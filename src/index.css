@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --bg: #0c0f14;
+  --panel: #121826;
+  --border: #1e293b;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: #e2e8f0;
+  font-family: system-ui, "Segoe UI", Roboto, Ubuntu, sans-serif;
+}
+
+.leaflet-container {
+  background: #0b1220 !important;
+  font-family: inherit;
+}
+
+/* Leaflet attribution legível no tema escuro */
+.leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.85) !important;
+  color: #94a3b8 !important;
+  font-size: 11px;
+}
