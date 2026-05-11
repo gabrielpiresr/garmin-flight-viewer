@@ -1,10 +1,10 @@
-import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { isSupabaseConfigured, supabase } from "../lib/supabase";
+import { account, isAppwriteConfigured, ID } from "../lib/appwrite";
+
+type AppwriteUser = { id: string; email: string };
 
 type AuthState = {
-  user: User | null;
-  session: Session | null;
+  user: AppwriteUser | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
@@ -15,63 +15,58 @@ type AuthState = {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(isSupabaseConfigured);
+  const [user, setUser] = useState<AppwriteUser | null>(null);
+  const [loading, setLoading] = useState(isAppwriteConfigured);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isAppwriteConfigured || !account) {
       setLoading(false);
       return;
     }
-
-    let cancelled = false;
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      if (!cancelled) {
-        setSession(s);
-        setLoading(false);
-      }
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-    });
-
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
+    account
+      .get()
+      .then((u) => setUser({ id: u.$id, email: u.email }))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    if (!supabase) return { error: new Error("Supabase não configurado") };
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error ? new Error(error.message) : null };
+    if (!account) return { error: new Error("Appwrite não configurado") };
+    try {
+      await account.createEmailPasswordSession(email, password);
+      const u = await account.get();
+      setUser({ id: u.$id, email: u.email });
+      return { error: null };
+    } catch (e) {
+      return { error: e as Error };
+    }
   }, []);
 
   const signUp = useCallback(async (email: string, password: string) => {
-    if (!supabase) return { error: new Error("Supabase não configurado") };
-    const { error } = await supabase.auth.signUp({ email, password });
-    return { error: error ? new Error(error.message) : null };
+    if (!account) return { error: new Error("Appwrite não configurado") };
+    try {
+      await account.create(ID.unique(), email, password);
+      await account.createEmailPasswordSession(email, password);
+      const u = await account.get();
+      setUser({ id: u.$id, email: u.email });
+      return { error: null };
+    } catch (e) {
+      return { error: e as Error };
+    }
   }, []);
 
   const signOut = useCallback(async () => {
-    if (!supabase) return;
-    await supabase.auth.signOut();
+    if (!account) return;
+    try {
+      await account.deleteSession("current");
+    } finally {
+      setUser(null);
+    }
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({
-      user: session?.user ?? null,
-      session,
-      loading,
-      signIn,
-      signUp,
-      signOut,
-      configured: isSupabaseConfigured,
-    }),
-    [session, loading, signIn, signUp, signOut],
+    () => ({ user, loading, signIn, signUp, signOut, configured: isAppwriteConfigured }),
+    [user, loading, signIn, signUp, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
