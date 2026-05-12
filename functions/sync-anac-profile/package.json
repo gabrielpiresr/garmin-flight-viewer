@@ -1,0 +1,11 @@
+{
+  "name": "sync-anac-profile-function",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/main.js",
+  "type": "commonjs",
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "node-appwrite": "^24.1.0"
+  }
+}

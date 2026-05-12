@@ -70,6 +70,8 @@ export const TELEMETRY_SERIES: TelemetrySeriesDef[] = [
   { key: "velNMps", label: "Vel N", patterns: [/^gps\s*velocity\s*n/i], color: "#94a3b8" },
   { key: "velUMps", label: "Vel U", patterns: [/^gps\s*velocity\s*u/i], color: "#cbd5e1" },
 
+  { key: "flapsPos", label: "Flaps", patterns: [/^flap\s*(position)?$/i], color: "#f59e0b" },
+
   { key: "aoa", label: "AOA", patterns: [/^aoa$/i], color: "#22d3ee" },
   { key: "aoaCp", label: "AOA Cp", patterns: [/^aoa\s*cp/i], color: "#0ea5e9" },
   { key: "fdPitchCmd", label: "FD pitch", patterns: [/^fd\s*pitch\s*command/i], color: "#fbbf24" },
@@ -95,6 +97,7 @@ export const TELEMETRY_PANELS: TelemetryChartPanel[] = [
   { id: "gpsv", title: "Velocidade GPS (E/N/U)", yUnit: "m/s", seriesKeys: ["velEMps", "velNMps", "velUMps"] },
   { id: "fdap", title: "FD / AP (comandos)", yUnit: "°", seriesKeys: ["fdPitchCmd", "fdRollCmd", "apPitchCmd", "apRollCmd"] },
   { id: "misc", title: "Temperatura / AOA", yUnit: "°C", seriesKeys: ["oatC", "aoa", "aoaCp"] },
+  { id: "flaps", title: "Flaps", yUnit: "pos", seriesKeys: ["flapsPos"] },
 ];
 
 export type ChartRow = { x: number } & Record<string, number | null>;

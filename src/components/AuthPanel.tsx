@@ -1,13 +1,25 @@
 import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { useToast } from "./ui/ToastProvider";
+
+function onlyDigits(value: string): string {
+  return value.replace(/\D/g, "");
+}
 
 export function AuthPanel() {
   const { user, loading, signIn, signUp, signOut, configured } = useAuth();
+  const { showToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [cpf, setCpf] = useState("");
+  const [phone, setPhone] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [weightKg, setWeightKg] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+  const [anacCode, setAnacCode] = useState("");
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
 
   if (!configured) {
     return (
@@ -43,17 +55,52 @@ export function AuthPanel() {
   }
 
   const submit = async () => {
-    setMessage(null);
     setBusy(true);
     try {
-      const fn = mode === "signin" ? signIn : signUp;
-      const { error } = await fn(email.trim(), password);
-      if (error) {
-        setMessage(error.message);
-        return;
-      }
-      if (mode === "signup") {
-        setMessage("Conta criada. Se o projeto exigir confirmação por e-mail, abra o link recebido antes de entrar.");
+      if (mode === "signin") {
+        const { error } = await signIn(email.trim(), password);
+        if (error) {
+          showToast({ variant: "error", message: error.message });
+          return;
+        }
+      } else {
+        const parsedWeight = Number(weightKg);
+        const parsedHeight = Number(heightCm);
+        const payload = {
+          fullName: fullName.trim(),
+          cpf: onlyDigits(cpf),
+          phone: onlyDigits(phone),
+          birthDate,
+          weightKg: parsedWeight,
+          heightCm: parsedHeight,
+          anacCode: onlyDigits(anacCode),
+        };
+
+        if (
+          !payload.fullName ||
+          payload.cpf.length !== 11 ||
+          payload.phone.length < 10 ||
+          !payload.birthDate ||
+          !Number.isFinite(payload.weightKg) ||
+          payload.weightKg <= 0 ||
+          !Number.isFinite(payload.heightCm) ||
+          payload.heightCm <= 0 ||
+          !payload.anacCode
+        ) {
+          showToast({ variant: "warning", message: "Preencha os dados do aluno para criar a conta." });
+          return;
+        }
+
+        const { error, anacSyncPending } = await signUp(email.trim(), password, payload);
+        if (error) {
+          showToast({ variant: "error", message: error.message });
+          return;
+        }
+        if (anacSyncPending) {
+          showToast({ variant: "warning", message: "Conta criada. Consulta ANAC pendente." });
+        } else {
+          showToast({ variant: "success", message: "Conta criada e dados ANAC importados." });
+        }
       }
       setPassword("");
     } finally {
@@ -101,7 +148,77 @@ export function AuthPanel() {
           />
         </label>
       </div>
-      {message ? <p className="text-xs text-amber-200/90">{message}</p> : null}
+      {mode === "signup" ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="block text-xs text-slate-500 sm:col-span-2">
+            Nome completo
+            <input
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            CPF
+            <input
+              type="text"
+              value={cpf}
+              onChange={(e) => setCpf(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            Telefone / WhatsApp
+            <input
+              type="text"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            Data de nascimento
+            <input
+              type="date"
+              value={birthDate}
+              onChange={(e) => setBirthDate(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            Código ANAC
+            <input
+              type="text"
+              value={anacCode}
+              onChange={(e) => setAnacCode(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            Peso (kg)
+            <input
+              type="number"
+              min={1}
+              step="0.1"
+              value={weightKg}
+              onChange={(e) => setWeightKg(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+          <label className="block text-xs text-slate-500">
+            Altura (cm)
+            <input
+              type="number"
+              min={1}
+              step="0.1"
+              value={heightCm}
+              onChange={(e) => setHeightCm(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
+            />
+          </label>
+        </div>
+      ) : null}
       <button
         type="button"
         disabled={busy || !email || password.length < 6}

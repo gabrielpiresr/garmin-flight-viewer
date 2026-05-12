@@ -6,7 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "appwrite:setup": "node scripts/setup-appwrite.mjs",
+    "appwrite:migrate:flights": "node scripts/migrate-flight-ownership.mjs",
+    "appwrite:set-role": "node scripts/set-user-role.mjs",
+    "appwrite:fix-profile-permissions": "node scripts/fix-profile-read-permissions.mjs",
+    "appwrite:fix-profiles-collection-permissions": "node scripts/fix-profiles-collection-permissions.mjs",
+    "appwrite:setup-admin": "node scripts/setup-admin-collections.mjs",
+    "appwrite:fix-admin-perms": "node scripts/fix-admin-collection-permissions.mjs",
+    "appwrite:setup-planning": "node scripts/setup-planning-collections.mjs",
+    "appwrite:setup-credits": "node scripts/setup-student-credits-collection.mjs",
+    "appwrite:setup-notices": "node scripts/setup-notices-collections.mjs",
+    "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs"
   },
   "dependencies": {
     "appwrite": "^25.0.0",

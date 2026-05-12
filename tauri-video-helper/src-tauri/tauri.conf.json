@@ -1,0 +1,31 @@
+{
+  "productName": "Garmin Flight Video Helper",
+  "version": "0.1.0",
+  "identifier": "dev.flightviewer.videohelper",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "ffmpeg.exe": "ffmpeg.exe",
+      "ffprobe.exe": "ffprobe.exe",
+      "watermark.png": "watermark.png"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

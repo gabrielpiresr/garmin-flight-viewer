@@ -1,0 +1,13 @@
+name = "video-upload-worker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "FLIGHT_VIDEOS"
+bucket_name = "flight-videos"
+
+[vars]
+R2_PUBLIC_URL = "https://pub-51af81af31584250882eafca3f31d54d.r2.dev"
+
+# WORKER_SECRET é configurado via: npx wrangler secret put WORKER_SECRET

@@ -1,0 +1,130 @@
+import { Query } from "appwrite";
+import { databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+
+const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
+const VIDEOS_COL_ID = import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string;
+
+export type ProcessingStatus = "processing" | "uploading" | "ready" | "failed";
+
+export type FlightVideo = {
+  id: string;
+  flight_id: string;
+  uploaded_by: string;
+  file_url: string;
+  file_size: number | null;
+  duration_sec: number | null;
+  original_files_count: number | null;
+  processing_status: ProcessingStatus;
+  created_at: string;
+};
+
+export async function createFlightVideoDoc(payload: {
+  flightId: string;
+  uploadedBy: string;
+  originalFilesCount: number;
+}): Promise<{ id: string | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { id: null, error: new Error("Appwrite não configurado") };
+  }
+  if (!VIDEOS_COL_ID) {
+    return { id: null, error: new Error("VITE_APPWRITE_VIDEOS_COLLECTION_ID não configurado") };
+  }
+  try {
+    const permissions = [
+      Permission.read(Role.users()),
+      Permission.update(Role.user(payload.uploadedBy)),
+      Permission.delete(Role.user(payload.uploadedBy)),
+    ];
+
+    const d = await databases.createDocument(DB_ID, VIDEOS_COL_ID, ID.unique(), {
+      flight_id: payload.flightId,
+      uploaded_by: payload.uploadedBy,
+      file_url: "",
+      processing_status: "processing",
+      original_files_count: payload.originalFilesCount,
+      created_at: new Date().toISOString(),
+    }, permissions);
+
+    return { id: d.$id, error: null };
+  } catch (e) {
+    return { id: null, error: e as Error };
+  }
+}
+
+export async function updateFlightVideoReady(docId: string, data: {
+  fileUrl: string;
+  fileSize: number | null;
+  durationSec: number | null;
+}): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite não configurado") };
+  }
+  try {
+    await databases.updateDocument(DB_ID, VIDEOS_COL_ID, docId, {
+      file_url: data.fileUrl,
+      file_size: data.fileSize,
+      duration_sec: data.durationSec,
+      processing_status: "ready",
+    });
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
+export async function updateFlightVideoFailed(docId: string): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite não configurado") };
+  }
+  try {
+    await databases.updateDocument(DB_ID, VIDEOS_COL_ID, docId, {
+      processing_status: "failed",
+    });
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
+export async function listFlightVideos(flightId: string): Promise<{ data: FlightVideo[] | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { data: null, error: new Error("Appwrite não configurado") };
+  }
+  if (!VIDEOS_COL_ID) {
+    return { data: [], error: null };
+  }
+  try {
+    const res = await databases.listDocuments(DB_ID, VIDEOS_COL_ID, [
+      Query.equal("flight_id", [flightId]),
+      Query.orderDesc("$createdAt"),
+    ]);
+
+    const data: FlightVideo[] = res.documents.map((d) => ({
+      id: d.$id,
+      flight_id: d.flight_id as string,
+      uploaded_by: d.uploaded_by as string,
+      file_url: (d.file_url as string | null) ?? "",
+      file_size: (d.file_size as number | null | undefined) ?? null,
+      duration_sec: (d.duration_sec as number | null | undefined) ?? null,
+      original_files_count: (d.original_files_count as number | null | undefined) ?? null,
+      processing_status: (d.processing_status as ProcessingStatus) ?? "processing",
+      created_at: d.$createdAt,
+    }));
+
+    return { data, error: null };
+  } catch (e) {
+    return { data: null, error: e as Error };
+  }
+}
+
+export async function deleteFlightVideo(docId: string): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite não configurado") };
+  }
+  try {
+    await databases.deleteDocument(DB_ID, VIDEOS_COL_ID, docId);
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}

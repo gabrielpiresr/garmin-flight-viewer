@@ -6,3 +6,9 @@ dist
 .env.*
 !.env.example
 .DS_Store
+server.err.log
+server.out.log
+.tmp/
+appwrite.config.json
+video-helper/ffmpeg.exe
+video-helper/ffprobe.exe

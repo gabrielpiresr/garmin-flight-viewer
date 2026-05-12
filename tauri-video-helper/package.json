@@ -1,0 +1,13 @@
+{
+  "name": "tauri-video-helper",
+  "version": "0.1.0",
+  "description": "Helper local para processamento de vídeos de voo",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

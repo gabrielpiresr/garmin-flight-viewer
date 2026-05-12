@@ -20,7 +20,7 @@ export function SavedFlightsPanel({ onOpen, refreshKey }: Props) {
     }
     setLoading(true);
     setErr(null);
-    const { data, error } = await listSavedFlights();
+    const { data, error } = await listSavedFlights({ userId: user.id, role: user.role });
     setLoading(false);
     if (error) {
       setErr(error.message);

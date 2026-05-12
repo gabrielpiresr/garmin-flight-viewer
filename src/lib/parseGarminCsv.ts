@@ -101,6 +101,12 @@ function parseSpeedToMs(value: number, colName: string): number | null {
   return value;
 }
 
+function normalizeHeading(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const normalized = ((value % 360) + 360) % 360;
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
 function parseTimeToMs(value: unknown, colName: string): number | null {
   const n = normHeader(colName);
   const s = String(value ?? "").trim();
@@ -314,19 +320,28 @@ export type ParseResult = {
   telemetryColumns: Record<string, string>;
   warnings: string[];
   metaLines: string[];
+  /** Matrícula da aeronave extraída dos metadados do arquivo, se disponível. */
+  aircraftIdent: string | null;
 };
+
+function extractAircraftIdent(text: string): string | null {
+  const lines = text.split(/\r?\n/).slice(0, 30);
+  for (const line of lines) {
+    const m =
+      line.match(/aircraft[_\s]ident[^,=]*[,=]\s*([A-Z0-9\-]+)/i) ??
+      line.match(/acft[_\s]?id[^,=]*[,=]\s*([A-Z0-9\-]+)/i);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
 
 export function parseGarminCsv(text: string): ParseResult {
   const warnings: string[] = [];
   const metaLines: string[] = [];
+  const aircraftIdent = extractAircraftIdent(text);
 
   const normalized = text.replace(/^\uFEFF/, "");
-  const { csv: clipped, headerLineIndex } = clipToDataHeader(normalized);
-  if (headerLineIndex > 0) {
-    metaLines.push(
-      `Cabeçalho de dados reconhecido após ${headerLineIndex} linha(s) iniciais (ex.: comentários # ou descrição de formato).`,
-    );
-  }
+  const { csv: clipped } = clipToDataHeader(normalized);
 
   const parsed = Papa.parse<Record<string, unknown>>(clipped, {
     header: true,
@@ -351,6 +366,7 @@ export function parseGarminCsv(text: string): ParseResult {
       telemetryColumns: {},
       warnings,
       metaLines,
+      aircraftIdent,
     };
   }
 
@@ -416,6 +432,7 @@ export function parseGarminCsv(text: string): ParseResult {
       telemetryColumns,
       warnings,
       metaLines,
+      aircraftIdent,
     };
   }
 
@@ -462,7 +479,9 @@ export function parseGarminCsv(text: string): ParseResult {
 
     const tRaw = instants[idx] ?? null;
     const t = tRaw ?? wallClockMs?.[idx] ?? null;
-    points.push({ lat, lon, altM, speedMs, t });
+    const trackDeg = normalizeHeading(rowChart.trackDeg);
+    const hdgMag = normalizeHeading(rowChart.hdgMag);
+    points.push({ lat, lon, headingDeg: trackDeg ?? hdgMag, altM, speedMs, t });
   });
 
   if (points.length < 2) {
@@ -479,5 +498,5 @@ export function parseGarminCsv(text: string): ParseResult {
   if (colAlt && altFeet) metaLines.push("Altitude interpretada como pés → convertida para metros nas estatísticas.");
   else if (colAlt) metaLines.push("Altitude interpretada em metros (ajuste manual se estiver incorreto).");
 
-  return { points, chartData, hasChartTime, chartTimeBaseMs, telemetryColumns, warnings, metaLines };
+  return { points, chartData, hasChartTime, chartTimeBaseMs, telemetryColumns, warnings, metaLines, aircraftIdent };
 }

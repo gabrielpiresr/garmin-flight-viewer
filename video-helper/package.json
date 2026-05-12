@@ -1,0 +1,11 @@
+{
+  "name": "flight-video-helper",
+  "version": "1.0.0",
+  "description": "Processa gravações de voo localmente e envia para R2",
+  "main": "helper.js",
+  "scripts": {
+    "start": "node helper.js",
+    "build": "npx pkg helper.js --targets node18-win-x64 --output dist/helper.exe"
+  },
+  "pkg": {}
+}
