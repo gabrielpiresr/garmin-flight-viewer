@@ -107,6 +107,20 @@ function formatMinutes(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function addMinutesToTime(startTime: string, minutes: number): string {
+  const match = startTime.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match || minutes <= 0) return "";
+  const h = Number(match[1] ?? "0");
+  const m = Number(match[2] ?? "0");
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
+  const total = (h * 60 + m + Math.round(minutes)) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function scheduleSignature(date: string, startTime: string, durationMinutes: number): string {
+  return `${date}|${startTime}|${addMinutesToTime(startTime, durationMinutes)}`;
+}
+
 function normalizeTimeInput(raw: string): string {
   const digits = raw.replace(/\D/g, "").slice(0, 4);
   if (!digits) return "";
@@ -387,6 +401,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [saving, setSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [flightId, setFlightId] = useState<string | null>(null);
+  const [originalScheduleSignature, setOriginalScheduleSignature] = useState<string | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
 
   const [studentId, setStudentId] = useState("");
@@ -523,10 +538,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setTelemetryCsv(decoded.telemetryCsv ?? "");
 
         if (!meta) {
+          const loadedDate = (data.created_at ?? "").slice(0, 10) || todayIso();
           setStudentId(data.student_user_id ?? "");
           setStudentLabel("");
-          setFlightDate((data.created_at ?? "").slice(0, 10) || todayIso());
+          setFlightDate(loadedDate);
           setStartTime("");
+          setOriginalScheduleSignature(scheduleSignature(loadedDate, "", data.duration_sec ? Math.round(data.duration_sec / 60) : 0));
           setAircraft(data.aircraft_ident ?? "");
           setScheduleMeta(undefined);
           setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, []));
@@ -535,10 +552,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           return;
         }
 
+        const loadedDate = meta.header.date || (data.created_at ?? "").slice(0, 10) || todayIso();
+        const loadedStartTime = meta.header.startTime ?? "";
+        const loadedDurationMinutes = (meta.legs ?? []).reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime || ""), 0);
         setStudentId(meta.header.studentUserId ?? data.student_user_id ?? "");
         setStudentLabel(meta.header.studentName ?? meta.header.studentLabel ?? "");
-        setFlightDate(meta.header.date || (data.created_at ?? "").slice(0, 10) || todayIso());
-        setStartTime(meta.header.startTime ?? "");
+        setFlightDate(loadedDate);
+        setStartTime(loadedStartTime);
+        setOriginalScheduleSignature(scheduleSignature(loadedDate, loadedStartTime, loadedDurationMinutes));
         setAircraft(meta.header.aircraft ?? data.aircraft_ident ?? "");
         setObjectiveMd(meta.preFlight.objectiveMd ?? "");
         setBriefingMd(meta.preFlight.briefingMd ?? DEFAULT_BRIEFING);
@@ -719,6 +740,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       duration_sec: totals.flightMin > 0 ? totals.flightMin * 60 : null,
       telemetryMetrics,
     };
+    const nextScheduleSignature = scheduleSignature(flightDate, startTime, totals.flightMin);
 
     if (flightId) {
       const { error: updateErr } = await updateFlight(flightId, payload);
@@ -727,17 +749,20 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setError(updateErr.message);
         return;
       }
-      void dispatchNotificationEvent({
-        eventType: "flight.updated",
-        flightId,
-        dedupeKey: `flight.updated:${flightId}:${Date.now()}`,
-        actorUserId: user.id,
-        data: {
-          aircraft,
-          flightDate,
-          startTime,
-        },
-      });
+      if (originalScheduleSignature !== nextScheduleSignature) {
+        void dispatchNotificationEvent({
+          eventType: "flight.updated",
+          flightId,
+          dedupeKey: `flight.updated:${flightId}:${Date.now()}`,
+          actorUserId: user.id,
+          data: {
+            aircraft,
+            flightDate,
+            startTime,
+          },
+        });
+      }
+      setOriginalScheduleSignature(nextScheduleSignature);
       onPublished?.(flightId);
       setSavedMessage("Alterações salvas.");
       return;
@@ -762,6 +787,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       },
     });
     onPublished?.(id);
+    setOriginalScheduleSignature(nextScheduleSignature);
     setSavedMessage("Voo salvo.");
   };
 

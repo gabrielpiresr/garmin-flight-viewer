@@ -78,6 +78,14 @@ const SLOT_BG_TINT: Record<SlotState, string> = {
   blocked: "bg-red-500/22",
 };
 
+function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
+  const date = new Date(`${weekStart}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return DAY_LABEL[dayOfWeek];
+  const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  date.setDate(date.getDate() + offset);
+  return `${DAY_LABEL[dayOfWeek]} ${date.getDate()}`;
+}
+
 function hoursToHHMM(hours: number): string {
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
@@ -86,6 +94,15 @@ function hoursToHHMM(hours: number): string {
 
 function composeEndTime(startHour: number, durationHours: number): string {
   return hoursToHHMM(startHour + durationHours);
+}
+
+function parseStartHour(startTime: string): number {
+  const [hh, mm] = startTime.split(":").map(Number);
+  return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
+}
+
+function scheduleSignature(date: string, startTime: string, endTime: string): string {
+  return `${date}|${startTime}|${endTime}`;
 }
 
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
@@ -517,6 +534,7 @@ function summarizeStudents(
 type CalendarProps = {
   suggestions: ScheduledFlightSuggestion[];
   title: string;
+  weekStart: string;
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   totalWeightByDemand: Map<string, string>;
@@ -527,6 +545,7 @@ type CalendarProps = {
 function CalendarGrid({
   suggestions,
   title,
+  weekStart,
   colorByAircraft,
   borderByInstructor,
   totalWeightByDemand,
@@ -632,7 +651,7 @@ function CalendarGrid({
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
               {DAY_ORDER.map((day) => (
                 <th key={day} className="w-[14.2%] pb-1 text-center text-xs font-semibold text-slate-400">
-                  {DAY_LABEL[day]}
+                  {formatCalendarDayHeader(weekStart, day)}
                 </th>
               ))}
             </tr>
@@ -1084,15 +1103,25 @@ export function ScheduleGenerationTab() {
 
         const existing = byDemand.get(suggestion.demandId);
         if (existing) {
+          const flightDate = weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek);
+          const startTime = hoursToHHMM(suggestion.startHour);
+          const previousSignature = scheduleSignature(
+            existing.date,
+            existing.startTime,
+            composeEndTime(parseStartHour(existing.startTime), existing.durationHours),
+          );
+          const nextSignature = scheduleSignature(flightDate, startTime, composeEndTime(suggestion.startHour, suggestion.durationHours));
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
-          notificationEvents.push({
-            eventType: "flight.updated",
-            flightId: existing.id,
-            aircraft: suggestion.aircraftRegistration,
-            flightDate: weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek),
-            startTime: hoursToHHMM(suggestion.startHour),
-          });
+          if (previousSignature !== nextSignature) {
+            notificationEvents.push({
+              eventType: "flight.updated",
+              flightId: existing.id,
+              aircraft: suggestion.aircraftRegistration,
+              flightDate,
+              startTime,
+            });
+          }
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
@@ -1925,6 +1954,7 @@ export function ScheduleGenerationTab() {
           <CalendarGrid
             suggestions={filteredSuggestions}
             title="Agenda semanal"
+            weekStart={weekData?.week.weekStart ?? selectedWeekStart}
             colorByAircraft={colorByAircraft}
             borderByInstructor={borderByInstructor}
             totalWeightByDemand={totalWeightByDemand}

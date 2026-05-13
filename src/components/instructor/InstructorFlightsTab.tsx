@@ -19,9 +19,25 @@ import { getProfile } from "../../lib/rbac";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
+import { Skeleton } from "../ui/Skeleton";
 
 type View = "list" | "detail" | "create";
 type DisplayMode = "cards" | "calendar" | "table";
+
+function defaultDisplayMode(): DisplayMode {
+  if (typeof window === "undefined") return "table";
+  return window.matchMedia("(min-width: 768px)").matches ? "table" : "cards";
+}
+
+function displayModeStorageKey(userId?: string): string {
+  return `gfv:meus-voos:inva:${userId ?? "anon"}:displayMode`;
+}
+
+function readStoredDisplayMode(userId?: string): DisplayMode {
+  if (typeof window === "undefined") return defaultDisplayMode();
+  const stored = window.localStorage.getItem(displayModeStorageKey(userId));
+  return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
+}
 
 function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
   if (mode === "calendar") {
@@ -136,6 +152,14 @@ function FlightCard({
                 {info?.instructorSuggestionMd ? "preenchida" : "pendente"}
               </span>
             </p>
+            {future ? (
+              <p className="sm:col-span-2 lg:col-span-4">
+                Sugestao aluno:{" "}
+                <span className={info?.studentSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
+                  {info?.studentSuggestionMd ? "preenchida" : "pendente"}
+                </span>
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -178,7 +202,7 @@ export function InstructorFlightsTab() {
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [search, setSearch] = useState("");
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("cards");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [suggestionFlightId, setSuggestionFlightId] = useState<string | null>(null);
   const [suggestionDraft, setSuggestionDraft] = useState("");
   const [suggestionSaving, setSuggestionSaving] = useState(false);
@@ -203,6 +227,15 @@ export function InstructorFlightsTab() {
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
+
+  useEffect(() => {
+    setDisplayMode(readStoredDisplayMode(user?.id));
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return;
+    window.localStorage.setItem(displayModeStorageKey(user.id), displayMode);
+  }, [displayMode, user?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,6 +301,7 @@ export function InstructorFlightsTab() {
       { flights: 0, minutes: 0, landings: 0 },
     );
   }, [filteredItems, infoById]);
+  const dataLoading = loading || items.some((item) => !infoById[item.id]);
 
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
@@ -388,9 +422,19 @@ export function InstructorFlightsTab() {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
-        <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
-        <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
+        {dataLoading ? (
+          <>
+            <SummaryCardSkeleton />
+            <SummaryCardSkeleton />
+            <SummaryCardSkeleton />
+          </>
+        ) : (
+          <>
+            <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
+            <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
+            <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
+          </>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
@@ -409,10 +453,36 @@ export function InstructorFlightsTab() {
         </p>
       ) : null}
 
-      {loading ? (
-        <div className="flex items-center gap-3 py-10 text-sm text-slate-500">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-          Carregando...
+      {dataLoading ? (
+        <div className="space-y-6">
+          {Array.from({ length: 2 }).map((_, gi) => (
+            <div key={gi}>
+              <Skeleton className="mb-3 h-3 w-28" />
+              <ul className="space-y-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <li key={i} className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+                    <div className="flex items-start gap-4">
+                      <div className="flex w-10 shrink-0 flex-col items-center gap-1">
+                        <Skeleton className="h-6 w-8" />
+                        <Skeleton className="h-2.5 w-6" />
+                      </div>
+                      <div className="flex-1 space-y-2">
+                        <div className="flex gap-2">
+                          <Skeleton className="h-5 w-16 rounded" />
+                          <Skeleton className="h-5 w-12 rounded" />
+                        </div>
+                        <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-3">
+                          {Array.from({ length: 6 }).map((_, j) => (
+                            <Skeleton key={j} className="h-3 w-full" />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       ) : filteredItems.length === 0 ? (
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-10 text-center">
@@ -546,6 +616,13 @@ export function InstructorFlightsTab() {
               <p>Aluno: <span className="text-slate-300">{suggestionInfo?.studentName || "—"}</span></p>
             </div>
 
+            <div className="mb-4 rounded-xl border border-slate-700/60 bg-slate-950/25 p-3">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Sugestao do aluno</p>
+              <p className="whitespace-pre-wrap break-words text-sm text-slate-300 [overflow-wrap:anywhere]">
+                {suggestionInfo?.studentSuggestionMd || "Sem sugestão registrada."}
+              </p>
+            </div>
+
             <label className="block">
               <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">
                 Sugestão do INVA
@@ -599,6 +676,15 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SummaryCardSkeleton() {
+  return (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+      <Skeleton className="h-3 w-16" />
+      <Skeleton className="mt-2 h-5 w-20" />
+    </div>
+  );
+}
+
 function FlightTableSection({
   title,
   groups,
@@ -616,6 +702,7 @@ function FlightTableSection({
   onDelete: (id: string) => void;
   onEditSuggestion?: (id: string) => void;
 }) {
+  const showSuggestionColumn = Boolean(onEditSuggestion);
   return (
     <section className="space-y-3">
       <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
@@ -639,7 +726,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Rota</th>
                     <th className="px-3 py-2 font-semibold">Horas</th>
                     <th className="px-3 py-2 font-semibold">Pousos</th>
-                    <th className="px-3 py-2 font-semibold">Sugestão</th>
+                    {showSuggestionColumn ? <th className="px-3 py-2 font-semibold">Sugestao</th> : null}
                     <th className="px-3 py-2 font-semibold">Ações</th>
                   </tr>
                 </thead>
@@ -668,11 +755,24 @@ function FlightTableSection({
                         <td className="px-3 py-2">{info?.fromTo ?? "—"}</td>
                         <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
                         <td className="px-3 py-2">{info?.landings ?? 0}</td>
-                        <td className="px-3 py-2">
-                          <span className={info?.instructorSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
-                            {info?.instructorSuggestionMd ? "Preenchida" : "Pendente"}
-                          </span>
-                        </td>
+                        {showSuggestionColumn ? (
+                          <td className="px-3 py-2">
+                            <div className="space-y-1">
+                              <p>
+                                INVA:{" "}
+                                <span className={info?.instructorSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
+                                  {info?.instructorSuggestionMd ? "Preenchida" : "Pendente"}
+                                </span>
+                              </p>
+                              <p>
+                                Aluno:{" "}
+                                <span className={info?.studentSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
+                                  {info?.studentSuggestionMd ? "Preenchida" : "Pendente"}
+                                </span>
+                              </p>
+                            </div>
+                          </td>
+                        ) : null}
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
                             {onEditSuggestion ? (

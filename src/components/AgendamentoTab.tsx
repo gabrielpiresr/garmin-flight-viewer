@@ -372,6 +372,7 @@ export function AgendamentoTab() {
 
   const [openWeeks, setOpenWeeks] = useState<OperationalWeek[]>([]);
   const [openWeek, setOpenWeek] = useState<OperationalWeek | null>(null);
+  const [submittedWeekStarts, setSubmittedWeekStarts] = useState<Set<string>>(new Set());
   const [existingPlanId, setExistingPlanId] = useState<string | null>(null);
   const [submittedPlan, setSubmittedPlan] = useState<WeeklyFlightPlanFull | null>(null);
   const [hasPreviousPlan, setHasPreviousPlan] = useState(false);
@@ -402,6 +403,14 @@ export function AgendamentoTab() {
       }
 
       setOpenWeeks(weeks);
+      const weekPlans = await Promise.all(weeks.map((week) => getStudentPlan(user.id, week.week_start)));
+      setSubmittedWeekStarts(
+        new Set(
+          weeks
+            .filter((_, index) => weekPlans[index]?.status === "submitted")
+            .map((week) => week.week_start),
+        ),
+      );
 
       if (weeks.length === 1) {
         // Only one open week — skip the selector and go directly
@@ -435,6 +444,7 @@ export function AgendamentoTab() {
 
       if (existing.status === "submitted") {
         setSubmittedPlan(existing);
+        setSubmittedWeekStarts((prev) => new Set([...prev, week.week_start]));
         setView("submitted");
         return;
       }
@@ -560,6 +570,7 @@ export function AgendamentoTab() {
       });
       await submitStudentPlan(result.id);
       setSubmittedPlan({ ...result, status: "submitted" });
+      setSubmittedWeekStarts((prev) => new Set([...prev, openWeek.week_start]));
       setView("submitted");
       void dispatchNotificationEvent({
         eventType: "weeklyPlan.submitted",
@@ -659,9 +670,16 @@ export function AgendamentoTab() {
               className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700/60 bg-slate-900/40 px-5 py-4 text-left transition hover:border-violet-500/50 hover:bg-slate-800/60 active:scale-[0.99]"
             >
               <div>
-                <p className="text-sm font-semibold text-slate-200">
-                  Semana de {formatWeekRange(week.week_start, week.week_end)}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-200">
+                    Semana de {formatWeekRange(week.week_start, week.week_end)}
+                  </p>
+                  {submittedWeekStarts.has(week.week_start) ? (
+                    <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                      Enviado
+                    </span>
+                  ) : null}
+                </div>
                 <p className="mt-0.5 text-xs text-slate-500">{week.week_start}</p>
               </div>
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5 flex-shrink-0 text-slate-500">
@@ -743,9 +761,16 @@ export function AgendamentoTab() {
             )}
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Planejamento semanal de voos</p>
-              <p className="mt-0.5 text-base font-semibold text-slate-200">
-                Semana de {formatWeekRange(openWeek.week_start, openWeek.week_end)}
-              </p>
+              <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                <p className="text-base font-semibold text-slate-200">
+                  Semana de {formatWeekRange(openWeek.week_start, openWeek.week_end)}
+                </p>
+                {submittedWeekStarts.has(openWeek.week_start) ? (
+                  <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                    Enviado
+                  </span>
+                ) : null}
+              </div>
             </div>
           </div>
           {hasPreviousPlan && (

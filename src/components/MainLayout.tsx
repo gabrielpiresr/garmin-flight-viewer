@@ -143,7 +143,7 @@ export function MainLayout() {
 
   return (
     <div className="flex min-h-screen bg-slate-950">
-      <aside className="hidden w-64 flex-col border-r border-slate-800 bg-slate-950/80 lg:flex">
+      <aside className="sticky top-0 hidden h-screen w-64 flex-col border-r border-slate-800 bg-slate-950/80 lg:flex">
         <div className="border-b border-slate-800 px-5 py-5">
           <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400">
             Aluno
@@ -152,7 +152,7 @@ export function MainLayout() {
           <p className="text-sm font-semibold text-slate-200">Operação de voo</p>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
+        <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
           {NAV_ITEMS.map((item) => {
             const isActive = section === item.id;
             return (

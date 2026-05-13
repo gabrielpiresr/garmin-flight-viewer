@@ -80,6 +80,14 @@ type CalendarFlightItem = {
   endTime: string;
 };
 
+function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
+  const date = new Date(`${weekStart}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return DAY_LABEL[dayOfWeek];
+  const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  date.setDate(date.getDate() + offset);
+  return `${DAY_LABEL[dayOfWeek]} ${date.getDate()}`;
+}
+
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
   const base = new Date(`${weekStart}T12:00:00`);
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -91,6 +99,10 @@ function hoursToHHMM(hours: number): string {
   const hh = Math.floor(hours);
   const mm = Math.round((hours - hh) * 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function scheduleSignature(date: string, startTime: string, durationHours: number): string {
+  return `${date}|${startTime}|${hoursToHHMM(parseStartHour(startTime) + durationHours)}`;
 }
 
 function parseStartHour(startTime: string): number {
@@ -179,12 +191,14 @@ function CalendarGrid({
   colorByAircraft,
   borderByInstructor,
   backgroundSupply,
+  weekStart,
   onItemClick,
 }: {
   items: CalendarFlightItem[];
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
+  weekStart: string;
   onItemClick: (item: CalendarFlightItem) => void;
 }) {
   const rowHeight = 38;
@@ -285,7 +299,7 @@ function CalendarGrid({
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
               {DAY_ORDER.map((day) => (
                 <th key={day} className="w-[14.2%] pb-1 text-center text-xs font-semibold text-slate-400">
-                  {DAY_LABEL[day]}
+                  {formatCalendarDayHeader(weekStart, day)}
                 </th>
               ))}
             </tr>
@@ -689,19 +703,28 @@ export function ScheduleFlightsTab() {
       } as const;
 
       if (formMode === "edit" && formDraft.id) {
+        const previous = flights.find((row) => row.id === formDraft.id);
+        const previousSignature = previous
+          ? scheduleSignature(previous.date, previous.startTime, previous.durationHours)
+          : null;
+        const nextDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
+        const nextStartTime = hoursToHHMM(formDraft.startHour);
+        const nextSignature = scheduleSignature(nextDate, nextStartTime, formDraft.durationHours);
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
-        void dispatchNotificationEvent({
-          eventType: "flight.updated",
-          flightId: formDraft.id,
-          dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
-          actorUserId: user.id,
-          data: {
-            aircraft: formDraft.aircraftRegistration,
-            flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
-            startTime: hoursToHHMM(formDraft.startHour),
-          },
-        });
+        if (previousSignature !== nextSignature) {
+          void dispatchNotificationEvent({
+            eventType: "flight.updated",
+            flightId: formDraft.id,
+            dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
+            actorUserId: user.id,
+            data: {
+              aircraft: formDraft.aircraftRegistration,
+              flightDate: nextDate,
+              startTime: nextStartTime,
+            },
+          });
+        }
         showToast({ variant: "success", message: "Voo atualizado com sucesso." });
       } else {
         const result = await insertFlight(payload);
@@ -950,6 +973,7 @@ export function ScheduleFlightsTab() {
             colorByAircraft={colorByAircraft}
             borderByInstructor={borderByInstructor}
             backgroundSupply={selectedSupplyForBackground}
+            weekStart={weekData.week.weekStart}
             onItemClick={(item) => {
               const selected = flights.find((row) => row.id === item.id);
               if (selected) void openEditModal(selected);

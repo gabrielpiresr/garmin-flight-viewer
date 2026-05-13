@@ -67,6 +67,21 @@ function aircraftColor(registration: string): string {
 
 type DisplayMode = "cards" | "calendar" | "table";
 
+function defaultDisplayMode(): DisplayMode {
+  if (typeof window === "undefined") return "table";
+  return window.matchMedia("(min-width: 768px)").matches ? "table" : "cards";
+}
+
+function displayModeStorageKey(userId?: string): string {
+  return `gfv:meus-voos:aluno:${userId ?? "anon"}:displayMode`;
+}
+
+function readStoredDisplayMode(userId?: string): DisplayMode {
+  if (typeof window === "undefined") return defaultDisplayMode();
+  const stored = window.localStorage.getItem(displayModeStorageKey(userId));
+  return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
+}
+
 function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
   if (mode === "calendar") {
     return (
@@ -121,7 +136,7 @@ export function MeusVoosTab() {
   const [aircraftFilter, setAircraftFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("cards");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [studentSuggestionFlightId, setStudentSuggestionFlightId] = useState<string | null>(null);
   const [shareFlightId, setShareFlightId] = useState<string | null>(null);
   const [studentSuggestionDraft, setStudentSuggestionDraft] = useState("");
@@ -149,6 +164,15 @@ export function MeusVoosTab() {
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
+
+  useEffect(() => {
+    setDisplayMode(readStoredDisplayMode(user?.id));
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return;
+    window.localStorage.setItem(displayModeStorageKey(user.id), displayMode);
+  }, [displayMode, user?.id]);
 
   useEffect(() => {
     const schoolId = SCHOOL_ID ?? "escola_principal";
@@ -229,6 +253,7 @@ export function MeusVoosTab() {
       { flights: 0, minutes: 0, landings: 0 },
     );
   }, [filteredItems, infoById]);
+  const dataLoading = loading || items.some((item) => !infoById[item.id]);
 
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
@@ -360,9 +385,19 @@ export function MeusVoosTab() {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
-        <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
-        <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
+        {dataLoading ? (
+          <>
+            <SummaryCardSkeleton />
+            <SummaryCardSkeleton />
+            <SummaryCardSkeleton />
+          </>
+        ) : (
+          <>
+            <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
+            <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
+            <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
+          </>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
@@ -413,7 +448,7 @@ export function MeusVoosTab() {
         </p>
       )}
 
-      {loading ? (
+      {dataLoading ? (
         <div className="space-y-6">
           {Array.from({ length: 2 }).map((_, gi) => (
             <div key={gi}>
@@ -841,6 +876,15 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
       <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</p>
       <p className="mt-1 text-lg font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function SummaryCardSkeleton() {
+  return (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+      <Skeleton className="h-3 w-16" />
+      <Skeleton className="mt-2 h-5 w-20" />
     </div>
   );
 }

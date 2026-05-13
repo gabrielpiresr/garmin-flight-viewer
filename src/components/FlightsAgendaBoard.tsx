@@ -77,6 +77,14 @@ function formatWeekLabel(weekStartIso: string): string {
   return `${start.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })} - ${end.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}`;
 }
 
+function formatDayHeader(weekStartIso: string, dayOfWeek: number): string {
+  const date = new Date(`${weekStartIso}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return DAY_LABEL[dayOfWeek];
+  const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  date.setDate(date.getDate() + offset);
+  return `${DAY_LABEL[dayOfWeek]} ${date.getDate()}`;
+}
+
 function parseStartHour(startTime: string): number {
   const [hh, mm] = startTime.split(":").map(Number);
   if (!Number.isFinite(hh)) return SLOT_HOURS[0] ?? 6;
@@ -175,7 +183,7 @@ export function FlightsAgendaBoard({
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
               {DAY_ORDER.map((day) => (
                 <th key={day} className="w-[14.2%] pb-1 text-center text-xs font-semibold text-slate-400">
-                  {DAY_LABEL[day]}
+                  {formatDayHeader(selectedWeekStart, day)}
                 </th>
               ))}
             </tr>
