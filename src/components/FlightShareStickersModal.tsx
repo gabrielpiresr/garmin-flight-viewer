@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   buildFlightShareStickers,
   buildCustomFlightShareSticker,
@@ -89,15 +89,48 @@ function downloadBlob(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function StickerPreview({ sticker }: { sticker: FlightShareSticker }) {
+function StickerPreview({
+  sticker,
+  onSwipeLeft,
+  onSwipeRight,
+}: {
+  sticker: FlightShareSticker;
+  onSwipeLeft?: () => void;
+  onSwipeRight?: () => void;
+}) {
+  const touchStartX = useRef<number | null>(null);
+  const canSwipe = Boolean(onSwipeLeft || onSwipeRight);
+
   return (
-    <div className="mx-auto flex h-full max-h-[58vh] min-h-[360px] w-full max-w-[360px] items-center justify-center rounded-[2rem] border border-slate-700/80 p-4 shadow-2xl shadow-black/40" style={checkerboardStyle}>
+    <div
+      className="relative mx-auto flex h-full max-h-[58vh] min-h-[360px] w-full max-w-[360px] touch-pan-y items-center justify-center rounded-[2rem] border border-slate-700/80 p-4 shadow-2xl shadow-black/40"
+      style={checkerboardStyle}
+      onTouchStart={(event) => {
+        if (!canSwipe) return;
+        touchStartX.current = event.touches[0]?.clientX ?? null;
+      }}
+      onTouchEnd={(event) => {
+        if (!canSwipe || touchStartX.current === null) return;
+        const endX = event.changedTouches[0]?.clientX;
+        if (typeof endX !== "number") return;
+        const delta = endX - touchStartX.current;
+        touchStartX.current = null;
+        if (Math.abs(delta) < 56) return;
+        if (delta < 0) onSwipeLeft?.();
+        else onSwipeRight?.();
+      }}
+    >
       <img
         src={svgToDataUri(sticker.svg)}
         alt={sticker.title}
         className="h-full max-h-[54vh] w-auto object-contain drop-shadow-2xl"
         draggable={false}
       />
+      {canSwipe ? (
+        <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1 text-[11px] font-semibold text-slate-200 sm:hidden">
+          Deslize para trocar
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -152,6 +185,7 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [mode, setMode] = useState<StickerMode>("ready");
+  const [readyShowBackground, setReadyShowBackground] = useState(true);
   const [customOptions, setCustomOptions] = useState<CustomStickerOptions>(DEFAULT_CUSTOM_STICKER_OPTIONS);
 
   useEffect(() => {
@@ -160,6 +194,7 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
     setError(null);
     setActiveIndex(0);
     setMode("ready");
+    setReadyShowBackground(true);
 
     void loadFlightShareData(flightId)
       .then((next) => {
@@ -182,7 +217,10 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const stickers = useMemo(() => shareData ? buildFlightShareStickers(shareData) : [], [shareData]);
+  const stickers = useMemo(
+    () => shareData ? buildFlightShareStickers(shareData, { showBackground: readyShowBackground }) : [],
+    [readyShowBackground, shareData],
+  );
   const customSticker = useMemo(
     () => shareData ? buildCustomFlightShareSticker(shareData, customOptions) : null,
     [customOptions, shareData],
@@ -296,7 +334,11 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
           ) : activeSticker ? (
             <div className="grid min-h-full gap-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
               <div className="flex flex-col items-center gap-4">
-                <StickerPreview sticker={activeSticker} />
+                <StickerPreview
+                  sticker={activeSticker}
+                  onSwipeLeft={mode === "ready" && stickers.length > 1 ? () => setActiveIndex((current) => (current + 1) % stickers.length) : undefined}
+                  onSwipeRight={mode === "ready" && stickers.length > 1 ? () => setActiveIndex((current) => (current - 1 + stickers.length) % stickers.length) : undefined}
+                />
                 {mode === "ready" ? (
                   <div className="flex items-center justify-center gap-2">
                     {stickers.map((sticker, index) => (
@@ -310,6 +352,9 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
                     ))}
                   </div>
                 ) : null}
+                <div className="rounded-full border border-sky-400/20 bg-sky-500/10 px-3 py-1.5 text-center text-[11px] font-semibold text-sky-100 lg:hidden">
+                  Role para baixo para ver opções, download e compartilhamento
+                </div>
               </div>
 
               <aside className="rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
@@ -334,8 +379,20 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
                 <h3 className="mt-2 text-xl font-bold text-slate-100">{activeSticker.title}</h3>
                 <p className="mt-1 text-sm text-slate-400">{activeSticker.description}</p>
 
+                <div className="mt-5">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Aparência</p>
+                  <ToggleOption
+                    checked={mode === "ready" ? readyShowBackground : customOptions.showBackground}
+                    label="Mostrar fundo"
+                    onChange={(checked) => {
+                      if (mode === "ready") setReadyShowBackground(checked);
+                      else updateCustomOptions({ showBackground: checked });
+                    }}
+                  />
+                </div>
+
                 {mode === "ready" ? (
-                  <div className="mt-5 grid grid-cols-2 gap-2">
+                  <div className="mt-4 grid grid-cols-2 gap-2">
                     {stickers.map((sticker, index) => (
                       <button
                         key={sticker.id}
@@ -357,11 +414,12 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
                 ) : (
                   <div className="mt-5 space-y-4">
                     <label className="block text-xs text-slate-400">
-                      Título
+                      Título opcional
                       <input
                         value={customOptions.title}
                         onChange={(event) => updateCustomOptions({ title: event.target.value })}
                         maxLength={32}
+                        placeholder="Sem título"
                         className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
                       />
                     </label>

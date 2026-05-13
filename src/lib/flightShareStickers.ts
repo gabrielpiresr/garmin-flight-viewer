@@ -18,6 +18,7 @@ export type FlightShareStickerId = "summary" | "route" | "legs" | "altitude" | "
 
 export type CustomStickerOptions = {
   title: string;
+  showBackground: boolean;
   routeMode: "map" | "clean" | "legs" | "hidden";
   showDistance: boolean;
   showTime: boolean;
@@ -88,7 +89,8 @@ const DEFAULT_BRAND: FlightShareBrand = {
 };
 
 export const DEFAULT_CUSTOM_STICKER_OPTIONS: CustomStickerOptions = {
-  title: "Meu voo",
+  title: "",
+  showBackground: true,
   routeMode: "map",
   showDistance: true,
   showTime: true,
@@ -103,7 +105,39 @@ export const DEFAULT_CUSTOM_STICKER_OPTIONS: CustomStickerOptions = {
 
 type Box = { x: number; y: number; w: number; h: number };
 type Sample = { x: number; y: number };
+type StickerBuildOptions = { showBackground?: boolean };
 const BRAND_CACHE_KEY = "gfv:emailBrandSettings";
+const BRAND_LOG_PREFIX = "[gfv:brand]";
+
+function summarizeSettings(settings: EmailBrandSettings | null | undefined) {
+  if (!settings) return null;
+  return {
+    schoolName: settings.schoolName || "",
+    hasLogoUrl: Boolean(settings.logoUrl?.trim()),
+    logoUrl: settings.logoUrl || "",
+    hasLogoDataUrl: Boolean(settings.logoDataUrl?.startsWith("data:image/")),
+    logoDataUrlLength: settings.logoDataUrl?.length ?? 0,
+    updatedAt: settings.updatedAt ?? null,
+  };
+}
+
+function summarizeBrand(brand: FlightShareBrand) {
+  return {
+    schoolName: brand.schoolName,
+    hasLogoUrl: Boolean(brand.logoUrl.trim()),
+    logoUrl: brand.logoUrl,
+    hasLogoDataUrl: Boolean(brand.logoDataUrl?.startsWith("data:image/")),
+    logoDataUrlLength: brand.logoDataUrl?.length ?? 0,
+  };
+}
+
+function logBrandDebug(message: string, details?: Record<string, unknown>) {
+  console.info(BRAND_LOG_PREFIX, message, details ?? {});
+}
+
+function warnBrandDebug(message: string, details?: Record<string, unknown>) {
+  console.warn(BRAND_LOG_PREFIX, message, details ?? {});
+}
 
 function escapeXml(value: string): string {
   return value
@@ -152,6 +186,10 @@ function slugify(value: string): string {
 function clampText(value: string | null | undefined, fallback = "-"): string {
   const trimmed = value?.trim();
   return trimmed || fallback;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function formatDatePt(iso: string | null): string {
@@ -204,30 +242,66 @@ async function urlToDataUrl(url: string): Promise<string | null> {
   if (!url.trim()) return null;
   if (url.startsWith("data:")) return url;
   try {
+    logBrandDebug("trying browser logo fetch fallback", { url });
     const response = await fetch(url, { mode: "cors" });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      warnBrandDebug("browser logo fetch fallback returned non-ok", { url, status: response.status });
+      return null;
+    }
     const blob = await response.blob();
-    return await new Promise((resolve, reject) => {
+    const dataUrl = await new Promise<string | null>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
     });
-  } catch {
+    logBrandDebug("browser logo fetch fallback finished", {
+      url,
+      contentType: blob.type,
+      dataUrlLength: dataUrl?.length ?? 0,
+    });
+    return dataUrl;
+  } catch (error) {
+    warnBrandDebug("browser logo fetch fallback failed", {
+      url,
+      message: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
 
 async function loadBrand(): Promise<FlightShareBrand> {
   try {
+    logBrandDebug("loading brand settings for stickers");
     const settings = await getEmailBrandSettings();
     const cached = readCachedBrandSettings();
     const effectiveSettings = !settings.logoUrl?.trim() && cached?.logoUrl ? cached : settings;
     cacheBrandSettings(effectiveSettings);
-    return normalizeBrand(effectiveSettings, effectiveSettings.logoDataUrl ?? await urlToDataUrl(effectiveSettings.logoUrl));
-  } catch {
+    const brand = normalizeBrand(
+      effectiveSettings,
+      effectiveSettings.logoDataUrl ?? await urlToDataUrl(effectiveSettings.logoUrl),
+    );
+    logBrandDebug("brand settings loaded for stickers", {
+      settings: summarizeSettings(settings),
+      cached: summarizeSettings(cached),
+      effectiveSettings: summarizeSettings(effectiveSettings),
+      brand: summarizeBrand(brand),
+    });
+    return brand;
+  } catch (error) {
+    warnBrandDebug("brand settings failed, trying local cache", {
+      message: error instanceof Error ? error.message : String(error),
+    });
     const cached = readCachedBrandSettings();
-    if (cached) return normalizeBrand(cached, cached.logoDataUrl ?? await urlToDataUrl(cached.logoUrl));
+    if (cached) {
+      const brand = normalizeBrand(cached, cached.logoDataUrl ?? await urlToDataUrl(cached.logoUrl));
+      logBrandDebug("brand settings loaded from local cache", {
+        cached: summarizeSettings(cached),
+        brand: summarizeBrand(brand),
+      });
+      return brand;
+    }
+    warnBrandDebug("brand settings unavailable, using default brand");
     return DEFAULT_BRAND;
   }
 }
@@ -274,10 +348,18 @@ function readCachedBrandSettings(): EmailBrandSettings | null {
 }
 
 function logoHref(data: FlightShareData): string | null {
-  return data.brand.logoDataUrl || null;
+  const href = data.brand.logoDataUrl || null;
+  if (!href) {
+    warnBrandDebug("sticker has no embedded logo data URL", {
+      flightId: data.flightId,
+      brand: summarizeBrand(data.brand),
+    });
+  }
+  return href;
 }
 
 export async function loadFlightShareData(flightId: string): Promise<FlightShareData> {
+  logBrandDebug("loading flight share data", { flightId });
   const [flight, brand] = await Promise.all([getSavedFlight(flightId), loadBrand()]);
   if (flight.error || !flight.data) {
     throw flight.error ?? new Error("Voo não encontrado.");
@@ -296,6 +378,15 @@ export async function loadFlightShareData(flightId: string): Promise<FlightShare
     summary.durationSec ??
     flight.data.duration_sec ??
     (displayInfo.totalFlightMinutes > 0 ? displayInfo.totalFlightMinutes * 60 : null);
+
+  logBrandDebug("flight share data ready", {
+    flightId,
+    sourceFileName: flight.data.source_filename,
+    points: points.length,
+    chartRows: chartData.length,
+    hasRouteMap: Boolean(routeMap),
+    brand: summarizeBrand(brand),
+  });
 
   return {
     flightId,
@@ -336,9 +427,6 @@ function baseDefs(data: FlightShareData): string {
       <clipPath id="gfvStickerSafe">
         <rect x="86" y="120" width="908" height="1680" rx="64" />
       </clipPath>
-      <clipPath id="gfvMapClip">
-        <rect x="116" y="390" width="848" height="842" rx="52" />
-      </clipPath>
       <style>
         text { font-family: "Segoe UI", Arial, sans-serif; }
       </style>
@@ -371,6 +459,16 @@ function smallBrand(data: FlightShareData, x: number, y: number): string {
     return `<image href="${escapeXml(href)}" x="${x}" y="${y}" width="260" height="82" preserveAspectRatio="xMinYMid meet" />`;
   }
   return "";
+}
+
+function outerCard(showBackground: boolean, x: number, y: number, width: number, height: number, opacity = 0.43): string {
+  if (!showBackground) return "";
+  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="64" fill="#020617" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.14" />`;
+}
+
+function innerCard(showBackground: boolean, x: number, y: number, width: number, height: number, radius = 48, opacity = 0.74): string {
+  if (!showBackground) return "";
+  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="#0f172a" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.12" />`;
 }
 
 function metricBlock(label: string, value: string, x: number, y: number, width = 395): string {
@@ -507,9 +605,75 @@ function routePathFromMap(map: FlightShareRouteMap | null, box: Box): string {
     .join(" ");
 }
 
+function routeAirportCodes(data: FlightShareData): [string, string] {
+  const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
+  const dep = legs.find((leg) => leg.dep)?.dep;
+  const arr = [...legs].reverse().find((leg) => leg.arr)?.arr;
+  if (dep || arr) return [clampText(dep, "DEP").toUpperCase(), clampText(arr, "ARR").toUpperCase()];
+
+  const parts = data.displayInfo.fromTo
+    .split(/\s*(?:->|→|\/| - | – )\s*/)
+    .map((part) => part.trim().toUpperCase())
+    .filter(Boolean);
+  return [parts[0] || "DEP", parts[parts.length - 1] || "ARR"];
+}
+
+function routeEndpointPositions(data: FlightShareData, box: Box): Array<{ x: number; y: number }> {
+  const map = data.routeMap;
+  if (map && map.routePoints.length >= 2) {
+    const scaleX = box.w / map.width;
+    const scaleY = box.h / map.height;
+    const first = map.routePoints[0];
+    const last = map.routePoints[map.routePoints.length - 1];
+    return [
+      { x: box.x + first.x * scaleX, y: box.y + first.y * scaleY },
+      { x: box.x + last.x * scaleX, y: box.y + last.y * scaleY },
+    ];
+  }
+
+  if (data.points.length < 2) return [];
+  const sampled = samplePoints(data.points, 320);
+  const lats = sampled.map((point) => point.lat);
+  const lons = sampled.map((point) => point.lon);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const latSpan = maxLat - minLat || 0.0001;
+  const lonSpan = maxLon - minLon || 0.0001;
+  const positionFor = (point: FlightPoint) => ({
+    x: box.x + ((point.lon - minLon) / lonSpan) * box.w,
+    y: box.y + box.h - ((point.lat - minLat) / latSpan) * box.h,
+  });
+  return [positionFor(sampled[0]), positionFor(sampled[sampled.length - 1])];
+}
+
+function routeEndpointMarkers(data: FlightShareData, box: Box): string {
+  const positions = routeEndpointPositions(data, box);
+  if (positions.length < 2) return "";
+  const [depCode, arrCode] = routeAirportCodes(data);
+  return positions.map((position, index) => {
+    const code = index === 0 ? depCode : arrCode;
+    const labelWidth = Math.max(74, code.length * 23 + 34);
+    const labelX = clampNumber(position.x, box.x + labelWidth / 2 + 14, box.x + box.w - labelWidth / 2 - 14);
+    const labelY = clampNumber(position.y - 44, box.y + 30, box.y + box.h - 38);
+    const markerX = clampNumber(position.x, box.x + 18, box.x + box.w - 18);
+    const markerY = clampNumber(position.y, box.y + 18, box.y + box.h - 18);
+    return `
+      <g>
+        <circle cx="${markerX.toFixed(1)}" cy="${markerY.toFixed(1)}" r="18" fill="#020617" fill-opacity="0.82" stroke="#ffffff" stroke-width="5" />
+        <circle cx="${markerX.toFixed(1)}" cy="${markerY.toFixed(1)}" r="8" fill="url(#gfvAccent)" />
+        <rect x="${(labelX - labelWidth / 2).toFixed(1)}" y="${(labelY - 28).toFixed(1)}" width="${labelWidth}" height="42" rx="21" fill="#020617" fill-opacity="0.86" stroke="#ffffff" stroke-opacity="0.28" />
+        ${fitText(code, labelX, labelY + 2, { fontSize: 25, fontWeight: 900, maxWidth: labelWidth - 22, anchor: "middle" })}
+      </g>
+    `;
+  }).join("");
+}
+
 function routeMapLayer(data: FlightShareData, box: Box, includeTiles: boolean): string {
   const map = data.routeMap;
   const route = routePathFromMap(map, box) || routePath(data.points, box);
+  const clipId = `gfvMapClip${Math.round(box.x)}${Math.round(box.y)}${Math.round(box.w)}${Math.round(box.h)}`;
   const tiles = includeTiles && map?.tiles.length
     ? map.tiles.map((tile) => {
       const scaleX = box.w / map.width;
@@ -519,13 +683,19 @@ function routeMapLayer(data: FlightShareData, box: Box, includeTiles: boolean): 
     : "";
 
   return `
-    <g clip-path="url(#gfvMapClip)">
+    <defs>
+      <clipPath id="${clipId}">
+        <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" />
+      </clipPath>
+    </defs>
+    <g clip-path="url(#${clipId})">
       <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" fill="${includeTiles ? "#e5e7eb" : "#0f172a"}" fill-opacity="${includeTiles ? "0.96" : "0.32"}" />
       ${tiles}
       ${!includeTiles || !tiles ? Array.from({ length: 8 }, (_, index) => `<line x1="${box.x + index * (box.w / 7)}" y1="${box.y}" x2="${box.x + index * (box.w / 7)}" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
       ${!includeTiles || !tiles ? Array.from({ length: 7 }, (_, index) => `<line x1="${box.x}" y1="${box.y + index * (box.h / 6)}" x2="${box.x + box.w}" y2="${box.y + index * (box.h / 6)}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
       <path d="${route}" fill="none" stroke="#ffffff" stroke-opacity="0.86" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
       <path d="${route}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
+      ${route ? routeEndpointMarkers(data, box) : ""}
       ${route ? "" : `<text x="${box.x + box.w / 2}" y="${box.y + box.h / 2}" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Rota indisponível</text>`}
       <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2" />
     </g>
@@ -589,57 +759,47 @@ function maxSeriesValue(chartData: ChartRow[], keys: string[]): number | null {
   return values.length > 0 ? Math.max(...values) : null;
 }
 
-function summarySticker(data: FlightShareData): FlightShareSticker {
+function summarySticker(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker {
+  const showBackground = options.showBackground ?? true;
   const title = flightTitle(data);
-  const date = formatDatePt(data.displayInfo.flightDateIso);
   const distance = formatDistanceNmKm(data.summary.distanceM, data.displayInfo.totalMiles);
   const altMax = formatMetricAlt(data.summary, data.chartData);
   const speedMax = formatMetricSpeed(data.summary, data.chartData);
-  const student = clampText(data.displayInfo.studentName, "Aluno");
   const body = `
     <g filter="url(#gfvShadow)">
-      <rect x="86" y="170" width="908" height="1390" rx="64" fill="#020617" fill-opacity="0.48" stroke="#ffffff" stroke-opacity="0.14" />
-      <rect x="128" y="212" width="824" height="1306" rx="52" fill="#0f172a" fill-opacity="0.72" />
-      ${brandMark(data, 176, 268, 380)}
-      ${fitText("VOO COMPARTILHADO", 176, 548, { color: "#94a3b8", fontSize: 30, fontWeight: 800, maxWidth: 728, letterSpacing: 4 })}
-      ${fitText(title, 176, 642, { fontSize: 56, fontWeight: 900, maxWidth: 728 })}
-      ${fitText(`${student} · ${date}`, 176, 700, { color: "#cbd5e1", fontSize: 32, fontWeight: 700, maxWidth: 728 })}
-      <rect x="176" y="764" width="728" height="4" rx="2" fill="url(#gfvAccent)" />
-      ${metricBlock("Tempo", data.durationDisplay, 176, 842)}
-      ${metricBlock("Distância", distance, 508, 842)}
-      ${metricBlock("Alt. máxima", altMax, 176, 1050)}
-      ${metricBlock("Vel. máxima", speedMax, 508, 1050)}
-      ${fitText("Treino de voo registrado", 176, 1345, { fontSize: 38, fontWeight: 900, maxWidth: 728 })}
-      ${fitText("Telemetria, ficha e desempenho em um só lugar.", 176, 1402, { color: "#94a3b8", fontSize: 30, fontWeight: 600, maxWidth: 728 })}
+      ${outerCard(showBackground, 86, 360, 908, 980, 0.48)}
+      ${innerCard(showBackground, 128, 402, 824, 896, 52, 0.72)}
+      ${brandMark(data, 176, 468, 380)}
+      ${fitText(title, 176, 648, { fontSize: 58, fontWeight: 900, maxWidth: 728 })}
+      <rect x="176" y="724" width="728" height="4" rx="2" fill="url(#gfvAccent)" />
+      ${metricBlock("Tempo", data.durationDisplay, 176, 806)}
+      ${metricBlock("Distância", distance, 508, 806)}
+      ${metricBlock("Alt. máxima", altMax, 176, 1014)}
+      ${metricBlock("Vel. máxima", speedMax, 508, 1014)}
     </g>
   `;
 
   return createSticker("summary", "Resumo do voo", "Métricas principais do voo.", data, body);
 }
 
-function routeSticker(data: FlightShareData): FlightShareSticker {
-  const box = { x: 116, y: 390, w: 848, h: 842 };
+function routeSticker(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker {
+  const showBackground = options.showBackground ?? true;
+  const box = { x: 116, y: 390, w: 848, h: 590 };
   const body = `
     <g filter="url(#gfvShadow)">
-      <rect x="86" y="142" width="908" height="1620" rx="64" fill="#020617" fill-opacity="0.34" stroke="#ffffff" stroke-opacity="0.14" />
-      ${fitText("Rota do voo", 132, 258, { fontSize: 58, fontWeight: 900, maxWidth: 816 })}
-      ${fitText(flightTitle(data), 132, 316, { color: "#cbd5e1", fontSize: 32, fontWeight: 700, maxWidth: 816 })}
+      ${outerCard(showBackground, 86, 142, 908, 1128, 0.34)}
+      ${fitText("Rota do voo", 132, 258, { fontSize: 58, fontWeight: 900, maxWidth: 520 })}
+      ${fitText(flightTitle(data), 132, 316, { color: "#cbd5e1", fontSize: 32, fontWeight: 700, maxWidth: 520 })}
+      ${smallBrand(data, 688, 220)}
       ${routeMapLayer(data, box, true)}
-      <rect x="132" y="1270" width="816" height="184" rx="42" fill="#0f172a" fill-opacity="0.78" stroke="#ffffff" stroke-opacity="0.13" />
-      ${metricMini("Distância", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 176, 1338)}
-      ${metricMini("Tempo", data.durationDisplay, 420, 1338)}
-      ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 664, 1338)}
-      ${smallBrand(data, 132, 1640)}
+      <rect x="132" y="1024" width="816" height="184" rx="42" fill="#0f172a" fill-opacity="0.78" stroke="#ffffff" stroke-opacity="0.13" />
+      ${metricMini("Distância", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 176, 1092)}
+      ${metricMini("Tempo", data.durationDisplay, 420, 1092)}
+      ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 664, 1092)}
     </g>
   `;
 
   return createSticker("route", "Rota + métricas", "Trilha GPS com tempo, distância e pousos.", data, body);
-}
-
-function legLabel(dep: string, arr: string): string {
-  const from = clampText(dep, "DEP").toUpperCase();
-  const to = clampText(arr, "ARR").toUpperCase();
-  return `${from} -> ${to}`;
 }
 
 function legDistance(value: string): string {
@@ -657,16 +817,22 @@ function legTime(value: string): string {
 function legRows(data: FlightShareData, x: number, y: number, width: number): string {
   const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
   if (legs.length === 0) {
-    return `<text x="${x + width / 2}" y="${y + 130}" fill="#cbd5e1" font-size="32" font-weight="700" text-anchor="middle">Pernas não informadas na ficha.</text>`;
+    return `<text x="${x + width / 2}" y="${y + 120}" fill="#cbd5e1" font-size="32" font-weight="700" text-anchor="middle">Pernas não informadas na ficha.</text>`;
   }
   return legs.slice(0, 7).map((leg, index) => {
-    const rowY = y + index * 128;
+    const rowY = y + index * 124;
+    const lineY = rowY + 70;
+    const dep = clampText(leg.dep, "DEP").toUpperCase();
+    const arr = clampText(leg.arr, "ARR").toUpperCase();
+    const detail = `${legTime(leg.flightTime)} · ${legDistance(leg.distance)}`;
     return `
       <g>
-        <rect x="${x}" y="${rowY + 30}" width="34" height="6" rx="3" fill="url(#gfvAccent)" />
-        ${fitText(legLabel(leg.dep, leg.arr), x + 64, rowY + 38, { fontSize: 34, fontWeight: 900, maxWidth: width - 280 })}
-        ${fitText(`${legTime(leg.flightTime)} · ${legDistance(leg.distance)}`, x + 64, rowY + 84, { color: "#cbd5e1", fontSize: 28, fontWeight: 700, maxWidth: width - 280 })}
-        ${fitText(`${Math.max(0, Math.round(leg.landings || 0))} pouso(s)`, x + width - 170, rowY + 60, { color: "#94a3b8", fontSize: 24, fontWeight: 800, maxWidth: 150, anchor: "end" })}
+        ${fitText(detail, x + width / 2, rowY + 36, { color: "#f8fafc", fontSize: 34, fontWeight: 900, maxWidth: width - 220, anchor: "middle" })}
+        <rect x="${x + 122}" y="${lineY - 6}" width="${width - 244}" height="12" rx="6" fill="url(#gfvAccent)" />
+        <circle cx="${x + 122}" cy="${lineY}" r="10" fill="#f8fafc" />
+        <circle cx="${x + width - 122}" cy="${lineY}" r="10" fill="#f8fafc" />
+        ${fitText(dep, x, lineY + 48, { fontSize: 38, fontWeight: 900, maxWidth: 240 })}
+        ${fitText(arr, x + width, lineY + 48, { fontSize: 38, fontWeight: 900, maxWidth: 240, anchor: "end" })}
       </g>
     `;
   }).join("");
@@ -675,87 +841,77 @@ function legRows(data: FlightShareData, x: number, y: number, width: number): st
 function legsContentMetrics(data: FlightShareData) {
   const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
   const visibleLegs = Math.max(1, Math.min(legs.length || 1, 7));
-  const rowsHeight = visibleLegs * 128;
-  const rowsBoxHeight = Math.max(260, rowsHeight + 132);
-  const totalsY = 640 + rowsBoxHeight + 52;
-  const outerHeight = totalsY + 226 - 142;
-  return { rowsBoxHeight, totalsY, outerHeight };
+  const rowsHeight = visibleLegs * 124;
+  const rowsBoxHeight = Math.max(240, rowsHeight + 96);
+  const outerHeight = 430 + rowsBoxHeight + 70 - 142;
+  return { rowsBoxHeight, outerHeight };
 }
 
-function legsSticker(data: FlightShareData): FlightShareSticker {
+function legsSticker(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker {
+  const showBackground = options.showBackground ?? true;
   const layout = legsContentMetrics(data);
-  const totalDistance = data.meta?.legs.reduce((sum, leg) => {
-    const n = Number((leg.distance ?? "").replace(",", ".").replace(/[^\d.-]/g, ""));
-    return sum + (Number.isFinite(n) && n > 0 ? n : 0);
-  }, 0) ?? 0;
   const body = `
     <g filter="url(#gfvShadow)">
-      <rect x="86" y="142" width="908" height="${layout.outerHeight}" rx="64" fill="#020617" fill-opacity="0.46" stroke="#ffffff" stroke-opacity="0.14" />
+      ${outerCard(showBackground, 86, 142, 908, layout.outerHeight, 0.46)}
       ${brandMark(data, 132, 220, 360)}
-      ${fitText("Pernas do voo", 132, 428, { fontSize: 60, fontWeight: 900, maxWidth: 816 })}
-      ${fitText(flightTitle(data), 132, 486, { color: "#cbd5e1", fontSize: 31, fontWeight: 700, maxWidth: 816 })}
-      <rect x="122" y="566" width="836" height="${layout.rowsBoxHeight}" rx="48" fill="#0f172a" fill-opacity="0.74" stroke="#ffffff" stroke-opacity="0.12" />
-      ${legRows(data, 166, 640, 748)}
-      <rect x="132" y="${layout.totalsY}" width="816" height="136" rx="36" fill="#0f172a" fill-opacity="0.76" stroke="#ffffff" stroke-opacity="0.12" />
-      ${metricMini("Tempo total", data.displayInfo.totalFlight || data.durationDisplay, 176, layout.totalsY + 54)}
-      ${metricMini("Distância", totalDistance > 0 ? `${totalDistance.toFixed(1)} NM` : formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 448, layout.totalsY + 54)}
-      ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 704, layout.totalsY + 54)}
+      ${innerCard(showBackground, 122, 430, 836, layout.rowsBoxHeight, 48, 0.74)}
+      ${legRows(data, 166, 490, 748)}
     </g>
   `;
   return createSticker("legs", "Pernas do voo", "Uma linha para cada perna com tempo e distância.", data, body);
 }
 
-function altitudeSticker(data: FlightShareData): FlightShareSticker {
+function altitudeSticker(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker {
+  const showBackground = options.showBackground ?? true;
   const samples = samplesFromChart(data.chartData, ["gpsAltFt", "baroAltFt", "pressAltFt"]);
   const fallbackSamples = samples.length >= 2 ? samples : samplesFromPoints(data.points, "altitudeFt");
-  const box = { x: 134, y: 692, w: 812, h: 450 };
+  const box = { x: 134, y: 642, w: 812, h: 420 };
   const linePath = chartPath(fallbackSamples, box);
   const areaPath = chartAreaPath(fallbackSamples, box);
   const altMax = formatMetricAlt(data.summary, data.chartData);
   const body = `
     <g filter="url(#gfvShadow)">
-      <rect x="86" y="190" width="908" height="1560" rx="64" fill="#020617" fill-opacity="0.42" stroke="#ffffff" stroke-opacity="0.14" />
-      ${fitText("ALTIMETRIA", 136, 326, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 760, letterSpacing: 4 })}
-      ${fitText(altMax, 136, 420, { fontSize: 86, fontWeight: 900, maxWidth: 760 })}
-      ${fitText("Altitude máxima no voo", 142, 482, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 760 })}
-      <rect x="116" y="612" width="848" height="616" rx="48" fill="#0f172a" fill-opacity="0.72" />
+      ${outerCard(showBackground, 86, 250, 908, 1280, 0.42)}
+      ${fitText("ALTIMETRIA", 136, 376, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 760, letterSpacing: 4 })}
+      ${fitText(altMax, 136, 470, { fontSize: 86, fontWeight: 900, maxWidth: 760 })}
+      ${fitText("Altitude máxima no voo", 142, 532, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 760 })}
+      <rect x="116" y="590" width="848" height="542" rx="48" fill="#0f172a" fill-opacity="0.72" />
       <path d="${areaPath}" fill="url(#gfvSoft)" />
       <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
-      ${linePath ? "" : `<text x="540" y="900" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Altimetria indisponível</text>`}
+      ${linePath ? "" : `<text x="540" y="870" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Altimetria indisponível</text>`}
       <line x1="134" y1="${box.y + box.h}" x2="946" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3" />
-      ${metricBlock("Tempo de voo", data.durationDisplay, 136, 1308, 380)}
-      ${metricBlock("Distância", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 564, 1308, 380)}
-      ${smallBrand(data, 136, 1630)}
+      ${metricBlock("Tempo de voo", data.durationDisplay, 136, 1188, 380)}
+      ${metricBlock("Distância", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 564, 1188, 380)}
+      ${smallBrand(data, 136, 1408)}
     </g>
   `;
 
   return createSticker("altitude", "Altitude", "Gráfico de altimetria em fundo transparente.", data, body);
 }
 
-function speedSticker(data: FlightShareData): FlightShareSticker {
+function speedSticker(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker {
+  const showBackground = options.showBackground ?? true;
   const samples = samplesFromChart(data.chartData, ["iasKt", "gsKt", "tasKt"]);
   const fallbackSamples = samples.length >= 2 ? samples : samplesFromPoints(data.points, "speedKt");
-  const box = { x: 132, y: 640, w: 816, h: 470 };
+  const box = { x: 132, y: 626, w: 816, h: 430 };
   const linePath = chartPath(fallbackSamples, box);
   const areaPath = chartAreaPath(fallbackSamples, box);
   const maxSpeed = formatMetricSpeed(data.summary, data.chartData);
   const avgSpeed = data.summary.speedAvgMs !== null ? formatSpeedKt(data.summary.speedAvgMs) : formatKt(maxSeriesValue(data.chartData, ["iasKt", "gsKt"]));
   const body = `
     <g filter="url(#gfvShadow)">
-      <rect x="86" y="170" width="908" height="1580" rx="64" fill="#020617" fill-opacity="0.4" stroke="#ffffff" stroke-opacity="0.14" />
-      <circle cx="540" cy="448" r="220" fill="url(#gfvSoft)" />
-      ${fitText("VELOCIDADE", 540, 366, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 700, anchor: "middle", letterSpacing: 4 })}
-      ${fitText(maxSpeed, 540, 486, { fontSize: 104, fontWeight: 900, maxWidth: 700, anchor: "middle" })}
-      ${fitText("máxima registrada", 540, 548, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 700, anchor: "middle" })}
-      <rect x="106" y="594" width="868" height="594" rx="54" fill="#0f172a" fill-opacity="0.72" />
+      ${outerCard(showBackground, 86, 210, 908, 1360, 0.4)}
+      <circle cx="540" cy="424" r="204" fill="url(#gfvSoft)" />
+      ${fitText("VELOCIDADE", 540, 350, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 700, anchor: "middle", letterSpacing: 4 })}
+      ${fitText(maxSpeed, 540, 468, { fontSize: 104, fontWeight: 900, maxWidth: 700, anchor: "middle" })}
+      ${fitText("máxima registrada", 540, 530, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 700, anchor: "middle" })}
+      <rect x="106" y="584" width="868" height="536" rx="54" fill="#0f172a" fill-opacity="0.72" />
       <path d="${areaPath}" fill="url(#gfvSoft)" />
       <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
-      ${linePath ? "" : `<text x="540" y="890" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Velocidade indisponível</text>`}
-      ${metricBlock("Vel. média", avgSpeed, 136, 1268, 380)}
-      ${metricBlock("Tempo", data.durationDisplay, 564, 1268, 380)}
-      ${fitText(clampText(data.displayInfo.aircraft, "Aeronave"), 136, 1538, { fontSize: 36, fontWeight: 900, maxWidth: 760 })}
-      ${fitText(formatDatePt(data.displayInfo.flightDateIso), 136, 1592, { color: "#94a3b8", fontSize: 29, fontWeight: 700, maxWidth: 760 })}
-      ${smallBrand(data, 136, 1660)}
+      ${linePath ? "" : `<text x="540" y="850" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Velocidade indisponível</text>`}
+      ${metricBlock("Vel. média", avgSpeed, 136, 1188, 380)}
+      ${metricBlock("Tempo", data.durationDisplay, 564, 1188, 380)}
+      ${smallBrand(data, 136, 1418)}
     </g>
   `;
 
@@ -800,17 +956,27 @@ function customMetricItems(data: FlightShareData, options: CustomStickerOptions)
 
 export function buildCustomFlightShareSticker(data: FlightShareData, options: CustomStickerOptions): FlightShareSticker {
   const merged: CustomStickerOptions = { ...DEFAULT_CUSTOM_STICKER_OPTIONS, ...options };
-  const title = clampText(merged.title, "Meu voo");
-  const routeBox = { x: 116, y: 470, w: 848, h: 640 };
+  const showBackground = merged.showBackground;
+  const title = merged.title.trim();
   const customLegsLayout = legsContentMetrics(data);
-  const customLegsBoxHeight = Math.min(640, customLegsLayout.rowsBoxHeight);
   const selectedChartCount = Number(merged.showAltitudeChart) + Number(merged.showSpeedChart);
   const hasVisualRoute = merged.routeMode === "map" || merged.routeMode === "clean" || merged.routeMode === "legs";
   const metricLimit = !hasVisualRoute
     ? (selectedChartCount > 0 ? 6 : 9)
     : (selectedChartCount > 0 ? 3 : 6);
   const metrics = customMetricItems(data, merged).slice(0, metricLimit);
-  const metricStartY = !hasVisualRoute ? 570 : 1208;
+  const titleLine = title
+    ? fitText(title, 132, 366, { fontSize: 56, fontWeight: 900, maxWidth: 816 })
+    : "";
+  const subtitleY = title ? 426 : 366;
+  const headerBottom = title ? 470 : 410;
+  const routeY = hasVisualRoute ? headerBottom + 42 : headerBottom;
+  const routeHeight = merged.routeMode === "legs"
+    ? customLegsLayout.rowsBoxHeight
+    : 420;
+  const routeBox = { x: 116, y: routeY, w: 848, h: routeHeight };
+  const routeBottom = hasVisualRoute ? routeY + routeHeight : headerBottom;
+  const metricStartY = routeBottom + (hasVisualRoute ? 86 : 74);
   const metricGrid = metrics.map((metric, index) => {
     const col = index % 3;
     const row = Math.floor(index / 3);
@@ -824,36 +990,37 @@ export function buildCustomFlightShareSticker(data: FlightShareData, options: Cu
     chartParts.push(miniChart("Altimetria", samples.length >= 2 ? samples : samplesFromPoints(data.points, "altitudeFt"), { x: 150, y: chartY, w: 780, h: 190 }));
     chartY += 310;
   }
-  if (merged.showSpeedChart && chartY < 1540) {
+  if (merged.showSpeedChart && chartY < 1570) {
     const samples = samplesFromChart(data.chartData, ["iasKt", "gsKt", "tasKt"]);
     chartParts.push(miniChart("Velocidade", samples.length >= 2 ? samples : samplesFromPoints(data.points, "speedKt"), { x: 150, y: chartY, w: 780, h: 190 }));
+    chartY += 310;
   }
 
   const routeLayer = merged.routeMode === "hidden"
     ? ""
     : merged.routeMode === "legs"
-      ? `<rect x="116" y="470" width="848" height="${customLegsBoxHeight}" rx="52" fill="#0f172a" fill-opacity="0.68" stroke="#ffffff" stroke-opacity="0.14" />
-        ${legRows(data, 164, 548, 752)}`
+      ? `${innerCard(showBackground, 116, routeY, 848, routeHeight, 52, 0.68)}
+        ${legRows(data, 164, routeY + 60, 752)}`
       : routeMapLayer(data, routeBox, merged.routeMode === "map");
   const contentBottom = Math.min(
     1760,
     Math.max(
-      620,
-      hasVisualRoute ? 1140 : 520,
-      metrics.length > 0 ? metricStartY + Math.ceil(metrics.length / 3) * 150 : metricStartY + 130,
-      chartParts.length > 0 ? chartY - 10 : 0,
-    ) + 110,
+      headerBottom + 180,
+      hasVisualRoute ? routeBottom : headerBottom,
+      metrics.length > 0 ? metricStartY + Math.ceil(metrics.length / 3) * 150 : 0,
+      chartParts.length > 0 ? chartY - 120 : 0,
+    ) + 90,
   );
   const outerHeight = Math.max(520, contentBottom - 142);
 
   const body = `
     <g filter="url(#gfvShadow)" clip-path="url(#gfvStickerSafe)">
-      <rect x="86" y="142" width="908" height="${outerHeight}" rx="64" fill="#020617" fill-opacity="0.43" stroke="#ffffff" stroke-opacity="0.14" />
+      ${outerCard(showBackground, 86, 142, 908, outerHeight, 0.43)}
       ${brandMark(data, 132, 212, 360)}
-      ${fitText(title, 132, 366, { fontSize: 56, fontWeight: 900, maxWidth: 816 })}
-      ${fitText(flightTitle(data), 132, 426, { color: "#cbd5e1", fontSize: 30, fontWeight: 700, maxWidth: 816 })}
+      ${titleLine}
+      ${fitText(flightTitle(data), 132, subtitleY, { color: "#cbd5e1", fontSize: 30, fontWeight: 700, maxWidth: 816 })}
       ${routeLayer}
-      ${metricGrid || fitText("Escolha pelo menos uma métrica para aparecer aqui.", 132, metricStartY + 64, { color: "#cbd5e1", fontSize: 30, fontWeight: 700, maxWidth: 816 })}
+      ${metricGrid || (!hasVisualRoute && chartParts.length === 0 ? fitText("Escolha uma rota, métrica ou gráfico para aparecer aqui.", 132, metricStartY + 64, { color: "#cbd5e1", fontSize: 30, fontWeight: 700, maxWidth: 816 }) : "")}
       ${chartParts.join("")}
     </g>
   `;
@@ -889,13 +1056,13 @@ function createSticker(
   };
 }
 
-export function buildFlightShareStickers(data: FlightShareData): FlightShareSticker[] {
+export function buildFlightShareStickers(data: FlightShareData, options: StickerBuildOptions = {}): FlightShareSticker[] {
   return [
-    summarySticker(data),
-    routeSticker(data),
-    legsSticker(data),
-    altitudeSticker(data),
-    speedSticker(data),
+    summarySticker(data, options),
+    routeSticker(data, options),
+    legsSticker(data, options),
+    altitudeSticker(data, options),
+    speedSticker(data, options),
   ];
 }
 

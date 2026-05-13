@@ -11,6 +11,27 @@ import type {
 } from "../types/notification";
 
 const BRAND_CACHE_KEY = "gfv:emailBrandSettings";
+const BRAND_LOG_PREFIX = "[gfv:brand]";
+
+function summarizeBrandSettings(settings: EmailBrandSettings | undefined) {
+  if (!settings) return null;
+  return {
+    schoolName: settings.schoolName || "",
+    hasLogoUrl: Boolean(settings.logoUrl?.trim()),
+    logoUrl: settings.logoUrl || "",
+    hasLogoDataUrl: Boolean(settings.logoDataUrl?.startsWith("data:image/")),
+    logoDataUrlLength: settings.logoDataUrl?.length ?? 0,
+    updatedAt: settings.updatedAt ?? null,
+  };
+}
+
+function logBrandDebug(message: string, details?: Record<string, unknown>) {
+  console.info(BRAND_LOG_PREFIX, message, details ?? {});
+}
+
+function warnBrandDebug(message: string, details?: Record<string, unknown>) {
+  console.warn(BRAND_LOG_PREFIX, message, details ?? {});
+}
 
 function cacheBrandSettings(settings: EmailBrandSettings) {
   try {
@@ -30,13 +51,56 @@ function parseResponse(body: string | undefined): NotificationResponse {
 }
 
 async function executeNotifications(payload: Record<string, unknown>): Promise<NotificationResponse> {
+  const action = String(payload.action || "unknown");
+  const shouldTraceBrand = action === "getEmailBrandSettings" || action === "saveEmailBrandSettings";
+
   if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    if (shouldTraceBrand) {
+      warnBrandDebug("admin function not configured", {
+        hasFunctionsClient: Boolean(functions),
+        functionId: ADMIN_USERS_FUNCTION_ID || null,
+      });
+    }
     throw new Error("Função administrativa não configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
   }
 
-  const execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
+  if (shouldTraceBrand) {
+    logBrandDebug("calling admin function", { action, functionId: ADMIN_USERS_FUNCTION_ID });
+  }
+
+  let execution;
+  try {
+    execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
+  } catch (error) {
+    if (shouldTraceBrand) {
+      warnBrandDebug("admin function call failed before response", {
+        action,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
+
   const response = parseResponse(execution.responseBody);
+  if (shouldTraceBrand) {
+    logBrandDebug("admin function response", {
+      action,
+      status: execution.status,
+      responseStatusCode: execution.responseStatusCode,
+      responseBodyLength: execution.responseBody?.length ?? 0,
+      brandSettings: summarizeBrandSettings(response.brandSettings),
+      message: response.message || "",
+    });
+  }
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    if (shouldTraceBrand) {
+      warnBrandDebug("admin function returned an error", {
+        action,
+        status: execution.status,
+        responseStatusCode: execution.responseStatusCode,
+        message: response.message || "",
+      });
+    }
     throw new Error(response.message || "Falha ao executar função de notificações.");
   }
   return response;
@@ -57,6 +121,9 @@ export async function saveEmailSettings(settings: EmailSettingsInput): Promise<E
 export async function getEmailBrandSettings(): Promise<EmailBrandSettings> {
   const response = await executeNotifications({ action: "getEmailBrandSettings" });
   if (!response.brandSettings) throw new Error(response.message || "Configuração visual de email não retornada.");
+  logBrandDebug("caching brand settings from function", {
+    brandSettings: summarizeBrandSettings(response.brandSettings),
+  });
   cacheBrandSettings(response.brandSettings);
   return response.brandSettings;
 }
@@ -64,6 +131,9 @@ export async function getEmailBrandSettings(): Promise<EmailBrandSettings> {
 export async function saveEmailBrandSettings(settings: EmailBrandSettingsInput): Promise<EmailBrandSettings> {
   const response = await executeNotifications({ action: "saveEmailBrandSettings", settings });
   if (!response.brandSettings) throw new Error(response.message || "Configuração visual de email não retornada.");
+  logBrandDebug("caching brand settings after save", {
+    brandSettings: summarizeBrandSettings(response.brandSettings),
+  });
   cacheBrandSettings(response.brandSettings);
   return response.brandSettings;
 }

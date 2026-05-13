@@ -1084,29 +1084,72 @@ function publicEmailBrandSettings(settings, updatedAt) {
   };
 }
 
-async function logoUrlToDataUrl(logoUrl) {
+function logBrandDebug(log, message, details = {}) {
+  if (typeof log !== "function") return;
+  log(`[gfv:brand] ${message} ${JSON.stringify(details)}`);
+}
+
+function summarizePublicBrandSettings(settings) {
+  return {
+    schoolName: settings.schoolName || "",
+    hasLogoUrl: Boolean(cleanString(settings.logoUrl)),
+    logoUrl: cleanString(settings.logoUrl),
+    hasLogoDataUrl: Boolean(settings.logoDataUrl && String(settings.logoDataUrl).startsWith("data:image/")),
+    logoDataUrlLength: settings.logoDataUrl ? String(settings.logoDataUrl).length : 0,
+    logoFileId: settings.logoFileId || null,
+    updatedAt: settings.updatedAt || null,
+  };
+}
+
+async function logoUrlToDataUrl(logoUrl, log) {
   const url = cleanString(logoUrl);
-  if (!url) return null;
-  if (url.startsWith("data:image/")) return url;
+  if (!url) {
+    logBrandDebug(log, "logoUrlToDataUrl skipped because logoUrl is empty");
+    return null;
+  }
+  if (url.startsWith("data:image/")) {
+    logBrandDebug(log, "logoUrlToDataUrl received data URL", { dataUrlLength: url.length });
+    return url;
+  }
   try {
+    logBrandDebug(log, "fetching logo URL from function runtime", { url });
     const response = await fetch(url);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      logBrandDebug(log, "logo URL fetch returned non-ok", { url, status: response.status });
+      return null;
+    }
     const contentType = response.headers.get("content-type") || "image/png";
-    if (!contentType.startsWith("image/")) return null;
+    if (!contentType.startsWith("image/")) {
+      logBrandDebug(log, "logo URL fetch returned non-image content", { url, contentType });
+      return null;
+    }
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
-    return `data:${contentType};base64,${base64}`;
-  } catch {
+    const dataUrl = `data:${contentType};base64,${base64}`;
+    logBrandDebug(log, "logo URL converted to data URL", {
+      url,
+      contentType,
+      bytes: arrayBuffer.byteLength,
+      dataUrlLength: dataUrl.length,
+    });
+    return dataUrl;
+  } catch (err) {
+    logBrandDebug(log, "logo URL conversion failed", {
+      url,
+      message: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
 
-async function publicEmailBrandSettingsWithLogo(settings, updatedAt) {
+async function publicEmailBrandSettingsWithLogo(settings, updatedAt, log) {
   const publicSettings = publicEmailBrandSettings(settings, updatedAt);
-  return {
+  const brandSettings = {
     ...publicSettings,
-    logoDataUrl: await logoUrlToDataUrl(publicSettings.logoUrl),
+    logoDataUrl: await logoUrlToDataUrl(publicSettings.logoUrl, log),
   };
+  logBrandDebug(log, "public brand settings prepared", summarizePublicBrandSettings(brandSettings));
+  return brandSettings;
 }
 
 function sanitizeEmailSettingsInput(input) {
@@ -1699,6 +1742,16 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, deliveries });
     }
 
+    if (action === "getEmailBrandSettings") {
+      logBrandDebug(log, "getEmailBrandSettings requested", {
+        actorUserId: actorUserId || null,
+        publicRead: true,
+      });
+      const { settings, doc } = await loadEmailBrandSettings();
+      const brandSettings = await publicEmailBrandSettingsWithLogo(settings, doc?.$updatedAt || null, log);
+      return jsonResponse(res, 200, { brandSettings });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "getEmailSettings") {
@@ -1711,18 +1764,13 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { emailSettings });
     }
 
-    if (action === "getEmailBrandSettings") {
-      const { settings, doc } = await loadEmailBrandSettings();
-      const brandSettings = await publicEmailBrandSettingsWithLogo(settings, doc?.$updatedAt || null);
-      return jsonResponse(res, 200, { brandSettings });
-    }
-
     if (action === "saveEmailBrandSettings") {
       const savedBrandSettings = await saveEmailBrandSettings(payload.settings);
       const brandSettings = {
         ...savedBrandSettings,
-        logoDataUrl: await logoUrlToDataUrl(savedBrandSettings.logoUrl),
+        logoDataUrl: await logoUrlToDataUrl(savedBrandSettings.logoUrl, log),
       };
+      logBrandDebug(log, "saveEmailBrandSettings response prepared", summarizePublicBrandSettings(brandSettings));
       return jsonResponse(res, 200, { brandSettings });
     }
 
