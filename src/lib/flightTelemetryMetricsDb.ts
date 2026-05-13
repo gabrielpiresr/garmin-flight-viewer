@@ -19,6 +19,7 @@ import type {
 import type { UserRole } from "./rbac";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
+const APPWRITE_UID_RE = /^[A-Za-z0-9][A-Za-z0-9_]{0,35}$/;
 
 type JourneyViewer = {
   userId: string;
@@ -93,14 +94,23 @@ export type JourneyTakeoffDoc = MetricDocumentBase & {
   fuel_flow_at_liftoff?: number | null;
 };
 
+function isValidCollectionId(value: string | null | undefined): value is string {
+  return Boolean(value && APPWRITE_UID_RE.test(value));
+}
+
+function metricsCollectionsConfigured(): boolean {
+  return Boolean(
+    isValidCollectionId(FLIGHT_TELEMETRY_SUMMARIES_COL_ID) &&
+      isValidCollectionId(FLIGHT_LANDINGS_COL_ID) &&
+      isValidCollectionId(FLIGHT_TAKEOFFS_COL_ID),
+  );
+}
+
 function configured(): boolean {
   return Boolean(
     isAppwriteConfigured &&
       databases &&
-      DB_ID &&
-      FLIGHT_TELEMETRY_SUMMARIES_COL_ID &&
-      FLIGHT_LANDINGS_COL_ID &&
-      FLIGHT_TAKEOFFS_COL_ID,
+      DB_ID,
   );
 }
 
@@ -114,6 +124,9 @@ async function listMetricDocuments<T extends MetricDocumentBase>(
   collectionId: string,
   viewer: JourneyViewer,
 ): Promise<{ data: T[] | null; error: Error | null }> {
+  if (!isValidCollectionId(collectionId)) {
+    return { data: [], error: null };
+  }
   if (!configured() || !databases) {
     return { data: null, error: new Error("Appwrite não configurado") };
   }
@@ -139,6 +152,7 @@ async function listMetricDocuments<T extends MetricDocumentBase>(
 export async function listJourneyTelemetrySummaries(
   viewer: JourneyViewer,
 ): Promise<{ data: JourneyTelemetrySummaryDoc[] | null; error: Error | null }> {
+  if (!isValidCollectionId(FLIGHT_TELEMETRY_SUMMARIES_COL_ID)) return { data: [], error: null };
   if (!FLIGHT_TELEMETRY_SUMMARIES_COL_ID) return { data: null, error: new Error("Coleção de resumos não configurada") };
   return listMetricDocuments<JourneyTelemetrySummaryDoc>(FLIGHT_TELEMETRY_SUMMARIES_COL_ID, viewer);
 }
@@ -146,6 +160,7 @@ export async function listJourneyTelemetrySummaries(
 export async function listJourneyLandings(
   viewer: JourneyViewer,
 ): Promise<{ data: JourneyLandingDoc[] | null; error: Error | null }> {
+  if (!isValidCollectionId(FLIGHT_LANDINGS_COL_ID)) return { data: [], error: null };
   if (!FLIGHT_LANDINGS_COL_ID) return { data: null, error: new Error("Coleção de pousos não configurada") };
   return listMetricDocuments<JourneyLandingDoc>(FLIGHT_LANDINGS_COL_ID, viewer);
 }
@@ -153,6 +168,7 @@ export async function listJourneyLandings(
 export async function listJourneyTakeoffs(
   viewer: JourneyViewer,
 ): Promise<{ data: JourneyTakeoffDoc[] | null; error: Error | null }> {
+  if (!isValidCollectionId(FLIGHT_TAKEOFFS_COL_ID)) return { data: [], error: null };
   if (!FLIGHT_TAKEOFFS_COL_ID) return { data: null, error: new Error("Coleção de decolagens não configurada") };
   return listMetricDocuments<JourneyTakeoffDoc>(FLIGHT_TAKEOFFS_COL_ID, viewer);
 }
@@ -274,7 +290,7 @@ function takeoffDoc(flightId: string, takeoff: FlightTakeoffMetric) {
 }
 
 async function deleteByFlight(collectionId: string, flightId: string): Promise<void> {
-  if (!databases) return;
+  if (!databases || !isValidCollectionId(collectionId)) return;
   let cursor: string | null = null;
   while (true) {
     const queries = [Query.equal("flight_id", [flightId]), Query.limit(100)];
@@ -290,7 +306,7 @@ async function deleteByFlight(collectionId: string, flightId: string): Promise<v
 }
 
 export async function clearFlightTelemetryMetrics(flightId: string): Promise<{ error: Error | null }> {
-  if (!configured()) return { error: null };
+  if (!configured() || !metricsCollectionsConfigured()) return { error: null };
   try {
     await Promise.all([
       deleteByFlight(FLIGHT_TELEMETRY_SUMMARIES_COL_ID!, flightId),
@@ -308,7 +324,7 @@ export async function replaceFlightTelemetryMetrics(
   actorUserId: string,
   metrics: FlightTelemetryMetricsBundle | null,
 ): Promise<{ error: Error | null }> {
-  if (!configured()) return { error: null };
+  if (!configured() || !metricsCollectionsConfigured()) return { error: null };
   try {
     await clearFlightTelemetryMetrics(flightId);
     if (!metrics || !databases) return { error: null };
