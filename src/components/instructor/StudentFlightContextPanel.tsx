@@ -4,6 +4,8 @@ import {
   buildFlightDisplayInfo,
   formatMinutes,
   getDateBase,
+  getFlightDateTimeMs,
+  isCompletedFlight,
   isFutureFlight,
   type FlightDisplayInfo,
 } from "../../lib/flightDisplay";
@@ -148,7 +150,7 @@ function HistoryDetail({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Detalhe separado</p>
-          <h3 className="mt-1 text-base font-semibold text-slate-100">{item?.name ?? "Voo selecionado"}</h3>
+          <h3 className="mt-1 text-base font-semibold text-slate-100">Voo selecionado</h3>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
             <span className="rounded border border-slate-700 bg-slate-950/40 px-2 py-1">
               {item ? formatDate(item, info) : "—"}
@@ -304,24 +306,24 @@ export function StudentFlightContextPanel({
     [currentFlightId, history, historyInfoById],
   );
   const completedFlights = useMemo(
-    () => contextFlights.filter((item) => !isFutureFlight(item, historyInfoById[item.id])),
+    () => contextFlights.filter((item) => isCompletedFlight(item, historyInfoById[item.id])),
     [contextFlights, historyInfoById],
   );
   const futureFlights = useMemo(
     () =>
       contextFlights
         .filter((item) => isFutureFlight(item, historyInfoById[item.id]))
-        .sort((a, b) => getDateBase(a, historyInfoById[a.id]).getTime() - getDateBase(b, historyInfoById[b.id]).getTime()),
+        .sort((a, b) => getFlightDateTimeMs(a, historyInfoById[a.id]) - getFlightDateTimeMs(b, historyInfoById[b.id])),
     [contextFlights, historyInfoById],
   );
   const totalMinutes = useMemo(
     () =>
-      contextFlights.reduce((acc, item) => {
+      completedFlights.reduce((acc, item) => {
         const info = historyInfoById[item.id];
         if (info?.totalFlightMinutes) return acc + info.totalFlightMinutes;
         return acc + (typeof item.duration_sec === "number" ? Math.round(item.duration_sec / 60) : 0);
       }, 0),
-    [contextFlights, historyInfoById],
+    [completedFlights, historyInfoById],
   );
   const aircrafts = useMemo(
     () =>
@@ -492,17 +494,11 @@ export function StudentFlightContextPanel({
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-medium text-slate-200">{item.name}</p>
                           {future ? (
                             <span className="rounded border border-violet-600/40 bg-violet-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">
                               Futuro
                             </span>
                           ) : null}
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                            info.status === "draft" ? "bg-amber-900/40 text-amber-200" : "bg-emerald-900/40 text-emerald-200"
-                          }`}>
-                            {info.status === "draft" ? "Rascunho" : "Enviado"}
-                          </span>
                         </div>
                         <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-2">
                           <p>Data: <span className="text-slate-300">{formatDate(item, info)}</span></p>

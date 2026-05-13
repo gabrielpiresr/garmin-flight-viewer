@@ -1,7 +1,8 @@
+import type { FlightExerciseGrade } from "../types/trainingExercise";
+
 const META_PREFIX = "#GFV_META_V1:";
 
 export type FlightRecordMeta = {
-  status: "draft" | "submitted";
   header: {
     studentUserId: string;
     studentLabel: string;
@@ -41,6 +42,7 @@ export type FlightRecordMeta = {
     serviceTime: string;
     distance: string;
   }>;
+  exercises?: FlightExerciseGrade[];
   risk: {
     commentsMd: string;
     dangerMd: string;

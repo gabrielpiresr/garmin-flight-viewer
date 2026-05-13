@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../../contexts/AuthContext";
-import { createStudentCredit, deleteStudentCredit, getStudentCreditStatement, updateStudentCredit } from "../../lib/creditsDb";
+import { createAdminUserCredit, deleteAdminUserCredit, updateAdminUserCredit } from "../../lib/adminUsersDb";
+import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import type { AircraftModel } from "../../types/admin";
 import type { StudentCreditInput, StudentCreditPurchase, StudentCreditStatement } from "../../types/credits";
@@ -13,16 +14,20 @@ type CreditForm = {
   aircraftModelId: string;
   amountPaid: string;
   paymentMethod: string;
+  paymentInstallments: string;
   validityDays: string;
   hours: string;
   notes: string;
 };
+
+const PAYMENT_METHODS = ["Cartão de crédito à vista", "Parcelado", "PIX"] as const;
 
 const emptyForm: CreditForm = {
   purchaseDate: new Date().toISOString().slice(0, 10),
   aircraftModelId: "",
   amountPaid: "",
   paymentMethod: "PIX",
+  paymentInstallments: "",
   validityDays: "90",
   hours: "",
   notes: "",
@@ -47,6 +52,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<CreditForm>(emptyForm);
   const [editingCreditId, setEditingCreditId] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -95,6 +101,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
       aircraftModelName: selectedModel?.name || "",
       amountPaid: parseNumber(form.amountPaid),
       paymentMethod: form.paymentMethod.trim(),
+      paymentInstallments: form.paymentMethod === "Parcelado" ? Math.round(parseNumber(form.paymentInstallments)) : null,
       validityDays: Math.round(parseNumber(form.validityDays)),
       hours: parseNumber(form.hours),
       notes: form.notes,
@@ -108,15 +115,24 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
       aircraftModelId: purchase.aircraftModelId,
       amountPaid: formatNumber(purchase.amountPaid),
       paymentMethod: purchase.paymentMethod,
+      paymentInstallments: purchase.paymentInstallments ? String(purchase.paymentInstallments) : "",
       validityDays: String(purchase.validityDays),
       hours: formatNumber(purchase.hours),
       notes: purchase.notes,
     });
+    setModalOpen(true);
   }
 
   function cancelEdit() {
     setEditingCreditId(null);
     setForm(emptyForm);
+    setModalOpen(false);
+  }
+
+  function openCreate() {
+    setEditingCreditId(null);
+    setForm(emptyForm);
+    setModalOpen(true);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -126,10 +142,10 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
     try {
       const input = toInput();
       if (editingCreditId) {
-        await updateStudentCredit(editingCreditId, input, user.id);
+        await updateAdminUserCredit(editingCreditId, input);
         showToast({ variant: "success", message: "Crédito atualizado." });
       } else {
-        await createStudentCredit(input, user.id);
+        await createAdminUserCredit(input);
         showToast({ variant: "success", message: "Crédito adicionado." });
       }
       cancelEdit();
@@ -145,7 +161,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
     if (!window.confirm(`Remover o crédito de ${purchase.aircraftModelName}?`)) return;
     setDeletingId(purchase.id);
     try {
-      await deleteStudentCredit(purchase.id);
+      await deleteAdminUserCredit(purchase.id, studentUserId);
       showToast({ variant: "success", message: "Crédito removido." });
       if (editingCreditId === purchase.id) cancelEdit();
       await load();
@@ -156,115 +172,112 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
     }
   }
 
+  const isInstallment = form.paymentMethod === "Parcelado";
+
   return (
-    <section className="space-y-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+    <section className="space-y-4 rounded-xl border border-slate-700/60 bg-slate-900/30 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Créditos</p>
           <h3 className="mt-1 text-base font-semibold text-slate-100">Créditos de {studentName}</h3>
           <p className="text-xs text-slate-500">Compras editáveis pelo admin e saídas calculadas pelos voos executados.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-        >
-          Recarregar créditos
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={openCreate}
+            className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-500"
+          >
+            Adicionar crédito
+          </button>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Recarregar
+          </button>
+        </div>
       </div>
 
-      <form onSubmit={(e) => void handleSubmit(e)} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-slate-200">{editingCreditId ? "Editar crédito" : "Adicionar crédito"}</p>
-          {editingCreditId ? (
-            <button type="button" onClick={cancelEdit} className="text-xs text-slate-400 underline-offset-4 hover:underline">
-              Cancelar edição
-            </button>
-          ) : null}
+      {modalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={(e) => void handleSubmit(e)}
+            className="w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl"
+          >
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400">
+                  {editingCreditId ? "Editar crédito" : "Adicionar crédito"}
+                </p>
+                <p className="mt-1 text-sm text-slate-400">Preencha os dados da compra de horas do aluno.</p>
+              </div>
+              <button type="button" onClick={cancelEdit} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+                Fechar
+              </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Data
+                <input type="date" value={form.purchaseDate} onChange={(e) => setForm((prev) => ({ ...prev, purchaseDate: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+              <label className="text-xs text-slate-400">
+                Modelo de avião
+                <select value={form.aircraftModelId} onChange={(e) => setForm((prev) => ({ ...prev, aircraftModelId: e.target.value }))} disabled={loadingModels} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500">
+                  <option value="">{loadingModels ? "Carregando modelos..." : "Selecione"}</option>
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>{model.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">
+                Valor pago
+                <input value={form.amountPaid} onChange={(e) => setForm((prev) => ({ ...prev, amountPaid: e.target.value }))} placeholder="0,00" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+              <label className="text-xs text-slate-400">
+                Pagamento
+                <select
+                  value={form.paymentMethod}
+                  onChange={(e) => setForm((prev) => ({ ...prev, paymentMethod: e.target.value, paymentInstallments: e.target.value === "Parcelado" ? prev.paymentInstallments : "" }))}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                >
+                  {PAYMENT_METHODS.map((method) => (
+                    <option key={method} value={method}>{method}</option>
+                  ))}
+                </select>
+              </label>
+              {isInstallment ? (
+                <label className="text-xs text-slate-400">
+                  Quantidade de parcelas
+                  <input value={form.paymentInstallments} onChange={(e) => setForm((prev) => ({ ...prev, paymentInstallments: e.target.value }))} placeholder="Ex: 3" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+                </label>
+              ) : null}
+              <label className="text-xs text-slate-400">
+                Horas
+                <input value={form.hours} onChange={(e) => setForm((prev) => ({ ...prev, hours: e.target.value }))} placeholder="10" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+              <label className="text-xs text-slate-400">
+                Validade (dias)
+                <input value={form.validityDays} onChange={(e) => setForm((prev) => ({ ...prev, validityDays: e.target.value }))} placeholder="90" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+              <label className="text-xs text-slate-400 md:col-span-2">
+                Observação
+                <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Opcional" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={cancelEdit} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+                Cancelar
+              </button>
+              <button type="submit" disabled={saving || loadingModels} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50">
+                {saving ? "Salvando..." : editingCreditId ? "Salvar crédito" : "Adicionar crédito"}
+              </button>
+            </div>
+          </form>
         </div>
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <label className="text-xs text-slate-400">
-            Data
-            <input
-              type="date"
-              value={form.purchaseDate}
-              onChange={(e) => setForm((prev) => ({ ...prev, purchaseDate: e.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <label className="text-xs text-slate-400 xl:col-span-2">
-            Modelo de avião
-            <select
-              value={form.aircraftModelId}
-              onChange={(e) => setForm((prev) => ({ ...prev, aircraftModelId: e.target.value }))}
-              disabled={loadingModels}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            >
-              <option value="">{loadingModels ? "Carregando modelos..." : "Selecione"}</option>
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-slate-400">
-            Valor pago
-            <input
-              value={form.amountPaid}
-              onChange={(e) => setForm((prev) => ({ ...prev, amountPaid: e.target.value }))}
-              placeholder="0,00"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <label className="text-xs text-slate-400">
-            Pagamento
-            <input
-              value={form.paymentMethod}
-              onChange={(e) => setForm((prev) => ({ ...prev, paymentMethod: e.target.value }))}
-              placeholder="PIX, cartão..."
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <label className="text-xs text-slate-400">
-            Horas
-            <input
-              value={form.hours}
-              onChange={(e) => setForm((prev) => ({ ...prev, hours: e.target.value }))}
-              placeholder="10"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <label className="text-xs text-slate-400">
-            Validade (dias)
-            <input
-              value={form.validityDays}
-              onChange={(e) => setForm((prev) => ({ ...prev, validityDays: e.target.value }))}
-              placeholder="90"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <label className="text-xs text-slate-400 md:col-span-2 xl:col-span-4">
-            Observação
-            <input
-              value={form.notes}
-              onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
-              placeholder="Opcional"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-            />
-          </label>
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={saving || loadingModels}
-              className="w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
-            >
-              {saving ? "Salvando..." : editingCreditId ? "Salvar crédito" : "Adicionar"}
-            </button>
-          </div>
-        </div>
-      </form>
+      ) : null}
 
       {loading ? (
         <div className="space-y-3">

@@ -215,9 +215,9 @@ export function FlightsAgendaBoard({
                             left: widthOffset,
                             right: widthOffset,
                           }}
-                          title={`${info?.studentName ?? agendaItem.flight.name} • ${info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} • ${agendaItem.startTime}-${agendaItem.endTime}`}
+                          title={`${info?.studentName ?? "Voo"} • ${info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} • ${agendaItem.startTime}-${agendaItem.endTime}`}
                         >
-                          <p className="truncate font-semibold">{info?.studentName ?? agendaItem.flight.name}</p>
+                          <p className="truncate font-semibold">{info?.studentName ?? "Voo"}</p>
                           <p className="truncate opacity-90">{agendaItem.startTime}-{agendaItem.endTime}</p>
                           <p className="truncate opacity-80">{info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} · {info?.instructorName || "Sem instrutor"}</p>
                         </button>

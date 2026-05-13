@@ -86,7 +86,7 @@ export function detectFlightConflicts(params: {
         type: "overlap",
         relatedFlightId: row.id,
         message:
-          `Sobreposição com voo ${row.name} (${formatHHMM(startHour)}-${formatHHMM(startHour + row.durationHours)}).`,
+          `Sobreposição com voo em ${formatHHMM(startHour)}-${formatHHMM(startHour + row.durationHours)}.`,
       });
       continue;
     }
@@ -98,7 +98,7 @@ export function detectFlightConflicts(params: {
         type: "min_gap",
         relatedFlightId: row.id,
         message:
-          `Intervalo menor que ${minGap} min em relação ao voo ${row.name} (${formatHHMM(startHour)}-${formatHHMM(startHour + row.durationHours)}).`,
+          `Intervalo menor que ${minGap} min em relação ao voo em ${formatHHMM(startHour)}-${formatHHMM(startHour + row.durationHours)}.`,
       });
     }
   }
@@ -116,7 +116,7 @@ export function detectFlightConflicts(params: {
       conflicts.push({
         type: "other",
         relatedFlightId: row.id,
-        message: `Aluno já possui voo sobreposto no mesmo dia (${row.name}).`,
+        message: "Aluno já possui voo sobreposto no mesmo dia.",
       });
       break;
     }
@@ -136,7 +136,7 @@ export function detectFlightConflicts(params: {
         conflicts.push({
           type: "other",
           relatedFlightId: row.id,
-          message: `Instrutor já possui voo sobreposto no mesmo dia (${row.name}).`,
+          message: "Instrutor já possui voo sobreposto no mesmo dia.",
         });
         break;
       }

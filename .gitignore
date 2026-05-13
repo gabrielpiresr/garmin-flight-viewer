@@ -8,6 +8,8 @@ dist
 .DS_Store
 server.err.log
 server.out.log
+vite*.log
+.cursor/
 .tmp/
 appwrite.config.json
 video-helper/ffmpeg.exe

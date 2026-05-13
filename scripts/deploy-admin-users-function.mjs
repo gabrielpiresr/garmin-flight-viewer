@@ -102,7 +102,7 @@ async function main() {
   const env = parseEnvFile(envPath);
   const endpoint = process.env.APPWRITE_ENDPOINT || env.VITE_APPWRITE_ENDPOINT;
   const projectId = process.env.APPWRITE_PROJECT_ID || env.VITE_APPWRITE_PROJECT_ID;
-  const apiKey = process.env.APPWRITE_API_KEY;
+  const apiKey = process.env.APPWRITE_API_KEY || env.APPWRITE_API_KEY;
   const databaseId = process.env.APPWRITE_DATABASE_ID || env.VITE_APPWRITE_DATABASE_ID;
   const profilesCollectionId = process.env.APPWRITE_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_PROFILES_COLLECTION_ID;
   const flightsCollectionId = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || env.VITE_APPWRITE_COLLECTION_ID;
@@ -110,6 +110,24 @@ async function main() {
     process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || env.VITE_APPWRITE_WEEKLY_PLANS_COL_ID;
   const instructorPrefsCollectionId =
     process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID;
+  const studentCreditsCollectionId =
+    process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID;
+  const maneuversSectionsCollectionId =
+    process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID;
+  const maneuversSubsectionsCollectionId =
+    process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID;
+  const maneuversArticlesCollectionId =
+    process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID;
+  const platformSettingsCollectionId =
+    process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
+  const pushSubscriptionsCollectionId =
+    process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID || env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID;
+  const notificationDeliveriesCollectionId =
+    process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID || env.VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID;
+  const webPushPublicKey = process.env.WEB_PUSH_PUBLIC_KEY || env.VITE_WEB_PUSH_PUBLIC_KEY;
+  const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
+  const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
+  const appUrl = process.env.APP_URL || env.VITE_APP_URL || "";
 
   const missing = [];
   if (!endpoint) missing.push("VITE_APPWRITE_ENDPOINT");
@@ -120,6 +138,15 @@ async function main() {
   if (!flightsCollectionId) missing.push("VITE_APPWRITE_COLLECTION_ID");
   if (!weeklyPlansCollectionId) missing.push("VITE_APPWRITE_WEEKLY_PLANS_COL_ID");
   if (!instructorPrefsCollectionId) missing.push("VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID");
+  if (!studentCreditsCollectionId) missing.push("VITE_APPWRITE_STUDENT_CREDITS_COL_ID");
+  if (!maneuversSectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID");
+  if (!maneuversSubsectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID");
+  if (!maneuversArticlesCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID");
+  if (!platformSettingsCollectionId) missing.push("VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID");
+  if (!pushSubscriptionsCollectionId) missing.push("VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID");
+  if (!notificationDeliveriesCollectionId) missing.push("VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID");
+  if (!webPushPublicKey) missing.push("VITE_WEB_PUSH_PUBLIC_KEY");
+  if (!webPushPrivateKey) missing.push("WEB_PUSH_PRIVATE_KEY");
   if (!fs.existsSync(archivePath)) missing.push(archivePath);
   if (missing.length) throw new Error(`Missing required values: ${missing.join(", ")}`);
 
@@ -133,6 +160,17 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_FLIGHTS_COLLECTION_ID", flightsCollectionId);
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_CREDITS_COLLECTION_ID", studentCreditsCollectionId);
+  await upsertVariable(functions, "APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID", maneuversSectionsCollectionId);
+  await upsertVariable(functions, "APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID", maneuversSubsectionsCollectionId);
+  await upsertVariable(functions, "APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID", maneuversArticlesCollectionId);
+  await upsertVariable(functions, "APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", platformSettingsCollectionId);
+  await upsertVariable(functions, "APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID", pushSubscriptionsCollectionId);
+  await upsertVariable(functions, "APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID", notificationDeliveriesCollectionId);
+  await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
+  await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
+  await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
+  if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
 
   const buffer = fs.readFileSync(archivePath);
   const code = new File([buffer], "admin-users-function.tar.gz", { type: "application/gzip" });

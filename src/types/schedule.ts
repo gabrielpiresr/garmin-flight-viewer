@@ -85,7 +85,6 @@ export type ExistingScheduledFlight = {
   date: string;
   startTime: string;
   durationHours: number;
-  name: string;
   sourceFilename: string;
 };
 

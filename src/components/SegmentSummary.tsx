@@ -9,11 +9,11 @@ export function SegmentSummary({ segment }: Props) {
   if (segment.type === "landing") {
     return <LandingSummary metrics={segment.landingMetrics} />;
   }
-  // TGL: show both
+  // TGL starts with the touchdown, then the go-around takeoff.
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <TakeoffSummary metrics={segment.takeoffMetrics} />
+    <div className="grid gap-4">
       <LandingSummary metrics={segment.landingMetrics} />
+      <TakeoffSummary metrics={segment.takeoffMetrics} />
     </div>
   );
 }
@@ -194,6 +194,9 @@ function LandingSummary({ metrics }: { metrics?: LandingMetrics }) {
       <Grid2>
         <Row label="IAS">
           <Val value={`${fmt(m?.tdIasKt, 0)} kts`} />
+        </Row>
+        <Row label="GS">
+          <Val value={`${fmt(m?.tdGsKt, 0)} kts`} />
         </Row>
         <Row label="Crab">
           <Val value={`${fmt(m?.tdCrabAngleDeg, 0)}°`} />

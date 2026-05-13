@@ -1,6 +1,8 @@
 import { Query } from "appwrite";
 import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, storage } from "./appwrite";
 import { decodeFlightRecord, encodeFlightRecord } from "./flightRecordCodec";
+import { clearFlightTelemetryMetrics, replaceFlightTelemetryMetrics } from "./flightTelemetryMetricsDb";
+import type { FlightTelemetryMetricsBundle } from "./flightTelemetryMetrics";
 import type { UserRole } from "./rbac";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
@@ -8,7 +10,6 @@ const COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
 
 export type SavedFlightListItem = {
   id: string;
-  name: string;
   source_filename: string;
   created_at: string;
   aircraft_ident: string | null;
@@ -24,7 +25,6 @@ export type SavedFlightFull = SavedFlightListItem & { csv_text: string };
 function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $createdAt: string }): SavedFlightListItem {
   return {
     id: d.$id,
-    name: d.name as string,
     source_filename: d.source_filename as string,
     created_at: d.$createdAt,
     aircraft_ident: (d.aircraft_ident as string | null | undefined) ?? null,
@@ -42,6 +42,14 @@ function getFlightScheduleFields(csvText: string): { flight_date: string | null;
     flight_date: meta?.header.date || null,
     start_time: meta?.header.startTime?.trim() || null,
   };
+}
+
+function buildInternalFlightName(payload: { csv_text: string; aircraft_ident?: string | null; source_filename: string }): string {
+  const scheduleFields = getFlightScheduleFields(payload.csv_text);
+  return [payload.aircraft_ident?.trim(), scheduleFields.flight_date, scheduleFields.start_time]
+    .filter(Boolean)
+    .join(" ")
+    .trim() || payload.source_filename || "Voo";
 }
 
 function buildActorOwnedPermissions(actorUserId: string) {
@@ -162,7 +170,6 @@ export async function getSavedFlight(id: string): Promise<{ data: SavedFlightFul
     return {
       data: {
         id: d.$id,
-        name: d.name as string,
         source_filename: d.source_filename as string,
         created_at: d.$createdAt,
         aircraft_ident: (d.aircraft_ident as string | null | undefined) ?? null,
@@ -185,11 +192,11 @@ export async function insertFlight(payload: {
   actorRole: UserRole;
   studentUserId: string;
   instructorUserId?: string | null;
-  name: string;
   source_filename: string;
   csv_text: string;
   aircraft_ident?: string | null;
   duration_sec?: number | null;
+  telemetryMetrics?: FlightTelemetryMetricsBundle | null;
 }): Promise<{ id: string | null; error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { id: null, error: new Error("Appwrite não configurado") };
@@ -221,7 +228,7 @@ export async function insertFlight(payload: {
         student_user_id: payload.studentUserId,
         instructor_user_id: payload.instructorUserId ?? null,
         created_by_role: payload.actorRole,
-        name: payload.name,
+        name: buildInternalFlightName(payload),
         source_filename: payload.source_filename,
         csv_text: payload.csv_text,
         csv_file_id: csvFileId,
@@ -232,6 +239,9 @@ export async function insertFlight(payload: {
       },
       permissions,
     );
+
+    const metricsResult = await replaceFlightTelemetryMetrics(d.$id, payload.actorUserId, payload.telemetryMetrics ?? null);
+    if (metricsResult.error) return { id: d.$id, error: metricsResult.error };
 
     return { id: d.$id, error: null };
   } catch (e) {
@@ -244,11 +254,11 @@ export async function updateFlight(id: string, payload: {
   actorRole: UserRole;
   studentUserId: string;
   instructorUserId?: string | null;
-  name: string;
   source_filename: string;
   csv_text: string;
   aircraft_ident?: string | null;
   duration_sec?: number | null;
+  telemetryMetrics?: FlightTelemetryMetricsBundle | null;
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
@@ -281,7 +291,7 @@ export async function updateFlight(id: string, payload: {
       student_user_id: payload.studentUserId,
       instructor_user_id: payload.instructorUserId ?? null,
       created_by_role: payload.actorRole,
-      name: payload.name,
+      name: buildInternalFlightName(payload),
       source_filename: payload.source_filename,
       csv_text: payload.csv_text,
       csv_file_id: csvFileId,
@@ -290,6 +300,8 @@ export async function updateFlight(id: string, payload: {
       flight_date: scheduleFields.flight_date,
       start_time: scheduleFields.start_time,
     }, permissions);
+    const metricsResult = await replaceFlightTelemetryMetrics(id, payload.actorUserId, payload.telemetryMetrics ?? null);
+    if (metricsResult.error) return { error: metricsResult.error };
     return { error: null };
   } catch (e) {
     return { error: e as Error };
@@ -394,6 +406,7 @@ export async function deleteSavedFlight(id: string): Promise<{ error: Error | nu
       }
     }
     await databases.deleteDocument(DB_ID, COL_ID, id);
+    await clearFlightTelemetryMetrics(id);
     return { error: null };
   } catch (e) {
     return { error: e as Error };

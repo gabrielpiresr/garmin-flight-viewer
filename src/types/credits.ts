@@ -6,6 +6,7 @@ export type StudentCreditPurchase = {
   aircraftModelName: string;
   amountPaid: number;
   paymentMethod: string;
+  paymentInstallments: number | null;
   validityDays: number;
   hours: number;
   expiresAt: string;
@@ -24,7 +25,6 @@ export type StudentCreditAllocation = {
 export type StudentCreditFlightDebit = {
   id: string;
   flightId: string;
-  flightName: string;
   flightDate: string;
   aircraftIdent: string;
   aircraftModelId: string | null;
@@ -68,6 +68,7 @@ export type StudentCreditInput = {
   aircraftModelName: string;
   amountPaid: number;
   paymentMethod: string;
+  paymentInstallments?: number | null;
   validityDays: number;
   hours: number;
   notes?: string;

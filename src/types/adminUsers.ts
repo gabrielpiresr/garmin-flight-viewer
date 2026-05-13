@@ -5,7 +5,6 @@ import type { WeeklyFlightPlanStatus } from "./planning";
 
 export type AdminUserFlight = {
   id: string;
-  name: string;
   createdAt: string;
   updatedAt: string;
   sourceFilename: string;
@@ -13,7 +12,6 @@ export type AdminUserFlight = {
   durationSec: number | null;
   flightDate: string | null;
   startTime: string | null;
-  status: "draft" | "submitted";
   route: string;
   landings: number;
   distanceNm: number;

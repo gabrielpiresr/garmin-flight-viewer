@@ -22,7 +22,6 @@ This Appwrite Function enforces role-based upload rules:
 ```json
 {
   "studentUserId": "user_123",
-  "name": "Voo circuito manhã",
   "source_filename": "flight.csv",
   "csv_text": "col1,col2,...",
   "aircraft_ident": "PR-ABC",

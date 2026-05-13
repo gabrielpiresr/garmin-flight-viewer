@@ -3,6 +3,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { listAircrafts } from "../lib/aircraftDb";
 import { listModels } from "../lib/aircraftModelsDb";
 import { SCHOOL_ID } from "../lib/appwrite";
+import { dispatchNotificationEvent } from "../lib/notificationsDb";
 import { Skeleton } from "./ui/Skeleton";
 import { useToast } from "./ui/ToastProvider";
 import {
@@ -560,6 +561,17 @@ export function AgendamentoTab() {
       await submitStudentPlan(result.id);
       setSubmittedPlan({ ...result, status: "submitted" });
       setView("submitted");
+      void dispatchNotificationEvent({
+        eventType: "weeklyPlan.submitted",
+        dedupeKey: `weeklyPlan.submitted:${result.id}:${result.updated_at}`,
+        recipientUserIds: [user.id],
+        actorUserId: user.id,
+        weeklyPlanId: result.id,
+        data: {
+          weekStart: openWeek.week_start,
+          requestedFlightsCount: flightCount,
+        },
+      });
       showToast({ variant: "success", message: "Planejamento enviado." });
     } catch (e) {
       setError((e as Error).message);

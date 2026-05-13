@@ -111,8 +111,7 @@ export function UpcomingFlightsCard({
               <article key={item.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-100">{item.name}</p>
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className="text-xs text-slate-500">
                       {formatFlightDate(info, item)} · {info.startTime || "horário a definir"}
                     </p>
                   </div>

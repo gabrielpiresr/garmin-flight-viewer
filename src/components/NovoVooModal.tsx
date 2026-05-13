@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
 import { insertFlight } from "../lib/flightsDb";
-import { suggestFlightName } from "../lib/flightNaming";
 import { chartDurationSec } from "../lib/flightStats";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { listAssignableStudents, type StudentOption } from "../lib/rbac";
@@ -18,8 +18,6 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
   const { user } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [flightName, setFlightName] = useState("");
-  const [nameEditedByUser, setNameEditedByUser] = useState(false);
   const [parsed, setParsed] = useState<ParseResult | null>(null);
   const [rawCsvText, setRawCsvText] = useState<string | null>(null);
   const [sourceFileName, setSourceFileName] = useState<string | null>(null);
@@ -79,17 +77,6 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
         }
         const result = ev.data.result;
         setParsed(result);
-        if (!nameEditedByUser) {
-          const durationSec = chartDurationSec(result.chartData, result.hasChartTime) ??
-            (result.points.length >= 2 ? (((result.points[result.points.length - 1]?.t ?? 0) - (result.points[0]?.t ?? 0)) / 1000) : null);
-          const base = result.chartTimeBaseMs ?? (result.points[0]?.t ?? null);
-          const suggested = suggestFlightName(base, file.name);
-          const withIdent = result.aircraftIdent
-            ? `${result.aircraftIdent} — ${suggested}`
-            : suggested;
-          setFlightName(withIdent);
-          void durationSec; // computed for payload below
-        }
         setPhase("ready");
       };
 
@@ -115,16 +102,25 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
       (parsed.points.length >= 2
         ? ((parsed.points[parsed.points.length - 1]?.t ?? 0) - (parsed.points[0]?.t ?? 0)) / 1000
         : null);
+    const telemetryMetrics = buildFlightTelemetryMetrics({
+      parsed,
+      identity: deriveIdentity({
+        studentUserId: targetStudentId,
+        instructorUserId: isInstructorFlow ? user.id : null,
+        aircraftIdent: parsed.aircraftIdent ?? null,
+      }),
+      meta: null,
+    });
 
     const { id, error } = await insertFlight({
       actorUserId: user.id,
       actorRole: user.role,
       studentUserId: targetStudentId,
-      name: flightName.trim() || suggestFlightName(parsed.chartTimeBaseMs, sourceFileName),
       source_filename: sourceFileName,
       csv_text: rawCsvText,
       aircraft_ident: parsed.aircraftIdent ?? null,
       duration_sec: durationSec ?? null,
+      telemetryMetrics,
     });
 
     if (error || !id) {
@@ -196,7 +192,7 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
             </div>
           </label>
 
-          {/* Step 2: name (appears after parse) */}
+          {/* Step 2: flight owner */}
           {(phase === "ready" || phase === "saving" || phase === "error") && (
             <>
               {isInstructorFlow && (
@@ -223,19 +219,9 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
                 </label>
               )}
 
-              <label className="block">
-                <span className="mb-1.5 block text-xs font-medium text-slate-400">Nome do voo</span>
-                <input
-                  type="text"
-                  value={flightName}
-                  onChange={(e) => { setFlightName(e.target.value); setNameEditedByUser(true); }}
-                  className="w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                  placeholder="Nome do voo"
-                />
-                {parsed?.aircraftIdent && (
-                  <p className="mt-1 text-xs text-slate-500">Aeronave detectada: {parsed.aircraftIdent}</p>
-                )}
-              </label>
+              {parsed?.aircraftIdent ? (
+                <p className="text-xs text-slate-500">Aeronave detectada: {parsed.aircraftIdent}</p>
+              ) : null}
             </>
           )}
 
@@ -258,7 +244,7 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
           <button
             type="button"
             onClick={() => void handleSave()}
-            disabled={phase !== "ready" || !flightName.trim() || !targetStudentId}
+            disabled={phase !== "ready" || !targetStudentId}
             className="w-full rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40 sm:w-auto"
           >
             {phase === "saving" ? (

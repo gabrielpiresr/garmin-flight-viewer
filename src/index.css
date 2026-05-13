@@ -31,3 +31,86 @@ body {
   color: #94a3b8 !important;
   font-size: 11px;
 }
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: #64748b;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.ProseMirror h2 {
+  margin-top: 1.25rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.ProseMirror h3 {
+  margin-top: 1rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+.ProseMirror ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+
+.ProseMirror ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+
+.ProseMirror blockquote {
+  border-left: 2px solid #38bdf8;
+  color: #cbd5e1;
+  padding-left: 1rem;
+}
+
+.ProseMirror img,
+.ProseMirror iframe,
+.ProseMirror video {
+  margin: 0.75rem 0;
+}
+
+.ProseMirror img.ProseMirror-selectednode {
+  outline: 2px solid #38bdf8;
+  outline-offset: 3px;
+}
+
+.maneuver-image-node {
+  display: inline-block;
+  position: relative;
+  margin: 0.75rem 0;
+  vertical-align: top;
+}
+
+.maneuver-image-node img {
+  display: block;
+}
+
+.maneuver-image-node.is-selected img {
+  outline: 2px solid #38bdf8;
+  outline-offset: 3px;
+}
+
+.maneuver-image-resize-handle {
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.6);
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.maneuver-image-node:hover .maneuver-image-resize-handle,
+.maneuver-image-node.is-selected .maneuver-image-resize-handle {
+  opacity: 1;
+}

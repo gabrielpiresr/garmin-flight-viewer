@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { account } from "../lib/appwrite";
 import { Skeleton } from "./ui/Skeleton";
@@ -115,7 +115,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     fileInputRef.current?.click();
   };
 
-  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFilesSelected = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
     setSelectedFiles(files.map((f) => ({ name: f.name, file: f })));
@@ -322,7 +322,6 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 
   return (
     <div className="space-y-6">
-
       {/* Instrutor: seção de ação */}
       {isInstructor && (
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">

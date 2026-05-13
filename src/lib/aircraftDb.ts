@@ -8,6 +8,38 @@ function isReady(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && AIRCRAFTS_COL_ID);
 }
 
+function adminScopedPermissions(): string[] {
+  const permissions = [
+    Permission.read(Role.label("admin")),
+    Permission.read(Role.label("instrutor")),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
+
+  if (ADMIN_USER_ID) {
+    permissions.push(
+      Permission.read(Role.user(ADMIN_USER_ID)),
+      Permission.update(Role.user(ADMIN_USER_ID)),
+      Permission.delete(Role.user(ADMIN_USER_ID)),
+    );
+  }
+
+  return Array.from(new Set(permissions));
+}
+
+function aircraftPhotoPermissions(): string[] {
+  return Array.from(
+    new Set([
+      Permission.read(Role.any()),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
+      ...(ADMIN_USER_ID
+        ? [Permission.update(Role.user(ADMIN_USER_ID)), Permission.delete(Role.user(ADMIN_USER_ID))]
+        : []),
+    ]),
+  );
+}
+
 function toAircraft(doc: Record<string, unknown>): Aircraft {
   return {
     id: doc.$id as string,
@@ -52,15 +84,7 @@ export async function createAircraft(data: {
       image_url: data.image_url ?? null,
       active: data.active ?? true,
     },
-    [
-      Permission.read(Role.user(ADMIN_USER_ID!)),
-      Permission.read(Role.label("admin")),
-      Permission.read(Role.label("instrutor")),
-      Permission.update(Role.user(ADMIN_USER_ID!)),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.user(ADMIN_USER_ID!)),
-      Permission.delete(Role.label("admin")),
-    ],
+    adminScopedPermissions(),
   );
   return toAircraft(doc as unknown as Record<string, unknown>);
 }
@@ -82,6 +106,6 @@ export async function toggleAircraftActive(id: string, active: boolean): Promise
 
 export async function uploadAircraftPhoto(file: File): Promise<string> {
   if (!storage || !BUCKET_ID) throw new Error("Bucket de arquivos não configurado");
-  const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file);
+  const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, aircraftPhotoPermissions());
   return storage.getFileView(BUCKET_ID, uploaded.$id).toString();
 }

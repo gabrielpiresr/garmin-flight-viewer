@@ -2,12 +2,17 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { SCHOOL_ID } from "../lib/appwrite";
 import { listAircrafts } from "../lib/aircraftDb";
+import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCodec";
+import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
 import { getSavedFlight, insertFlight, updateFlight } from "../lib/flightsDb";
 import { renderMarkdownBlocks } from "../lib/markdown";
+import { dispatchNotificationEvent } from "../lib/notificationsDb";
+import { parseGarminCsv } from "../lib/parseGarminCsv";
 import { getProfile, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
+import { listTrainingExercises } from "../lib/trainingExercisesDb";
 import type { Aircraft } from "../types/admin";
-import { VideosTab } from "./VideosTab";
+import type { ExerciseGrade, FlightExerciseGrade, TrainingExercise } from "../types/trainingExercise";
 import { useToast } from "./ui/ToastProvider";
 
 const DEFAULT_BRIEFING =
@@ -53,9 +58,11 @@ const STEPS = [
   { id: "dados", label: "Dados do voo" },
   { id: "pre-voo", label: "Pre voo" },
   { id: "pernas", label: "Pernas" },
+  { id: "exercicios", label: "Exercicios" },
   { id: "risco", label: "Risco e parecer" },
-  { id: "anexos", label: "Anexos finais" },
 ] as const;
+
+const GRADE_OPTIONS: ExerciseGrade[] = ["NO", "1", "2", "3", "4"];
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -105,6 +112,59 @@ function normalizeTimeInput(raw: string): string {
   if (!digits) return "";
   if (digits.length <= 2) return digits;
   return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function isExerciseGrade(value: unknown): value is ExerciseGrade {
+  return value === "NO" || value === "1" || value === "2" || value === "3" || value === "4";
+}
+
+function normalizeSavedExercises(value: unknown): FlightExerciseGrade[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row, index) => {
+      const item = row as Partial<FlightExerciseGrade>;
+      const title = typeof item.title === "string" ? item.title.trim() : "";
+      if (!title) return null;
+      return {
+        exerciseId: typeof item.exerciseId === "string" && item.exerciseId ? item.exerciseId : `legacy-${index + 1}`,
+        title,
+        acceptableProficiency:
+          typeof item.acceptableProficiency === "string" ? item.acceptableProficiency.trim() : "",
+        grade: isExerciseGrade(item.grade) ? item.grade : null,
+        order: typeof item.order === "number" && Number.isFinite(item.order) ? item.order : index + 1,
+      } satisfies FlightExerciseGrade;
+    })
+    .filter((item): item is FlightExerciseGrade => Boolean(item))
+    .sort((a, b) => a.order - b.order);
+}
+
+function mergeExerciseGrades(
+  catalog: TrainingExercise[],
+  saved: FlightExerciseGrade[],
+): FlightExerciseGrade[] {
+  const byId = new Map(catalog.map((exercise) => [exercise.id, exercise]));
+  const usedIds = new Set<string>();
+  const mergedSaved = saved.map((exercise) => {
+    const catalogExercise = byId.get(exercise.exerciseId);
+    if (catalogExercise) usedIds.add(catalogExercise.id);
+    return {
+      exerciseId: exercise.exerciseId,
+      title: catalogExercise?.title ?? exercise.title,
+      acceptableProficiency: catalogExercise?.acceptableProficiency ?? exercise.acceptableProficiency,
+      grade: isExerciseGrade(exercise.grade) ? exercise.grade : null,
+      order: catalogExercise?.order ?? exercise.order,
+    } satisfies FlightExerciseGrade;
+  });
+  const newCatalogRows = catalog
+    .filter((exercise) => exercise.isActive && !usedIds.has(exercise.id))
+    .map((exercise) => ({
+      exerciseId: exercise.id,
+      title: exercise.title,
+      acceptableProficiency: exercise.acceptableProficiency,
+      grade: null,
+      order: exercise.order,
+    }) satisfies FlightExerciseGrade);
+  return [...mergedSaved, ...newCatalogRows].sort((a, b) => a.order - b.order);
 }
 
 function escapeHtml(text: string): string {
@@ -335,7 +395,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [flightDate, setFlightDate] = useState(todayIso());
   const [startTime, setStartTime] = useState("");
   const [aircraft, setAircraft] = useState("");
-  const [flightName, setFlightName] = useState("");
 
   const [objectiveMd, setObjectiveMd] = useState("");
   const [briefingMd, setBriefingMd] = useState(DEFAULT_BRIEFING);
@@ -344,6 +403,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [scheduleMeta, setScheduleMeta] = useState<FlightRecordMeta["schedule"]>(undefined);
 
   const [legs, setLegs] = useState<LegDraft[]>([emptyLeg()]);
+  const [exerciseCatalog, setExerciseCatalog] = useState<TrainingExercise[]>([]);
+  const [exerciseGrades, setExerciseGrades] = useState<FlightExerciseGrade[]>([]);
+  const [exercisesLoading, setExercisesLoading] = useState(false);
+  const exerciseCatalogRef = useRef<TrainingExercise[]>([]);
 
   const [commentsMd, setCommentsMd] = useState("");
   const [dangerMd, setDangerMd] = useState(DEFAULT_DANGER);
@@ -353,7 +416,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
 
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [telemetryCsv, setTelemetryCsv] = useState("");
-  const [csvLoading, setCsvLoading] = useState(false);
 
   const isInstructorFlow = user?.role === "instrutor" || user?.role === "admin";
   const canEdit = isInstructorFlow;
@@ -416,6 +478,27 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   }, []);
 
   useEffect(() => {
+    const schoolId = SCHOOL_ID ?? "escola_principal";
+    setExercisesLoading(true);
+    void listTrainingExercises({ schoolId })
+      .then((res) => {
+        if (res.error) {
+          setError(res.error.message);
+          setExerciseCatalog([]);
+          return;
+        }
+        setExerciseCatalog(res.data);
+      })
+      .finally(() => setExercisesLoading(false));
+  }, []);
+
+  useEffect(() => {
+    exerciseCatalogRef.current = exerciseCatalog;
+    if (exerciseCatalog.length === 0) return;
+    setExerciseGrades((current) => mergeExerciseGrades(exerciseCatalog, current));
+  }, [exerciseCatalog]);
+
+  useEffect(() => {
     if (!studentId) {
       setSelectedProfile(null);
       return;
@@ -436,7 +519,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         const decoded = decodeFlightRecord(data.csv_text);
         const meta = decoded.meta;
         setFlightId(data.id);
-        setFlightName(data.name ?? "");
         setCsvFileName(data.source_filename ?? null);
         setTelemetryCsv(decoded.telemetryCsv ?? "");
 
@@ -447,6 +529,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           setStartTime("");
           setAircraft(data.aircraft_ident ?? "");
           setScheduleMeta(undefined);
+          setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, []));
           setLoadedInstructorName(instructorFromDb?.data?.fullName?.trim() || "");
           setLoadedInstructorAnac(instructorFromDb?.data?.anacCode?.trim() || "");
           return;
@@ -480,6 +563,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
               }))
             : [emptyLeg()],
         );
+        setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, normalizeSavedExercises(meta.exercises)));
         setCommentsMd(meta.risk.commentsMd ?? "");
         setDangerMd(meta.risk.dangerMd ?? DEFAULT_DANGER);
         setRiskMd(meta.risk.riskMd ?? DEFAULT_RISK);
@@ -498,13 +582,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       })
       .finally(() => setLoadingExisting(false));
   }, [initialFlightId]);
-
-  useEffect(() => {
-    if (!flightName.trim()) {
-      const name = [aircraft.trim(), flightDate].filter(Boolean).join(" - ");
-      if (name) setFlightName(name);
-    }
-  }, [aircraft, flightDate, flightName]);
 
   const totals = useMemo(() => {
     const sum = (selector: (leg: LegDraft) => string) =>
@@ -530,6 +607,58 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     });
   }, [studentProfilesById, studentSearch, students]);
 
+  const displayInstructorName = initialFlightId ? loadedInstructorName : (instructorProfile?.fullName?.trim() || user?.email || "");
+  const displayInstructorAnac = initialFlightId ? loadedInstructorAnac : (instructorProfile?.anacCode?.trim() || "");
+
+  const buildFlightMeta = (): FlightRecordMeta => ({
+    ...(scheduleMeta ? { schedule: scheduleMeta } : {}),
+    header: {
+      studentUserId: studentId,
+      studentLabel,
+      studentName: selectedProfile?.fullName?.trim() || studentLabel || "",
+      studentAnac: selectedProfile?.anacCode?.trim() || "",
+      instructorName: displayInstructorName,
+      instructorAnac: displayInstructorAnac,
+      date: flightDate,
+      startTime: startTime.trim(),
+      aircraft: aircraft.trim(),
+    },
+    preFlight: {
+      objectiveMd: objectiveMd.trim(),
+      briefingMd: briefingMd.trim(),
+      instructorSuggestionMd: instructorSuggestionMd.trim(),
+      studentSuggestionMd: studentSuggestionMd.trim(),
+    },
+    legs: legs.map((leg) => ({
+      id: leg.id,
+      date: leg.date,
+      role: leg.role,
+      dep: leg.dep.trim(),
+      arr: leg.arr.trim(),
+      landings: Math.max(0, Math.round(leg.landings || 0)),
+      flightTime: leg.flightTime.trim(),
+      navTime: leg.navTime.trim(),
+      ifrTime: leg.ifrTime.trim(),
+      nightTime: leg.nightTime.trim(),
+      serviceTime: leg.serviceTime.trim(),
+      distance: leg.distance.trim(),
+    })),
+    exercises: exerciseGrades.map((exercise) => ({
+      exerciseId: exercise.exerciseId,
+      title: exercise.title.trim(),
+      acceptableProficiency: exercise.acceptableProficiency.trim(),
+      grade: isExerciseGrade(exercise.grade) ? exercise.grade : null,
+      order: exercise.order,
+    })),
+    risk: {
+      commentsMd: commentsMd.trim(),
+      dangerMd: dangerMd.trim(),
+      riskMd: riskMd.trim(),
+      managementMd: managementMd.trim(),
+      instructorOpinionMd: instructorOpinionMd.trim(),
+    },
+  });
+
   const updateLeg = (id: string, patch: Partial<LegDraft>) => {
     setLegs((prev) => prev.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
   };
@@ -540,24 +669,17 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     setLegs((prev) => (prev.length <= 1 ? prev : prev.filter((leg) => leg.id !== id)));
   };
 
-  const readCsvFile = (file: File) => {
-    if (!canEdit) return;
-    setCsvLoading(true);
-    setError(null);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setTelemetryCsv((e.target?.result as string) ?? "");
-      setCsvFileName(file.name);
-      setCsvLoading(false);
-    };
-    reader.onerror = () => {
-      setCsvLoading(false);
-      setError("Falha ao ler o CSV de telemetria.");
-    };
-    reader.readAsText(file);
+  const updateExerciseGrade = (exerciseId: string, grade: ExerciseGrade) => {
+    setExerciseGrades((prev) =>
+      prev.map((exercise) =>
+        exercise.exerciseId === exerciseId
+          ? { ...exercise, grade: exercise.grade === grade ? null : grade }
+          : exercise,
+      ),
+    );
   };
 
-  const persist = async (status: "draft" | "submitted") => {
+  const persist = async () => {
     if (!user) return;
     if (!canEdit) {
       setError("Somente instrutor/admin pode editar esta ficha.");
@@ -567,88 +689,35 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       setError("Selecione um aluno para continuar.");
       return;
     }
-    if (status === "submitted" && !instructorOpinionMd.trim()) {
-      setError("PARECER DO INSTRUTOR é obrigatório para enviar.");
-      return;
-    }
-    if (status === "submitted" && !startTime.trim()) {
-      setError("Preencha o Horário de Início.");
-      return;
-    }
-    const hasAnyLeg = legs.some((leg) =>
-      leg.dep.trim() ||
-      leg.arr.trim() ||
-      leg.flightTime.trim() ||
-      leg.navTime.trim() ||
-      leg.ifrTime.trim() ||
-      leg.nightTime.trim() ||
-      leg.serviceTime.trim() ||
-      leg.distance.trim() ||
-      leg.landings > 0,
-    );
-    if (status === "submitted" && !hasAnyLeg) {
-      setError("Adicione pelo menos uma perna de voo antes de enviar.");
-      return;
-    }
 
     setSaving(true);
     setError(null);
     setSavedMessage(null);
 
-    const meta: FlightRecordMeta = {
-      status,
-      ...(scheduleMeta ? { schedule: scheduleMeta } : {}),
-      header: {
-        studentUserId: studentId,
-        studentLabel,
-        studentName: selectedProfile?.fullName?.trim() || studentLabel || "",
-        studentAnac: selectedProfile?.anacCode?.trim() || "",
-        instructorName: instructorProfile?.fullName?.trim() || user.email || "",
-        instructorAnac: instructorProfile?.anacCode?.trim() || "",
-        date: flightDate,
-        startTime: startTime.trim(),
-        aircraft: aircraft.trim(),
-      },
-      preFlight: {
-        objectiveMd: objectiveMd.trim(),
-        briefingMd: briefingMd.trim(),
-        instructorSuggestionMd: instructorSuggestionMd.trim(),
-        studentSuggestionMd: studentSuggestionMd.trim(),
-      },
-      legs: legs.map((leg) => ({
-        id: leg.id,
-        date: leg.date,
-        role: leg.role,
-        dep: leg.dep.trim(),
-        arr: leg.arr.trim(),
-        landings: Math.max(0, Math.round(leg.landings || 0)),
-        flightTime: leg.flightTime.trim(),
-        navTime: leg.navTime.trim(),
-        ifrTime: leg.ifrTime.trim(),
-        nightTime: leg.nightTime.trim(),
-        serviceTime: leg.serviceTime.trim(),
-        distance: leg.distance.trim(),
-      })),
-      risk: {
-        commentsMd: commentsMd.trim(),
-        dangerMd: dangerMd.trim(),
-        riskMd: riskMd.trim(),
-        managementMd: managementMd.trim(),
-        instructorOpinionMd: instructorOpinionMd.trim(),
-      },
-    };
-
+    const meta = buildFlightMeta();
     const csvPayload = encodeFlightRecord({ meta, telemetryCsv });
+    const telemetryMetrics = telemetryCsv.trim()
+      ? buildFlightTelemetryMetrics({
+          parsed: parseGarminCsv(telemetryCsv),
+          identity: deriveIdentity({
+            meta,
+            studentUserId: studentId,
+            instructorUserId: user.id,
+            aircraftIdent: aircraft.trim() || null,
+          }),
+          meta,
+        })
+      : null;
     const payload = {
       actorUserId: user.id,
       actorRole: user.role,
       studentUserId: studentId,
       instructorUserId: user.id,
-      name: flightName.trim() || `Voo ${flightDate}`,
       source_filename: csvFileName ?? "manual-entry.csv",
       csv_text: csvPayload,
       aircraft_ident: aircraft.trim() || null,
       duration_sec: totals.flightMin > 0 ? totals.flightMin * 60 : null,
+      telemetryMetrics,
     };
 
     if (flightId) {
@@ -658,8 +727,19 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setError(updateErr.message);
         return;
       }
-      if (status === "submitted") onPublished?.(flightId);
-      setSavedMessage(status === "draft" ? "Rascunho atualizado." : "Voo publicado com sucesso.");
+      void dispatchNotificationEvent({
+        eventType: "flight.updated",
+        flightId,
+        dedupeKey: `flight.updated:${flightId}:${Date.now()}`,
+        actorUserId: user.id,
+        data: {
+          aircraft,
+          flightDate,
+          startTime,
+        },
+      });
+      onPublished?.(flightId);
+      setSavedMessage("Alterações salvas.");
       return;
     }
 
@@ -670,16 +750,34 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       return;
     }
     setFlightId(id);
-    if (status === "submitted") onPublished?.(id);
-    setSavedMessage(status === "draft" ? "Rascunho salvo." : "Voo publicado com sucesso.");
+    void dispatchNotificationEvent({
+      eventType: "flight.scheduled",
+      flightId: id,
+      dedupeKey: `flight.scheduled:${id}`,
+      actorUserId: user.id,
+      data: {
+        aircraft,
+        flightDate,
+        startTime,
+      },
+    });
+    onPublished?.(id);
+    setSavedMessage("Voo salvo.");
+  };
+
+  const handleExportPdf = () => {
+    const result = exportFlightFichaPdf({
+      meta: buildFlightMeta(),
+      telemetryCsv,
+      telemetryFileName: csvFileName,
+    });
+    if (!result.ok) setError(result.error ?? "Não foi possível exportar o PDF.");
   };
 
   const goNext = () => setStepIdx((idx) => Math.min(STEPS.length - 1, idx + 1));
   const goPrev = () => setStepIdx((idx) => Math.max(0, idx - 1));
 
   const stepId = STEPS[stepIdx]?.id;
-  const displayInstructorName = initialFlightId ? loadedInstructorName : (instructorProfile?.fullName?.trim() || user?.email || "");
-  const displayInstructorAnac = initialFlightId ? loadedInstructorAnac : (instructorProfile?.anacCode?.trim() || "");
 
   if (loadingExisting) {
     return (
@@ -708,7 +806,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-700/70 bg-slate-900/40 p-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
         {STEPS.map((step, idx) => {
           const isActive = idx === stepIdx;
           const isPast = idx < stepIdx;
@@ -816,31 +914,21 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
               </select>
             </label>
 
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-500">Nome do voo</span>
-              <input
-                type="text"
-                value={flightName}
-                onChange={(e) => setFlightName(e.target.value)}
-                disabled={!canEdit}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
-              />
-            </label>
           </div>
           <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-700/70 bg-slate-950/30 p-3 md:grid-cols-3">
-            <InfoBlock label="Nome completo" value={selectedProfile?.fullName || "—"} />
-            <InfoBlock label="Codigo ANAC" value={selectedProfile?.anacCode || "—"} />
-            <InfoBlock label="Aluno (email)" value={studentLabel || "—"} />
+            <InfoBlock label="Nome completo" value={selectedProfile?.fullName || "—"} plain />
+            <InfoBlock label="Código ANAC" value={selectedProfile?.anacCode || "—"} plain />
+            <InfoBlock label="Aluno selecionado" value={studentLabel || "—"} plain />
           </div>
           <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-700/70 bg-slate-950/30 p-3 md:grid-cols-2">
-            <InfoBlock label="Instrutor (exibição)" value={displayInstructorName} />
-            <InfoBlock label="CANAC instrutor (exibição)" value={displayInstructorAnac} />
+            <InfoBlock label="Instrutor (exibição)" value={displayInstructorName} plain />
+            <InfoBlock label="CANAC instrutor (exibição)" value={displayInstructorAnac} plain />
           </div>
         </section>
       )}
 
       {stepId === "pre-voo" && (
-        <section className="space-y-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4">
+        <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pre voo</p>
           <MarkdownField label="Objetivo da lição" value={objectiveMd} onChange={setObjectiveMd} disabled={!canEdit} />
           <MarkdownField
@@ -860,7 +948,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       )}
 
       {stepId === "pernas" && (
-        <section className="space-y-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4">
+        <section className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pernas</p>
             <button
@@ -958,7 +1046,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
             ))}
           </div>
 
-          <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3 text-xs sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
             <TotalCard label="Pousos" value={String(totals.landings)} />
             <TotalCard label="Tempo de voo" value={formatMinutes(totals.flightMin)} />
             <TotalCard label="Navegação" value={formatMinutes(totals.navMin)} />
@@ -969,8 +1057,76 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         </section>
       )}
 
+      {stepId === "exercicios" && (
+        <section className="space-y-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Exercicios</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Avalie cada exercicio com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
+            </p>
+          </div>
+
+          {exercisesLoading && exerciseGrades.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4 text-sm text-slate-400">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+              Carregando exercicios...
+            </div>
+          ) : exerciseGrades.length === 0 ? (
+            <div className="rounded-xl border border-slate-700/70 bg-slate-900/30 p-6 text-center text-sm text-slate-500">
+              Nenhum exercicio ativo cadastrado no admin.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-slate-700/70 bg-slate-900/30">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-800 text-sm">
+                  <thead className="bg-slate-950/50 text-left text-xs uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Exercicio</th>
+                      <th className="px-3 py-2">Grau</th>
+                      <th className="px-3 py-2">Proficiencia aceitavel</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/80">
+                    {exerciseGrades.map((exercise) => (
+                      <tr key={exercise.exerciseId} className="align-top">
+                        <td className="min-w-56 px-3 py-3 font-medium text-slate-100">{exercise.title}</td>
+                        <td className="min-w-64 px-3 py-3">
+                          <div className="grid grid-cols-5 gap-1">
+                            {GRADE_OPTIONS.map((grade) => {
+                              const selected = exercise.grade === grade;
+                              return (
+                                <button
+                                  key={grade}
+                                  type="button"
+                                  onClick={() => updateExerciseGrade(exercise.exerciseId, grade)}
+                                  disabled={!canEdit}
+                                  className={`h-9 rounded-md border text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                                    selected
+                                      ? "border-sky-400 bg-sky-500 text-white"
+                                      : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
+                                  }`}
+                                >
+                                  {grade}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td className="min-w-96 px-3 py-3 text-xs leading-relaxed text-slate-400">
+                          {exercise.acceptableProficiency || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {stepId === "risco" && (
-        <section className="space-y-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4">
+        <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Risco e parecer</p>
           <MarkdownField label="Comentários" value={commentsMd} onChange={setCommentsMd} minRows={3} disabled={!canEdit} />
           <MarkdownField label="DESCRIÇÃO DO PERIGO" value={dangerMd} onChange={setDangerMd} minRows={3} disabled={!canEdit} />
@@ -995,44 +1151,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         </section>
       )}
 
-      {stepId === "anexos" && (
-        <section className="space-y-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Anexos finais</p>
-          <label className="block">
-            <span className="mb-1 block text-xs text-slate-500">CSV de telemetria</span>
-            <input
-              type="file"
-              accept=".csv,text/csv,text/plain"
-              disabled={!canEdit}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) readCsvFile(f);
-              }}
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-xs file:text-slate-200 disabled:opacity-70"
-            />
-          </label>
-          {csvLoading ? <p className="text-xs text-slate-500">Lendo CSV...</p> : null}
-          {csvFileName ? (
-            <p className="text-xs text-emerald-300">
-              CSV carregado: {csvFileName} ({telemetryCsv.length.toLocaleString("pt-BR")} chars)
-            </p>
-          ) : (
-            <p className="text-xs text-slate-500">Nenhum CSV carregado.</p>
-          )}
-
-          {flightId ? (
-            <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-3">
-              <p className="mb-2 text-xs font-medium text-slate-400">Vídeos do voo</p>
-              <VideosTab flightId={flightId} />
-            </div>
-          ) : (
-            <p className="rounded-lg border border-slate-700/70 bg-slate-950/30 px-3 py-2 text-xs text-slate-500">
-              Salve um rascunho para habilitar upload de vídeos neste voo.
-            </p>
-          )}
-        </section>
-      )}
-
       <div className="sticky bottom-2 flex flex-col gap-3 rounded-xl border border-slate-700/70 bg-slate-900/95 px-4 py-3 backdrop-blur sm:flex-row sm:items-center">
         <button
           type="button"
@@ -1052,26 +1170,23 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           </button>
         ) : null}
         <div className="flex w-full flex-col gap-3 sm:ml-auto sm:w-auto sm:flex-row sm:items-center">
-        {canEdit && (
-          <>
+          <button
+            type="button"
+            onClick={handleExportPdf}
+            className="w-full rounded-lg border border-slate-700 px-5 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 sm:w-auto"
+          >
+            Exportar PDF
+          </button>
+          {canEdit && (
             <button
               type="button"
-              onClick={() => void persist("draft")}
-              disabled={saving}
-              className="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60 sm:w-auto"
-            >
-              {saving ? "💾 Salvando..." : "💾 Salvar rascunho"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void persist("submitted")}
+              onClick={() => void persist()}
               disabled={saving}
               className="w-full rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60 sm:w-auto"
             >
-              {saving ? "✈ Enviando..." : "✈ Enviar voo"}
+              {saving ? "Salvando..." : "Salvar alterações"}
             </button>
-          </>
-        )}
+          )}
         </div>
       </div>
     </div>
@@ -1099,9 +1214,9 @@ function TotalCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function InfoBlock({ label, value }: { label: string; value: string }) {
+function InfoBlock({ label, value, plain = false }: { label: string; value: string; plain?: boolean }) {
   return (
-    <div className="rounded-md border border-slate-700/70 bg-slate-900/40 px-3 py-2">
+    <div className={plain ? "px-1 py-1" : "rounded-md border border-slate-700/70 bg-slate-900/40 px-3 py-2"}>
       <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
       <p className="text-sm font-medium text-slate-100">{value}</p>
     </div>

@@ -50,13 +50,12 @@ module.exports = async ({ req, res, log, error }) => {
 
     const payload = req.bodyJson || {};
     const studentUserId = String(payload.studentUserId || "").trim();
-    const name = String(payload.name || "").trim();
     const sourceFilename = String(payload.source_filename || "").trim();
     const csvText = String(payload.csv_text || "");
     const aircraftIdent = payload.aircraft_ident ? String(payload.aircraft_ident) : null;
     const durationSec = payload.duration_sec == null ? null : Number(payload.duration_sec);
 
-    if (!studentUserId || !name || !sourceFilename || !csvText) {
+    if (!studentUserId || !sourceFilename || !csvText) {
       return jsonResponse(res, 400, { message: "Missing required fields." });
     }
 
@@ -106,7 +105,7 @@ module.exports = async ({ req, res, log, error }) => {
         student_user_id: studentUserId,
         instructor_user_id: userId,
         created_by_role: actorRole,
-        name,
+        name: [aircraftIdent, sourceFilename].filter(Boolean).join(" ") || "Voo",
         source_filename: sourceFilename,
         csv_text: csvFileId ? "" : csvText,
         csv_file_id: csvFileId,

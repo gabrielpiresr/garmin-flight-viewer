@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { renderMarkdownBlocks } from "../../lib/markdown";
+import { dispatchNotificationEvent } from "../../lib/notificationsDb";
 import { createNotice, deleteNotice, listAllNotices, updateNotice } from "../../lib/noticesDb";
 import type { Notice } from "../../types/notice";
 import { Skeleton } from "../ui/Skeleton";
@@ -13,6 +14,7 @@ type EditorForm = {
   ctaUrl: string;
   publishedAtLocal: string;
   isPublished: boolean;
+  sendNotification: boolean;
   bannerFile: File | null;
   removeBanner: boolean;
 };
@@ -24,6 +26,7 @@ const emptyForm: EditorForm = {
   ctaUrl: "",
   publishedAtLocal: "",
   isPublished: true,
+  sendNotification: false,
   bannerFile: null,
   removeBanner: false,
 };
@@ -109,6 +112,7 @@ export function NoticesTab() {
       ctaUrl: notice.ctaUrl ?? "",
       publishedAtLocal: formatInputDateTime(notice.publishedAt),
       isPublished: notice.isPublished,
+      sendNotification: false,
       bannerFile: null,
       removeBanner: false,
     });
@@ -180,6 +184,19 @@ export function NoticesTab() {
 
     setOpenEditor(false);
     setSaving(false);
+    if (form.isPublished && form.sendNotification && result.data) {
+      void dispatchNotificationEvent({
+        eventType: "notice.published",
+        noticeId: result.data.id,
+        dedupeKey: `notice.published:${result.data.id}:${result.data.updatedAt || result.data.publishedAt}`,
+        actorUserId: user.id,
+        data: {
+          title: result.data.title,
+          contentMd: result.data.contentMd,
+          ctaUrl: result.data.ctaUrl,
+        },
+      });
+    }
     showToast({ variant: "success", message: editing ? "Aviso atualizado." : "Aviso criado." });
     await load();
   }
@@ -297,14 +314,35 @@ export function NoticesTab() {
                 ) : null}
               </div>
 
-              <label className="inline-flex items-center gap-2 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={form.isPublished}
-                  onChange={(e) => setForm((prev) => ({ ...prev, isPublished: e.target.checked }))}
-                />
-                Publicado no feed
-              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex items-start gap-2 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={form.isPublished}
+                    onChange={(e) => setForm((prev) => ({ ...prev, isPublished: e.target.checked }))}
+                    className="mt-0.5 shrink-0"
+                  />
+                  <span>
+                    Publicado no feed
+                    <span className="mt-0.5 block text-xs text-slate-500">Exibe o aviso para alunos e instrutores.</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={form.sendNotification}
+                    onChange={(e) => setForm((prev) => ({ ...prev, sendNotification: e.target.checked }))}
+                    disabled={!form.isPublished}
+                    className="mt-0.5 shrink-0"
+                  />
+                  <span>
+                    Disparar email e push ao salvar
+                    <span className="mt-0.5 block text-xs text-slate-500">
+                      Use apenas para avisos novos ou alterações importantes.
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
 
             <div className="space-y-3">
@@ -377,7 +415,7 @@ export function NoticesTab() {
         </section>
       ) : null}
 
-      {loading ? (
+      {!openEditor && loading ? (
         <div className="grid grid-cols-1 gap-3">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/40">
@@ -401,11 +439,11 @@ export function NoticesTab() {
             </div>
           ))}
         </div>
-      ) : notices.length === 0 ? (
+      ) : !openEditor && notices.length === 0 ? (
         <div className="rounded-xl border border-slate-700/40 bg-slate-900/30 p-10 text-center text-sm text-slate-500">
           Nenhum aviso cadastrado.
         </div>
-      ) : (
+      ) : !openEditor ? (
         <div className="grid grid-cols-1 gap-3">
           {notices.map((notice) => (
             <article key={notice.id} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/40">
@@ -451,7 +489,7 @@ export function NoticesTab() {
             </article>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

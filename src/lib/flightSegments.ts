@@ -144,6 +144,26 @@ function findTouchdown(data: ChartRow[], after: number): number | null {
 
 // ─── metrics ─────────────────────────────────────────────────────────────────
 
+/** Index where AGL indicates a climb after touchdown. */
+function findAglClimbAfterTouchdown(
+  data: ChartRow[],
+  touchdownIdx: number,
+  withinMs = 90_000,
+  minAglFt = 100,
+): number | null {
+  const touchdownX = data[touchdownIdx]?.x;
+  if (touchdownX === undefined) return null;
+
+  for (let i = touchdownIdx + 1; i < data.length; i++) {
+    if (data[i]!.x - touchdownX > withinMs) break;
+
+    const agl = get(data[i]!, "heightAglFt");
+    if (agl !== null && agl > minAglFt) return i;
+  }
+
+  return null;
+}
+
 function computeTakeoffMetrics(
   data: ChartRow[],
   points: FlightPoint[],
@@ -159,12 +179,23 @@ function computeTakeoffMetrics(
   let rollStartIdx = rotIdx;
   for (let i = rotIdx; i >= Math.max(0, rotIdx - 120); i--) {
     const gs = get(data[i]!, "gsKt");
-    if (gs !== null && gs < 5) { rollStartIdx = i + 1; break; }
+    if (gs !== null && gs < 10) { rollStartIdx = i + 1; break; }
   }
   const groundRollFt = distanceFtBetween(
     points, chartTimeBaseMs,
     data[rollStartIdx]!.x, data[liftIdx]!.x,
   );
+  const groundRollDurationSec = (data[liftIdx]!.x - data[rollStartIdx]!.x) / 1000;
+
+  const findAglAfter = (thresholdFt: number): number | null => {
+    for (let i = liftIdx; i < Math.min(liftIdx + 900, data.length); i++) {
+      const agl = get(data[i]!, "heightAglFt");
+      if (agl !== null && agl >= thresholdFt) return i;
+    }
+    return null;
+  };
+  const agl100Idx = findAglAfter(100);
+  const agl500Idx = findAglAfter(500);
 
   // Rotation pitch rate (deg/s — CSV is 1 Hz)
   const pitchNow = get(rot, "pitchDeg");
@@ -189,6 +220,9 @@ function computeTakeoffMetrics(
 
   return {
     groundRollFt,
+    groundRollDurationSec,
+    timeToAgl100Sec: agl100Idx !== null ? (data[agl100Idx]!.x - data[rollStartIdx]!.x) / 1000 : null,
+    timeToAgl500Sec: agl500Idx !== null ? (data[agl500Idx]!.x - data[rollStartIdx]!.x) / 1000 : null,
     rotationIasKt: get(rot, "iasKt"),
     rotationPitchRateDs,
     liftoffIasKt: get(lift, "iasKt"),
@@ -199,6 +233,57 @@ function computeTakeoffMetrics(
     at50IasKt,
     at50PitchDeg,
     at50VspdFpm,
+  };
+}
+
+function computeTglTakeoffMetrics(
+  data: ChartRow[],
+  points: FlightPoint[],
+  chartTimeBaseMs: number,
+  touchdownIdx: number,
+  liftIdx: number | null,
+  climbIdx: number,
+): TakeoffMetrics {
+  const liftoffRow = liftIdx !== null ? data[liftIdx]! : data[climbIdx]!;
+  const altAtLiftoff = get(liftoffRow, "gpsAltFt") ?? get(data[touchdownIdx]!, "gpsAltFt") ?? 0;
+  const ftIdx = liftIdx !== null ? find50ft(data, liftIdx, altAtLiftoff) ?? climbIdx : climbIdx;
+  const rollEndIdx = liftIdx ?? climbIdx;
+
+  const findAglAfter = (thresholdFt: number): number | null => {
+    for (let i = touchdownIdx; i < Math.min(touchdownIdx + 900, data.length); i++) {
+      const agl = get(data[i]!, "heightAglFt");
+      if (agl !== null && agl >= thresholdFt) return i;
+    }
+    return null;
+  };
+  const agl100Idx = findAglAfter(100);
+  const agl500Idx = findAglAfter(500);
+
+  return {
+    groundRollFt: distanceFtBetween(
+      points,
+      chartTimeBaseMs,
+      data[touchdownIdx]!.x,
+      data[rollEndIdx]!.x,
+    ),
+    groundRollDurationSec: (data[rollEndIdx]!.x - data[touchdownIdx]!.x) / 1000,
+    timeToAgl100Sec: agl100Idx !== null ? (data[agl100Idx]!.x - data[touchdownIdx]!.x) / 1000 : null,
+    timeToAgl500Sec: agl500Idx !== null ? (data[agl500Idx]!.x - data[touchdownIdx]!.x) / 1000 : null,
+    rotationIasKt: null,
+    rotationPitchRateDs: null,
+    liftoffIasKt: get(liftoffRow, "iasKt"),
+    rpmAtLiftoff: get(liftoffRow, "rpm"),
+    mapAtLiftoff: get(liftoffRow, "mapInHg"),
+    fuelFlowAtLiftoff: get(liftoffRow, "fuelFlowGph"),
+    at50DistFromRotFt: distanceFtBetween(
+      points,
+      chartTimeBaseMs,
+      data[touchdownIdx]!.x,
+      data[ftIdx]!.x,
+    ),
+    at50IasKt: get(data[ftIdx]!, "iasKt"),
+    at50PitchDeg: get(data[ftIdx]!, "pitchDeg"),
+    at50VspdFpm: get(data[ftIdx]!, "vertSpeedFpm"),
   };
 }
 
@@ -279,14 +364,18 @@ function computeLandingMetrics(
 
   // Touchdown metrics
   const tdIasKt = get(td, "iasKt");
+  const tdGsKt = get(td, "gsKt");
+  const tdVertSpeedFpm = get(td, "vertSpeedFpm");
   const tdPitchDeg = get(td, "pitchDeg");
   const normG = get(td, "normG");
-  const tdImpactG = normG !== null ? normG - 1.0 : null;
+  const tdImpactG = normG;
   let tdImpactLabel: 'Low' | 'Medium' | 'High' | null = null;
-  if (tdImpactG !== null) {
-    if (tdImpactG < 0.3) tdImpactLabel = 'Low';
-    else if (tdImpactG < 0.6) tdImpactLabel = 'Medium';
-    else tdImpactLabel = 'High';
+  if ((tdImpactG !== null && tdImpactG > 1.6) || (tdVertSpeedFpm !== null && tdVertSpeedFpm < -400)) {
+    tdImpactLabel = 'High';
+  } else if ((tdImpactG !== null && tdImpactG > 1.3) || (tdVertSpeedFpm !== null && tdVertSpeedFpm < -200)) {
+    tdImpactLabel = 'Medium';
+  } else if (tdImpactG !== null || tdVertSpeedFpm !== null) {
+    tdImpactLabel = 'Low';
   }
 
   const hdg = get(td, "hdgMag");
@@ -332,6 +421,8 @@ function computeLandingMetrics(
     flareDistFt,
     pitchOscillations,
     tdIasKt,
+    tdGsKt,
+    tdVertSpeedFpm,
     tdPitchDeg,
     tdImpactG,
     tdImpactLabel,
@@ -388,16 +479,53 @@ export function detectFlightSegments(
     }
   }
 
+  let touchdownSearchFrom = 0;
+  while (touchdownSearchFrom < data.length) {
+    const tdIdx = findTouchdown(data, touchdownSearchFrom);
+    if (tdIdx === null) break;
+    if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
+      touchdowns.push({ tdIdx });
+    }
+    touchdownSearchFrom = tdIdx + 5;
+  }
+  touchdowns.sort((a, b) => a.tdIdx - b.tdIdx);
+  const uniqueTouchdowns: TouchdownGroup[] = [];
+  touchdowns.forEach((td) => {
+    const duplicate = uniqueTouchdowns.some(
+      (seen) => Math.abs(data[td.tdIdx]!.x - data[seen.tdIdx]!.x) < 30_000,
+    );
+    if (!duplicate) {
+      uniqueTouchdowns.push(td);
+    }
+  });
+  touchdowns.length = 0;
+  touchdowns.push(...uniqueTouchdowns);
+
   const usedTd = new Set<number>();
-  // Takeoff indices that are the second leg of a TGL (skip standalone takeoff, still build landing)
+  // Takeoffs that are part of a TGL segment should not appear as standalone takeoffs.
   const consumedTakeoffs = new Set<number>();
+
+  function pushLandingSegment(id: string, tdIdx: number) {
+    const tdStartX = Math.max(0, data[tdIdx]!.x - 300 * ONE_SEC);
+    const tdEndX = Math.min(data[data.length - 1]!.x, data[tdIdx]!.x + 30 * ONE_SEC);
+    segments.push({
+      id,
+      type: "landing",
+      label: `Pouso ${formatTimeFromX(data[tdIdx]!.x, chartTimeBaseMs!)}`,
+      startX: tdStartX,
+      endX: tdEndX,
+      events: [
+        { type: "touchdown", xMs: data[tdIdx]!.x, label: "Touchdown", color: COLORS.touchdown, rowIdx: tdIdx },
+      ],
+      landingMetrics: computeLandingMetrics(data, points, chartTimeBaseMs!, tdIdx),
+    });
+  }
 
   takeoffs.forEach((to, ti) => {
     // Find first unused touchdown after this liftoff
     const paired = touchdowns.find((td) => !usedTd.has(td.tdIdx) && td.tdIdx > to.liftIdx);
     if (paired) usedTd.add(paired.tdIdx);
 
-    // If this takeoff was the go-around leg of a TGL, only emit the final landing
     if (consumedTakeoffs.has(ti)) {
       if (paired) {
         pushLanding(ti);
@@ -406,30 +534,49 @@ export function detectFlightSegments(
     }
 
     const nextTo = takeoffs[ti + 1];
+    const climbAfterTouchdownIdx =
+      paired !== undefined ? findAglClimbAfterTouchdown(data, paired.tdIdx) : null;
     const isTgl =
       paired !== undefined &&
-      nextTo !== undefined &&
-      (nextTo.rotIdx - paired.tdIdx) < 90;
+      climbAfterTouchdownIdx !== null;
 
-    if (isTgl && paired && nextTo) {
-      // Mark the next takeoff as consumed (it's the go-around leg)
-      consumedTakeoffs.add(ti + 1);
+    if (isTgl && paired && climbAfterTouchdownIdx !== null) {
+      const nextTglTakeoff =
+        nextTo !== undefined &&
+        nextTo.rotIdx > paired.tdIdx &&
+        data[nextTo.rotIdx]!.x - data[paired.tdIdx]!.x <= 90_000
+          ? nextTo
+          : undefined;
+      if (nextTglTakeoff !== undefined) {
+        consumedTakeoffs.add(ti + 1);
+      }
 
-      const nextLiftIdx = nextTo.liftIdx;
-      const nextAlt = get(data[nextLiftIdx]!, "gpsAltFt") ?? 0;
-      const nextFtIdx = find50ft(data, nextLiftIdx, nextAlt);
+      const nextLiftIdx = nextTglTakeoff?.liftIdx ?? findLiftoff(data, paired.tdIdx);
+      const nextAlt = nextLiftIdx !== null ? get(data[nextLiftIdx]!, "gpsAltFt") ?? 0 : 0;
+      const nextFtIdx =
+        nextLiftIdx !== null ? find50ft(data, nextLiftIdx, nextAlt) : climbAfterTouchdownIdx;
+      const segmentEndIdx = nextLiftIdx ?? climbAfterTouchdownIdx;
 
-      const startX = Math.max(0, data[to.rotIdx]!.x - 30 * ONE_SEC);
-      const endX = Math.min(data[data.length - 1]!.x, data[nextLiftIdx]!.x + 240 * ONE_SEC);
+      const startX = Math.max(0, data[paired.tdIdx]!.x - 300 * ONE_SEC);
+      const endX = Math.min(data[data.length - 1]!.x, data[segmentEndIdx]!.x + 240 * ONE_SEC);
 
       const events: FlightEvent[] = [
-        { type: "rotation", xMs: data[to.rotIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: to.rotIdx },
-        { type: "liftoff",  xMs: data[to.liftIdx]!.x, label: "Liftoff",  color: COLORS.liftoff,  rowIdx: to.liftIdx },
-        ...(to.ftIdx !== null ? [{ type: "50ft" as const, xMs: data[to.ftIdx]!.x, label: "50 ft", color: COLORS["50ft"], rowIdx: to.ftIdx }] : []),
         { type: "touchdown", xMs: data[paired.tdIdx]!.x, label: "Touchdown", color: COLORS.touchdown, rowIdx: paired.tdIdx },
-        { type: "rotation", xMs: data[nextTo.rotIdx]!.x, label: "Rotation 2", color: COLORS.rotation, rowIdx: nextTo.rotIdx },
-        { type: "liftoff",  xMs: data[nextTo.liftIdx]!.x, label: "Liftoff 2", color: COLORS.liftoff,  rowIdx: nextTo.liftIdx },
-        ...(nextFtIdx !== null ? [{ type: "50ft" as const, xMs: data[nextFtIdx]!.x, label: "50 ft 2", color: COLORS["50ft"], rowIdx: nextFtIdx }] : []),
+        ...(nextTglTakeoff !== undefined
+          ? [{ type: "rotation" as const, xMs: data[nextTglTakeoff.rotIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: nextTglTakeoff.rotIdx }]
+          : []),
+        ...(nextLiftIdx !== null
+          ? [{ type: "liftoff" as const, xMs: data[nextLiftIdx]!.x, label: "Liftoff", color: COLORS.liftoff, rowIdx: nextLiftIdx }]
+          : []),
+        ...(nextFtIdx !== null
+          ? [{
+              type: "50ft" as const,
+              xMs: data[nextFtIdx]!.x,
+              label: nextLiftIdx !== null ? "50 ft" : "AGL > 100 ft",
+              color: COLORS["50ft"],
+              rowIdx: nextFtIdx,
+            }]
+          : []),
       ];
 
       segments.push({
@@ -439,48 +586,50 @@ export function detectFlightSegments(
         startX,
         endX,
         events,
-        takeoffMetrics: computeTakeoffMetrics(data, points, chartTimeBaseMs, to.rotIdx, to.liftIdx, to.ftIdx),
+        takeoffMetrics:
+          nextTglTakeoff !== undefined
+            ? computeTakeoffMetrics(data, points, chartTimeBaseMs, nextTglTakeoff.rotIdx, nextTglTakeoff.liftIdx, nextTglTakeoff.ftIdx)
+            : computeTglTakeoffMetrics(data, points, chartTimeBaseMs, paired.tdIdx, nextLiftIdx, climbAfterTouchdownIdx),
         landingMetrics: computeLandingMetrics(data, points, chartTimeBaseMs, paired.tdIdx),
       });
-    } else {
-      // Standalone takeoff
-      const startX = Math.max(0, data[to.rotIdx]!.x - 30 * ONE_SEC);
-      const endX = Math.min(data[data.length - 1]!.x, data[to.rotIdx]!.x + 240 * ONE_SEC);
 
-      segments.push({
-        id: `takeoff-${ti}`,
-        type: "takeoff",
-        label: `Decolagem ${formatTimeFromX(data[to.rotIdx]!.x, chartTimeBaseMs)}`,
-        startX,
-        endX,
-        events: [
-          { type: "rotation", xMs: data[to.rotIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: to.rotIdx },
-          { type: "liftoff",  xMs: data[to.liftIdx]!.x, label: "Liftoff",  color: COLORS.liftoff,  rowIdx: to.liftIdx },
-          ...(to.ftIdx !== null ? [{ type: "50ft" as const, xMs: data[to.ftIdx]!.x, label: "50 ft", color: COLORS["50ft"], rowIdx: to.ftIdx }] : []),
-        ],
-        takeoffMetrics: computeTakeoffMetrics(data, points, chartTimeBaseMs, to.rotIdx, to.liftIdx, to.ftIdx),
-      });
+      pushTakeoff(ti, to);
+    } else {
+      pushTakeoff(ti, to);
 
       if (paired) {
         pushLanding(ti);
       }
     }
 
+    function pushTakeoff(idx: number, takeoff: TakeoffGroup) {
+      const startX = Math.max(0, data[takeoff.rotIdx]!.x - 30 * ONE_SEC);
+      const endX = Math.min(data[data.length - 1]!.x, data[takeoff.rotIdx]!.x + 240 * ONE_SEC);
+
+      segments.push({
+        id: `takeoff-${idx}`,
+        type: "takeoff",
+        label: `Decolagem ${formatTimeFromX(data[takeoff.rotIdx]!.x, chartTimeBaseMs!)}`,
+        startX,
+        endX,
+        events: [
+          { type: "rotation", xMs: data[takeoff.rotIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: takeoff.rotIdx },
+          { type: "liftoff",  xMs: data[takeoff.liftIdx]!.x, label: "Liftoff",  color: COLORS.liftoff,  rowIdx: takeoff.liftIdx },
+          ...(takeoff.ftIdx !== null ? [{ type: "50ft" as const, xMs: data[takeoff.ftIdx]!.x, label: "50 ft", color: COLORS["50ft"], rowIdx: takeoff.ftIdx }] : []),
+        ],
+        takeoffMetrics: computeTakeoffMetrics(data, points, chartTimeBaseMs!, takeoff.rotIdx, takeoff.liftIdx, takeoff.ftIdx),
+      });
+    }
+
     function pushLanding(idx: number) {
       if (!paired) return;
-      const tdStartX = Math.max(0, data[paired.tdIdx]!.x - 300 * ONE_SEC);
-      const tdEndX = Math.min(data[data.length - 1]!.x, data[paired.tdIdx]!.x + 30 * ONE_SEC);
-      segments.push({
-        id: `landing-${idx}`,
-        type: "landing",
-        label: `Pouso ${formatTimeFromX(data[paired.tdIdx]!.x, chartTimeBaseMs!)}`,
-        startX: tdStartX,
-        endX: tdEndX,
-        events: [
-          { type: "touchdown", xMs: data[paired.tdIdx]!.x, label: "Touchdown", color: COLORS.touchdown, rowIdx: paired.tdIdx },
-        ],
-        landingMetrics: computeLandingMetrics(data, points, chartTimeBaseMs!, paired.tdIdx),
-      });
+      pushLandingSegment(`landing-${idx}`, paired.tdIdx);
+    }
+  });
+
+  touchdowns.forEach((td, idx) => {
+    if (!usedTd.has(td.tdIdx)) {
+      pushLandingSegment(`landing-extra-${idx}`, td.tdIdx);
     }
   });
 

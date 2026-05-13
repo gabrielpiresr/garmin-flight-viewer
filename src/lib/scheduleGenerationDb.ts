@@ -224,7 +224,6 @@ async function listExistingGeneratedFlights(
       date: meta.header.date,
       startTime: meta.header.startTime ?? "06:00",
       durationHours,
-      name: row.name,
       sourceFilename: row.source_filename,
     });
   }

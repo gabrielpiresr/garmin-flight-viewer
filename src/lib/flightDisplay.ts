@@ -16,7 +16,6 @@ export type FlightDisplayInfo = {
   totalFlightMinutes: number;
   totalMiles: string;
   telemetryOk: boolean;
-  status: "draft" | "submitted";
   instructorSuggestionMd: string;
   studentSuggestionMd: string;
 };
@@ -69,8 +68,14 @@ export function getFlightDateTimeMs(item: SavedFlightListItem, info?: FlightDisp
 }
 
 export function isFutureFlight(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
-  const iso = info?.flightDateIso ?? item.flight_date ?? (item.created_at ?? "").slice(0, 10);
-  return iso >= new Date().toISOString().slice(0, 10);
+  return getFlightDateTimeMs(item, info) > Date.now();
+}
+
+export function isCompletedFlight(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
+  const totalFlightMinutes =
+    info?.totalFlightMinutes ??
+    (typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0);
+  return totalFlightMinutes > 0 && (info?.landings ?? 0) > 0;
 }
 
 export function buildFlightDisplayInfo(
@@ -98,7 +103,6 @@ export function buildFlightDisplayInfo(
     totalFlightMinutes: typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0,
     totalMiles: "0.0",
     telemetryOk: false,
-    status: "submitted",
     instructorSuggestionMd: "",
     studentSuggestionMd: "",
   };
@@ -140,7 +144,6 @@ export function buildFlightDisplayInfo(
     totalFlightMinutes,
     totalMiles: totalMiles.toFixed(1),
     telemetryOk: decoded.telemetryCsv.trim().length > 0,
-    status: meta.status === "draft" ? "draft" : "submitted",
     instructorSuggestionMd: meta.preFlight.instructorSuggestionMd ?? "",
     studentSuggestionMd: meta.preFlight.studentSuggestionMd ?? "",
   };

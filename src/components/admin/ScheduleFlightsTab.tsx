@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
+import { dispatchNotificationEvent } from "../../lib/notificationsDb";
 import { detectFlightConflicts, type ConflictFlightDraft, type DetectedFlightConflict } from "../../lib/scheduleConflicts";
 import {
   AUTO_SOURCE_PREFIX,
@@ -100,7 +101,6 @@ function parseStartHour(startTime: string): number {
 function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: InstructorIdentity | null): FlightRecordMeta {
   const weekDate = weekDateFromStart(weekStart, draft.dayOfWeek);
   return {
-    status: "draft",
     schedule: {
       version: "AUTO_SCHEDULE_V1",
       weekStart,
@@ -682,7 +682,6 @@ export function ScheduleFlightsTab() {
         actorRole: user.role,
         studentUserId: formDraft.studentId,
         instructorUserId: formDraft.instructorId,
-        name: "Voo agendado",
         source_filename: sourceFilename,
         csv_text: csvText,
         aircraft_ident: formDraft.aircraftRegistration,
@@ -692,10 +691,34 @@ export function ScheduleFlightsTab() {
       if (formMode === "edit" && formDraft.id) {
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
+        void dispatchNotificationEvent({
+          eventType: "flight.updated",
+          flightId: formDraft.id,
+          dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
+          actorUserId: user.id,
+          data: {
+            aircraft: formDraft.aircraftRegistration,
+            flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
+            startTime: hoursToHHMM(formDraft.startHour),
+          },
+        });
         showToast({ variant: "success", message: "Voo atualizado com sucesso." });
       } else {
         const result = await insertFlight(payload);
         if (result.error) throw result.error;
+        if (result.id) {
+          void dispatchNotificationEvent({
+            eventType: "flight.scheduled",
+            flightId: result.id,
+            dedupeKey: `flight.scheduled:${result.id}`,
+            actorUserId: user.id,
+            data: {
+              aircraft: formDraft.aircraftRegistration,
+              flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
+              startTime: hoursToHHMM(formDraft.startHour),
+            },
+          });
+        }
         showToast({ variant: "success", message: "Voo criado com sucesso." });
       }
       setFormDraft(null);
@@ -710,11 +733,22 @@ export function ScheduleFlightsTab() {
   }
 
   async function handleDeleteFlight(row: ExistingScheduledFlight) {
-    if (!window.confirm(`Excluir o voo "${row.name}"?`)) return;
+    if (!window.confirm("Excluir este voo?")) return;
     setError(null);
     try {
       const result = await deleteSavedFlight(row.id);
       if (result.error) throw result.error;
+      void dispatchNotificationEvent({
+        eventType: "flight.cancelled",
+        dedupeKey: `flight.cancelled:${row.id}:${Date.now()}`,
+        recipientUserIds: [row.studentId, row.instructorId].filter((id): id is string => Boolean(id)),
+        actorUserId: user?.id ?? null,
+        data: {
+          aircraft: row.aircraftRegistration,
+          flightDate: row.date,
+          startTime: row.startTime,
+        },
+      });
       showToast({ variant: "success", message: "Voo excluído com sucesso." });
       if (selectedWeekStart) await loadWeek(selectedWeekStart);
     } catch (e) {

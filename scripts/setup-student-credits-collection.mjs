@@ -114,6 +114,7 @@ async function configureCredits(databaseId, collectionId) {
   await attr(() => db.createStringAttribute(databaseId, collectionId, "expires_at", 10, true), "expires_at");
   await attr(() => db.createFloatAttribute(databaseId, collectionId, "amount_paid", true), "amount_paid");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "payment_method", 64, true), "payment_method");
+  await attr(() => db.createIntegerAttribute(databaseId, collectionId, "payment_installments", false), "payment_installments");
   await attr(() => db.createIntegerAttribute(databaseId, collectionId, "validity_days", true), "validity_days");
   await attr(() => db.createFloatAttribute(databaseId, collectionId, "hours", true), "hours");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "notes", 1024, false), "notes");

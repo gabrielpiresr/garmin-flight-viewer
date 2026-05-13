@@ -7,6 +7,7 @@ export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | und
 export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
 export const ADMIN_USERS_FUNCTION_ID = import.meta.env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID as string | undefined;
+export const WEB_PUSH_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY as string | undefined;
 
 // Admin — frota e configuração operacional
 export const SCHOOL_ID = import.meta.env.VITE_SCHOOL_ID as string | undefined;
@@ -19,8 +20,25 @@ export const OP_WEEKS_COL_ID = import.meta.env.VITE_APPWRITE_OP_WEEKS_COL_ID as 
 // Student planning collections
 export const WEEKLY_PLANS_COL_ID = import.meta.env.VITE_APPWRITE_WEEKLY_PLANS_COL_ID as string | undefined;
 export const NOTICES_COL_ID = import.meta.env.VITE_APPWRITE_NOTICES_COL_ID as string | undefined;
+export const MANEUVERS_SECTIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID as string | undefined) ?? "6a0461a3001603e99577";
+export const MANEUVERS_SUBSECTIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID as string | undefined) ?? "6a0461c5002ac4794ec4";
+export const MANEUVERS_ARTICLES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID as string | undefined) ?? "6a0461d0001a1ceefdad";
+export const MANEUVERS_MEDIA_BUCKET_ID =
+  (import.meta.env.VITE_APPWRITE_MANEUVERS_MEDIA_BUCKET_ID as string | undefined) ?? BUCKET_ID;
 export const INSTRUCTOR_PREFS_COL_ID = import.meta.env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID as string | undefined;
 export const STUDENT_CREDITS_COL_ID = import.meta.env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID as string | undefined;
+export const PLATFORM_SETTINGS_COL_ID = import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID as string | undefined;
+export const PUSH_SUBSCRIPTIONS_COL_ID = import.meta.env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID as string | undefined;
+export const NOTIFICATION_DELIVERIES_COL_ID = import.meta.env
+  .VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID as string | undefined;
+export const FLIGHT_TELEMETRY_SUMMARIES_COL_ID = import.meta.env
+  .VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID as string | undefined;
+export const FLIGHT_LANDINGS_COL_ID = import.meta.env.VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID as string | undefined;
+export const FLIGHT_TAKEOFFS_COL_ID = import.meta.env.VITE_APPWRITE_FLIGHT_TAKEOFFS_COL_ID as string | undefined;
+export const TRAINING_EXERCISES_COL_ID = import.meta.env.VITE_APPWRITE_TRAINING_EXERCISES_COL_ID as string | undefined;
 
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 

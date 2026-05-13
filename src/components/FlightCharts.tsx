@@ -19,15 +19,7 @@ import {
   type ChartRow,
 } from "../lib/telemetryCharts";
 
-// Fewer points = much faster render & hover updates (600 is plenty for visual fidelity)
-const MAX_CHART_POINTS = 600;
 const CHART_SYNC_ID = "telemetry-sync";
-
-function downsample(data: ChartRow[], maxPoints: number): ChartRow[] {
-  if (data.length <= maxPoints) return data;
-  const step = (data.length - 1) / (maxPoints - 1);
-  return Array.from({ length: maxPoints }, (_, i) => data[Math.round(i * step)]!);
-}
 
 function formatX(v: number, hasTime: boolean, chartTimeBaseMs: number | null) {
   if (hasTime && chartTimeBaseMs != null) {
@@ -53,6 +45,32 @@ function formatX(v: number, hasTime: boolean, chartTimeBaseMs: number | null) {
   return `#${Math.round(v)}`;
 }
 
+function formatTooltipX(v: number, hasTime: boolean, chartTimeBaseMs: number | null) {
+  if (hasTime && chartTimeBaseMs != null) {
+    try {
+      return new Date(chartTimeBaseMs + v).toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      return String(v);
+    }
+  }
+  if (hasTime) {
+    try {
+      return new Date(v).toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      return String(v);
+    }
+  }
+  return `#${Math.round(v)}`;
+}
+
 type BaseProps = {
   chartData: ChartRow[];
   hasTime: boolean;
@@ -62,8 +80,10 @@ type BaseProps = {
 
 type Props = BaseProps & {
   onHoverX?: (x: number | null) => void;
+  onXDomainChange?: (domain: [number, number] | null) => void;
   /** Domínio [xMin, xMax] derivado dos bounds do mapa; null = mostrar tudo. */
   xDomain?: [number, number] | null;
+  fullXDomain?: [number, number] | null;
   /** Janela de foco (ex.: trecho selecionado) para realce e escala Y. */
   focusDomain?: [number, number] | null;
   /** Eventos de voo para marcar com linhas pontilhadas. */
@@ -105,6 +125,10 @@ function focusedKey(key: string): string {
   return `${key}__focus`;
 }
 
+function sourceKey(key: string): string {
+  return key.endsWith("__focus") ? key.slice(0, -"__focus".length) : key;
+}
+
 function defaultHiddenForPanel(panelId: string, keys: string[]): Set<string> {
   if (panelId === "alt") {
     if (keys.includes("gpsAltFt")) return new Set(keys.filter((k) => k !== "gpsAltFt"));
@@ -124,12 +148,14 @@ export const FlightCharts = memo(function FlightCharts({
   chartTimeBaseMs,
   resolved,
   onHoverX,
+  onXDomainChange,
   xDomain,
+  fullXDomain,
   focusDomain,
   events,
 }: Props) {
   const resolvedMap = useMemo(() => new Map(Object.entries(resolved)), [resolved]);
-  const displayData = useMemo(() => downsample(chartData, MAX_CHART_POINTS), [chartData]);
+  const displayData = chartData;
   const panels = useMemo(
     () => TELEMETRY_PANELS.filter((p) => panelHasData(p, displayData, resolvedMap)),
     [displayData, resolvedMap],
@@ -194,7 +220,9 @@ export const FlightCharts = memo(function FlightCharts({
             hasTime={hasTime}
             chartTimeBaseMs={chartTimeBaseMs}
             onHoverX={onHoverX}
+            onXDomainChange={onXDomainChange}
             xDomain={xDomain}
+            fullXDomain={fullXDomain}
             focusDomain={focusDomain}
             events={events}
             onPanelChange={(nextPanelId) => {
@@ -220,7 +248,9 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
   hasTime,
   chartTimeBaseMs,
   onHoverX,
+  onXDomainChange,
   xDomain,
+  fullXDomain,
   focusDomain,
   events,
   onPanelChange,
@@ -233,17 +263,32 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
   hasTime: boolean;
   chartTimeBaseMs: number | null;
   onHoverX?: (x: number | null) => void;
+  onXDomainChange?: (domain: [number, number] | null) => void;
   xDomain?: [number, number] | null;
+  fullXDomain?: [number, number] | null;
   focusDomain?: [number, number] | null;
   events?: FlightEvent[];
   onPanelChange: (panelId: string) => void;
 }) {
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const lastHoverIndex = useRef<number | null>(null);
-  const keys = panel.seriesKeys.filter((k) => resolvedMap.has(k));
+  const chartShellRef = useRef<HTMLDivElement | null>(null);
+  const xDomainRef = useRef<[number, number] | null | undefined>(xDomain);
+  const fullXDomainRef = useRef<[number, number] | null | undefined>(fullXDomain);
+  const onXDomainChangeRef = useRef<typeof onXDomainChange>(onXDomainChange);
+  const wheelFrameRef = useRef<number | null>(null);
+  const wheelDeltaRef = useRef(0);
+  const wheelClientXRef = useRef<number | null>(null);
+  const keys = useMemo(
+    () => panel.seriesKeys.filter((k) => resolvedMap.has(k)),
+    [panel.seriesKeys, resolvedMap],
+  );
   useEffect(() => {
     setHiddenKeys(defaultHiddenForPanel(panel.id, keys));
-  }, [panel.id, keys]);
+  }, [panel.id]);
+  useEffect(() => { xDomainRef.current = xDomain; }, [xDomain]);
+  useEffect(() => { fullXDomainRef.current = fullXDomain; }, [fullXDomain]);
+  useEffect(() => { onXDomainChangeRef.current = onXDomainChange; }, [onXDomainChange]);
   const visibleKeys = keys.filter((k) => !hiddenKeys.has(k));
   const yDomain = useMemo(
     () => calcYDomain(displayData, visibleKeys, focusDomain ?? xDomain ?? null),
@@ -270,6 +315,68 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
       return next;
     });
   };
+
+  useEffect(() => {
+    const el = chartShellRef.current;
+    if (!el) return undefined;
+
+    const applyWheelZoom = () => {
+      wheelFrameRef.current = null;
+      const full = fullXDomainRef.current;
+      const onChange = onXDomainChangeRef.current;
+      if (!full || !onChange) return;
+
+      const [fullMin, fullMax] = full;
+      const fullSpan = fullMax - fullMin;
+      if (fullSpan <= 0) return;
+
+      const current = xDomainRef.current ?? full;
+      const currentSpan = current[1] - current[0];
+      const rect = el.getBoundingClientRect();
+      const clientX = wheelClientXRef.current ?? (rect.left + rect.width / 2);
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      const anchor = current[0] + currentSpan * ratio;
+      const factor = Math.exp(wheelDeltaRef.current * 0.0015);
+      wheelDeltaRef.current = 0;
+      const nextSpan = Math.min(fullSpan, Math.max(fullSpan / 300, currentSpan * factor));
+
+      if (nextSpan >= fullSpan * 0.75) {
+        onChange(null);
+        return;
+      }
+
+      let nextMin = anchor - nextSpan * ratio;
+      let nextMax = nextMin + nextSpan;
+      if (nextMin < fullMin) {
+        nextMin = fullMin;
+        nextMax = fullMin + nextSpan;
+      }
+      if (nextMax > fullMax) {
+        nextMax = fullMax;
+        nextMin = fullMax - nextSpan;
+      }
+      onChange([nextMin, nextMax]);
+    };
+
+    const handleNativeWheel = (event: WheelEvent) => {
+      if (!fullXDomainRef.current || !onXDomainChangeRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      wheelDeltaRef.current += event.deltaY;
+      wheelClientXRef.current = event.clientX;
+      if (wheelFrameRef.current === null) {
+        wheelFrameRef.current = window.requestAnimationFrame(applyWheelZoom);
+      }
+    };
+
+    el.addEventListener("wheel", handleNativeWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", handleNativeWheel);
+      if (wheelFrameRef.current !== null) {
+        window.cancelAnimationFrame(wheelFrameRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-700 bg-slate-950/40 p-2">
@@ -300,7 +407,7 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
           ))}
         </div>
       )}
-      <div className="min-h-0 flex-1">
+      <div ref={chartShellRef} className="min-h-0 flex-1 overscroll-contain">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={decoratedData}
@@ -336,7 +443,7 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
                 borderRadius: 8,
                 fontSize: 12,
               }}
-              labelFormatter={(v) => formatX(Number(v), hasTime, chartTimeBaseMs)}
+              labelFormatter={(v) => formatTooltipX(Number(v), hasTime, chartTimeBaseMs)}
               formatter={(value: number, name: string) => {
                 const label = typeof name === "string" ? labelForKey(name) : name;
                 const n = typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : String(value);
@@ -345,15 +452,18 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
             />
             <Legend
               wrapperStyle={{ fontSize: 11 }}
-              onClick={(e) => { if (typeof e.dataKey === "string") toggleKey(e.dataKey); }}
-              formatter={(value) => (
-                <span
-                  className="cursor-pointer"
-                  style={{ color: hiddenKeys.has(value) ? "#475569" : "#94a3b8" }}
-                >
-                  {labelForKey(value)}
-                </span>
-              )}
+              onClick={(e) => { if (typeof e.dataKey === "string") toggleKey(sourceKey(e.dataKey)); }}
+              formatter={(value) => {
+                const key = sourceKey(String(value));
+                return (
+                  <span
+                    className="cursor-pointer"
+                    style={{ color: hiddenKeys.has(key) ? "#475569" : "#94a3b8" }}
+                  >
+                    {labelForKey(key)}
+                  </span>
+                );
+              }}
             />
             {keys.map((k) =>
               focusDomain ? (

@@ -26,7 +26,7 @@ function formatCurrency(value: number): string {
 
 function MetricCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-lg border border-slate-700/60 bg-slate-950/35 p-3">
+    <div className="border-l border-slate-700/70 pl-3">
       <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-1 text-xl font-semibold text-slate-100">{value}</p>
       {hint ? <p className="mt-0.5 text-xs text-slate-500">{hint}</p> : null}
@@ -44,7 +44,7 @@ export function CreditStatementView({
   const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0;
 
   return (
-    <section className="space-y-4 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4">
+    <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">{title}</p>
@@ -55,7 +55,7 @@ export function CreditStatementView({
         </span>
       </div>
 
-      <div className={`grid gap-3 ${compact ? "md:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-5"}`}>
+      <div className={`grid gap-4 border-y border-slate-800 py-3 ${compact ? "md:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-5"}`}>
         <MetricCard label="Saldo disponível" value={formatHours(statement.totals.availableHours)} />
         <MetricCard label="Horas compradas" value={formatHours(statement.totals.purchasedHours)} />
         <MetricCard label="Horas consumidas" value={formatHours(statement.totals.consumedHours)} />
@@ -70,23 +70,31 @@ export function CreditStatementView({
       ) : null}
 
       {statement.summaries.length > 0 ? (
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="overflow-x-auto rounded-lg border border-slate-800">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2 font-medium">Modelo</th>
+                <th className="px-3 py-2 font-medium">Disponível</th>
+                <th className="px-3 py-2 font-medium">Compradas</th>
+                <th className="px-3 py-2 font-medium">Saídas</th>
+                <th className="px-3 py-2 font-medium">Vencidas</th>
+                <th className="px-3 py-2 font-medium">Pendentes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
           {statement.summaries.map((summary) => (
-            <div key={summary.aircraftModelId} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <h4 className="text-sm font-semibold text-slate-100">{summary.aircraftModelName}</h4>
-                <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300">
-                  {formatHours(summary.availableHours)} disponíveis
-                </span>
-              </div>
-              <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-4">
-                <span>Compradas: {formatHours(summary.purchasedHours)}</span>
-                <span>Saídas: {formatHours(summary.consumedHours)}</span>
-                <span>Vencidas: {formatHours(summary.expiredHours)}</span>
-                <span>Pendentes: {formatHours(summary.unallocatedFlightHours)}</span>
-              </div>
-            </div>
+            <tr key={summary.aircraftModelId} className="text-slate-300">
+              <td className="px-3 py-2 font-medium text-slate-100">{summary.aircraftModelName}</td>
+              <td className="px-3 py-2 text-emerald-300">{formatHours(summary.availableHours)}</td>
+              <td className="px-3 py-2">{formatHours(summary.purchasedHours)}</td>
+              <td className="px-3 py-2">{formatHours(summary.consumedHours)}</td>
+              <td className="px-3 py-2">{formatHours(summary.expiredHours)}</td>
+              <td className="px-3 py-2">{formatHours(summary.unallocatedFlightHours)}</td>
+            </tr>
           ))}
+            </tbody>
+          </table>
         </div>
       ) : null}
 
@@ -95,74 +103,91 @@ export function CreditStatementView({
           Nenhum crédito ou saída encontrada para este aluno.
         </p>
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
-          <div className="rounded-xl border border-slate-700/60 bg-slate-950/25 p-3">
+        <div className="space-y-5">
+          <div>
             <h4 className="text-sm font-semibold text-slate-200">Extrato de compras</h4>
-            <div className="mt-3 space-y-2">
+            <div className="mt-2 overflow-x-auto rounded-lg border border-slate-800">
               {statement.purchases.length === 0 ? (
-                <p className="text-sm text-slate-500">Nenhuma compra registrada.</p>
+                <p className="px-3 py-4 text-sm text-slate-500">Nenhuma compra registrada.</p>
               ) : (
-                statement.purchases.map((purchase) => {
-                  const expired = purchase.expiresAt < statement.generatedAt;
-                  return (
-                    <div key={purchase.id} className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium text-slate-100">{purchase.aircraftModelName}</p>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            {formatDate(purchase.purchaseDate)} · {purchase.paymentMethod || "Forma nao informada"}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${
-                            expired ? "bg-red-500/15 text-red-300" : "bg-emerald-500/15 text-emerald-300"
-                          }`}>
+                <table className="w-full min-w-[900px] text-left text-sm">
+                  <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Data</th>
+                      <th className="px-3 py-2 font-medium">Modelo</th>
+                      <th className="px-3 py-2 font-medium">Pagamento</th>
+                      <th className="px-3 py-2 font-medium">Valor</th>
+                      <th className="px-3 py-2 font-medium">Horas</th>
+                      <th className="px-3 py-2 font-medium">Validade</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                      {renderPurchaseActions ? <th className="px-3 py-2 font-medium">Ações</th> : null}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {statement.purchases.map((purchase) => {
+                      const expired = purchase.expiresAt < statement.generatedAt;
+                      const payment = purchase.paymentInstallments
+                        ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
+                        : purchase.paymentMethod || "Forma nao informada";
+                      return (
+                        <tr key={purchase.id} className="text-slate-300">
+                          <td className="px-3 py-2">{formatDate(purchase.purchaseDate)}</td>
+                          <td className="px-3 py-2 font-medium text-slate-100">{purchase.aircraftModelName}</td>
+                          <td className="px-3 py-2">{payment}</td>
+                          <td className="px-3 py-2">{formatCurrency(purchase.amountPaid)}</td>
+                          <td className="px-3 py-2">{formatHours(purchase.hours)}</td>
+                          <td className="px-3 py-2">{formatDate(purchase.expiresAt)}</td>
+                          <td className={expired ? "px-3 py-2 text-red-300" : "px-3 py-2 text-emerald-300"}>
                             {expired ? "Vencido" : "Ativo"}
-                          </span>
-                          {renderPurchaseActions ? renderPurchaseActions(purchase) : null}
-                        </div>
-                      </div>
-                      <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-3">
-                        <span>Horas: {formatHours(purchase.hours)}</span>
-                        <span>Valor: {formatCurrency(purchase.amountPaid)}</span>
-                        <span>Validade: {formatDate(purchase.expiresAt)}</span>
-                      </div>
-                      {purchase.notes ? <p className="mt-2 text-xs text-slate-500">{purchase.notes}</p> : null}
-                    </div>
-                  );
-                })
+                          </td>
+                          {renderPurchaseActions ? (
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-2">{renderPurchaseActions(purchase)}</div>
+                            </td>
+                          ) : null}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               )}
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-700/60 bg-slate-950/25 p-3">
+          <div>
             <h4 className="text-sm font-semibold text-slate-200">Extrato de saídas (voos)</h4>
-            <div className="mt-3 space-y-2">
+            <div className="mt-2 overflow-x-auto rounded-lg border border-slate-800">
               {statement.flightDebits.length === 0 ? (
-                <p className="text-sm text-slate-500">Nenhuma saída por voo encontrada.</p>
+                <p className="px-3 py-4 text-sm text-slate-500">Nenhuma saída por voo encontrada.</p>
               ) : (
-                statement.flightDebits.map((debit) => (
-                  <div key={debit.id} className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium text-slate-100">{debit.flightName}</p>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {formatDate(debit.flightDate)} · {debit.aircraftIdent || "Aeronave nao informada"}
-                        </p>
-                      </div>
-                      <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${
-                        debit.unallocatedHours > 0 ? "bg-amber-500/15 text-amber-300" : "bg-sky-500/15 text-sky-300"
-                      }`}>
-                        {debit.unallocatedHours > 0 ? "Parcial" : "Debitado"}
-                      </span>
-                    </div>
-                    <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-3">
-                      <span>Modelo: {debit.aircraftModelName}</span>
-                      <span>Debitado: {formatHours(debit.allocatedHours)}</span>
-                      <span>Pendente: {formatHours(debit.unallocatedHours)}</span>
-                    </div>
-                  </div>
-                ))
+                <table className="w-full min-w-[820px] text-left text-sm">
+                  <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Data</th>
+                      <th className="px-3 py-2 font-medium">Aeronave</th>
+                      <th className="px-3 py-2 font-medium">Modelo</th>
+                      <th className="px-3 py-2 font-medium">Horas</th>
+                      <th className="px-3 py-2 font-medium">Debitado</th>
+                      <th className="px-3 py-2 font-medium">Pendente</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {statement.flightDebits.map((debit) => (
+                      <tr key={debit.id} className="text-slate-300">
+                        <td className="px-3 py-2">{formatDate(debit.flightDate)}</td>
+                        <td className="px-3 py-2">{debit.aircraftIdent || "Aeronave nao informada"}</td>
+                        <td className="px-3 py-2">{debit.aircraftModelName}</td>
+                        <td className="px-3 py-2">{formatHours(debit.hours)}</td>
+                        <td className="px-3 py-2">{formatHours(debit.allocatedHours)}</td>
+                        <td className="px-3 py-2">{formatHours(debit.unallocatedHours)}</td>
+                        <td className={debit.unallocatedHours > 0 ? "px-3 py-2 text-amber-300" : "px-3 py-2 text-sky-300"}>
+                          {debit.unallocatedHours > 0 ? "Parcial" : "Debitado"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
           </div>

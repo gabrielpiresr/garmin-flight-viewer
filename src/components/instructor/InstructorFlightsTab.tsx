@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
   buildFlightDisplayInfo,
+  formatMinutes,
   getDateBase,
   getFlightDateTimeMs,
   isFutureFlight,
@@ -20,7 +21,29 @@ import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
 
 type View = "list" | "detail" | "create";
-type DisplayMode = "list" | "calendar";
+type DisplayMode = "cards" | "calendar" | "table";
+
+function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
+  if (mode === "calendar") {
+    return (
+      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M5.75 3A1.75 1.75 0 004 4.75v10.5C4 16.216 4.784 17 5.75 17h8.5A1.75 1.75 0 0016 15.25V4.75A1.75 1.75 0 0014.25 3h-8.5zM5.5 7h9v8.25a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25V7z" />
+      </svg>
+    );
+  }
+  if (mode === "table") {
+    return (
+      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M3 5.75A1.75 1.75 0 014.75 4h10.5A1.75 1.75 0 0117 5.75v8.5A1.75 1.75 0 0115.25 16H4.75A1.75 1.75 0 013 14.25v-8.5zM4.5 8h11V5.75a.25.25 0 00-.25-.25H4.75a.25.25 0 00-.25.25V8zm0 1.5v4.75c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25V9.5h-11z" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M4.75 3A1.75 1.75 0 003 4.75v2.5C3 8.216 3.784 9 4.75 9h2.5A1.75 1.75 0 009 7.25v-2.5A1.75 1.75 0 007.25 3h-2.5zm8 0A1.75 1.75 0 0011 4.75v2.5C11 8.216 11.784 9 12.75 9h2.5A1.75 1.75 0 0017 7.25v-2.5A1.75 1.75 0 0015.25 3h-2.5zm-8 8A1.75 1.75 0 003 12.75v2.5C3 16.216 3.784 17 4.75 17h2.5A1.75 1.75 0 009 15.25v-2.5A1.75 1.75 0 007.25 11h-2.5zm8 0A1.75 1.75 0 0011 12.75v2.5c0 .966.784 1.75 1.75 1.75h2.5A1.75 1.75 0 0017 15.25v-2.5A1.75 1.75 0 0015.25 11h-2.5z" />
+    </svg>
+  );
+}
 
 function groupByMonth(
   items: SavedFlightListItem[],
@@ -91,21 +114,11 @@ function FlightCard({
             <span className="shrink-0 rounded border border-sky-600/50 bg-sky-900/60 px-1.5 py-0.5 text-xs font-medium text-sky-200">
               {info?.aircraft ?? item.aircraft_ident ?? "—"}
             </span>
-            <span
-              className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
-                info?.status === "draft"
-                  ? "border-amber-600/50 bg-amber-900/40 text-amber-200"
-                  : "border-emerald-600/50 bg-emerald-900/40 text-emerald-200"
-              }`}
-            >
-              {info?.status === "draft" ? "Rascunho" : "Enviado"}
-            </span>
             {future ? (
               <span className="shrink-0 rounded border border-violet-600/40 bg-violet-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">
                 Futuro
               </span>
             ) : null}
-            <p className="min-w-0 truncate text-sm font-medium text-slate-100">{item.name}</p>
           </div>
 
           <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
@@ -165,7 +178,7 @@ export function InstructorFlightsTab() {
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [search, setSearch] = useState("");
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("list");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("cards");
   const [suggestionFlightId, setSuggestionFlightId] = useState<string | null>(null);
   const [suggestionDraft, setSuggestionDraft] = useState("");
   const [suggestionSaving, setSuggestionSaving] = useState(false);
@@ -225,7 +238,6 @@ export function InstructorFlightsTab() {
     return items.filter((item) => {
       const info = infoById[item.id];
       return (
-        item.name.toLowerCase().includes(q) ||
         (info?.studentName ?? "").toLowerCase().includes(q) ||
         (info?.studentAnac ?? "").toLowerCase().includes(q) ||
         (info?.aircraft ?? "").toLowerCase().includes(q)
@@ -243,6 +255,19 @@ export function InstructorFlightsTab() {
   );
   const futureGroups = useMemo(() => groupByMonth(futureItems, infoById, "asc"), [futureItems, infoById]);
   const pastGroups = useMemo(() => groupByMonth(pastItems, infoById, "desc"), [pastItems, infoById]);
+  const consolidatedSummary = useMemo(() => {
+    return filteredItems.reduce(
+      (acc, item) => {
+        const info = infoById[item.id];
+        return {
+          flights: acc.flights + 1,
+          minutes: acc.minutes + (info?.totalFlightMinutes ?? (item.duration_sec ? Math.round(item.duration_sec / 60) : 0)),
+          landings: acc.landings + (info?.landings ?? 0),
+        };
+      },
+      { flights: 0, minutes: 0, landings: 0 },
+    );
+  }, [filteredItems, infoById]);
 
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
@@ -335,17 +360,19 @@ export function InstructorFlightsTab() {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-lg border border-slate-700 bg-slate-900/60 p-1">
             {([
-              ["list", "Lista"],
+              ["cards", "Card"],
               ["calendar", "Agenda"],
+              ["table", "Lista"],
             ] as const).map(([mode, label]) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setDisplayMode(mode)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
                   displayMode === mode ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
+                <DisplayModeIcon mode={mode} />
                 {label}
               </button>
             ))}
@@ -358,6 +385,12 @@ export function InstructorFlightsTab() {
             + Novo voo
           </button>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
+        <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
+        <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
       </div>
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
@@ -388,6 +421,33 @@ export function InstructorFlightsTab() {
       ) : displayMode === "calendar" ? (
         <div className="space-y-4">
           <FlightsAgendaBoard items={filteredItems} infoById={infoById} onOpen={openFlight} />
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="text-xs text-slate-500 underline-offset-4 hover:underline"
+          >
+            Atualizar lista
+          </button>
+        </div>
+      ) : displayMode === "table" ? (
+        <div className="space-y-6">
+          <FlightTableSection
+            title="Voos futuros"
+            groups={futureGroups}
+            infoById={infoById}
+            emptyLabel="Nenhum voo futuro."
+            onOpen={openFlight}
+            onDelete={(id) => void handleDelete(id)}
+            onEditSuggestion={openSuggestion}
+          />
+          <FlightTableSection
+            title="Voos antigos"
+            groups={pastGroups}
+            infoById={infoById}
+            emptyLabel="Nenhum voo antigo."
+            onOpen={openFlight}
+            onDelete={(id) => void handleDelete(id)}
+          />
           <button
             type="button"
             onClick={() => void refresh()}
@@ -527,5 +587,127 @@ export function InstructorFlightsTab() {
         </div>
       )}
     </div>
+  );
+}
+
+function SummaryCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function FlightTableSection({
+  title,
+  groups,
+  infoById,
+  emptyLabel,
+  onOpen,
+  onDelete,
+  onEditSuggestion,
+}: {
+  title: string;
+  groups: { label: string; flights: SavedFlightListItem[] }[];
+  infoById: Record<string, FlightDisplayInfo>;
+  emptyLabel: string;
+  onOpen: (id: string) => void;
+  onDelete: (id: string) => void;
+  onEditSuggestion?: (id: string) => void;
+}) {
+  return (
+    <section className="space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
+      {groups.length === 0 ? (
+        <p className="text-sm text-slate-500">{emptyLabel}</p>
+      ) : (
+        groups.map((group) => (
+          <div key={`${title}-${group.label}`} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
+            <div className="border-b border-slate-700/60 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+              {group.label}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-[920px] w-full text-left text-xs">
+                <thead className="bg-slate-950/40 text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 font-semibold">Data</th>
+                    <th className="px-3 py-2 font-semibold">Início</th>
+                    <th className="px-3 py-2 font-semibold">Aluno</th>
+                    <th className="px-3 py-2 font-semibold">ANAC</th>
+                    <th className="px-3 py-2 font-semibold">Matrícula</th>
+                    <th className="px-3 py-2 font-semibold">Rota</th>
+                    <th className="px-3 py-2 font-semibold">Horas</th>
+                    <th className="px-3 py-2 font-semibold">Pousos</th>
+                    <th className="px-3 py-2 font-semibold">Sugestão</th>
+                    <th className="px-3 py-2 font-semibold">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                  {group.flights.map((item) => {
+                    const info = infoById[item.id];
+                    return (
+                      <tr
+                        key={item.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onOpen(item.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onOpen(item.id);
+                          }
+                        }}
+                        className="cursor-pointer text-slate-300 transition hover:bg-slate-800/50"
+                      >
+                        <td className="px-3 py-2 text-slate-200">{formatDate(item, info)}</td>
+                        <td className="px-3 py-2">{info?.startTime || "—"}</td>
+                        <td className="px-3 py-2">{info?.studentName ?? "—"}</td>
+                        <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
+                        <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
+                        <td className="px-3 py-2">{info?.fromTo ?? "—"}</td>
+                        <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
+                        <td className="px-3 py-2">{info?.landings ?? 0}</td>
+                        <td className="px-3 py-2">
+                          <span className={info?.instructorSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
+                            {info?.instructorSuggestionMd ? "Preenchida" : "Pendente"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-2">
+                            {onEditSuggestion ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onEditSuggestion(item.id);
+                                }}
+                                className="text-sky-300 underline-offset-4 hover:underline"
+                              >
+                                Sugestão
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDelete(item.id);
+                              }}
+                              className="text-red-400/80 underline-offset-4 hover:underline"
+                            >
+                              Apagar
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))
+      )}
+    </section>
   );
 }

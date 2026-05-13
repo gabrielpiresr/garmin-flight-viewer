@@ -3,11 +3,23 @@ import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
 import { AlunoProfileDashboard } from "./AlunoProfileDashboard";
 import { CreditosTab } from "./CreditosTab";
+import { JornadaTab } from "./JornadaTab";
+import { ManobrasTab } from "./ManobrasTab";
 import { MeusVoosTab } from "./MeusVoosTab";
 import { NoticeFeed } from "./NoticeFeed";
+import { PushNotificationsToggle } from "./PushNotificationsToggle";
 import { StudentHome } from "./StudentHome";
 
-type Section = "home" | "meus-voos" | "agendamento" | "creditos" | "avisos" | "manuais" | "manobras" | "perfil";
+type Section =
+  | "home"
+  | "jornada"
+  | "meus-voos"
+  | "agendamento"
+  | "creditos"
+  | "avisos"
+  | "manuais"
+  | "manobras"
+  | "perfil";
 
 type NavItem = {
   id: Section;
@@ -27,6 +39,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M11.47 3.84a.75.75 0 011.06 0l8.69 8.69a.75.75 0 101.06-1.06l-8.69-8.69a2.25 2.25 0 00-3.18 0l-8.69 8.69a.75.75 0 001.06 1.06l8.69-8.69z" />
         <path d="M12 5.432l8.159 8.159c.03.03.061.058.091.086v6.198c0 1.035-.84 1.875-1.875 1.875H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75.75V21a.75.75 0 01-.75.75H5.625A1.875 1.875 0 013.75 19.875v-6.198c.03-.028.061-.056.091-.086L12 5.432z" />
+      </svg>
+    ),
+  },
+  {
+    id: "jornada",
+    label: "Jornada",
+    sublabel: "Evolução, recordes e conquistas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M5.166 2.621A.75.75 0 015.75 2.25h12.5a.75.75 0 01.584.371l1.25 2.083a3.75 3.75 0 01-2.396 5.577 6.773 6.773 0 01-4.938 4.102v2.117h2.5a.75.75 0 01.75.75v2h2.25a.75.75 0 010 1.5H5.75a.75.75 0 010-1.5H8v-2a.75.75 0 01.75-.75h2.5v-2.117a6.773 6.773 0 01-4.938-4.102 3.75 3.75 0 01-2.396-5.577l1.25-2.083zM6 4.5l-.798 1.33A2.25 2.25 0 006 9.198V4.5zm12 4.698a2.25 2.25 0 00.798-3.368L18 4.5v4.698z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -85,7 +107,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: "manobras",
     label: "Manobras",
-    sublabel: "Em breve",
+    sublabel: "Material de estudo",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm0 8.625a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25zM15.375 12a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0zM7.5 10.875a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25z" clipRule="evenodd" />
@@ -180,6 +202,7 @@ export function MainLayout() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
               <button
                 type="button"
@@ -195,8 +218,12 @@ export function MainLayout() {
 
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {section === "home" && (
-            <StudentHome onOpenFlights={() => setSection("meus-voos")} onOpenNotices={() => setSection("avisos")} />
+            <StudentHome
+              onOpenFlights={() => setSection("meus-voos")}
+              onOpenNotices={() => setSection("avisos")}
+            />
           )}
+          {section === "jornada" && <JornadaTab />}
           {section === "meus-voos" && <MeusVoosTab />}
           {section === "agendamento" && <AgendamentoTab />}
           {section === "creditos" && <CreditosTab />}
@@ -209,12 +236,7 @@ export function MainLayout() {
               description="Os materiais de consulta ficarão disponíveis aqui quando forem publicados."
             />
           )}
-          {section === "manobras" && (
-            <EmptySection
-              title="Manobras em breve"
-              description="As referências de treinamento e procedimentos serão adicionadas nesta seção."
-            />
-          )}
+          {section === "manobras" && <ManobrasTab />}
           {section === "perfil" && <AlunoProfileDashboard />}
         </main>
 

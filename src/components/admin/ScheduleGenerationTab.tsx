@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { insertFlight, updateFlight } from "../../lib/flightsDb";
+import { dispatchNotificationEvent } from "../../lib/notificationsDb";
 import { getScheduleWeekData, getScheduleWeekOptions, AUTO_SOURCE_PREFIX } from "../../lib/scheduleGenerationDb";
 import { assignInstructorsToSuggestions, generateSchedulePreview } from "../../lib/scheduleGenerator";
 import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
@@ -242,7 +243,6 @@ function buildAutoMeta(
   instructor?: InstructorIdentity | null,
 ): FlightRecordMeta {
   return {
-    status: "draft",
     schedule: {
       version: "AUTO_SCHEDULE_V1",
       weekStart,
@@ -1059,6 +1059,13 @@ export function ScheduleGenerationTab() {
     try {
       const byDemand = new Map(weekData.existingGeneratedFlights.map((row) => [row.demandId, row]));
       let successCount = 0;
+      const notificationEvents: Array<{
+        eventType: "flight.scheduled" | "flight.updated";
+        flightId: string;
+        aircraft: string;
+        flightDate: string;
+        startTime: string;
+      }> = [];
       for (const suggestion of editableSuggestions) {
         const student = weekData.students.find((row) => row.userId === suggestion.studentId);
         const instructor = suggestion.instructorId ? instructorById.get(suggestion.instructorId) ?? null : null;
@@ -1069,7 +1076,6 @@ export function ScheduleGenerationTab() {
           actorRole: user.role,
           studentUserId: suggestion.studentId,
           instructorUserId: suggestion.instructorId,
-          name: "Voo agendado",
           source_filename: `${AUTO_SOURCE_PREFIX}${weekData.week.weekStart}.csv`,
           csv_text: csvText,
           aircraft_ident: suggestion.aircraftRegistration,
@@ -1080,15 +1086,47 @@ export function ScheduleGenerationTab() {
         if (existing) {
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
+          notificationEvents.push({
+            eventType: "flight.updated",
+            flightId: existing.id,
+            aircraft: suggestion.aircraftRegistration,
+            flightDate: weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek),
+            startTime: hoursToHHMM(suggestion.startHour),
+          });
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
+          if (result.id) {
+            notificationEvents.push({
+              eventType: "flight.scheduled",
+              flightId: result.id,
+              aircraft: suggestion.aircraftRegistration,
+              flightDate: weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek),
+              startTime: hoursToHHMM(suggestion.startHour),
+            });
+          }
         }
         successCount += 1;
       }
 
       setPersistedCount(successCount);
       const closed = await closeScheduleWeek(weekData.week.weekStart);
+      for (const event of notificationEvents) {
+        void dispatchNotificationEvent({
+          eventType: event.eventType,
+          flightId: event.flightId,
+          dedupeKey:
+            event.eventType === "flight.scheduled"
+              ? `flight.scheduled:${event.flightId}`
+              : `flight.updated:${event.flightId}:${closed.closedAt}`,
+          actorUserId: user.id,
+          data: {
+            aircraft: event.aircraft,
+            flightDate: event.flightDate,
+            startTime: event.startTime,
+          },
+        });
+      }
       setLastClosedWeekMessage(
         `Semana ${weekData.week.label} fechada em ${new Date(closed.closedAt).toLocaleString("pt-BR")}.`,
       );
@@ -1268,7 +1306,7 @@ export function ScheduleGenerationTab() {
     <div className="mx-auto max-w-7xl space-y-5">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala Automática</h2>
-        <p className="text-xs text-slate-500">Cruze intenções dos alunos com disponibilidade operacional e gere voos em rascunho.</p>
+        <p className="text-xs text-slate-500">Cruze intenções dos alunos com disponibilidade operacional e gere voos.</p>
       </div>
 
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-3">
@@ -1616,7 +1654,7 @@ export function ScheduleGenerationTab() {
 
             {persistedCount > 0 ? (
               <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
-                {persistedCount} voo(s) criado(s)/atualizado(s) em draft.
+                {persistedCount} voo(s) criado(s)/atualizado(s).
               </div>
             ) : null}
 

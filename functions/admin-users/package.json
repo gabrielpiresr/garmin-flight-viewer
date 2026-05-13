@@ -5,6 +5,8 @@
   "main": "src/main.js",
   "type": "commonjs",
   "dependencies": {
-    "node-appwrite": "^24.1.0"
+    "node-appwrite": "^24.1.0",
+    "resend": "^6.12.3",
+    "web-push": "^3.6.7"
   }
 }

@@ -33,6 +33,7 @@ type CreditDoc = {
   aircraft_model_name?: string;
   amount_paid?: number;
   payment_method?: string;
+  payment_installments?: number;
   validity_days?: number;
   hours?: number;
   expires_at?: string;
@@ -43,7 +44,6 @@ type CreditDoc = {
 
 type FlightSource = {
   id: string;
-  name: string;
   flightDate: string;
   aircraftIdent: string;
   hours: number;
@@ -103,6 +103,7 @@ function toCredit(doc: CreditDoc): StudentCreditPurchase {
     aircraftModelName: doc.aircraft_model_name || "Modelo nao informado",
     amountPaid: parsePositiveNumber(Number(doc.amount_paid)),
     paymentMethod: doc.payment_method || "",
+    paymentInstallments: typeof doc.payment_installments === "number" && doc.payment_installments > 0 ? doc.payment_installments : null,
     validityDays,
     hours: parsePositiveNumber(Number(doc.hours)),
     expiresAt: doc.expires_at || addDaysIso(purchaseDate, validityDays),
@@ -125,6 +126,10 @@ function toPayload(input: StudentCreditInput, actorUserId?: string) {
     expires_at: addDaysIso(purchaseDate, validityDays),
     amount_paid: parsePositiveNumber(Number(input.amountPaid)),
     payment_method: input.paymentMethod.trim(),
+    payment_installments:
+      typeof input.paymentInstallments === "number" && input.paymentInstallments > 0
+        ? Math.round(input.paymentInstallments)
+        : null,
     validity_days: validityDays,
     hours: parsePositiveNumber(Number(input.hours)),
     notes: input.notes?.trim() || null,
@@ -132,13 +137,13 @@ function toPayload(input: StudentCreditInput, actorUserId?: string) {
   };
 }
 
-function buildCreditPermissions(userId: string) {
+function buildCreditPermissions(userId: string, actorUserId: string) {
   return [
+    Permission.read(Role.user(actorUserId)),
+    Permission.update(Role.user(actorUserId)),
+    Permission.delete(Role.user(actorUserId)),
     Permission.read(Role.user(userId)),
-    Permission.read(Role.label("admin")),
     Permission.read(Role.label("instrutor")),
-    Permission.update(Role.label("admin")),
-    Permission.delete(Role.label("admin")),
   ];
 }
 
@@ -148,6 +153,9 @@ function validateInput(input: StudentCreditInput) {
   if (!input.aircraftModelName.trim()) throw new Error("Nome do modelo nao informado.");
   if (!input.purchaseDate) throw new Error("Data do credito nao informada.");
   if (!input.paymentMethod.trim()) throw new Error("Forma de pagamento nao informada.");
+  if (input.paymentMethod === "Parcelado" && (!input.paymentInstallments || input.paymentInstallments <= 0)) {
+    throw new Error("Informe a quantidade de parcelas.");
+  }
   if (!Number.isFinite(input.amountPaid) || input.amountPaid < 0) throw new Error("Valor pago invalido.");
   if (!Number.isFinite(input.validityDays) || input.validityDays < 0) throw new Error("Dias de validade invalidos.");
   if (!Number.isFinite(input.hours) || input.hours <= 0) throw new Error("Quantidade de horas invalida.");
@@ -165,19 +173,17 @@ function modelName(modelId: string | null, modelsById: Map<string, AircraftModel
 function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | null): FlightSource | null {
   const decoded = full?.csv_text ? decodeFlightRecord(full.csv_text) : { meta: null };
   const meta = decoded.meta;
-  const status = meta?.status === "draft" ? "draft" : "submitted";
   const flightDate = asIsoDate(meta?.header.date || item.flight_date || item.created_at);
-  if (status === "draft" || flightDate > todayIso()) return null;
 
   const totalMinutes =
     meta?.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0) ||
     (typeof item.duration_sec === "number" ? Math.round(item.duration_sec / 60) : 0);
+  const landings = meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ?? 0;
   const hours = roundHours(totalMinutes / 60);
-  if (hours <= 0) return null;
+  if (hours <= 0 || landings <= 0) return null;
 
   return {
     id: item.id,
-    name: item.name || "Voo",
     flightDate,
     aircraftIdent: normalizeRegistration(meta?.header.aircraft || item.aircraft_ident),
     hours,
@@ -254,7 +260,6 @@ export function buildStudentCreditStatement(params: {
       .filter(
         (credit) =>
           credit.aircraftModelId === aircraftModelId &&
-          credit.purchaseDate <= flight.flightDate &&
           credit.expiresAt >= flight.flightDate &&
           credit.remainingHours > EPSILON,
       )
@@ -273,7 +278,6 @@ export function buildStudentCreditStatement(params: {
     return {
       id: flight.id,
       flightId: flight.id,
-      flightName: flight.name,
       flightDate: flight.flightDate,
       aircraftIdent: flight.aircraftIdent,
       aircraftModelId,
@@ -345,7 +349,7 @@ export async function createStudentCredit(input: StudentCreditInput, actorUserId
       ...toPayload(input, actorUserId),
       created_by: actorUserId || null,
     },
-    buildCreditPermissions(input.userId),
+    buildCreditPermissions(input.userId, actorUserId),
   );
   return toCredit(doc as unknown as CreditDoc);
 }

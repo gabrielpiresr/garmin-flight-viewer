@@ -16,6 +16,9 @@ export type SegmentType = 'takeoff' | 'landing' | 'tgl';
 
 export type TakeoffMetrics = {
   groundRollFt: number | null;
+  groundRollDurationSec: number | null;
+  timeToAgl100Sec: number | null;
+  timeToAgl500Sec: number | null;
   rotationIasKt: number | null;
   rotationPitchRateDs: number | null;
   liftoffIasKt: number | null;
@@ -42,6 +45,8 @@ export type LandingMetrics = {
   flareDistFt: number | null;
   pitchOscillations: number | null;
   tdIasKt: number | null;
+  tdGsKt: number | null;
+  tdVertSpeedFpm: number | null;
   tdPitchDeg: number | null;
   tdImpactG: number | null;
   tdImpactLabel: 'Low' | 'Medium' | 'High' | null;

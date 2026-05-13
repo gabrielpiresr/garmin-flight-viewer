@@ -66,7 +66,7 @@ export function SavedFlightsPanel({ onOpen, refreshKey }: Props) {
                 onClick={() => onOpen(f.id)}
                 title={f.source_filename}
               >
-                {f.name}
+                Abrir voo
               </button>
               <button
                 type="button"

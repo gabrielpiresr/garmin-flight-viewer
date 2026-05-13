@@ -131,6 +131,7 @@ const StaticMapLayers = memo(function StaticMapLayers({
   return (
     <>
       <Polyline
+        renderer={canvasRenderer}
         positions={positions}
         pathOptions={{
           color: "#d946ef",
@@ -141,6 +142,7 @@ const StaticMapLayers = memo(function StaticMapLayers({
       />
       {selectedPositions.length > 1 && (
         <Polyline
+          renderer={canvasRenderer}
           positions={selectedPositions}
           pathOptions={{ color: "#d946ef", weight: 3.4, opacity: 0.95 }}
         />
@@ -172,74 +174,17 @@ type Props = {
   boundsCallbackRef?: React.MutableRefObject<((b: L.LatLngBounds) => void) | null>;
 };
 
-const MAX_MAP_POINTS = 1500;
-const MAX_SELECTED_MAP_POINTS = 900;
-
-/** Largest Triangle Three Buckets on lat/lon plane: keeps route shape better than stride sampling. */
-function downsamplePoints(points: FlightPoint[], maxPoints: number): FlightPoint[] {
-  if (points.length <= maxPoints || maxPoints < 3) return points;
-  const n = points.length;
-  const sampled: FlightPoint[] = [points[0]!];
-  const bucketSize = (n - 2) / (maxPoints - 2);
-  let a = 0;
-
-  for (let i = 0; i < maxPoints - 2; i++) {
-    const rangeStart = Math.floor(i * bucketSize) + 1;
-    const rangeEnd = Math.min(Math.floor((i + 1) * bucketSize) + 1, n - 1);
-    const nextRangeStart = Math.floor((i + 1) * bucketSize) + 1;
-    const nextRangeEnd = Math.min(Math.floor((i + 2) * bucketSize) + 1, n);
-
-    let avgLat = 0;
-    let avgLon = 0;
-    let avgCount = 0;
-    for (let j = nextRangeStart; j < nextRangeEnd; j++) {
-      avgLat += points[j]!.lat;
-      avgLon += points[j]!.lon;
-      avgCount++;
-    }
-    if (avgCount === 0) {
-      avgLat = points[Math.min(nextRangeStart, n - 1)]!.lat;
-      avgLon = points[Math.min(nextRangeStart, n - 1)]!.lon;
-      avgCount = 1;
-    }
-    avgLat /= avgCount;
-    avgLon /= avgCount;
-
-    const ax = points[a]!.lon;
-    const ay = points[a]!.lat;
-    let maxArea = -1;
-    let picked = rangeStart;
-    for (let j = rangeStart; j < rangeEnd; j++) {
-      const bx = points[j]!.lon;
-      const by = points[j]!.lat;
-      const area = Math.abs((ax - avgLon) * (by - ay) - (ax - bx) * (avgLat - ay));
-      if (area > maxArea) {
-        maxArea = area;
-        picked = j;
-      }
-    }
-
-    sampled.push(points[picked]!);
-    a = picked;
-  }
-
-  sampled.push(points[n - 1]!);
-  return sampled;
-}
-
 export const FlightMap = memo(
   function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef }: Props) {
-    const sampled = useMemo(() => downsamplePoints(points, MAX_MAP_POINTS), [points]);
-    const selectedSampled = useMemo(() => {
+    const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
       const [t0, t1] = selectedRangeT;
-      const selected = points.filter((p) => p.t !== null && p.t >= t0 && p.t <= t1);
-      return downsamplePoints(selected, MAX_SELECTED_MAP_POINTS);
+      return points.filter((p) => p.t !== null && p.t >= t0 && p.t <= t1);
     }, [points, selectedRangeT]);
-    const positions = useMemo(() => sampled.map((p) => [p.lat, p.lon] as [number, number]), [sampled]);
+    const positions = useMemo(() => points.map((p) => [p.lat, p.lon] as [number, number]), [points]);
     const selectedPositions = useMemo(
-      () => selectedSampled.map((p) => [p.lat, p.lon] as [number, number]),
-      [selectedSampled],
+      () => selectedPoints.map((p) => [p.lat, p.lon] as [number, number]),
+      [selectedPoints],
     );
 
     const center = useMemo((): [number, number] => {
@@ -259,7 +204,7 @@ export const FlightMap = memo(
       for (let i = step; i < positions.length; i += step) {
         const prev = positions[i - 1]!;
         const curr = positions[i]!;
-        const heading = sampled[i]?.headingDeg;
+        const heading = points[i]?.headingDeg;
         markers.push({
           pos: curr,
           deg:
@@ -269,13 +214,13 @@ export const FlightMap = memo(
         });
       }
       return markers;
-    }, [positions, sampled]);
+    }, [positions, points]);
 
     const planeMarker = useMemo(() => {
       if (positions.length < 2) return null;
       const last = positions[positions.length - 1]!;
       const prev = positions[positions.length - 2]!;
-      const lastHeading = sampled[sampled.length - 1]?.headingDeg;
+      const lastHeading = points[points.length - 1]?.headingDeg;
       return {
         pos: last,
         deg:
@@ -283,7 +228,7 @@ export const FlightMap = memo(
             ? lastHeading
             : calcBearing(prev[0], prev[1], last[0], last[1]),
       };
-    }, [positions, sampled]);
+    }, [positions, points]);
 
     if (positions.length < 2) {
       return (

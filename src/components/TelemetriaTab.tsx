@@ -1,24 +1,27 @@
 import L from "leaflet";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getSavedFlight } from "../lib/flightsDb";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useAuth } from "../contexts/AuthContext";
+import { decodeFlightRecord, encodeFlightRecord } from "../lib/flightRecordCodec";
+import { getSavedFlight, updateFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
   chartDurationSec,
   formatAltFt,
-  formatDistM,
   formatDuration,
   formatSpeedKt,
   summarizeFlight,
 } from "../lib/flightStats";
 import { detectFlightSegments } from "../lib/flightSegments";
-import type { ParseResult } from "../lib/parseGarminCsv";
+import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
+import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
 import type { ChartRow } from "../lib/telemetryCharts";
-import type { FlightPoint } from "../types/flight";
+import type { FlightPoint, FlightSegment, FlightSummary } from "../types/flight";
 import CsvWorker from "../workers/csvWorker?worker";
 import { FlightCharts } from "./FlightCharts";
 import { FlightMap } from "./FlightMap";
 import { SegmentSelector } from "./SegmentSelector";
 import { SegmentSummary } from "./SegmentSummary";
+import { useToast } from "./ui/ToastProvider";
 
 type Props = {
   flightId?: string;
@@ -52,7 +55,10 @@ function findHoverPos(
 }
 
 export function TelemetriaTab({ flightId, parsedResult }: Props) {
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [fileName, setFileName] = useState<string | null>(null);
+  const [telemetryCharCount, setTelemetryCharCount] = useState(0);
   const [points, setPoints] = useState<FlightPoint[]>([]);
   const [chartData, setChartData] = useState<ChartRow[]>([]);
   const [hasChartTime, setHasChartTime] = useState(false);
@@ -60,6 +66,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const [telemetryColumns, setTelemetryColumns] = useState<Record<string, string>>({});
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [savingTelemetry, setSavingTelemetry] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const workerRef = useRef<Worker | null>(null);
 
@@ -72,8 +79,12 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   // Stable refs so callbacks never need to change (empty useCallback deps)
   const pointsRef = useRef<FlightPoint[]>(points);
   const chartTimeBaseMsRef = useRef<number | null>(chartTimeBaseMs);
+  const selectedSegmentIdRef = useRef<string | null>(selectedSegmentId);
   useEffect(() => { pointsRef.current = points; }, [points]);
   useEffect(() => { chartTimeBaseMsRef.current = chartTimeBaseMs; }, [chartTimeBaseMs]);
+  useEffect(() => { selectedSegmentIdRef.current = selectedSegmentId; }, [selectedSegmentId]);
+
+  const canEditTelemetry = user?.role === "instrutor" || user?.role === "admin";
 
   /** Called on map moveend/zoomend — updates the chart domain to match visible route. */
   const handleBoundsChange = useCallback((bounds: L.LatLngBounds) => {
@@ -94,8 +105,12 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     const visMin = Math.min(...visibleTs);
     const visMax = Math.max(...visibleTs);
 
-    // If nearly the entire route is visible, reset to full view
     const coverage = (visMax - visMin) / (totalMax - totalMin || 1);
+    if (coverage > 0.75 && selectedSegmentIdRef.current) {
+      setSelectedSegmentId(null);
+      setChartDomain(null);
+      return;
+    }
     if (coverage > 0.97) { setChartDomain(null); return; }
 
     setChartDomain([visMin - base, visMax - base]);
@@ -115,8 +130,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     hoverCallbackRef.current(pos);
   }, []); // stable — no deps needed, uses refs
 
-  const applyResult = useCallback((r: ParseResult, name: string) => {
+  const applyResult = useCallback((r: ParseResult, name: string, charCount?: number) => {
     setFileName(name);
+    if (typeof charCount === "number") setTelemetryCharCount(charCount);
     setPoints(r.points);
     setChartData(r.chartData);
     setHasChartTime(r.hasChartTime);
@@ -144,6 +160,17 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         setLoadError(error?.message ?? "Voo não encontrado.");
         return;
       }
+      const decoded = decodeFlightRecord(data.csv_text);
+      const telemetryText = decoded.meta ? decoded.telemetryCsv : data.csv_text;
+      if (!telemetryText.trim()) {
+        setLoading(false);
+        setFileName(null);
+        setTelemetryCharCount(0);
+        setPoints([]);
+        setChartData([]);
+        setWarnings([]);
+        return;
+      }
       const worker = new CsvWorker();
       workerRef.current = worker;
       worker.onmessage = (e: MessageEvent<{ ok: boolean; result?: ParseResult; error?: string }>) => {
@@ -154,7 +181,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
           setLoadError(e.data.error ?? "Erro ao processar CSV.");
           return;
         }
-        applyResult(e.data.result, data.source_filename);
+        applyResult(e.data.result, data.source_filename, telemetryText.length);
       };
       worker.onerror = (err) => {
         worker.terminate();
@@ -162,9 +189,58 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         setLoading(false);
         setLoadError(err.message);
       };
-      worker.postMessage(data.csv_text);
+      worker.postMessage(telemetryText);
     });
   }, [flightId, applyResult]);
+
+  const handleTelemetryCsvSelected = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !flightId || !user || !canEditTelemetry) return;
+
+    setSavingTelemetry(true);
+    setLoadError(null);
+    try {
+      const telemetryCsv = await file.text();
+      const saved = await getSavedFlight(flightId);
+      if (saved.error || !saved.data) throw saved.error ?? new Error("Voo não encontrado.");
+
+      const decoded = decodeFlightRecord(saved.data.csv_text);
+      if (!decoded.meta) throw new Error("Ficha do voo sem metadados para anexar telemetria.");
+
+      const parsed = parseGarminCsv(telemetryCsv);
+      const parsedSummary = summarizeFlight(parsed.points);
+      const durationSec = chartDurationSec(parsed.chartData, parsed.hasChartTime) ?? parsedSummary.durationSec;
+      const csvText = encodeFlightRecord({ meta: decoded.meta, telemetryCsv });
+      const identity = deriveIdentity({
+        meta: decoded.meta,
+        studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
+        instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
+        aircraftIdent: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
+      });
+      const telemetryMetrics = buildFlightTelemetryMetrics({ parsed, identity, meta: decoded.meta });
+      const result = await updateFlight(flightId, {
+        actorUserId: user.id,
+        actorRole: user.role,
+        studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
+        instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
+        source_filename: file.name,
+        csv_text: csvText,
+        aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
+        duration_sec: durationSec,
+        telemetryMetrics,
+      });
+
+      if (result.error) throw result.error;
+
+      applyResult(parsed, file.name, telemetryCsv.length);
+      showToast({ variant: "success", message: "CSV de telemetria salvo." });
+    } catch (err) {
+      showToast({ variant: "error", message: (err as Error).message || "Falha ao salvar CSV de telemetria." });
+    } finally {
+      setSavingTelemetry(false);
+    }
+  };
 
   const segments = useMemo(
     () => chartData.length > 0 && hasChartTime
@@ -178,6 +254,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     [segments, selectedSegmentId],
   );
 
+  const fullXDomain = useMemo<[number, number] | null>(() => {
+    if (chartData.length < 2) return null;
+    return [chartData[0]!.x, chartData[chartData.length - 1]!.x];
+  }, [chartData]);
+
   const selectedRangeT = useMemo<[number, number] | null>(() => {
     if (!selectedSegment || chartTimeBaseMs == null) return null;
     return [chartTimeBaseMs + selectedSegment.startX, chartTimeBaseMs + selectedSegment.endX];
@@ -189,7 +270,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   );
 
   const activeChartXDomain = useMemo<[number, number] | null>(
-    () => selectedXDomain ?? chartDomain,
+    () => chartDomain ?? selectedXDomain,
     [selectedXDomain, chartDomain],
   );
 
@@ -198,12 +279,62 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     [selectedSegment, chartDomain],
   );
 
+  const handleChartDomainChange = useCallback((domain: [number, number] | null) => {
+    if (!domain) {
+      setSelectedSegmentId(null);
+      setChartDomain(null);
+      return;
+    }
+    if (fullXDomain) {
+      const coverage = (domain[1] - domain[0]) / (fullXDomain[1] - fullXDomain[0] || 1);
+      if (coverage > 0.75 && selectedSegmentIdRef.current) {
+        setSelectedSegmentId(null);
+        setChartDomain(null);
+        return;
+      }
+    }
+    setChartDomain(domain);
+  }, [fullXDomain]);
+
+  const handleSegmentChange = useCallback((id: string | null) => {
+    setChartDomain(null);
+    setSelectedSegmentId(id);
+  }, []);
+
   const summary = useMemo(() => summarizeFlight(points), [points]);
   const durationDisplay = useMemo(() => {
     const fromChart = chartDurationSec(chartData, hasChartTime);
     if (fromChart !== null) return formatDuration(fromChart);
     return formatDuration(summary.durationSec);
   }, [chartData, hasChartTime, summary.durationSec]);
+
+  const uploadPanel = (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-200">CSV de telemetria</p>
+          <p className="mt-1 text-xs text-slate-500">
+            {fileName
+              ? `${fileName} (${telemetryCharCount.toLocaleString("pt-BR")} chars)`
+              : "Nenhum CSV de telemetria carregado."}
+          </p>
+        </div>
+
+        {canEditTelemetry && (
+          <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800">
+            {savingTelemetry ? "Salvando CSV..." : fileName ? "Substituir CSV" : "Subir CSV"}
+            <input
+              type="file"
+              accept=".csv,text/csv,text/plain"
+              disabled={savingTelemetry}
+              onChange={(e) => void handleTelemetryCsvSelected(e)}
+              className="hidden"
+            />
+          </label>
+        )}
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
@@ -227,36 +358,31 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
 
   if (loadError) {
     return (
-      <p className="rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-3 text-sm text-red-300">
-        {loadError}
-      </p>
+      <div className="space-y-3">
+        {uploadPanel}
+        <p className="rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-3 text-sm text-red-300">
+          {loadError}
+        </p>
+      </div>
     );
   }
 
   if (!fileName) {
     return (
-      <p className="py-12 text-center text-sm text-slate-500">
-        Nenhum arquivo carregado.
-      </p>
+      <div className="space-y-3">
+        {uploadPanel}
+        <p className="py-12 text-center text-sm text-slate-500">
+          Nenhum arquivo carregado.
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="min-w-0 flex flex-col gap-2">
+      {uploadPanel}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">Arquivo: {fileName}</h3>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <StatInline label="Distância" value={summary.pointCount >= 2 ? formatDistM(summary.distanceM) : "—"} />
-          <StatInline label="Duração" value={durationDisplay} />
-          <StatInline
-            label="Alt máx/mín"
-            value={summary.pointCount > 0 ? `${formatAltFt(summary.altMaxM)} / ${formatAltFt(summary.altMinM)}` : "—"}
-          />
-          <StatInline
-            label="Vel média/máx"
-            value={summary.pointCount > 0 ? `${formatSpeedKt(summary.speedAvgMs)} / ${formatSpeedKt(summary.speedMaxMs)}` : "—"}
-          />
-        </div>
       </div>
 
       {warnings.length > 0 && (
@@ -269,16 +395,26 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         <SegmentSelector
           segments={segments}
           selectedId={selectedSegmentId}
-          onChange={setSelectedSegmentId}
+          onChange={handleSegmentChange}
         />
       )}
 
       {(points.length > 0 || chartData.length > 0) && (
         <div className="h-[calc(100vh-1.5rem)] min-h-[520px] md:min-h-[700px]">
-          <div className={`grid h-full min-h-0 gap-2 ${selectedSegment ? "xl:grid-cols-[320px_minmax(0,1fr)]" : "grid-cols-1"}`}>
-            {selectedSegment && (
+          <div className={`grid h-full min-h-0 gap-2 ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+            {chartData.length > 0 && (
               <div className="min-h-0 overflow-y-auto">
-                <SegmentSummary segment={selectedSegment} />
+                {selectedSegment ? (
+                  <SegmentSummary segment={selectedSegment} />
+                ) : (
+                  <FullFlightSummary
+                    chartData={chartData}
+                    chartTimeBaseMs={chartTimeBaseMs}
+                    durationDisplay={durationDisplay}
+                    segments={segments}
+                    summary={summary}
+                  />
+                )}
               </div>
             )}
 
@@ -304,7 +440,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                   chartTimeBaseMs={chartTimeBaseMs}
                   resolved={telemetryColumns}
                   onHoverX={handleHoverX}
+                  onXDomainChange={handleChartDomainChange}
                   xDomain={activeChartXDomain}
+                  fullXDomain={fullXDomain}
                   focusDomain={focusDomain}
                   events={selectedSegment?.events}
                 />
@@ -317,11 +455,384 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   );
 }
 
-function StatInline({ label, value }: { label: string; value: string }) {
+function FullFlightSummary({
+  chartData,
+  chartTimeBaseMs,
+  durationDisplay,
+  segments,
+  summary,
+}: {
+  chartData: ChartRow[];
+  chartTimeBaseMs: number | null;
+  durationDisplay: string;
+  segments: FlightSegment[];
+  summary: FlightSummary;
+}) {
+  const landingSegments = segments.filter((seg) => seg.type === "landing" || seg.type === "tgl");
+  const takeoffSegments = segments.filter((seg) => seg.type === "takeoff");
+  const gsMax = maxSampleFromRows(chartData, "gsKt");
+  const wind = computeWindComponents(chartData);
+  const operational = computeOperationalSummary(chartData, chartTimeBaseMs, segments);
+
   return (
-    <div className="rounded-md border border-slate-700/80 bg-slate-900/40 px-2.5 py-1.5">
-      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="text-xs font-semibold text-slate-100">{value}</p>
+    <div className="grid gap-4">
+      <OperationalTimelineCard summary={operational} />
+
+      <SummaryCard title="Voo completo">
+        <InfoRow label="Distância" value={formatDistanceNmKm(summary.distanceM)} />
+        <InfoRow label="Duração" value={durationDisplay} />
+        <InfoRow label="Alt máx" value={formatAltFt(summary.altMaxM)} />
+        <InfoRow label="Vel média" value={formatSpeedKt(summary.speedAvgMs)} />
+        <InfoRow label="GS máx" value={fmtKtAt(gsMax, chartTimeBaseMs)} />
+        <InfoRow label="Maior vento de proa" value={fmtKtAt(wind.maxHeadwind, chartTimeBaseMs)} />
+        <InfoRow label="Maior vento de cauda" value={fmtKtAt(wind.maxTailwind, chartTimeBaseMs)} />
+        <InfoRow label="Maior vento de través" value={fmtKtAt(wind.maxCrosswind, chartTimeBaseMs)} />
+      </SummaryCard>
+
+      <SummaryCard title="Resumo de pousos">
+        <InfoRow label="Qtd de pousos" value={String(landingSegments.length)} />
+        <div className="mt-3 grid gap-3">
+          {landingSegments.map((seg, idx) => (
+            <div key={seg.id} className="rounded-lg border border-slate-800 bg-slate-950/35 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Pouso {String(idx + 1).padStart(2, "0")}
+              </p>
+              <InfoRow
+                label="Impacto"
+                value={formatImpact(seg.landingMetrics?.tdImpactG, seg.landingMetrics?.tdImpactLabel)}
+              />
+              <InfoRow label="VA toque" value={fmtKt(seg.landingMetrics?.tdIasKt)} />
+              <InfoRow label="GS toque" value={fmtKt(seg.landingMetrics?.tdGsKt)} />
+              <InfoRow label="VS toque" value={fmtFpm(seg.landingMetrics?.tdVertSpeedFpm)} />
+            </div>
+          ))}
+        </div>
+      </SummaryCard>
+
+      <SummaryCard title="Resumo de decolagens">
+        <InfoRow label="Qtd de decolagens" value={String(takeoffSegments.length)} />
+        <div className="mt-3 grid gap-3">
+          {takeoffSegments.map((seg, idx) => (
+            <div key={seg.id} className="rounded-lg border border-slate-800 bg-slate-950/35 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Decolagem {String(idx + 1).padStart(2, "0")}
+              </p>
+              <InfoRow label="Distância de decolagem" value={fmtMetersFromFt(seg.takeoffMetrics?.groundRollFt)} />
+              <InfoRow label="Tempo até decolagem" value={fmtSeconds(seg.takeoffMetrics?.groundRollDurationSec)} />
+              <InfoRow label="Tempo até AGL 100" value={fmtSeconds(seg.takeoffMetrics?.timeToAgl100Sec)} />
+              <InfoRow label="Tempo até AGL 500" value={fmtSeconds(seg.takeoffMetrics?.timeToAgl500Sec)} />
+            </div>
+          ))}
+        </div>
+      </SummaryCard>
     </div>
   );
+}
+
+function SummaryCard({ children, title }: { children: React.ReactNode; title: string }) {
+  return (
+    <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-4">
+      <h4 className="text-sm font-semibold text-slate-200">{title}</h4>
+      <div className="mt-3">{children}</div>
+    </div>
+  );
+}
+
+type OperationalSummary = {
+  startup: string;
+  shutdown: string;
+  brakesOff: string;
+  brakesOn: string;
+  takeoff: string;
+  airtimeDuration: string;
+  landing: string;
+  startupToShutdown: string;
+  brakesDuration: string;
+};
+
+function OperationalTimelineCard({ summary }: { summary: OperationalSummary }) {
+  return (
+    <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-4">
+      <div className="grid gap-3 text-sm">
+        <TimelineRow
+          leftLabel="Startup"
+          leftValue={summary.startup}
+          center={summary.startupToShutdown}
+          rightLabel="Shutdown"
+          rightValue={summary.shutdown}
+        />
+        <TimelineRow
+          leftLabel="Brakes off"
+          leftValue={summary.brakesOff}
+          center={summary.brakesDuration}
+          rightLabel="Brakes on"
+          rightValue={summary.brakesOn}
+        />
+        <TimelineRow
+          leftLabel="Takeoff"
+          leftValue={summary.takeoff}
+          center={summary.airtimeDuration}
+          centerLabel="Airtime"
+          rightLabel="Landing"
+          rightValue={summary.landing}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TimelineRow({
+  center,
+  centerLabel,
+  leftLabel,
+  leftValue,
+  rightLabel,
+  rightValue,
+}: {
+  center: string;
+  centerLabel?: string;
+  leftLabel: string;
+  leftValue: string;
+  rightLabel: string;
+  rightValue: string;
+}) {
+  return (
+    <div className="grid grid-cols-[72px_minmax(0,1fr)_72px] items-end gap-2">
+      <div>
+        <p className="text-[11px] text-indigo-300/80">{leftLabel}</p>
+        <p className="font-medium text-slate-100">{leftValue}</p>
+      </div>
+      <div className="grid gap-1 text-center">
+        {centerLabel && <p className="text-[11px] text-indigo-300/80">{centerLabel}</p>}
+        <div className="flex items-center gap-2">
+          <span className="h-px flex-1 bg-slate-600" />
+          <span className="rounded-full bg-slate-600 px-3 py-1 text-sm font-semibold text-white">{center}</span>
+          <span className="h-px flex-1 bg-slate-600" />
+        </div>
+      </div>
+      <div className="text-right">
+        <p className="text-[11px] text-indigo-300/80">{rightLabel}</p>
+        <p className="font-medium text-slate-100">{rightValue}</p>
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-slate-800 py-1.5 last:border-0">
+      <span className="text-xs text-slate-400">{label}</span>
+      <span className="text-right text-sm font-medium text-slate-100">{value}</span>
+    </div>
+  );
+}
+
+type TimedValue = { value: number; x: number } | null;
+
+function maxSampleFromRows(rows: ChartRow[], key: string): TimedValue {
+  let best: TimedValue = null;
+  rows.forEach((row) => {
+    const value = row[key];
+    if (value === null || value === undefined || !Number.isFinite(value)) return;
+    if (best === null || value > best.value) best = { value, x: row.x };
+  });
+  return best;
+}
+
+function computeWindComponents(rows: ChartRow[]) {
+  let maxHeadwind: TimedValue = null;
+  let maxTailwind: TimedValue = null;
+  let maxCrosswind: TimedValue = null;
+
+  rows.forEach((row) => {
+    const windKt = row.windKt;
+    const windDirDeg = row.windDirDeg;
+    const referenceDeg = row.hdgMag ?? row.trackDeg;
+    if (isFiniteNumber(windKt) && isFiniteNumber(windDirDeg) && isFiniteNumber(referenceDeg)) {
+      const diffRad = (angleDiffDeg(windDirDeg, referenceDeg) * Math.PI) / 180;
+      const headwind = windKt * Math.cos(diffRad);
+      const crosswind = Math.abs(windKt * Math.sin(diffRad));
+      if (headwind >= 0) {
+        if (maxHeadwind === null || headwind > maxHeadwind.value) {
+          maxHeadwind = { value: headwind, x: row.x };
+        }
+      } else {
+        const tailwind = Math.abs(headwind);
+        if (maxTailwind === null || tailwind > maxTailwind.value) {
+          maxTailwind = { value: tailwind, x: row.x };
+        }
+      }
+      if (maxCrosswind === null || crosswind > maxCrosswind.value) {
+        maxCrosswind = { value: crosswind, x: row.x };
+      }
+      return;
+    }
+
+    const gsKt = row.gsKt;
+    const tasKt = row.tasKt;
+    if (!isFiniteNumber(gsKt) || !isFiniteNumber(tasKt)) return;
+
+    const longitudinalWind = tasKt - gsKt;
+    if (longitudinalWind >= 0) {
+      if (maxHeadwind === null || longitudinalWind > maxHeadwind.value) {
+        maxHeadwind = { value: longitudinalWind, x: row.x };
+      }
+    } else {
+      const tailwind = Math.abs(longitudinalWind);
+      if (maxTailwind === null || tailwind > maxTailwind.value) {
+        maxTailwind = { value: tailwind, x: row.x };
+      }
+    }
+  });
+
+  return { maxHeadwind, maxTailwind, maxCrosswind };
+}
+
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return value !== null && value !== undefined && Number.isFinite(value);
+}
+
+function computeOperationalSummary(
+  chartData: ChartRow[],
+  chartTimeBaseMs: number | null,
+  segments: FlightSegment[],
+): OperationalSummary {
+  const startupX = findFirstRunningEngineX(chartData) ?? chartData[0]?.x ?? null;
+  const shutdownX = findShutdownX(chartData) ?? chartData[chartData.length - 1]?.x ?? null;
+  const firstTakeoff = segments.find((seg) => seg.type === "takeoff");
+  const landingSegments = segments.filter((seg) => seg.type === "landing" || seg.type === "tgl");
+  const finalLanding = landingSegments[landingSegments.length - 1] ?? null;
+
+  const firstLiftoff = firstTakeoff?.events.find((ev) => ev.type === "liftoff") ?? null;
+  const finalTouchdown = finalLanding?.events.find((ev) => ev.type === "touchdown") ?? null;
+  const brakesOffX = findFirstGroundSpeedX(chartData);
+  const brakesOnX = findLastGroundSpeedX(chartData);
+  const airtimeSec =
+    firstLiftoff && finalTouchdown ? Math.max(0, (finalTouchdown.xMs - firstLiftoff.xMs) / 1000) : null;
+
+  return {
+    startup: formatShortTime(startupX, chartTimeBaseMs),
+    shutdown: formatShortTime(shutdownX, chartTimeBaseMs),
+    brakesOff: formatShortTime(brakesOffX, chartTimeBaseMs),
+    brakesOn: formatShortTime(brakesOnX, chartTimeBaseMs),
+    takeoff: formatShortTime(firstLiftoff?.xMs ?? null, chartTimeBaseMs),
+    airtimeDuration: formatCompactDuration(airtimeSec),
+    landing: formatShortTime(finalTouchdown?.xMs ?? null, chartTimeBaseMs),
+    startupToShutdown: formatCompactDuration(startupX !== null && shutdownX !== null ? (shutdownX - startupX) / 1000 : null),
+    brakesDuration: formatCompactDuration(brakesOffX !== null && brakesOnX !== null ? (brakesOnX - brakesOffX) / 1000 : null),
+  };
+}
+
+function findFirstRunningEngineX(chartData: ChartRow[]): number | null {
+  const row = chartData.find((sample) => isRunningEngine(sample.rpm));
+  return row?.x ?? null;
+}
+
+function findShutdownX(chartData: ChartRow[]): number | null {
+  let lastRunningIdx = -1;
+  for (let i = 0; i < chartData.length; i++) {
+    if (isRunningEngine(chartData[i]?.rpm)) lastRunningIdx = i;
+  }
+  if (lastRunningIdx < 0) return null;
+  for (let i = lastRunningIdx + 1; i < chartData.length; i++) {
+    const rpm = chartData[i]?.rpm;
+    if (rpm !== null && rpm !== undefined && !isRunningEngine(rpm)) return chartData[i]!.x;
+  }
+  return chartData[chartData.length - 1]?.x ?? null;
+}
+
+function isRunningEngine(rpm: number | null | undefined): boolean {
+  return rpm !== null && rpm !== undefined && Number.isFinite(rpm) && rpm > 300;
+}
+
+function findFirstGroundSpeedX(chartData: ChartRow[]): number | null {
+  const row = chartData.find((sample) => hasGroundSpeedIndication(sample.gsKt));
+  return row?.x ?? null;
+}
+
+function findLastGroundSpeedX(chartData: ChartRow[]): number | null {
+  for (let i = chartData.length - 1; i >= 0; i--) {
+    if (hasGroundSpeedIndication(chartData[i]?.gsKt)) return chartData[i]!.x;
+  }
+  return null;
+}
+
+function hasGroundSpeedIndication(gsKt: number | null | undefined): boolean {
+  return gsKt !== null && gsKt !== undefined && Number.isFinite(gsKt) && gsKt > 1;
+}
+
+function angleDiffDeg(a: number, b: number): number {
+  let diff = Math.abs(a - b) % 360;
+  if (diff > 180) diff = 360 - diff;
+  return diff;
+}
+
+function formatDistanceNmKm(meters: number): string {
+  if (!Number.isFinite(meters) || meters <= 0) return "—";
+  return `${(meters / 1852).toFixed(1)} NM / ${(meters / 1000).toFixed(1)} km`;
+}
+
+function fmtKt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${value.toFixed(0)} kt`;
+}
+
+function fmtKtAt(sample: TimedValue, baseMs: number | null): string {
+  if (sample === null) return "—";
+  const time = formatSampleTime(sample.x, baseMs);
+  return `${sample.value.toFixed(0)} kt${time ? ` às ${time}` : ""}`;
+}
+
+function fmtFpm(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${value.toFixed(0)} fpm`;
+}
+
+function fmtMetersFromFt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${(value * 0.3048).toFixed(0)} m`;
+}
+
+function fmtSeconds(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${Math.round(value)} s`;
+}
+
+function formatCompactDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  const total = Math.max(0, Math.round(value));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}`;
+  return `${minutes}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function formatImpact(value: number | null | undefined, label: string | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return label ?? "—";
+  return `${value.toFixed(2)} G${label ? ` (${label})` : ""}`;
+}
+
+function formatShortTime(xMs: number | null | undefined, baseMs: number | null): string {
+  if (xMs === null || xMs === undefined || baseMs === null) return "—";
+  try {
+    return `${new Date(baseMs + xMs).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}z`;
+  } catch {
+    return "—";
+  }
+}
+
+function formatSampleTime(xMs: number, baseMs: number | null): string {
+  if (baseMs === null) return "";
+  try {
+    return new Date(baseMs + xMs).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }

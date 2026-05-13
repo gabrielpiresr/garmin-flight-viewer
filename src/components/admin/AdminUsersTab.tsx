@@ -135,14 +135,10 @@ function FlightCard({ flight, onOpen }: { flight: AdminUserFlight; onOpen: (id: 
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate font-medium text-slate-200">{flight.name}</p>
-          <p className="mt-0.5 text-xs text-slate-500">
+          <p className="text-xs text-slate-500">
             {formatFlightDate(flight)} · {flight.aircraftIdent || "Aeronave nao informada"}
           </p>
         </div>
-        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-400">
-          {flight.status === "draft" ? "rascunho" : "publicado"}
-        </span>
       </div>
       <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2">
         <span>Duracao: {formatDuration(flight.durationSec)}</span>
@@ -518,11 +514,6 @@ export function AdminUsersTab() {
                   </dl>
                 </section>
 
-                <AdminUserCreditsSection
-                  studentUserId={selectedDetail.userId}
-                  studentName={displayName(selectedDetail)}
-                />
-
                 <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <h3 className="text-sm font-semibold text-slate-200">Habilitacoes</h3>
@@ -575,6 +566,13 @@ export function AdminUsersTab() {
                     </div>
                   </div>
                 </section>
+
+                {selectedDetail.role === "aluno" ? (
+                  <AdminUserCreditsSection
+                    studentUserId={selectedDetail.userId}
+                    studentName={displayName(selectedDetail)}
+                  />
+                ) : null}
 
                 {(roleDraft === "instrutor" || selectedDetail.role === "instrutor") ? (
                   <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">

@@ -3,6 +3,7 @@ import type { UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types/adminUsers";
+import type { StudentCreditInput } from "../types/credits";
 
 type AdminUsersResponse = {
   users?: AdminUserSummary[];
@@ -85,6 +86,18 @@ export async function updateAdminUserInstructorPreferences(
     );
   }
   return response.user;
+}
+
+export async function createAdminUserCredit(input: StudentCreditInput): Promise<void> {
+  await executeAdminUsers({ action: "createCredit", credit: input });
+}
+
+export async function updateAdminUserCredit(creditId: string, input: StudentCreditInput): Promise<void> {
+  await executeAdminUsers({ action: "updateCredit", creditId, credit: input });
+}
+
+export async function deleteAdminUserCredit(creditId: string, userId: string): Promise<void> {
+  await executeAdminUsers({ action: "deleteCredit", creditId, userId });
 }
 
 export async function listAdminUsers(search: string): Promise<AdminUserSummary[]> {
