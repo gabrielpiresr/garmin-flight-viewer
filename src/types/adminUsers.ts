@@ -2,6 +2,7 @@ import type { PilotLicense, PilotMedical, PilotRating, UserRole } from "../lib/r
 import type { AvailabilityType } from "./planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "./schedule";
 import type { WeeklyFlightPlanStatus } from "./planning";
+import type { StudentTrainingTrack, TrainingSelectionSnapshot } from "./trainingTrack";
 
 export type AdminUserFlight = {
   id: string;
@@ -21,6 +22,10 @@ export type AdminUserFlight = {
   instructorAnac: string;
   scheduleWeekStart: string | null;
   scheduleDemandId: string | null;
+  trainingTrackId: string | null;
+  trainingStageId: string | null;
+  trainingMissionId: string | null;
+  trainingSnapshot: TrainingSelectionSnapshot | null;
   studentUserId: string | null;
   instructorUserId: string | null;
 };
@@ -108,6 +113,7 @@ export type AdminUserSummary = {
   executed: AdminExecutedMetrics;
   planned: AdminPlannedMetrics;
   intentions: AdminIntentionsMetrics;
+  trainingTracks?: StudentTrainingTrack[];
 };
 
 export type AdminUserDetail = Omit<AdminUserSummary, "profile"> & {
@@ -116,6 +122,7 @@ export type AdminUserDetail = Omit<AdminUserSummary, "profile"> & {
   plannedFlights: AdminUserFlight[];
   futureIntentions: AdminUserPlannedFlight[];
   flights: AdminUserFlight[];
+  trainingTracks: StudentTrainingTrack[];
 };
 
 export type AdminUsersPage = {

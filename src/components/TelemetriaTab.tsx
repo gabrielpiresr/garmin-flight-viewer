@@ -1,7 +1,8 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { decodeFlightRecord, encodeFlightRecord } from "../lib/flightRecordCodec";
+import { decodeFlightRecord, encodeFlightRecord, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
+import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/flightTelemetryAlertsDb";
 import { getSavedFlight, updateFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
@@ -14,6 +15,13 @@ import {
 import { detectFlightSegments } from "../lib/flightSegments";
 import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
+import {
+  MAX_TELEMETRY_CSV_FILES,
+  mergeTelemetryCsvFiles,
+  type TelemetryCsvFileMeta,
+  type TelemetryCsvGap,
+} from "../lib/telemetryCsvMerge";
+import { propertyLabel, propertyUnit, type TelemetryAlertProperty } from "../lib/telemetryAlerts";
 import type { ChartRow } from "../lib/telemetryCharts";
 import type { FlightPoint, FlightSegment, FlightSummary } from "../types/flight";
 import CsvWorker from "../workers/csvWorker?worker";
@@ -59,6 +67,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const { showToast } = useToast();
   const [fileName, setFileName] = useState<string | null>(null);
   const [telemetryCharCount, setTelemetryCharCount] = useState(0);
+  const [telemetrySources, setTelemetrySources] = useState<FlightRecordTelemetryFile[]>([]);
+  const [telemetryFileMetas, setTelemetryFileMetas] = useState<TelemetryCsvFileMeta[]>([]);
+  const [telemetryGapSec, setTelemetryGapSec] = useState<number | null>(null);
+  const [telemetryGaps, setTelemetryGaps] = useState<TelemetryCsvGap[]>([]);
+  const [telemetryDirty, setTelemetryDirty] = useState(false);
   const [points, setPoints] = useState<FlightPoint[]>([]);
   const [chartData, setChartData] = useState<ChartRow[]>([]);
   const [hasChartTime, setHasChartTime] = useState(false);
@@ -68,6 +81,8 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const [loading, setLoading] = useState(false);
   const [savingTelemetry, setSavingTelemetry] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [flightAlerts, setFlightAlerts] = useState<FlightTelemetryAlertDoc[]>([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
   const workerRef = useRef<Worker | null>(null);
 
   const [chartDomain, setChartDomain] = useState<[number, number] | null>(null);
@@ -85,6 +100,25 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   useEffect(() => { selectedSegmentIdRef.current = selectedSegmentId; }, [selectedSegmentId]);
 
   const canEditTelemetry = user?.role === "instrutor" || user?.role === "admin";
+
+  const loadFlightAlerts = useCallback(async () => {
+    if (!flightId) {
+      setFlightAlerts([]);
+      return;
+    }
+    setAlertsLoading(true);
+    const result = await listFlightTelemetryAlerts(flightId);
+    setAlertsLoading(false);
+    if (result.error) {
+      showToast({ variant: "error", message: result.error.message });
+      return;
+    }
+    setFlightAlerts(result.data);
+  }, [flightId, showToast]);
+
+  useEffect(() => {
+    void loadFlightAlerts();
+  }, [loadFlightAlerts]);
 
   /** Called on map moveend/zoomend — updates the chart domain to match visible route. */
   const handleBoundsChange = useCallback((bounds: L.LatLngBounds) => {
@@ -144,6 +178,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   useEffect(() => {
     if (!parsedResult) return;
     applyResult(parsedResult, "voo importado");
+    setTelemetrySources([]);
+    setTelemetryFileMetas([]);
+    setTelemetryGapSec(null);
+    setTelemetryGaps([]);
+    setTelemetryDirty(false);
   }, [parsedResult, applyResult]);
 
   useEffect(() => () => { workerRef.current?.terminate(); }, []);
@@ -166,11 +205,40 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         setLoading(false);
         setFileName(null);
         setTelemetryCharCount(0);
+        setTelemetrySources([]);
+        setTelemetryFileMetas([]);
+        setTelemetryGapSec(null);
+        setTelemetryGaps([]);
+        setTelemetryDirty(false);
         setPoints([]);
         setChartData([]);
         setWarnings([]);
         return;
       }
+      const loadedSources =
+        decoded.telemetryFiles && decoded.telemetryFiles.length > 0
+          ? decoded.telemetryFiles
+          : [{ name: data.source_filename || "telemetria.csv", text: telemetryText }];
+      let loadedFileMetas = decoded.telemetryFileMetadata ?? [];
+      let loadedGapSec = decoded.telemetryGapSec ?? null;
+      let loadedGaps = decoded.telemetryGaps ?? [];
+      if (loadedFileMetas.length === 0 && loadedSources.length > 0) {
+        try {
+          const merged = mergeTelemetryCsvFiles(loadedSources);
+          loadedFileMetas = merged.files;
+          loadedGapSec = merged.totalGapSec;
+          loadedGaps = merged.gaps;
+        } catch {
+          loadedFileMetas = [];
+          loadedGapSec = null;
+          loadedGaps = [];
+        }
+      }
+      setTelemetrySources(loadedSources);
+      setTelemetryFileMetas(loadedFileMetas);
+      setTelemetryGapSec(loadedGapSec);
+      setTelemetryGaps(loadedGaps);
+      setTelemetryDirty(false);
       const worker = new CsvWorker();
       workerRef.current = worker;
       worker.onmessage = (e: MessageEvent<{ ok: boolean; result?: ParseResult; error?: string }>) => {
@@ -193,25 +261,63 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     });
   }, [flightId, applyResult]);
 
-  const handleTelemetryCsvSelected = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleTelemetryFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    if (!file || !flightId || !user || !canEditTelemetry) return;
+    if (files.length === 0 || !flightId || !user || !canEditTelemetry) return;
+    if (telemetrySources.length + files.length > MAX_TELEMETRY_CSV_FILES) {
+      showToast({ variant: "error", message: `Selecione no máximo ${MAX_TELEMETRY_CSV_FILES} CSVs por voo.` });
+      return;
+    }
+
+    setLoadError(null);
+    try {
+      const nextSources = await Promise.all(
+        files.map(async (file) => ({
+          name: file.name,
+          text: await file.text(),
+        })),
+      );
+      setTelemetrySources((current) => [...current, ...nextSources]);
+      setTelemetryDirty(true);
+      showToast({ variant: "success", message: "CSV adicionado. Clique em Processar telemetria para validar." });
+    } catch (err) {
+      showToast({ variant: "error", message: (err as Error).message || "Falha ao ler CSV de telemetria." });
+    }
+  };
+
+  const removeTelemetrySource = (index: number) => {
+    setTelemetrySources((current) => current.filter((_, i) => i !== index));
+    setTelemetryDirty(true);
+  };
+
+  const handleProcessTelemetry = async () => {
+    if (!flightId || !user || !canEditTelemetry) return;
+    if (telemetrySources.length === 0) {
+      showToast({ variant: "error", message: "Selecione pelo menos um CSV para processar." });
+      return;
+    }
 
     setSavingTelemetry(true);
     setLoadError(null);
     try {
-      const telemetryCsv = await file.text();
       const saved = await getSavedFlight(flightId);
       if (saved.error || !saved.data) throw saved.error ?? new Error("Voo não encontrado.");
 
       const decoded = decodeFlightRecord(saved.data.csv_text);
       if (!decoded.meta) throw new Error("Ficha do voo sem metadados para anexar telemetria.");
 
-      const parsed = parseGarminCsv(telemetryCsv);
+      const merged = mergeTelemetryCsvFiles(telemetrySources);
+      if (!merged.csv.trim()) throw new Error("Nenhum CSV de telemetria selecionado.");
+
+      const parsed = parseGarminCsv(merged.csv);
       const parsedSummary = summarizeFlight(parsed.points);
       const durationSec = chartDurationSec(parsed.chartData, parsed.hasChartTime) ?? parsedSummary.durationSec;
-      const csvText = encodeFlightRecord({ meta: decoded.meta, telemetryCsv });
+      const csvText = encodeFlightRecord({
+        meta: decoded.meta,
+        telemetryCsv: merged.csv,
+        telemetryFiles: telemetrySources,
+      });
       const identity = deriveIdentity({
         meta: decoded.meta,
         studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
@@ -224,19 +330,25 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         actorRole: user.role,
         studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
         instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
-        source_filename: file.name,
+        source_filename: merged.sourceFileName,
         csv_text: csvText,
         aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
         duration_sec: durationSec,
         telemetryMetrics,
+        telemetryAlertParsed: parsed,
       });
 
       if (result.error) throw result.error;
 
-      applyResult(parsed, file.name, telemetryCsv.length);
-      showToast({ variant: "success", message: "CSV de telemetria salvo." });
+      applyResult(parsed, merged.sourceFileName, merged.csv.length);
+      setTelemetryFileMetas(merged.files);
+      setTelemetryGapSec(merged.totalGapSec);
+      setTelemetryGaps(merged.gaps);
+      setTelemetryDirty(false);
+      await loadFlightAlerts();
+      showToast({ variant: "success", message: "Telemetria processada." });
     } catch (err) {
-      showToast({ variant: "error", message: (err as Error).message || "Falha ao salvar CSV de telemetria." });
+      showToast({ variant: "error", message: (err as Error).message || "Falha ao processar telemetria." });
     } finally {
       setSavingTelemetry(false);
     }
@@ -308,29 +420,84 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     return formatDuration(summary.durationSec);
   }, [chartData, hasChartTime, summary.durationSec]);
 
+  const processedTelemetryFileCount = telemetryFileMetas.length || (fileName ? 1 : 0);
+  const canAddTelemetryFiles = canEditTelemetry && telemetrySources.length < MAX_TELEMETRY_CSV_FILES;
+
   const uploadPanel = (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4">
         <div>
-          <p className="text-sm font-medium text-slate-200">CSV de telemetria</p>
+          <p className="text-sm font-medium text-slate-200">
+            CSVs de telemetria ({telemetrySources.length}/{MAX_TELEMETRY_CSV_FILES})
+          </p>
           <p className="mt-1 text-xs text-slate-500">
             {fileName
-              ? `${fileName} (${telemetryCharCount.toLocaleString("pt-BR")} chars)`
+              ? `Último processamento: ${fileName} (${telemetryCharCount.toLocaleString("pt-BR")} chars)`
               : "Nenhum CSV de telemetria carregado."}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            A ordem de processamento é definida pelos horários nas linhas dos CSVs, não pela ordem de seleção.
           </p>
         </div>
 
+        {telemetrySources.length > 0 ? (
+          <div className="grid gap-2">
+            {telemetrySources.map((source, index) => (
+              <div
+                key={`${source.name}-${index}`}
+                className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-medium text-slate-200">{source.name}</p>
+                  <p className="text-xs text-slate-500">{source.text.length.toLocaleString("pt-BR")} chars</p>
+                </div>
+                {canEditTelemetry ? (
+                  <button
+                    type="button"
+                    onClick={() => removeTelemetrySource(index)}
+                    disabled={savingTelemetry}
+                    className="self-start rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50 sm:self-auto"
+                  >
+                    Remover
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {telemetryDirty ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
+            Há alterações pendentes. Clique em Processar telemetria para validar e salvar.
+          </p>
+        ) : null}
+
         {canEditTelemetry && (
-          <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800">
-            {savingTelemetry ? "Salvando CSV..." : fileName ? "Substituir CSV" : "Subir CSV"}
-            <input
-              type="file"
-              accept=".csv,text/csv,text/plain"
-              disabled={savingTelemetry}
-              onChange={(e) => void handleTelemetryCsvSelected(e)}
-              className="hidden"
-            />
-          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <label
+              className={`inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 ${
+                canAddTelemetryFiles && !savingTelemetry ? "cursor-pointer hover:bg-slate-800" : "cursor-not-allowed opacity-50"
+              }`}
+            >
+              Adicionar CSVs
+              <input
+                type="file"
+                multiple
+                accept=".csv,text/csv,text/plain"
+                disabled={!canAddTelemetryFiles || savingTelemetry}
+                onChange={(e) => void handleTelemetryFilesSelected(e)}
+                className="hidden"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleProcessTelemetry()}
+              disabled={savingTelemetry || telemetrySources.length === 0}
+              className="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              {savingTelemetry ? "Processando..." : "Processar telemetria"}
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -372,7 +539,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       <div className="space-y-3">
         {uploadPanel}
         <p className="py-12 text-center text-sm text-slate-500">
-          Nenhum arquivo carregado.
+          {telemetrySources.length > 0
+            ? "Arquivos selecionados. Clique em Processar telemetria para validar os dados."
+            : "Nenhum arquivo carregado."}
         </p>
       </div>
     );
@@ -381,8 +550,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   return (
     <div className="min-w-0 flex flex-col gap-2">
       {uploadPanel}
+      <TelemetryAlertsPanel alerts={flightAlerts} loading={alertsLoading} />
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">Arquivo: {fileName}</h3>
+        <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">
+          Arquivos processados: {fileName}
+        </h3>
       </div>
 
       {warnings.length > 0 && (
@@ -413,6 +585,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                     durationDisplay={durationDisplay}
                     segments={segments}
                     summary={summary}
+                    telemetryFileCount={processedTelemetryFileCount}
+                    telemetryGapSec={telemetryGapSec}
+                    telemetryGaps={telemetryGaps}
                   />
                 )}
               </div>
@@ -455,24 +630,102 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   );
 }
 
+const ALERT_SEVERITY_CLASS: Record<string, string> = {
+  leve: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+  atencao: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+  risco: "border-rose-500/30 bg-rose-500/10 text-rose-200",
+};
+
+function parseEvidenceValues(evidenceJson: string): Partial<Record<TelemetryAlertProperty, number>> {
+  try {
+    const parsed = JSON.parse(evidenceJson) as { values?: Partial<Record<TelemetryAlertProperty, number>> };
+    return parsed.values ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function formatAlertTime(value: string | null): string {
+  if (!value) return "horario indisponivel";
+  try {
+    return new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return value;
+  }
+}
+
+function TelemetryAlertsPanel({ alerts, loading }: { alerts: FlightTelemetryAlertDoc[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-4">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-2 h-3 w-64" />
+      </div>
+    );
+  }
+
+  if (alerts.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100">Alertas ativados</h3>
+          <p className="text-xs text-slate-500">Regras configuradas pelo admin que foram disparadas neste voo.</p>
+        </div>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-xs text-slate-400">
+          {alerts.length} {alerts.length === 1 ? "alerta" : "alertas"}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {alerts.map((alert) => {
+          const values = parseEvidenceValues(alert.evidenceJson);
+          const valueText = Object.entries(values)
+            .map(([key, value]) => `${propertyLabel(key as TelemetryAlertProperty)}: ${value} ${propertyUnit(key as TelemetryAlertProperty)}`)
+            .join(" | ");
+          return (
+            <div key={alert.id} className={`rounded-lg border px-3 py-2 ${ALERT_SEVERITY_CLASS[alert.severity] ?? ALERT_SEVERITY_CLASS.leve}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold">{alert.ruleName}</p>
+                <span className="text-[11px] uppercase tracking-wider">{alert.severity}</span>
+              </div>
+              <p className="mt-1 text-xs opacity-80">
+                {alert.phase ?? "fase"} · {formatAlertTime(alert.matchedAt)}
+                {alert.durationSec ? ` · ${alert.durationSec}s` : ""}
+              </p>
+              {valueText ? <p className="mt-1 text-xs opacity-90">{valueText}</p> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function FullFlightSummary({
   chartData,
   chartTimeBaseMs,
   durationDisplay,
   segments,
   summary,
+  telemetryFileCount,
+  telemetryGapSec,
+  telemetryGaps,
 }: {
   chartData: ChartRow[];
   chartTimeBaseMs: number | null;
   durationDisplay: string;
   segments: FlightSegment[];
   summary: FlightSummary;
+  telemetryFileCount: number;
+  telemetryGapSec: number | null;
+  telemetryGaps: TelemetryCsvGap[];
 }) {
   const landingSegments = segments.filter((seg) => seg.type === "landing" || seg.type === "tgl");
   const takeoffSegments = segments.filter((seg) => seg.type === "takeoff");
   const gsMax = maxSampleFromRows(chartData, "gsKt");
   const wind = computeWindComponents(chartData);
-  const operational = computeOperationalSummary(chartData, chartTimeBaseMs, segments);
+  const operational = computeOperationalSummary(chartData, chartTimeBaseMs, segments, telemetryGapSec, telemetryFileCount, telemetryGaps);
 
   return (
     <div className="grid gap-4">
@@ -548,6 +801,12 @@ type OperationalSummary = {
   landing: string;
   startupToShutdown: string;
   brakesDuration: string;
+  telemetryGapDuration: string | null;
+  telemetryGaps: Array<{
+    startTime: string;
+    endTime: string;
+    duration: string;
+  }>;
 };
 
 function OperationalTimelineCard({ summary }: { summary: OperationalSummary }) {
@@ -576,6 +835,28 @@ function OperationalTimelineCard({ summary }: { summary: OperationalSummary }) {
           rightLabel="Landing"
           rightValue={summary.landing}
         />
+        {summary.telemetryGaps.length > 0 ? (
+          summary.telemetryGaps.map((gap, index) => (
+            <TimelineRow
+              key={`${gap.startTime}-${gap.endTime}-${index}`}
+              leftLabel={summary.telemetryGaps.length > 1 ? `Fim telemetria ${index + 1}` : "Fim telemetria"}
+              leftValue={gap.startTime}
+              center={gap.duration}
+              centerLabel="Parado sem telemetria"
+              rightLabel="Retorno telemetria"
+              rightValue={gap.endTime}
+            />
+          ))
+        ) : summary.telemetryGapDuration ? (
+          <TimelineRow
+            leftLabel="Fim telemetria"
+            leftValue="—"
+            center={summary.telemetryGapDuration}
+            centerLabel="Parado sem telemetria"
+            rightLabel="Retorno telemetria"
+            rightValue="—"
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -696,6 +977,9 @@ function computeOperationalSummary(
   chartData: ChartRow[],
   chartTimeBaseMs: number | null,
   segments: FlightSegment[],
+  telemetryGapSec: number | null,
+  telemetryFileCount: number,
+  telemetryGaps: TelemetryCsvGap[],
 ): OperationalSummary {
   const startupX = findFirstRunningEngineX(chartData) ?? chartData[0]?.x ?? null;
   const shutdownX = findShutdownX(chartData) ?? chartData[chartData.length - 1]?.x ?? null;
@@ -720,6 +1004,12 @@ function computeOperationalSummary(
     landing: formatShortTime(finalTouchdown?.xMs ?? null, chartTimeBaseMs),
     startupToShutdown: formatCompactDuration(startupX !== null && shutdownX !== null ? (shutdownX - startupX) / 1000 : null),
     brakesDuration: formatCompactDuration(brakesOffX !== null && brakesOnX !== null ? (brakesOnX - brakesOffX) / 1000 : null),
+    telemetryGapDuration: telemetryFileCount > 1 ? formatCompactDuration(telemetryGapSec ?? 0) : null,
+    telemetryGaps: telemetryGaps.map((gap) => ({
+      startTime: formatAbsoluteShortTime(gap.startMs),
+      endTime: formatAbsoluteShortTime(gap.endMs),
+      duration: formatCompactDuration(gap.durationSec),
+    })),
   };
 }
 
@@ -816,6 +1106,18 @@ function formatShortTime(xMs: number | null | undefined, baseMs: number | null):
   if (xMs === null || xMs === undefined || baseMs === null) return "—";
   try {
     return `${new Date(baseMs + xMs).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}z`;
+  } catch {
+    return "—";
+  }
+}
+
+function formatAbsoluteShortTime(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  try {
+    return `${new Date(ms).toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
     })}z`;

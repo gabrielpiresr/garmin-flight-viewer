@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listModels, createModel, updateModel, deleteModel } from "../../lib/aircraftModelsDb";
 import { listAircrafts } from "../../lib/aircraftDb";
-import type { AircraftModel, AircraftCategory } from "../../types/admin";
+import type { AircraftModel, AircraftCategory, TemperatureUnit } from "../../types/admin";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -31,6 +31,20 @@ type ModelForm = {
   vref_flap2_kt: string;
   rpm_cruise: string;
   rpm_takeoff_max: string;
+  op_oil_temp_unit: TemperatureUnit;
+  op_oil_temp_attention: string;
+  op_oil_temp_danger: string;
+  op_oil_pressure_attention_psi: string;
+  op_oil_pressure_danger_psi: string;
+  op_rpm_attention: string;
+  op_rpm_danger: string;
+  op_fuel_pressure_attention_psi: string;
+  op_fuel_pressure_danger_psi: string;
+  op_gload_attention: string;
+  op_gload_danger: string;
+  op_touchdown_ias_attention_kt: string;
+  op_touchdown_ias_danger_kt: string;
+  op_best_climb_after_takeoff_kt: string;
 };
 
 const emptyForm: ModelForm = {
@@ -56,6 +70,20 @@ const emptyForm: ModelForm = {
   vref_flap2_kt: "",
   rpm_cruise: "",
   rpm_takeoff_max: "",
+  op_oil_temp_unit: "F",
+  op_oil_temp_attention: "",
+  op_oil_temp_danger: "",
+  op_oil_pressure_attention_psi: "",
+  op_oil_pressure_danger_psi: "",
+  op_rpm_attention: "",
+  op_rpm_danger: "",
+  op_fuel_pressure_attention_psi: "",
+  op_fuel_pressure_danger_psi: "",
+  op_gload_attention: "",
+  op_gload_danger: "",
+  op_touchdown_ias_attention_kt: "",
+  op_touchdown_ias_danger_kt: "",
+  op_best_climb_after_takeoff_kt: "",
 };
 
 const PERF_FIELDS: ReadonlyArray<{ key: keyof ModelForm; label: string; unit: string }> = [
@@ -79,6 +107,40 @@ const PERF_FIELDS: ReadonlyArray<{ key: keyof ModelForm; label: string; unit: st
   { key: "rpm_takeoff_max", label: "RPM máx decolagem", unit: "rpm" },
 ];
 
+const LIMIT_SECTIONS: ReadonlyArray<{
+  title: string;
+  fields: ReadonlyArray<{ key: keyof ModelForm; label: string; unit: string }>;
+}> = [
+  {
+    title: "Óleo",
+    fields: [
+      { key: "op_oil_temp_attention", label: "Temperatura max de atenção", unit: "temp" },
+      { key: "op_oil_temp_danger", label: "Temperatura max de perigo", unit: "temp" },
+      { key: "op_oil_pressure_attention_psi", label: "Pressão max de atenção", unit: "psi" },
+      { key: "op_oil_pressure_danger_psi", label: "Pressão max de perigo", unit: "psi" },
+    ],
+  },
+  {
+    title: "Motor",
+    fields: [
+      { key: "op_rpm_attention", label: "RPM max de atenção", unit: "rpm" },
+      { key: "op_rpm_danger", label: "RPM max de perigo", unit: "rpm" },
+      { key: "op_fuel_pressure_attention_psi", label: "Fuel pressure max de atenção", unit: "psi" },
+      { key: "op_fuel_pressure_danger_psi", label: "Fuel pressure max de perigo", unit: "psi" },
+    ],
+  },
+  {
+    title: "Voo",
+    fields: [
+      { key: "op_gload_attention", label: "G-load max de atencao", unit: "G" },
+      { key: "op_gload_danger", label: "G-load max de perigo", unit: "G" },
+      { key: "op_touchdown_ias_attention_kt", label: "IAS de toque max de atencao", unit: "kt" },
+      { key: "op_touchdown_ias_danger_kt", label: "IAS de toque max de perigo", unit: "kt" },
+      { key: "op_best_climb_after_takeoff_kt", label: "Velocidade ideal de subida apos decolagem", unit: "kt" },
+    ],
+  },
+];
+
 function n(v: string): number | null {
   const trimmed = v.trim().replace(",", ".");
   if (!trimmed) return null;
@@ -88,6 +150,25 @@ function n(v: string): number | null {
 
 function s(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? "" : String(v);
+}
+
+function operationalLimitPayload(form: ModelForm) {
+  return {
+    op_oil_temp_unit: form.op_oil_temp_unit,
+    op_oil_temp_attention: n(form.op_oil_temp_attention),
+    op_oil_temp_danger: n(form.op_oil_temp_danger),
+    op_oil_pressure_attention_psi: n(form.op_oil_pressure_attention_psi),
+    op_oil_pressure_danger_psi: n(form.op_oil_pressure_danger_psi),
+    op_rpm_attention: n(form.op_rpm_attention),
+    op_rpm_danger: n(form.op_rpm_danger),
+    op_fuel_pressure_attention_psi: n(form.op_fuel_pressure_attention_psi),
+    op_fuel_pressure_danger_psi: n(form.op_fuel_pressure_danger_psi),
+    op_gload_attention: n(form.op_gload_attention),
+    op_gload_danger: n(form.op_gload_danger),
+    op_touchdown_ias_attention_kt: n(form.op_touchdown_ias_attention_kt),
+    op_touchdown_ias_danger_kt: n(form.op_touchdown_ias_danger_kt),
+    op_best_climb_after_takeoff_kt: n(form.op_best_climb_after_takeoff_kt),
+  };
 }
 
 export function ModelsTab() {
@@ -160,6 +241,20 @@ export function ModelsTab() {
       vref_flap2_kt: s(model.vref_flap2_kt),
       rpm_cruise: s(model.rpm_cruise),
       rpm_takeoff_max: s(model.rpm_takeoff_max),
+      op_oil_temp_unit: model.op_oil_temp_unit,
+      op_oil_temp_attention: s(model.op_oil_temp_attention),
+      op_oil_temp_danger: s(model.op_oil_temp_danger),
+      op_oil_pressure_attention_psi: s(model.op_oil_pressure_attention_psi),
+      op_oil_pressure_danger_psi: s(model.op_oil_pressure_danger_psi),
+      op_rpm_attention: s(model.op_rpm_attention),
+      op_rpm_danger: s(model.op_rpm_danger),
+      op_fuel_pressure_attention_psi: s(model.op_fuel_pressure_attention_psi),
+      op_fuel_pressure_danger_psi: s(model.op_fuel_pressure_danger_psi),
+      op_gload_attention: s(model.op_gload_attention),
+      op_gload_danger: s(model.op_gload_danger),
+      op_touchdown_ias_attention_kt: s(model.op_touchdown_ias_attention_kt),
+      op_touchdown_ias_danger_kt: s(model.op_touchdown_ias_danger_kt),
+      op_best_climb_after_takeoff_kt: s(model.op_best_climb_after_takeoff_kt),
     });
     setEditingId(model.id);
     setShowForm(true);
@@ -193,6 +288,7 @@ export function ModelsTab() {
           vref_flap2_kt: n(form.vref_flap2_kt),
           rpm_cruise: n(form.rpm_cruise),
           rpm_takeoff_max: n(form.rpm_takeoff_max),
+          ...operationalLimitPayload(form),
         });
         setModels((prev) => prev.map((m) => (m.id === editingId ? updated : m)));
       } else {
@@ -219,6 +315,7 @@ export function ModelsTab() {
           vref_flap2_kt: n(form.vref_flap2_kt),
           rpm_cruise: n(form.rpm_cruise),
           rpm_takeoff_max: n(form.rpm_takeoff_max),
+          ...operationalLimitPayload(form),
         });
         setModels((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
       }
@@ -334,6 +431,54 @@ export function ModelsTab() {
               ))}
             </div>
           </div>
+          <div className="mt-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Limites operacionais
+              </p>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                Temperatura do oleo
+                <select
+                  value={form.op_oil_temp_unit}
+                  onChange={(e) => setForm((f) => ({ ...f, op_oil_temp_unit: e.target.value as TemperatureUnit }))}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                >
+                  <option value="F">F</option>
+                  <option value="C">C</option>
+                </select>
+              </label>
+            </div>
+            <div className="space-y-4">
+              {LIMIT_SECTIONS.map((section) => (
+                <section key={section.title} className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                  <p className="mb-3 text-xs font-semibold text-slate-300">{section.title}</p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {section.fields.map((field) => {
+                      const unit = field.unit === "temp" ? form.op_oil_temp_unit : field.unit;
+                      return (
+                        <div key={field.key}>
+                          <label className="mb-1.5 block text-xs font-medium text-slate-400">{field.label}</label>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={form[field.key]}
+                              onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value }))}
+                              placeholder="--"
+                              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-12 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-sky-500"
+                            />
+                            <span className="pointer-events-none absolute right-3 top-2 text-xs text-slate-500">
+                              {unit}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
@@ -435,6 +580,7 @@ export function ModelsTab() {
                       <p>Vx/Vy: {model.vx_kt ?? "—"} / {model.vy_kt ?? "—"} kt</p>
                       <p>Vs/Vso: {model.vs_clean_kt ?? "—"} / {model.vso_kt ?? "—"} kt</p>
                       <p>Va/Vne: {model.va_kt ?? "—"} / {model.vne_kt ?? "—"} kt</p>
+                      <p>Limites: G {model.op_gload_attention ?? "—"}/{model.op_gload_danger ?? "—"} · RPM {model.op_rpm_attention ?? "—"}/{model.op_rpm_danger ?? "—"}</p>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`text-sm font-medium ${count > 0 ? "text-slate-200" : "text-slate-600"}`}>

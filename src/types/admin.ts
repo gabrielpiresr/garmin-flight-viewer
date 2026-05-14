@@ -1,4 +1,5 @@
 export type AircraftCategory = "PPL" | "IFR" | "Multi-Engine" | "Helicopter" | "Outro";
+export type TemperatureUnit = "C" | "F";
 
 export type AircraftModel = {
   id: string;
@@ -24,6 +25,20 @@ export type AircraftModel = {
   vref_flap2_kt: number | null;
   rpm_cruise: number | null;
   rpm_takeoff_max: number | null;
+  op_oil_temp_unit: TemperatureUnit;
+  op_oil_temp_attention: number | null;
+  op_oil_temp_danger: number | null;
+  op_oil_pressure_attention_psi: number | null;
+  op_oil_pressure_danger_psi: number | null;
+  op_rpm_attention: number | null;
+  op_rpm_danger: number | null;
+  op_fuel_pressure_attention_psi: number | null;
+  op_fuel_pressure_danger_psi: number | null;
+  op_gload_attention: number | null;
+  op_gload_danger: number | null;
+  op_touchdown_ias_attention_kt: number | null;
+  op_touchdown_ias_danger_kt: number | null;
+  op_best_climb_after_takeoff_kt: number | null;
   created_at: string;
 };
 
@@ -35,6 +50,18 @@ export type Aircraft = {
   nickname: string | null;
   image_url: string | null;
   active: boolean;
+  wb_empty_weight_kg: number | null;
+  wb_empty_arm_mm: number | null;
+  wb_occupants_arm_mm: number | null;
+  wb_occupants_max_kg: number | null;
+  wb_baggage_arm_mm: number | null;
+  wb_baggage_max_kg: number | null;
+  wb_fuel_arm_mm: number | null;
+  wb_fuel_max_kg: number | null;
+  wb_fuel_density_kg_l: number | null;
+  wb_max_weight_kg: number | null;
+  wb_arm_min_mm: number | null;
+  wb_arm_max_mm: number | null;
   created_at: string;
   // joined client-side
   model?: AircraftModel;

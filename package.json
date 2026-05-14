@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "appwrite:setup": "node scripts/setup-appwrite.mjs",
     "appwrite:setup-telemetry": "node scripts/setup-telemetry-metrics-collections.mjs",
+    "appwrite:setup-telemetry-alerts": "node scripts/setup-telemetry-alerts-collections.mjs",
     "appwrite:migrate:flights": "node scripts/migrate-flight-ownership.mjs",
     "appwrite:set-role": "node scripts/set-user-role.mjs",
     "appwrite:fix-profile-permissions": "node scripts/fix-profile-read-permissions.mjs",
@@ -22,6 +23,7 @@
     "appwrite:setup-maneuvers": "node scripts/setup-maneuvers-collections.mjs",
     "appwrite:import-maneuvers": "node scripts/import-maneuvers-content.mjs",
     "appwrite:setup-exercises": "node scripts/setup-training-exercises-collection.mjs",
+    "appwrite:setup-tracks": "node scripts/setup-training-tracks.mjs",
     "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs"
   },
   "dependencies": {
@@ -51,5 +53,21 @@
     "tailwindcss": "^4.0.0",
     "typescript": "~5.7.2",
     "vite": "^6.1.0"
-  }
+  },
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabrielpiresr/garmin-flight-viewer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/gabrielpiresr/garmin-flight-viewer/issues"
+  },
+  "homepage": "https://github.com/gabrielpiresr/garmin-flight-viewer#readme"
 }

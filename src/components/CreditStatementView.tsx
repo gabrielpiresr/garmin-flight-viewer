@@ -128,7 +128,7 @@ export function CreditStatementView({
                       const expired = purchase.expiresAt < statement.generatedAt;
                       const payment = purchase.paymentInstallments
                         ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
-                        : purchase.paymentMethod || "Forma nao informada";
+                        : purchase.paymentMethod || "Forma não informada";
                       return (
                         <tr key={purchase.id} className="text-slate-300">
                           <td className="px-3 py-2">{formatDate(purchase.purchaseDate)}</td>
@@ -176,7 +176,7 @@ export function CreditStatementView({
                     {statement.flightDebits.map((debit) => (
                       <tr key={debit.id} className="text-slate-300">
                         <td className="px-3 py-2">{formatDate(debit.flightDate)}</td>
-                        <td className="px-3 py-2">{debit.aircraftIdent || "Aeronave nao informada"}</td>
+                        <td className="px-3 py-2">{debit.aircraftIdent || "Aeronave não informada"}</td>
                         <td className="px-3 py-2">{debit.aircraftModelName}</td>
                         <td className="px-3 py-2">{formatHours(debit.hours)}</td>
                         <td className="px-3 py-2">{formatHours(debit.allocatedHours)}</td>

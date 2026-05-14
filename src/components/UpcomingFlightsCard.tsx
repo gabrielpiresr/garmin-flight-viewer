@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { buildFlightDisplayInfo, getFlightDateTimeMs, isFutureFlight, type FlightDisplayInfo } from "../lib/flightDisplay";
-import { getSavedFlight, listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
+import { getFlightDateTimeMs, isFutureFlight, type FlightDisplayInfo } from "../lib/flightDisplay";
+import { listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
+import {
+  buildBasicFlightListDisplayInfo,
+  loadFullFlightListDisplayInfos,
+} from "../lib/flightListDisplayCache";
 
 type UpcomingFlight = {
   item: SavedFlightListItem;
@@ -22,6 +26,13 @@ function formatFlightDate(info: FlightDisplayInfo, item: SavedFlightListItem): s
   return Number.isNaN(date.getTime())
     ? "—"
     : date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+}
+
+function futureStudentPendingItems(info: FlightDisplayInfo): string[] {
+  const pending: string[] = [];
+  if (!info.studentSuggestionMd.trim()) pending.push("sugestão do aluno");
+  if (!info.weightBalanceFilled) pending.push("peso e balanceamento");
+  return pending;
 }
 
 export function UpcomingFlightsCard({
@@ -52,13 +63,12 @@ export function UpcomingFlightsCard({
       return;
     }
 
-    const rows = await Promise.all(
-      (data ?? []).map(async (item) => {
-        const saved = await getSavedFlight(item.id);
-        const info = buildFlightDisplayInfo(item, saved.data?.csv_text ?? null);
-        return { item, info };
-      }),
-    );
+    const items = data ?? [];
+    const infoById = await loadFullFlightListDisplayInfos(items);
+    const rows = items.map((item) => ({
+      item,
+      info: infoById[item.id] ?? buildBasicFlightListDisplayInfo(item),
+    }));
     setFlights(rows);
     setLoading(false);
   }, [configured, user]);
@@ -107,37 +117,46 @@ export function UpcomingFlightsCard({
           <p className="py-4 text-sm text-slate-500">Nenhum voo futuro atribuído.</p>
         ) : (
           <div className="space-y-3">
-            {nextFlights.map(({ item, info }) => (
-              <article key={item.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs text-slate-500">
-                      {formatFlightDate(info, item)} · {info.startTime || "horário a definir"}
-                    </p>
+            {nextFlights.map(({ item, info }) => {
+              const pending = user?.role === "aluno" ? futureStudentPendingItems(info) : [];
+              return (
+                <article key={item.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs text-slate-500">
+                        {formatFlightDate(info, item)} · {info.startTime || "horário a definir"}
+                      </p>
+                    </div>
+                    <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300 [overflow-wrap:anywhere]">
+                      {info.aircraft}
+                    </span>
                   </div>
-                  <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300 [overflow-wrap:anywhere]">
-                    {info.aircraft}
-                  </span>
-                </div>
-                <div className="mt-3 grid gap-2 break-words text-xs text-slate-400 [overflow-wrap:anywhere]">
-                  <p>
-                    Aluno: <span className="text-slate-300">{info.studentName}</span>
-                  </p>
-                  {info.instructorName ? (
+                  <div className="mt-3 grid gap-2 break-words text-xs text-slate-400 [overflow-wrap:anywhere]">
                     <p>
-                      Instrutor: <span className="text-slate-300">{info.instructorName}</span>
+                      Aluno: <span className="text-slate-300">{info.studentName}</span>
                     </p>
-                  ) : null}
-                  <p>
-                    Rota: <span className="text-slate-300">{info.fromTo}</span>
-                  </p>
-                  <p>
-                    Sugestão INVA:{" "}
-                    <span className="text-slate-300">{info.instructorSuggestionMd ? "preenchida" : "pendente"}</span>
-                  </p>
-                </div>
-              </article>
-            ))}
+                    {info.instructorName ? (
+                      <p>
+                        Instrutor: <span className="text-slate-300">{info.instructorName}</span>
+                      </p>
+                    ) : null}
+                    <p>
+                      Rota: <span className="text-slate-300">{info.fromTo}</span>
+                    </p>
+                    <p>
+                      Sugestão INVA:{" "}
+                      <span className="text-slate-300">{info.instructorSuggestionMd ? "preenchida" : "pendente"}</span>
+                    </p>
+                    {pending.length > 0 ? (
+                      <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+                        <span className="font-semibold">Pendente antes do voo: </span>
+                        {pending.join(" e ")}.
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </div>

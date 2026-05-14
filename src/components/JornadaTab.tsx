@@ -12,6 +12,8 @@ import {
   YAxis,
 } from "recharts";
 import { useAuth } from "../contexts/AuthContext";
+import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import { getSavedFlight, listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
 import {
   listJourneyLandings,
   listJourneyTakeoffs,
@@ -23,7 +25,10 @@ import {
   type JourneyLandingDistributionPoint,
   type JourneyMetrics,
 } from "../lib/journeyMetrics";
+import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import type { StudentTrainingTrack, TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
 import { Skeleton } from "./ui/Skeleton";
+import { Tabs } from "./ui/Tabs";
 
 type JourneyState = {
   metrics: JourneyMetrics;
@@ -31,14 +36,29 @@ type JourneyState = {
   error: string | null;
 };
 
+type FormationState = {
+  tracks: StudentTrainingTrack[];
+  flights: Array<SavedFlightListItem & { trainingMissionIds: string[] }>;
+  loading: boolean;
+  error: string | null;
+};
+
+type MissionTimelineItem = {
+  stage: TrainingStage;
+  mission: TrainingMission;
+  index: number;
+  status: "done" | "next" | "locked";
+};
+
 type MonthlyMetricKey = "hours" | "distanceNm" | "landings";
+type JourneySection = "formacao" | "evolucao";
 
 const EMPTY_METRICS = aggregateJourneyMetrics({ summaries: [], landings: [], takeoffs: [] });
 const CHART_GRID = "#334155";
 const TOOLTIP_STYLE = {
   backgroundColor: "#0f172a",
   border: "1px solid rgba(71,85,105,0.8)",
-  borderRadius: "0.75rem",
+  borderRadius: "0.4875rem",
   color: "#e2e8f0",
 };
 const PIE_COLORS = ["#34d399", "#fbbf24", "#fb7185"];
@@ -57,6 +77,29 @@ const MONTHLY_METRICS: Record<MonthlyMetricKey, { label: string; stroke: string;
   distanceNm: { label: "Milhas", stroke: "#a78bfa", gradientId: "journeyDistance" },
   landings: { label: "Pousos", stroke: "#34d399", gradientId: "journeyLandings" },
 };
+
+const JOURNEY_SECTIONS: Array<{ id: JourneySection; label: string; icon: ReactNode }> = [
+  {
+    id: "formacao",
+    label: "Formação",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2.25a.9.9 0 01.36.075l7 3.05a.9.9 0 010 1.65l-7 3.05a.9.9 0 01-.72 0l-7-3.05a.9.9 0 010-1.65l7-3.05A.9.9 0 0110 2.25z" />
+        <path d="M4.25 8.75v3.4c0 .8.54 1.5 1.31 1.72l3.95 1.13c.32.09.66.09.98 0l3.95-1.13a1.8 1.8 0 001.31-1.72v-3.4l-4.79 2.09a2.4 2.4 0 01-1.92 0L4.25 8.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "evolucao",
+    label: "Evolução",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M3.5 3.75A.75.75 0 014.25 3h11.5a.75.75 0 010 1.5H5v10.75a.75.75 0 01-1.5 0V3.75z" />
+        <path d="M7 13.5a1 1 0 100 2 1 1 0 000-2zm4-4a1 1 0 100 2 1 1 0 000-2zm4-3.5a1 1 0 100 2 1 1 0 000-2zM7.53 13.03l3-3 1.06 1.06-3 3-1.06-1.06zm4.04-2.6l2.9-3.38 1.14.98-2.9 3.38-1.14-.98z" />
+      </svg>
+    ),
+  },
+];
 
 function useJourneyMetrics(): JourneyState {
   const { user, configured } = useAuth();
@@ -84,6 +127,9 @@ function useJourneyMetrics(): JourneyState {
         listJourneyTakeoffs({ userId: currentUser.id, role: currentUser.role }),
       ]);
       if (cancelled) return;
+      // #region agent log
+      fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0a56a4" }, body: JSON.stringify({ sessionId: "0a56a4", runId: "pre-fix", hypothesisId: "H2,H3,H5", location: "src/components/JornadaTab.tsx:90", message: "Journey metric load results", data: { userRole: currentUser.role, summaries: { count: summaries.data?.length ?? null, error: summaries.error?.message ?? null }, landings: { count: landings.data?.length ?? null, error: landings.error?.message ?? null }, takeoffs: { count: takeoffs.data?.length ?? null, error: takeoffs.error?.message ?? null } }, timestamp: Date.now() }) }).catch(() => {});
+      // #endregion
       const error = summaries.error ?? landings.error ?? takeoffs.error;
       if (error) {
         setState({ metrics: EMPTY_METRICS, loading: false, error: error.message });
@@ -97,6 +143,59 @@ function useJourneyMetrics(): JourneyState {
         }),
         loading: false,
         error: null,
+      });
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, user]);
+
+  return state;
+}
+
+function useFormationProgress(): FormationState {
+  const { user, configured } = useAuth();
+  const [state, setState] = useState<FormationState>({ tracks: [], flights: [], loading: true, error: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!configured || !user) {
+      setState({ tracks: [], flights: [], loading: false, error: configured ? null : "Appwrite não configurado" });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const currentUser = user;
+
+    async function load() {
+      setState((prev) => ({ ...prev, loading: true, error: null }));
+      const [tracksRes, flightsRes] = await Promise.all([
+        listStudentTrainingTracks(currentUser.id),
+        listSavedFlights({ userId: currentUser.id, role: currentUser.role }),
+      ]);
+      if (cancelled) return;
+      const error = tracksRes.error ?? flightsRes.error;
+      const baseFlights = flightsRes.data ?? [];
+      const trainingFlights = await Promise.all(
+        baseFlights.map(async (flight) => {
+          if (!flight.training_track_id) return { ...flight, trainingMissionIds: flightMissionIds(flight) };
+          const full = await getSavedFlight(flight.id);
+          if (full.error || !full.data) return { ...flight, trainingMissionIds: flightMissionIds(flight) };
+          const meta = decodeFlightRecord(full.data.csv_text).meta;
+          return {
+            ...flight,
+            trainingMissionIds: Array.from(new Set([...(meta?.training?.missionIds ?? []), ...flightMissionIds(flight)].filter(Boolean))),
+          };
+        }),
+      );
+      if (cancelled) return;
+      setState({
+        tracks: tracksRes.data ?? [],
+        flights: trainingFlights,
+        loading: false,
+        error: error?.message ?? null,
       });
     }
 
@@ -159,6 +258,18 @@ function latestMonths(metrics: JourneyMetrics) {
   }));
 }
 
+function flightMissionIds(flight: SavedFlightListItem): string[] {
+  return Array.from(new Set([flight.training_mission_id ?? ""].filter(Boolean)));
+}
+
+function flattenTrackMissions(track: TrainingTrack): Array<{ stage: TrainingStage; mission: TrainingMission }> {
+  return track.stages.flatMap((stage) => stage.missions.map((mission) => ({ stage, mission })));
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function LoadingHero() {
   return (
     <div className="overflow-hidden rounded-3xl border border-slate-700/70 bg-slate-900/50 p-4 shadow-2xl shadow-slate-950/30 md:p-5">
@@ -202,7 +313,7 @@ function ErrorCard({ message }: { message: string }) {
 function WeeklyStreakCard({ metrics, compact = false }: { metrics: JourneyMetrics; compact?: boolean }) {
   return (
     <div className={`rounded-2xl border border-amber-300/20 bg-amber-400/10 ${compact ? "p-3" : "p-4"} text-center`}>
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[1.25rem] bg-amber-400 text-2xl shadow-lg shadow-amber-950/30">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[0.8125rem] bg-amber-400 text-2xl shadow-lg shadow-amber-950/30">
         <span className="drop-shadow-sm">🔥</span>
       </div>
       <p className={`${compact ? "mt-1 text-3xl" : "mt-2 text-4xl"} font-black leading-none text-amber-300`}>
@@ -427,9 +538,147 @@ function LandingDistribution({ metrics }: { metrics: JourneyMetrics }) {
   );
 }
 
+function FormationJourney({ state }: { state: FormationState }) {
+  const [selectedTrackId, setSelectedTrackId] = useState("");
+  const activeTracks = useMemo(
+    () => state.tracks.filter((row) => row.status === "active" && row.track).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
+    [state.tracks],
+  );
+
+  useEffect(() => {
+    if (selectedTrackId && activeTracks.some((row) => row.trackId === selectedTrackId)) return;
+    setSelectedTrackId(activeTracks.find((row) => row.isPrimary)?.trackId ?? activeTracks[0]?.trackId ?? "");
+  }, [activeTracks, selectedTrackId]);
+
+  if (state.loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-48 rounded-3xl" />
+        <Skeleton className="h-56 rounded-2xl" />
+      </div>
+    );
+  }
+  if (state.error) return <ErrorCard message={state.error} />;
+  if (activeTracks.length === 0) {
+    return <EmptyJourneyCard title="Nenhuma trilha ativa vinculada" />;
+  }
+
+  const selectedAssignment = activeTracks.find((row) => row.trackId === selectedTrackId) ?? activeTracks[0]!;
+  const track = selectedAssignment.track!;
+  const trackFlights = state.flights.filter((flight) => flight.training_track_id === track.id);
+  const completedMissionIds = new Set(trackFlights.flatMap((flight) => flight.trainingMissionIds));
+  const missionRows = flattenTrackMissions(track);
+  const firstOpenIndex = missionRows.findIndex((row) => !completedMissionIds.has(row.mission.id));
+  const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
+  const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
+    ...row,
+    index,
+    status: completedMissionIds.has(row.mission.id) ? "done" : index === nextIndex && firstOpenIndex >= 0 ? "next" : "locked",
+  }));
+  const completedCount = timeline.filter((item) => item.status === "done").length;
+  const flownHours = trackFlights.reduce((acc, flight) => acc + ((flight.duration_sec ?? 0) / 3600), 0);
+  const trackHours = track.totalMinutes / 60;
+  const hoursPct = trackHours > 0 ? clampPercent((flownHours / trackHours) * 100) : 0;
+  const missionPct = track.missionCount > 0 ? clampPercent((completedCount / track.missionCount) * 100) : 0;
+  const nextMission = timeline.find((item) => item.status === "next") ?? null;
+
+  return (
+    <div className="space-y-4">
+      <section className="relative overflow-hidden rounded-3xl border border-emerald-400/20 bg-[linear-gradient(135deg,rgba(6,78,59,0.84),rgba(15,23,42,0.92)_48%,rgba(88,28,135,0.72))] p-4 shadow-2xl shadow-slate-950/40 md:p-5">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-end">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-200/80">Formação</p>
+            <h2 className="mt-2 text-2xl font-black tracking-tight text-white md:text-4xl">{track.name}</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-5 text-emerald-50/80">
+              Progresso da trilha, missões conquistadas e próximo objetivo em uma linha do tempo navegável.
+            </p>
+            {activeTracks.length > 1 ? (
+              <select
+                value={selectedAssignment.trackId}
+                onChange={(event) => setSelectedTrackId(event.target.value)}
+                className="mt-4 w-full max-w-sm rounded-lg border border-white/15 bg-slate-950/50 px-3 py-2 text-sm text-white outline-none focus:border-emerald-300"
+              >
+                {activeTracks.map((row) => (
+                  <option key={row.id} value={row.trackId}>
+                    {row.track?.name ?? row.trackId}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4">
+            <p className="text-xs uppercase tracking-widest text-emerald-100/70">Próxima missão</p>
+            <p className="mt-1 text-2xl font-black text-white">{nextMission?.mission.name ?? "Trilha completa"}</p>
+            <p className="mt-1 text-xs text-emerald-50/70">
+              {nextMission ? `${nextMission.stage.name} · ${nextMission.mission.durationMinutes} min · ${nextMission.mission.type}` : "Todas as missões foram marcadas."}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <SectionCard title="Horas na trilha" subtitle={`${formatHours(flownHours)} de ${formatHours(trackHours)} planejadas`}>
+          <div className="flex items-end justify-between gap-3">
+            <p className="text-3xl font-black text-slate-100">{formatPercent(hoursPct)}</p>
+            <p className="text-sm text-slate-400">{formatInteger(trackFlights.length)} voos vinculados</p>
+          </div>
+          <div className="mt-3"><ProgressBar value={hoursPct} /></div>
+        </SectionCard>
+        <SectionCard title="Missões completadas" subtitle={`${formatInteger(completedCount)} de ${formatInteger(track.missionCount)} na trilha`}>
+          <div className="flex items-end justify-between gap-3">
+            <p className="text-3xl font-black text-slate-100">{formatPercent(missionPct)}</p>
+            <p className="text-sm text-slate-400">{formatInteger(Math.max(track.missionCount - completedCount, 0))} restantes</p>
+          </div>
+          <div className="mt-3"><ProgressBar value={missionPct} /></div>
+        </SectionCard>
+      </div>
+
+      <SectionCard title="Timeline da trilha" subtitle="Arraste para ver missões passadas, atual e futuras.">
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {timeline.map((item) => (
+            <article
+              key={item.mission.id}
+              className={`min-h-52 w-64 shrink-0 rounded-2xl border p-3 transition ${
+                item.status === "done"
+                  ? "border-emerald-400/40 bg-emerald-500/10"
+                  : item.status === "next"
+                    ? "border-amber-300/60 bg-amber-400/10 shadow-lg shadow-amber-950/20"
+                    : "border-slate-700/70 bg-slate-950/30"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-black ${
+                  item.status === "done" ? "bg-emerald-400 text-emerald-950" : item.status === "next" ? "bg-amber-300 text-amber-950" : "bg-slate-800 text-slate-500"
+                }`}>
+                  {item.status === "done" ? "OK" : item.index + 1}
+                </span>
+                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-400">
+                  {item.status === "done" ? "Concluída" : item.status === "next" ? "Próxima" : "Futura"}
+                </span>
+              </div>
+              <p className="mt-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{item.stage.name}</p>
+              <h3 className="mt-1 text-lg font-black text-slate-100">{item.mission.name}</h3>
+              <p className="mt-1 text-xs text-slate-400">{item.mission.durationMinutes} min · {item.mission.type}</p>
+              {item.mission.maneuvers.length > 0 ? (
+                <ul className="mt-3 space-y-1 text-xs text-slate-400">
+                  {item.mission.maneuvers.slice(0, 3).map((maneuver, idx) => (
+                    <li key={`${item.mission.id}-${idx}`} className="line-clamp-2">{maneuver}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
 export function JornadaTab() {
   const { user } = useAuth();
   const { metrics, loading, error } = useJourneyMetrics();
+  const formationState = useFormationProgress();
+  const [section, setSection] = useState<JourneySection>("formacao");
   const [monthlyMetric, setMonthlyMetric] = useState<MonthlyMetricKey>("hours");
   const roleLabel = user?.role === "instrutor" ? "do INVA" : "do aluno";
   const chartData = useMemo(() => latestMonths(metrics), [metrics]);
@@ -437,12 +686,20 @@ export function JornadaTab() {
   const relationshipLabel = user?.role === "instrutor" ? "Alunos" : "Instrutores";
   const relationshipValue = user?.role === "instrutor" ? metrics.totals.students : metrics.totals.instructors;
 
-  if (loading) return <JourneySkeletonPage />;
-  if (error) return <ErrorCard message={error} />;
-  if (!metrics.hasData) return <EmptyJourneyCard />;
-
   return (
     <div className="min-w-0 space-y-4">
+      <Tabs items={JOURNEY_SECTIONS} value={section} onChange={setSection} ariaLabel="Subabas da jornada" accent="sky" />
+
+      {section === "formacao" ? (
+        <FormationJourney state={formationState} />
+      ) : loading ? (
+        <JourneySkeletonPage />
+      ) : error ? (
+        <ErrorCard message={error} />
+      ) : !metrics.hasData ? (
+        <EmptyJourneyCard />
+      ) : (
+        <>
       <JourneyHero metrics={metrics} roleLabel={roleLabel} />
 
       <div className="grid gap-3 xl:grid-cols-[340px_minmax(0,1fr)]">
@@ -568,6 +825,8 @@ export function JornadaTab() {
           ))}
         </div>
       </SectionCard>
+        </>
+      )}
     </div>
   );
 }

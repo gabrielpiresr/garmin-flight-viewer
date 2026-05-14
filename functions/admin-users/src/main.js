@@ -18,10 +18,21 @@ const WEEKLY_PLANS_COLLECTION_ID =
   process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || process.env.APPWRITE_WEEKLY_PLANS_COL_ID;
 const INSTRUCTOR_PREFS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID;
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID;
+const AIRCRAFTS_COLLECTION_ID = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFTS_COL_ID;
+const AIRCRAFT_MODELS_COLLECTION_ID =
+  process.env.APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFT_MODELS_COL_ID;
+const FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID;
+const FLIGHT_LANDINGS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_LANDINGS_COL_ID;
+const FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID;
 const MANEUVERS_SECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID;
 const MANEUVERS_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID;
 const MANEUVERS_ARTICLES_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID;
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
+const TRAINING_TRACKS_COLLECTION_ID = process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || "training_tracks";
+const STUDENT_TRACKS_COLLECTION_ID = process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || "student_training_tracks";
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
@@ -48,6 +59,10 @@ const FLIGHT_SELECT = [
   "instructor_user_id",
   "flight_date",
   "start_time",
+  "training_track_id",
+  "training_stage_id",
+  "training_mission_id",
+  "training_snapshot_json",
 ];
 const FLIGHT_DETAIL_SELECT = [
   ...FLIGHT_SELECT,
@@ -73,7 +88,94 @@ const PROFILE_SELECT = [
   "anac_sync_error",
   "anac_last_sync_at",
 ];
+const TRAINING_TRACK_SELECT = [
+  "$id",
+  "$createdAt",
+  "$updatedAt",
+  "school_id",
+  "name",
+  "is_default",
+  "is_active",
+  "stages_json",
+  "mission_count",
+  "total_minutes",
+  "updated_at",
+];
+const STUDENT_TRACK_SELECT = [
+  "$id",
+  "$createdAt",
+  "$updatedAt",
+  "school_id",
+  "student_user_id",
+  "track_id",
+  "status",
+  "is_primary",
+  "assigned_at",
+  "updated_at",
+];
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
+const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active"];
+const AIRCRAFT_MODEL_SELECT = [
+  "$id",
+  "name",
+  "manufacturer",
+  "category",
+  "op_oil_temp_unit",
+  "op_oil_temp_attention",
+  "op_oil_temp_danger",
+  "op_oil_pressure_attention_psi",
+  "op_oil_pressure_danger_psi",
+  "op_rpm_attention",
+  "op_rpm_danger",
+  "op_fuel_pressure_attention_psi",
+  "op_fuel_pressure_danger_psi",
+  "op_gload_attention",
+  "op_gload_danger",
+  "op_touchdown_ias_attention_kt",
+  "op_touchdown_ias_danger_kt",
+  "op_best_climb_after_takeoff_kt",
+];
+const TELEMETRY_SUMMARY_SELECT = [
+  "$id",
+  "flight_id",
+  "telemetry_present",
+  "duration_sec",
+  "distance_nm",
+  "point_count",
+  "takeoff_count",
+  "landing_count",
+  "tgl_count",
+  "smooth_landing_count",
+  "medium_landing_count",
+  "hard_landing_count",
+  "best_touchdown_g",
+  "best_touchdown_vert_speed_fpm",
+  "slowest_landing_ias_kt",
+  "slowest_landing_gs_kt",
+  "max_touchdown_g",
+  "max_descent_rate_fpm",
+  "longest_takeoff_ground_roll_ft",
+  "shortest_takeoff_ground_roll_ft",
+  "fastest_takeoff_ias_kt",
+  "max_headwind_kt",
+  "max_tailwind_kt",
+  "max_crosswind_kt",
+  "aerodrome_count",
+  "aerodromes_json",
+  "max_oil_pressure_psi",
+  "max_oil_temp_f",
+  "max_normal_g",
+  "max_lateral_g",
+  "max_cht_f",
+  "max_egt_f",
+  "max_rpm",
+  "max_map_inhg",
+  "max_fuel_flow_gph",
+  "max_fuel_pressure_psi",
+  "min_fuel_qty",
+  "max_oat_c",
+];
+const LANDING_METRIC_SELECT = ["$id", "flight_id", "td_ias_kt"];
 const CREDIT_SELECT = [
   "$id",
   "$createdAt",
@@ -92,6 +194,38 @@ const CREDIT_SELECT = [
   "created_by",
   "updated_by",
 ];
+const DASHBOARD_TELEMETRY_SELECT = [
+  "$id",
+  "flight_id",
+  "student_user_id",
+  "instructor_user_id",
+  "aircraft_ident",
+  "flight_date",
+  "duration_sec",
+  "distance_nm",
+  "telemetry_present",
+  "landing_count",
+  "takeoff_count",
+  "tgl_count",
+  "hard_landing_count",
+];
+const DASHBOARD_ALERT_SELECT = [
+  "$id",
+  "$createdAt",
+  "flight_id",
+  "model_id",
+  "student_user_id",
+  "instructor_user_id",
+  "aircraft_ident",
+  "flight_date",
+  "start_time",
+  "severity",
+  "rule_name",
+  "phase",
+  "matched_at",
+  "duration_sec",
+];
+const DASHBOARD_SEVERITIES = ["risco", "atencao", "leve"];
 
 function jsonResponse(res, status, payload) {
   return res.json(payload, status);
@@ -140,6 +274,46 @@ function parseItemsJson(value) {
   } catch {
     return [];
   }
+}
+
+function parseTrainingStages(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function toTrainingTrack(doc) {
+  if (!doc) return null;
+  return {
+    id: doc.$id,
+    schoolId: doc.school_id || "",
+    name: doc.name || "",
+    isDefault: Boolean(doc.is_default),
+    isActive: Boolean(doc.is_active),
+    stages: parseTrainingStages(doc.stages_json),
+    missionCount: Number(doc.mission_count) || 0,
+    totalMinutes: Number(doc.total_minutes) || 0,
+    updatedAt: doc.updated_at || doc.$updatedAt || "",
+    createdAt: doc.$createdAt || "",
+  };
+}
+
+function toStudentTrainingTrack(doc, track) {
+  return {
+    id: doc.$id,
+    schoolId: doc.school_id || "",
+    studentUserId: doc.student_user_id || "",
+    trackId: doc.track_id || "",
+    status: doc.status || "active",
+    isPrimary: Boolean(doc.is_primary),
+    assignedAt: doc.assigned_at || "",
+    updatedAt: doc.updated_at || doc.$updatedAt || "",
+    track: toTrainingTrack(track),
+  };
 }
 
 function parseJsonList(value) {
@@ -496,6 +670,10 @@ function toFlight(doc) {
     instructorAnac: meta?.header?.instructorAnac || "",
     scheduleWeekStart: meta?.schedule?.weekStart || null,
     scheduleDemandId: meta?.schedule?.demandId || null,
+    trainingTrackId: doc.training_track_id || meta?.training?.trackId || null,
+    trainingStageId: doc.training_stage_id || meta?.training?.stageId || null,
+    trainingMissionId: doc.training_mission_id || meta?.training?.missionId || null,
+    trainingSnapshot: parseJsonObject(doc.training_snapshot_json, meta?.training?.snapshot || null),
     studentUserId: doc.student_user_id || doc.user_id || null,
     instructorUserId: doc.instructor_user_id || null,
   };
@@ -590,7 +768,7 @@ function summarizeFlights(flights, plans) {
   };
 }
 
-function toUserRecord(user, profile, preference, flights, plans) {
+function toUserRecord(user, profile, preference, flights, plans, trainingTracks = []) {
   const role = VALID_ROLES.has(profile?.role) ? profile.role : deriveRoleFromLabels(user.labels || []);
   const profilePayload = toProfile(profile, preference);
   const summary = summarizeFlights(flights, plans);
@@ -604,6 +782,7 @@ function toUserRecord(user, profile, preference, flights, plans) {
     emailVerification: Boolean(user.emailVerification),
     createdAt: user.$createdAt || "",
     profile: profilePayload,
+    trainingTracks,
     executed: summary.executed,
     planned: summary.planned,
     intentions: summary.intentions,
@@ -614,8 +793,8 @@ function toUserRecord(user, profile, preference, flights, plans) {
   };
 }
 
-function toUserSummary(user, profile, preference, flights, plans) {
-  const detail = toUserRecord(user, profile, preference, flights, plans);
+function toUserSummary(user, profile, preference, flights, plans, trainingTracks = []) {
+  const detail = toUserRecord(user, profile, preference, flights, plans, trainingTracks);
   return {
     userId: detail.userId,
     email: detail.email,
@@ -635,9 +814,778 @@ function toUserSummary(user, profile, preference, flights, plans) {
       instructorPreferenceLevel: detail.profile.instructorPreferenceLevel,
       instructorAvailability: detail.profile.instructorAvailability,
     },
+    trainingTracks: detail.trainingTracks,
     executed: detail.executed,
     planned: detail.planned,
     intentions: detail.intentions,
+  };
+}
+
+function clampInactiveDays(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 14;
+  return Math.min(180, Math.max(1, Math.round(parsed)));
+}
+
+function daysBetweenIso(fromDate, toDate) {
+  if (!fromDate || !toDate) return null;
+  const from = new Date(`${String(fromDate).slice(0, 10)}T12:00:00`);
+  const to = new Date(`${String(toDate).slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+  return Math.max(0, Math.floor((to.getTime() - from.getTime()) / 86400000));
+}
+
+function studentProgressStatus(daysSinceLastFlight, inactiveDays) {
+  if (daysSinceLastFlight === null) return "noFlights";
+  if (daysSinceLastFlight >= inactiveDays) return "inactive";
+  const watchDays = Math.max(7, Math.ceil(inactiveDays * 0.6));
+  if (daysSinceLastFlight >= watchDays) return "watch";
+  return "active";
+}
+
+function sameIsoDay(value, target) {
+  return Boolean(value && target && String(value).slice(0, 10) === target);
+}
+
+function shiftIsoDay(value, days) {
+  const date = new Date(`${asIsoDate(value)}T12:00:00`);
+  date.setDate(date.getDate() + Math.round(Number(days) || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function weekRangeForIso(value) {
+  const date = new Date(`${asIsoDate(value)}T12:00:00`);
+  const day = date.getDay() || 7;
+  date.setDate(date.getDate() - day + 1);
+  const start = date.toISOString().slice(0, 10);
+  date.setDate(date.getDate() + 6);
+  return { start, end: date.toISOString().slice(0, 10) };
+}
+
+function sumFlightHours(flights) {
+  return Number(
+    flights.reduce((acc, flight) => acc + ((flight.durationSec || 0) / 3600), 0).toFixed(1),
+  );
+}
+
+function studentDisplayName(record) {
+  return record.profile.fullName || record.name || record.email || record.userId;
+}
+
+async function getStudentsProgress(payload = {}) {
+  const inactiveDays = clampInactiveDays(payload.inactiveDays);
+  const today = asIsoDate(payload.today);
+  const yesterday = shiftIsoDay(today, -1);
+  const tomorrow = shiftIsoDay(today, 1);
+  const week = weekRangeForIso(today);
+  const records = (await buildRecords()).filter((record) => record.role === "aluno");
+
+  const buckets = {
+    yesterday: { key: "yesterday", label: "Ontem", students: 0, flights: 0, hours: 0 },
+    today: { key: "today", label: "Hoje", students: 0, flights: 0, hours: 0 },
+    tomorrow: { key: "tomorrow", label: "Amanha", students: 0, flights: 0, hours: 0 },
+    week: { key: "week", label: "Semana", students: 0, flights: 0, hours: 0 },
+  };
+
+  const students = records.map((record) => {
+    const executedFlights = record.executedFlights || [];
+    const plannedFlights = record.plannedFlights || [];
+    const lastFlightDate = record.executed.lastFlightAt;
+    const daysSinceLastFlight = lastFlightDate ? daysBetweenIso(lastFlightDate, today) : null;
+    const agendaFlights = {
+      yesterday: executedFlights.filter((flight) => sameIsoDay(flight.flightDate, yesterday)),
+      today: plannedFlights.filter((flight) => sameIsoDay(flight.flightDate, today)),
+      tomorrow: plannedFlights.filter((flight) => sameIsoDay(flight.flightDate, tomorrow)),
+      week: plannedFlights.filter((flight) => {
+        const date = String(flight.flightDate || "").slice(0, 10);
+        return date >= week.start && date <= week.end;
+      }),
+    };
+    const agenda = {
+      yesterday: { flights: agendaFlights.yesterday.length, hours: sumFlightHours(agendaFlights.yesterday) },
+      today: { flights: agendaFlights.today.length, hours: sumFlightHours(agendaFlights.today) },
+      tomorrow: { flights: agendaFlights.tomorrow.length, hours: sumFlightHours(agendaFlights.tomorrow) },
+      week: { flights: agendaFlights.week.length, hours: sumFlightHours(agendaFlights.week) },
+    };
+
+    return {
+      userId: record.userId,
+      email: record.email,
+      name: record.name,
+      profile: record.profile,
+      status: studentProgressStatus(daysSinceLastFlight, inactiveDays),
+      daysSinceLastFlight,
+      executed: record.executed,
+      planned: record.planned,
+      intentions: record.intentions,
+      agenda,
+      recentExecutedFlights: executedFlights.slice(0, 6),
+      upcomingFlights: plannedFlights.slice(0, 6),
+      futureIntentions: (record.futureIntentions || []).slice(0, 6),
+    };
+  });
+
+  for (const key of Object.keys(buckets)) {
+    const bucket = buckets[key];
+    for (const student of students) {
+      if (student.agenda[key].flights <= 0) continue;
+      bucket.students += 1;
+      bucket.flights += student.agenda[key].flights;
+      bucket.hours += student.agenda[key].hours;
+    }
+    bucket.hours = Number(bucket.hours.toFixed(1));
+  }
+
+  students.sort((a, b) => {
+    const statusRank = { inactive: 0, noFlights: 1, watch: 2, active: 3 };
+    return statusRank[a.status] - statusRank[b.status]
+      || (b.daysSinceLastFlight ?? 9999) - (a.daysSinceLastFlight ?? 9999)
+      || studentDisplayName(a).localeCompare(studentDisplayName(b), "pt-BR");
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    today,
+    inactiveDays,
+    summary: {
+      totalStudents: students.length,
+      activeStudents: students.filter((student) => student.status === "active").length,
+      watchStudents: students.filter((student) => student.status === "watch").length,
+      inactiveStudents: students.filter((student) => student.status === "inactive").length,
+      studentsWithoutFlights: students.filter((student) => student.status === "noFlights").length,
+      totalHours: Number(students.reduce((acc, student) => acc + student.executed.hours, 0).toFixed(1)),
+      totalExecutedFlights: students.reduce((acc, student) => acc + student.executed.count, 0),
+      totalPlannedFlights: students.reduce((acc, student) => acc + student.planned.count, 0),
+    },
+    buckets,
+    students,
+  };
+}
+
+function normalizeAircraftIdent(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function parseAerodromes(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function toTelemetrySummary(doc) {
+  if (!doc) return null;
+  return {
+    telemetryPresent: Boolean(doc.telemetry_present),
+    telemetryDurationSec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
+    telemetryDistanceNm: typeof doc.distance_nm === "number" ? doc.distance_nm : null,
+    pointCount: Number(doc.point_count) || 0,
+    takeoffCount: Number(doc.takeoff_count) || 0,
+    landingCount: Number(doc.landing_count) || 0,
+    tglCount: Number(doc.tgl_count) || 0,
+    smoothLandingCount: Number(doc.smooth_landing_count) || 0,
+    mediumLandingCount: Number(doc.medium_landing_count) || 0,
+    hardLandingCount: Number(doc.hard_landing_count) || 0,
+    bestTouchdownG: typeof doc.best_touchdown_g === "number" ? doc.best_touchdown_g : null,
+    bestTouchdownVertSpeedFpm:
+      typeof doc.best_touchdown_vert_speed_fpm === "number" ? doc.best_touchdown_vert_speed_fpm : null,
+    slowestLandingIasKt: typeof doc.slowest_landing_ias_kt === "number" ? doc.slowest_landing_ias_kt : null,
+    slowestLandingGsKt: typeof doc.slowest_landing_gs_kt === "number" ? doc.slowest_landing_gs_kt : null,
+    fastestLandingIasKt: null,
+    maxTouchdownG: typeof doc.max_touchdown_g === "number" ? doc.max_touchdown_g : null,
+    maxDescentRateFpm: typeof doc.max_descent_rate_fpm === "number" ? doc.max_descent_rate_fpm : null,
+    longestTakeoffGroundRollFt:
+      typeof doc.longest_takeoff_ground_roll_ft === "number" ? doc.longest_takeoff_ground_roll_ft : null,
+    shortestTakeoffGroundRollFt:
+      typeof doc.shortest_takeoff_ground_roll_ft === "number" ? doc.shortest_takeoff_ground_roll_ft : null,
+    fastestTakeoffIasKt: typeof doc.fastest_takeoff_ias_kt === "number" ? doc.fastest_takeoff_ias_kt : null,
+    maxHeadwindKt: typeof doc.max_headwind_kt === "number" ? doc.max_headwind_kt : null,
+    maxTailwindKt: typeof doc.max_tailwind_kt === "number" ? doc.max_tailwind_kt : null,
+    maxCrosswindKt: typeof doc.max_crosswind_kt === "number" ? doc.max_crosswind_kt : null,
+    aerodromeCount: Number(doc.aerodrome_count) || 0,
+    aerodromes: parseAerodromes(doc.aerodromes_json),
+    maxOilPressurePsi: typeof doc.max_oil_pressure_psi === "number" ? doc.max_oil_pressure_psi : null,
+    maxOilTempF: typeof doc.max_oil_temp_f === "number" ? doc.max_oil_temp_f : null,
+    maxNormalG: typeof doc.max_normal_g === "number" ? doc.max_normal_g : null,
+    maxLateralG: typeof doc.max_lateral_g === "number" ? doc.max_lateral_g : null,
+    maxChtF: typeof doc.max_cht_f === "number" ? doc.max_cht_f : null,
+    maxEgtF: typeof doc.max_egt_f === "number" ? doc.max_egt_f : null,
+    maxRpm: typeof doc.max_rpm === "number" ? doc.max_rpm : null,
+    maxMapInHg: typeof doc.max_map_inhg === "number" ? doc.max_map_inhg : null,
+    maxFuelFlowGph: typeof doc.max_fuel_flow_gph === "number" ? doc.max_fuel_flow_gph : null,
+    maxFuelPressurePsi: typeof doc.max_fuel_pressure_psi === "number" ? doc.max_fuel_pressure_psi : null,
+    minFuelQty: typeof doc.min_fuel_qty === "number" ? doc.min_fuel_qty : null,
+    maxOatC: typeof doc.max_oat_c === "number" ? doc.max_oat_c : null,
+  };
+}
+
+function toOperationalLimits(model) {
+  return {
+    oilTempUnit: model?.op_oil_temp_unit === "C" ? "C" : "F",
+    oilTempAttention: typeof model?.op_oil_temp_attention === "number" ? model.op_oil_temp_attention : null,
+    oilTempDanger: typeof model?.op_oil_temp_danger === "number" ? model.op_oil_temp_danger : null,
+    oilPressureAttentionPsi:
+      typeof model?.op_oil_pressure_attention_psi === "number" ? model.op_oil_pressure_attention_psi : null,
+    oilPressureDangerPsi: typeof model?.op_oil_pressure_danger_psi === "number" ? model.op_oil_pressure_danger_psi : null,
+    rpmAttention: typeof model?.op_rpm_attention === "number" ? model.op_rpm_attention : null,
+    rpmDanger: typeof model?.op_rpm_danger === "number" ? model.op_rpm_danger : null,
+    fuelPressureAttentionPsi:
+      typeof model?.op_fuel_pressure_attention_psi === "number" ? model.op_fuel_pressure_attention_psi : null,
+    fuelPressureDangerPsi:
+      typeof model?.op_fuel_pressure_danger_psi === "number" ? model.op_fuel_pressure_danger_psi : null,
+    gloadAttention: typeof model?.op_gload_attention === "number" ? model.op_gload_attention : null,
+    gloadDanger: typeof model?.op_gload_danger === "number" ? model.op_gload_danger : null,
+    touchdownIasAttentionKt:
+      typeof model?.op_touchdown_ias_attention_kt === "number" ? model.op_touchdown_ias_attention_kt : null,
+    touchdownIasDangerKt:
+      typeof model?.op_touchdown_ias_danger_kt === "number" ? model.op_touchdown_ias_danger_kt : null,
+    bestClimbAfterTakeoffKt:
+      typeof model?.op_best_climb_after_takeoff_kt === "number" ? model.op_best_climb_after_takeoff_kt : null,
+  };
+}
+
+function userDisplayName(userId, usersById, profilesByUserId, fallback) {
+  if (!userId) return fallback || "";
+  const profile = profilesByUserId.get(userId);
+  const user = usersById.get(userId);
+  return profile?.full_name || user?.name || user?.email || fallback || userId;
+}
+
+function dashboardOptionalDate(value) {
+  const raw = String(value || "").trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+}
+
+function dashboardStringList(value) {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return Array.from(new Set(values.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+function dashboardFilters(payload) {
+  let fromDate = dashboardOptionalDate(payload.fromDate);
+  let toDate = dashboardOptionalDate(payload.toDate);
+  if (fromDate && toDate && fromDate > toDate) {
+    const previousFromDate = fromDate;
+    fromDate = toDate;
+    toDate = previousFromDate;
+  }
+  return {
+    fromDate,
+    toDate,
+    aircrafts: dashboardStringList(payload.aircrafts || payload.aircraft).map(normalizeAircraftIdent),
+    models: dashboardStringList(payload.models || payload.modelIds || payload.model),
+    instructors: dashboardStringList(payload.instructors || payload.instructorIds || payload.instructor),
+    students: dashboardStringList(payload.students || payload.studentIds || payload.student),
+    upcomingLimit: Math.min(30, Math.max(1, Math.round(Number(payload.upcomingLimit) || 12))),
+    alertLimit: Math.min(15, Math.max(1, Math.round(Number(payload.alertLimit) || 6))),
+  };
+}
+
+function dashboardDateQueries(attribute, fromDate, toDate) {
+  const queries = [];
+  if (fromDate) queries.push(sdk.Query.greaterThanEqual(attribute, fromDate));
+  if (toDate) queries.push(sdk.Query.lessThanEqual(attribute, toDate));
+  return queries;
+}
+
+function dashboardEqualQuery(attribute, values) {
+  const clean = dashboardStringList(values);
+  return clean.length ? [sdk.Query.equal(attribute, clean)] : [];
+}
+
+function dashboardNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function dashboardHours(seconds) {
+  return Number((dashboardNumber(seconds) / 3600).toFixed(2));
+}
+
+function roundDashboardNumber(value, digits = 1) {
+  return Number(dashboardNumber(value).toFixed(digits));
+}
+
+function dashboardAircraftMeta(aircraftIdent, aircraftByRegistration, modelsById) {
+  const ident = normalizeAircraftIdent(aircraftIdent);
+  const aircraft = ident ? aircraftByRegistration.get(ident) : null;
+  const model = aircraft ? modelsById.get(aircraft.model_id) : null;
+  return {
+    aircraftIdent: ident || null,
+    aircraftId: aircraft?.$id || null,
+    aircraftNickname: aircraft?.nickname || null,
+    modelId: model?.$id || aircraft?.model_id || null,
+    modelName: model?.name || "",
+  };
+}
+
+function dashboardProfileName(userId, profilesByUserId, fallback = "") {
+  if (!userId) return fallback || "";
+  const profile = profilesByUserId.get(userId);
+  return profile?.full_name || profile?.email || fallback || userId;
+}
+
+function dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId) {
+  const flight = toFlight(doc);
+  const telemetry = toTelemetrySummary(telemetryByFlightId.get(flight.id));
+  const meta = dashboardAircraftMeta(flight.aircraftIdent, aircraftByRegistration, modelsById);
+  const durationSec = flight.durationSec ?? telemetry?.telemetryDurationSec ?? null;
+  const distanceNm = flight.distanceNm || telemetry?.telemetryDistanceNm || 0;
+  const landings = Math.max(flight.landings || 0, telemetry?.landingCount || 0);
+  const status = isFutureFlight(flight) ? "futuro" : "executado";
+
+  return {
+    id: flight.id,
+    status,
+    flightDate: flight.flightDate,
+    startTime: flight.startTime,
+    sourceFilename: flight.sourceFilename,
+    studentUserId: flight.studentUserId,
+    instructorUserId: flight.instructorUserId,
+    studentName: dashboardProfileName(flight.studentUserId, profilesByUserId, flight.studentName),
+    instructorName: dashboardProfileName(flight.instructorUserId, profilesByUserId, flight.instructorName),
+    ...meta,
+    durationSec,
+    hours: dashboardHours(durationSec),
+    landings,
+    distanceNm: roundDashboardNumber(distanceNm, 1),
+    telemetryPresent: Boolean(telemetry?.telemetryPresent),
+    takeoffCount: telemetry?.takeoffCount || 0,
+    landingCount: telemetry?.landingCount || 0,
+    tglCount: telemetry?.tglCount || 0,
+    hardLandingCount: telemetry?.hardLandingCount || 0,
+  };
+}
+
+function dashboardAlertRow(doc, aircraftByRegistration, modelsById, profilesByUserId) {
+  const meta = dashboardAircraftMeta(doc.aircraft_ident, aircraftByRegistration, modelsById);
+  const model = doc.model_id ? modelsById.get(doc.model_id) : null;
+  return {
+    id: doc.$id,
+    flightId: doc.flight_id || "",
+    severity: DASHBOARD_SEVERITIES.includes(doc.severity) ? doc.severity : "leve",
+    ruleName: doc.rule_name || "",
+    phase: doc.phase || null,
+    matchedAt: doc.matched_at || null,
+    flightDate: doc.flight_date || null,
+    startTime: doc.start_time || null,
+    durationSec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
+    studentUserId: doc.student_user_id || null,
+    instructorUserId: doc.instructor_user_id || null,
+    studentName: dashboardProfileName(doc.student_user_id, profilesByUserId),
+    instructorName: dashboardProfileName(doc.instructor_user_id, profilesByUserId),
+    ...meta,
+    modelId: doc.model_id || meta.modelId,
+    modelName: model?.name || meta.modelName,
+    createdAt: doc.$createdAt || "",
+  };
+}
+
+function rowMatchesDashboardFilters(row, filters) {
+  if (filters.aircrafts.length && !filters.aircrafts.includes(normalizeAircraftIdent(row.aircraftIdent))) return false;
+  if (filters.models.length && !filters.models.includes(row.modelId || "") && !filters.models.includes(row.modelName || "")) return false;
+  if (filters.instructors.length && !filters.instructors.includes(row.instructorUserId || "")) return false;
+  if (filters.students.length && !filters.students.includes(row.studentUserId || "")) return false;
+  return true;
+}
+
+async function listProfilesForDashboard(userIds) {
+  const cleanIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (!cleanIds.length || !PROFILES_COLLECTION_ID) return [];
+  const profiles = [];
+  for (let index = 0; index < cleanIds.length; index += 100) {
+    const chunk = cleanIds.slice(index, index + 100);
+    profiles.push(
+      ...(await listAllDocuments(PROFILES_COLLECTION_ID, [
+        sdk.Query.equal("user_id", chunk),
+        ...selectQuery(PROFILE_SELECT),
+      ])),
+    );
+  }
+  return profiles;
+}
+
+async function listDashboardAlertBuckets(filters) {
+  const empty = DASHBOARD_SEVERITIES.reduce((acc, severity) => {
+    acc[severity] = { total: 0, documents: [] };
+    return acc;
+  }, {});
+  if (!FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID) return empty;
+
+  const baseQueries = [
+    ...dashboardDateQueries("flight_date", filters.fromDate, filters.toDate),
+    ...dashboardEqualQuery("model_id", filters.models),
+    ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
+    ...dashboardEqualQuery("instructor_user_id", filters.instructors),
+    ...dashboardEqualQuery("student_user_id", filters.students),
+  ];
+
+  const entries = await Promise.all(
+    DASHBOARD_SEVERITIES.map(async (severity) => {
+      const page = await listDocumentsPage(FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, [
+        ...baseQueries,
+        sdk.Query.equal("severity", [severity]),
+        sdk.Query.orderDesc("flight_date"),
+        sdk.Query.limit(filters.alertLimit),
+        ...selectQuery(DASHBOARD_ALERT_SELECT),
+      ]);
+      return [severity, { total: page.total, documents: page.documents }];
+    }),
+  );
+
+  return Object.fromEntries(entries);
+}
+
+function makeAircraftDashboardRow(aircraft, model) {
+  const ident = normalizeAircraftIdent(aircraft?.registration);
+  return {
+    aircraftId: aircraft?.$id || null,
+    aircraftIdent: ident || null,
+    aircraftNickname: aircraft?.nickname || null,
+    modelId: model?.$id || aircraft?.model_id || null,
+    modelName: model?.name || "",
+    active: aircraft?.active !== false,
+  };
+}
+
+function ensureAircraftBucket(map, base) {
+  const key = normalizeAircraftIdent(base.aircraftIdent) || "SEM_AVIAO";
+  if (!map.has(key)) {
+    map.set(key, {
+      ...base,
+      aircraftIdent: base.aircraftIdent || "Sem aviao",
+      hoursToday: 0,
+      hoursNext2Days: 0,
+      hoursNext5Days: 0,
+      hoursNext7Days: 0,
+      futureFlights7Days: 0,
+      nextFlightAt: null,
+      executedFlights: 0,
+      futureFlights: 0,
+      executedHours: 0,
+      landings: 0,
+      distanceNm: 0,
+      hardLandingCount: 0,
+      telemetryFlights: 0,
+      alertCounts: { risco: 0, atencao: 0, leve: 0 },
+    });
+  }
+  return map.get(key);
+}
+
+function buildAircraftDashboard({ aircrafts, modelsById, forecastRows, periodRows, alertRows, today }) {
+  const buckets = new Map();
+  for (const aircraft of aircrafts) {
+    const model = aircraft.model_id ? modelsById.get(aircraft.model_id) : null;
+    ensureAircraftBucket(buckets, makeAircraftDashboardRow(aircraft, model));
+  }
+
+  const next2End = addDaysIso(today, 1);
+  const next5End = addDaysIso(today, 4);
+  const next7End = addDaysIso(today, 6);
+
+  for (const row of forecastRows) {
+    const bucket = ensureAircraftBucket(buckets, row);
+    const date = row.flightDate || "";
+    const hours = row.hours || 0;
+    if (date === today) bucket.hoursToday += hours;
+    if (date >= today && date <= next2End) bucket.hoursNext2Days += hours;
+    if (date >= today && date <= next5End) bucket.hoursNext5Days += hours;
+    if (date >= today && date <= next7End) bucket.hoursNext7Days += hours;
+    if (date >= today && date <= next7End) bucket.futureFlights7Days += 1;
+    const dateTime = flightDateTimeKey(row);
+    if (!bucket.nextFlightAt || dateTime < bucket.nextFlightAt) bucket.nextFlightAt = dateTime;
+  }
+
+  for (const row of periodRows) {
+    const bucket = ensureAircraftBucket(buckets, row);
+    if (row.status === "futuro") {
+      bucket.futureFlights += 1;
+      continue;
+    }
+    bucket.executedFlights += 1;
+    bucket.executedHours += row.hours || 0;
+    bucket.landings += row.landings || 0;
+    bucket.distanceNm += row.distanceNm || 0;
+    bucket.hardLandingCount += row.hardLandingCount || 0;
+    if (row.telemetryPresent) bucket.telemetryFlights += 1;
+  }
+
+  for (const alert of alertRows) {
+    const bucket = ensureAircraftBucket(buckets, alert);
+    bucket.alertCounts[alert.severity] += 1;
+  }
+
+  return Array.from(buckets.values())
+    .map((row) => ({
+      ...row,
+      hoursToday: roundDashboardNumber(row.hoursToday, 1),
+      hoursNext2Days: roundDashboardNumber(row.hoursNext2Days, 1),
+      hoursNext5Days: roundDashboardNumber(row.hoursNext5Days, 1),
+      hoursNext7Days: roundDashboardNumber(row.hoursNext7Days, 1),
+      executedHours: roundDashboardNumber(row.executedHours, 1),
+      distanceNm: roundDashboardNumber(row.distanceNm, 1),
+    }))
+    .sort((a, b) => b.hoursNext7Days - a.hoursNext7Days || b.executedHours - a.executedHours || a.aircraftIdent.localeCompare(b.aircraftIdent));
+}
+
+async function getDashboardSummary(payload = {}) {
+  const filters = dashboardFilters(payload);
+  const today = todayIso();
+  const next7End = addDaysIso(today, 6);
+
+  const [aircrafts, models] = await Promise.all([
+    listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
+    listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
+  ]);
+
+  const modelsById = new Map(models.map((model) => [model.$id, model]));
+  const aircraftByRegistration = new Map(
+    aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
+  );
+
+  const flightFilterQueries = [
+    ...dashboardDateQueries("flight_date", filters.fromDate, filters.toDate),
+    ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
+    ...dashboardEqualQuery("instructor_user_id", filters.instructors),
+    ...dashboardEqualQuery("student_user_id", filters.students),
+  ];
+  const telemetryFilterQueries = [
+    ...dashboardDateQueries("flight_date", filters.fromDate, filters.toDate),
+    ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
+    ...dashboardEqualQuery("instructor_user_id", filters.instructors),
+    ...dashboardEqualQuery("student_user_id", filters.students),
+  ];
+  const creditFilterQueries = [
+    ...dashboardDateQueries("purchase_date", filters.fromDate, filters.toDate),
+    ...dashboardEqualQuery("aircraft_model_id", filters.models),
+    ...dashboardEqualQuery("user_id", filters.students),
+  ];
+
+  const [
+    periodFlightDocs,
+    upcomingPage,
+    forecastFlightDocs,
+    telemetryDocs,
+    creditDocs,
+    alertBucketsRaw,
+  ] = await Promise.all([
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      ...flightFilterQueries,
+      sdk.Query.orderDesc("flight_date"),
+      ...selectQuery(FLIGHT_SELECT),
+    ]),
+    listDocumentsPage(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.greaterThanEqual("flight_date", today),
+      ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
+      ...dashboardEqualQuery("instructor_user_id", filters.instructors),
+      ...dashboardEqualQuery("student_user_id", filters.students),
+      sdk.Query.orderAsc("flight_date"),
+      sdk.Query.limit(100),
+      ...selectQuery(FLIGHT_SELECT),
+    ]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.greaterThanEqual("flight_date", today),
+      sdk.Query.lessThanEqual("flight_date", next7End),
+      ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
+      ...dashboardEqualQuery("instructor_user_id", filters.instructors),
+      ...dashboardEqualQuery("student_user_id", filters.students),
+      ...selectQuery(FLIGHT_SELECT),
+    ]),
+    listAllDocuments(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, [
+      ...telemetryFilterQueries,
+      ...selectQuery(DASHBOARD_TELEMETRY_SELECT),
+    ]),
+    listAllDocuments(STUDENT_CREDITS_COLLECTION_ID, [
+      ...creditFilterQueries,
+      ...selectQuery(CREDIT_SELECT),
+    ]),
+    listDashboardAlertBuckets(filters),
+  ]);
+
+  const telemetryByFlightId = new Map(telemetryDocs.map((doc) => [doc.flight_id, doc]));
+  const alertDocs = DASHBOARD_SEVERITIES.flatMap((severity) => alertBucketsRaw[severity]?.documents || []);
+  const userIds = [
+    ...periodFlightDocs.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]),
+    ...upcomingPage.documents.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]),
+    ...forecastFlightDocs.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]),
+    ...alertDocs.flatMap((doc) => [doc.student_user_id, doc.instructor_user_id]),
+  ];
+  const profiles = await listProfilesForDashboard(userIds);
+  const profilesByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
+
+  const periodRows = periodFlightDocs
+    .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
+    .filter((row) => rowMatchesDashboardFilters(row, filters));
+  const upcomingRows = upcomingPage.documents
+    .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
+    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters))
+    .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)))
+    .slice(0, filters.upcomingLimit);
+  const forecastRows = forecastFlightDocs
+    .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
+    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters));
+  const alertRows = alertDocs.map((doc) => dashboardAlertRow(doc, aircraftByRegistration, modelsById, profilesByUserId));
+
+  const executedRows = periodRows.filter((row) => row.status === "executado");
+  const futureRows = periodRows.filter((row) => row.status === "futuro");
+  const alertCounts = DASHBOARD_SEVERITIES.reduce((acc, severity) => {
+    acc[severity] = alertBucketsRaw[severity]?.total || 0;
+    return acc;
+  }, {});
+  const finance = {
+    amountPaid: roundDashboardNumber(creditDocs.reduce((acc, doc) => acc + dashboardNumber(doc.amount_paid), 0), 2),
+    purchasedHours: roundDashboardNumber(creditDocs.reduce((acc, doc) => acc + dashboardNumber(doc.hours), 0), 1),
+    purchasesCount: creditDocs.length,
+  };
+  const aircraftRows = buildAircraftDashboard({
+    aircrafts,
+    modelsById,
+    forecastRows,
+    periodRows,
+    alertRows,
+    today,
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    filters: {
+      fromDate: filters.fromDate,
+      toDate: filters.toDate,
+      aircrafts: filters.aircrafts,
+      models: filters.models,
+      instructors: filters.instructors,
+      students: filters.students,
+    },
+    summary: {
+      totalFlights: periodRows.length,
+      executedFlights: executedRows.length,
+      futureFlights: futureRows.length,
+      executedHours: roundDashboardNumber(executedRows.reduce((acc, row) => acc + row.hours, 0), 1),
+      plannedHours: roundDashboardNumber(futureRows.reduce((acc, row) => acc + row.hours, 0), 1),
+      landings: executedRows.reduce((acc, row) => acc + row.landings, 0),
+      distanceNm: roundDashboardNumber(executedRows.reduce((acc, row) => acc + row.distanceNm, 0), 1),
+      studentsActive: new Set(periodRows.map((row) => row.studentUserId).filter(Boolean)).size,
+      instructorsActive: new Set(periodRows.map((row) => row.instructorUserId).filter(Boolean)).size,
+      aircraftActive: new Set(periodRows.map((row) => row.aircraftIdent).filter(Boolean)).size,
+      telemetryFlights: executedRows.filter((row) => row.telemetryPresent).length,
+      flightsWithoutTelemetry: executedRows.filter((row) => !row.telemetryPresent).length,
+      hardLandingCount: executedRows.reduce((acc, row) => acc + row.hardLandingCount, 0),
+      alerts: alertCounts,
+      revenue: finance.amountPaid,
+    },
+    finance,
+    upcomingFlights: {
+      total: upcomingPage.total,
+      items: upcomingRows,
+    },
+    alertsBySeverity: Object.fromEntries(
+      DASHBOARD_SEVERITIES.map((severity) => [
+        severity,
+        {
+          total: alertBucketsRaw[severity]?.total || 0,
+          items: (alertBucketsRaw[severity]?.documents || []).map((doc) =>
+            dashboardAlertRow(doc, aircraftByRegistration, modelsById, profilesByUserId),
+          ),
+        },
+      ]),
+    ),
+    aircraftForecast: aircraftRows.map((row) => ({
+      aircraftId: row.aircraftId,
+      aircraftIdent: row.aircraftIdent,
+      aircraftNickname: row.aircraftNickname,
+      modelId: row.modelId,
+      modelName: row.modelName,
+      active: row.active,
+      hoursToday: row.hoursToday,
+      hoursNext2Days: row.hoursNext2Days,
+      hoursNext5Days: row.hoursNext5Days,
+      hoursNext7Days: row.hoursNext7Days,
+      futureFlights7Days: row.futureFlights7Days,
+      nextFlightAt: row.nextFlightAt,
+    })),
+    aircraftUtilization: aircraftRows.map((row) => ({
+      aircraftId: row.aircraftId,
+      aircraftIdent: row.aircraftIdent,
+      aircraftNickname: row.aircraftNickname,
+      modelId: row.modelId,
+      modelName: row.modelName,
+      active: row.active,
+      executedFlights: row.executedFlights,
+      futureFlights: row.futureFlights,
+      executedHours: row.executedHours,
+      landings: row.landings,
+      distanceNm: row.distanceNm,
+      hardLandingCount: row.hardLandingCount,
+      telemetryFlights: row.telemetryFlights,
+      alertCounts: row.alertCounts,
+    })),
+  };
+}
+
+async function listFlightReports() {
+  const [usersList, profiles, flights, aircrafts, models, telemetrySummaries, landingMetrics] = await Promise.all([
+    listAllUsers(),
+    listAllDocuments(PROFILES_COLLECTION_ID, selectQuery(PROFILE_SELECT)),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.orderDesc("flight_date"), ...selectQuery(FLIGHT_DETAIL_SELECT)]),
+    listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
+    listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
+    listAllDocuments(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, selectQuery(TELEMETRY_SUMMARY_SELECT)),
+    listAllDocuments(FLIGHT_LANDINGS_COLLECTION_ID, selectQuery(LANDING_METRIC_SELECT)),
+  ]);
+
+  const usersById = new Map(usersList.map((user) => [user.$id, user]));
+  const profilesByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
+  const modelsById = new Map(models.map((model) => [model.$id, model]));
+  const aircraftByRegistration = new Map(
+    aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
+  );
+  const telemetryByFlightId = new Map(telemetrySummaries.map((doc) => [doc.flight_id, doc]));
+  const fastestLandingIasByFlightId = new Map();
+  for (const landing of landingMetrics) {
+    if (!landing.flight_id || typeof landing.td_ias_kt !== "number") continue;
+    fastestLandingIasByFlightId.set(
+      landing.flight_id,
+      Math.max(fastestLandingIasByFlightId.get(landing.flight_id) ?? Number.NEGATIVE_INFINITY, landing.td_ias_kt),
+    );
+  }
+
+  const rows = flights.map((doc) => {
+    const flight = toFlight(doc);
+    const aircraftIdent = normalizeAircraftIdent(flight.aircraftIdent);
+    const aircraft = aircraftByRegistration.get(aircraftIdent);
+    const model = aircraft ? modelsById.get(aircraft.model_id) : null;
+    const telemetry = toTelemetrySummary(telemetryByFlightId.get(flight.id));
+    if (telemetry && fastestLandingIasByFlightId.has(flight.id)) {
+      telemetry.fastestLandingIasKt = fastestLandingIasByFlightId.get(flight.id);
+    }
+    const status = isFutureFlight(flight) ? "futuro" : "executado";
+    const durationSec = flight.durationSec ?? telemetry?.telemetryDurationSec ?? null;
+    const distanceNm = flight.distanceNm || telemetry?.telemetryDistanceNm || 0;
+
+    return {
+      ...flight,
+      status,
+      aircraftIdent: aircraftIdent || flight.aircraftIdent || null,
+      aircraftNickname: aircraft?.nickname || null,
+      aircraftId: aircraft?.$id || null,
+      modelId: model?.$id || null,
+      modelName: model?.name || "",
+      modelManufacturer: model?.manufacturer || "",
+      operationalLimits: toOperationalLimits(model),
+      durationSec,
+      hours: durationSec ? Number((durationSec / 3600).toFixed(2)) : 0,
+      distanceNm: Number(distanceNm.toFixed(1)),
+      studentName: userDisplayName(flight.studentUserId, usersById, profilesByUserId, flight.studentName),
+      instructorName: userDisplayName(flight.instructorUserId, usersById, profilesByUserId, flight.instructorName),
+      telemetry,
+    };
+  });
+
+  return {
+    flights: rows.sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a))),
   };
 }
 
@@ -663,6 +1611,118 @@ function groupDataByUserId(flights, plans) {
   }
 
   return { flightsByUser, plansByUser };
+}
+
+async function listTrainingTracks() {
+  if (!TRAINING_TRACKS_COLLECTION_ID) return [];
+  return listAllDocuments(TRAINING_TRACKS_COLLECTION_ID, [
+    sdk.Query.orderAsc("name"),
+    ...selectQuery(TRAINING_TRACK_SELECT),
+  ]);
+}
+
+async function getDefaultTrainingTrack() {
+  if (!TRAINING_TRACKS_COLLECTION_ID) return null;
+  const res = await databases.listDocuments(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("is_default", [true]),
+    sdk.Query.limit(1),
+    ...selectQuery(TRAINING_TRACK_SELECT),
+  ]);
+  return res.documents[0] || null;
+}
+
+async function getStudentTrainingTrackDocs(studentUserId) {
+  if (!STUDENT_TRACKS_COLLECTION_ID || !studentUserId) return [];
+  return listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    ...selectQuery(STUDENT_TRACK_SELECT),
+  ]);
+}
+
+async function listStudentTrainingTracks(studentUserId) {
+  const [assignments, tracks] = await Promise.all([getStudentTrainingTrackDocs(studentUserId), listTrainingTracks()]);
+  const tracksById = new Map(tracks.map((track) => [track.$id, track]));
+  return assignments
+    .map((assignment) => toStudentTrainingTrack(assignment, tracksById.get(assignment.track_id) || null))
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || (a.track?.name || "").localeCompare(b.track?.name || "", "pt-BR"));
+}
+
+async function ensureDefaultTrainingTrackForStudent(studentUserId) {
+  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID || !studentUserId) return;
+  const assignments = await getStudentTrainingTrackDocs(studentUserId);
+  if (assignments.length > 0) return;
+  const track = await getDefaultTrainingTrack();
+  if (!track) return;
+  const now = nowIso();
+  await databases.createDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, sdk.ID.unique(), {
+    school_id: track.school_id || "escola_principal",
+    student_user_id: studentUserId,
+    track_id: track.$id,
+    status: "active",
+    is_primary: true,
+    assigned_at: now,
+    updated_at: now,
+  });
+}
+
+async function assignStudentTrainingTrack(targetUserId, trackId, isPrimary = false) {
+  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecoes de trilhas nao configuradas."), { status: 500 });
+  }
+  if (!targetUserId || !trackId) throw Object.assign(new Error("Aluno ou trilha nao informado."), { status: 400 });
+  const track = await databases.getDocument(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, trackId);
+  const existing = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [targetUserId]),
+    sdk.Query.equal("track_id", [trackId]),
+    sdk.Query.limit(1),
+  ]);
+  const now = nowIso();
+  if (isPrimary) await setPrimaryStudentTrainingTrack(targetUserId, trackId);
+  if (existing.documents[0]) {
+    await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, existing.documents[0].$id, {
+      status: "active",
+      is_primary: Boolean(isPrimary),
+      updated_at: now,
+    });
+  } else {
+    await databases.createDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, sdk.ID.unique(), {
+      school_id: track.school_id || "escola_principal",
+      student_user_id: targetUserId,
+      track_id: trackId,
+      status: "active",
+      is_primary: Boolean(isPrimary),
+      assigned_at: now,
+      updated_at: now,
+    });
+  }
+  return listStudentTrainingTracks(targetUserId);
+}
+
+async function setPrimaryStudentTrainingTrack(targetUserId, trackId) {
+  if (!STUDENT_TRACKS_COLLECTION_ID) return [];
+  const assignments = await getStudentTrainingTrackDocs(targetUserId);
+  const now = nowIso();
+  await Promise.all(assignments.map((doc) =>
+    databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, doc.$id, {
+      is_primary: doc.track_id === trackId,
+      updated_at: now,
+    }),
+  ));
+  return listStudentTrainingTracks(targetUserId);
+}
+
+async function removeStudentTrainingTrack(targetUserId, assignmentId) {
+  if (!STUDENT_TRACKS_COLLECTION_ID) return [];
+  if (!targetUserId || !assignmentId) throw Object.assign(new Error("Aluno ou vinculo nao informado."), { status: 400 });
+  await databases.deleteDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, assignmentId);
+  const remaining = await getStudentTrainingTrackDocs(targetUserId);
+  if (remaining.length > 0 && !remaining.some((doc) => doc.is_primary)) {
+    await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, remaining[0].$id, {
+      is_primary: true,
+      updated_at: nowIso(),
+    });
+  }
+  return listStudentTrainingTracks(targetUserId);
 }
 
 function matchesSearch(record, search) {
@@ -793,17 +1853,24 @@ async function getUserDetail(targetUserId) {
     throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
   }
   const user = await users.get({ userId: targetUserId });
-  const [[profileByUserId, prefByUserId], flights, plans] = await Promise.all([
+  const [[profileByUserId, prefByUserId], flights, plans, trainingTracks] = await Promise.all([
     Promise.all([getProfilesByUserIds([targetUserId]), getInstructorPrefsByUserIds([targetUserId])]),
     getFlightsByUserIds([targetUserId], { includeCsv: true }),
     getPlansByUserIds([targetUserId]),
+    listStudentTrainingTracks(targetUserId),
   ]);
+  const profile = profileByUserId.get(targetUserId) || null;
+  if (normalizeRole(profile?.role) === "aluno" && trainingTracks.length === 0) {
+    await ensureDefaultTrainingTrackForStudent(targetUserId);
+    trainingTracks.push(...(await listStudentTrainingTracks(targetUserId)));
+  }
   return toUserRecord(
     user,
-    profileByUserId.get(targetUserId) || null,
+    profile,
     prefByUserId.get(targetUserId) || null,
     flights,
     plans,
+    trainingTracks,
   );
 }
 
@@ -813,6 +1880,7 @@ async function upsertProfile(userId, email, role) {
 
   if (existing) {
     await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, existing.$id, data);
+    if (role === "aluno") await ensureDefaultTrainingTrackForStudent(userId);
     return existing.$id;
   }
 
@@ -832,6 +1900,7 @@ async function upsertProfile(userId, email, role) {
       sdk.Permission.read(sdk.Role.label("instrutor")),
     ],
   );
+  if (role === "aluno") await ensureDefaultTrainingTrackForStudent(userId);
   return created.$id;
 }
 
@@ -976,7 +2045,10 @@ async function deleteManeuverDocument(kind, documentId) {
 
 const EMAIL_SETTINGS_KEY = "email";
 const EMAIL_BRAND_SETTINGS_KEY = "emailBrand";
+const SCHOOL_RULES_KEY = "schoolRules";
 const NOTIFICATION_CHANNELS = ["email", "push"];
+const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "perfil"];
+const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.cancelled", "weeklyPlan.submitted", "notice.published"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
   sdk.Permission.update(sdk.Role.label("admin")),
@@ -1054,6 +2126,27 @@ function defaultEmailBrandSettings() {
     appUrl: normalizeAbsoluteUrl(APP_URL),
     supportEmail: "",
     footerText: "Este e um email automatico da plataforma.",
+  };
+}
+
+function defaultSchoolRules() {
+  return {
+    studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, true])),
+    theme: {
+      primaryColor: "#10b981",
+      accentColor: "#38bdf8",
+      backgroundColor: "#020617",
+      surfaceColor: "#0f172a",
+    },
+    schedule: {
+      minRequestHours: 1,
+      maxRequestHours: 4,
+      allowStudentFlightIntentions: true,
+      requireCreditsForIntentions: false,
+    },
+    emailNotifications: Object.fromEntries(
+      NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
+    ),
   };
 }
 
@@ -1184,6 +2277,56 @@ function sanitizeEmailBrandSettingsInput(input) {
   };
 }
 
+function sanitizeHours(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.round(parsed * 2) / 2;
+}
+
+function publicSchoolRules(settings, updatedAt) {
+  const defaults = defaultSchoolRules();
+  const minRequestHours = Math.max(0.5, sanitizeHours(settings?.schedule?.minRequestHours, defaults.schedule.minRequestHours));
+  const maxRequestHours = Math.max(
+    minRequestHours,
+    sanitizeHours(settings?.schedule?.maxRequestHours, defaults.schedule.maxRequestHours),
+  );
+  return {
+    studentTabs: Object.fromEntries(
+      STUDENT_PORTAL_TABS.map((tab) => [tab, Boolean(settings?.studentTabs?.[tab] ?? defaults.studentTabs[tab])]),
+    ),
+    theme: {
+      primaryColor: sanitizeHexColor(settings?.theme?.primaryColor, defaults.theme.primaryColor),
+      accentColor: sanitizeHexColor(settings?.theme?.accentColor, defaults.theme.accentColor),
+      backgroundColor: sanitizeHexColor(settings?.theme?.backgroundColor, defaults.theme.backgroundColor),
+      surfaceColor: sanitizeHexColor(settings?.theme?.surfaceColor, defaults.theme.surfaceColor),
+    },
+    schedule: {
+      minRequestHours,
+      maxRequestHours,
+      allowStudentFlightIntentions: Boolean(
+        settings?.schedule?.allowStudentFlightIntentions ?? defaults.schedule.allowStudentFlightIntentions,
+      ),
+      requireCreditsForIntentions: Boolean(
+        settings?.schedule?.requireCreditsForIntentions ?? defaults.schedule.requireCreditsForIntentions,
+      ),
+    },
+    emailNotifications: Object.fromEntries(
+      NOTIFICATION_EVENT_TYPES.map((eventType) => [
+        eventType,
+        {
+          enabled: Boolean(settings?.emailNotifications?.[eventType]?.enabled ?? true),
+          customNotice: cleanString(settings?.emailNotifications?.[eventType]?.customNotice).slice(0, 500),
+        },
+      ]),
+    ),
+    updatedAt: updatedAt || null,
+  };
+}
+
+function sanitizeSchoolRulesInput(input) {
+  return publicSchoolRules(input && typeof input === "object" ? input : {}, null);
+}
+
 async function getSettingDoc(key) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
   const res = await databases.listDocuments(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, [
@@ -1214,6 +2357,20 @@ async function loadEmailBrandSettings() {
   return {
     settings,
     publicSettings: publicEmailBrandSettings(settings, doc.$updatedAt || null),
+    doc,
+  };
+}
+
+async function loadSchoolRules() {
+  const doc = await getSettingDoc(SCHOOL_RULES_KEY);
+  if (!doc) {
+    const defaults = defaultSchoolRules();
+    return { settings: defaults, publicSettings: publicSchoolRules(defaults, null), doc: null };
+  }
+  const settings = parseJsonObject(doc.settings_json, defaultSchoolRules());
+  return {
+    settings,
+    publicSettings: publicSchoolRules(settings, doc.$updatedAt || null),
     doc,
   };
 }
@@ -1262,6 +2419,26 @@ async function saveEmailBrandSettings(input) {
         ADMIN_DOC_PERMS,
       );
   return publicEmailBrandSettings(settings, doc.$updatedAt || null);
+}
+
+async function saveSchoolRules(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const sanitized = sanitizeSchoolRulesInput(input);
+  const { updatedAt, ...settings } = sanitized;
+  const data = { key: SCHOOL_RULES_KEY, settings_json: JSON.stringify(settings) };
+  const current = await loadSchoolRules();
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicSchoolRules(settings, doc.$updatedAt || null);
 }
 
 async function getUserMapByIds(userIds) {
@@ -1408,6 +2585,7 @@ function emailHtml(message, brand) {
   const buttonTextColor = isLightHex(primary) ? "#0f172a" : "#ffffff";
   const logo = cleanString(brand.logoUrl);
   const actionUrl = resolveActionUrl(message.url, brand);
+  const customNotice = cleanString(message.customNotice);
   const detailsHtml = Array.isArray(message.details) && message.details.length > 0
     ? `
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;border-collapse:separate;border-spacing:0 10px">
@@ -1442,6 +2620,11 @@ function emailHtml(message, brand) {
                 <td style="padding:32px">
                   <p style="margin:0 0 12px;color:#334155;font-size:17px;line-height:1.55;font-weight:700">${escapeHtml(message.intro || "")}</p>
                   <p style="margin:0;color:#475569;font-size:15px;line-height:1.7">${escapeHtml(message.body)}</p>
+                  ${
+                    customNotice
+                      ? `<div style="margin-top:20px;padding:14px 16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:14px;line-height:1.6">${escapeHtml(customNotice)}</div>`
+                      : ""
+                  }
                   ${detailsHtml}
                   ${
                     actionUrl
@@ -1593,12 +2776,18 @@ async function dispatchNotificationEvent(actorUserId, event) {
   }
   recipients = Array.from(new Set(recipients));
 
-  const channels = Array.isArray(safeEvent.channels) && safeEvent.channels.length > 0
+  const requestedChannels = Array.isArray(safeEvent.channels) && safeEvent.channels.length > 0
     ? safeEvent.channels.filter((channel) => NOTIFICATION_CHANNELS.includes(channel))
     : NOTIFICATION_CHANNELS;
+  const { publicSettings: rules } = await loadSchoolRules();
+  const emailRule = rules.emailNotifications[eventType] || { enabled: true, customNotice: "" };
+  const channels = requestedChannels.filter((channel) => channel !== "email" || emailRule.enabled);
   const { settings } = await loadEmailSettings();
   const { publicSettings: brand } = await loadEmailBrandSettings();
-  const message = buildNotificationMessage(safeEvent, flight);
+  const message = {
+    ...buildNotificationMessage(safeEvent, flight),
+    customNotice: emailRule.customNotice,
+  };
   const usersById = await getUserMapByIds(recipients);
   const deliveries = [];
   for (const recipientUserId of recipients) {
@@ -1697,6 +2886,7 @@ function sampleEventForTemplate(templateType) {
 async function sendTestEmail(to, templateType) {
   const { settings } = await loadEmailSettings();
   const { publicSettings: brand } = await loadEmailBrandSettings();
+  const { publicSettings: rules } = await loadSchoolRules();
   const sample = sampleEventForTemplate(templateType);
   const message =
     sample.eventType === "test"
@@ -1713,6 +2903,9 @@ async function sendTestEmail(to, templateType) {
           url: brand.appUrl || APP_URL,
         }
       : buildNotificationMessage(sample, null);
+  if (sample.eventType !== "test") {
+    message.customNotice = rules.emailNotifications[sample.eventType]?.customNotice || "";
+  }
   const result = await sendEmailToUser(settings, brand, { email: cleanString(to) }, message);
   if (result.status !== "sent") throw Object.assign(new Error(result.reason || "Email de teste nao enviado."), { status: 400 });
 }
@@ -1752,6 +2945,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { brandSettings });
     }
 
+    if (action === "getSchoolRules") {
+      const { publicSettings } = await loadSchoolRules();
+      return jsonResponse(res, 200, { schoolRules: publicSettings });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "getEmailSettings") {
@@ -1774,6 +2972,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { brandSettings });
     }
 
+    if (action === "saveSchoolRules") {
+      const schoolRules = await saveSchoolRules(payload.rules);
+      return jsonResponse(res, 200, { schoolRules });
+    }
+
     if (action === "sendTestEmail") {
       await sendTestEmail(payload.to, payload.templateType);
       return jsonResponse(res, 200, { ok: true });
@@ -1791,6 +2994,34 @@ module.exports = async ({ req, res, log, error }) => {
         payload.availability,
       );
       return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "assignStudentTrainingTrack") {
+      const trainingTracks = await assignStudentTrainingTrack(
+        String(payload.userId || ""),
+        String(payload.trackId || ""),
+        Boolean(payload.isPrimary),
+      );
+      const user = await getUserDetail(String(payload.userId || ""));
+      return jsonResponse(res, 200, { user, trainingTracks });
+    }
+
+    if (action === "setPrimaryStudentTrainingTrack") {
+      const trainingTracks = await setPrimaryStudentTrainingTrack(
+        String(payload.userId || ""),
+        String(payload.trackId || ""),
+      );
+      const user = await getUserDetail(String(payload.userId || ""));
+      return jsonResponse(res, 200, { user, trainingTracks });
+    }
+
+    if (action === "removeStudentTrainingTrack") {
+      const trainingTracks = await removeStudentTrainingTrack(
+        String(payload.userId || ""),
+        String(payload.assignmentId || ""),
+      );
+      const user = await getUserDetail(String(payload.userId || ""));
+      return jsonResponse(res, 200, { user, trainingTracks });
     }
 
     if (action === "createCredit") {
@@ -1856,6 +3087,21 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getDetail") {
       const user = await getUserDetail(String(payload.userId || ""));
       return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "listFlightReports") {
+      const report = await listFlightReports();
+      return jsonResponse(res, 200, report);
+    }
+
+    if (action === "getDashboardSummary") {
+      const dashboard = await getDashboardSummary(payload);
+      return jsonResponse(res, 200, { dashboard });
+    }
+
+    if (action === "getStudentsProgress") {
+      const studentsProgress = await getStudentsProgress(payload);
+      return jsonResponse(res, 200, { studentsProgress });
     }
 
     if (action === "listSummaries" || action === "list") {

@@ -18,6 +18,7 @@ export type FlightDisplayInfo = {
   telemetryOk: boolean;
   instructorSuggestionMd: string;
   studentSuggestionMd: string;
+  weightBalanceFilled: boolean;
 };
 
 export function parseDurationToMinutes(value: string): number {
@@ -105,6 +106,7 @@ export function buildFlightDisplayInfo(
     telemetryOk: false,
     instructorSuggestionMd: "",
     studentSuggestionMd: "",
+    weightBalanceFilled: false,
   };
 
   if (!csvText) return defaultInfo;
@@ -146,5 +148,14 @@ export function buildFlightDisplayInfo(
     telemetryOk: decoded.telemetryCsv.trim().length > 0,
     instructorSuggestionMd: meta.preFlight.instructorSuggestionMd ?? "",
     studentSuggestionMd: meta.preFlight.studentSuggestionMd ?? "",
+    weightBalanceFilled: Boolean(
+      meta.weightBalance &&
+        meta.weightBalance.inputs.occupantsWeightKg !== null &&
+        meta.weightBalance.inputs.baggageWeightKg !== null &&
+        meta.weightBalance.inputs.rampFuel.value !== null &&
+        meta.weightBalance.inputs.taxiFuel.value !== null &&
+        meta.weightBalance.inputs.tripFuel.value !== null &&
+        meta.weightBalance.results.isComplete,
+    ),
   };
 }

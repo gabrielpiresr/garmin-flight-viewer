@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { JornadaTab } from "../JornadaTab";
 import { ManobrasTab } from "../ManobrasTab";
@@ -106,7 +106,13 @@ function EmptySection({ title }: { title: string }) {
 export function InstructorLayout() {
   const { user, signOut } = useAuth();
   const [section, setSection] = useState<InstructorSection>("home");
+  const [hasOpenedFlights, setHasOpenedFlights] = useState(false);
   const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
+  const shouldRenderFlights = hasOpenedFlights || section === "flights";
+
+  useEffect(() => {
+    if (section === "flights") setHasOpenedFlights(true);
+  }, [section]);
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -186,7 +192,11 @@ export function InstructorLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {section === "home" && <InstructorHome onOpenFlights={() => setSection("flights")} />}
           {section === "journey" && <JornadaTab />}
-          {section === "flights" && <InstructorFlightsTab />}
+          {shouldRenderFlights && (
+            <div hidden={section !== "flights"}>
+              <InstructorFlightsTab />
+            </div>
+          )}
           {section === "notices" && <NoticeFeed className="w-full max-w-4xl" />}
           {section === "manuals" && <EmptySection title="Manuais em breve" />}
           {section === "maneuvers" && <ManobrasTab />}

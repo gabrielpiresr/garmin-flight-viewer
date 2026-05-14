@@ -8,6 +8,7 @@ import {
   OP_WEEKS_COL_ID,
   WEEKLY_PLANS_COL_ID,
 } from "./appwrite";
+import { getSchoolRules } from "./schoolRulesDb";
 import type { OperationalWeek } from "../types/admin";
 import type {
   WeeklyFlightPlan,
@@ -19,6 +20,7 @@ import type {
   AvailabilityPeriod,
   AvailabilityType,
 } from "../types/planning";
+import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -118,6 +120,60 @@ function studentPlanPerms(studentId: string) {
   ];
 }
 
+function validDurationStep(value: number): boolean {
+  return Math.abs(value * 2 - Math.round(value * 2)) <= 0.001;
+}
+
+function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules): SavePlanPayload["items"] {
+  return items.map((item, index) => {
+    const durationHours = Number(item.durationHours);
+    if (
+      !Number.isFinite(durationHours) ||
+      durationHours < rules.schedule.minRequestHours ||
+      durationHours > rules.schedule.maxRequestHours ||
+      !validDurationStep(durationHours)
+    ) {
+      throw new Error(`Duração inválida no voo ${index + 1}.`);
+    }
+    if (!["low", "medium", "high"].includes(item.flexibilityLevel)) {
+      throw new Error(`Flexibilidade inválida no voo ${index + 1}.`);
+    }
+    if (![1, 2, 3].includes(item.priorityLevel)) {
+      throw new Error(`Prioridade inválida no voo ${index + 1}.`);
+    }
+    const availability = item.availability.filter((entry) => {
+      return (
+        [1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek) &&
+        (entry.period === "morning" || entry.period === "afternoon") &&
+        (entry.availabilityType === "available" || entry.availabilityType === "preferred")
+      );
+    });
+    if (availability.length === 0) throw new Error(`Informe disponibilidade no voo ${index + 1}.`);
+    return {
+      position: index,
+      durationHours,
+      flexibilityLevel: item.flexibilityLevel,
+      preferredAircraft: item.preferredAircraft ? String(item.preferredAircraft).slice(0, 64) : null,
+      priorityLevel: item.priorityLevel,
+      notes: item.notes ? String(item.notes).slice(0, 512) : null,
+      availability,
+    };
+  });
+}
+
+async function ensureWeekIsOpen(operationalWeekId: string, weekStart: string) {
+  if (!databases || !DB_ID || !OP_WEEKS_COL_ID) return;
+  const res = await databases.listDocuments(DB_ID, OP_WEEKS_COL_ID, [
+    Query.equal("week_start", [weekStart]),
+    Query.equal("is_open_for_requests", [true]),
+    Query.limit(50),
+  ]);
+  const matching = res.documents.find((doc) => doc.$id === operationalWeekId) ?? res.documents[0];
+  if (!matching || (matching as unknown as Record<string, unknown>).schedule_closed_at) {
+    throw new Error("As solicitações para esta semana não estão abertas.");
+  }
+}
+
 // Returns all open weeks whose week_end >= today, deduplicated by week_start (one entry per calendar week).
 export async function findOpenWeeks(): Promise<OperationalWeek[]> {
   if (!isReady() || !databases || !DB_ID || !OP_WEEKS_COL_ID) return [];
@@ -132,6 +188,7 @@ export async function findOpenWeeks(): Promise<OperationalWeek[]> {
   const weeks: OperationalWeek[] = [];
   for (const doc of res.documents) {
     const d = doc as unknown as Record<string, unknown>;
+    if (d.schedule_closed_at) continue;
     const ws = (d.week_start as string) ?? "";
     if (!seen.has(ws)) {
       seen.add(ws);
@@ -182,7 +239,21 @@ export async function saveStudentPlan(
     throw new Error("Appwrite não configurado");
   }
 
-  const items_json = serializeItems(payload.items);
+  const rules = await getSchoolRules().catch(() => DEFAULT_SCHOOL_RULES);
+  if (!rules.schedule.allowStudentFlightIntentions) {
+    throw new Error("A escola desativou solicitações de intenção de voo no momento.");
+  }
+  await ensureWeekIsOpen(payload.operationalWeekId, payload.weekStart);
+
+  const requestedFlightsCount = Math.round(Number(payload.requestedFlightsCount));
+  if (!Number.isInteger(requestedFlightsCount) || requestedFlightsCount < 1 || requestedFlightsCount > 7) {
+    throw new Error("Informe entre 1 e 7 voos para a semana.");
+  }
+  if (payload.items.length !== requestedFlightsCount) {
+    throw new Error("Quantidade de voos diferente dos itens informados.");
+  }
+  const sanitizedItems = sanitizePlanItems(payload.items, rules);
+  const items_json = serializeItems(sanitizedItems);
   const now = new Date().toISOString();
 
   const existing = await databases.listDocuments(DB_ID, WEEKLY_PLANS_COL_ID, [
@@ -195,7 +266,7 @@ export async function saveStudentPlan(
 
   if (existing.total > 0 && existing.documents[0]) {
     planDoc = await databases.updateDocument(DB_ID, WEEKLY_PLANS_COL_ID, existing.documents[0].$id, {
-      requested_flights_count: payload.requestedFlightsCount,
+      requested_flights_count: requestedFlightsCount,
       status: "draft",
       updated_at: now,
       items_json,
@@ -209,7 +280,7 @@ export async function saveStudentPlan(
         student_id: payload.studentId,
         operational_week_id: payload.operationalWeekId,
         week_start: payload.weekStart,
-        requested_flights_count: payload.requestedFlightsCount,
+        requested_flights_count: requestedFlightsCount,
         status: "draft",
         updated_at: now,
         items_json,
@@ -226,6 +297,11 @@ export async function submitStudentPlan(planId: string): Promise<void> {
   if (!isReady() || !databases || !DB_ID || !WEEKLY_PLANS_COL_ID) {
     throw new Error("Appwrite não configurado");
   }
+  const plan = await databases.getDocument(DB_ID, WEEKLY_PLANS_COL_ID, planId);
+  await ensureWeekIsOpen(
+    String((plan as unknown as Record<string, unknown>).operational_week_id ?? ""),
+    String((plan as unknown as Record<string, unknown>).week_start ?? ""),
+  );
   await databases.updateDocument(DB_ID, WEEKLY_PLANS_COL_ID, planId, {
     status: "submitted",
     updated_at: new Date().toISOString(),

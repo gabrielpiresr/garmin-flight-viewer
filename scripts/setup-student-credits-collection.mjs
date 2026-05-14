@@ -126,6 +126,7 @@ async function configureCredits(databaseId, collectionId) {
   await idx(databaseId, collectionId, "credits_purchase_idx", ["purchase_date"]);
   await idx(databaseId, collectionId, "credits_expires_idx", ["expires_at"]);
   await idx(databaseId, collectionId, "credits_user_model_idx", ["user_id", "aircraft_model_id"]);
+  await idx(databaseId, collectionId, "credits_model_purchase_idx", ["aircraft_model_id", "purchase_date"], ["ASC", "ASC"]);
 }
 
 async function main() {

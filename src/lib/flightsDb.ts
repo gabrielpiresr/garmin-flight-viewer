@@ -1,9 +1,13 @@
 import { Query } from "appwrite";
 import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, storage } from "./appwrite";
 import { decodeFlightRecord, encodeFlightRecord } from "./flightRecordCodec";
+import type { FlightWeightBalanceMeta } from "./weightBalance";
 import { clearFlightTelemetryMetrics, replaceFlightTelemetryMetrics } from "./flightTelemetryMetricsDb";
+import { clearFlightTelemetryAlerts, replaceFlightTelemetryAlertsForFlight } from "./flightTelemetryAlertsDb";
 import type { FlightTelemetryMetricsBundle } from "./flightTelemetryMetrics";
+import type { ParseResult } from "./parseGarminCsv";
 import type { UserRole } from "./rbac";
+import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
@@ -18,6 +22,10 @@ export type SavedFlightListItem = {
   start_time: string | null;
   student_user_id: string | null;
   instructor_user_id: string | null;
+  training_track_id: string | null;
+  training_stage_id: string | null;
+  training_mission_id: string | null;
+  training_snapshot_json: string | null;
 };
 
 export type SavedFlightFull = SavedFlightListItem & { csv_text: string };
@@ -33,6 +41,10 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
     start_time: (d.start_time as string | null | undefined) ?? null,
     student_user_id: (d.student_user_id as string | null | undefined) ?? (d.user_id as string | null | undefined) ?? null,
     instructor_user_id: (d.instructor_user_id as string | null | undefined) ?? null,
+    training_track_id: (d.training_track_id as string | null | undefined) ?? null,
+    training_stage_id: (d.training_stage_id as string | null | undefined) ?? null,
+    training_mission_id: (d.training_mission_id as string | null | undefined) ?? null,
+    training_snapshot_json: (d.training_snapshot_json as string | null | undefined) ?? null,
   };
 }
 
@@ -50,6 +62,13 @@ function buildInternalFlightName(payload: { csv_text: string; aircraft_ident?: s
     .filter(Boolean)
     .join(" ")
     .trim() || payload.source_filename || "Voo";
+}
+
+function toStorageCsvFileName(sourceFilename: string): string {
+  const trimmed = sourceFilename.trim() || "telemetria.csv";
+  if (/\.csv$/i.test(trimmed)) return trimmed;
+  const safeBase = trimmed.replace(/\.[^.\\/]+$/, "").trim() || "telemetria";
+  return `${safeBase}.csv`;
 }
 
 function buildActorOwnedPermissions(actorUserId: string) {
@@ -102,7 +121,26 @@ export async function listSavedFlights(
     return { data: null, error: new Error("Appwrite não configurado") };
   }
   try {
-    const queries = [Query.orderDesc("$createdAt"), Query.limit(200)];
+    const queries = [
+      Query.select([
+        "$id",
+        "$createdAt",
+        "source_filename",
+        "aircraft_ident",
+        "duration_sec",
+        "flight_date",
+        "start_time",
+        "student_user_id",
+        "instructor_user_id",
+        "user_id",
+        "training_track_id",
+        "training_stage_id",
+        "training_mission_id",
+        "training_snapshot_json",
+      ]),
+      Query.orderDesc("$createdAt"),
+      Query.limit(200),
+    ];
     if (viewer.role === "aluno") {
       queries.push(Query.equal("student_user_id", [viewer.userId]));
     } else if (viewer.role === "instrutor") {
@@ -178,6 +216,10 @@ export async function getSavedFlight(id: string): Promise<{ data: SavedFlightFul
         start_time: (d.start_time as string | null | undefined) ?? null,
         student_user_id: (d.student_user_id as string | null | undefined) ?? (d.user_id as string | null | undefined) ?? null,
         instructor_user_id: (d.instructor_user_id as string | null | undefined) ?? null,
+        training_track_id: (d.training_track_id as string | null | undefined) ?? null,
+        training_stage_id: (d.training_stage_id as string | null | undefined) ?? null,
+        training_mission_id: (d.training_mission_id as string | null | undefined) ?? null,
+        training_snapshot_json: (d.training_snapshot_json as string | null | undefined) ?? null,
         csv_text: csvText,
       },
       error: null,
@@ -196,7 +238,12 @@ export async function insertFlight(payload: {
   csv_text: string;
   aircraft_ident?: string | null;
   duration_sec?: number | null;
+  trainingTrackId?: string | null;
+  trainingStageId?: string | null;
+  trainingMissionId?: string | null;
+  trainingSnapshot?: TrainingSelectionSnapshot | null;
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
+  telemetryAlertParsed?: ParseResult | null;
 }): Promise<{ id: string | null; error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { id: null, error: new Error("Appwrite não configurado") };
@@ -214,7 +261,7 @@ export async function insertFlight(payload: {
     let csvFileId: string | null = null;
     if (storage && BUCKET_ID) {
       const blob = new Blob([payload.csv_text], { type: "text/csv" });
-      const file = new File([blob], payload.source_filename, { type: "text/csv" });
+      const file = new File([blob], toStorageCsvFileName(payload.source_filename), { type: "text/csv" });
       const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, permissions);
       csvFileId = uploaded.$id;
     }
@@ -236,12 +283,31 @@ export async function insertFlight(payload: {
         duration_sec: payload.duration_sec ?? null,
         flight_date: scheduleFields.flight_date,
         start_time: scheduleFields.start_time,
+        training_track_id: payload.trainingTrackId ?? null,
+        training_stage_id: payload.trainingStageId ?? null,
+        training_mission_id: payload.trainingMissionId ?? null,
+        training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
       },
       permissions,
     );
 
     const metricsResult = await replaceFlightTelemetryMetrics(d.$id, payload.actorUserId, payload.telemetryMetrics ?? null);
     if (metricsResult.error) return { id: d.$id, error: metricsResult.error };
+    if (Object.prototype.hasOwnProperty.call(payload, "telemetryAlertParsed")) {
+      const alertsResult = await replaceFlightTelemetryAlertsForFlight({
+        flightId: d.$id,
+        actorUserId: payload.actorUserId,
+        identity: payload.telemetryMetrics?.summary ?? {
+          studentUserId: payload.studentUserId,
+          instructorUserId: payload.instructorUserId ?? null,
+          aircraftIdent: payload.aircraft_ident ?? null,
+          flightDate: scheduleFields.flight_date,
+          startTime: scheduleFields.start_time,
+        },
+        parsed: payload.telemetryAlertParsed ?? null,
+      });
+      if (alertsResult.error) console.warn("Falha ao materializar alertas de telemetria.", alertsResult.error);
+    }
 
     return { id: d.$id, error: null };
   } catch (e) {
@@ -258,7 +324,12 @@ export async function updateFlight(id: string, payload: {
   csv_text: string;
   aircraft_ident?: string | null;
   duration_sec?: number | null;
+  trainingTrackId?: string | null;
+  trainingStageId?: string | null;
+  trainingMissionId?: string | null;
+  trainingSnapshot?: TrainingSelectionSnapshot | null;
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
+  telemetryAlertParsed?: ParseResult | null;
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
@@ -281,7 +352,7 @@ export async function updateFlight(id: string, payload: {
     let csvFileId: string | null = null;
     if (storage && BUCKET_ID) {
       const blob = new Blob([payload.csv_text], { type: "text/csv" });
-      const file = new File([blob], payload.source_filename, { type: "text/csv" });
+      const file = new File([blob], toStorageCsvFileName(payload.source_filename), { type: "text/csv" });
       const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, permissions);
       csvFileId = uploaded.$id;
     }
@@ -299,9 +370,28 @@ export async function updateFlight(id: string, payload: {
       duration_sec: payload.duration_sec ?? null,
       flight_date: scheduleFields.flight_date,
       start_time: scheduleFields.start_time,
+      training_track_id: payload.trainingTrackId ?? null,
+      training_stage_id: payload.trainingStageId ?? null,
+      training_mission_id: payload.trainingMissionId ?? null,
+      training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
     }, permissions);
     const metricsResult = await replaceFlightTelemetryMetrics(id, payload.actorUserId, payload.telemetryMetrics ?? null);
     if (metricsResult.error) return { error: metricsResult.error };
+    if (Object.prototype.hasOwnProperty.call(payload, "telemetryAlertParsed")) {
+      const alertsResult = await replaceFlightTelemetryAlertsForFlight({
+        flightId: id,
+        actorUserId: payload.actorUserId,
+        identity: payload.telemetryMetrics?.summary ?? {
+          studentUserId: payload.studentUserId,
+          instructorUserId: payload.instructorUserId ?? null,
+          aircraftIdent: payload.aircraft_ident ?? null,
+          flightDate: scheduleFields.flight_date,
+          startTime: scheduleFields.start_time,
+        },
+        parsed: payload.telemetryAlertParsed ?? null,
+      });
+      if (alertsResult.error) console.warn("Falha ao materializar alertas de telemetria.", alertsResult.error);
+    }
     return { error: null };
   } catch (e) {
     return { error: e as Error };
@@ -336,7 +426,57 @@ export async function updateStudentFlightSuggestion(id: string, payload: {
         studentSuggestionMd: payload.suggestionMd.trim(),
       },
     };
-    const csvText = encodeFlightRecord({ meta: nextMeta, telemetryCsv: decoded.telemetryCsv });
+    const csvText = encodeFlightRecord({
+      meta: nextMeta,
+      telemetryCsv: decoded.telemetryCsv,
+      telemetryFiles: decoded.telemetryFiles,
+    });
+
+    await databases.updateDocument(DB_ID, COL_ID, id, {
+      csv_text: csvText,
+      csv_file_id: null,
+    });
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
+export async function updateFlightWeightBalance(id: string, payload: {
+  actorUserId: string;
+  actorRole: UserRole;
+  weightBalance: FlightWeightBalanceMeta;
+}): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite não configurado") };
+  }
+  try {
+    const saved = await getSavedFlight(id);
+    if (saved.error || !saved.data) {
+      return { error: saved.error ?? new Error("Voo não encontrado.") };
+    }
+    const canUpdate =
+      payload.actorRole === "admin" ||
+      payload.actorRole === "instrutor" ||
+      saved.data.student_user_id === payload.actorUserId;
+    if (!canUpdate) {
+      return { error: new Error("Você não tem permissão para atualizar o peso e balanceamento deste voo.") };
+    }
+
+    const decoded = decodeFlightRecord(saved.data.csv_text);
+    if (!decoded.meta) {
+      return { error: new Error("Ficha do voo sem metadados para atualizar.") };
+    }
+
+    const nextMeta = {
+      ...decoded.meta,
+      weightBalance: payload.weightBalance,
+    };
+    const csvText = encodeFlightRecord({
+      meta: nextMeta,
+      telemetryCsv: decoded.telemetryCsv,
+      telemetryFiles: decoded.telemetryFiles,
+    });
 
     await databases.updateDocument(DB_ID, COL_ID, id, {
       csv_text: csvText,
@@ -376,7 +516,11 @@ export async function updateInstructorFlightSuggestion(id: string, payload: {
         instructorSuggestionMd: payload.suggestionMd.trim(),
       },
     };
-    const csvText = encodeFlightRecord({ meta: nextMeta, telemetryCsv: decoded.telemetryCsv });
+    const csvText = encodeFlightRecord({
+      meta: nextMeta,
+      telemetryCsv: decoded.telemetryCsv,
+      telemetryFiles: decoded.telemetryFiles,
+    });
 
     await databases.updateDocument(DB_ID, COL_ID, id, {
       csv_text: csvText,
@@ -407,6 +551,7 @@ export async function deleteSavedFlight(id: string): Promise<{ error: Error | nu
     }
     await databases.deleteDocument(DB_ID, COL_ID, id);
     await clearFlightTelemetryMetrics(id);
+    await clearFlightTelemetryAlerts(id);
     return { error: null };
   } catch (e) {
     return { error: e as Error };

@@ -1,5 +1,6 @@
 import { SLOT_HOURS } from "../types/admin";
 import type {
+  AircraftWeekSupply,
   AircraftUtilizationSummary,
   AllocationLayer,
   CandidateRejectionCode,
@@ -24,6 +25,7 @@ const DAY_RANK = new Map<number, number>(DAY_ORDER.map((day, index) => [day, ind
 const REASON_LABEL: Record<NonAllocationReasonCode, string> = {
   noAvailableSlot: "Sem slot compatível disponível",
   dailyCapReached: "Cap diário da aeronave atingido",
+  groupCapReached: "Teto por grupo de dias da aeronave atingido",
   gapConflict: "Conflito com intervalo mínimo entre voos",
   existingFlightConflict: "Conflito com voo já existente na semana",
   preferenceIncompatible: "Preferências incompatíveis com a oferta da semana",
@@ -66,6 +68,22 @@ type InstructorOccupied = {
 type DemandSortState = {
   served: number;
   requested: number;
+};
+
+type DemandWorkItem = {
+  demand: StudentRequestDemand;
+  originalIndex: number;
+};
+
+type CandidateBuildResult = {
+  candidates: Candidate[];
+  hadNonContiguousAttempt: boolean;
+};
+
+type CandidateEvaluation = {
+  allocated: Candidate | null;
+  validCandidateCount: number;
+  rejectionCodes: Set<CandidateRejectionCode>;
 };
 
 function minutesToHHMM(totalMinutes: number): string {
@@ -307,9 +325,36 @@ export function assignInstructorsToSuggestions(input: {
 
 function rejectReasonPriority(codes: Set<CandidateRejectionCode>): NonAllocationReasonCode {
   if (codes.has("dailyCapReached")) return "dailyCapReached";
+  if (codes.has("groupCapReached")) return "groupCapReached";
   if (codes.has("existingFlightConflict")) return "existingFlightConflict";
   if (codes.has("gapConflict")) return "gapConflict";
   return "insufficientContiguousTime";
+}
+
+function reachesGroupCap(params: {
+  supply: AircraftWeekSupply;
+  dayOfWeek: number;
+  durationHours: number;
+  usedHoursByAircraftDay: Map<string, number>;
+}): boolean {
+  for (const groupCap of params.supply.groupCaps) {
+    if (!groupCap.days.includes(params.dayOfWeek)) continue;
+    const usedInGroup = groupCap.days.reduce((total, day) => {
+      return total + (params.usedHoursByAircraftDay.get(`${params.supply.aircraftId}-${day}`) ?? 0);
+    }, 0);
+    if (usedInGroup + params.durationHours > groupCap.maxHours) return true;
+  }
+  return false;
+}
+
+function groupCapUsedHours(
+  supply: AircraftWeekSupply,
+  groupDays: number[],
+  usedHoursByAircraftDay: Map<string, number>,
+): number {
+  return groupDays.reduce((total, day) => {
+    return total + (usedHoursByAircraftDay.get(`${supply.aircraftId}-${day}`) ?? 0);
+  }, 0);
 }
 
 function slotStateRank(state: "preferred" | "normal" | "avoid" | "blocked" | undefined): number {
@@ -360,22 +405,11 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     demandStats.set(demand.studentId, current);
   }
 
-  const orderedDemands = [...input.demands].sort((a, b) => {
-    if (a.priorityLevel !== b.priorityLevel) return a.priorityLevel - b.priorityLevel;
-    const flexCmp = compareFlexibility(a.flexibilityLevel, b.flexibilityLevel);
-    if (flexCmp !== 0) return flexCmp;
-    if (a.durationHours !== b.durationHours) return b.durationHours - a.durationHours;
-    const aStats = demandStats.get(a.studentId) ?? { served: 0, requested: 1 };
-    const bStats = demandStats.get(b.studentId) ?? { served: 0, requested: 1 };
-    const aRatio = aStats.served / Math.max(1, aStats.requested);
-    const bRatio = bStats.served / Math.max(1, bStats.requested);
-    return aRatio - bRatio;
-  });
-
   const suggestions: ScheduledFlightSuggestion[] = [];
   const unallocatedDemands: UnallocatedDemand[] = [];
+  const remainingDemands: DemandWorkItem[] = input.demands.map((demand, originalIndex) => ({ demand, originalIndex }));
 
-  for (const demand of orderedDemands) {
+  const buildCandidates = (demand: StudentRequestDemand): CandidateBuildResult => {
     const demandAvailability = buildAvailabilitySets(demand);
     const units = Math.max(1, Math.ceil(demand.durationHours));
     const candidates: Candidate[] = [];
@@ -430,23 +464,62 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       }
     }
 
-    if (candidates.length === 0) {
-      const reasonCode: NonAllocationReasonCode = hadNonContiguousAttempt
-        ? "insufficientContiguousTime"
-        : demand.preferredModelId
-          ? "preferenceIncompatible"
-          : "noAvailableSlot";
-      unallocatedDemands.push({
-        demandId: demand.demandId,
-        studentId: demand.studentId,
-        studentLabel: demand.studentLabel,
-        durationHours: demand.durationHours,
-        reasonCode,
-        reasonLabel: REASON_LABEL[reasonCode],
-      });
-      continue;
+    return { candidates, hadNonContiguousAttempt };
+  };
+
+  const rejectionForCandidate = (
+    demand: StudentRequestDemand,
+    candidate: Candidate,
+  ): CandidateRejectionCode | null => {
+    const dayKey = `${candidate.aircraftId}-${candidate.dayOfWeek}`;
+    const studentDayKey = `${demand.studentId}-${candidate.weekDate}`;
+    if (studentUsedDays.has(studentDayKey)) return "existingFlightConflict";
+
+    const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
+    const cap = supply?.dailyCaps[candidate.dayOfWeek];
+    const used = usedHoursByAircraftDay.get(dayKey) ?? 0;
+    if (typeof cap === "number" && used + candidate.durationHours > cap) return "dailyCapReached";
+    if (
+      supply &&
+      reachesGroupCap({
+        supply,
+        dayOfWeek: candidate.dayOfWeek,
+        durationHours: candidate.durationHours,
+        usedHoursByAircraftDay,
+      })
+    ) {
+      return "groupCapReached";
     }
 
+    const aircraftIntervals = occupiedByAircraftDay.get(dayKey) ?? [];
+    for (const interval of aircraftIntervals) {
+      const overlap = candidate.startMinute < interval.endMinute && candidate.endMinute > interval.startMinute;
+      if (overlap && interval.existing) return "existingFlightConflict";
+      if (overlap) return "gapConflict";
+
+      const minGap = Math.max(0, input.minGapMinutes);
+      const noGapBefore = candidate.startMinute < interval.endMinute + minGap;
+      const noGapAfter = interval.startMinute < candidate.endMinute + minGap;
+      const gapConflict = noGapBefore && noGapAfter;
+      if (gapConflict && interval.existing) return "existingFlightConflict";
+      if (gapConflict) return "gapConflict";
+    }
+
+    const studentIntervals = studentOccupiedByStudent.get(demand.studentId) ?? [];
+    const hasStudentConflict = studentIntervals.some((interval) => {
+      if (interval.date !== candidate.weekDate) return false;
+      return candidate.startMinute < interval.endMinute && candidate.endMinute > interval.startMinute;
+    });
+    if (hasStudentConflict) return "existingFlightConflict";
+
+    return null;
+  };
+
+  const evaluateCandidates = (
+    demand: StudentRequestDemand,
+    candidates: Candidate[],
+    candidateImpactScore?: (candidate: Candidate) => number,
+  ): CandidateEvaluation => {
     const attemptsByLayer = new Map<AllocationLayer, Candidate[]>();
     for (const candidate of candidates) {
       const list = attemptsByLayer.get(candidate.layer) ?? [];
@@ -456,12 +529,15 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
 
     let allocated: Candidate | null = null;
     const rejectionCodes = new Set<CandidateRejectionCode>();
+    let validCandidateCount = 0;
 
     for (const layer of layerOrderForDemand(demand)) {
       const layerCandidates = attemptsByLayer.get(layer) ?? [];
       if (layerCandidates.length === 0) continue;
 
       layerCandidates.sort((a, b) => {
+        const impactCmp = (candidateImpactScore?.(a) ?? 0) - (candidateImpactScore?.(b) ?? 0);
+        if (impactCmp !== 0) return impactCmp;
         const dayCmp = (DAY_RANK.get(a.dayOfWeek) ?? 99) - (DAY_RANK.get(b.dayOfWeek) ?? 99);
         if (dayCmp !== 0) return dayCmp;
         const opCmp = b.operationalPreferenceRank - a.operationalPreferenceRank;
@@ -476,66 +552,146 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       });
 
       for (const candidate of layerCandidates) {
-        const dayKey = `${candidate.aircraftId}-${candidate.dayOfWeek}`;
-        const studentDayKey = `${demand.studentId}-${candidate.weekDate}`;
-        if (studentUsedDays.has(studentDayKey)) {
-          rejectionCodes.add("existingFlightConflict");
-          continue;
-        }
-        const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
-        const cap = supply?.dailyCaps[candidate.dayOfWeek];
-        const used = usedHoursByAircraftDay.get(dayKey) ?? 0;
-        if (typeof cap === "number" && used + candidate.durationHours > cap) {
-          rejectionCodes.add("dailyCapReached");
+        const rejection = rejectionForCandidate(demand, candidate);
+        if (rejection) {
+          rejectionCodes.add(rejection);
           continue;
         }
 
-        const aircraftIntervals = occupiedByAircraftDay.get(dayKey) ?? [];
-        const hasAircraftConflict = aircraftIntervals.some((interval) => {
-          const overlap = candidate.startMinute < interval.endMinute && candidate.endMinute > interval.startMinute;
-          if (overlap && interval.existing) {
-            rejectionCodes.add("existingFlightConflict");
-            return true;
-          }
-          if (overlap) {
-            rejectionCodes.add("gapConflict");
-            return true;
-          }
-          const minGap = Math.max(0, input.minGapMinutes);
-          const noGapBefore = candidate.startMinute < interval.endMinute + minGap;
-          const noGapAfter = interval.startMinute < candidate.endMinute + minGap;
-          const gapConflict = noGapBefore && noGapAfter;
-          if (gapConflict && interval.existing) {
-            rejectionCodes.add("existingFlightConflict");
-            return true;
-          }
-          if (gapConflict) {
-            rejectionCodes.add("gapConflict");
-            return true;
-          }
-          return false;
-        });
-        if (hasAircraftConflict) continue;
-
-        const studentIntervals = studentOccupiedByStudent.get(demand.studentId) ?? [];
-        const hasStudentConflict = studentIntervals.some((interval) => {
-          if (interval.date !== candidate.weekDate) return false;
-          return candidate.startMinute < interval.endMinute && candidate.endMinute > interval.startMinute;
-        });
-        if (hasStudentConflict) {
-          rejectionCodes.add("existingFlightConflict");
-          continue;
-        }
-
-        allocated = candidate;
-        break;
+        validCandidateCount += 1;
+        allocated ??= candidate;
       }
 
       if (allocated) break;
     }
 
+    return { allocated, validCandidateCount, rejectionCodes };
+  };
+
+  while (remainingDemands.length > 0) {
+    const buildResults = new Map<string, CandidateBuildResult>();
+    const validCandidatesByDemand = new Map<string, Candidate[]>();
+    for (const item of remainingDemands) {
+      const buildResult = buildCandidates(item.demand);
+      buildResults.set(item.demand.demandId, buildResult);
+      validCandidatesByDemand.set(
+        item.demand.demandId,
+        buildResult.candidates.filter((candidate) => !rejectionForCandidate(item.demand, candidate)),
+      );
+    }
+
+    const wouldAllocationRejectCandidate = (allocation: Candidate, candidate: Candidate): boolean => {
+      if (allocation.aircraftId !== candidate.aircraftId) return false;
+
+      if (allocation.dayOfWeek === candidate.dayOfWeek) {
+        const overlap = candidate.startMinute < allocation.endMinute && candidate.endMinute > allocation.startMinute;
+        if (overlap) return true;
+
+        const minGap = Math.max(0, input.minGapMinutes);
+        const gapConflict =
+          candidate.startMinute < allocation.endMinute + minGap &&
+          allocation.startMinute < candidate.endMinute + minGap;
+        if (gapConflict) return true;
+
+        const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
+        const cap = supply?.dailyCaps[candidate.dayOfWeek];
+        const used = usedHoursByAircraftDay.get(`${candidate.aircraftId}-${candidate.dayOfWeek}`) ?? 0;
+        if (typeof cap === "number" && used + allocation.durationHours + candidate.durationHours > cap) return true;
+      }
+
+      const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
+      if (!supply) return false;
+      return supply.groupCaps.some((groupCap) => {
+        if (!groupCap.days.includes(allocation.dayOfWeek) || !groupCap.days.includes(candidate.dayOfWeek)) return false;
+        const used = groupCapUsedHours(supply, groupCap.days, usedHoursByAircraftDay);
+        return used + allocation.durationHours + candidate.durationHours > groupCap.maxHours;
+      });
+    };
+
+    const impactCache = new Map<string, number>();
+    const makeCandidateImpactScore = (currentDemand: StudentRequestDemand) => (candidate: Candidate): number => {
+      const cacheKey = [
+        currentDemand.demandId,
+        candidate.aircraftId,
+        candidate.dayOfWeek,
+        candidate.startMinute,
+        candidate.durationHours,
+      ].join("::");
+      const cached = impactCache.get(cacheKey);
+      if (typeof cached === "number") return cached;
+
+      let score = 0;
+      for (const item of remainingDemands) {
+        if (item.demand.demandId === currentDemand.demandId) continue;
+        const validCandidates = validCandidatesByDemand.get(item.demand.demandId) ?? [];
+        if (validCandidates.length === 0) continue;
+
+        let lostCandidates = 0;
+        for (const otherCandidate of validCandidates) {
+          const sameStudentDay =
+            item.demand.studentId === currentDemand.studentId && otherCandidate.weekDate === candidate.weekDate;
+          if (sameStudentDay || wouldAllocationRejectCandidate(candidate, otherCandidate)) {
+            lostCandidates += 1;
+          }
+        }
+        if (lostCandidates === 0) continue;
+
+        score += lostCandidates / validCandidates.length;
+        if (lostCandidates === validCandidates.length) score += 100;
+      }
+
+      impactCache.set(cacheKey, score);
+      return score;
+    };
+
+    const evaluations = remainingDemands.map((item, remainingIndex) => {
+      const buildResult = buildResults.get(item.demand.demandId) ?? { candidates: [], hadNonContiguousAttempt: false };
+      const candidateEvaluation = evaluateCandidates(item.demand, buildResult.candidates);
+      return {
+        ...item,
+        remainingIndex,
+        ...buildResult,
+        ...candidateEvaluation,
+      };
+    });
+
+    evaluations.sort((a, b) => {
+      const aHasAllocation = a.allocated ? 1 : 0;
+      const bHasAllocation = b.allocated ? 1 : 0;
+      if (aHasAllocation !== bHasAllocation) return bHasAllocation - aHasAllocation;
+      if (a.validCandidateCount !== b.validCandidateCount) return a.validCandidateCount - b.validCandidateCount;
+      if (a.demand.priorityLevel !== b.demand.priorityLevel) return a.demand.priorityLevel - b.demand.priorityLevel;
+      const flexCmp = compareFlexibility(a.demand.flexibilityLevel, b.demand.flexibilityLevel);
+      if (flexCmp !== 0) return flexCmp;
+      const aStats = demandStats.get(a.demand.studentId) ?? { served: 0, requested: 1 };
+      const bStats = demandStats.get(b.demand.studentId) ?? { served: 0, requested: 1 };
+      const aRatio = aStats.served / Math.max(1, aStats.requested);
+      const bRatio = bStats.served / Math.max(1, bStats.requested);
+      if (aRatio !== bRatio) return aRatio - bRatio;
+      if (a.demand.durationHours !== b.demand.durationHours) return b.demand.durationHours - a.demand.durationHours;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    const selected = evaluations[0];
+    if (!selected) break;
+    remainingDemands.splice(selected.remainingIndex, 1);
+
+    const demand = selected.demand;
+    const allocated = evaluateCandidates(
+      demand,
+      selected.candidates,
+      makeCandidateImpactScore(demand),
+    ).allocated;
+
     if (!allocated) {
-      const reasonCode = rejectReasonPriority(rejectionCodes);
+      const reasonCode: NonAllocationReasonCode =
+        selected.candidates.length === 0
+          ? selected.hadNonContiguousAttempt
+            ? "insufficientContiguousTime"
+            : demand.preferredModelId
+              ? "preferenceIncompatible"
+              : "noAvailableSlot"
+          : rejectReasonPriority(selected.rejectionCodes);
       unallocatedDemands.push({
         demandId: demand.demandId,
         studentId: demand.studentId,

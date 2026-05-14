@@ -112,6 +112,18 @@ async function main() {
     process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID;
   const studentCreditsCollectionId =
     process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID;
+  const aircraftsCollectionId = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || env.VITE_APPWRITE_AIRCRAFTS_COL_ID;
+  const aircraftModelsCollectionId =
+    process.env.APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID || env.VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID;
+  const flightTelemetrySummariesCollectionId =
+    process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID;
+  const flightLandingsCollectionId =
+    process.env.APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID || env.VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID;
+  const flightTelemetryAlertsCollectionId =
+    process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID ||
+    "flight_telemetry_alerts";
   const maneuversSectionsCollectionId =
     process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID;
   const maneuversSubsectionsCollectionId =
@@ -120,6 +132,10 @@ async function main() {
     process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID;
   const platformSettingsCollectionId =
     process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
+  const trainingTracksCollectionId =
+    process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID || "training_tracks";
+  const studentTracksCollectionId =
+    process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID || "student_training_tracks";
   const pushSubscriptionsCollectionId =
     process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID || env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID;
   const notificationDeliveriesCollectionId =
@@ -139,14 +155,16 @@ async function main() {
   if (!weeklyPlansCollectionId) missing.push("VITE_APPWRITE_WEEKLY_PLANS_COL_ID");
   if (!instructorPrefsCollectionId) missing.push("VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID");
   if (!studentCreditsCollectionId) missing.push("VITE_APPWRITE_STUDENT_CREDITS_COL_ID");
+  if (!aircraftsCollectionId) missing.push("VITE_APPWRITE_AIRCRAFTS_COL_ID");
+  if (!aircraftModelsCollectionId) missing.push("VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID");
+  if (!flightTelemetrySummariesCollectionId) missing.push("VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID");
+  if (!flightLandingsCollectionId) missing.push("VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID");
   if (!maneuversSectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID");
   if (!maneuversSubsectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID");
   if (!maneuversArticlesCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID");
   if (!platformSettingsCollectionId) missing.push("VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID");
   if (!pushSubscriptionsCollectionId) missing.push("VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID");
   if (!notificationDeliveriesCollectionId) missing.push("VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID");
-  if (!webPushPublicKey) missing.push("VITE_WEB_PUSH_PUBLIC_KEY");
-  if (!webPushPrivateKey) missing.push("WEB_PUSH_PRIVATE_KEY");
   if (!fs.existsSync(archivePath)) missing.push(archivePath);
   if (missing.length) throw new Error(`Missing required values: ${missing.join(", ")}`);
 
@@ -161,14 +179,21 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_CREDITS_COLLECTION_ID", studentCreditsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AIRCRAFTS_COLLECTION_ID", aircraftsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID", aircraftModelsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID", flightTelemetrySummariesCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID", flightLandingsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID", flightTelemetryAlertsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID", maneuversSectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID", maneuversSubsectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID", maneuversArticlesCollectionId);
   await upsertVariable(functions, "APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", platformSettingsCollectionId);
+  await upsertVariable(functions, "APPWRITE_TRAINING_TRACKS_COLLECTION_ID", trainingTracksCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
   await upsertVariable(functions, "APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID", pushSubscriptionsCollectionId);
   await upsertVariable(functions, "APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID", notificationDeliveriesCollectionId);
-  await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
-  await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
+  if (webPushPublicKey) await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
+  if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
   if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
 

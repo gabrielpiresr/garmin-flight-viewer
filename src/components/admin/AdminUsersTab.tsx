@@ -6,10 +6,18 @@ import {
   updateAdminUserRole,
 } from "../../lib/adminUsersDb";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
+import {
+  assignStudentTrainingTrack,
+  listStudentTrainingTracks,
+  listTrainingTracks,
+  removeStudentTrainingTrack,
+  setPrimaryStudentTrainingTrack,
+} from "../../lib/trainingTracksDb";
 import type { UserRole } from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../../types/schedule";
 import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlannedFlight } from "../../types/adminUsers";
+import type { TrainingTrack } from "../../types/trainingTrack";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
@@ -110,6 +118,7 @@ function detailToSummary(detail: AdminUserDetail): AdminUserSummary {
       instructorPreferenceLevel: detail.profile.instructorPreferenceLevel,
       instructorAvailability: detail.profile.instructorAvailability,
     },
+    trainingTracks: detail.trainingTracks ?? [],
     executed: detail.executed,
     planned: detail.planned,
     intentions: detail.intentions,
@@ -136,12 +145,12 @@ function FlightCard({ flight, onOpen }: { flight: AdminUserFlight; onOpen: (id: 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs text-slate-500">
-            {formatFlightDate(flight)} · {flight.aircraftIdent || "Aeronave nao informada"}
+            {formatFlightDate(flight)} · {flight.aircraftIdent || "Aeronave não informada"}
           </p>
         </div>
       </div>
       <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2">
-        <span>Duracao: {formatDuration(flight.durationSec)}</span>
+        <span>Duração: {formatDuration(flight.durationSec)}</span>
         <span>Pousos: {flight.landings || 0}</span>
         <span>Rota: {flight.route || "-"}</span>
         <span>Instrutor: {flight.instructorName || "-"}</span>
@@ -187,7 +196,10 @@ export function AdminUsersTab() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
   const [savingInstructorPrefs, setSavingInstructorPrefs] = useState(false);
+  const [savingTrack, setSavingTrack] = useState(false);
   const [roleDraft, setRoleDraft] = useState<UserRole>("aluno");
+  const [trackDraft, setTrackDraft] = useState("");
+  const [tracksCatalog, setTracksCatalog] = useState<TrainingTrack[]>([]);
   const [instructorPreferenceDraft, setInstructorPreferenceDraft] = useState<InstructorPreferenceLevel>("medium");
   const [instructorAvailabilityDraft, setInstructorAvailabilityDraft] = useState<Record<string, AvailabilityType>>({});
   const [activeFlightId, setActiveFlightId] = useState<string | null>(null);
@@ -243,6 +255,12 @@ export function AdminUsersTab() {
   }, []);
 
   useEffect(() => {
+    void listTrainingTracks({ includeInactive: true }).then((result) => {
+      if (!result.error) setTracksCatalog(result.data);
+    });
+  }, []);
+
+  useEffect(() => {
     if (!selectedId) {
       setSelectedDetail(null);
       return;
@@ -251,9 +269,13 @@ export function AdminUsersTab() {
     setLoadingDetail(true);
     setError(null);
     void getAdminUserDetail(selectedId)
-      .then((detail) => {
+      .then(async (detail) => {
         if (cancelled) return;
-        setSelectedDetail(detail);
+        const tracks = detail.role === "aluno" ? await listStudentTrainingTracks(detail.userId) : { data: [], error: null };
+        if (cancelled) return;
+        const detailWithTracks = { ...detail, trainingTracks: tracks.data };
+        if (tracks.error) setError(tracks.error.message);
+        setSelectedDetail(detailWithTracks);
         setRoleDraft(detail.role);
         setInstructorPreferenceDraft(detail.profile.instructorPreferenceLevel ?? "medium");
         const next: Record<string, AvailabilityType> = {};
@@ -261,6 +283,7 @@ export function AdminUsersTab() {
           next[availKey(row.dayOfWeek, row.period)] = row.availabilityType;
         }
         setInstructorAvailabilityDraft(next);
+        setTrackDraft(tracks.data.find((row) => row.status === "active")?.trackId ?? "");
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -320,6 +343,73 @@ export function AdminUsersTab() {
       setError((e as Error).message);
     } finally {
       setSavingInstructorPrefs(false);
+    }
+  }
+
+  async function handleAssignTrack() {
+    if (!selectedDetail || !trackDraft) return;
+    setSavingTrack(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await assignStudentTrainingTrack({
+        studentUserId: selectedDetail.userId,
+        trackId: trackDraft,
+        isPrimary: (selectedDetail.trainingTracks ?? []).length === 0,
+      });
+      if (result.error) throw result.error;
+      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
+      if (tracks.error) throw tracks.error;
+      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess("Trilha atribuida ao aluno.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingTrack(false);
+    }
+  }
+
+  async function handleSetPrimaryTrack(trackId: string) {
+    if (!selectedDetail) return;
+    setSavingTrack(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await setPrimaryStudentTrainingTrack(selectedDetail.userId, trackId);
+      if (result.error) throw result.error;
+      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
+      if (tracks.error) throw tracks.error;
+      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess("Trilha principal atualizada.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingTrack(false);
+    }
+  }
+
+  async function handleRemoveTrack(assignmentId: string) {
+    if (!selectedDetail) return;
+    setSavingTrack(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await removeStudentTrainingTrack(assignmentId);
+      if (result.error) throw result.error;
+      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
+      if (tracks.error) throw tracks.error;
+      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess("Trilha removida do aluno.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingTrack(false);
     }
   }
 
@@ -501,7 +591,7 @@ export function AdminUsersTab() {
                     <MetricCard label="Total de horas" value={formatHours(selectedDetail.executed.hours)} hint="Horas executadas" />
                     <MetricCard label="Total de pousos" value={selectedDetail.executed.landings} hint="Pousos registrados" />
                     <MetricCard label="Voos planejados" value={selectedDetail.planned.count} hint={`Proximo ${formatDate(selectedDetail.planned.nextFlightAt)}`} />
-                    <MetricCard label="Intencoes futuras" value={selectedDetail.intentions.requestedFlights} hint={`${formatHours(selectedDetail.intentions.requestedHours)} solicitadas`} />
+                    <MetricCard label="Intenções futuras" value={selectedDetail.intentions.requestedFlights} hint={`${formatHours(selectedDetail.intentions.requestedHours)} solicitadas`} />
                   </div>
 
                   <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
@@ -509,16 +599,16 @@ export function AdminUsersTab() {
                     <div><dt className="text-xs text-slate-500">Telefone</dt><dd className="text-slate-200">{selectedDetail.profile.phone || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Nascimento</dt><dd className="text-slate-200">{selectedDetail.profile.birthDate || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Peso / altura</dt><dd className="text-slate-200">{selectedDetail.profile.weightKg ?? "-"}kg / {selectedDetail.profile.heightCm ?? "-"}cm</dd></div>
-                    <div><dt className="text-xs text-slate-500">Email verificado</dt><dd className="text-slate-200">{selectedDetail.emailVerification ? "Sim" : "Nao"}</dd></div>
+                    <div><dt className="text-xs text-slate-500">Email verificado</dt><dd className="text-slate-200">{selectedDetail.emailVerification ? "Sim" : "Não"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Criado em</dt><dd className="text-slate-200">{formatDate(selectedDetail.createdAt)}</dd></div>
                   </dl>
                 </section>
 
                 <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-                    <h3 className="text-sm font-semibold text-slate-200">Habilitacoes</h3>
+                    <h3 className="text-sm font-semibold text-slate-200">Habilitações</h3>
                     {selectedDetail.profile.anacRatings.length === 0 ? (
-                      <p className="mt-2 text-xs text-slate-500">Nenhuma habilitacao importada.</p>
+                      <p className="mt-2 text-xs text-slate-500">Nenhuma habilitação importada.</p>
                     ) : (
                       <ul className="mt-2 space-y-2 text-sm text-slate-300">
                         {selectedDetail.profile.anacRatings.map((item, idx) => {
@@ -536,9 +626,9 @@ export function AdminUsersTab() {
                     )}
                   </div>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-                    <h3 className="text-sm font-semibold text-slate-200">Licencas</h3>
+                    <h3 className="text-sm font-semibold text-slate-200">Licenças</h3>
                     {selectedDetail.profile.anacLicenses.length === 0 ? (
-                      <p className="mt-2 text-xs text-slate-500">Nenhuma licenca importada.</p>
+                      <p className="mt-2 text-xs text-slate-500">Nenhuma licença importada.</p>
                     ) : (
                       <ul className="mt-2 space-y-2 text-sm text-slate-300">
                         {selectedDetail.profile.anacLicenses.map((item, idx) => (
@@ -551,7 +641,7 @@ export function AdminUsersTab() {
                     )}
                   </div>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-                    <h3 className="text-sm font-semibold text-slate-200">Certificado medico</h3>
+                    <h3 className="text-sm font-semibold text-slate-200">Certificado médico</h3>
                     <div className="mt-3 grid gap-2 text-sm text-slate-300">
                       <p><span className="text-slate-400">Classe:</span> {selectedDetail.profile.anacMedical.classe || "-"}</p>
                       <p>
@@ -568,21 +658,96 @@ export function AdminUsersTab() {
                 </section>
 
                 {selectedDetail.role === "aluno" ? (
-                  <AdminUserCreditsSection
-                    studentUserId={selectedDetail.userId}
-                    studentName={displayName(selectedDetail)}
-                  />
+                  <>
+                    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                      <div className="flex flex-wrap items-end justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Trilhas do aluno</p>
+                          <p className="text-xs text-slate-600">Define os curriculos ativos usados na ficha de voo.</p>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-2">
+                          <label className="text-xs text-slate-400">
+                            Adicionar trilha
+                            <select
+                              value={trackDraft}
+                              onChange={(e) => setTrackDraft(e.target.value)}
+                              className="mt-1 block min-w-56 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                            >
+                              <option value="">Selecione...</option>
+                              {tracksCatalog
+                                .filter((track) => !(selectedDetail.trainingTracks ?? []).some((row) => row.trackId === track.id))
+                                .map((track) => (
+                                  <option key={track.id} value={track.id}>
+                                    {track.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => void handleAssignTrack()}
+                            disabled={savingTrack || !trackDraft}
+                            className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                          >
+                            {savingTrack ? "Salvando..." : "Adicionar"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-2">
+                        {(selectedDetail.trainingTracks ?? []).map((row) => (
+                          <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-sm">
+                            <div>
+                              <p className="font-medium text-slate-200">{row.track?.name || row.trackId}</p>
+                              <p className="text-xs text-slate-500">
+                                {row.track?.missionCount ?? 0} missoes · {formatHours((row.track?.totalMinutes ?? 0) / 60)}
+                                {row.isPrimary ? " · principal" : ""}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void handleSetPrimaryTrack(row.trackId)}
+                                disabled={savingTrack || row.isPrimary}
+                                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                              >
+                                Principal
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleRemoveTrack(row.id)}
+                                disabled={savingTrack}
+                                className="rounded-lg border border-red-900/60 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                              >
+                                Remover
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {(selectedDetail.trainingTracks ?? []).length === 0 ? (
+                          <p className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-500">
+                            Nenhuma trilha atribuida.
+                          </p>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <AdminUserCreditsSection
+                      studentUserId={selectedDetail.userId}
+                      studentName={displayName(selectedDetail)}
+                    />
+                  </>
                 ) : null}
 
                 {(roleDraft === "instrutor" || selectedDetail.role === "instrutor") ? (
                   <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Preferencia padrao do instrutor</p>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Preferência padrão do instrutor</p>
                         <p className="text-xs text-slate-600">Usada como ponto de partida em instrutores da semana.</p>
                       </div>
                       <label className="text-xs text-slate-400">
-                        Preferencia
+                        Preferência
                         <select
                           value={instructorPreferenceDraft}
                           onChange={(e) => setInstructorPreferenceDraft(e.target.value as InstructorPreferenceLevel)}
@@ -675,12 +840,12 @@ export function AdminUsersTab() {
                     </div>
                   </div>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-                    <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Intencoes futuras</p>
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Intenções futuras</p>
                     <div className="space-y-2">
                       {selectedDetail.futureIntentions.slice(0, 30).map((plan) => (
                         <IntentionCard key={plan.id} plan={plan} />
                       ))}
-                      {selectedDetail.futureIntentions.length === 0 ? <p className="text-sm text-slate-500">Nenhuma intencao futura encontrada.</p> : null}
+                      {selectedDetail.futureIntentions.length === 0 ? <p className="text-sm text-slate-500">Nenhuma intenção futura encontrada.</p> : null}
                     </div>
                   </div>
                 </section>

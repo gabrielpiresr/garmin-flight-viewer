@@ -360,6 +360,18 @@ function validateSuggestions(
     }
   }
 
+  for (const supply of weekData.supplies) {
+    const rows = suggestions.filter((row) => row.aircraftRegistration === supply.aircraftRegistration);
+    for (const groupCap of supply.groupCaps) {
+      const groupRows = rows.filter((row) => groupCap.days.includes(row.dayOfWeek));
+      const used = groupRows.reduce((total, row) => total + row.durationHours, 0);
+      if (used <= groupCap.maxHours) continue;
+      for (const row of groupRows) {
+        errorByDemand.set(row.demandId, "Teto por grupo de dias excedido para esta aeronave.");
+      }
+    }
+  }
+
   const byStudentDay = new Map<string, ScheduledFlightSuggestion[]>();
   for (const suggestion of suggestions) {
     const key = `${suggestion.studentId}-${suggestion.weekDate}`;

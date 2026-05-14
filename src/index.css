@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+@theme {
+  --radius-xs: 0.08125rem;
+  --radius-sm: 0.1625rem;
+  --radius-md: 0.24375rem;
+  --radius-lg: 0.325rem;
+  --radius-xl: 0.4875rem;
+  --radius-2xl: 0.65rem;
+  --radius-3xl: 0.975rem;
+  --radius-4xl: 1.3rem;
+}
+
 :root {
   color-scheme: dark;
   --bg: #0c0f14;
@@ -7,6 +18,10 @@
   --border: #1e293b;
   --muted: #94a3b8;
   --accent: #38bdf8;
+  --school-primary: #10b981;
+  --school-accent: #38bdf8;
+  --school-bg: #020617;
+  --school-surface: #0f172a;
 }
 
 html {
@@ -23,6 +38,33 @@ body {
 .leaflet-container {
   background: #0b1220 !important;
   font-family: inherit;
+}
+
+.school-themed-shell {
+  background: var(--school-bg);
+}
+
+.school-themed-surface {
+  background-color: color-mix(in srgb, var(--school-surface) 82%, transparent);
+}
+
+.school-nav-active {
+  color: var(--school-primary);
+  background-color: color-mix(in srgb, var(--school-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--school-primary) 42%, transparent);
+}
+
+.school-primary-button {
+  background: var(--school-primary);
+  color: #ffffff;
+}
+
+.school-primary-button:hover {
+  background: color-mix(in srgb, var(--school-primary) 84%, white);
+}
+
+.school-accent-text {
+  color: var(--school-accent);
 }
 
 /* Leaflet attribution legível no tema escuro */

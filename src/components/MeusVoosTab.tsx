@@ -3,11 +3,10 @@ import { useAuth } from "../contexts/AuthContext";
 import { SCHOOL_ID } from "../lib/appwrite";
 import { listAircrafts } from "../lib/aircraftDb";
 import {
-  buildFlightDisplayInfo,
   formatMinutes,
   getDateBase,
+  getFlightDateTimeMs,
   isFutureFlight,
-  type FlightDisplayInfo,
 } from "../lib/flightDisplay";
 import {
   deleteSavedFlight,
@@ -16,34 +15,38 @@ import {
   updateStudentFlightSuggestion,
   type SavedFlightListItem,
 } from "../lib/flightsDb";
-import { listFlightVideos } from "../lib/flightVideosDb";
-import { getProfile } from "../lib/rbac";
+import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
+import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import {
+  buildBasicFlightListDisplayInfo,
+  invalidateFlightListDisplayCache,
+  loadFlightVideoFlags,
+  loadFullFlightListDisplayInfos,
+  loadLightFlightListDisplayInfos,
+  type FlightListDisplayInfo,
+} from "../lib/flightListDisplayCache";
 import { FlightsAgendaBoard } from "./FlightsAgendaBoard";
 import { FlightDetailView } from "./FlightDetailView";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
 import { NovoVooFlow } from "./NovoVooFlow";
+import type { NovoVooStepId } from "./NovoVooFlow";
 import { Skeleton } from "./ui/Skeleton";
 
 type View = "list" | "detail" | "create";
 
-type FlightCardInfo = FlightDisplayInfo & { videoOk: boolean };
+type FlightCardInfo = FlightListDisplayInfo;
+type DetailOpenOptions = { initialStepId?: NovoVooStepId; hideStepMenu?: boolean };
 
-function groupByMonth(
+function groupFlights(
   items: SavedFlightListItem[],
   infoById: Record<string, FlightCardInfo>,
+  direction: "asc" | "desc" = "desc",
 ): { label: string; flights: SavedFlightListItem[] }[] {
-  const map = new Map<string, SavedFlightListItem[]>();
-  const ordered = [...items].sort(
-    (a, b) => getDateBase(b, infoById[b.id]).getTime() - getDateBase(a, infoById[a.id]).getTime(),
-  );
-  for (const item of ordered) {
-    const d = getDateBase(item, infoById[item.id]);
-    const key = d.toLocaleString("pt-BR", { month: "long", year: "numeric" });
-    const capitalized = key.charAt(0).toUpperCase() + key.slice(1);
-    if (!map.has(capitalized)) map.set(capitalized, []);
-    map.get(capitalized)!.push(item);
-  }
-  return Array.from(map.entries()).map(([label, flights]) => ({ label, flights }));
+  const ordered = [...items].sort((a, b) => {
+    const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
+    return direction === "asc" ? diff : -diff;
+  });
+  return ordered.length ? [{ label: "", flights: ordered }] : [];
 }
 
 function yesNoTag(ok: boolean, yes: string, no: string): string {
@@ -63,6 +66,68 @@ function aircraftColor(registration: string): string {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash + key.charCodeAt(i) * (i + 1)) % 997;
   return AIRCRAFT_COLORS[hash % AIRCRAFT_COLORS.length] ?? AIRCRAFT_COLORS[0]!;
+}
+
+function FutureWeightBalanceCta({ ok, onClick }: { ok: boolean; onClick: () => void }) {
+  return (
+    <div className="inline-flex items-center gap-2">
+      {ok ? <span className="rounded bg-emerald-900/40 px-2 py-1 text-[11px] font-semibold text-emerald-200">OK</span> : null}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        className="rounded bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-500"
+      >
+        {ok ? "Editar" : "Enviar P&B"}
+      </button>
+    </div>
+  );
+}
+
+function FutureStudentSuggestionStatus({ suggestion }: { suggestion?: string }) {
+  const text = suggestion?.trim();
+  if (!text) {
+    return <span className="rounded bg-amber-900/40 px-2 py-1 text-[11px] font-semibold text-amber-200">Pendente</span>;
+  }
+  return <span className="text-xs text-emerald-200">OK - {text}</span>;
+}
+
+function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" | "default" }) {
+  const color =
+    tone === "future"
+      ? "text-sky-300"
+      : tone === "past"
+        ? "text-violet-300"
+        : "text-slate-400";
+  return <p className={`text-xs font-semibold uppercase tracking-widest ${color}`}>{title}</p>;
+}
+
+function writeFichaWindowStatus(printWindow: Window, title: string, message: string) {
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+  <html lang="pt-BR">
+    <head>
+      <meta charset="utf-8" />
+      <title>${title}</title>
+      <style>
+        body { margin: 0; background: #020617; color: #e2e8f0; font-family: Arial, sans-serif; }
+        main { min-height: 100vh; display: grid; place-items: center; padding: 24px; text-align: center; }
+        h1 { margin: 0 0 8px; font-size: 20px; }
+        p { margin: 0; color: #94a3b8; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <div>
+          <h1>${title}</h1>
+          <p>${message}</p>
+        </div>
+      </main>
+    </body>
+  </html>`);
+  printWindow.document.close();
 }
 
 type DisplayMode = "cards" | "calendar" | "table";
@@ -104,19 +169,32 @@ function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
   );
 }
 
-function ShareFlightButton({ onClick, className = "" }: { onClick: (event: MouseEvent<HTMLButtonElement>) => void; className?: string }) {
+function ShareFlightButton({
+  onClick,
+  className = "",
+  iconOnly = false,
+}: {
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+  className?: string;
+  iconOnly?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-xs font-semibold text-pink-100 transition hover:border-pink-400/60 hover:bg-pink-500/20 ${className}`}
+      title="Compartilhar"
+      aria-label="Compartilhar"
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-pink-500/30 bg-pink-500/10 ${iconOnly ? "p-2" : "px-3 py-2"} text-xs font-semibold text-pink-100 transition hover:border-pink-400/60 hover:bg-pink-500/20 ${className}`}
     >
+      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M13.5 5.5a2.5 2.5 0 10-2.45-3.01L7.2 4.42a2.5 2.5 0 100 3.16l3.85 1.93a2.5 2.5 0 10.67-1.34L7.87 6.24a2.57 2.57 0 000-.48l3.85-1.93c.45.99 1.45 1.67 2.78 1.67z" />
+      </svg>
       <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" strokeWidth="1.8" />
+        <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
         <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
         <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
       </svg>
-      Compartilhar
+      {iconOnly ? null : "Compartilhar"}
     </button>
   );
 }
@@ -125,13 +203,13 @@ export function MeusVoosTab() {
   const { user, configured } = useAuth();
   const [view, setView] = useState<View>("list");
   const [selectedFlightId, setSelectedFlightId] = useState<string | undefined>(undefined);
+  const [detailOpenOptions, setDetailOpenOptions] = useState<DetailOpenOptions>({});
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [infoById, setInfoById] = useState<Record<string, FlightCardInfo>>({});
   const [aircraftOptions, setAircraftOptions] = useState<string[]>([]);
-  const [studentFilter, setStudentFilter] = useState("");
   const [instructorFilter, setInstructorFilter] = useState("");
   const [aircraftFilter, setAircraftFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
@@ -139,6 +217,7 @@ export function MeusVoosTab() {
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [studentSuggestionFlightId, setStudentSuggestionFlightId] = useState<string | null>(null);
   const [shareFlightId, setShareFlightId] = useState<string | null>(null);
+  const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
   const [studentSuggestionDraft, setStudentSuggestionDraft] = useState("");
   const [studentSuggestionSaving, setStudentSuggestionSaving] = useState(false);
   const [studentSuggestionError, setStudentSuggestionError] = useState<string | null>(null);
@@ -182,46 +261,63 @@ export function MeusVoosTab() {
   }, []);
 
   useEffect(() => {
-    const missing = items.filter((f) => !infoById[f.id]);
-    if (missing.length === 0) return;
     let cancelled = false;
-    void (async () => {
-      for (const item of missing) {
-        const [saved, videos, studentRes, instructorRes] = await Promise.all([
-          getSavedFlight(item.id),
-          listFlightVideos(item.id),
-          item.student_user_id ? getProfile(item.student_user_id) : Promise.resolve({ data: null, error: null }),
-          item.instructor_user_id ? getProfile(item.instructor_user_id) : Promise.resolve({ data: null, error: null }),
-        ]);
-        if (cancelled) return;
+    if (items.length === 0) {
+      setInfoById({});
+      return;
+    }
 
-        const studentProfile = studentRes.data;
-        const instructorProfile = instructorRes.data;
-        const displayInfo = buildFlightDisplayInfo(item, saved.data?.csv_text ?? null, {
-          studentName: studentProfile?.fullName,
-          studentAnac: studentProfile?.anacCode,
-          instructorName: instructorProfile?.fullName,
-          instructorAnac: instructorProfile?.anacCode,
-        });
-        const info: FlightCardInfo = {
-          ...displayInfo,
-          videoOk: (videos.data ?? []).length > 0,
+    setInfoById((prev) => {
+      const next: Record<string, FlightCardInfo> = {};
+      for (const item of items) {
+        next[item.id] = prev[item.id] ?? {
+          ...buildBasicFlightListDisplayInfo(item),
+          videoOk: false,
         };
-        setInfoById((prev) => ({ ...prev, [item.id]: info }));
       }
+      return next;
+    });
+
+    void (async () => {
+      const lightInfos = await loadLightFlightListDisplayInfos(items);
+      if (cancelled) return;
+      setInfoById((prev) => {
+        const next = { ...prev };
+        for (const item of items) {
+          next[item.id] = {
+            ...(lightInfos[item.id] ?? buildBasicFlightListDisplayInfo(item)),
+            videoOk: prev[item.id]?.videoOk ?? false,
+          };
+        }
+        return next;
+      });
+
+      const [fullInfos, videoFlags] = await Promise.all([
+        loadFullFlightListDisplayInfos(items),
+        loadFlightVideoFlags(items),
+      ]);
+      if (cancelled) return;
+      setInfoById((prev) => {
+        const next = { ...prev };
+        for (const item of items) {
+          next[item.id] = {
+            ...(fullInfos[item.id] ?? lightInfos[item.id] ?? buildBasicFlightListDisplayInfo(item)),
+            videoOk: videoFlags[item.id] ?? prev[item.id]?.videoOk ?? false,
+          };
+        }
+        return next;
+      });
     })();
     return () => {
       cancelled = true;
     };
-  }, [items, infoById]);
+  }, [items]);
 
   const filteredItems = useMemo(() => {
-    const sf = studentFilter.trim().toLowerCase();
     const inf = instructorFilter.trim().toLowerCase();
     const af = aircraftFilter.trim().toLowerCase();
     return items.filter((item) => {
       const info = infoById[item.id];
-      if (sf && !(info?.studentName ?? "").toLowerCase().includes(sf)) return false;
       if (inf && !(info?.instructorName ?? "").toLowerCase().includes(inf)) return false;
       if (af && !(info?.aircraft ?? "").toLowerCase().includes(af)) return false;
       const iso = info?.flightDateIso ?? (item.created_at ?? "").slice(0, 10);
@@ -229,16 +325,16 @@ export function MeusVoosTab() {
       if (dateTo && iso > dateTo) return false;
       return true;
     });
-  }, [items, infoById, studentFilter, instructorFilter, aircraftFilter, dateFrom, dateTo]);
+  }, [items, infoById, instructorFilter, aircraftFilter, dateFrom, dateTo]);
 
-  const groups = useMemo(() => groupByMonth(filteredItems, infoById), [filteredItems, infoById]);
+  const groups = useMemo(() => groupFlights(filteredItems, infoById), [filteredItems, infoById]);
   const futureGroups = useMemo(() => {
     const future = filteredItems.filter((item) => isFutureFlight(item, infoById[item.id]));
-    return groupByMonth(future, infoById);
+    return groupFlights(future, infoById, "asc");
   }, [filteredItems, infoById]);
   const pastGroups = useMemo(() => {
     const past = filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id]));
-    return groupByMonth(past, infoById);
+    return groupFlights(past, infoById, "desc");
   }, [filteredItems, infoById]);
   const consolidatedSummary = useMemo(() => {
     return filteredItems.reduce(
@@ -253,11 +349,51 @@ export function MeusVoosTab() {
       { flights: 0, minutes: 0, landings: 0 },
     );
   }, [filteredItems, infoById]);
-  const dataLoading = loading || items.some((item) => !infoById[item.id]);
+  const dataLoading = loading && items.length === 0;
 
-  const openFlight = (id: string) => {
+  const openFlight = (id: string, options: DetailOpenOptions = {}) => {
     setSelectedFlightId(id);
+    setDetailOpenOptions(options);
     setView("detail");
+  };
+
+  const openFutureWeightBalance = (id: string) => {
+    openFlight(id, { initialStepId: "peso-balanceamento", hideStepMenu: true });
+  };
+
+  const exportFicha = async (id: string) => {
+    setErr(null);
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      setErr("Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-ups.");
+      return;
+    }
+    writeFichaWindowStatus(printWindow, "Preparando ficha", "Carregando dados do voo...");
+    setExportingFichaId(id);
+    const { data, error } = await getSavedFlight(id);
+    setExportingFichaId(null);
+
+    if (error || !data) {
+      const message = error?.message ?? "Voo não encontrado.";
+      setErr(message);
+      writeFichaWindowStatus(printWindow, "Falha ao gerar ficha", message);
+      return;
+    }
+
+    const decoded = decodeFlightRecord(data.csv_text);
+    if (!decoded.meta) {
+      const message = "Ficha do voo sem metadados estruturados para exportar.";
+      setErr(message);
+      writeFichaWindowStatus(printWindow, "Falha ao gerar ficha", message);
+      return;
+    }
+
+    const result = exportFlightFichaPdf({
+      meta: decoded.meta,
+      telemetryCsv: decoded.telemetryCsv,
+      telemetryFileName: data.source_filename,
+    }, { targetWindow: printWindow });
+    if (!result.ok) setErr(result.error ?? "Não foi possível exportar o PDF.");
   };
 
   const openStudentSuggestionModal = (id: string) => {
@@ -287,6 +423,7 @@ export function MeusVoosTab() {
       setStudentSuggestionError(error.message);
       return;
     }
+    invalidateFlightListDisplayCache([studentSuggestionFlightId]);
     setInfoById((prev) => {
       const current = prev[studentSuggestionFlightId];
       if (!current) return prev;
@@ -305,6 +442,7 @@ export function MeusVoosTab() {
   const backToList = () => {
     setView("list");
     setSelectedFlightId(undefined);
+    setDetailOpenOptions({});
   };
 
   const handleDelete = async (id: string) => {
@@ -313,13 +451,16 @@ export function MeusVoosTab() {
     if (error) {
       setErr(error.message);
     } else {
+      invalidateFlightListDisplayCache([id]);
       setRefreshKey((k) => k + 1);
     }
   };
 
   const handleCreated = (id: string) => {
+    invalidateFlightListDisplayCache([id]);
     setRefreshKey((k) => k + 1);
     setSelectedFlightId(id);
+    setDetailOpenOptions({});
     setView("detail");
   };
 
@@ -341,7 +482,14 @@ export function MeusVoosTab() {
   }
 
   if (view === "detail") {
-    return <FlightDetailView flightId={selectedFlightId} onBack={backToList} />;
+    return (
+      <FlightDetailView
+        flightId={selectedFlightId}
+        onBack={backToList}
+        fichaInitialStepId={detailOpenOptions.initialStepId}
+        hideFichaStepMenu={detailOpenOptions.hideStepMenu}
+      />
+    );
   }
 
   return (
@@ -402,14 +550,7 @@ export function MeusVoosTab() {
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Filtros avançados</p>
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
-          <input
-            type="text"
-            value={studentFilter}
-            onChange={(e) => setStudentFilter(e.target.value)}
-            placeholder="Nome do aluno"
-            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-          />
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
           <input
             type="text"
             value={instructorFilter}
@@ -490,9 +631,7 @@ export function MeusVoosTab() {
             items={filteredItems}
             infoById={infoById}
             onOpen={(id) => {
-              const item = items.find((flight) => flight.id === id);
-              if (isStudentView && item && isFutureFlight(item, infoById[id])) openStudentSuggestionModal(id);
-              else openFlight(id);
+              openFlight(id);
             }}
           />
           <button
@@ -511,11 +650,12 @@ export function MeusVoosTab() {
             infoById={infoById}
             emptyLabel="Nenhum voo futuro."
             onOpen={(id) => {
-              const item = items.find((flight) => flight.id === id);
-              if (isStudentView && item) openStudentSuggestionModal(id);
-              else openFlight(id);
+              openFlight(id);
             }}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
+            showStudentPending={isStudentView}
+            onStudentSuggestion={isStudentView ? openStudentSuggestionModal : undefined}
+            onStudentWeightBalance={isStudentView ? openFutureWeightBalance : undefined}
           />
           <FlightTableSection
             title="Voos antigos"
@@ -524,6 +664,8 @@ export function MeusVoosTab() {
             emptyLabel="Nenhum voo antigo."
             onOpen={openFlight}
             onShare={(id) => setShareFlightId(id)}
+            onExportFicha={(id) => void exportFicha(id)}
+            exportingFichaId={exportingFichaId}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
           />
           <button
@@ -536,14 +678,12 @@ export function MeusVoosTab() {
         </div>
       ) : (
         <div className="space-y-6">
-          {isStudentView ? (
-            <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Voos futuros</p>
-          ) : null}
+          {isStudentView ? <SectionTitle title="Voos futuros" tone="future" /> : null}
           {(isStudentView ? futureGroups : groups).map((group) => (
-            <div key={group.label}>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                {group.label}
-              </p>
+            <div key={group.label || "all"}>
+              {group.label ? (
+                <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p>
+              ) : null}
               <ul className="space-y-2">
                 {group.flights.map((f) => {
                   const info = infoById[f.id];
@@ -558,16 +698,7 @@ export function MeusVoosTab() {
                     return (
                       <li
                         key={f.id}
-                        className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-sky-700/60 hover:bg-slate-900/70"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openStudentSuggestionModal(f.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            openStudentSuggestionModal(f.id);
-                          }
-                        }}
+                        className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                       >
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                           <div className="flex w-10 shrink-0 flex-col items-center text-center">
@@ -596,21 +727,31 @@ export function MeusVoosTab() {
                                 <p className="whitespace-pre-wrap break-words text-slate-300 [overflow-wrap:anywhere]">{info?.instructorSuggestionMd || "Sem sugestão registrada."}</p>
                               </div>
                               <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3">
-                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Sugestão do Aluno</p>
-                                <p className="whitespace-pre-wrap break-words text-slate-300 [overflow-wrap:anywhere]">{info?.studentSuggestionMd || "Clique para preencher sua sugestão."}</p>
+                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Peso e Balanceamento</p>
+                                <FutureWeightBalanceCta
+                                  ok={Boolean(info?.weightBalanceFilled)}
+                                  onClick={() => openFutureWeightBalance(f.id)}
+                                />
+                              </div>
+                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3">
+                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Sugestão do aluno</p>
+                                {info?.studentSuggestionMd ? (
+                                  <FutureStudentSuggestionStatus suggestion={info.studentSuggestionMd} />
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openStudentSuggestionModal(f.id);
+                                    }}
+                                    className="rounded bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-500"
+                                  >
+                                    Enviar sugestão
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openStudentSuggestionModal(f.id);
-                            }}
-                            className="w-full shrink-0 rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 sm:w-auto"
-                          >
-                            Preencher sugestão
-                          </button>
                         </div>
                       </li>
                     );
@@ -618,16 +759,7 @@ export function MeusVoosTab() {
                   return (
                     <li
                       key={f.id}
-                      className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-sky-700/60 hover:bg-slate-900/70"
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => openFlight(f.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          openFlight(f.id);
-                        }
-                      }}
+                      className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                     >
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                         <div className="flex w-10 shrink-0 flex-col items-center text-center">
@@ -662,14 +794,20 @@ export function MeusVoosTab() {
                             <p>Instrutor: <span className="text-slate-300">{info.instructorName ?? ""}</span></p>
                             <p>ANAC instrutor: <span className="text-slate-300">{info.instructorAnac ?? ""}</span></p>
                             <p className="sm:col-span-2 lg:col-span-2">
-                              Tags:{" "}
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
-                                {yesNoTag(Boolean(info.telemetryOk), "telemetria ok", "telemetria ausente")}
-                              </span>
-                              {" "}
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.videoOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
-                                {yesNoTag(Boolean(info.videoOk), "video ok", "video ausente")}
-                              </span>
+                              Status:{" "}
+                              {isPastFlight ? (
+                                <>
+                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
+                                    {yesNoTag(Boolean(info.telemetryOk), "telemetria ok", "telemetria ausente")}
+                                  </span>
+                                  {" "}
+                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.videoOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
+                                    {yesNoTag(Boolean(info.videoOk), "video ok", "video ausente")}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="rounded bg-sky-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">agendado</span>
+                              )}
                             </p>
                           </div>
                           )}
@@ -678,13 +816,40 @@ export function MeusVoosTab() {
                         {(isPastFlight || canManageFlights) && (
                           <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:items-end">
                             {isPastFlight ? (
-                              <ShareFlightButton
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShareFlightId(f.id);
-                                }}
-                                className="w-full sm:w-auto"
-                              />
+                              <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+                                <ShareFlightButton
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setShareFlightId(f.id);
+                                  }}
+                                  iconOnly
+                                />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openFlight(f.id);
+                                  }}
+                                  className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                >
+                                  Detalhes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void exportFicha(f.id);
+                                  }}
+                                  disabled={exportingFichaId === f.id}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-600/20"
+                                >
+                                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                    <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                  </svg>
+                                  {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
+                                </button>
+                              </div>
                             ) : null}
                             {canManageFlights && (
                               <button
@@ -709,15 +874,15 @@ export function MeusVoosTab() {
           ))}
           {isStudentView ? (
             <section className="space-y-4">
-              <p className="mb-1 border-t border-slate-700/60 pt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                Voos antigos
-              </p>
+              <div className="border-t border-slate-700/60 pt-4">
+                <SectionTitle title="Voos antigos" tone="past" />
+              </div>
               {pastGroups.length === 0 ? (
                 <p className="text-sm text-slate-500">Nenhum voo antigo.</p>
               ) : (
                 pastGroups.map((group) => (
-                  <div key={`past-${group.label}`}>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p>
+                  <div key={`past-${group.label || "all"}`}>
+                    {group.label ? <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p> : null}
                     <ul className="space-y-2">
                       {group.flights.map((f) => {
                         const info = infoById[f.id];
@@ -730,16 +895,7 @@ export function MeusVoosTab() {
                         return (
                           <li
                             key={f.id}
-                            className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-sky-700/60 hover:bg-slate-900/70"
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => openFlight(f.id)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                openFlight(f.id);
-                              }
-                            }}
+                            className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                           >
                             <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                               <div className="flex w-10 shrink-0 flex-col items-center text-center">
@@ -766,13 +922,40 @@ export function MeusVoosTab() {
                                   <p>ANAC instrutor: <span className="text-slate-300">{info?.instructorAnac ?? ""}</span></p>
                                 </div>
                               </div>
-                              <ShareFlightButton
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShareFlightId(f.id);
-                                }}
-                                className="w-full shrink-0 sm:w-auto"
-                              />
+                              <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto sm:justify-end">
+                                <ShareFlightButton
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setShareFlightId(f.id);
+                                  }}
+                                  iconOnly
+                                />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openFlight(f.id);
+                                  }}
+                                  className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                >
+                                  Detalhes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void exportFicha(f.id);
+                                  }}
+                                  disabled={exportingFichaId === f.id}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-600/20"
+                                >
+                                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                    <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                  </svg>
+                                  {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
+                                </button>
+                              </div>
                             </div>
                           </li>
                         );
@@ -896,7 +1079,12 @@ function FlightTableSection({
   emptyLabel,
   onOpen,
   onShare,
+  onExportFicha,
+  exportingFichaId,
   onDelete,
+  onStudentSuggestion,
+  onStudentWeightBalance,
+  showStudentPending = false,
 }: {
   title: string;
   groups: { label: string; flights: SavedFlightListItem[] }[];
@@ -904,19 +1092,24 @@ function FlightTableSection({
   emptyLabel: string;
   onOpen: (id: string) => void;
   onShare?: (id: string) => void;
+  onExportFicha?: (id: string) => void;
+  exportingFichaId?: string | null;
   onDelete?: (id: string) => void;
+  onStudentSuggestion?: (id: string) => void;
+  onStudentWeightBalance?: (id: string) => void;
+  showStudentPending?: boolean;
 }) {
   return (
     <section className="space-y-3">
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
+      <SectionTitle title={title} tone={title.toLowerCase().includes("futuro") ? "future" : title.toLowerCase().includes("antigo") ? "past" : "default"} />
       {groups.length === 0 ? (
         <p className="text-sm text-slate-500">{emptyLabel}</p>
       ) : (
         groups.map((group) => (
           <div key={`${title}-${group.label}`} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
-            <div className="border-b border-slate-700/60 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            {group.label ? <div className="border-b border-slate-700/60 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
               {group.label}
-            </div>
+            </div> : null}
             <div className="overflow-x-auto">
               <table className="min-w-[980px] w-full text-left text-xs">
                 <thead className="bg-slate-950/40 text-[10px] uppercase tracking-wider text-slate-500">
@@ -926,33 +1119,29 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">Instrutor</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
-                    <th className="px-3 py-2 font-semibold">Rota</th>
-                    <th className="px-3 py-2 font-semibold">Horas</th>
-                    <th className="px-3 py-2 font-semibold">Pousos</th>
+                    {showStudentPending ? <th className="px-3 py-2 font-semibold">Fim</th> : null}
+                    {!showStudentPending ? <th className="px-3 py-2 font-semibold">Rota</th> : null}
+                    {!showStudentPending ? <th className="px-3 py-2 font-semibold">Horas</th> : null}
+                    {!showStudentPending ? <th className="px-3 py-2 font-semibold">Pousos</th> : null}
+                    {showStudentPending ? <th className="px-3 py-2 font-semibold">Sugestão INVA</th> : null}
+                    {showStudentPending ? <th className="px-3 py-2 font-semibold">Peso e Balanceamento</th> : null}
+                    {showStudentPending ? <th className="px-3 py-2 font-semibold">Sugestão aluno</th> : null}
                     <th className="px-3 py-2 font-semibold">Status</th>
-                    {onDelete || onShare ? <th className="px-3 py-2 font-semibold">Ações</th> : null}
+                    {onDelete || onShare || onExportFicha ? <th className="px-3 py-2 font-semibold">Ações</th> : null}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/80">
                   {group.flights.map((item) => {
                     const info = infoById[item.id];
                     const d = getDateBase(item, info);
+                    const isFuture = isFutureFlight(item, info);
                     const dateLabel = info?.flightDateIso
                       ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
                       : d.toLocaleDateString("pt-BR");
                     return (
                       <tr
                         key={item.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => onOpen(item.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            onOpen(item.id);
-                          }
-                        }}
-                        className="cursor-pointer text-slate-300 transition hover:bg-slate-800/50"
+                        className="text-slate-300 transition hover:bg-slate-800/30"
                       >
                         <td className="px-3 py-2 text-slate-200">{dateLabel}</td>
                         <td className="px-3 py-2">{info?.startTime || "—"}</td>
@@ -963,25 +1152,90 @@ function FlightTableSection({
                             {info?.aircraft ?? item.aircraft_ident ?? "—"}
                           </span>
                         </td>
-                        <td className="px-3 py-2">{info?.fromTo ?? "—"}</td>
-                        <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
-                        <td className="px-3 py-2">{info?.landings ?? 0}</td>
+                        {showStudentPending ? <td className="px-3 py-2">{info?.endTime || "—"}</td> : null}
+                        {!showStudentPending ? <td className="px-3 py-2">{info?.fromTo ?? "—"}</td> : null}
+                        {!showStudentPending ? <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td> : null}
+                        {!showStudentPending ? <td className="px-3 py-2">{info?.landings ?? 0}</td> : null}
+                        {showStudentPending ? (
+                          <td className="max-w-64 px-3 py-2">
+                            <span className="line-clamp-2 text-slate-300">
+                              {info?.instructorSuggestionMd || "Sem sugestão registrada."}
+                            </span>
+                          </td>
+                        ) : null}
+                        {showStudentPending ? (
+                          <td className="px-3 py-2">
+                            <FutureWeightBalanceCta
+                              ok={Boolean(info?.weightBalanceFilled)}
+                              onClick={() => onStudentWeightBalance?.(item.id)}
+                            />
+                          </td>
+                        ) : null}
+                        {showStudentPending ? (
+                          <td className="px-3 py-2">
+                            {info?.studentSuggestionMd ? (
+                              <FutureStudentSuggestionStatus suggestion={info.studentSuggestionMd} />
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onStudentSuggestion?.(item.id);
+                                }}
+                                className="rounded bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-500"
+                              >
+                                Enviar sugestão
+                              </button>
+                            )}
+                          </td>
+                        ) : null}
                         <td className="px-3 py-2">
-                          <span className={info?.telemetryOk ? "text-emerald-300" : "text-amber-300"}>
-                            {info?.telemetryOk ? "Telemetria ok" : "Sem telemetria"}
-                          </span>
+                          {isFuture ? (
+                            <span className="text-sky-300">Agendado</span>
+                          ) : (
+                            <span className={info?.telemetryOk ? "text-emerald-300" : "text-amber-300"}>
+                              {info?.telemetryOk ? "Telemetria ok" : "Sem telemetria"}
+                            </span>
+                          )}
                         </td>
-                        {onDelete || onShare ? (
+                        {onDelete || onShare || onExportFicha ? (
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-2">
                               {onShare ? (
-                                <ShareFlightButton
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onShare(item.id);
-                                  }}
-                                  className="py-1.5"
-                                />
+                                <>
+                                  <ShareFlightButton
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onShare(item.id);
+                                    }}
+                                    iconOnly
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onOpen(item.id);
+                                    }}
+                                    className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                                  >
+                                    Detalhes
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onExportFicha?.(item.id);
+                                    }}
+                                    disabled={exportingFichaId === item.id}
+                                    className="inline-flex items-center gap-1.5 rounded border border-sky-600/40 bg-sky-600/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-600/20"
+                                  >
+                                    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                      <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                    </svg>
+                                    {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
+                                  </button>
+                                </>
                               ) : null}
                               {onDelete ? (
                                 <button

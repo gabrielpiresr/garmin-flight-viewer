@@ -88,6 +88,8 @@ async function configureFlights(databaseId, collectionId) {
   await safeCreateIndex(databaseId, collectionId, "flights_student_idx", ["student_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "flights_instructor_idx", ["instructor_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "flights_date_idx", ["flight_date"]);
+  await safeCreateIndex(databaseId, collectionId, "flights_date_time_idx", ["flight_date", "start_time"], ["ASC", "ASC"]);
+  await safeCreateIndex(databaseId, collectionId, "flights_aircraft_date_idx", ["aircraft_ident", "flight_date"], ["ASC", "ASC"]);
 }
 
 async function configureProfiles(databaseId, collectionId) {
@@ -210,6 +212,7 @@ async function configureTelemetrySummaries(databaseId, collectionId) {
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_instructor_idx", ["instructor_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_date_idx", ["flight_date"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_aircraft_idx", ["aircraft_ident"]);
+  await safeCreateIndex(databaseId, collectionId, "telemetry_summary_aircraft_date_idx", ["aircraft_ident", "flight_date"], ["ASC", "ASC"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_hard_landings_idx", ["hard_landing_count"]);
 }
 

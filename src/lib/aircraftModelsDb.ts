@@ -1,6 +1,6 @@
 import { Query } from "appwrite";
 import { databases, ID, isAppwriteConfigured, Permission, Role, AIRCRAFT_MODELS_COL_ID, ADMIN_USER_ID } from "./appwrite";
-import type { AircraftModel, AircraftCategory } from "../types/admin";
+import type { AircraftModel, AircraftCategory, TemperatureUnit } from "../types/admin";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -33,9 +33,40 @@ function toModel(doc: Record<string, unknown>): AircraftModel {
     vref_flap2_kt: (doc.vref_flap2_kt as number | null | undefined) ?? null,
     rpm_cruise: (doc.rpm_cruise as number | null | undefined) ?? null,
     rpm_takeoff_max: (doc.rpm_takeoff_max as number | null | undefined) ?? null,
+    op_oil_temp_unit: ((doc.op_oil_temp_unit as TemperatureUnit | undefined) === "C" ? "C" : "F"),
+    op_oil_temp_attention: (doc.op_oil_temp_attention as number | null | undefined) ?? null,
+    op_oil_temp_danger: (doc.op_oil_temp_danger as number | null | undefined) ?? null,
+    op_oil_pressure_attention_psi: (doc.op_oil_pressure_attention_psi as number | null | undefined) ?? null,
+    op_oil_pressure_danger_psi: (doc.op_oil_pressure_danger_psi as number | null | undefined) ?? null,
+    op_rpm_attention: (doc.op_rpm_attention as number | null | undefined) ?? null,
+    op_rpm_danger: (doc.op_rpm_danger as number | null | undefined) ?? null,
+    op_fuel_pressure_attention_psi: (doc.op_fuel_pressure_attention_psi as number | null | undefined) ?? null,
+    op_fuel_pressure_danger_psi: (doc.op_fuel_pressure_danger_psi as number | null | undefined) ?? null,
+    op_gload_attention: (doc.op_gload_attention as number | null | undefined) ?? null,
+    op_gload_danger: (doc.op_gload_danger as number | null | undefined) ?? null,
+    op_touchdown_ias_attention_kt: (doc.op_touchdown_ias_attention_kt as number | null | undefined) ?? null,
+    op_touchdown_ias_danger_kt: (doc.op_touchdown_ias_danger_kt as number | null | undefined) ?? null,
+    op_best_climb_after_takeoff_kt: (doc.op_best_climb_after_takeoff_kt as number | null | undefined) ?? null,
     created_at: (doc.$createdAt as string) ?? "",
   };
 }
+
+export type OperationalLimitPayload = {
+  op_oil_temp_unit?: TemperatureUnit;
+  op_oil_temp_attention?: number | null;
+  op_oil_temp_danger?: number | null;
+  op_oil_pressure_attention_psi?: number | null;
+  op_oil_pressure_danger_psi?: number | null;
+  op_rpm_attention?: number | null;
+  op_rpm_danger?: number | null;
+  op_fuel_pressure_attention_psi?: number | null;
+  op_fuel_pressure_danger_psi?: number | null;
+  op_gload_attention?: number | null;
+  op_gload_danger?: number | null;
+  op_touchdown_ias_attention_kt?: number | null;
+  op_touchdown_ias_danger_kt?: number | null;
+  op_best_climb_after_takeoff_kt?: number | null;
+};
 
 export async function listModels(): Promise<AircraftModel[]> {
   if (!isReady() || !databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) return [];
@@ -66,7 +97,7 @@ export async function createModel(data: {
   vref_flap2_kt?: number | null;
   rpm_cruise?: number | null;
   rpm_takeoff_max?: number | null;
-}): Promise<AircraftModel> {
+} & OperationalLimitPayload): Promise<AircraftModel> {
   if (!databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) throw new Error("Appwrite não configurado");
   const doc = await databases.createDocument(
     DB_ID,
@@ -95,6 +126,20 @@ export async function createModel(data: {
       vref_flap2_kt: data.vref_flap2_kt ?? null,
       rpm_cruise: data.rpm_cruise ?? null,
       rpm_takeoff_max: data.rpm_takeoff_max ?? null,
+      op_oil_temp_unit: data.op_oil_temp_unit ?? "F",
+      op_oil_temp_attention: data.op_oil_temp_attention ?? null,
+      op_oil_temp_danger: data.op_oil_temp_danger ?? null,
+      op_oil_pressure_attention_psi: data.op_oil_pressure_attention_psi ?? null,
+      op_oil_pressure_danger_psi: data.op_oil_pressure_danger_psi ?? null,
+      op_rpm_attention: data.op_rpm_attention ?? null,
+      op_rpm_danger: data.op_rpm_danger ?? null,
+      op_fuel_pressure_attention_psi: data.op_fuel_pressure_attention_psi ?? null,
+      op_fuel_pressure_danger_psi: data.op_fuel_pressure_danger_psi ?? null,
+      op_gload_attention: data.op_gload_attention ?? null,
+      op_gload_danger: data.op_gload_danger ?? null,
+      op_touchdown_ias_attention_kt: data.op_touchdown_ias_attention_kt ?? null,
+      op_touchdown_ias_danger_kt: data.op_touchdown_ias_danger_kt ?? null,
+      op_best_climb_after_takeoff_kt: data.op_best_climb_after_takeoff_kt ?? null,
     },
     [
       Permission.read(Role.user(ADMIN_USER_ID!)),
@@ -130,7 +175,7 @@ export async function updateModel(
     vref_flap2_kt: number | null;
     rpm_cruise: number | null;
     rpm_takeoff_max: number | null;
-  }>,
+  } & OperationalLimitPayload>,
 ): Promise<AircraftModel> {
   if (!databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) throw new Error("Appwrite não configurado");
   const doc = await databases.updateDocument(DB_ID, AIRCRAFT_MODELS_COL_ID, id, data);

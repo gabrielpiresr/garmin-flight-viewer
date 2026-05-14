@@ -71,6 +71,7 @@ export type AircraftWeekSupply = {
   aircraftRegistration: string;
   aircraftImageUrl?: string | null;
   dailyCaps: Record<number, number>;
+  groupCaps: Array<{ maxHours: number; days: number[] }>;
   slotStates: Record<string, SlotState>;
 };
 
@@ -103,6 +104,7 @@ export type RelaxationLevel = "none" | "aircraft_only" | "time_only" | "aircraft
 export type NonAllocationReasonCode =
   | "noAvailableSlot"
   | "dailyCapReached"
+  | "groupCapReached"
   | "gapConflict"
   | "existingFlightConflict"
   | "preferenceIncompatible"
@@ -110,6 +112,7 @@ export type NonAllocationReasonCode =
 
 export type CandidateRejectionCode =
   | "dailyCapReached"
+  | "groupCapReached"
   | "gapConflict"
   | "existingFlightConflict"
   | "insufficientContiguousTime";

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
-  buildFlightDisplayInfo,
   formatMinutes,
   getDateBase,
   getFlightDateTimeMs,
@@ -10,12 +9,16 @@ import {
 } from "../../lib/flightDisplay";
 import {
   deleteSavedFlight,
-  getSavedFlight,
   listSavedFlights,
   updateInstructorFlightSuggestion,
   type SavedFlightListItem,
 } from "../../lib/flightsDb";
-import { getProfile } from "../../lib/rbac";
+import {
+  buildBasicFlightListDisplayInfo,
+  invalidateFlightListDisplayCache,
+  loadFullFlightListDisplayInfos,
+  loadLightFlightListDisplayInfos,
+} from "../../lib/flightListDisplayCache";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
@@ -61,24 +64,24 @@ function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
   );
 }
 
-function groupByMonth(
+function groupFlights(
   items: SavedFlightListItem[],
   infoById: Record<string, FlightDisplayInfo>,
   direction: "asc" | "desc",
 ): { label: string; flights: SavedFlightListItem[] }[] {
-  const map = new Map<string, SavedFlightListItem[]>();
   const ordered = [...items].sort((a, b) => {
     const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
     return direction === "asc" ? diff : -diff;
   });
-  for (const item of ordered) {
-    const d = getDateBase(item, infoById[item.id]);
-    const key = d.toLocaleString("pt-BR", { month: "long", year: "numeric" });
-    const capitalized = key.charAt(0).toUpperCase() + key.slice(1);
-    if (!map.has(capitalized)) map.set(capitalized, []);
-    map.get(capitalized)!.push(item);
-  }
-  return Array.from(map.entries()).map(([label, flights]) => ({ label, flights }));
+  return ordered.length ? [{ label: "", flights: ordered }] : [];
+}
+
+function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" }) {
+  return (
+    <p className={`text-xs font-semibold uppercase tracking-widest ${tone === "future" ? "text-sky-300" : "text-violet-300"}`}>
+      {title}
+    </p>
+  );
 }
 
 function formatDate(item: SavedFlightListItem, info?: FlightDisplayInfo): string {
@@ -239,26 +242,26 @@ export function InstructorFlightsTab() {
 
   useEffect(() => {
     let cancelled = false;
-    setInfoById({});
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      setInfoById({});
+      return;
+    }
+
+    setInfoById((prev) => {
+      const next: Record<string, FlightDisplayInfo> = {};
+      for (const item of items) {
+        next[item.id] = prev[item.id] ?? buildBasicFlightListDisplayInfo(item);
+      }
+      return next;
+    });
+
     void (async () => {
-      const pairs = await Promise.all(
-        items.map(async (item) => {
-          const [saved, studentRes, instructorRes] = await Promise.all([
-            getSavedFlight(item.id),
-            item.student_user_id ? getProfile(item.student_user_id) : Promise.resolve({ data: null, error: null }),
-            item.instructor_user_id ? getProfile(item.instructor_user_id) : Promise.resolve({ data: null, error: null }),
-          ]);
-          const info = buildFlightDisplayInfo(item, saved.data?.csv_text ?? null, {
-            studentName: studentRes.data?.fullName,
-            studentAnac: studentRes.data?.anacCode,
-            instructorName: instructorRes.data?.fullName,
-            instructorAnac: instructorRes.data?.anacCode,
-          });
-          return [item.id, info] as const;
-        }),
-      );
-      if (!cancelled) setInfoById(Object.fromEntries(pairs));
+      const lightInfos = await loadLightFlightListDisplayInfos(items);
+      if (cancelled) return;
+      setInfoById((prev) => ({ ...prev, ...lightInfos }));
+
+      const fullInfos = await loadFullFlightListDisplayInfos(items);
+      if (!cancelled) setInfoById((prev) => ({ ...prev, ...fullInfos }));
     })();
     return () => {
       cancelled = true;
@@ -286,8 +289,8 @@ export function InstructorFlightsTab() {
     () => filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id])),
     [filteredItems, infoById],
   );
-  const futureGroups = useMemo(() => groupByMonth(futureItems, infoById, "asc"), [futureItems, infoById]);
-  const pastGroups = useMemo(() => groupByMonth(pastItems, infoById, "desc"), [pastItems, infoById]);
+  const futureGroups = useMemo(() => groupFlights(futureItems, infoById, "asc"), [futureItems, infoById]);
+  const pastGroups = useMemo(() => groupFlights(pastItems, infoById, "desc"), [pastItems, infoById]);
   const consolidatedSummary = useMemo(() => {
     return filteredItems.reduce(
       (acc, item) => {
@@ -301,7 +304,7 @@ export function InstructorFlightsTab() {
       { flights: 0, minutes: 0, landings: 0 },
     );
   }, [filteredItems, infoById]);
-  const dataLoading = loading || items.some((item) => !infoById[item.id]);
+  const dataLoading = loading && items.length === 0;
 
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
@@ -315,6 +318,7 @@ export function InstructorFlightsTab() {
       setErr(error.message);
       return;
     }
+    invalidateFlightListDisplayCache([id]);
     setRefreshKey((k) => k + 1);
   };
 
@@ -344,6 +348,7 @@ export function InstructorFlightsTab() {
       setSuggestionError(error.message);
       return;
     }
+    invalidateFlightListDisplayCache([suggestionFlightId]);
     setInfoById((prev) => {
       const current = prev[suggestionFlightId];
       if (!current) return prev;
@@ -360,6 +365,7 @@ export function InstructorFlightsTab() {
   };
 
   const handleCreated = (id: string) => {
+    invalidateFlightListDisplayCache([id]);
     setRefreshKey((k) => k + 1);
     setSelectedFlightId(id);
     setView("detail");
@@ -529,13 +535,13 @@ export function InstructorFlightsTab() {
       ) : (
         <div className="space-y-6">
           <section className="space-y-4">
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Voos futuros</p>
+            <SectionTitle title="Voos futuros" tone="future" />
             {futureGroups.length === 0 ? (
               <p className="text-sm text-slate-500">Nenhum voo futuro.</p>
             ) : (
               futureGroups.map((group) => (
-                <div key={`future-${group.label}`}>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p>
+                <div key={`future-${group.label || "all"}`}>
+                  {group.label ? <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p> : null}
                   <ul className="space-y-2">
                     {group.flights.map((item) => (
                       <FlightCard
@@ -555,15 +561,15 @@ export function InstructorFlightsTab() {
           </section>
 
           <section className="space-y-4">
-            <p className="border-t border-slate-700/60 pt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">
-              Voos antigos
-            </p>
+            <div className="border-t border-slate-700/60 pt-4">
+              <SectionTitle title="Voos antigos" tone="past" />
+            </div>
             {pastGroups.length === 0 ? (
               <p className="text-sm text-slate-500">Nenhum voo antigo.</p>
             ) : (
               pastGroups.map((group) => (
-                <div key={`past-${group.label}`}>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p>
+                <div key={`past-${group.label || "all"}`}>
+                  {group.label ? <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{group.label}</p> : null}
                   <ul className="space-y-2">
                     {group.flights.map((item) => (
                       <FlightCard
@@ -705,15 +711,15 @@ function FlightTableSection({
   const showSuggestionColumn = Boolean(onEditSuggestion);
   return (
     <section className="space-y-3">
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
+      <SectionTitle title={title} tone={title.toLowerCase().includes("futuro") ? "future" : "past"} />
       {groups.length === 0 ? (
         <p className="text-sm text-slate-500">{emptyLabel}</p>
       ) : (
         groups.map((group) => (
           <div key={`${title}-${group.label}`} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
-            <div className="border-b border-slate-700/60 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            {group.label ? <div className="border-b border-slate-700/60 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
               {group.label}
-            </div>
+            </div> : null}
             <div className="overflow-x-auto">
               <table className="min-w-[920px] w-full text-left text-xs">
                 <thead className="bg-slate-950/40 text-[10px] uppercase tracking-wider text-slate-500">

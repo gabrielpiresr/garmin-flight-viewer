@@ -100,7 +100,7 @@ function toCredit(doc: CreditDoc): StudentCreditPurchase {
     userId: doc.user_id || "",
     purchaseDate,
     aircraftModelId: doc.aircraft_model_id || "",
-    aircraftModelName: doc.aircraft_model_name || "Modelo nao informado",
+    aircraftModelName: doc.aircraft_model_name || "Modelo não informado",
     amountPaid: parsePositiveNumber(Number(doc.amount_paid)),
     paymentMethod: doc.payment_method || "",
     paymentInstallments: typeof doc.payment_installments === "number" && doc.payment_installments > 0 ? doc.payment_installments : null,
@@ -148,17 +148,17 @@ function buildCreditPermissions(userId: string, actorUserId: string) {
 }
 
 function validateInput(input: StudentCreditInput) {
-  if (!input.userId) throw new Error("Aluno nao informado.");
-  if (!input.aircraftModelId) throw new Error("Modelo de aviao nao informado.");
-  if (!input.aircraftModelName.trim()) throw new Error("Nome do modelo nao informado.");
-  if (!input.purchaseDate) throw new Error("Data do credito nao informada.");
-  if (!input.paymentMethod.trim()) throw new Error("Forma de pagamento nao informada.");
+  if (!input.userId) throw new Error("Aluno não informado.");
+  if (!input.aircraftModelId) throw new Error("Modelo de avião não informado.");
+  if (!input.aircraftModelName.trim()) throw new Error("Nome do modelo não informado.");
+  if (!input.purchaseDate) throw new Error("Data do crédito não informada.");
+  if (!input.paymentMethod.trim()) throw new Error("Forma de pagamento não informada.");
   if (input.paymentMethod === "Parcelado" && (!input.paymentInstallments || input.paymentInstallments <= 0)) {
     throw new Error("Informe a quantidade de parcelas.");
   }
-  if (!Number.isFinite(input.amountPaid) || input.amountPaid < 0) throw new Error("Valor pago invalido.");
-  if (!Number.isFinite(input.validityDays) || input.validityDays < 0) throw new Error("Dias de validade invalidos.");
-  if (!Number.isFinite(input.hours) || input.hours <= 0) throw new Error("Quantidade de horas invalida.");
+  if (!Number.isFinite(input.amountPaid) || input.amountPaid < 0) throw new Error("Valor pago inválido.");
+  if (!Number.isFinite(input.validityDays) || input.validityDays < 0) throw new Error("Dias de validade inválidos.");
+  if (!Number.isFinite(input.hours) || input.hours <= 0) throw new Error("Quantidade de horas inválida.");
 }
 
 function normalizeRegistration(value: string | null | undefined): string {
@@ -166,8 +166,8 @@ function normalizeRegistration(value: string | null | undefined): string {
 }
 
 function modelName(modelId: string | null, modelsById: Map<string, AircraftModel>): string {
-  if (!modelId) return "Modelo nao identificado";
-  return modelsById.get(modelId)?.name || "Modelo nao identificado";
+  if (!modelId) return "Modelo não identificado";
+  return modelsById.get(modelId)?.name || "Modelo não identificado";
 }
 
 function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | null): FlightSource | null {
@@ -297,10 +297,10 @@ export function buildStudentCreditStatement(params: {
     .map((modelId) => {
       const modelLabel =
         modelId === "unresolved"
-          ? "Modelo nao identificado"
+          ? "Modelo não identificado"
           : modelsById.get(modelId)?.name ||
             mutableCredits.find((credit) => credit.aircraftModelId === modelId)?.aircraftModelName ||
-            "Modelo nao identificado";
+            "Modelo não identificado";
       return summarizeModel(
         modelId,
         modelLabel,
@@ -339,7 +339,7 @@ export async function listStudentCredits(userId: string): Promise<StudentCreditP
 }
 
 export async function createStudentCredit(input: StudentCreditInput, actorUserId: string): Promise<StudentCreditPurchase> {
-  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Colecao de creditos nao configurada.");
+  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Coleção de créditos não configurada.");
   validateInput(input);
   const doc = await databases.createDocument(
     DB_ID,
@@ -359,14 +359,14 @@ export async function updateStudentCredit(
   input: StudentCreditInput,
   actorUserId: string,
 ): Promise<StudentCreditPurchase> {
-  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Colecao de creditos nao configurada.");
+  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Coleção de créditos não configurada.");
   validateInput(input);
   const doc = await databases.updateDocument(DB_ID, STUDENT_CREDITS_COL_ID, creditId, toPayload(input, actorUserId));
   return toCredit(doc as unknown as CreditDoc);
 }
 
 export async function deleteStudentCredit(creditId: string): Promise<void> {
-  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Colecao de creditos nao configurada.");
+  if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Coleção de créditos não configurada.");
   await databases.deleteDocument(DB_ID, STUDENT_CREDITS_COL_ID, creditId);
 }
 

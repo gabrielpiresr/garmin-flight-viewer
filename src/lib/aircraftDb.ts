@@ -12,6 +12,8 @@ function adminScopedPermissions(): string[] {
   const permissions = [
     Permission.read(Role.label("admin")),
     Permission.read(Role.label("instrutor")),
+    Permission.read(Role.label("aluno")),
+    Permission.read(Role.users()),
     Permission.update(Role.label("admin")),
     Permission.delete(Role.label("admin")),
   ];
@@ -49,9 +51,36 @@ function toAircraft(doc: Record<string, unknown>): Aircraft {
     nickname: (doc.nickname as string | null) ?? null,
     image_url: (doc.image_url as string | null) ?? null,
     active: (doc.active as boolean) ?? true,
+    wb_empty_weight_kg: (doc.wb_empty_weight_kg as number | null | undefined) ?? null,
+    wb_empty_arm_mm: (doc.wb_empty_arm_mm as number | null | undefined) ?? null,
+    wb_occupants_arm_mm: (doc.wb_occupants_arm_mm as number | null | undefined) ?? null,
+    wb_occupants_max_kg: (doc.wb_occupants_max_kg as number | null | undefined) ?? null,
+    wb_baggage_arm_mm: (doc.wb_baggage_arm_mm as number | null | undefined) ?? null,
+    wb_baggage_max_kg: (doc.wb_baggage_max_kg as number | null | undefined) ?? null,
+    wb_fuel_arm_mm: (doc.wb_fuel_arm_mm as number | null | undefined) ?? null,
+    wb_fuel_max_kg: (doc.wb_fuel_max_kg as number | null | undefined) ?? null,
+    wb_fuel_density_kg_l: (doc.wb_fuel_density_kg_l as number | null | undefined) ?? null,
+    wb_max_weight_kg: (doc.wb_max_weight_kg as number | null | undefined) ?? null,
+    wb_arm_min_mm: (doc.wb_arm_min_mm as number | null | undefined) ?? null,
+    wb_arm_max_mm: (doc.wb_arm_max_mm as number | null | undefined) ?? null,
     created_at: (doc.$createdAt as string) ?? "",
   };
 }
+
+type AircraftWeightBalanceData = Partial<{
+  wb_empty_weight_kg: number | null;
+  wb_empty_arm_mm: number | null;
+  wb_occupants_arm_mm: number | null;
+  wb_occupants_max_kg: number | null;
+  wb_baggage_arm_mm: number | null;
+  wb_baggage_max_kg: number | null;
+  wb_fuel_arm_mm: number | null;
+  wb_fuel_max_kg: number | null;
+  wb_fuel_density_kg_l: number | null;
+  wb_max_weight_kg: number | null;
+  wb_arm_min_mm: number | null;
+  wb_arm_max_mm: number | null;
+}>;
 
 export async function listAircrafts(schoolId: string): Promise<Aircraft[]> {
   if (!isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return [];
@@ -63,6 +92,19 @@ export async function listAircrafts(schoolId: string): Promise<Aircraft[]> {
   return res.documents.map((d) => toAircraft(d as Record<string, unknown>));
 }
 
+export async function getAircraftByRegistration(registration: string, schoolId: string): Promise<Aircraft | null> {
+  const normalized = registration.trim().toUpperCase();
+  if (!normalized || !isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return null;
+  const queries = [
+    Query.equal("registration", [normalized]),
+    Query.limit(1),
+  ];
+  if (schoolId) queries.unshift(Query.equal("school_id", [schoolId]));
+  const res = await databases.listDocuments(DB_ID, AIRCRAFTS_COL_ID, queries);
+  const doc = res.documents[0];
+  return doc ? toAircraft(doc as unknown as Record<string, unknown>) : null;
+}
+
 export async function createAircraft(data: {
   school_id: string;
   model_id: string;
@@ -70,7 +112,7 @@ export async function createAircraft(data: {
   nickname?: string;
   image_url?: string;
   active?: boolean;
-}): Promise<Aircraft> {
+} & AircraftWeightBalanceData): Promise<Aircraft> {
   if (!databases || !DB_ID || !AIRCRAFTS_COL_ID) throw new Error("Appwrite não configurado");
   const doc = await databases.createDocument(
     DB_ID,
@@ -83,6 +125,18 @@ export async function createAircraft(data: {
       nickname: data.nickname ?? null,
       image_url: data.image_url ?? null,
       active: data.active ?? true,
+      wb_empty_weight_kg: data.wb_empty_weight_kg ?? null,
+      wb_empty_arm_mm: data.wb_empty_arm_mm ?? null,
+      wb_occupants_arm_mm: data.wb_occupants_arm_mm ?? null,
+      wb_occupants_max_kg: data.wb_occupants_max_kg ?? null,
+      wb_baggage_arm_mm: data.wb_baggage_arm_mm ?? null,
+      wb_baggage_max_kg: data.wb_baggage_max_kg ?? null,
+      wb_fuel_arm_mm: data.wb_fuel_arm_mm ?? null,
+      wb_fuel_max_kg: data.wb_fuel_max_kg ?? null,
+      wb_fuel_density_kg_l: data.wb_fuel_density_kg_l ?? null,
+      wb_max_weight_kg: data.wb_max_weight_kg ?? null,
+      wb_arm_min_mm: data.wb_arm_min_mm ?? null,
+      wb_arm_max_mm: data.wb_arm_max_mm ?? null,
     },
     adminScopedPermissions(),
   );
@@ -91,7 +145,7 @@ export async function createAircraft(data: {
 
 export async function updateAircraft(
   id: string,
-  data: Partial<{ model_id: string; registration: string; nickname: string | null; image_url: string | null; active: boolean }>,
+  data: Partial<{ model_id: string; registration: string; nickname: string | null; image_url: string | null; active: boolean }> & AircraftWeightBalanceData,
 ): Promise<Aircraft> {
   if (!databases || !DB_ID || !AIRCRAFTS_COL_ID) throw new Error("Appwrite não configurado");
   const payload = { ...data };

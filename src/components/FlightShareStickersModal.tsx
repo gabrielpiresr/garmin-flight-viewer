@@ -37,7 +37,7 @@ const checkerboardStyle = {
 function InstagramIcon({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
       <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
       <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
     </svg>
@@ -103,7 +103,7 @@ function StickerPreview({
 
   return (
     <div
-      className="relative mx-auto flex h-full max-h-[58vh] min-h-[360px] w-full max-w-[360px] touch-pan-y items-center justify-center rounded-[2rem] border border-slate-700/80 p-4 shadow-2xl shadow-black/40"
+      className="relative mx-auto flex h-full max-h-[58vh] min-h-[360px] w-full max-w-[360px] touch-pan-y items-center justify-center rounded-[1.3rem] border border-slate-700/80 p-4 shadow-2xl shadow-black/40"
       style={checkerboardStyle}
       onTouchStart={(event) => {
         if (!canSwipe) return;

@@ -440,7 +440,7 @@ const SyncedPanelChart = memo(function SyncedPanelChart({
                 background: "rgba(15, 23, 42, 0.78)",
                 backdropFilter: "blur(6px)",
                 border: "1px solid #334155",
-                borderRadius: 8,
+                borderRadius: 5.2,
                 fontSize: 12,
               }}
               labelFormatter={(v) => formatTooltipX(Number(v), hasTime, chartTimeBaseMs)}

@@ -122,6 +122,7 @@ async function configureTelemetrySummaries(databaseId, collectionId) {
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_instructor_idx", ["instructor_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_date_idx", ["flight_date"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_aircraft_idx", ["aircraft_ident"]);
+  await safeCreateIndex(databaseId, collectionId, "telemetry_summary_aircraft_date_idx", ["aircraft_ident", "flight_date"], ["ASC", "ASC"]);
   await safeCreateIndex(databaseId, collectionId, "telemetry_summary_hard_landings_idx", ["hard_landing_count"]);
 }
 

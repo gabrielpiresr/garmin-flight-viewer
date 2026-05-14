@@ -425,7 +425,7 @@ function baseDefs(data: FlightShareData): string {
         <feDropShadow dx="0" dy="0" stdDeviation="16" flood-color="${primary}" flood-opacity="0.65" />
       </filter>
       <clipPath id="gfvStickerSafe">
-        <rect x="86" y="120" width="908" height="1680" rx="64" />
+        <rect x="86" y="120" width="908" height="1680" rx="41.6" />
       </clipPath>
       <style>
         text { font-family: "Segoe UI", Arial, sans-serif; }
@@ -463,10 +463,10 @@ function smallBrand(data: FlightShareData, x: number, y: number): string {
 
 function outerCard(showBackground: boolean, x: number, y: number, width: number, height: number, opacity = 0.43): string {
   if (!showBackground) return "";
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="64" fill="#020617" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.14" />`;
+  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="41.6" fill="#020617" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.14" />`;
 }
 
-function innerCard(showBackground: boolean, x: number, y: number, width: number, height: number, radius = 48, opacity = 0.74): string {
+function innerCard(showBackground: boolean, x: number, y: number, width: number, height: number, radius = 31.2, opacity = 0.74): string {
   if (!showBackground) return "";
   return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="#0f172a" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.12" />`;
 }
@@ -474,7 +474,7 @@ function innerCard(showBackground: boolean, x: number, y: number, width: number,
 function metricBlock(label: string, value: string, x: number, y: number, width = 395): string {
   return `
     <g>
-      <rect x="${x}" y="${y}" width="${width}" height="160" rx="34" fill="#0f172a" fill-opacity="0.76" stroke="#ffffff" stroke-opacity="0.12" />
+      <rect x="${x}" y="${y}" width="${width}" height="160" rx="22.1" fill="#0f172a" fill-opacity="0.76" stroke="#ffffff" stroke-opacity="0.12" />
       ${fitText(label, x + 34, y + 58, { color: "#94a3b8", fontSize: 28, fontWeight: 700, maxWidth: width - 68, letterSpacing: 1.2 })}
       ${fitText(value, x + 34, y + 116, { fontSize: 44, fontWeight: 900, maxWidth: width - 68 })}
     </g>
@@ -663,7 +663,7 @@ function routeEndpointMarkers(data: FlightShareData, box: Box): string {
       <g>
         <circle cx="${markerX.toFixed(1)}" cy="${markerY.toFixed(1)}" r="18" fill="#020617" fill-opacity="0.82" stroke="#ffffff" stroke-width="5" />
         <circle cx="${markerX.toFixed(1)}" cy="${markerY.toFixed(1)}" r="8" fill="url(#gfvAccent)" />
-        <rect x="${(labelX - labelWidth / 2).toFixed(1)}" y="${(labelY - 28).toFixed(1)}" width="${labelWidth}" height="42" rx="21" fill="#020617" fill-opacity="0.86" stroke="#ffffff" stroke-opacity="0.28" />
+        <rect x="${(labelX - labelWidth / 2).toFixed(1)}" y="${(labelY - 28).toFixed(1)}" width="${labelWidth}" height="42" rx="13.65" fill="#020617" fill-opacity="0.86" stroke="#ffffff" stroke-opacity="0.28" />
         ${fitText(code, labelX, labelY + 2, { fontSize: 25, fontWeight: 900, maxWidth: labelWidth - 22, anchor: "middle" })}
       </g>
     `;
@@ -685,11 +685,11 @@ function routeMapLayer(data: FlightShareData, box: Box, includeTiles: boolean): 
   return `
     <defs>
       <clipPath id="${clipId}">
-        <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" />
+        <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" />
       </clipPath>
     </defs>
     <g clip-path="url(#${clipId})">
-      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" fill="${includeTiles ? "#e5e7eb" : "#0f172a"}" fill-opacity="${includeTiles ? "0.96" : "0.32"}" />
+      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" fill="${includeTiles ? "#e5e7eb" : "#0f172a"}" fill-opacity="${includeTiles ? "0.96" : "0.32"}" />
       ${tiles}
       ${!includeTiles || !tiles ? Array.from({ length: 8 }, (_, index) => `<line x1="${box.x + index * (box.w / 7)}" y1="${box.y}" x2="${box.x + index * (box.w / 7)}" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
       ${!includeTiles || !tiles ? Array.from({ length: 7 }, (_, index) => `<line x1="${box.x}" y1="${box.y + index * (box.h / 6)}" x2="${box.x + box.w}" y2="${box.y + index * (box.h / 6)}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
@@ -697,7 +697,7 @@ function routeMapLayer(data: FlightShareData, box: Box, includeTiles: boolean): 
       <path d="${route}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
       ${route ? routeEndpointMarkers(data, box) : ""}
       ${route ? "" : `<text x="${box.x + box.w / 2}" y="${box.y + box.h / 2}" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Rota indisponível</text>`}
-      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="52" fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2" />
+      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2" />
     </g>
   `;
 }
@@ -768,10 +768,10 @@ function summarySticker(data: FlightShareData, options: StickerBuildOptions = {}
   const body = `
     <g filter="url(#gfvShadow)">
       ${outerCard(showBackground, 86, 360, 908, 980, 0.48)}
-      ${innerCard(showBackground, 128, 402, 824, 896, 52, 0.72)}
+      ${innerCard(showBackground, 128, 402, 824, 896, 33.8, 0.72)}
       ${brandMark(data, 176, 468, 380)}
       ${fitText(title, 176, 648, { fontSize: 58, fontWeight: 900, maxWidth: 728 })}
-      <rect x="176" y="724" width="728" height="4" rx="2" fill="url(#gfvAccent)" />
+      <rect x="176" y="724" width="728" height="4" rx="1.3" fill="url(#gfvAccent)" />
       ${metricBlock("Tempo", data.durationDisplay, 176, 806)}
       ${metricBlock("Distância", distance, 508, 806)}
       ${metricBlock("Alt. máxima", altMax, 176, 1014)}
@@ -792,7 +792,7 @@ function routeSticker(data: FlightShareData, options: StickerBuildOptions = {}):
       ${fitText(flightTitle(data), 132, 316, { color: "#cbd5e1", fontSize: 32, fontWeight: 700, maxWidth: 520 })}
       ${smallBrand(data, 688, 220)}
       ${routeMapLayer(data, box, true)}
-      <rect x="132" y="1024" width="816" height="184" rx="42" fill="#0f172a" fill-opacity="0.78" stroke="#ffffff" stroke-opacity="0.13" />
+      <rect x="132" y="1024" width="816" height="184" rx="27.3" fill="#0f172a" fill-opacity="0.78" stroke="#ffffff" stroke-opacity="0.13" />
       ${metricMini("Distância", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 176, 1092)}
       ${metricMini("Tempo", data.durationDisplay, 420, 1092)}
       ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 664, 1092)}
@@ -828,7 +828,7 @@ function legRows(data: FlightShareData, x: number, y: number, width: number): st
     return `
       <g>
         ${fitText(detail, x + width / 2, rowY + 36, { color: "#f8fafc", fontSize: 34, fontWeight: 900, maxWidth: width - 220, anchor: "middle" })}
-        <rect x="${x + 122}" y="${lineY - 6}" width="${width - 244}" height="12" rx="6" fill="url(#gfvAccent)" />
+        <rect x="${x + 122}" y="${lineY - 6}" width="${width - 244}" height="12" rx="3.9" fill="url(#gfvAccent)" />
         <circle cx="${x + 122}" cy="${lineY}" r="10" fill="#f8fafc" />
         <circle cx="${x + width - 122}" cy="${lineY}" r="10" fill="#f8fafc" />
         ${fitText(dep, x, lineY + 48, { fontSize: 38, fontWeight: 900, maxWidth: 240 })}
@@ -854,7 +854,7 @@ function legsSticker(data: FlightShareData, options: StickerBuildOptions = {}): 
     <g filter="url(#gfvShadow)">
       ${outerCard(showBackground, 86, 142, 908, layout.outerHeight, 0.46)}
       ${brandMark(data, 132, 220, 360)}
-      ${innerCard(showBackground, 122, 430, 836, layout.rowsBoxHeight, 48, 0.74)}
+      ${innerCard(showBackground, 122, 430, 836, layout.rowsBoxHeight, 31.2, 0.74)}
       ${legRows(data, 166, 490, 748)}
     </g>
   `;
@@ -875,7 +875,7 @@ function altitudeSticker(data: FlightShareData, options: StickerBuildOptions = {
       ${fitText("ALTIMETRIA", 136, 376, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 760, letterSpacing: 4 })}
       ${fitText(altMax, 136, 470, { fontSize: 86, fontWeight: 900, maxWidth: 760 })}
       ${fitText("Altitude máxima no voo", 142, 532, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 760 })}
-      <rect x="116" y="590" width="848" height="542" rx="48" fill="#0f172a" fill-opacity="0.72" />
+      <rect x="116" y="590" width="848" height="542" rx="31.2" fill="#0f172a" fill-opacity="0.72" />
       <path d="${areaPath}" fill="url(#gfvSoft)" />
       <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
       ${linePath ? "" : `<text x="540" y="870" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Altimetria indisponível</text>`}
@@ -905,7 +905,7 @@ function speedSticker(data: FlightShareData, options: StickerBuildOptions = {}):
       ${fitText("VELOCIDADE", 540, 350, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 700, anchor: "middle", letterSpacing: 4 })}
       ${fitText(maxSpeed, 540, 468, { fontSize: 104, fontWeight: 900, maxWidth: 700, anchor: "middle" })}
       ${fitText("máxima registrada", 540, 530, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 700, anchor: "middle" })}
-      <rect x="106" y="584" width="868" height="536" rx="54" fill="#0f172a" fill-opacity="0.72" />
+      <rect x="106" y="584" width="868" height="536" rx="35.1" fill="#0f172a" fill-opacity="0.72" />
       <path d="${areaPath}" fill="url(#gfvSoft)" />
       <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
       ${linePath ? "" : `<text x="540" y="850" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Velocidade indisponível</text>`}
@@ -921,7 +921,7 @@ function speedSticker(data: FlightShareData, options: StickerBuildOptions = {}):
 function compactMetric(label: string, value: string, x: number, y: number): string {
   return `
     <g>
-      <rect x="${x}" y="${y}" width="246" height="132" rx="30" fill="#0f172a" fill-opacity="0.74" stroke="#ffffff" stroke-opacity="0.12" />
+      <rect x="${x}" y="${y}" width="246" height="132" rx="19.5" fill="#0f172a" fill-opacity="0.74" stroke="#ffffff" stroke-opacity="0.12" />
       ${fitText(label, x + 26, y + 48, { color: "#94a3b8", fontSize: 24, fontWeight: 800, maxWidth: 194, letterSpacing: 0.8 })}
       ${fitText(value, x + 26, y + 98, { fontSize: 38, fontWeight: 900, maxWidth: 194 })}
     </g>
@@ -933,7 +933,7 @@ function miniChart(title: string, samples: Sample[], box: Box): string {
   const areaPath = chartAreaPath(samples, box);
   return `
     <g>
-      <rect x="${box.x - 18}" y="${box.y - 76}" width="${box.w + 36}" height="${box.h + 112}" rx="36" fill="#0f172a" fill-opacity="0.74" stroke="#ffffff" stroke-opacity="0.12" />
+      <rect x="${box.x - 18}" y="${box.y - 76}" width="${box.w + 36}" height="${box.h + 112}" rx="23.4" fill="#0f172a" fill-opacity="0.74" stroke="#ffffff" stroke-opacity="0.12" />
       ${fitText(title, box.x, box.y - 28, { color: "#cbd5e1", fontSize: 29, fontWeight: 900, maxWidth: box.w })}
       <path d="${areaPath}" fill="url(#gfvSoft)" />
       <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
@@ -999,7 +999,7 @@ export function buildCustomFlightShareSticker(data: FlightShareData, options: Cu
   const routeLayer = merged.routeMode === "hidden"
     ? ""
     : merged.routeMode === "legs"
-      ? `${innerCard(showBackground, 116, routeY, 848, routeHeight, 52, 0.68)}
+      ? `${innerCard(showBackground, 116, routeY, 848, routeHeight, 33.8, 0.68)}
         ${legRows(data, 164, routeY + 60, 752)}`
       : routeMapLayer(data, routeBox, merged.routeMode === "map");
   const contentBottom = Math.min(

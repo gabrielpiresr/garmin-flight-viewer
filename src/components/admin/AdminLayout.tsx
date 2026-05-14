@@ -1,26 +1,35 @@
 import { useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
+import { Tabs } from "../ui/Tabs";
 import { ModelsTab } from "./ModelsTab";
 import { FleetTab } from "./FleetTab";
 import { MaintenanceTab } from "./MaintenanceTab";
+import { TelemetryAlertsTab } from "./TelemetryAlertsTab";
 import { ManobrasTab } from "./ManobrasTab";
 import { NoticesTab } from "./NoticesTab";
 import { PlatformSettingsTab } from "./PlatformSettingsTab";
 import { ScheduleAdminTab } from "./ScheduleAdminTab";
+import { AdminStudentsTab } from "./AdminStudentsTab";
 import { AdminUsersTab } from "./AdminUsersTab";
+import { FlightReportsTab } from "./FlightReportsTab";
 import { TrainingExercisesTab } from "./TrainingExercisesTab";
+import { AdminHome } from "./AdminHome";
 
 type AdminSection =
-  | "models"
+  | "home"
   | "fleet"
-  | "maintenance"
+  | "telemetry-alerts"
   | "schedule"
   | "notices"
   | "maneuvers"
   | "exercises"
+  | "reports"
+  | "students"
   | "users"
   | "settings";
+
+type FleetSubTab = "aircraft" | "models" | "maintenance";
 
 type NavItem = {
   id: AdminSection;
@@ -33,21 +42,42 @@ const SELECTED_NAV_CLASS = "text-emerald-400 bg-emerald-500/10 border-emerald-50
 
 const NAV_ITEMS: NavItem[] = [
   {
-    id: "models",
-    label: "Modelos",
-    sublabel: "Tipos de aeronave",
+    id: "home",
+    label: "Home",
+    sublabel: "Dashboard operacional",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M11.644 1.59a.75.75 0 01.712 0l9.75 5.25a.75.75 0 010 1.32l-9.75 5.25a.75.75 0 01-.712 0l-9.75-5.25a.75.75 0 010-1.32l9.75-5.25z" />
-        <path d="M3.265 10.602l7.668 4.129a2.25 2.25 0 002.134 0l7.668-4.13 1.37.739a.75.75 0 010 1.32l-9.75 5.25a.75.75 0 01-.71 0l-9.75-5.25a.75.75 0 010-1.32l1.37-.738z" />
-        <path d="M10.933 19.231l-7.668-4.13-1.37.739a.75.75 0 000 1.32l9.75 5.25c.221.12.489.12.71 0l9.75-5.25a.75.75 0 000-1.32l-1.37-.738-7.668 4.13a2.25 2.25 0 01-2.134-.001z" />
+        <path d="M11.47 3.841a.75.75 0 011.06 0l8.69 8.69a.75.75 0 11-1.06 1.06l-.91-.91V19.5A1.5 1.5 0 0117.75 21h-3a.75.75 0 01-.75-.75V16.5a1.5 1.5 0 00-3 0v3.75a.75.75 0 01-.75.75h-3a1.5 1.5 0 01-1.5-1.5v-6.819l-.91.91a.75.75 0 11-1.06-1.06l8.69-8.69z" />
+      </svg>
+    ),
+  },
+  {
+    id: "reports",
+    label: "Relatorios",
+    sublabel: "Voos, filtros e exportacoes",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
+        <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "students",
+    label: "Alunos",
+    sublabel: "Evolução e ritmo de voo",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M11.7 2.805a.75.75 0 01.6 0l9 3.857a.75.75 0 010 1.378l-9 3.857a.75.75 0 01-.6 0l-9-3.857a.75.75 0 010-1.378l9-3.857z" />
+        <path d="M3.75 10.5a.75.75 0 01.75.75v3.75c0 .557.31 1.07.804 1.33l5.25 2.763a3 3 0 002.892 0l5.25-2.763a1.5 1.5 0 00.804-1.33v-3.75a.75.75 0 011.5 0v3.75a3 3 0 01-1.607 2.66l-5.25 2.763a4.5 4.5 0 01-4.286 0l-5.25-2.763A3 3 0 013 15v-3.75a.75.75 0 01.75-.75z" />
+        <path d="M7.5 12.75a.75.75 0 011.5 0v2.25a.75.75 0 01-1.5 0v-2.25z" />
       </svg>
     ),
   },
   {
     id: "fleet",
     label: "Frota",
-    sublabel: "Aeronaves da escola",
+    sublabel: "Aviões, modelos e manutenções",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
@@ -55,12 +85,12 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "maintenance",
-    label: "Manutenções",
-    sublabel: "Regras por modelo",
+    id: "telemetry-alerts",
+    label: "Alertas",
+    sublabel: "Telemetria por modelo",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M12 6.75a5.25 5.25 0 016.775-5.025.75.75 0 01.313 1.248l-3.32 3.319c.063.475.276.934.641 1.299.365.365.824.578 1.3.641l3.318-3.319a.75.75 0 011.248.313 5.25 5.25 0 01-5.472 6.756c-1.018-.086-1.87.1-2.309.634L7.344 21.3A3.298 3.298 0 112.7 16.657l8.684-7.151c.533-.44.72-1.291.634-2.308A5.28 5.28 0 0112 6.75zM4.117 19.125a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75h-.008a.75.75 0 01-.75-.75v-.008z" clipRule="evenodd" />
+        <path fillRule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.198 0l7.355 12.74c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.753-2.5-2.599-4.5l7.355-12.74zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -97,8 +127,8 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "exercises",
-    label: "Exercicios",
-    sublabel: "Notas e proficiencia da ficha",
+    label: "Exercícios",
+    sublabel: "Notas e proficiência da ficha",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M6.32 2.577a49.255 49.255 0 0111.36 0c1.497.174 2.57 1.46 2.57 2.93v11.986c0 1.47-1.073 2.756-2.57 2.93a49.255 49.255 0 01-11.36 0c-1.497-.174-2.57-1.46-2.57-2.93V5.507c0-1.47 1.073-2.756 2.57-2.93zM8.25 6.75A.75.75 0 019 6h6a.75.75 0 010 1.5H9a.75.75 0 01-.75-.75zM9 10.5a.75.75 0 000 1.5h6a.75.75 0 000-1.5H9zm-.75 5.25A.75.75 0 019 15h3a.75.75 0 010 1.5H9a.75.75 0 01-.75-.75z" clipRule="evenodd" />
@@ -127,9 +157,42 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const FLEET_TABS = [
+  {
+    id: "aircraft",
+    label: "Aviões",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+      </svg>
+    ),
+  },
+  {
+    id: "models",
+    label: "Modelos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M11.644 1.59a.75.75 0 01.712 0l9.75 5.25a.75.75 0 010 1.32l-9.75 5.25a.75.75 0 01-.712 0l-9.75-5.25a.75.75 0 010-1.32l9.75-5.25z" />
+        <path d="M3.265 10.602l7.668 4.129a2.25 2.25 0 002.134 0l7.668-4.13 1.37.739a.75.75 0 010 1.32l-9.75 5.25a.75.75 0 01-.71 0l-9.75-5.25a.75.75 0 010-1.32l1.37-.738z" />
+        <path d="M10.933 19.231l-7.668-4.13-1.37.739a.75.75 0 000 1.32l9.75 5.25c.221.12.489.12.71 0l9.75-5.25a.75.75 0 000-1.32l-1.37-.738-7.668 4.13a2.25 2.25 0 01-2.134-.001z" />
+      </svg>
+    ),
+  },
+  {
+    id: "maintenance",
+    label: "Manutenções",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M12 6.75a5.25 5.25 0 016.775-5.025.75.75 0 01.313 1.248l-3.32 3.319c.063.475.276.934.641 1.299.365.365.824.578 1.3.641l3.318-3.319a.75.75 0 011.248.313 5.25 5.25 0 01-5.472 6.756c-1.018-.086-1.87.1-2.309.634L7.344 21.3A3.298 3.298 0 112.7 16.657l8.684-7.151c.533-.44.72-1.291.634-2.308A5.28 5.28 0 0112 6.75zM4.117 19.125a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75h-.008a.75.75 0 01-.75-.75v-.008z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+] satisfies Array<{ id: FleetSubTab; label: string; icon: React.ReactNode }>;
+
 export function AdminLayout() {
   const { user, signOut } = useAuth();
-  const [section, setSection] = useState<AdminSection>("fleet");
+  const [section, setSection] = useState<AdminSection>("home");
+  const [fleetTab, setFleetTab] = useState<FleetSubTab>("aircraft");
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
 
@@ -220,14 +283,25 @@ export function AdminLayout() {
         </header>
 
         {/* Content */}
-        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
-          {section === "models" && <ModelsTab />}
-          {section === "fleet" && <FleetTab />}
-          {section === "maintenance" && <MaintenanceTab />}
+        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 lg:pb-4">
+          {section === "home" && (
+            <AdminHome onOpenReports={() => setSection("reports")} onOpenAlerts={() => setSection("telemetry-alerts")} />
+          )}
+          {section === "fleet" && (
+            <div className="space-y-4">
+              <Tabs items={FLEET_TABS} value={fleetTab} onChange={setFleetTab} ariaLabel="Subabas de frota" accent="sky" />
+              {fleetTab === "aircraft" && <FleetTab />}
+              {fleetTab === "models" && <ModelsTab />}
+              {fleetTab === "maintenance" && <MaintenanceTab />}
+            </div>
+          )}
+          {section === "telemetry-alerts" && <TelemetryAlertsTab />}
           {section === "schedule" && <ScheduleAdminTab />}
           {section === "notices" && <NoticesTab />}
           {section === "maneuvers" && <ManobrasTab />}
           {section === "exercises" && <TrainingExercisesTab />}
+          {section === "reports" && <FlightReportsTab />}
+          {section === "students" && <AdminStudentsTab />}
           {section === "users" && <AdminUsersTab />}
           {section === "settings" && <PlatformSettingsTab />}
         </main>

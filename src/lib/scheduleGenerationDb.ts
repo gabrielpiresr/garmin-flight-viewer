@@ -10,6 +10,7 @@ import {
 import { listAircrafts } from "./aircraftDb";
 import { getProfile, listAssignableInstructors, listAssignableStudents } from "./rbac";
 import { getSavedFlight, listSavedFlights } from "./flightsDb";
+import { getSchoolRules } from "./schoolRulesDb";
 import type {
   AircraftWeekSupply,
   ExistingScheduledFlight,
@@ -20,6 +21,7 @@ import type {
 } from "../types/schedule";
 import type { SlotState } from "../types/admin";
 import type { UserRole } from "./rbac";
+import { DEFAULT_SCHOOL_RULES } from "../types/schoolRules";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 const schoolId = SCHOOL_ID ?? "escola_principal";
@@ -34,6 +36,7 @@ type OpWeekDoc = {
   aircraft_id?: string;
   schedule_closed_at?: string | null;
   daily_caps_json?: string | null;
+  group_caps_json?: string | null;
   slots_json?: string | null;
 };
 
@@ -72,6 +75,20 @@ function parsePlanItems(json: string | null | undefined): ParsedItem[] {
   } catch {
     return [];
   }
+}
+
+function isValidDemandItem(item: ParsedItem, minHours: number, maxHours: number): boolean {
+  const duration = Number(item.durationHours);
+  return (
+    Number.isFinite(duration) &&
+    duration >= minHours &&
+    duration <= maxHours &&
+    Math.abs(duration * 2 - Math.round(duration * 2)) <= 0.001 &&
+    [1, 2, 3].includes(Number(item.priorityLevel)) &&
+    ["low", "medium", "high"].includes(item.flexibilityLevel) &&
+    Array.isArray(item.availability) &&
+    item.availability.length > 0
+  );
 }
 
 function getWeekMonday(date: Date): Date {
@@ -117,6 +134,22 @@ function parseDailyCaps(json: string | null | undefined): Record<number, number>
     return caps;
   } catch {
     return {};
+  }
+}
+
+function parseGroupCaps(json: string | null | undefined): Array<{ maxHours: number; days: number[] }> {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as Array<{ maxHours: number; days: number[] }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((cap) => ({
+        maxHours: Number(cap.maxHours),
+        days: Array.isArray(cap.days) ? cap.days.map(Number).filter((day) => Number.isInteger(day)) : [],
+      }))
+      .filter((cap) => Number.isFinite(cap.maxHours) && cap.maxHours >= 0 && cap.days.length > 0);
+  } catch {
+    return [];
   }
 }
 
@@ -323,7 +356,8 @@ export async function getScheduleWeekData(params: {
     };
   }
 
-  const [aircrafts, studentsOptions, instructors, opWeeksRes, planDocs, existingGeneratedFlights] = await Promise.all([
+  const [rules, aircrafts, studentsOptions, instructors, opWeeksRes, planDocs, existingGeneratedFlights] = await Promise.all([
+    getSchoolRules().catch(() => DEFAULT_SCHOOL_RULES),
     listAircrafts(schoolId),
     listAssignableStudents(params.actorUserId, params.actorRole),
     listAssignableInstructors(params.actorRole),
@@ -364,6 +398,7 @@ export async function getScheduleWeekData(params: {
       aircraftRegistration: registration,
       aircraftImageUrl: aircraftMap.get(doc.aircraft_id ?? "")?.image_url ?? null,
       dailyCaps: parseDailyCaps(doc.daily_caps_json),
+      groupCaps: parseGroupCaps(doc.group_caps_json),
       slotStates: parseSlotStates(doc.slots_json),
     };
   });
@@ -377,7 +412,9 @@ export async function getScheduleWeekData(params: {
       studentsMap.get(studentId) ||
       studentId;
     const parsedItems = parsePlanItems(plan.items_json);
-    for (const item of parsedItems) {
+    for (const item of parsedItems.filter((entry) =>
+      isValidDemandItem(entry, rules.schedule.minRequestHours, rules.schedule.maxRequestHours),
+    )) {
       demands.push({
         demandId: `${plan.$id}-${item.position}`,
         studentId,

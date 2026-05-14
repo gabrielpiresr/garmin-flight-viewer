@@ -121,6 +121,7 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
       aircraft_ident: parsed.aircraftIdent ?? null,
       duration_sec: durationSec ?? null,
       telemetryMetrics,
+      telemetryAlertParsed: parsed,
     });
 
     if (error || !id) {

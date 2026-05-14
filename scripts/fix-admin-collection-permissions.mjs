@@ -28,12 +28,16 @@ const ADMIN_PERMS = [
 const AIRCRAFTS_COLLECTION_PERMS = [
   ...ADMIN_PERMS,
   Permission.read(Role.label("instrutor")),
+  Permission.read(Role.label("aluno")),
+  Permission.read(Role.users()),
 ];
 
 const AIRCRAFT_DOCUMENT_PERMS = [
   Permission.read(Role.user(ADMIN_USER_ID)),
   Permission.read(Role.label("admin")),
   Permission.read(Role.label("instrutor")),
+  Permission.read(Role.label("aluno")),
+  Permission.read(Role.users()),
   Permission.update(Role.user(ADMIN_USER_ID)),
   Permission.update(Role.label("admin")),
   Permission.delete(Role.user(ADMIN_USER_ID)),

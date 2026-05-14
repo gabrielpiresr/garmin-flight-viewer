@@ -3,6 +3,7 @@ import { parseGarminCsv } from "./parseGarminCsv";
 import type { FlightRecordMeta } from "./flightRecordCodec";
 import type { ChartRow } from "./telemetryCharts";
 import { colorForKey, labelForKey } from "./telemetryCharts";
+import { formatNumber } from "./weightBalance";
 
 type ExportFlightFichaPdfInput = {
   meta: FlightRecordMeta;
@@ -195,14 +196,14 @@ function formatExerciseGrade(value: string | null | undefined): string {
 
 function buildExercisesTable(meta: FlightRecordMeta): string {
   const exercises = (meta.exercises ?? []).slice().sort((a, b) => a.order - b.order);
-  if (exercises.length === 0) return "<p>Nenhum exercicio registrado.</p>";
+  if (exercises.length === 0) return "<p>Nenhum exercício registrado.</p>";
   return `
     <table class="ficha-table exercises-table">
       <thead>
         <tr>
-          <th>Exercicio</th>
+          <th>Exercício</th>
           <th>Grau</th>
-          <th>Proficiencia aceitavel</th>
+          <th>Proficiência aceitável</th>
         </tr>
       </thead>
       <tbody>
@@ -215,6 +216,57 @@ function buildExercisesTable(meta: FlightRecordMeta): string {
         `).join("")}
       </tbody>
     </table>
+  `;
+}
+
+function buildWeightBalanceSection(meta: FlightRecordMeta): string {
+  const wb = meta.weightBalance;
+  if (!wb) return "<p>Peso e balanceamento não informado.</p>";
+  const issues = Array.from(new Set([
+    ...wb.results.stationIssues,
+    ...wb.results.points.flatMap((point) => point.issues),
+  ]));
+  return `
+    ${fieldTable([
+      ["Aeronave", wb.aircraft.registration],
+      ["Peso vazio", `${formatNumber(wb.aircraft.emptyWeightKg)} kg`],
+      ["Braço vazio", `${formatNumber(wb.aircraft.emptyArmMm)} mm`],
+      ["Peso máximo", `${formatNumber(wb.aircraft.maxWeightKg)} kg`],
+      ["Braço mínimo", `${formatNumber(wb.aircraft.armMinMm)} mm`],
+      ["Braço máximo", `${formatNumber(wb.aircraft.armMaxMm)} mm`],
+      ["Combustível", `${formatNumber(wb.aircraft.fuelDensityKgPerL, 3)} kg/L`],
+      ["Status", wb.results.isWithinLimits ? "Dentro do envelope" : "Verificar envelope"],
+    ], 2)}
+    ${fieldTable([
+      ["Peso ocupantes", `${formatNumber(wb.inputs.occupantsWeightKg)} kg`],
+      ["Peso bagagem", `${formatNumber(wb.inputs.baggageWeightKg)} kg`],
+      ["Combustível inicial", `${formatNumber(wb.inputs.rampFuel.value)} ${wb.inputs.rampFuel.unit === "l" ? "L" : "kg"} / ${formatNumber(wb.inputs.rampFuel.weightKg)} kg`],
+      ["Combustível táxi", `${formatNumber(wb.inputs.taxiFuel.value)} ${wb.inputs.taxiFuel.unit === "l" ? "L" : "kg"} / ${formatNumber(wb.inputs.taxiFuel.weightKg)} kg`],
+      ["Combustível até pouso", `${formatNumber(wb.inputs.tripFuel.value)} ${wb.inputs.tripFuel.unit === "l" ? "L" : "kg"} / ${formatNumber(wb.inputs.tripFuel.weightKg)} kg`],
+    ], 1)}
+    <table class="ficha-table compact">
+      <thead>
+        <tr>
+          <th>Ponto</th>
+          <th>Peso</th>
+          <th>Momento</th>
+          <th>Braço</th>
+          <th>Envelope</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${wb.results.points.map((point) => `
+          <tr>
+            <td>${escapeHtml(point.label)}</td>
+            <td>${escapeHtml(`${formatNumber(point.weightKg)} kg`)}</td>
+            <td>${escapeHtml(`${formatNumber(point.momentKgMm)} kg.mm`)}</td>
+            <td>${escapeHtml(`${formatNumber(point.armMm)} mm`)}</td>
+            <td>${escapeHtml(point.inEnvelope ? "OK" : point.inEnvelope === false ? "Fora" : "Incompleto")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+    ${issues.length > 0 ? `<div class="warning-box"><strong>Atenção:</strong><ul>${issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul></div>` : ""}
   `;
 }
 
@@ -459,7 +511,7 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
         .chart-legend span { display: inline-flex; align-items: center; gap: 3px; }
         .chart-legend i { display: inline-block; width: 10px; height: 3px; }
         .empty-visual { border: 1px dashed #6b7280; padding: 18px; color: #6b7280; text-align: center; }
-        .warnings { border: 1px solid #92400e; background: #fffbeb; padding: 8px; }
+        .warnings, .warning-box { border: 1px solid #92400e; background: #fffbeb; padding: 8px; }
         @media print {
           main { padding: 0; }
           .ficha-section { page-break-inside: avoid; }
@@ -496,7 +548,9 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
 
         ${section("Registro de pernas", buildLegsTable(meta))}
 
-        ${section("Exercicios", buildExercisesTable(meta))}
+        ${section("Exercícios", buildExercisesTable(meta))}
+
+        ${section("Peso e balanceamento", buildWeightBalanceSection(meta))}
 
         ${section("Risco e parecer", [
           narrativeBox("Comentários", meta.risk.commentsMd),
@@ -520,8 +574,11 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
   </html>`;
 }
 
-export function exportFlightFichaPdf(input: ExportFlightFichaPdfInput): { ok: boolean; error?: string } {
-  const printWindow = window.open("", "_blank");
+export function exportFlightFichaPdf(
+  input: ExportFlightFichaPdfInput,
+  options: { targetWindow?: Window | null } = {},
+): { ok: boolean; error?: string } {
+  const printWindow = options.targetWindow ?? window.open("", "_blank");
   if (!printWindow) {
     return { ok: false, error: "Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-ups." };
   }

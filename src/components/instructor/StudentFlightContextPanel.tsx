@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
   buildFlightDisplayInfo,
@@ -14,12 +14,45 @@ import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getSavedFlight, listStudentFlightHistory, type SavedFlightListItem } from "../../lib/flightsDb";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { getProfile, type PilotProfile } from "../../lib/rbac";
+import { formatNumber } from "../../lib/weightBalance";
 import type { StudentCreditStatement } from "../../types/credits";
 import { CreditStatementView } from "../CreditStatementView";
 import { TelemetriaTab } from "../TelemetriaTab";
 import { VideosTab } from "../VideosTab";
+import { Tabs } from "../ui/Tabs";
 
 type HistoryDetailTab = "ficha" | "telemetria" | "videos";
+
+const HISTORY_DETAIL_TABS: Array<{ id: HistoryDetailTab; label: string; icon: ReactNode }> = [
+  {
+    id: "ficha",
+    label: "Ficha",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M5.75 2A1.75 1.75 0 004 3.75v12.5C4 17.216 4.784 18 5.75 18h8.5A1.75 1.75 0 0016 16.25V6.5L11.5 2H5.75zm5 1.75L14.25 7h-2.5a1 1 0 01-1-1V3.75zM7 10h6v1.5H7V10zm0 3h6v1.5H7V13z" />
+      </svg>
+    ),
+  },
+  {
+    id: "telemetria",
+    label: "Telemetria",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M3.5 3.75A.75.75 0 014.25 3h11.5a.75.75 0 010 1.5H5v10.75a.75.75 0 01-1.5 0V3.75z" />
+        <path d="M7 13.5a1 1 0 100 2 1 1 0 000-2zm4-4a1 1 0 100 2 1 1 0 000-2zm4-3.5a1 1 0 100 2 1 1 0 000-2zM7.53 13.03l3-3 1.06 1.06-3 3-1.06-1.06zm4.04-2.6l2.9-3.38 1.14.98-2.9 3.38-1.14-.98z" />
+      </svg>
+    ),
+  },
+  {
+    id: "videos",
+    label: "Vídeos",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M4.75 4A1.75 1.75 0 003 5.75v8.5C3 15.216 3.784 16 4.75 16h7.5A1.75 1.75 0 0014 14.25v-8.5A1.75 1.75 0 0012.25 4h-7.5zM15 7.25l2.47-1.65A1 1 0 0119 6.43v7.14a1 1 0 01-1.53.83L15 12.75v-5.5z" />
+      </svg>
+    ),
+  },
+];
 
 function field(label: string, value: string | number | null | undefined) {
   return (
@@ -95,6 +128,53 @@ function ReadOnlyFicha({ meta }: { meta: FlightRecordMeta | null }) {
           ))}
         </div>
       </section>
+
+      {meta.weightBalance ? (
+        <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Peso e balanceamento</p>
+            <span className={`rounded-full border px-2 py-1 text-[11px] ${
+              meta.weightBalance.results.isWithinLimits
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-200"
+            }`}>
+              {meta.weightBalance.results.isWithinLimits ? "Dentro do envelope" : "Verificar envelope"}
+            </span>
+          </div>
+          <div className="mb-3 grid gap-2 text-xs md:grid-cols-4">
+            {field("Peso ocupantes", `${formatNumber(meta.weightBalance.inputs.occupantsWeightKg)} kg`)}
+            {field("Peso bagagem", `${formatNumber(meta.weightBalance.inputs.baggageWeightKg)} kg`)}
+            {field("Combustível inicial", `${formatNumber(meta.weightBalance.inputs.rampFuel.weightKg)} kg`)}
+            {field("Fator combustível", `${formatNumber(meta.weightBalance.aircraft.fuelDensityKgPerL, 3)} kg/L`)}
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-slate-700/70">
+            <table className="min-w-full divide-y divide-slate-800 text-left text-xs">
+              <thead className="bg-slate-900/60 text-slate-400">
+                <tr>
+                  <th className="px-3 py-2">Ponto</th>
+                  <th className="px-3 py-2">Peso</th>
+                  <th className="px-3 py-2">Momento</th>
+                  <th className="px-3 py-2">Braço</th>
+                  <th className="px-3 py-2">Envelope</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80">
+                {meta.weightBalance.results.points.map((point) => (
+                  <tr key={point.id}>
+                    <td className="px-3 py-2 text-slate-100">{point.label}</td>
+                    <td className="px-3 py-2 text-slate-300">{formatNumber(point.weightKg)} kg</td>
+                    <td className="px-3 py-2 text-slate-300">{formatNumber(point.momentKgMm)} kg.mm</td>
+                    <td className="px-3 py-2 text-slate-300">{formatNumber(point.armMm)} mm</td>
+                    <td className="px-3 py-2 text-slate-300">
+                      {point.inEnvelope ? "OK" : point.inEnvelope === false ? "Fora" : "Incompleto"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       <section className="grid gap-3 lg:grid-cols-2">
         <MarkdownPreview label="Comentários" value={meta.risk.commentsMd} />
@@ -177,24 +257,7 @@ function HistoryDetail({
         </div>
       ) : null}
 
-      <div className="flex gap-1 rounded-xl border border-slate-700/80 bg-slate-900/40 p-1">
-        {([
-          ["ficha", "Ficha"],
-          ["telemetria", "Telemetria"],
-          ["videos", "Vídeos"],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setTab(id)}
-            className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              tab === id ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Tabs items={HISTORY_DETAIL_TABS} value={tab} onChange={setTab} ariaLabel="Detalhe do histórico do aluno" accent="sky" />
       {loading ? (
         <p className="py-8 text-sm text-slate-500">Carregando ficha...</p>
       ) : error ? (

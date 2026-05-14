@@ -3,7 +3,9 @@ import { useAuth } from "../contexts/AuthContext";
 import { listAircrafts } from "../lib/aircraftDb";
 import { listModels } from "../lib/aircraftModelsDb";
 import { SCHOOL_ID } from "../lib/appwrite";
+import { getStudentCreditStatement } from "../lib/creditsDb";
 import { dispatchNotificationEvent } from "../lib/notificationsDb";
+import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { Skeleton } from "./ui/Skeleton";
 import { useToast } from "./ui/ToastProvider";
 import {
@@ -15,6 +17,7 @@ import {
 } from "../lib/weeklyFlightPlansDb";
 import type { OperationalWeek } from "../types/admin";
 import type { AircraftModel } from "../types/admin";
+import type { StudentCreditStatement } from "../types/credits";
 import type {
   AvailabilityPeriod,
   AvailabilityType,
@@ -24,6 +27,7 @@ import type {
   WeeklyFlightPlanItemFull,
   SavePlanPayload,
 } from "../types/planning";
+import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 
 const PLAN_DAYS = [1, 2, 3, 4, 5, 6] as const;
 const PLAN_DAY_LABELS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -33,9 +37,17 @@ const PLAN_PERIODS: { id: AvailabilityPeriod; label: string }[] = [
   { id: "afternoon", label: "Tarde" },
 ];
 
-const DURATION_OPTIONS = [1, 1.5, 2, 2.5, 3];
-
 const AVAIL_CYCLE: (AvailabilityType | undefined)[] = [undefined, "available", "preferred"];
+
+function buildDurationOptions(minHours: number, maxHours: number): number[] {
+  const min = Math.max(0.5, Math.ceil(minHours * 2) / 2);
+  const max = Math.max(min, Math.floor(maxHours * 2) / 2);
+  const options: number[] = [];
+  for (let value = min; value <= max + 0.001; value += 0.5) {
+    options.push(Number(value.toFixed(1)));
+  }
+  return options.length > 0 ? options : [1];
+}
 
 function cycleAvailability(current: AvailabilityType | undefined): AvailabilityType | undefined {
   const idx = AVAIL_CYCLE.indexOf(current);
@@ -46,10 +58,10 @@ function availKey(day: number, period: AvailabilityPeriod): string {
   return `${day}-${period}`;
 }
 
-function makeEmptyItem(): FlightItemLocal {
+function makeEmptyItem(durationHours = 1): FlightItemLocal {
   return {
     localId: crypto.randomUUID(),
-    durationHours: 1,
+    durationHours,
     flexibilityLevel: "medium",
     preferredAircraft: null,
     priorityLevel: 2,
@@ -58,7 +70,7 @@ function makeEmptyItem(): FlightItemLocal {
   };
 }
 
-function itemFullToLocal(item: WeeklyFlightPlanItemFull): FlightItemLocal {
+function itemFullToLocal(item: WeeklyFlightPlanItemFull, rules: SchoolRules): FlightItemLocal {
   const availability: Record<string, AvailabilityType> = {};
   for (const a of item.availability) {
     const period = (a as { period: string }).period;
@@ -71,7 +83,10 @@ function itemFullToLocal(item: WeeklyFlightPlanItemFull): FlightItemLocal {
   }
   return {
     localId: item.id,
-    durationHours: Math.max(1, item.duration_hours),
+    durationHours: Math.min(
+      rules.schedule.maxRequestHours,
+      Math.max(rules.schedule.minRequestHours, item.duration_hours),
+    ),
     flexibilityLevel: item.flexibility_level,
     preferredAircraft: item.preferred_aircraft,
     priorityLevel: item.priority_level,
@@ -127,11 +142,12 @@ type FlightItemCardProps = {
   index: number;
   item: FlightItemLocal;
   modelOptions: AircraftModel[];
+  durationOptions: number[];
   onChange: (updated: FlightItemLocal) => void;
   onReplicate: () => void;
 };
 
-function FlightItemCard({ index, item, modelOptions, onChange, onReplicate }: FlightItemCardProps) {
+function FlightItemCard({ index, item, modelOptions, durationOptions, onChange, onReplicate }: FlightItemCardProps) {
   const [expanded, setExpanded] = useState(index === 0);
 
   function toggleCell(day: number, period: AvailabilityPeriod) {
@@ -197,7 +213,7 @@ function FlightItemCard({ index, item, modelOptions, onChange, onReplicate }: Fl
                 onChange={(e) => onChange({ ...item, durationHours: parseFloat(e.target.value) })}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
               >
-                {DURATION_OPTIONS.map((h) => (
+                {durationOptions.map((h) => (
                   <option key={h} value={h}>{h}h</option>
                 ))}
               </select>
@@ -360,7 +376,7 @@ function FlightItemCard({ index, item, modelOptions, onChange, onReplicate }: Fl
 
 // ─── AgendamentoTab ────────────────────────────────────────────────────────────
 
-type AgendamentoView = "loading" | "no-open-week" | "week-select" | "submitted" | "form";
+type AgendamentoView = "loading" | "intentions-disabled" | "no-open-week" | "week-select" | "submitted" | "form";
 
 export function AgendamentoTab() {
   const { user } = useAuth();
@@ -375,23 +391,42 @@ export function AgendamentoTab() {
   const [submittedWeekStarts, setSubmittedWeekStarts] = useState<Set<string>>(new Set());
   const [existingPlanId, setExistingPlanId] = useState<string | null>(null);
   const [submittedPlan, setSubmittedPlan] = useState<WeeklyFlightPlanFull | null>(null);
+  const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
+  const [creditStatement, setCreditStatement] = useState<StudentCreditStatement | null>(null);
   const [hasPreviousPlan, setHasPreviousPlan] = useState(false);
   const [loadingPrevious, setLoadingPrevious] = useState(false);
 
   const [flightCount, setFlightCount] = useState(1);
   const [flightItems, setFlightItems] = useState<FlightItemLocal[]>([makeEmptyItem()]);
   const [modelOptions, setModelOptions] = useState<AircraftModel[]>([]);
+  const durationOptions = buildDurationOptions(rules.schedule.minRequestHours, rules.schedule.maxRequestHours);
 
   const load = useCallback(async () => {
     if (!user) return;
     setView("loading");
     setError(null);
     try {
-      const [weeks, fleetList, allModels] = await Promise.all([
+      const nextRules = await getSchoolRules().catch(() => DEFAULT_SCHOOL_RULES);
+      setRules(nextRules);
+      applySchoolTheme(nextRules);
+
+      if (!nextRules.schedule.allowStudentFlightIntentions) {
+        setView("intentions-disabled");
+        return;
+      }
+
+      const [weeks, fleetList, allModels, statement] = await Promise.all([
         findOpenWeeks(),
         listAircrafts(SCHOOL_ID ?? "escola_principal"),
         listModels(),
+        nextRules.schedule.requireCreditsForIntentions
+          ? getStudentCreditStatement({
+              viewer: { userId: user.id, role: user.role },
+              studentUserId: user.id,
+            })
+          : Promise.resolve(null),
       ]);
+      setCreditStatement(statement);
 
       const activeFleet = fleetList.filter((a) => a.active);
       const modelIdsInFleet = new Set(activeFleet.map((a) => a.model_id));
@@ -414,7 +449,7 @@ export function AgendamentoTab() {
 
       if (weeks.length === 1) {
         // Only one open week — skip the selector and go directly
-        await selectWeek(weeks[0]!, user.id);
+        await selectWeek(weeks[0]!, user.id, nextRules);
       } else {
         setView("week-select");
       }
@@ -424,7 +459,7 @@ export function AgendamentoTab() {
     }
   }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function selectWeek(week: OperationalWeek, studentId: string) {
+  async function selectWeek(week: OperationalWeek, studentId: string, activeRules = rules) {
     setError(null);
     try {
       setOpenWeek(week);
@@ -437,7 +472,7 @@ export function AgendamentoTab() {
 
       if (!existing) {
         setFlightCount(1);
-        setFlightItems([makeEmptyItem()]);
+        setFlightItems([makeEmptyItem(activeRules.schedule.minRequestHours)]);
         setView("form");
         return;
       }
@@ -451,7 +486,7 @@ export function AgendamentoTab() {
 
       setExistingPlanId(existing.id);
       setFlightCount(existing.requested_flights_count);
-      setFlightItems(existing.items.map(itemFullToLocal));
+      setFlightItems(existing.items.map((item) => itemFullToLocal(item, activeRules)));
       setView("form");
     } catch (e) {
       setError((e as Error).message);
@@ -470,7 +505,7 @@ export function AgendamentoTab() {
     setFlightCount(count);
     setFlightItems((prev) => {
       if (count > prev.length) {
-        const extras = Array.from({ length: count - prev.length }, () => makeEmptyItem());
+        const extras = Array.from({ length: count - prev.length }, () => makeEmptyItem(rules.schedule.minRequestHours));
         return [...prev, ...extras];
       }
       return prev.slice(0, count);
@@ -485,7 +520,7 @@ export function AgendamentoTab() {
       const prev = await getPreviousStudentPlan(user.id);
       if (!prev) return;
       setFlightCount(prev.requested_flights_count);
-      setFlightItems(prev.items.map(itemFullToLocal));
+      setFlightItems(prev.items.map((item) => itemFullToLocal(item, rules)));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -518,9 +553,45 @@ export function AgendamentoTab() {
 
   function validatePlanningItems(): string | null {
     const items = flightItems.slice(0, flightCount);
+    if (!rules.schedule.allowStudentFlightIntentions) {
+      return "A escola desativou solicitações de intenção de voo no momento.";
+    }
+    if (!Number.isInteger(flightCount) || flightCount < 1 || flightCount > 7) {
+      return "Informe entre 1 e 7 voos para a semana.";
+    }
+    const invalidDurationIdx = items.findIndex((item) => {
+      const duration = Number(item.durationHours);
+      return (
+        !Number.isFinite(duration) ||
+        duration < rules.schedule.minRequestHours ||
+        duration > rules.schedule.maxRequestHours ||
+        Math.abs(duration * 2 - Math.round(duration * 2)) > 0.001
+      );
+    });
+    if (invalidDurationIdx >= 0) {
+      return `A duração do voo ${invalidDurationIdx + 1} precisa ficar entre ${rules.schedule.minRequestHours}h e ${rules.schedule.maxRequestHours}h.`;
+    }
     const missingAvailabilityIdx = items.findIndex((item) => !hasAnyAvailability(item));
     if (missingAvailabilityIdx >= 0) {
       return `Preencha ao menos 1 slot de disponibilidade no voo ${missingAvailabilityIdx + 1}.`;
+    }
+    if (rules.schedule.requireCreditsForIntentions) {
+      if (!creditStatement) return "Não foi possível consultar seus créditos para enviar a solicitação.";
+      const requestedHours = items.reduce((acc, item) => acc + item.durationHours, 0);
+      if (requestedHours > creditStatement.totals.availableHours + 0.001) {
+        return `Você possui ${creditStatement.totals.availableHours.toFixed(1)}h de crédito disponível e solicitou ${requestedHours.toFixed(1)}h.`;
+      }
+      const requestedByModel = new Map<string, number>();
+      for (const item of items) {
+        if (!item.preferredAircraft) continue;
+        requestedByModel.set(item.preferredAircraft, (requestedByModel.get(item.preferredAircraft) ?? 0) + item.durationHours);
+      }
+      for (const [modelId, hours] of requestedByModel) {
+        const summary = creditStatement.summaries.find((item) => item.aircraftModelId === modelId);
+        if (summary && hours > summary.availableHours + 0.001) {
+          return `Você possui ${summary.availableHours.toFixed(1)}h de crédito para ${summary.aircraftModelName} e solicitou ${hours.toFixed(1)}h.`;
+        }
+      }
     }
     return null;
   }
@@ -595,7 +666,7 @@ export function AgendamentoTab() {
     if (!user || !openWeek || !submittedPlan) return;
     setExistingPlanId(submittedPlan.id);
     setFlightCount(submittedPlan.requested_flights_count);
-    setFlightItems(submittedPlan.items.map(itemFullToLocal));
+    setFlightItems(submittedPlan.items.map((item) => itemFullToLocal(item, rules)));
     setView("form");
   }
 
@@ -648,6 +719,20 @@ export function AgendamentoTab() {
         </div>
         <p className="text-base font-medium text-slate-300">Solicitações ainda não abertas para esta semana.</p>
         <p className="mt-1 text-sm text-slate-600">A coordenação irá abrir o planejamento em breve.</p>
+      </div>
+    );
+  }
+
+  if (view === "intentions-disabled") {
+    return (
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-12 text-center">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-800">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-7 w-7 text-slate-500">
+            <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-2.59a.75.75 0 10-1.06-1.06L12 10.94 9.45 8.39a.75.75 0 10-1.06 1.06L10.94 12l-2.55 2.55a.75.75 0 101.06 1.06L12 13.06l2.55 2.55a.75.75 0 101.06-1.06L13.06 12l2.55-2.59z" clipRule="evenodd" />
+          </svg>
+        </div>
+        <p className="text-base font-medium text-slate-300">Solicitações de intenção de voo estão desativadas.</p>
+        <p className="mt-1 text-sm text-slate-600">A coordenação liberará esse fluxo quando estiver disponível.</p>
       </div>
     );
   }
@@ -822,6 +907,7 @@ export function AgendamentoTab() {
             index={i}
             item={item}
             modelOptions={modelOptions}
+            durationOptions={durationOptions}
             onChange={(updated) => handleItemChange(item.localId, updated)}
             onReplicate={() => handleReplicate(item.localId)}
           />
@@ -845,7 +931,7 @@ export function AgendamentoTab() {
           type="button"
           onClick={() => void handleSubmit()}
           disabled={saving}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-6 py-3 text-sm font-semibold text-white shadow-lg transition hover:bg-violet-500 active:scale-95 disabled:opacity-50 sm:w-auto"
+          className="school-primary-button flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold shadow-lg transition active:scale-95 disabled:opacity-50 sm:w-auto"
         >
           {saving ? (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />

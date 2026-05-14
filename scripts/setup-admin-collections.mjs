@@ -23,6 +23,8 @@ const ADMIN_PERMS = [
 const AIRCRAFTS_PERMS = [
   ...ADMIN_PERMS,
   Permission.read(Role.label("instrutor")),
+  Permission.read(Role.label("aluno")),
+  Permission.read(Role.users()),
 ];
 
 async function sleep(ms) {
@@ -97,6 +99,20 @@ async function setupAircraftModels() {
   await attr(() => db.createFloatAttribute(DATABASE_ID, id, "vref_flap2_kt", false), "vref_flap2_kt");
   await attr(() => db.createFloatAttribute(DATABASE_ID, id, "rpm_cruise", false), "rpm_cruise");
   await attr(() => db.createFloatAttribute(DATABASE_ID, id, "rpm_takeoff_max", false), "rpm_takeoff_max");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "op_oil_temp_unit", 1, false, "F"), "op_oil_temp_unit");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_oil_temp_attention", false), "op_oil_temp_attention");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_oil_temp_danger", false), "op_oil_temp_danger");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_oil_pressure_attention_psi", false), "op_oil_pressure_attention_psi");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_oil_pressure_danger_psi", false), "op_oil_pressure_danger_psi");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_rpm_attention", false), "op_rpm_attention");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_rpm_danger", false), "op_rpm_danger");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_fuel_pressure_attention_psi", false), "op_fuel_pressure_attention_psi");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_fuel_pressure_danger_psi", false), "op_fuel_pressure_danger_psi");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_gload_attention", false), "op_gload_attention");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_gload_danger", false), "op_gload_danger");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_touchdown_ias_attention_kt", false), "op_touchdown_ias_attention_kt");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_touchdown_ias_danger_kt", false), "op_touchdown_ias_danger_kt");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "op_best_climb_after_takeoff_kt", false), "op_best_climb_after_takeoff_kt");
   await idx(id, "models_name_idx", ["name"]);
   return id;
 }
@@ -106,13 +122,25 @@ async function setupAircrafts() {
   const col = await ensureCollection("aircrafts");
   const id = col.$id;
   await db.updateCollection(DATABASE_ID, id, "aircrafts", AIRCRAFTS_PERMS, true, true);
-  console.log("     ✓ permissions: admin full, instrutor read");
+  console.log("     ✓ permissions: admin full, authenticated users read");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "school_id", 64, true), "school_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "model_id", 64, true), "model_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "registration", 16, true), "registration");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "nickname", 64, false), "nickname");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "image_url", 1024, false), "image_url");
   await attr(() => db.createBooleanAttribute(DATABASE_ID, id, "active", true), "active");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_empty_weight_kg", false), "wb_empty_weight_kg");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_empty_arm_mm", false), "wb_empty_arm_mm");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_occupants_arm_mm", false), "wb_occupants_arm_mm");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_occupants_max_kg", false), "wb_occupants_max_kg");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_baggage_arm_mm", false), "wb_baggage_arm_mm");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_baggage_max_kg", false), "wb_baggage_max_kg");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_fuel_arm_mm", false), "wb_fuel_arm_mm");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_fuel_max_kg", false), "wb_fuel_max_kg");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_fuel_density_kg_l", false), "wb_fuel_density_kg_l");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_max_weight_kg", false), "wb_max_weight_kg");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_arm_min_mm", false), "wb_arm_min_mm");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_arm_max_mm", false), "wb_arm_max_mm");
   await idx(id, "aircrafts_school_idx", ["school_id"]);
   await idx(id, "aircrafts_model_idx", ["model_id"]);
   return id;

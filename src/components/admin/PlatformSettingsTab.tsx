@@ -7,6 +7,7 @@ import {
   saveEmailSettings,
   sendTestEmail,
 } from "../../lib/notificationsDb";
+import { getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
 import type {
   EmailBrandSettings,
   EmailBrandSettingsInput,
@@ -14,16 +15,24 @@ import type {
   EmailSettingsInput,
   EmailTemplateType,
 } from "../../types/notification";
+import {
+  DEFAULT_SCHOOL_RULES,
+  EMAIL_NOTIFICATION_EVENT_OPTIONS,
+  STUDENT_PORTAL_TAB_OPTIONS,
+  type SchoolRules,
+  type SchoolRulesInput,
+} from "../../types/schoolRules";
 import { Skeleton } from "../ui/Skeleton";
+import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
+import { TrainingTracksTab } from "./TrainingTracksTab";
 
-type SettingsSubTab = "email" | "brand";
+type SettingsSubTab = "email" | "brand" | "rules" | "tracks";
 
-const SUB_TABS: Array<{ id: SettingsSubTab; label: string; description: string; icon: ReactNode }> = [
+const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
     id: "email",
     label: "Email",
-    description: "Remetente, chave Resend e envio de teste",
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M3 4a2 2 0 00-2 2v.217l9 4.5 9-4.5V6a2 2 0 00-2-2H3z" />
@@ -34,10 +43,27 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; description: string; 
   {
     id: "brand",
     label: "Aparência",
-    description: "Logo, cores e rodapé dos emails",
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path fillRule="evenodd" d="M4 2a2 2 0 00-2 2v11.5A2.5 2.5 0 004.5 18h11A2.5 2.5 0 0018 15.5V4a2 2 0 00-2-2H4zm0 2h12v7.5l-2.4-2.4a1 1 0 00-1.414 0L9 12.286 7.314 10.6a1 1 0 00-1.414 0L4 12.5V4zm10 2.25a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "rules",
+    label: "Regras",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M9.664 1.319a.75.75 0 01.672 0l6.25 3.125A.75.75 0 0117 5.115v4.768c0 3.227-1.953 6.133-4.942 7.346l-1.776.721a.75.75 0 01-.564 0l-1.776-.721A7.93 7.93 0 013 9.883V5.115a.75.75 0 01.414-.671l6.25-3.125zM13.78 7.78a.75.75 0 00-1.06-1.06L9 10.44 7.28 8.72a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.06 0l4.25-4.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "tracks",
+    label: "Trilhas",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M4 3.5A2.5 2.5 0 016.5 1h7A2.5 2.5 0 0116 3.5v13a.75.75 0 01-1.18.615L10 13.742l-4.82 3.373A.75.75 0 014 16.5v-13zM6.5 2.5A1 1 0 005.5 3.5v11.56l4.07-2.85a.75.75 0 01.86 0l4.07 2.85V3.5a1 1 0 00-1-1h-7z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -101,6 +127,20 @@ function formatUpdatedAt(value: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+}
+
+function toRulesForm(settings: SchoolRules): SchoolRulesInput {
+  return {
+    studentTabs: { ...settings.studentTabs },
+    theme: { ...settings.theme },
+    schedule: { ...settings.schedule },
+    emailNotifications: Object.fromEntries(
+      EMAIL_NOTIFICATION_EVENT_OPTIONS.map((item) => [
+        item.id,
+        { ...settings.emailNotifications[item.id] },
+      ]),
+    ) as SchoolRulesInput["emailNotifications"],
+  };
 }
 
 function EmailSettingsPanel() {
@@ -538,38 +578,327 @@ function BrandSettingsPanel() {
   );
 }
 
-export function PlatformSettingsTab() {
-  const [subTab, setSubTab] = useState<SettingsSubTab>("email");
-  const active = SUB_TABS.find((tab) => tab.id === subTab)!;
+function RulesSettingsPanel() {
+  const { showToast } = useToast();
+  const [settings, setSettings] = useState<SchoolRules | null>(null);
+  const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await getSchoolRules();
+      setSettings(next);
+      setForm(toRulesForm(next));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (error) showToast({ variant: "error", message: error });
+  }, [error, showToast]);
+
+  async function handleSave() {
+    if (form.schedule.minRequestHours <= 0 || form.schedule.maxRequestHours <= 0) {
+      setError("As horas mínima e máxima precisam ser maiores que zero.");
+      return;
+    }
+    if (form.schedule.minRequestHours > form.schedule.maxRequestHours) {
+      setError("A hora mínima não pode ser maior que a máxima.");
+      return;
+    }
+    if (!Object.values(form.studentTabs).some(Boolean)) {
+      setError("Mantenha ao menos uma aba disponível para os alunos.");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await saveSchoolRules(form);
+      setSettings(saved);
+      setForm(toRulesForm(saved));
+      showToast({ variant: "success", message: "Regras da escola salvas." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <Skeleton className="h-5 w-48" />
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {Array.from({ length: 8 }).map((_, index) => (
+            <Skeleton key={index} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
-      <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
-        <div className="flex flex-wrap justify-start gap-2">
-          {SUB_TABS.map((tab) => {
-            const isActive = tab.id === subTab;
-            return (
+    <section className="space-y-4">
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Regras gerais</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Escolha quais áreas aparecem para alunos e personalize as cores principais da plataforma.
+            </p>
+          </div>
+          <p className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
+            Atualizado: {formatUpdatedAt(settings?.updatedAt ?? null)}
+          </p>
+        </div>
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="space-y-5">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Abas disponíveis para alunos</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {STUDENT_PORTAL_TAB_OPTIONS.map((tab) => (
+                  <label
+                    key={tab.id}
+                    className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.studentTabs[tab.id]}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          studentTabs: { ...prev.studentTabs, [tab.id]: e.target.checked },
+                        }))
+                      }
+                      className="h-4 w-4 accent-emerald-500"
+                    />
+                    {tab.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cores da plataforma</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {[
+                  ["primaryColor", "Cor principal"],
+                  ["accentColor", "Cor de destaque"],
+                  ["backgroundColor", "Fundo"],
+                  ["surfaceColor", "Cards e menus"],
+                ].map(([key, label]) => (
+                  <label key={key} className="text-xs text-slate-400">
+                    {label}
+                    <div className="mt-1 flex gap-2">
+                      <input
+                        type="color"
+                        value={form.theme[key as keyof SchoolRulesInput["theme"]]}
+                        onChange={(e) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            theme: { ...prev.theme, [key]: e.target.value },
+                          }))
+                        }
+                        className="h-10 w-14 rounded border border-slate-700 bg-slate-800"
+                      />
+                      <input
+                        type="text"
+                        value={form.theme[key as keyof SchoolRulesInput["theme"]]}
+                        onChange={(e) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            theme: { ...prev.theme, [key]: e.target.value },
+                          }))
+                        }
+                        className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                      />
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="rounded-2xl border p-4"
+            style={{
+              background: form.theme.backgroundColor,
+              borderColor: form.theme.primaryColor,
+              color: "#e2e8f0",
+            }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: form.theme.accentColor }}>
+              Preview do aluno
+            </p>
+            <div className="mt-3 rounded-xl p-3" style={{ background: form.theme.surfaceColor }}>
+              <div className="mb-3 h-2 w-20 rounded-full" style={{ background: form.theme.primaryColor }} />
+              <p className="text-sm font-semibold">Portal do aluno</p>
+              <p className="mt-1 text-xs text-slate-400">Navegação, cards e ações principais usarão essas cores.</p>
               <button
-                key={tab.id}
                 type="button"
-                onClick={() => setSubTab(tab.id)}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                  isActive
-                    ? "border-cyan-500/40 bg-cyan-500/20 text-cyan-100"
-                    : "border-slate-700 text-slate-300 hover:bg-slate-800"
-                }`}
+                className="mt-4 rounded-lg px-4 py-2 text-xs font-semibold"
+                style={{ background: form.theme.primaryColor, color: "#ffffff" }}
               >
-                {tab.icon}
-                {tab.label}
+                Enviar planejamento
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala de voo</h3>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <label className="text-xs text-slate-400">
+            Mínimo de horas por solicitação
+            <input
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={form.schedule.minRequestHours}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  schedule: { ...prev.schedule, minRequestHours: Number(e.target.value) },
+                }))
+              }
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Máximo de horas por solicitação
+            <input
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={form.schedule.maxRequestHours}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  schedule: { ...prev.schedule, maxRequestHours: Number(e.target.value) },
+                }))
+              }
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={form.schedule.allowStudentFlightIntentions}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  schedule: { ...prev.schedule, allowStudentFlightIntentions: e.target.checked },
+                }))
+              }
+              className="h-4 w-4 accent-emerald-500"
+            />
+            Permitir o aluno fazer solicitação de intenção de voo
+          </label>
+          <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={form.schedule.requireCreditsForIntentions}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  schedule: { ...prev.schedule, requireCreditsForIntentions: e.target.checked },
+                }))
+              }
+              className="h-4 w-4 accent-emerald-500"
+            />
+            Aluno só consegue solicitar intenções condizentes com seus créditos
+          </label>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Emails</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Ative ou desative notificações por email e adicione um aviso curto ao template de cada evento.
+        </p>
+        <div className="mt-4 space-y-3">
+          {EMAIL_NOTIFICATION_EVENT_OPTIONS.map((event) => {
+            const current = form.emailNotifications[event.id];
+            return (
+              <div key={event.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+                <label className="flex items-center gap-3 text-sm font-medium text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={current.enabled}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        emailNotifications: {
+                          ...prev.emailNotifications,
+                          [event.id]: { ...prev.emailNotifications[event.id], enabled: e.target.checked },
+                        },
+                      }))
+                    }
+                    className="h-4 w-4 accent-emerald-500"
+                  />
+                  {event.label}
+                </label>
+                <textarea
+                  value={current.customNotice}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      emailNotifications: {
+                        ...prev.emailNotifications,
+                        [event.id]: { ...prev.emailNotifications[event.id], customNotice: e.target.value },
+                      },
+                    }))
+                  }
+                  maxLength={500}
+                  rows={2}
+                  placeholder="Aviso opcional exibido no email deste evento."
+                  className="mt-2 w-full resize-none rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                />
+              </div>
             );
           })}
         </div>
-        <p className="mt-2 text-xs text-slate-500">{active.description}</p>
-      </section>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+        >
+          {saving ? "Salvando..." : "Salvar regras"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function PlatformSettingsTab() {
+  const [subTab, setSubTab] = useState<SettingsSubTab>("email");
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-4">
+      <Tabs items={SUB_TABS} value={subTab} onChange={setSubTab} ariaLabel="Configurações da plataforma" accent="cyan" />
 
       {subTab === "email" ? <EmailSettingsPanel /> : null}
       {subTab === "brand" ? <BrandSettingsPanel /> : null}
+      {subTab === "rules" ? <RulesSettingsPanel /> : null}
+      {subTab === "tracks" ? <TrainingTracksTab /> : null}
     </div>
   );
 }

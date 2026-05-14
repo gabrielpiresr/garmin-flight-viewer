@@ -3,16 +3,35 @@ import { useAuth } from "../contexts/AuthContext";
 import { SCHOOL_ID } from "../lib/appwrite";
 import { listAircrafts } from "../lib/aircraftDb";
 import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
-import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCodec";
+import { invalidateFlightListDisplayCache } from "../lib/flightListDisplayCache";
+import {
+  decodeFlightRecord,
+  encodeFlightRecord,
+  type FlightRecordMeta,
+  type FlightRecordTelemetryFile,
+} from "../lib/flightRecordCodec";
 import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
-import { getSavedFlight, insertFlight, updateFlight } from "../lib/flightsDb";
+import { getSavedFlight, insertFlight, updateFlight, updateFlightWeightBalance } from "../lib/flightsDb";
 import { renderMarkdownBlocks } from "../lib/markdown";
 import { dispatchNotificationEvent } from "../lib/notificationsDb";
 import { parseGarminCsv } from "../lib/parseGarminCsv";
 import { getProfile, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
+import { buildTrainingSnapshot, listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import {
+  aircraftToWeightBalanceSnapshot,
+  buildWeightBalanceMeta,
+  formatNumber,
+  parseNullableNumber,
+  toInputValue,
+  type FlightWeightBalanceMeta,
+  type FuelQuantityUnit,
+  type WeightBalanceAircraftSnapshot,
+  type WeightBalanceFuelInput,
+} from "../lib/weightBalance";
 import type { Aircraft } from "../types/admin";
 import type { ExerciseGrade, FlightExerciseGrade, TrainingExercise } from "../types/trainingExercise";
+import type { StudentTrainingTrack, TrainingSelectionSnapshot } from "../types/trainingTrack";
 import { useToast } from "./ui/ToastProvider";
 
 const DEFAULT_BRIEFING =
@@ -21,6 +40,10 @@ const DEFAULT_DANGER = "Sem perigos a serem reportados.";
 const DEFAULT_RISK = "Sem riscos a serem reportados.";
 const DEFAULT_RISK_MANAGEMENT = "Não houveram quaisquer riscos na instrução prática.";
 const DEFAULT_APPROVED_TEXT = "Aluno e Voo foram considerados dentro dos padrões na instrução prática.";
+
+function normalizeTrainingMissionIds(input: { missionIds?: string[]; legacyMissionId?: string | null }): string[] {
+  return Array.from(new Set([...(input.missionIds ?? []), input.legacyMissionId ?? ""].map((id) => id.trim()).filter(Boolean)));
+}
 
 const BOARD_ROLE_OPTIONS = [
   "Instrutor Voo",
@@ -50,17 +73,21 @@ type LegDraft = {
 type Props = {
   initialFlightId?: string;
   embedded?: boolean;
+  initialStepId?: NovoVooStepId;
+  hideStepMenu?: boolean;
   onCancel?: () => void;
   onPublished?: (id: string) => void;
 };
 
 const STEPS = [
   { id: "dados", label: "Dados do voo" },
-  { id: "pre-voo", label: "Pre voo" },
+  { id: "pre-voo", label: "Pré voo" },
   { id: "pernas", label: "Pernas" },
-  { id: "exercicios", label: "Exercicios" },
+  { id: "exercicios", label: "Exercícios" },
+  { id: "peso-balanceamento", label: "Peso e balanceamento" },
   { id: "risco", label: "Risco e parecer" },
 ] as const;
+export type NovoVooStepId = (typeof STEPS)[number]["id"];
 
 const GRADE_OPTIONS: ExerciseGrade[] = ["NO", "1", "2", "3", "4"];
 
@@ -384,7 +411,7 @@ function MarkdownField({
   );
 }
 
-export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPublished }: Props) {
+export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, hideStepMenu = false, onCancel, onPublished }: Props) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [students, setStudents] = useState<StudentOption[]>([]);
@@ -394,6 +421,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [instructorProfile, setInstructorProfile] = useState<PilotProfile | null>(null);
   const [loadedInstructorName, setLoadedInstructorName] = useState("");
   const [loadedInstructorAnac, setLoadedInstructorAnac] = useState("");
+  const [loadedInstructorWeightKg, setLoadedInstructorWeightKg] = useState<number | null>(null);
   const [studentsLoading, setStudentsLoading] = useState(false);
   const [aircraftLoading, setAircraftLoading] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(Boolean(initialFlightId));
@@ -402,7 +430,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [flightId, setFlightId] = useState<string | null>(null);
   const [originalScheduleSignature, setOriginalScheduleSignature] = useState<string | null>(null);
-  const [stepIdx, setStepIdx] = useState(0);
+  const [stepIdx, setStepIdx] = useState(() => {
+    const initialIndex = STEPS.findIndex((step) => step.id === initialStepId);
+    return initialIndex >= 0 ? initialIndex : 0;
+  });
 
   const [studentId, setStudentId] = useState("");
   const [studentLabel, setStudentLabel] = useState("");
@@ -416,12 +447,26 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const [instructorSuggestionMd, setInstructorSuggestionMd] = useState("");
   const [studentSuggestionMd, setStudentSuggestionMd] = useState("");
   const [scheduleMeta, setScheduleMeta] = useState<FlightRecordMeta["schedule"]>(undefined);
+  const [studentTracks, setStudentTracks] = useState<StudentTrainingTrack[]>([]);
+  const [tracksLoading, setTracksLoading] = useState(false);
+  const [trainingTrackId, setTrainingTrackId] = useState("");
+  const [trainingMissionIds, setTrainingMissionIds] = useState<string[]>([]);
 
   const [legs, setLegs] = useState<LegDraft[]>([emptyLeg()]);
   const [exerciseCatalog, setExerciseCatalog] = useState<TrainingExercise[]>([]);
   const [exerciseGrades, setExerciseGrades] = useState<FlightExerciseGrade[]>([]);
   const [exercisesLoading, setExercisesLoading] = useState(false);
   const exerciseCatalogRef = useRef<TrainingExercise[]>([]);
+
+  const [wbOccupantsWeight, setWbOccupantsWeight] = useState("");
+  const [wbBaggageWeight, setWbBaggageWeight] = useState("");
+  const [wbRampFuelValue, setWbRampFuelValue] = useState("");
+  const [wbRampFuelUnit, setWbRampFuelUnit] = useState<FuelQuantityUnit>("l");
+  const [wbTaxiFuelValue, setWbTaxiFuelValue] = useState("");
+  const [wbTaxiFuelUnit, setWbTaxiFuelUnit] = useState<FuelQuantityUnit>("l");
+  const [wbTripFuelValue, setWbTripFuelValue] = useState("");
+  const [wbTripFuelUnit, setWbTripFuelUnit] = useState<FuelQuantityUnit>("l");
+  const [savedWeightBalanceAircraft, setSavedWeightBalanceAircraft] = useState<WeightBalanceAircraftSnapshot | null>(null);
 
   const [commentsMd, setCommentsMd] = useState("");
   const [dangerMd, setDangerMd] = useState(DEFAULT_DANGER);
@@ -431,9 +476,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
 
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [telemetryCsv, setTelemetryCsv] = useState("");
+  const [telemetryFiles, setTelemetryFiles] = useState<FlightRecordTelemetryFile[]>([]);
 
   const isInstructorFlow = user?.role === "instrutor" || user?.role === "admin";
   const canEdit = isInstructorFlow;
+  const canEditWeightBalance = canEdit || (user?.role === "aluno" && Boolean(initialFlightId));
 
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
@@ -487,7 +534,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     const schoolId = SCHOOL_ID ?? "escola_principal";
     setAircraftLoading(true);
     void listAircrafts(schoolId)
-      .then((res) => setAircrafts(res.filter((a) => a.active)))
+      .then((res) => setAircrafts(res))
       .catch((e) => setError((e as Error).message))
       .finally(() => setAircraftLoading(false));
   }, []);
@@ -516,9 +563,26 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   useEffect(() => {
     if (!studentId) {
       setSelectedProfile(null);
+      setStudentTracks([]);
       return;
     }
     void getProfile(studentId).then(({ data }) => setSelectedProfile(data));
+    setTracksLoading(true);
+    void listStudentTrainingTracks(studentId)
+      .then((result) => {
+        if (result.error) {
+          setError(result.error.message);
+          setStudentTracks([]);
+          return;
+        }
+        const active = result.data.filter((row) => row.status === "active" && row.track?.isActive !== false);
+        setStudentTracks(active);
+        setTrainingTrackId((current) => {
+          if (current && active.some((row) => row.trackId === current)) return current;
+          return active.find((row) => row.isPrimary)?.trackId ?? active[0]?.trackId ?? "";
+        });
+      })
+      .finally(() => setTracksLoading(false));
   }, [studentId]);
 
   useEffect(() => {
@@ -536,6 +600,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setFlightId(data.id);
         setCsvFileName(data.source_filename ?? null);
         setTelemetryCsv(decoded.telemetryCsv ?? "");
+        setTelemetryFiles(decoded.telemetryFiles ?? []);
 
         if (!meta) {
           const loadedDate = (data.created_at ?? "").slice(0, 10) || todayIso();
@@ -545,10 +610,18 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           setStartTime("");
           setOriginalScheduleSignature(scheduleSignature(loadedDate, "", data.duration_sec ? Math.round(data.duration_sec / 60) : 0));
           setAircraft(data.aircraft_ident ?? "");
+          setTrainingTrackId(data.training_track_id ?? "");
+          setTrainingMissionIds(
+            normalizeTrainingMissionIds({
+              legacyMissionId: data.training_mission_id,
+            }),
+          );
           setScheduleMeta(undefined);
           setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, []));
           setLoadedInstructorName(instructorFromDb?.data?.fullName?.trim() || "");
           setLoadedInstructorAnac(instructorFromDb?.data?.anacCode?.trim() || "");
+          setLoadedInstructorWeightKg(instructorFromDb?.data?.weightKg ?? null);
+          setSavedWeightBalanceAircraft(null);
           return;
         }
 
@@ -561,6 +634,13 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setStartTime(loadedStartTime);
         setOriginalScheduleSignature(scheduleSignature(loadedDate, loadedStartTime, loadedDurationMinutes));
         setAircraft(meta.header.aircraft ?? data.aircraft_ident ?? "");
+        setTrainingTrackId(meta.training?.trackId ?? data.training_track_id ?? "");
+        setTrainingMissionIds(
+          normalizeTrainingMissionIds({
+            missionIds: meta.training?.missionIds,
+            legacyMissionId: meta.training?.missionId ?? data.training_mission_id,
+          }),
+        );
         setObjectiveMd(meta.preFlight.objectiveMd ?? "");
         setBriefingMd(meta.preFlight.briefingMd ?? DEFAULT_BRIEFING);
         setInstructorSuggestionMd(meta.preFlight.instructorSuggestionMd ?? "");
@@ -585,6 +665,19 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
             : [emptyLeg()],
         );
         setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, normalizeSavedExercises(meta.exercises)));
+        if (meta.weightBalance) {
+          setSavedWeightBalanceAircraft(meta.weightBalance.aircraft);
+          setWbOccupantsWeight(toInputValue(meta.weightBalance.inputs.occupantsWeightKg));
+          setWbBaggageWeight(toInputValue(meta.weightBalance.inputs.baggageWeightKg));
+          setWbRampFuelValue(toInputValue(meta.weightBalance.inputs.rampFuel.value));
+          setWbRampFuelUnit(meta.weightBalance.inputs.rampFuel.unit);
+          setWbTaxiFuelValue(toInputValue(meta.weightBalance.inputs.taxiFuel.value));
+          setWbTaxiFuelUnit(meta.weightBalance.inputs.taxiFuel.unit);
+          setWbTripFuelValue(toInputValue(meta.weightBalance.inputs.tripFuel.value));
+          setWbTripFuelUnit(meta.weightBalance.inputs.tripFuel.unit);
+        } else {
+          setSavedWeightBalanceAircraft(null);
+        }
         setCommentsMd(meta.risk.commentsMd ?? "");
         setDangerMd(meta.risk.dangerMd ?? DEFAULT_DANGER);
         setRiskMd(meta.risk.riskMd ?? DEFAULT_RISK);
@@ -600,6 +693,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
             instructorFromDb?.data?.anacCode?.trim() ||
             "",
         );
+        setLoadedInstructorWeightKg(instructorFromDb?.data?.weightKg ?? null);
       })
       .finally(() => setLoadingExisting(false));
   }, [initialFlightId]);
@@ -628,16 +722,112 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     });
   }, [studentProfilesById, studentSearch, students]);
 
+  const selectedAircraft = useMemo(
+    () => aircrafts.find((item) => item.registration === aircraft.trim()) ?? null,
+    [aircraft, aircrafts],
+  );
+  const selectedTrainingTrack = useMemo(
+    () => studentTracks.find((row) => row.trackId === trainingTrackId)?.track ?? null,
+    [studentTracks, trainingTrackId],
+  );
+  const trainingMissions = useMemo(
+    () =>
+      selectedTrainingTrack?.stages.flatMap((stage) =>
+        stage.missions.map((mission) => ({
+          stage,
+          mission,
+        })),
+      ) ?? [],
+    [selectedTrainingTrack],
+  );
+  const selectedTrainingSnapshots = useMemo(
+    () =>
+      trainingMissionIds
+        .map((missionId) => buildTrainingSnapshot(selectedTrainingTrack, missionId))
+        .filter((snapshot): snapshot is TrainingSelectionSnapshot => Boolean(snapshot)),
+    [selectedTrainingTrack, trainingMissionIds],
+  );
+  const selectedTrainingSnapshot = selectedTrainingSnapshots[0] ?? null;
+  const defaultOccupantsWeightKg = useMemo(() => {
+    const studentWeight = selectedProfile?.weightKg ?? null;
+    const instructorWeight = initialFlightId ? loadedInstructorWeightKg : instructorProfile?.weightKg ?? null;
+    const total = (studentWeight ?? 0) + (instructorWeight ?? 0);
+    return total > 0 ? total : null;
+  }, [initialFlightId, instructorProfile?.weightKg, loadedInstructorWeightKg, selectedProfile?.weightKg]);
+  const weightBalanceAircraft = useMemo(() => {
+    if (selectedAircraft) return aircraftToWeightBalanceSnapshot(selectedAircraft);
+    if (savedWeightBalanceAircraft) {
+      return {
+        ...savedWeightBalanceAircraft,
+        registration: aircraft.trim() || savedWeightBalanceAircraft.registration,
+      };
+    }
+    return {
+      ...aircraftToWeightBalanceSnapshot(null),
+      registration: aircraft.trim(),
+    };
+  }, [aircraft, savedWeightBalanceAircraft, selectedAircraft]);
+  const currentWeightBalanceMeta = useMemo<FlightWeightBalanceMeta>(
+    () =>
+      buildWeightBalanceMeta({
+        aircraft: weightBalanceAircraft,
+        inputs: {
+          occupantsWeightKg: parseNullableNumber(wbOccupantsWeight),
+          baggageWeightKg: parseNullableNumber(wbBaggageWeight),
+          rampFuel: { value: parseNullableNumber(wbRampFuelValue), unit: wbRampFuelUnit },
+          taxiFuel: { value: parseNullableNumber(wbTaxiFuelValue), unit: wbTaxiFuelUnit },
+          tripFuel: { value: parseNullableNumber(wbTripFuelValue), unit: wbTripFuelUnit },
+        },
+      }),
+    [
+      wbBaggageWeight,
+      wbOccupantsWeight,
+      wbRampFuelUnit,
+      wbRampFuelValue,
+      wbTaxiFuelUnit,
+      wbTaxiFuelValue,
+      wbTripFuelUnit,
+      wbTripFuelValue,
+      weightBalanceAircraft,
+    ],
+  );
+
   const displayInstructorName = initialFlightId ? loadedInstructorName : (instructorProfile?.fullName?.trim() || user?.email || "");
   const displayInstructorAnac = initialFlightId ? loadedInstructorAnac : (instructorProfile?.anacCode?.trim() || "");
+  const displayStudentName = selectedProfile?.fullName?.trim() || studentLabel || user?.email || "";
+  const displayStudentAnac = selectedProfile?.anacCode?.trim() || "";
+
+  useEffect(() => {
+    if (wbOccupantsWeight.trim() || defaultOccupantsWeightKg === null) return;
+    setWbOccupantsWeight(String(defaultOccupantsWeightKg));
+  }, [defaultOccupantsWeightKg, wbOccupantsWeight]);
+
+  useEffect(() => {
+    if (trainingMissionIds.length === 0) return;
+    const available = new Set(trainingMissions.map((row) => row.mission.id));
+    const next = trainingMissionIds.filter((missionId) => available.has(missionId));
+    if (next.length !== trainingMissionIds.length) setTrainingMissionIds(next);
+  }, [trainingMissionIds, trainingMissions]);
 
   const buildFlightMeta = (): FlightRecordMeta => ({
     ...(scheduleMeta ? { schedule: scheduleMeta } : {}),
+    ...(trainingTrackId
+      ? {
+          training: {
+            trackId: trainingTrackId,
+            stageId: selectedTrainingSnapshot?.stageId,
+            missionId: selectedTrainingSnapshot?.missionId,
+            missionIds: trainingMissionIds,
+            snapshot: selectedTrainingSnapshot,
+            snapshots: selectedTrainingSnapshots,
+          },
+        }
+      : {}),
     header: {
       studentUserId: studentId,
       studentLabel,
-      studentName: selectedProfile?.fullName?.trim() || studentLabel || "",
-      studentAnac: selectedProfile?.anacCode?.trim() || "",
+      studentName: displayStudentName,
+      studentAnac: displayStudentAnac,
       instructorName: displayInstructorName,
       instructorAnac: displayInstructorAnac,
       date: flightDate,
@@ -671,6 +861,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       grade: isExerciseGrade(exercise.grade) ? exercise.grade : null,
       order: exercise.order,
     })),
+    weightBalance: {
+      ...currentWeightBalanceMeta,
+      updatedAt: new Date().toISOString(),
+    },
     risk: {
       commentsMd: commentsMd.trim(),
       dangerMd: dangerMd.trim(),
@@ -700,9 +894,38 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     );
   };
 
+  const persistWeightBalance = async () => {
+    if (!user || !flightId) {
+      setError("Salve o voo antes de atualizar peso e balanceamento.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setSavedMessage(null);
+    const { error: updateErr } = await updateFlightWeightBalance(flightId, {
+      actorUserId: user.id,
+      actorRole: user.role,
+      weightBalance: {
+        ...currentWeightBalanceMeta,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    setSaving(false);
+    if (updateErr) {
+      setError(updateErr.message);
+      return;
+    }
+    invalidateFlightListDisplayCache([flightId]);
+    setSavedMessage("Peso e balanceamento salvo.");
+  };
+
   const persist = async () => {
     if (!user) return;
     if (!canEdit) {
+      if (canEditWeightBalance && flightId) {
+        await persistWeightBalance();
+        return;
+      }
       setError("Somente instrutor/admin pode editar esta ficha.");
       return;
     }
@@ -716,10 +939,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
     setSavedMessage(null);
 
     const meta = buildFlightMeta();
-    const csvPayload = encodeFlightRecord({ meta, telemetryCsv });
-    const telemetryMetrics = telemetryCsv.trim()
+    const csvPayload = encodeFlightRecord({ meta, telemetryCsv, telemetryFiles });
+    const parsedTelemetry = telemetryCsv.trim() ? parseGarminCsv(telemetryCsv) : null;
+    const telemetryMetrics = parsedTelemetry
       ? buildFlightTelemetryMetrics({
-          parsed: parseGarminCsv(telemetryCsv),
+          parsed: parsedTelemetry,
           identity: deriveIdentity({
             meta,
             studentUserId: studentId,
@@ -738,7 +962,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       csv_text: csvPayload,
       aircraft_ident: aircraft.trim() || null,
       duration_sec: totals.flightMin > 0 ? totals.flightMin * 60 : null,
+      trainingTrackId: trainingTrackId || null,
+      trainingStageId: selectedTrainingSnapshot?.stageId ?? null,
+      trainingMissionId: selectedTrainingSnapshot?.missionId ?? null,
+      trainingSnapshot: selectedTrainingSnapshot,
       telemetryMetrics,
+      telemetryAlertParsed: parsedTelemetry,
     };
     const nextScheduleSignature = scheduleSignature(flightDate, startTime, totals.flightMin);
 
@@ -749,6 +978,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         setError(updateErr.message);
         return;
       }
+      invalidateFlightListDisplayCache([flightId]);
       if (originalScheduleSignature !== nextScheduleSignature) {
         void dispatchNotificationEvent({
           eventType: "flight.updated",
@@ -775,6 +1005,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       return;
     }
     setFlightId(id);
+    invalidateFlightListDisplayCache([id]);
     void dispatchNotificationEvent({
       eventType: "flight.scheduled",
       flightId: id,
@@ -804,6 +1035,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
   const goPrev = () => setStepIdx((idx) => Math.max(0, idx - 1));
 
   const stepId = STEPS[stepIdx]?.id;
+  const weightBalanceIssues = [
+    ...currentWeightBalanceMeta.results.stationIssues,
+    ...currentWeightBalanceMeta.results.points.flatMap((point) => point.issues),
+  ];
 
   if (loadingExisting) {
     return (
@@ -832,29 +1067,33 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
-        {STEPS.map((step, idx) => {
-          const isActive = idx === stepIdx;
-          const isPast = idx < stepIdx;
-          return (
-            <button
-              key={step.id}
-              type="button"
-              onClick={() => setStepIdx(idx)}
-              className={`rounded-lg border px-2 py-2 text-left transition ${
-                isActive
-                  ? "border-sky-500 bg-sky-600/20 text-sky-200"
-                  : isPast
-                    ? "border-emerald-600/40 bg-emerald-600/10 text-emerald-200"
-                    : "border-slate-700 bg-slate-800/40 text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <p className="text-[10px] uppercase tracking-wide">Etapa {idx + 1}</p>
-              <p className="text-xs font-medium">{step.label}</p>
-            </button>
-          );
-        })}
+      {!hideStepMenu && (
+      <div className="overflow-x-auto">
+        <div className="grid min-w-[720px] grid-cols-6 gap-2">
+          {STEPS.map((step, idx) => {
+            const isActive = idx === stepIdx;
+            const isPast = idx < stepIdx;
+            return (
+              <button
+                key={step.id}
+                type="button"
+                onClick={() => setStepIdx(idx)}
+                className={`rounded-lg border px-2 py-2 text-left transition ${
+                  isActive
+                    ? "border-sky-500 bg-sky-600/20 text-sky-200"
+                    : isPast
+                      ? "border-emerald-600/40 bg-emerald-600/10 text-emerald-200"
+                      : "border-slate-700 bg-slate-800/40 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <p className="text-[10px] uppercase tracking-wide">Etapa {idx + 1}</p>
+                <p className="truncate text-xs font-medium" title={step.label}>{step.label}</p>
+              </button>
+            );
+          })}
+        </div>
       </div>
+      )}
 
       {stepId === "dados" && (
         <section className="space-y-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4">
@@ -862,7 +1101,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label className="block">
               <span className="mb-1 block text-xs text-slate-500">Aluno</span>
-              {canEdit && (
+              {!canEdit ? (
+                <div className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100">
+                  {displayStudentName || "—"}
+                </div>
+              ) : (
+                <>
                 <input
                   type="text"
                   value={studentSearch}
@@ -870,35 +1114,36 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
                   placeholder="Pesquisar por nome ou CANAC"
                   className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
                 />
+                <select
+                  value={studentId}
+                  disabled={studentsLoading}
+                  onChange={(e) => {
+                    const selected = students.find((student) => student.userId === e.target.value);
+                    const profile = selected ? studentProfilesById[selected.userId] : undefined;
+                    setStudentId(e.target.value);
+                    setStudentLabel(profile?.name || selected?.email || "");
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                >
+                  {filteredStudents.length === 0 ? (
+                    <option value="">
+                      {studentsLoading ? "Carregando alunos..." : "Nenhum aluno encontrado"}
+                    </option>
+                  ) : (
+                    filteredStudents.map((student) => {
+                      const profile = studentProfilesById[student.userId];
+                      const label = profile?.name || student.email;
+                      const anac = profile?.anac ? ` - CANAC ${profile.anac}` : "";
+                      return (
+                        <option key={student.userId} value={student.userId}>
+                          {label}{anac}
+                        </option>
+                      );
+                    })
+                  )}
+                </select>
+                </>
               )}
-              <select
-                value={studentId}
-                disabled={studentsLoading || !canEdit}
-                onChange={(e) => {
-                  const selected = students.find((student) => student.userId === e.target.value);
-                  const profile = selected ? studentProfilesById[selected.userId] : undefined;
-                  setStudentId(e.target.value);
-                  setStudentLabel(profile?.name || selected?.email || "");
-                }}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-              >
-                {filteredStudents.length === 0 ? (
-                  <option value="">
-                    {studentsLoading ? "Carregando alunos..." : "Nenhum aluno encontrado"}
-                  </option>
-                ) : (
-                  filteredStudents.map((student) => {
-                    const profile = studentProfilesById[student.userId];
-                    const label = profile?.name || student.email;
-                    const anac = profile?.anac ? ` - CANAC ${profile.anac}` : "";
-                    return (
-                      <option key={student.userId} value={student.userId}>
-                        {label}{anac}
-                      </option>
-                    );
-                  })
-                )}
-              </select>
             </label>
 
             <label className="block">
@@ -925,25 +1170,31 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
 
             <label className="block">
               <span className="mb-1 block text-xs text-slate-500">Aeronave / Matrícula</span>
-              <select
-                value={aircraft}
-                onChange={(e) => setAircraft(e.target.value)}
-                disabled={!canEdit || aircraftLoading}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
-              >
-                <option value="">{aircraftLoading ? "Carregando aeronaves..." : "Selecione"}</option>
-                {aircrafts.map((ac) => (
-                  <option key={ac.id} value={ac.registration}>
-                    {ac.registration}{ac.nickname ? ` - ${ac.nickname}` : ""}
-                  </option>
-                ))}
-              </select>
+              {!canEdit ? (
+                <div className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100">
+                  {aircraft.trim() || "—"}
+                </div>
+              ) : (
+                <select
+                  value={aircraft}
+                  onChange={(e) => setAircraft(e.target.value)}
+                  disabled={aircraftLoading}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
+                >
+                  <option value="">{aircraftLoading ? "Carregando aeronaves..." : "Selecione"}</option>
+                  {aircrafts.map((ac) => (
+                    <option key={ac.id} value={ac.registration}>
+                      {ac.registration}{ac.nickname ? ` - ${ac.nickname}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
             </label>
 
           </div>
           <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-700/70 bg-slate-950/30 p-3 md:grid-cols-3">
-            <InfoBlock label="Nome completo" value={selectedProfile?.fullName || "—"} plain />
-            <InfoBlock label="Código ANAC" value={selectedProfile?.anacCode || "—"} plain />
+            <InfoBlock label="Nome completo" value={displayStudentName || "—"} plain />
+            <InfoBlock label="Código ANAC" value={displayStudentAnac || "—"} plain />
             <InfoBlock label="Aluno selecionado" value={studentLabel || "—"} plain />
           </div>
           <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-700/70 bg-slate-950/30 p-3 md:grid-cols-2">
@@ -955,7 +1206,122 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
 
       {stepId === "pre-voo" && (
         <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pre voo</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pré voo</p>
+          <div className="rounded-xl border border-slate-700/70 bg-slate-900/30 p-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Trilha
+                <select
+                  value={trainingTrackId}
+                  onChange={(e) => {
+                    setTrainingTrackId(e.target.value);
+                    setTrainingMissionIds([]);
+                  }}
+                  disabled={!canEdit || tracksLoading || studentTracks.length === 0}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 disabled:opacity-60"
+                >
+                  <option value="">{tracksLoading ? "Carregando trilhas..." : "Sem trilha"}</option>
+                  {studentTracks.map((row) => (
+                    <option key={row.id} value={row.trackId}>
+                      {row.track?.name || row.trackId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="text-xs text-slate-400">
+                <div className="flex items-center justify-between gap-2">
+                  <span>Missões do voo</span>
+                  {trainingMissionIds.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setTrainingMissionIds([])}
+                      disabled={!canEdit}
+                      className="text-[11px] font-semibold text-slate-400 hover:text-slate-200 disabled:opacity-50"
+                    >
+                      Limpar
+                    </button>
+                  ) : null}
+                </div>
+                <div className="mt-1 max-h-44 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 p-2">
+                  {trainingMissions.length === 0 ? (
+                    <p className="px-2 py-2 text-xs text-slate-500">Selecione uma trilha para ver as missões.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {trainingMissions.map(({ stage, mission }) => {
+                        const checked = trainingMissionIds.includes(mission.id);
+                        return (
+                          <label
+                            key={mission.id}
+                            className={`flex cursor-pointer items-start gap-2 rounded-md border px-2 py-2 transition ${
+                              checked
+                                ? "border-cyan-500/50 bg-cyan-500/10 text-slate-100"
+                                : "border-slate-700/70 bg-slate-900/50 text-slate-400 hover:border-slate-600"
+                            } ${!canEdit ? "cursor-default opacity-70" : ""}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!canEdit}
+                              onChange={() =>
+                                setTrainingMissionIds((current) =>
+                                  current.includes(mission.id)
+                                    ? current.filter((missionId) => missionId !== mission.id)
+                                    : [...current, mission.id],
+                                )
+                              }
+                              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-sm font-semibold">{mission.name}</span>
+                              <span className="block text-[11px] text-slate-500">
+                                {stage.name} · {mission.durationMinutes} min · {mission.type}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            {selectedTrainingSnapshots.length > 0 ? (
+              <div className="mt-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-100">{selectedTrainingSnapshots.length} missao(oes) anexada(s)</span>
+                  <span className="text-xs text-slate-400">
+                    {selectedTrainingSnapshots.reduce((acc, snapshot) => acc + snapshot.durationMinutes, 0)} min planejados
+                  </span>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {selectedTrainingSnapshots.map((snapshot) => (
+                    <div key={snapshot.missionId} className="rounded-lg border border-slate-700/60 bg-slate-900/50 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-slate-100">{snapshot.missionName}</span>
+                        <span className="rounded-full border border-cyan-700/60 px-2 py-0.5 text-[10px] uppercase text-cyan-300">
+                          {snapshot.stageName}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {snapshot.durationMinutes} min · {snapshot.missionType}
+                        </span>
+                      </div>
+                      {snapshot.maneuvers.length > 0 ? (
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-400">
+                          {snapshot.maneuvers.map((maneuver, idx) => (
+                            <li key={`${snapshot.missionId}-${maneuver}-${idx}`}>{maneuver}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : selectedTrainingTrack ? (
+              <p className="mt-2 text-xs text-slate-500">Missões opcionais; selecione uma ou mais para anexar os dados da etapa ao voo.</p>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">Este aluno ainda não possui trilha ativa configurada.</p>
+            )}
+          </div>
           <MarkdownField label="Objetivo da lição" value={objectiveMd} onChange={setObjectiveMd} disabled={!canEdit} />
           <MarkdownField
             label="Sugestão do INVA"
@@ -1086,20 +1452,20 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
       {stepId === "exercicios" && (
         <section className="space-y-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Exercicios</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Exercícios</p>
             <p className="mt-1 text-xs text-slate-500">
-              Avalie cada exercicio com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
+              Avalie cada exercício com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
             </p>
           </div>
 
           {exercisesLoading && exerciseGrades.length === 0 ? (
             <div className="flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4 text-sm text-slate-400">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-              Carregando exercicios...
+              Carregando exercícios...
             </div>
           ) : exerciseGrades.length === 0 ? (
             <div className="rounded-xl border border-slate-700/70 bg-slate-900/30 p-6 text-center text-sm text-slate-500">
-              Nenhum exercicio ativo cadastrado no admin.
+              Nenhum exercício ativo cadastrado no admin.
             </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-slate-700/70 bg-slate-900/30">
@@ -1107,9 +1473,9 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
                 <table className="min-w-full divide-y divide-slate-800 text-sm">
                   <thead className="bg-slate-950/50 text-left text-xs uppercase tracking-wider text-slate-500">
                     <tr>
-                      <th className="px-3 py-2">Exercicio</th>
+                      <th className="px-3 py-2">Exercício</th>
                       <th className="px-3 py-2">Grau</th>
-                      <th className="px-3 py-2">Proficiencia aceitavel</th>
+                      <th className="px-3 py-2">Proficiência aceitável</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/80">
@@ -1148,6 +1514,155 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
               </div>
             </div>
           )}
+        </section>
+      )}
+
+      {stepId === "peso-balanceamento" && (
+        <section className="space-y-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Peso e balanceamento</p>
+              <p className="mt-1 text-xs text-slate-500">
+                A ficha usa os parâmetros cadastrados na aeronave e salva um snapshot junto com o voo.
+              </p>
+            </div>
+            <span
+              className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${
+                currentWeightBalanceMeta.results.isWithinLimits
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                  : "border-amber-500/40 bg-amber-500/10 text-amber-200"
+              }`}
+            >
+              {currentWeightBalanceMeta.results.isWithinLimits ? "Dentro do envelope" : "Verificar envelope"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4 sm:grid-cols-2 lg:grid-cols-4">
+            <InfoBlock label="Aeronave" value={weightBalanceAircraft.registration || "-"} />
+            <InfoBlock label="Peso vazio" value={`${formatNumber(weightBalanceAircraft.emptyWeightKg)} kg`} />
+            <InfoBlock label="Braço vazio" value={`${formatNumber(weightBalanceAircraft.emptyArmMm)} mm`} />
+            <InfoBlock label="Combustível" value={`${formatNumber(weightBalanceAircraft.fuelDensityKgPerL, 3)} kg/L`} />
+            <InfoBlock label="Peso máximo" value={`${formatNumber(weightBalanceAircraft.maxWeightKg)} kg`} />
+            <InfoBlock label="Braço mínimo" value={`${formatNumber(weightBalanceAircraft.armMinMm)} mm`} />
+            <InfoBlock label="Braço máximo" value={`${formatNumber(weightBalanceAircraft.armMaxMm)} mm`} />
+            <InfoBlock label="Braço combustível" value={`${formatNumber(weightBalanceAircraft.fuelArmMm)} mm`} />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:grid-cols-2 xl:grid-cols-5">
+            <Input label="Peso ocupantes (kg)">
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={wbOccupantsWeight}
+                disabled={!canEditWeightBalance}
+                onChange={(e) => setWbOccupantsWeight(e.target.value)}
+                className={inputClass}
+              />
+            </Input>
+            <Input label="Peso bagagem (kg)">
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={wbBaggageWeight}
+                disabled={!canEditWeightBalance}
+                onChange={(e) => setWbBaggageWeight(e.target.value)}
+                className={inputClass}
+              />
+            </Input>
+            <FuelQuantityField
+              label="Combustível inicial"
+              value={wbRampFuelValue}
+              unit={wbRampFuelUnit}
+              weightKg={currentWeightBalanceMeta.inputs.rampFuel.weightKg}
+              disabled={!canEditWeightBalance}
+              onValueChange={setWbRampFuelValue}
+              onUnitChange={setWbRampFuelUnit}
+            />
+            <FuelQuantityField
+              label="Combustível gasto no táxi"
+              value={wbTaxiFuelValue}
+              unit={wbTaxiFuelUnit}
+              weightKg={currentWeightBalanceMeta.inputs.taxiFuel.weightKg}
+              disabled={!canEditWeightBalance}
+              onValueChange={setWbTaxiFuelValue}
+              onUnitChange={setWbTaxiFuelUnit}
+            />
+            <FuelQuantityField
+              label="Combustível gasto até o pouso"
+              value={wbTripFuelValue}
+              unit={wbTripFuelUnit}
+              weightKg={currentWeightBalanceMeta.inputs.tripFuel.weightKg}
+              disabled={!canEditWeightBalance}
+              onValueChange={setWbTripFuelValue}
+              onUnitChange={setWbTripFuelUnit}
+            />
+          </div>
+
+          {weightBalanceIssues.length > 0 ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+              <p className="font-semibold">Atenção</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                {Array.from(new Set(weightBalanceIssues)).map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="overflow-x-auto rounded-xl border border-slate-700/70">
+            <table className="min-w-full divide-y divide-slate-800 text-left text-xs">
+              <thead className="bg-slate-900/60 text-slate-400">
+                <tr>
+                  <th className="px-3 py-2">Ponto</th>
+                  <th className="px-3 py-2">Peso</th>
+                  <th className="px-3 py-2">Momento</th>
+                  <th className="px-3 py-2">Braço</th>
+                  <th className="px-3 py-2">Envelope</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80">
+                {currentWeightBalanceMeta.results.points.map((point) => (
+                  <tr key={point.id}>
+                    <td className="px-3 py-3 font-medium text-slate-100">{point.label}</td>
+                    <td
+                      className={`px-3 py-3 ${
+                        weightBalanceAircraft.maxWeightKg !== null &&
+                        point.weightKg !== null &&
+                        point.weightKg > weightBalanceAircraft.maxWeightKg
+                          ? "font-semibold text-red-300"
+                          : "text-slate-300"
+                      }`}
+                    >
+                      {formatNumber(point.weightKg)} kg
+                    </td>
+                    <td className="px-3 py-3 text-slate-300">{formatNumber(point.momentKgMm)} kg.mm</td>
+                    <td className="min-w-64 px-3 py-3 text-slate-300">
+                      <ArmEnvelopeBar
+                        armMm={point.armMm}
+                        minArmMm={weightBalanceAircraft.armMinMm}
+                        maxArmMm={weightBalanceAircraft.armMaxMm}
+                      />
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={`rounded-full border px-2 py-1 text-[11px] ${
+                          point.inEnvelope
+                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                            : point.inEnvelope === false
+                              ? "border-red-500/40 bg-red-500/10 text-red-200"
+                              : "border-slate-600 bg-slate-800 text-slate-300"
+                        }`}
+                      >
+                        {point.inEnvelope ? "OK" : point.inEnvelope === false ? "Fora" : "Incompleto"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
@@ -1203,14 +1718,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, onCancel, onPub
           >
             Exportar PDF
           </button>
-          {canEdit && (
+          {(canEdit || (canEditWeightBalance && stepId === "peso-balanceamento")) && (
             <button
               type="button"
               onClick={() => void persist()}
               disabled={saving}
               className="w-full rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60 sm:w-auto"
             >
-              {saving ? "Salvando..." : "Salvar alterações"}
+              {saving ? "Salvando..." : canEdit ? "Salvar alterações" : "Salvar peso e balanceamento"}
             </button>
           )}
         </div>
@@ -1228,6 +1743,87 @@ function Input({ label, children }: { label: string; children: ReactNode }) {
       <span className="mb-1 block text-[11px] text-slate-500">{label}</span>
       {children}
     </label>
+  );
+}
+
+function FuelQuantityField({
+  label,
+  value,
+  unit,
+  weightKg,
+  disabled,
+  onValueChange,
+  onUnitChange,
+}: {
+  label: string;
+  value: string;
+  unit: FuelQuantityUnit;
+  weightKg: WeightBalanceFuelInput["weightKg"];
+  disabled: boolean;
+  onValueChange: (value: string) => void;
+  onUnitChange: (unit: FuelQuantityUnit) => void;
+}) {
+  return (
+    <div>
+      <span className="mb-1 block text-[11px] text-slate-500">{label}</span>
+      <div className="flex gap-2">
+        <input
+          type="number"
+          min={0}
+          step="any"
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onValueChange(e.target.value)}
+          className={inputClass}
+        />
+        <select
+          value={unit}
+          disabled={disabled}
+          onChange={(e) => onUnitChange(e.target.value === "kg" ? "kg" : "l")}
+          className="w-20 rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-sky-500"
+        >
+          <option value="l">L</option>
+          <option value="kg">kg</option>
+        </select>
+      </div>
+      <p className="mt-1 text-[11px] text-slate-500">Equivalente: {formatNumber(weightKg)} kg</p>
+    </div>
+  );
+}
+
+function ArmEnvelopeBar({
+  armMm,
+  minArmMm,
+  maxArmMm,
+}: {
+  armMm: number | null;
+  minArmMm: number | null;
+  maxArmMm: number | null;
+}) {
+  if (armMm === null || minArmMm === null || maxArmMm === null || maxArmMm <= minArmMm) {
+    return <span>{formatNumber(armMm)} mm</span>;
+  }
+  const pct = Math.min(100, Math.max(0, ((armMm - minArmMm) / (maxArmMm - minArmMm)) * 100));
+  const outside = armMm < minArmMm || armMm > maxArmMm;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-slate-500">{formatNumber(minArmMm)} min</span>
+        <span className={outside ? "font-semibold text-red-300" : "font-semibold text-slate-100"}>
+          {formatNumber(armMm)} mm
+        </span>
+        <span className="text-slate-500">{formatNumber(maxArmMm)} max</span>
+      </div>
+      <div className="relative h-2 rounded-full bg-slate-800">
+        <div className={`h-full rounded-full ${outside ? "bg-red-500/50" : "bg-sky-500/50"}`} style={{ width: `${pct}%` }} />
+        <span
+          className={`absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 ${
+            outside ? "border-red-200 bg-red-500" : "border-sky-100 bg-sky-500"
+          }`}
+          style={{ left: `${pct}%` }}
+        />
+      </div>
+    </div>
   );
 }
 

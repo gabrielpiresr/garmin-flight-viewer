@@ -14,9 +14,74 @@ const emptyForm = {
   nickname: "",
   image_url: "",
   active: true,
+  wb_empty_weight_kg: "",
+  wb_empty_arm_mm: "",
+  wb_occupants_arm_mm: "",
+  wb_occupants_max_kg: "",
+  wb_baggage_arm_mm: "",
+  wb_baggage_max_kg: "",
+  wb_fuel_arm_mm: "",
+  wb_fuel_max_kg: "",
+  wb_fuel_density_kg_l: "0.72",
+  wb_max_weight_kg: "",
+  wb_arm_min_mm: "",
+  wb_arm_max_mm: "",
 };
 
 type FilterState = "all" | "active" | "inactive";
+type AircraftForm = typeof emptyForm;
+
+function numberToFormValue(value: number | null | undefined, fallback = ""): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : fallback;
+}
+
+function nullableNumber(value: string): number | null {
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function weightBalancePayload(form: AircraftForm) {
+  return {
+    wb_empty_weight_kg: nullableNumber(form.wb_empty_weight_kg),
+    wb_empty_arm_mm: nullableNumber(form.wb_empty_arm_mm),
+    wb_occupants_arm_mm: nullableNumber(form.wb_occupants_arm_mm),
+    wb_occupants_max_kg: nullableNumber(form.wb_occupants_max_kg),
+    wb_baggage_arm_mm: nullableNumber(form.wb_baggage_arm_mm),
+    wb_baggage_max_kg: nullableNumber(form.wb_baggage_max_kg),
+    wb_fuel_arm_mm: nullableNumber(form.wb_fuel_arm_mm),
+    wb_fuel_max_kg: nullableNumber(form.wb_fuel_max_kg),
+    wb_fuel_density_kg_l: nullableNumber(form.wb_fuel_density_kg_l) ?? 0.72,
+    wb_max_weight_kg: nullableNumber(form.wb_max_weight_kg),
+    wb_arm_min_mm: nullableNumber(form.wb_arm_min_mm),
+    wb_arm_max_mm: nullableNumber(form.wb_arm_max_mm),
+  };
+}
+
+function WbNumberField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-medium text-slate-400">{label}</label>
+      <input
+        type="number"
+        step="any"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+      />
+    </div>
+  );
+}
 
 export function FleetTab() {
   const { showToast } = useToast();
@@ -67,6 +132,18 @@ export function FleetTab() {
       nickname: ac.nickname ?? "",
       image_url: ac.image_url ?? "",
       active: ac.active,
+      wb_empty_weight_kg: numberToFormValue(ac.wb_empty_weight_kg),
+      wb_empty_arm_mm: numberToFormValue(ac.wb_empty_arm_mm),
+      wb_occupants_arm_mm: numberToFormValue(ac.wb_occupants_arm_mm),
+      wb_occupants_max_kg: numberToFormValue(ac.wb_occupants_max_kg),
+      wb_baggage_arm_mm: numberToFormValue(ac.wb_baggage_arm_mm),
+      wb_baggage_max_kg: numberToFormValue(ac.wb_baggage_max_kg),
+      wb_fuel_arm_mm: numberToFormValue(ac.wb_fuel_arm_mm),
+      wb_fuel_max_kg: numberToFormValue(ac.wb_fuel_max_kg),
+      wb_fuel_density_kg_l: numberToFormValue(ac.wb_fuel_density_kg_l, "0.72"),
+      wb_max_weight_kg: numberToFormValue(ac.wb_max_weight_kg),
+      wb_arm_min_mm: numberToFormValue(ac.wb_arm_min_mm),
+      wb_arm_max_mm: numberToFormValue(ac.wb_arm_max_mm),
     });
     setPhotoFile(null);
     setEditingId(ac.id);
@@ -85,6 +162,7 @@ export function FleetTab() {
           nickname: form.nickname.trim() || null,
           image_url: imageUrl,
           active: form.active,
+          ...weightBalancePayload(form),
         });
         setAircrafts((prev) => prev.map((a) => (a.id === editingId ? updated : a)));
       } else {
@@ -95,6 +173,7 @@ export function FleetTab() {
           nickname: form.nickname.trim() || undefined,
           image_url: imageUrl ?? undefined,
           active: form.active,
+          ...weightBalancePayload(form),
         });
         setAircrafts((prev) => [...prev, created].sort((a, b) => a.registration.localeCompare(b.registration)));
       }
@@ -240,6 +319,77 @@ export function FleetTab() {
                 </button>
               </div>
             </div>
+            <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
+              <div>
+                <h4 className="text-sm font-semibold text-slate-200">Peso e balanceamento</h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  Informe pesos em kg e braços em mm. O fator de combustível converte litros para kg.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <WbNumberField
+                  label="Peso vazio (kg)"
+                  value={form.wb_empty_weight_kg}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_empty_weight_kg: value }))}
+                />
+                <WbNumberField
+                  label="Braço vazio (mm)"
+                  value={form.wb_empty_arm_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_empty_arm_mm: value }))}
+                />
+                <WbNumberField
+                  label="Braço ocupantes (mm)"
+                  value={form.wb_occupants_arm_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_occupants_arm_mm: value }))}
+                />
+                <WbNumberField
+                  label="Peso máx. ocupantes (kg)"
+                  value={form.wb_occupants_max_kg}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_occupants_max_kg: value }))}
+                />
+                <WbNumberField
+                  label="Braço bagagem (mm)"
+                  value={form.wb_baggage_arm_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_baggage_arm_mm: value }))}
+                />
+                <WbNumberField
+                  label="Peso máx. bagagem (kg)"
+                  value={form.wb_baggage_max_kg}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_baggage_max_kg: value }))}
+                />
+                <WbNumberField
+                  label="Braço combustível (mm)"
+                  value={form.wb_fuel_arm_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_arm_mm: value }))}
+                />
+                <WbNumberField
+                  label="Peso máx. combustível (kg)"
+                  value={form.wb_fuel_max_kg}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_max_kg: value }))}
+                />
+                <WbNumberField
+                  label="Combustível (kg/L)"
+                  value={form.wb_fuel_density_kg_l}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_density_kg_l: value }))}
+                  placeholder="0.72"
+                />
+                <WbNumberField
+                  label="Peso máximo avião (kg)"
+                  value={form.wb_max_weight_kg}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_max_weight_kg: value }))}
+                />
+                <WbNumberField
+                  label="Braço mínimo (mm)"
+                  value={form.wb_arm_min_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_arm_min_mm: value }))}
+                />
+                <WbNumberField
+                  label="Braço máximo (mm)"
+                  value={form.wb_arm_max_mm}
+                  onChange={(value) => setForm((f) => ({ ...f, wb_arm_max_mm: value }))}
+                />
+              </div>
+            </div>
           </div>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
@@ -344,6 +494,14 @@ export function FleetTab() {
                         {model.name}
                       </span>
                     ) : null}
+                  </div>
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Peso e balanceamento</p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      {ac.wb_empty_weight_kg && ac.wb_max_weight_kg && ac.wb_arm_min_mm && ac.wb_arm_max_mm
+                        ? `${ac.wb_empty_weight_kg} kg vazio · MTOW ${ac.wb_max_weight_kg} kg`
+                        : "Configuração pendente"}
+                    </p>
                   </div>
                   <div className="mt-3 flex items-center gap-2">
                     <button

@@ -1,5 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
+import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
 import { AgendamentoTab } from "./AgendamentoTab";
 import { AlunoProfileDashboard } from "./AlunoProfileDashboard";
 import { CreditosTab } from "./CreditosTab";
@@ -10,16 +12,7 @@ import { NoticeFeed } from "./NoticeFeed";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
 import { StudentHome } from "./StudentHome";
 
-type Section =
-  | "home"
-  | "jornada"
-  | "meus-voos"
-  | "agendamento"
-  | "creditos"
-  | "avisos"
-  | "manuais"
-  | "manobras"
-  | "perfil";
+type Section = StudentPortalTab;
 
 type NavItem = {
   id: Section;
@@ -28,7 +21,7 @@ type NavItem = {
   icon: ReactNode;
 };
 
-const SELECTED_NAV_CLASS = "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
+const SELECTED_NAV_CLASS = "school-nav-active";
 
 const NAV_ITEMS: NavItem[] = [
   {
@@ -138,12 +131,50 @@ function EmptySection({ title, description }: { title: string; description: stri
 export function MainLayout() {
   const { user, signOut } = useAuth();
   const [section, setSection] = useState<Section>("home");
+  const [hasOpenedFlights, setHasOpenedFlights] = useState(false);
+  const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
 
-  const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
+  const visibleNavItems = NAV_ITEMS.filter((item) => rules.studentTabs[item.id]);
+  const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
+  const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
+  const shouldRenderFlights = hasOpenedFlights || section === "meus-voos";
+
+  function openSection(target: Section) {
+    const targetIsAvailable = availableNavItems.some((item) => item.id === target);
+    setSection(targetIsAvailable ? target : activeNav.id);
+  }
+
+  useEffect(() => {
+    if (section === "meus-voos") setHasOpenedFlights(true);
+  }, [section]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSchoolRules()
+      .then((next) => {
+        if (cancelled) return;
+        setRules(next);
+        applySchoolTheme(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRules(DEFAULT_SCHOOL_RULES);
+        applySchoolTheme(DEFAULT_SCHOOL_RULES);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!availableNavItems.some((item) => item.id === section)) {
+      setSection(availableNavItems[0]!.id);
+    }
+  }, [availableNavItems, section]);
 
   return (
-    <div className="flex min-h-screen bg-slate-950">
-      <aside className="sticky top-0 hidden h-screen w-64 flex-col border-r border-slate-800 bg-slate-950/80 lg:flex">
+    <div className="school-themed-shell flex min-h-screen">
+      <aside className="school-themed-surface sticky top-0 hidden h-screen w-64 flex-col border-r border-slate-800 lg:flex">
         <div className="border-b border-slate-800 px-5 py-5">
           <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400">
             Aluno
@@ -153,13 +184,13 @@ export function MainLayout() {
         </div>
 
         <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
-          {NAV_ITEMS.map((item) => {
+          {availableNavItems.map((item) => {
             const isActive = section === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setSection(item.id)}
+                onClick={() => openSection(item.id)}
                 className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-all ${
                   isActive
                     ? SELECTED_NAV_CLASS
@@ -189,7 +220,7 @@ export function MainLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-sm">
-          <div className="flex items-center justify-between gap-4 px-4 py-3 md:px-6">
+          <div className="school-themed-surface flex items-center justify-between gap-4 px-4 py-3 md:px-6">
             <div className="flex min-w-0 items-center gap-3">
               <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400 lg:hidden">
                 Aluno
@@ -219,12 +250,16 @@ export function MainLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {section === "home" && (
             <StudentHome
-              onOpenFlights={() => setSection("meus-voos")}
-              onOpenNotices={() => setSection("avisos")}
+              onOpenFlights={() => openSection("meus-voos")}
+              onOpenNotices={() => openSection("avisos")}
             />
           )}
           {section === "jornada" && <JornadaTab />}
-          {section === "meus-voos" && <MeusVoosTab />}
+          {shouldRenderFlights && (
+            <div hidden={section !== "meus-voos"}>
+              <MeusVoosTab />
+            </div>
+          )}
           {section === "agendamento" && <AgendamentoTab />}
           {section === "creditos" && <CreditosTab />}
           {section === "avisos" && (
@@ -247,15 +282,15 @@ export function MainLayout() {
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
-            {NAV_ITEMS.map((item) => {
+            {availableNavItems.map((item) => {
               const isActive = section === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setSection(item.id)}
+                  onClick={() => openSection(item.id)}
                   className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
-                    isActive ? "bg-emerald-500/10 text-emerald-400" : "text-slate-500 hover:text-slate-300"
+                    isActive ? "school-nav-active" : "text-slate-500 hover:text-slate-300"
                   }`}
                 >
                   <span className="h-4 w-4">{item.icon}</span>
