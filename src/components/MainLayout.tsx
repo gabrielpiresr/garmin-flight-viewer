@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
 import { AgendamentoTab } from "./AgendamentoTab";
@@ -119,6 +120,18 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const SECTION_ROUTES = [
+  { id: "home", path: "/aluno", aliases: ["/"] },
+  { id: "jornada", path: "/aluno/jornada" },
+  { id: "meus-voos", path: "/aluno/meus-voos" },
+  { id: "agendamento", path: "/aluno/agendamento" },
+  { id: "creditos", path: "/aluno/creditos" },
+  { id: "avisos", path: "/aluno/avisos" },
+  { id: "manuais", path: "/aluno/manuais" },
+  { id: "manobras", path: "/aluno/manobras" },
+  { id: "perfil", path: "/aluno/perfil" },
+] satisfies readonly TabRoute<Section>[];
+
 function EmptySection({ title, description }: { title: string; description: string }) {
   return (
     <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-10 text-center md:p-12">
@@ -130,23 +143,18 @@ function EmptySection({ title, description }: { title: string; description: stri
 
 export function MainLayout() {
   const { user, signOut } = useAuth();
-  const [section, setSection] = useState<Section>("home");
-  const [hasOpenedFlights, setHasOpenedFlights] = useState(false);
+  const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
+  const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
 
   const visibleNavItems = NAV_ITEMS.filter((item) => rules.studentTabs[item.id]);
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
-  const shouldRenderFlights = hasOpenedFlights || section === "meus-voos";
 
   function openSection(target: Section) {
     const targetIsAvailable = availableNavItems.some((item) => item.id === target);
     setSection(targetIsAvailable ? target : activeNav.id);
   }
-
-  useEffect(() => {
-    if (section === "meus-voos") setHasOpenedFlights(true);
-  }, [section]);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,7 +176,7 @@ export function MainLayout() {
 
   useEffect(() => {
     if (!availableNavItems.some((item) => item.id === section)) {
-      setSection(availableNavItems[0]!.id);
+      setSection(availableNavItems[0]!.id, { replace: true });
     }
   }, [availableNavItems, section]);
 
@@ -248,31 +256,57 @@ export function MainLayout() {
         </header>
 
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
-          {section === "home" && (
-            <StudentHome
-              onOpenFlights={() => openSection("meus-voos")}
-              onOpenNotices={() => openSection("avisos")}
-            />
+          {openedSections.has("home") && (
+            <div hidden={section !== "home"}>
+              <StudentHome
+                onOpenFlights={() => openSection("meus-voos")}
+                onOpenNotices={() => openSection("avisos")}
+              />
+            </div>
           )}
-          {section === "jornada" && <JornadaTab />}
-          {shouldRenderFlights && (
+          {openedSections.has("jornada") && (
+            <div hidden={section !== "jornada"}>
+              <JornadaTab />
+            </div>
+          )}
+          {openedSections.has("meus-voos") && (
             <div hidden={section !== "meus-voos"}>
               <MeusVoosTab />
             </div>
           )}
-          {section === "agendamento" && <AgendamentoTab />}
-          {section === "creditos" && <CreditosTab />}
-          {section === "avisos" && (
-            <NoticeFeed className="w-full max-w-4xl" eyebrow="Avisos" title="Comunicados da escola" />
+          {openedSections.has("agendamento") && (
+            <div hidden={section !== "agendamento"}>
+              <AgendamentoTab />
+            </div>
           )}
-          {section === "manuais" && (
-            <EmptySection
-              title="Manuais em breve"
-              description="Os materiais de consulta ficarão disponíveis aqui quando forem publicados."
-            />
+          {openedSections.has("creditos") && (
+            <div hidden={section !== "creditos"}>
+              <CreditosTab />
+            </div>
           )}
-          {section === "manobras" && <ManobrasTab />}
-          {section === "perfil" && <AlunoProfileDashboard />}
+          {openedSections.has("avisos") && (
+            <div hidden={section !== "avisos"}>
+              <NoticeFeed className="w-full max-w-4xl" eyebrow="Avisos" title="Comunicados da escola" />
+            </div>
+          )}
+          {openedSections.has("manuais") && (
+            <div hidden={section !== "manuais"}>
+              <EmptySection
+                title="Manuais em breve"
+                description="Os materiais de consulta ficarão disponíveis aqui quando forem publicados."
+              />
+            </div>
+          )}
+          {openedSections.has("manobras") && (
+            <div hidden={section !== "manobras"}>
+              <ManobrasTab />
+            </div>
+          )}
+          {openedSections.has("perfil") && (
+            <div hidden={section !== "perfil"}>
+              <AlunoProfileDashboard />
+            </div>
+          )}
         </main>
 
         <footer className="hidden border-t border-slate-800 px-4 py-3 text-center text-xs text-slate-600 md:px-6 lg:block">

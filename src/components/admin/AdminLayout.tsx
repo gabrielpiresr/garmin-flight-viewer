@@ -1,5 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import {
+  pathForRoute,
+  resolveRouteId,
+  routeMatches,
+  useOpenedTabs,
+  useRoutedTab,
+  type TabRoute,
+} from "../../lib/routedTabs";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 import { Tabs } from "../ui/Tabs";
 import { ModelsTab } from "./ModelsTab";
@@ -9,7 +17,7 @@ import { TelemetryAlertsTab } from "./TelemetryAlertsTab";
 import { ManobrasTab } from "./ManobrasTab";
 import { NoticesTab } from "./NoticesTab";
 import { PlatformSettingsTab } from "./PlatformSettingsTab";
-import { ScheduleAdminTab } from "./ScheduleAdminTab";
+import { ScheduleAdminTab, type ScheduleSubTab } from "./ScheduleAdminTab";
 import { AdminStudentsTab } from "./AdminStudentsTab";
 import { AdminUsersTab } from "./AdminUsersTab";
 import { FlightReportsTab } from "./FlightReportsTab";
@@ -189,12 +197,78 @@ const FLEET_TABS = [
   },
 ] satisfies Array<{ id: FleetSubTab; label: string; icon: React.ReactNode }>;
 
+const FLEET_ROUTES = [
+  { id: "aircraft", path: "/admin/frota/avioes", aliases: ["/admin/frota", "/admin/fleet"] },
+  { id: "models", path: "/admin/frota/modelos" },
+  { id: "maintenance", path: "/admin/frota/manutencoes" },
+] satisfies readonly TabRoute<FleetSubTab>[];
+
+const SCHEDULE_ROUTES = [
+  { id: "flights", path: "/admin/escala/voos", aliases: ["/admin/escala", "/admin/schedule"] },
+  { id: "weekly", path: "/admin/escala/disponibilidades" },
+  { id: "generator", path: "/admin/escala/gerador" },
+] satisfies readonly TabRoute<ScheduleSubTab>[];
+
+const ADMIN_ROUTES = [
+  { id: "home", path: "/admin" },
+  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
+  { id: "telemetry-alerts", path: "/admin/alertas" },
+  { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
+  { id: "notices", path: "/admin/avisos" },
+  { id: "maneuvers", path: "/admin/manobras" },
+  { id: "exercises", path: "/admin/exercicios" },
+  { id: "reports", path: "/admin/relatorios" },
+  { id: "students", path: "/admin/alunos" },
+  { id: "users", path: "/admin/usuarios" },
+  { id: "settings", path: "/admin/configuracoes" },
+] satisfies readonly TabRoute<AdminSection>[];
+
 export function AdminLayout() {
   const { user, signOut } = useAuth();
-  const [section, setSection] = useState<AdminSection>("home");
-  const [fleetTab, setFleetTab] = useState<FleetSubTab>("aircraft");
+  const [section, setSection] = useRoutedTab(ADMIN_ROUTES, "home");
+  const openedSections = useOpenedTabs(section);
+  const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
+  const openedFleetTabs = useOpenedTabs(fleetTab);
+  const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
+
+  useEffect(() => {
+    const syncSubRoutes = () => {
+      if (routeMatches(FLEET_ROUTES)) {
+        setFleetTab(resolveRouteId(FLEET_ROUTES, "aircraft"));
+      }
+      if (routeMatches(SCHEDULE_ROUTES)) {
+        setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
+      }
+    };
+
+    syncSubRoutes();
+    window.addEventListener("popstate", syncSubRoutes);
+    return () => window.removeEventListener("popstate", syncSubRoutes);
+  }, []);
+
+  function openSection(target: AdminSection) {
+    if (target === "fleet") {
+      setSection(target, { path: pathForRoute(FLEET_ROUTES, fleetTab) });
+      return;
+    }
+    if (target === "schedule") {
+      setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) });
+      return;
+    }
+    setSection(target);
+  }
+
+  function changeFleetTab(next: FleetSubTab) {
+    setFleetTab(next);
+    setSection("fleet", { path: pathForRoute(FLEET_ROUTES, next) });
+  }
+
+  function changeScheduleTab(next: ScheduleSubTab) {
+    setScheduleTab(next);
+    setSection("schedule", { path: pathForRoute(SCHEDULE_ROUTES, next) });
+  }
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -219,7 +293,7 @@ export function AdminLayout() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setSection(item.id)}
+                onClick={() => openSection(item.id)}
                 className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-all ${
                   isActive
                     ? SELECTED_NAV_CLASS
@@ -284,26 +358,76 @@ export function AdminLayout() {
 
         {/* Content */}
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 lg:pb-4">
-          {section === "home" && (
-            <AdminHome onOpenReports={() => setSection("reports")} onOpenAlerts={() => setSection("telemetry-alerts")} />
-          )}
-          {section === "fleet" && (
-            <div className="space-y-4">
-              <Tabs items={FLEET_TABS} value={fleetTab} onChange={setFleetTab} ariaLabel="Subabas de frota" accent="sky" />
-              {fleetTab === "aircraft" && <FleetTab />}
-              {fleetTab === "models" && <ModelsTab />}
-              {fleetTab === "maintenance" && <MaintenanceTab />}
+          {openedSections.has("home") && (
+            <div hidden={section !== "home"}>
+              <AdminHome onOpenReports={() => openSection("reports")} onOpenAlerts={() => openSection("telemetry-alerts")} />
             </div>
           )}
-          {section === "telemetry-alerts" && <TelemetryAlertsTab />}
-          {section === "schedule" && <ScheduleAdminTab />}
-          {section === "notices" && <NoticesTab />}
-          {section === "maneuvers" && <ManobrasTab />}
-          {section === "exercises" && <TrainingExercisesTab />}
-          {section === "reports" && <FlightReportsTab />}
-          {section === "students" && <AdminStudentsTab />}
-          {section === "users" && <AdminUsersTab />}
-          {section === "settings" && <PlatformSettingsTab />}
+          {openedSections.has("fleet") && (
+            <div hidden={section !== "fleet"} className="space-y-4">
+              <Tabs items={FLEET_TABS} value={fleetTab} onChange={changeFleetTab} ariaLabel="Subabas de frota" accent="sky" />
+              {openedFleetTabs.has("aircraft") ? (
+                <div hidden={fleetTab !== "aircraft"}>
+                  <FleetTab />
+                </div>
+              ) : null}
+              {openedFleetTabs.has("models") ? (
+                <div hidden={fleetTab !== "models"}>
+                  <ModelsTab />
+                </div>
+              ) : null}
+              {openedFleetTabs.has("maintenance") ? (
+                <div hidden={fleetTab !== "maintenance"}>
+                  <MaintenanceTab />
+                </div>
+              ) : null}
+            </div>
+          )}
+          {openedSections.has("telemetry-alerts") && (
+            <div hidden={section !== "telemetry-alerts"}>
+              <TelemetryAlertsTab />
+            </div>
+          )}
+          {openedSections.has("schedule") && (
+            <div hidden={section !== "schedule"}>
+              <ScheduleAdminTab subTab={scheduleTab} onSubTabChange={changeScheduleTab} />
+            </div>
+          )}
+          {openedSections.has("notices") && (
+            <div hidden={section !== "notices"}>
+              <NoticesTab />
+            </div>
+          )}
+          {openedSections.has("maneuvers") && (
+            <div hidden={section !== "maneuvers"}>
+              <ManobrasTab />
+            </div>
+          )}
+          {openedSections.has("exercises") && (
+            <div hidden={section !== "exercises"}>
+              <TrainingExercisesTab />
+            </div>
+          )}
+          {openedSections.has("reports") && (
+            <div hidden={section !== "reports"}>
+              <FlightReportsTab />
+            </div>
+          )}
+          {openedSections.has("students") && (
+            <div hidden={section !== "students"}>
+              <AdminStudentsTab />
+            </div>
+          )}
+          {openedSections.has("users") && (
+            <div hidden={section !== "users"}>
+              <AdminUsersTab />
+            </div>
+          )}
+          {openedSections.has("settings") && (
+            <div hidden={section !== "settings"}>
+              <PlatformSettingsTab />
+            </div>
+          )}
         </main>
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
@@ -314,7 +438,7 @@ export function AdminLayout() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setSection(item.id)}
+                  onClick={() => openSection(item.id)}
                   className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
                     isActive ? "bg-emerald-500/10 text-emerald-400" : "text-slate-500 hover:text-slate-300"
                   }`}

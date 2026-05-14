@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
 import { JornadaTab } from "../JornadaTab";
 import { ManobrasTab } from "../ManobrasTab";
 import { NoticeFeed } from "../NoticeFeed";
@@ -94,6 +95,16 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const SECTION_ROUTES = [
+  { id: "home", path: "/instrutor" },
+  { id: "journey", path: "/instrutor/jornada" },
+  { id: "flights", path: "/instrutor/meus-voos" },
+  { id: "notices", path: "/instrutor/avisos" },
+  { id: "manuals", path: "/instrutor/manuais" },
+  { id: "maneuvers", path: "/instrutor/manobras" },
+  { id: "profile", path: "/instrutor/perfil" },
+] satisfies readonly TabRoute<InstructorSection>[];
+
 function EmptySection({ title }: { title: string }) {
   return (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-12 text-center">
@@ -105,14 +116,9 @@ function EmptySection({ title }: { title: string }) {
 
 export function InstructorLayout() {
   const { user, signOut } = useAuth();
-  const [section, setSection] = useState<InstructorSection>("home");
-  const [hasOpenedFlights, setHasOpenedFlights] = useState(false);
+  const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
+  const openedSections = useOpenedTabs(section);
   const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
-  const shouldRenderFlights = hasOpenedFlights || section === "flights";
-
-  useEffect(() => {
-    if (section === "flights") setHasOpenedFlights(true);
-  }, [section]);
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -190,17 +196,41 @@ export function InstructorLayout() {
         </header>
 
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
-          {section === "home" && <InstructorHome onOpenFlights={() => setSection("flights")} />}
-          {section === "journey" && <JornadaTab />}
-          {shouldRenderFlights && (
+          {openedSections.has("home") && (
+            <div hidden={section !== "home"}>
+              <InstructorHome onOpenFlights={() => setSection("flights")} />
+            </div>
+          )}
+          {openedSections.has("journey") && (
+            <div hidden={section !== "journey"}>
+              <JornadaTab />
+            </div>
+          )}
+          {openedSections.has("flights") && (
             <div hidden={section !== "flights"}>
               <InstructorFlightsTab />
             </div>
           )}
-          {section === "notices" && <NoticeFeed className="w-full max-w-4xl" />}
-          {section === "manuals" && <EmptySection title="Manuais em breve" />}
-          {section === "maneuvers" && <ManobrasTab />}
-          {section === "profile" && <InstructorProfileTab />}
+          {openedSections.has("notices") && (
+            <div hidden={section !== "notices"}>
+              <NoticeFeed className="w-full max-w-4xl" />
+            </div>
+          )}
+          {openedSections.has("manuals") && (
+            <div hidden={section !== "manuals"}>
+              <EmptySection title="Manuais em breve" />
+            </div>
+          )}
+          {openedSections.has("maneuvers") && (
+            <div hidden={section !== "maneuvers"}>
+              <ManobrasTab />
+            </div>
+          )}
+          {openedSections.has("profile") && (
+            <div hidden={section !== "profile"}>
+              <InstructorProfileTab />
+            </div>
+          )}
         </main>
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">

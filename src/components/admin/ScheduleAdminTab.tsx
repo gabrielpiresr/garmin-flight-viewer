@@ -4,8 +4,9 @@ import { ScheduleFlightsTab } from "./ScheduleFlightsTab";
 import { WeeklyConfigTab } from "./WeeklyConfigTab";
 import { ScheduleGenerationTab } from "./ScheduleGenerationTab";
 import { Tabs } from "../ui/Tabs";
+import { useOpenedTabs } from "../../lib/routedTabs";
 
-type ScheduleSubTab = "flights" | "weekly" | "generator";
+export type ScheduleSubTab = "flights" | "weekly" | "generator";
 
 const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = [
   {
@@ -37,22 +38,49 @@ const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = 
   },
 ];
 
-export function ScheduleAdminTab() {
-  const [subTab, setSubTab] = useState<ScheduleSubTab>("flights");
+type ScheduleAdminTabProps = {
+  subTab?: ScheduleSubTab;
+  onSubTabChange?: (tab: ScheduleSubTab) => void;
+};
+
+export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: ScheduleAdminTabProps = {}) {
+  const [internalSubTab, setInternalSubTab] = useState<ScheduleSubTab>("flights");
+  const subTab = controlledSubTab ?? internalSubTab;
+  const openedSubTabs = useOpenedTabs(subTab);
+
+  function changeSubTab(next: ScheduleSubTab) {
+    if (onSubTabChange) {
+      onSubTabChange(next);
+      return;
+    }
+    setInternalSubTab(next);
+  }
 
   return (
     <div className="space-y-4">
       <Tabs
         items={SUB_TABS}
         value={subTab}
-        onChange={setSubTab}
+        onChange={changeSubTab}
         ariaLabel="Administração de escala"
         className="mx-auto max-w-7xl"
       />
 
-      {subTab === "flights" ? <ScheduleFlightsTab /> : null}
-      {subTab === "weekly" ? <WeeklyConfigTab /> : null}
-      {subTab === "generator" ? <ScheduleGenerationTab /> : null}
+      {openedSubTabs.has("flights") ? (
+        <div hidden={subTab !== "flights"}>
+          <ScheduleFlightsTab />
+        </div>
+      ) : null}
+      {openedSubTabs.has("weekly") ? (
+        <div hidden={subTab !== "weekly"}>
+          <WeeklyConfigTab />
+        </div>
+      ) : null}
+      {openedSubTabs.has("generator") ? (
+        <div hidden={subTab !== "generator"}>
+          <ScheduleGenerationTab />
+        </div>
+      ) : null}
     </div>
   );
 }
