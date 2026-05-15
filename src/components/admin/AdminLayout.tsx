@@ -20,12 +20,14 @@ import { ScheduleAdminTab, type ScheduleSubTab } from "./ScheduleAdminTab";
 import { AdminStudentsTab } from "./AdminStudentsTab";
 import { AdminUsersTab } from "./AdminUsersTab";
 import { FlightReportsTab } from "./FlightReportsTab";
+import { NoTelemetryTab } from "./NoTelemetryTab";
 import { AdminHome } from "./AdminHome";
 
 type AdminSection =
   | "home"
   | "fleet"
   | "telemetry-alerts"
+  | "no-telemetry"
   | "schedule"
   | "maneuvers"
   | "reports"
@@ -84,6 +86,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.198 0l7.355 12.74c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.753-2.5-2.599-4.5l7.355-12.74zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "no-telemetry",
+    label: "Sem telemetria",
+    sublabel: "Importar logs Garmin",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M12 2.25a.75.75 0 01.75.75v2.25a7.5 7.5 0 017.5 7.5H21a.75.75 0 010 1.5h-.75a7.5 7.5 0 01-7.5 7.5v2.25a.75.75 0 01-1.5 0v-2.25a7.5 7.5 0 01-7.5-7.5H3a.75.75 0 010-1.5h.75a7.5 7.5 0 017.5-7.5V3a.75.75 0 01.75-.75z" />
       </svg>
     ),
   },
@@ -199,6 +211,7 @@ const ADMIN_ROUTES = [
   { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
   { id: "students", path: "/admin/alunos" },
   { id: "telemetry-alerts", path: "/admin/alertas" },
+  { id: "no-telemetry", path: "/admin/sem-telemetria" },
   { id: "reports", path: "/admin/relatorios" },
   { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
   { id: "maneuvers", path: "/admin/manobras" },
@@ -360,7 +373,11 @@ export function AdminLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 lg:pb-4">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
-              <AdminHome onOpenReports={() => openSection("reports")} onOpenAlerts={() => openSection("telemetry-alerts")} />
+              <AdminHome
+                onOpenReports={() => openSection("reports")}
+                onOpenAlerts={() => openSection("telemetry-alerts")}
+                onOpenNoTelemetry={() => openSection("no-telemetry")}
+              />
             </div>
           )}
           {openedSections.has("fleet") && (
@@ -396,6 +413,11 @@ export function AdminLayout() {
           {openedSections.has("maneuvers") && (
             <div hidden={section !== "maneuvers"}>
               <ManobrasTab />
+            </div>
+          )}
+          {openedSections.has("no-telemetry") && (
+            <div hidden={section !== "no-telemetry"}>
+              <NoTelemetryTab />
             </div>
           )}
           {openedSections.has("reports") && (

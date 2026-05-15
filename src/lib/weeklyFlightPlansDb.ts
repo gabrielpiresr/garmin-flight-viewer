@@ -6,8 +6,11 @@ import {
   Permission,
   Role,
   OP_WEEKS_COL_ID,
+  SCHOOL_ID,
   WEEKLY_PLANS_COL_ID,
 } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import { getSchoolRules } from "./schoolRulesDb";
 import type { OperationalWeek } from "../types/admin";
 import type {
@@ -209,6 +212,7 @@ export async function getStudentPlan(
   if (!isReady() || !databases || !DB_ID || !WEEKLY_PLANS_COL_ID) return null;
 
   const res = await databases.listDocuments(DB_ID, WEEKLY_PLANS_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
     Query.equal("student_id", [studentId]),
     Query.equal("week_start", [weekStart]),
     Query.limit(1),
@@ -225,6 +229,7 @@ export async function getPreviousStudentPlan(
   if (!isReady() || !databases || !DB_ID || !WEEKLY_PLANS_COL_ID) return null;
 
   const res = await databases.listDocuments(DB_ID, WEEKLY_PLANS_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
     Query.equal("student_id", [studentId]),
     Query.equal("status", ["submitted"]),
     Query.orderDesc("week_start"),
@@ -261,6 +266,7 @@ export async function saveStudentPlan(
   const now = new Date().toISOString();
 
   const existing = await databases.listDocuments(DB_ID, WEEKLY_PLANS_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
     Query.equal("student_id", [payload.studentId]),
     Query.equal("week_start", [payload.weekStart]),
     Query.limit(1),
@@ -281,6 +287,7 @@ export async function saveStudentPlan(
       WEEKLY_PLANS_COL_ID,
       ID.unique(),
       {
+        school_id: DEFAULT_SCHOOL_ID,
         student_id: payload.studentId,
         operational_week_id: payload.operationalWeekId,
         week_start: payload.weekStart,

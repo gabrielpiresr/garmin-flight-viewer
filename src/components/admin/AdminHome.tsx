@@ -17,6 +17,7 @@ type PeriodPresetKey = "all" | "thisWeek" | "thisMonth" | "last30" | "thisYear" 
 type Props = {
   onOpenReports: () => void;
   onOpenAlerts: () => void;
+  onOpenNoTelemetry: () => void;
 };
 
 const PERIOD_PRESETS: Array<{ key: PeriodPresetKey; label: string }> = [
@@ -136,7 +137,7 @@ function aircraftLabel(row: { aircraftIdent: string | null; aircraftNickname?: s
   return [row.aircraftIdent || "Sem avião", row.aircraftNickname].filter(Boolean).join(" · ");
 }
 
-export function AdminHome({ onOpenReports, onOpenAlerts }: Props) {
+export function AdminHome({ onOpenReports, onOpenAlerts, onOpenNoTelemetry }: Props) {
   const initialPeriod = useMemo(() => periodForPreset("thisMonth"), []);
   const [periodPreset, setPeriodPreset] = useState<PeriodPresetKey>("thisMonth");
   const [fromDate, setFromDate] = useState(initialPeriod.fromDate);
@@ -232,7 +233,7 @@ export function AdminHome({ onOpenReports, onOpenAlerts }: Props) {
 
       {loading && !dashboard ? <DashboardSkeleton /> : dashboard ? (
         <>
-          <SummaryGrid dashboard={dashboard} />
+          <SummaryGrid dashboard={dashboard} onOpenNoTelemetry={onOpenNoTelemetry} />
           <div className="grid gap-4 xl:grid-cols-12">
             <UpcomingFlightsBoard flights={dashboard.upcomingFlights.items} onOpenReports={onOpenReports} />
             <AlertsBoard dashboard={dashboard} onOpenAlerts={onOpenAlerts} onOpenAlert={setSelectedAlert} />
@@ -262,7 +263,13 @@ function DashboardSkeleton() {
   );
 }
 
-function SummaryGrid({ dashboard }: { dashboard: AdminDashboardData }) {
+function SummaryGrid({
+  dashboard,
+  onOpenNoTelemetry,
+}: {
+  dashboard: AdminDashboardData;
+  onOpenNoTelemetry: () => void;
+}) {
   const { summary, finance } = dashboard;
   return (
     <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
@@ -273,7 +280,13 @@ function SummaryGrid({ dashboard }: { dashboard: AdminDashboardData }) {
       <MetricCard label="Alunos ativos" value={fmtInt(summary.studentsActive)} detail={`${fmtInt(summary.instructorsActive)} instrutores`} />
       <MetricCard label="Receita" value={fmtCurrency(finance.amountPaid)} detail={`${fmtNumber(finance.purchasedHours, 1)} h compradas`} />
       <MetricCard label="Alertas críticos" value={fmtInt(summary.alerts.risco)} detail={`${fmtInt(summary.alerts.atencao)} atenção · ${fmtInt(summary.alerts.leve)} leves`} tone="rose" />
-      <MetricCard label="Sem telemetria" value={fmtInt(summary.flightsWithoutTelemetry)} detail={`${fmtInt(summary.telemetryFlights)} voos com telemetria`} tone="amber" />
+      <MetricCard
+        label="Sem telemetria"
+        value={fmtInt(summary.flightsWithoutTelemetry)}
+        detail={`${fmtInt(summary.telemetryFlights)} voos com telemetria`}
+        tone="amber"
+        onClick={onOpenNoTelemetry}
+      />
     </section>
   );
 }
@@ -283,22 +296,38 @@ function MetricCard({
   value,
   detail,
   tone = "emerald",
+  onClick,
 }: {
   label: string;
   value: string;
   detail: string;
   tone?: "emerald" | "amber" | "rose";
+  onClick?: () => void;
 }) {
   const toneClass = tone === "rose" ? "text-rose-300" : tone === "amber" ? "text-amber-300" : "text-emerald-300";
-  return (
-    <div className="flex min-h-[7.25rem] min-w-0 flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/50 p-3 sm:min-h-[7.75rem] sm:p-4">
+  const body = (
+    <>
       <p className="line-clamp-2 text-[10px] font-medium uppercase leading-snug tracking-wide text-slate-500 sm:text-[11px] sm:tracking-wider">
         {label}
       </p>
       <p className={`mt-2 break-words text-lg font-semibold leading-tight sm:text-xl lg:text-2xl ${toneClass}`}>{value}</p>
       <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-slate-400 sm:text-xs">{detail}</p>
-    </div>
+    </>
   );
+  const className =
+    "flex min-h-[7.25rem] min-w-0 flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/50 p-3 sm:min-h-[7.75rem] sm:p-4";
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${className} cursor-pointer text-left transition hover:border-amber-500/40 hover:bg-slate-900/80`}
+      >
+        {body}
+      </button>
+    );
+  }
+  return <div className={className}>{body}</div>;
 }
 
 function UpcomingFlightsBoard({ flights, onOpenReports }: { flights: AdminDashboardFlight[]; onOpenReports: () => void }) {

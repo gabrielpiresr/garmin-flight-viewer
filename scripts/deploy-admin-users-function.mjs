@@ -144,6 +144,8 @@ async function main() {
   const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
   const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
   const appUrl = process.env.APP_URL || env.VITE_APP_URL || "";
+  // Identificador da escola — isola dados em ambiente multi-tenant.
+  const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
 
   const missing = [];
   if (!endpoint) missing.push("VITE_APPWRITE_ENDPOINT");
@@ -196,6 +198,7 @@ async function main() {
   if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
   if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
+  await upsertVariable(functions, "SCHOOL_ID", schoolId);
 
   const buffer = fs.readFileSync(archivePath);
   const code = new File([buffer], "admin-users-function.tar.gz", { type: "application/gzip" });

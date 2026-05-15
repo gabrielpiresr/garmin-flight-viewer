@@ -11,8 +11,11 @@ import {
   Role,
   MANEUVERS_SECTIONS_COL_ID,
   MANEUVERS_SUBSECTIONS_COL_ID,
+  SCHOOL_ID,
   storage,
 } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import type {
   ManeuverArticle,
   ManeuverArticlePayload,
@@ -156,11 +159,12 @@ export async function listManeuverCatalog(includeDrafts = false): Promise<{ data
   }
 
   try {
+    const schoolFilter = Query.equal("school_id", [DEFAULT_SCHOOL_ID]);
     const publishedFilter = includeDrafts ? [] : [Query.equal("is_published", [true])];
     const [sectionsRes, subsectionsRes, articlesRes] = await Promise.all([
-      databases.listDocuments(DB_ID, MANEUVERS_SECTIONS_COL_ID, [...publishedFilter, Query.orderAsc("order"), Query.limit(100)]),
-      databases.listDocuments(DB_ID, MANEUVERS_SUBSECTIONS_COL_ID, [...publishedFilter, Query.orderAsc("order"), Query.limit(300)]),
-      databases.listDocuments(DB_ID, MANEUVERS_ARTICLES_COL_ID, [...publishedFilter, Query.orderAsc("order"), Query.limit(300)]),
+      databases.listDocuments(DB_ID, MANEUVERS_SECTIONS_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(100)]),
+      databases.listDocuments(DB_ID, MANEUVERS_SUBSECTIONS_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(300)]),
+      databases.listDocuments(DB_ID, MANEUVERS_ARTICLES_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(300)]),
     ]);
     return {
       data: {
@@ -184,6 +188,7 @@ export async function createManeuverSection(payload: ManeuverSectionPayload): Pr
       const response = await executePrivilegedManeuver({
         action: "createManeuverSection",
         data: {
+          school_id: DEFAULT_SCHOOL_ID,
           title: payload.title,
           description: payload.description ?? null,
           order: payload.order,
@@ -193,6 +198,7 @@ export async function createManeuverSection(payload: ManeuverSectionPayload): Pr
       if (response.document) return { data: toSection(response.document), error: null };
     }
     const doc = await databases.createDocument(DB_ID, MANEUVERS_SECTIONS_COL_ID, ID.unique(), {
+      school_id: DEFAULT_SCHOOL_ID,
       title: payload.title,
       description: payload.description ?? null,
       order: payload.order,
@@ -259,6 +265,7 @@ export async function createManeuverSubsection(payload: ManeuverSubsectionPayloa
       const response = await executePrivilegedManeuver({
         action: "createManeuverSubsection",
         data: {
+          school_id: DEFAULT_SCHOOL_ID,
           section_id: payload.sectionId,
           title: payload.title,
           description: payload.description ?? null,
@@ -269,6 +276,7 @@ export async function createManeuverSubsection(payload: ManeuverSubsectionPayloa
       if (response.document) return { data: toSubsection(response.document), error: null };
     }
     const doc = await databases.createDocument(DB_ID, MANEUVERS_SUBSECTIONS_COL_ID, ID.unique(), {
+      school_id: DEFAULT_SCHOOL_ID,
       section_id: payload.sectionId,
       title: payload.title,
       description: payload.description ?? null,

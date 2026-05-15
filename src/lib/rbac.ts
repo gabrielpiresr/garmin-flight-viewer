@@ -1,5 +1,7 @@
 import { Permission, Query, Role } from "appwrite";
-import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured } from "./appwrite";
+import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured, SCHOOL_ID } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import type { InstructorIdentity, InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 
@@ -187,6 +189,7 @@ function withInstructorPreference(
 async function getInstructorPreference(userId: string): Promise<InstructorPreferenceDoc | undefined> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !INSTRUCTOR_PREFS_COL_ID) return undefined;
   const res = await databases.listDocuments(DB_ID, INSTRUCTOR_PREFS_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
     Query.equal("user_id", [userId]),
     Query.limit(1),
   ]);
@@ -330,6 +333,7 @@ export async function ensureProfile(
       await databases.updateDocument(DB_ID, PROFILES_COL_ID, existing.documents[0].$id, {
         email,
         role: currentRole || role,
+        school_id: DEFAULT_SCHOOL_ID,
         ...updates,
       });
       return { error: null };
@@ -339,7 +343,7 @@ export async function ensureProfile(
       DB_ID,
       PROFILES_COL_ID,
       ID.unique(),
-      { user_id: userId, email, role, ...updates },
+      { user_id: userId, email, role, school_id: DEFAULT_SCHOOL_ID, ...updates },
       [
         Permission.read(Role.users()),
         Permission.read(Role.user(userId)),
@@ -355,7 +359,10 @@ export async function ensureProfile(
 
 async function listStudentsFromProfiles(actorUserId: string): Promise<StudentOption[]> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
-  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [Query.limit(200)]);
+  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+    Query.limit(200),
+  ]);
 
   const students = res.documents
     .filter((doc) => {
@@ -391,7 +398,10 @@ export async function listAssignableStudents(actorUserId: string, actorRole: Use
 export async function listStudentIdentitiesForSchedule(actorUserId: string): Promise<ScheduleStudentIdentity[]> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
 
-  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [Query.limit(200)]);
+  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+    Query.limit(200),
+  ]);
 
   return res.documents
     .filter((doc) => {
@@ -425,9 +435,15 @@ export async function listAssignableInstructors(actorRole: UserRole): Promise<In
   if (actorRole !== "admin" && actorRole !== "instrutor") return [];
 
   const [profilesRes, preferencesRes] = await Promise.all([
-    databases.listDocuments(DB_ID, PROFILES_COL_ID, [Query.limit(200)]),
+    databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+      Query.limit(200),
+    ]),
     INSTRUCTOR_PREFS_COL_ID
-      ? databases.listDocuments(DB_ID, INSTRUCTOR_PREFS_COL_ID, [Query.limit(200)])
+      ? databases.listDocuments(DB_ID, INSTRUCTOR_PREFS_COL_ID, [
+          Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+          Query.limit(200),
+        ])
       : Promise.resolve({ documents: [] }),
   ]);
   const preferenceByUserId = new Map(

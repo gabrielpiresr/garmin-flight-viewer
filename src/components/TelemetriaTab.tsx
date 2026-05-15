@@ -1,9 +1,10 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { decodeFlightRecord, encodeFlightRecord, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
+import { decodeFlightRecord, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
 import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/flightTelemetryAlertsDb";
-import { getSavedFlight, updateFlight } from "../lib/flightsDb";
+import { attachFlightTelemetry } from "../lib/attachFlightTelemetry";
+import { getSavedFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
   TelemetryProcessingOverlay,
@@ -17,7 +18,6 @@ import {
   summarizeFlight,
 } from "../lib/flightStats";
 import { detectFlightSegments } from "../lib/flightSegments";
-import { buildFlightTelemetryMetrics, deriveIdentity } from "../lib/flightTelemetryMetrics";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
 import {
   MAX_TELEMETRY_CSV_FILES,
@@ -305,41 +305,15 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     setSavingTelemetry(true);
     setLoadError(null);
     try {
-      const saved = await getSavedFlight(flightId);
-      if (saved.error || !saved.data) throw saved.error ?? new Error("Voo não encontrado.");
-
-      const decoded = decodeFlightRecord(saved.data.csv_text);
-      if (!decoded.meta) throw new Error("Ficha do voo sem metadados para anexar telemetria.");
-
       const merged = mergeTelemetryCsvFiles(telemetrySources);
       if (!merged.csv.trim()) throw new Error("Nenhum CSV de telemetria selecionado.");
 
       const parsed = parseGarminCsv(merged.csv);
-      const parsedSummary = summarizeFlight(parsed.points);
-      const durationSec = chartDurationSec(parsed.chartData, parsed.hasChartTime) ?? parsedSummary.durationSec;
-      const csvText = encodeFlightRecord({
-        meta: decoded.meta,
-        telemetryCsv: merged.csv,
-        telemetryFiles: telemetrySources,
-      });
-      const identity = deriveIdentity({
-        meta: decoded.meta,
-        studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
-        instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
-        aircraftIdent: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
-      });
-      const telemetryMetrics = buildFlightTelemetryMetrics({ parsed, identity, meta: decoded.meta });
-      const result = await updateFlight(flightId, {
+      const result = await attachFlightTelemetry({
+        flightId,
         actorUserId: user.id,
         actorRole: user.role,
-        studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
-        instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
-        source_filename: merged.sourceFileName,
-        csv_text: csvText,
-        aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
-        duration_sec: durationSec,
-        telemetryMetrics,
-        telemetryAlertParsed: parsed,
+        telemetryFiles: telemetrySources,
       });
 
       if (result.error) throw result.error;

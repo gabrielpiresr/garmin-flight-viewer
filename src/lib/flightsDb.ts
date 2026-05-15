@@ -1,5 +1,7 @@
 import { Query } from "appwrite";
-import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, storage } from "./appwrite";
+import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, storage } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import { decodeFlightRecord, encodeFlightRecord } from "./flightRecordCodec";
 import type { FlightWeightBalanceMeta } from "./weightBalance";
 import { clearFlightTelemetryMetrics, replaceFlightTelemetryMetrics } from "./flightTelemetryMetricsDb";
@@ -431,6 +433,7 @@ export async function listSavedFlights(
   try {
     const queries = [
       Query.select(FLIGHT_LIST_SELECT),
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
       Query.orderDesc("$createdAt"),
       Query.limit(200),
     ];
@@ -448,6 +451,7 @@ export async function listSavedFlights(
     try {
       const queries = [
         Query.select(LEGACY_FLIGHT_LIST_SELECT),
+        Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
         Query.orderDesc("$createdAt"),
         Query.limit(200),
       ];
@@ -584,6 +588,7 @@ export async function insertFlight(payload: {
     const d = await createFlightDocumentWithMaterializedFallback({
       id: ID.unique(),
       basePayload: {
+        school_id: DEFAULT_SCHOOL_ID,
         user_id: payload.studentUserId,
         student_user_id: payload.studentUserId,
         instructor_user_id: payload.instructorUserId ?? null,
@@ -676,6 +681,7 @@ export async function updateFlight(id: string, payload: {
     await updateFlightDocumentWithMaterializedFallback({
       id,
       basePayload: {
+        school_id: DEFAULT_SCHOOL_ID,
         user_id: payload.studentUserId,
         student_user_id: payload.studentUserId,
         instructor_user_id: payload.instructorUserId ?? null,

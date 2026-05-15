@@ -41,6 +41,8 @@ const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
 const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
 const APP_URL = process.env.APP_URL || "";
+// Identificador único da escola — usado para isolar dados em ambiente multi-tenant.
+const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_INSTRUCTOR_PREFERENCES = new Set(["low", "medium", "high"]);
@@ -356,6 +358,19 @@ function buildRoute(legs) {
   return airports.length > 0 ? airports.join(" -> ") : "";
 }
 
+function extractLegIcaos(legs) {
+  const list = Array.isArray(legs) ? legs : [];
+  let firstDepIcao = null;
+  let lastArrIcao = null;
+  for (const leg of list) {
+    const dep = String(leg.dep || "").trim().toUpperCase();
+    const arr = String(leg.arr || "").trim().toUpperCase();
+    if (!firstDepIcao && dep && dep !== "---") firstDepIcao = dep;
+    if (arr && arr !== "---") lastArrIcao = arr;
+  }
+  return { firstDepIcao, lastArrIcao };
+}
+
 function flightDateTimeKey(flight) {
   const date = flight.flightDate || (flight.createdAt || "").slice(0, 10);
   const time = flight.startTime || "23:59";
@@ -566,9 +581,10 @@ async function getFlightsByUserIds(userIds, { includeCsv = false } = {}) {
   if (!FLIGHTS_COLLECTION_ID || !userIds.length) return [];
   const batchSize = 25;
   const byId = new Map();
+  const schoolFilter = sdk.Query.equal("school_id", [SCHOOL_ID]);
   for (let i = 0; i < userIds.length; i += batchSize) {
     const batch = userIds.slice(i, i + batchSize);
-    const queryBase = [sdk.Query.orderDesc("flight_date"), ...selectQuery(includeCsv ? FLIGHT_DETAIL_SELECT : FLIGHT_SELECT)];
+    const queryBase = [schoolFilter, sdk.Query.orderDesc("flight_date"), ...selectQuery(includeCsv ? FLIGHT_DETAIL_SELECT : FLIGHT_SELECT)];
     const [studentFlights, instructorFlights] = await Promise.all([
       listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.equal("student_user_id", batch), ...queryBase]),
       listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.equal("instructor_user_id", batch), ...queryBase]),
@@ -586,6 +602,7 @@ async function getPlansByUserIds(userIds) {
     const batch = userIds.slice(i, i + batchSize);
     docs.push(
       ...(await listAllDocuments(WEEKLY_PLANS_COLLECTION_ID, [
+        sdk.Query.equal("school_id", [SCHOOL_ID]),
         sdk.Query.equal("student_id", batch),
         sdk.Query.orderDesc("week_start"),
         ...selectQuery(PLAN_SELECT),
@@ -626,6 +643,7 @@ async function requireAdmin(actorUserId) {
 function toFlight(doc) {
   const meta = decodeFlightMeta(doc.csv_text);
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
+  const { firstDepIcao, lastArrIcao } = extractLegIcaos(legs);
   const landings = legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings) || 0)), 0);
   const totalMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
   const navigationMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.navTime), 0);
@@ -668,6 +686,9 @@ function toFlight(doc) {
     trainingSnapshot: snapshot,
     studentUserId: doc.student_user_id || doc.user_id || null,
     instructorUserId: doc.instructor_user_id || null,
+    firstDepIcao,
+    lastArrIcao,
+    telemetryPresentOnDoc: Boolean(doc.telemetry_present),
   };
 }
 
@@ -1424,6 +1445,7 @@ async function getDashboardSummary(payload = {}) {
   );
 
   const flightFilterQueries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
     ...dashboardDateQueries("flight_date", filters.fromDate, filters.toDate),
     ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
     ...dashboardEqualQuery("instructor_user_id", filters.instructors),
@@ -1436,6 +1458,7 @@ async function getDashboardSummary(payload = {}) {
     ...dashboardEqualQuery("student_user_id", filters.students),
   ];
   const creditFilterQueries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
     ...dashboardDateQueries("purchase_date", filters.fromDate, filters.toDate),
     ...dashboardEqualQuery("aircraft_model_id", filters.models),
     ...dashboardEqualQuery("user_id", filters.students),
@@ -1455,6 +1478,7 @@ async function getDashboardSummary(payload = {}) {
       ...selectQuery(FLIGHT_SELECT),
     ]),
     listDocumentsPage(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
       sdk.Query.greaterThanEqual("flight_date", today),
       ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
       ...dashboardEqualQuery("instructor_user_id", filters.instructors),
@@ -1464,6 +1488,7 @@ async function getDashboardSummary(payload = {}) {
       ...selectQuery(FLIGHT_SELECT),
     ]),
     listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
       sdk.Query.greaterThanEqual("flight_date", today),
       sdk.Query.lessThanEqual("flight_date", next7End),
       ...dashboardEqualQuery("aircraft_ident", filters.aircrafts),
@@ -1612,8 +1637,8 @@ async function getDashboardSummary(payload = {}) {
 async function listFlightReports() {
   const [usersList, profiles, flights, aircrafts, models, telemetrySummaries, landingMetrics] = await Promise.all([
     listAllUsers(),
-    listAllDocuments(PROFILES_COLLECTION_ID, selectQuery(PROFILE_SELECT)),
-    listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.orderDesc("flight_date"), ...selectQuery(FLIGHT_DETAIL_SELECT)]),
+    listAllDocuments(PROFILES_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID]), ...selectQuery(PROFILE_SELECT)]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID]), sdk.Query.orderDesc("flight_date"), ...selectQuery(FLIGHT_DETAIL_SELECT)]),
     listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
     listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
     listAllDocuments(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, selectQuery(TELEMETRY_SUMMARY_SELECT)),
@@ -1716,12 +1741,13 @@ function matchesSearch(record, search) {
 }
 
 async function buildRecords({ search = "", onlyUserId = null } = {}) {
+  const schoolFilter = sdk.Query.equal("school_id", [SCHOOL_ID]);
   const [allUsers, profiles, instructorPrefs, flights, plans] = await Promise.all([
     onlyUserId ? users.get({ userId: onlyUserId }).then((user) => [user]) : listAllUsers(),
-    listAllDocuments(PROFILES_COLLECTION_ID),
-    listAllDocuments(INSTRUCTOR_PREFS_COLLECTION_ID),
-    listAllDocuments(FLIGHTS_COLLECTION_ID),
-    listAllDocuments(WEEKLY_PLANS_COLLECTION_ID),
+    listAllDocuments(PROFILES_COLLECTION_ID, [schoolFilter]),
+    listAllDocuments(INSTRUCTOR_PREFS_COLLECTION_ID, [schoolFilter]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [schoolFilter]),
+    listAllDocuments(WEEKLY_PLANS_COLLECTION_ID, [schoolFilter]),
   ]);
 
   const profileByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
@@ -1754,6 +1780,7 @@ async function findProfileSearchUserIds(search) {
   const needle = normalizeSearch(search);
   if (!needle) return [];
   const profiles = await listAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
     ...selectQuery(["$id", "user_id", "full_name", "cpf", "phone", "anac_code", "email", "role"]),
   ]);
   return profiles
@@ -1914,7 +1941,7 @@ async function getUserDetail(targetUserId) {
 
 async function upsertProfile(userId, email, role) {
   const existing = await getProfileByUserId(userId);
-  const data = { user_id: userId, email, role };
+  const data = { user_id: userId, email, role, school_id: SCHOOL_ID };
 
   if (existing) {
     await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, existing.$id, data);
@@ -2004,6 +2031,7 @@ async function createCredit(actorUserId, creditInput) {
     sdk.ID.unique(),
     {
       ...data,
+      school_id: SCHOOL_ID,
       created_by: actorUserId,
       updated_by: actorUserId,
     },

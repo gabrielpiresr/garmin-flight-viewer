@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { account, ID, isAppwriteConfigured } from "../lib/appwrite";
+import { account, ID, isAppwriteConfigured, SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
 import { deriveRoleFromLabels, ensureProfile, getUserRole, type UserRole } from "../lib/rbac";
 
-type AppwriteUser = { id: string; email: string; role: UserRole };
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
+type AppwriteUser = { id: string; email: string; role: UserRole; schoolId: string };
 export type SignUpProfileInput = {
   fullName: string;
   cpf: string;
@@ -45,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
         const role = profileRole === "aluno" ? labelRole : profileRole;
         await ensureProfile(u.$id, u.email, role);
-        setUser({ id: u.$id, email: u.email, role });
+        setUser({ id: u.$id, email: u.email, role, schoolId: DEFAULT_SCHOOL_ID });
       })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
@@ -60,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
       const role = profileRole === "aluno" ? labelRole : profileRole;
       await ensureProfile(u.$id, u.email, role);
-      setUser({ id: u.$id, email: u.email, role });
+      setUser({ id: u.$id, email: u.email, role, schoolId: DEFAULT_SCHOOL_ID });
       return { error: null };
     } catch (e) {
       return { error: e as Error };
@@ -110,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      setUser({ id: u.$id, email: u.email, role: "aluno" });
+      setUser({ id: u.$id, email: u.email, role: "aluno", schoolId: DEFAULT_SCHOOL_ID });
       return { error: null, anacSyncPending };
     } catch (e) {
       return { error: e as Error, anacSyncPending: true };

@@ -1,5 +1,7 @@
 import { Query } from "appwrite";
 import { databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, STUDENT_CREDITS_COL_ID } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import { listAircrafts } from "./aircraftDb";
 import { listModels } from "./aircraftModelsDb";
 import { decodeFlightRecord } from "./flightRecordCodec";
@@ -366,6 +368,7 @@ export function buildStudentCreditStatement(params: {
 export async function listStudentCredits(userId: string): Promise<StudentCreditPurchase[]> {
   if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) return [];
   const res = await databases.listDocuments(DB_ID, STUDENT_CREDITS_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
     Query.equal("user_id", [userId]),
     Query.orderDesc("purchase_date"),
     Query.limit(500),
@@ -382,6 +385,7 @@ export async function createStudentCredit(input: StudentCreditInput, actorUserId
     ID.unique(),
     {
       ...toPayload(input, actorUserId),
+      school_id: DEFAULT_SCHOOL_ID,
       created_by: actorUserId || null,
     },
     buildCreditPermissions(input.userId, actorUserId),

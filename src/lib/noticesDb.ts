@@ -6,8 +6,11 @@ import {
   isAppwriteConfigured,
   NOTICES_BUCKET_ID,
   NOTICES_COL_ID,
+  SCHOOL_ID,
   storage,
 } from "./appwrite";
+
+const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import type { CreateNoticePayload, Notice, UpdateNoticePayload } from "../types/notice";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -71,6 +74,7 @@ export async function listPublishedNotices(): Promise<{ data: Notice[] | null; e
   }
   try {
     const res = await databases!.listDocuments(DB_ID, NOTICES_COL_ID, [
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
       Query.equal("is_published", [true]),
       Query.orderDesc("published_at"),
       Query.limit(100),
@@ -86,7 +90,11 @@ export async function listAllNotices(): Promise<{ data: Notice[] | null; error: 
     return { data: [], error: null };
   }
   try {
-    const res = await databases!.listDocuments(DB_ID, NOTICES_COL_ID, [Query.orderDesc("published_at"), Query.limit(200)]);
+    const res = await databases!.listDocuments(DB_ID, NOTICES_COL_ID, [
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+      Query.orderDesc("published_at"),
+      Query.limit(200),
+    ]);
     return { data: res.documents.map((doc) => toNotice(doc as Record<string, unknown>)), error: null };
   } catch (error) {
     return { data: null, error: error as Error };
@@ -114,6 +122,7 @@ export async function createNotice(payload: CreateNoticePayload): Promise<{ data
       NOTICES_COL_ID,
       ID.unique(),
       {
+        school_id: DEFAULT_SCHOOL_ID,
         title: payload.title,
         content_md: payload.contentMd,
         banner_file_id: bannerFileId,
