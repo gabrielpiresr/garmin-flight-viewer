@@ -132,7 +132,12 @@ export function CreditStatementView({
                       return (
                         <tr key={purchase.id} className="text-slate-300">
                           <td className="px-3 py-2">{formatDate(purchase.purchaseDate)}</td>
-                          <td className="px-3 py-2 font-medium text-slate-100">{purchase.aircraftModelName}</td>
+                          <td className="px-3 py-2 font-medium text-slate-100">
+                            {purchase.aircraftModelName}
+                            {purchase.isNight && (
+                              <span className="ml-2 rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">Noturno</span>
+                            )}
+                          </td>
                           <td className="px-3 py-2">{payment}</td>
                           <td className="px-3 py-2">{formatCurrency(purchase.amountPaid)}</td>
                           <td className="px-3 py-2">{formatHours(purchase.hours)}</td>

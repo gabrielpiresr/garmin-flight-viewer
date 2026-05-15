@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { insertFlight, updateFlight } from "../../lib/flightsDb";
@@ -6,8 +6,16 @@ import { dispatchNotificationEvent } from "../../lib/notificationsDb";
 import { getScheduleWeekData, getScheduleWeekOptions, AUTO_SOURCE_PREFIX } from "../../lib/scheduleGenerationDb";
 import { assignInstructorsToSuggestions, generateSchedulePreview } from "../../lib/scheduleGenerator";
 import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
+import { getSchoolRules } from "../../lib/schoolRulesDb";
+import {
+  buildScheduleHourOptions,
+  hourSelectValue,
+  parseHourSelectValue,
+} from "../../lib/scheduleTimeOptions";
 import { SLOT_HOURS } from "../../types/admin";
 import type { SlotState } from "../../types/admin";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES } from "../../types/schoolRules";
+import type { FlightScheduleRules } from "../../types/schoolRules";
 import type {
   ExistingScheduledFlight,
   SchedulePreview,
@@ -18,6 +26,7 @@ import type {
   ScheduledFlightSuggestion,
   InstructorIdentity,
   InstructorWeeklyConfig,
+  SchedulePeriod,
 } from "../../types/schedule";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
@@ -34,9 +43,10 @@ const DAY_LABEL: Record<number, string> = {
 };
 const INSTRUCTOR_DAY_ORDER = [1, 2, 3, 4, 5, 6] as const;
 
-const PERIOD_LABEL: Record<"morning" | "afternoon", string> = {
+const PERIOD_LABEL: Record<SchedulePeriod, string> = {
   morning: "Manhã",
   afternoon: "Tarde",
+  night: "Noite",
 };
 
 const INSTRUCTOR_PREFERENCE_LABEL: Record<InstructorWeeklyConfig["preferenceLevel"], string> = {
@@ -143,7 +153,7 @@ function makeDefaultInstructorConfig(instructorId: string): InstructorWeeklyConf
     availableThisWeek: true,
     preferenceLevel: "medium",
     availability: INSTRUCTOR_DAY_ORDER.flatMap((dayOfWeek) =>
-      (["morning", "afternoon"] as const).map((period) => ({
+      (["morning", "afternoon", "night"] as const).map((period) => ({
         dayOfWeek,
         period,
         available: true,
@@ -248,6 +258,7 @@ function toGeneratedSuggestion(
     instructorAssignmentMode: existing.instructorId ? "manual" : "auto",
     allocationLayer: "D",
     relaxationLevel: "aircraft_and_time",
+    isNight: existing.isNight ?? false,
     notes: null,
     source: "manual",
   };
@@ -450,6 +461,7 @@ type FlightEditDraft = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  isNight?: boolean;
 };
 
 function scheduleDraftKey(userId: string, weekStart: string): string {
@@ -469,7 +481,10 @@ function buildSuggestionFromDraft(
   draft: FlightEditDraft,
   weekStart: string,
   studentLabel: string,
+  rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
 ): ScheduledFlightSuggestion {
+  const isNight = draft.isNight ?? false;
+  const startHour = isNight ? rules.nightFlightStartHour : draft.startHour;
   return {
     demandId: draft.demandId,
     studentId: draft.studentId,
@@ -478,9 +493,10 @@ function buildSuggestionFromDraft(
     aircraftRegistration: draft.aircraftRegistration,
     dayOfWeek: draft.dayOfWeek,
     weekDate: weekDateFromStart(weekStart, draft.dayOfWeek),
-    startHour: draft.startHour,
-    startTime: `${String(draft.startHour).padStart(2, "0")}:00`,
-    endTime: composeEndTime(draft.startHour, draft.durationHours),
+    startHour,
+    startTime: hoursToHHMM(startHour),
+    endTime: composeEndTime(startHour, draft.durationHours),
+    isNight,
     durationHours: draft.durationHours,
     priorityLevel: 2,
     flexibilityLevel: "medium",
@@ -543,6 +559,15 @@ function summarizeStudents(
     .sort((a, b) => a.studentLabel.localeCompare(b.studentLabel, "pt-BR"));
 }
 
+type CalendarDropTarget = { dayOfWeek: number; startHour: number; isNight: boolean };
+
+function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
+  const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
+  const strike = unassigned ? "line-through decoration-white/40 decoration-1 opacity-75" : "";
+  const pointer = draggable ? "cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-white/60" : "hover:ring-1 hover:ring-white/60";
+  return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
+}
+
 type CalendarProps = {
   suggestions: ScheduledFlightSuggestion[];
   title: string;
@@ -552,6 +577,7 @@ type CalendarProps = {
   totalWeightByDemand: Map<string, string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   onSuggestionClick?: (suggestion: ScheduledFlightSuggestion) => void;
+  onItemDrop?: (suggestion: ScheduledFlightSuggestion, target: CalendarDropTarget) => void;
 };
 
 function CalendarGrid({
@@ -563,8 +589,10 @@ function CalendarGrid({
   totalWeightByDemand,
   backgroundSupply,
   onSuggestionClick,
+  onItemDrop,
 }: CalendarProps) {
   const rowHeight = 38;
+  const boardHeight = SLOT_HOURS.length * rowHeight;
   const hourIndexMap = useMemo(() => {
     const map = new Map<number, number>();
     SLOT_HOURS.forEach((hour, idx) => map.set(hour, idx));
@@ -651,18 +679,93 @@ function CalendarGrid({
     return out;
   }, [byDay]);
 
-  const boardHeight = SLOT_HOURS.length * rowHeight;
+  const dayTotals = useMemo(() => {
+    const byDayMap = new Map<number, { flights: number; hours: number }>();
+    for (const day of DAY_ORDER) byDayMap.set(day, { flights: 0, hours: 0 });
+    for (const item of suggestions) {
+      const row = byDayMap.get(item.dayOfWeek) ?? { flights: 0, hours: 0 };
+      row.flights += 1;
+      row.hours += item.durationHours;
+      byDayMap.set(item.dayOfWeek, row);
+    }
+    let cumFlights = 0;
+    let cumHours = 0;
+    const cumulative = new Map<number, { flights: number; hours: number }>();
+    for (const day of DAY_ORDER) {
+      const d = byDayMap.get(day) ?? { flights: 0, hours: 0 };
+      cumFlights += d.flights;
+      cumHours += d.hours;
+      cumulative.set(day, { flights: cumFlights, hours: Number(cumHours.toFixed(1)) });
+    }
+    return { byDay: byDayMap, cumulative };
+  }, [suggestions]);
+
+  const dayBoardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const nightRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [dragState, setDragState] = useState<{ item: ScheduledFlightSuggestion; preview: CalendarDropTarget } | null>(null);
+  const dragEndedRef = useRef(false);
+  const draggable = Boolean(onItemDrop);
+
+  const resolveDropTarget = useCallback(
+    (clientX: number, clientY: number): CalendarDropTarget | null => {
+      for (const day of DAY_ORDER) {
+        const nightEl = nightRowRefs.current.get(day);
+        if (nightEl) {
+          const r = nightEl.getBoundingClientRect();
+          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+            return { dayOfWeek: day, startHour: SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17, isNight: true };
+          }
+        }
+      }
+      for (const day of DAY_ORDER) {
+        const board = dayBoardRefs.current.get(day);
+        if (!board) continue;
+        const r = board.getBoundingClientRect();
+        if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
+        const idx = Math.max(0, Math.min(SLOT_HOURS.length - 1, Math.round((clientY - r.top) / rowHeight)));
+        return { dayOfWeek: day, startHour: SLOT_HOURS[idx] ?? 6, isNight: false };
+      }
+      return null;
+    },
+    [rowHeight],
+  );
+
+  useEffect(() => {
+    if (!dragState) return;
+    function onMove(e: PointerEvent) {
+      const t = resolveDropTarget(e.clientX, e.clientY);
+      if (t) setDragState((p) => (p ? { ...p, preview: t } : p));
+    }
+    function onUp(e: PointerEvent) {
+      setDragState((p) => {
+        if (p && onItemDrop) {
+          dragEndedRef.current = true;
+          onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
+        }
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragState, onItemDrop, resolveDropTarget]);
 
   return (
-    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">{title}</p>
-      <div className="overflow-x-auto">
-        <table className="min-w-[680px] table-fixed border-separate border-spacing-1 md:w-full">
+    <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+      {draggable ? (
+        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
+      ) : null}
+      <div className="w-full overflow-x-auto">
+        <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
           <thead>
             <tr>
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
               {DAY_ORDER.map((day) => (
-                <th key={day} className="w-[14.2%] pb-1 text-center text-xs font-semibold text-slate-400">
+                <th key={day} className="pb-1 text-center text-xs font-semibold text-slate-400">
                   {formatCalendarDayHeader(weekStart, day)}
                 </th>
               ))}
@@ -683,10 +786,16 @@ function CalendarGrid({
                   ))}
                 </div>
               </td>
-              {DAY_ORDER.map((day) => {
-                return (
-                  <td key={day} className="align-top p-0">
-                    <div className="relative rounded-md border border-slate-700/60 bg-slate-800/30" style={{ height: `${boardHeight}px` }}>
+              {DAY_ORDER.map((day) => (
+                <td key={day} className="align-top p-0">
+                  <div
+                    ref={(node) => {
+                      if (node) dayBoardRefs.current.set(day, node);
+                      else dayBoardRefs.current.delete(day);
+                    }}
+                    className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
+                    style={{ height: `${boardHeight}px` }}
+                  >
                       {backgroundSupply
                         ? SLOT_HOURS.map((hour, idx) => {
                             const state = backgroundSupply.slotStates[`${day}-${hour}`];
@@ -707,38 +816,172 @@ function CalendarGrid({
                           style={{ top: `${idx * rowHeight}px` }}
                         />
                       ))}
-                      {(layoutByDay.get(day) ?? []).map((entry) => {
+                      {(layoutByDay.get(day) ?? []).filter((e) => !e.item.isNight).map((entry) => {
                         const item = entry.item;
                         const hourIdx = hourIndexMap.get(item.startHour) ?? 0;
                         const top = hourIdx * rowHeight;
                         const height = Math.max(rowHeight, item.durationHours * rowHeight);
                         const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
-                        const instructorBorder = item.instructorId
-                          ? borderByInstructor.get(item.instructorId) ?? "border-white/80"
-                          : "border-red-300";
+                        const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                        if (dragState?.item.demandId === item.demandId) return null;
                         const widthPercent = 100 / Math.max(1, entry.columnCount);
                         const leftPercent = entry.columnIndex * widthPercent;
                         return (
                           <div
                             key={item.demandId}
-                            className={`absolute overflow-hidden rounded border-2 px-1.5 py-1 text-[10px] text-white ${color} ${instructorBorder} ${onSuggestionClick ? "cursor-pointer hover:ring-1 hover:ring-white/60" : ""}`}
+                            role="button"
+                            tabIndex={0}
+                            onPointerDown={(e) => {
+                              if (!draggable) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              dragEndedRef.current = false;
+                              const target = resolveDropTarget(e.clientX, e.clientY) ?? {
+                                dayOfWeek: item.dayOfWeek,
+                                startHour: item.startHour,
+                                isNight: false,
+                              };
+                              setDragState({ item, preview: target });
+                            }}
+                            onClick={(e) => {
+                              if (dragEndedRef.current) {
+                                dragEndedRef.current = false;
+                                e.preventDefault();
+                                return;
+                              }
+                              onSuggestionClick?.(item);
+                            }}
+                            className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
                             style={{
                               top: `${top}px`,
                               height: `${height - 4}px`,
                               left: `calc(${leftPercent}% + 4px)`,
                               width: `calc(${widthPercent}% - 8px)`,
                             }}
-                            title={`${item.studentLabel} • ${item.instructorLabel ?? "Sem instrutor"} • ${item.aircraftRegistration} • ${item.startTime}-${item.endTime}`}
-                            onClick={() => onSuggestionClick?.(item)}
                           >
                             <p className="truncate font-semibold">{item.studentLabel}</p>
                             <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                             <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                             <p className="truncate opacity-80">Peso: {totalWeightByDemand.get(item.demandId) ?? "—"}</p>
-                            {!item.instructorId ? <p className="truncate font-semibold text-amber-100">Sem instrutor</p> : null}
                           </div>
                         );
                       })}
+                      {dragState && dragState.preview.dayOfWeek === day && !dragState.preview.isNight ? (() => {
+                        const item = dragState.item;
+                        const entry = (layoutByDay.get(day) ?? []).find((e) => e.item.demandId === item.demandId) ?? {
+                          item,
+                          columnIndex: 0,
+                          columnCount: 1,
+                        };
+                        const hourIdx = hourIndexMap.get(dragState.preview.startHour) ?? 0;
+                        const top = hourIdx * rowHeight;
+                        const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                        const widthPercent = 100 / Math.max(1, entry.columnCount);
+                        const leftPercent = entry.columnIndex * widthPercent;
+                        const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                        return (
+                          <div
+                            key="preview"
+                            className={`pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1.5 py-1 text-[10px] text-white shadow-lg ring-2 ring-violet-400/50 ${color}`}
+                            style={{
+                              top: `${top}px`,
+                              height: `${height - 4}px`,
+                              left: `calc(${leftPercent}% + 4px)`,
+                              width: `calc(${widthPercent}% - 8px)`,
+                            }}
+                          >
+                            <p className="truncate font-semibold">{item.studentLabel}</p>
+                            <p className="truncate opacity-80">Solte para confirmar</p>
+                          </div>
+                        );
+                      })() : null}
+                  </div>
+                </td>
+              ))}
+            </tr>
+            <tr>
+              <td className="pr-2 pt-1 text-right text-[11px] font-mono text-indigo-400/60">Noite</td>
+              {DAY_ORDER.map((day) => {
+                const nightState = backgroundSupply?.slotStates[`${day}-night`];
+                const nightItems = (layoutByDay.get(day) ?? []).filter((e) => e.item.isNight);
+                return (
+                  <td key={day} className="p-0 pt-1">
+                    <div
+                      ref={(node) => {
+                        if (node) nightRowRefs.current.set(day, node);
+                        else nightRowRefs.current.delete(day);
+                      }}
+                      className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightState === "blocked" ? "border-slate-700/40 bg-slate-800/20" : nightState ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
+                    >
+                      {nightItems.length === 0 && !(dragState?.preview.dayOfWeek === day && dragState.preview.isNight) ? (
+                        <p className="text-center text-[10px] text-slate-600">—</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {nightItems.map(({ item }) => {
+                            const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                            const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                            if (dragState?.item.demandId === item.demandId) return null;
+                            return (
+                              <div
+                                key={item.demandId}
+                                role="button"
+                                tabIndex={0}
+                                onPointerDown={(e) => {
+                                  if (!draggable) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  dragEndedRef.current = false;
+                                  setDragState({
+                                    item,
+                                    preview: { dayOfWeek: day, startHour: item.startHour, isNight: true },
+                                  });
+                                }}
+                                onClick={(e) => {
+                                  if (dragEndedRef.current) {
+                                    dragEndedRef.current = false;
+                                    e.preventDefault();
+                                    return;
+                                  }
+                                  onSuggestionClick?.(item);
+                                }}
+                                className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
+                              >
+                                <p className="truncate font-semibold">{item.studentLabel}</p>
+                                <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                              </div>
+                            );
+                          })}
+                          {dragState && dragState.preview.dayOfWeek === day && dragState.preview.isNight ? (
+                            <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
+                              <p className="truncate font-semibold">{dragState.item.studentLabel}</p>
+                              <p className="truncate opacity-80">Solte para confirmar</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+            <tr>
+              <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Total
+              </td>
+              {DAY_ORDER.map((day) => {
+                const d = dayTotals.byDay.get(day) ?? { flights: 0, hours: 0 };
+                const cum = dayTotals.cumulative.get(day) ?? { flights: 0, hours: 0 };
+                return (
+                  <td key={day} className="p-0 pt-2">
+                    <div className="rounded-md border border-slate-700/50 bg-slate-800/40 px-2 py-2 text-center text-xs leading-snug text-slate-300">
+                      <p>
+                        <span className="text-sm font-semibold text-slate-100">{d.flights}</span> voos ·{" "}
+                        <span className="text-sm font-semibold text-slate-100">{d.hours.toFixed(1)}</span>h
+                      </p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Σ <span className="font-medium text-slate-200">{cum.flights}</span> ·{" "}
+                        <span className="font-medium text-slate-200">{cum.hours.toFixed(1)}</span>h
+                      </p>
                     </div>
                   </td>
                 );
@@ -764,6 +1007,7 @@ export function ScheduleGenerationTab() {
   const [requestsModalOpen, setRequestsModalOpen] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
 
+  const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [minGapMinutes, setMinGapMinutes] = useState(30);
   const [preview, setPreview] = useState<SchedulePreview | null>(null);
   const [editableSuggestions, setEditableSuggestions] = useState<ScheduledFlightSuggestion[]>([]);
@@ -836,11 +1080,15 @@ export function ScheduleGenerationTab() {
     setWeekLoading(true);
     setError(null);
     try {
-      const data = await getScheduleWeekData({
-        weekStart,
-        actorUserId: user.id,
-        actorRole: user.role,
-      });
+      const [data, rules] = await Promise.all([
+        getScheduleWeekData({
+          weekStart,
+          actorUserId: user.id,
+          actorRole: user.role,
+        }),
+        getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
+      ]);
+      setScheduleRules(rules.schedule);
       setWeekData(data);
       const savedDraft = readSavedPreview(weekStart);
       const nextInstructorConfigs = normalizeInstructorConfigs(data.instructors, savedDraft?.instructorConfigs ?? []);
@@ -1027,6 +1275,8 @@ export function ScheduleGenerationTab() {
         instructors: weekData.instructors,
         instructorConfigs: configs,
         minGapMinutes,
+        allowNightFlights: scheduleRules.allowNightFlights,
+        nightFlightStartHour: scheduleRules.nightFlightStartHour,
       });
       setPreview(generated);
       setEditableSuggestions(generated.suggestions);
@@ -1052,6 +1302,8 @@ export function ScheduleGenerationTab() {
       instructors: weekData.instructors,
       instructorConfigs,
       minGapMinutes,
+      allowNightFlights: scheduleRules.allowNightFlights,
+      nightFlightStartHour: scheduleRules.nightFlightStartHour,
     });
     setPreview(regenerated);
     setEditableSuggestions(regenerated.suggestions);
@@ -1216,8 +1468,9 @@ export function ScheduleGenerationTab() {
       instructorAnac: suggestion.instructorAnac,
       aircraftRegistration: suggestion.aircraftRegistration,
       dayOfWeek: suggestion.dayOfWeek,
-      startHour: suggestion.startHour,
+      startHour: (suggestion.isNight ?? false) ? scheduleRules.nightFlightStartHour : suggestion.startHour,
       durationHours: suggestion.durationHours,
+      isNight: suggestion.isNight ?? false,
     });
   }
 
@@ -1239,6 +1492,7 @@ export function ScheduleGenerationTab() {
       dayOfWeek: 1,
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
+      isNight: false,
     });
   }
 
@@ -1246,7 +1500,7 @@ export function ScheduleGenerationTab() {
     if (!weekData || !flightModalDraft) return;
     const studentLabel =
       weekData.students.find((row) => row.userId === flightModalDraft.studentId)?.label ?? flightModalDraft.studentId;
-    const next = buildSuggestionFromDraft(flightModalDraft, weekData.week.weekStart, studentLabel);
+    const next = buildSuggestionFromDraft(flightModalDraft, weekData.week.weekStart, studentLabel, scheduleRules);
     if (flightModalMode === "create") {
       setEditableSuggestions((prev) => withAutoInstructorAssignments([...prev, next]));
     } else {
@@ -1260,6 +1514,8 @@ export function ScheduleGenerationTab() {
     () => [...editableSuggestions].sort(compareByDayAndHour),
     [editableSuggestions],
   );
+
+  const hourOptions = useMemo(() => buildScheduleHourOptions(scheduleRules), [scheduleRules]);
 
   const colorByAircraft = useMemo(() => {
     const regs = [...new Set((weekData?.supplies ?? []).map((s) => s.aircraftRegistration))];
@@ -1344,7 +1600,7 @@ export function ScheduleGenerationTab() {
   }, [demandsByStudent, editableSuggestions, selectedStudentId, weekData]);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala Automática</h2>
         <p className="text-xs text-slate-500">Cruze intenções dos alunos com disponibilidade operacional e gere voos.</p>
@@ -1395,10 +1651,10 @@ export function ScheduleGenerationTab() {
             disabled={!weekData || weekLoading || bootLoading || generatingPreview || !canGenerateForSelectedWeek}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:opacity-50"
           >
-            {generatingPreview || weekLoading ? (
+            {generatingPreview ? (
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent" />
             ) : null}
-            {weekLoading ? "Carregando semana..." : generatingPreview ? "Gerando preview..." : "Gerar preview da escala"}
+            {generatingPreview ? "Gerando preview..." : "Gerar preview da escala"}
           </button>
         </div>
       </section>
@@ -1574,7 +1830,7 @@ export function ScheduleGenerationTab() {
                           {INSTRUCTOR_DAY_ORDER.map((day) => (
                             <td key={`${instructor.userId}-${day}`} className="px-2 py-2">
                               <div className="flex flex-col gap-1">
-                                {(["morning", "afternoon"] as const).map((period) => {
+                                {(["morning", "afternoon", "night"] as const).map((period) => {
                                   const availability =
                                     config.availability.find((row) => row.dayOfWeek === day && row.period === period) ?? {
                                       dayOfWeek: day,
@@ -1603,15 +1859,19 @@ export function ScheduleGenerationTab() {
                                             ),
                                           );
                                         }}
-                                      className={`h-8 w-full rounded-md border transition-all duration-75 disabled:opacity-40 ${instructorAvailabilityCellClass(availability)}`}
+                                      className={`flex h-9 w-full flex-col items-center justify-center gap-0.5 rounded-md border transition-all duration-75 disabled:opacity-40 ${instructorAvailabilityCellClass(availability)}`}
                                       aria-label={`${DAY_LABEL[day]} ${PERIOD_LABEL[period]}`}
                                     >
+                                      <span className="text-[9px] font-medium uppercase leading-none opacity-80">
+                                        {PERIOD_LABEL[period]}
+                                      </span>
                                       {availability.available && availability.availabilityType === "preferred" ? (
-                                        <span className="text-[10px] font-bold">★</span>
-                                      ) : null}
-                                      {availability.available && availability.availabilityType === "available" ? (
-                                        <span className="text-[10px]">✓</span>
-                                      ) : null}
+                                        <span className="text-[10px] font-bold leading-none">★</span>
+                                      ) : availability.available ? (
+                                        <span className="text-[10px] leading-none">✓</span>
+                                      ) : (
+                                        <span className="text-[10px] leading-none opacity-40">—</span>
+                                      )}
                                     </button>
                                   );
                                 })}
@@ -1768,23 +2028,22 @@ export function ScheduleGenerationTab() {
                         </td>
                         <td className="px-2 py-2">
                           <select
-                            value={row.startHour}
-                            onChange={(e) =>
-                              updateSuggestion(row.demandId, (current) => {
-                                const startHour = Number(e.target.value);
-                                return {
-                                  ...current,
-                                  startHour,
-                                  startTime: `${String(startHour).padStart(2, "0")}:00`,
-                                  endTime: composeEndTime(startHour, current.durationHours),
-                                };
-                              })
-                            }
+                            value={hourSelectValue(row.isNight, row.startHour)}
+                            onChange={(e) => {
+                              const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                              updateSuggestion(row.demandId, (current) => ({
+                                ...current,
+                                startHour: parsed.startHour,
+                                isNight: parsed.isNight,
+                                startTime: hoursToHHMM(parsed.startHour),
+                                endTime: composeEndTime(parsed.startHour, current.durationHours),
+                              }));
+                            }}
                             className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"
                           >
-                            {SLOT_HOURS.map((hour) => (
-                              <option key={hour} value={hour}>
-                                {hour}h
+                            {hourOptions.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
                               </option>
                             ))}
                           </select>
@@ -1972,6 +2231,19 @@ export function ScheduleGenerationTab() {
             totalWeightByDemand={totalWeightByDemand}
             backgroundSupply={selectedSupplyForBackground}
             onSuggestionClick={(suggestion) => openEditFlightModal(suggestion)}
+            onItemDrop={(suggestion, target) => {
+              openEditFlightModal(suggestion);
+              setFlightModalDraft((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      dayOfWeek: target.dayOfWeek,
+                      startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
+                      isNight: target.isNight,
+                    }
+                  : prev,
+              );
+            }}
           />
 
           <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -2392,15 +2664,18 @@ export function ScheduleGenerationTab() {
               <label className="text-xs text-slate-400">
                 Hora
                 <select
-                  value={flightModalDraft.startHour}
-                  onChange={(e) =>
-                    setFlightModalDraft((prev) => (prev ? { ...prev, startHour: Number(e.target.value) } : prev))
-                  }
+                  value={hourSelectValue(flightModalDraft.isNight, flightModalDraft.startHour)}
+                  onChange={(e) => {
+                    const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                    setFlightModalDraft((prev) =>
+                      prev ? { ...prev, startHour: parsed.startHour, isNight: parsed.isNight } : prev,
+                    );
+                  }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 >
-                  {SLOT_HOURS.map((hour) => (
-                    <option key={hour} value={hour}>
-                      {hour}h
+                  {hourOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>

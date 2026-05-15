@@ -136,6 +136,7 @@ export type WeekConfigPayload = {
   dailyCaps: { dayOfWeek: number; maxHours: number }[];
   groupCaps: { maxHours: number; days: number[] }[];
   slots: { dayOfWeek: number; startHour: number; state: SlotState }[];
+  nightSlots?: { dayOfWeek: number; state: SlotState }[];
 };
 
 export type WeekConfigFull = {
@@ -147,6 +148,7 @@ export type WeekConfigFull = {
 
 export const SLOT_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] as const;
 export type SlotHour = (typeof SLOT_HOURS)[number];
+export const NIGHT_SLOT_KEY_SUFFIX = "night" as const;
 
 // 0=Dom,1=Seg,2=Ter,3=Qua,4=Qui,5=Sex,6=Sab — ISO week starts Monday
 export const DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"] as const;

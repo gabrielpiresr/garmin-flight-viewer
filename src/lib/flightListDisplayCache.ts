@@ -1,7 +1,7 @@
 import { buildFlightDisplayInfo, type FlightDisplayInfo } from "./flightDisplay";
 import { getSavedFlight, type SavedFlightListItem } from "./flightsDb";
-import { listFlightVideos } from "./flightVideosDb";
-import { getProfile, type PilotProfile } from "./rbac";
+import { listFlightVideoFlags, listFlightVideos } from "./flightVideosDb";
+import { getProfile, listProfileSummariesByUserIds, type PilotProfile } from "./rbac";
 
 export type FlightListDisplayInfo = FlightDisplayInfo & { videoOk: boolean };
 
@@ -16,6 +16,58 @@ type ProfileFallback = {
 const profileCache = new Map<string, Promise<ProfileSummary | null>>();
 const fullInfoCache = new Map<string, Promise<FlightDisplayInfo>>();
 const videoOkCache = new Map<string, Promise<boolean>>();
+const DEFAULT_FULL_INFO_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const limit = Math.max(1, Math.floor(concurrency));
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+function uniqueProfileIds(items: SavedFlightListItem[]): string[] {
+  return Array.from(
+    new Set(
+      items
+        .flatMap((item) => [item.student_user_id, item.instructor_user_id])
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+}
+
+function primeProfileCache(userIds: string[]): void {
+  const missing = userIds.filter((id) => !profileCache.has(id));
+  if (missing.length === 0) return;
+
+  const batch = listProfileSummariesByUserIds(missing).catch(() => ({} as Record<string, ProfileSummary>));
+  for (const userId of missing) {
+    profileCache.set(userId, batch.then((summaries) => summaries[userId] ?? null));
+  }
+}
+
+function primeVideoCache(flightIds: string[]): void {
+  const missing = flightIds.filter((id) => !videoOkCache.has(id));
+  if (missing.length === 0) return;
+
+  const batch = listFlightVideoFlags(missing).catch(() => ({} as Record<string, boolean>));
+  for (const flightId of missing) {
+    videoOkCache.set(flightId, batch.then((flags) => Boolean(flags[flightId])));
+  }
+}
 
 async function getCachedProfile(userId: string | null | undefined): Promise<ProfileSummary | null> {
   if (!userId) return null;
@@ -54,15 +106,27 @@ export function buildBasicFlightListDisplayInfo(item: SavedFlightListItem): Flig
   return buildFlightDisplayInfo(item, null);
 }
 
+function hasMaterializedDisplayInfo(item: SavedFlightListItem): boolean {
+  return (
+    item.from_to !== null ||
+    item.landings !== null ||
+    item.total_flight_minutes !== null ||
+    item.total_miles !== null ||
+    item.telemetry_present !== null ||
+    item.instructor_suggestion_md !== null ||
+    item.student_suggestion_md !== null ||
+    item.weight_balance_complete !== null
+  );
+}
+
 export async function loadLightFlightListDisplayInfos(
   items: SavedFlightListItem[],
 ): Promise<Record<string, FlightDisplayInfo>> {
-  const pairs = await Promise.all(
-    items.map(async (item) => {
-      const fallback = await getProfileFallback(item);
-      return [item.id, buildFlightDisplayInfo(item, null, fallback)] as const;
-    }),
-  );
+  primeProfileCache(uniqueProfileIds(items));
+  const pairs = await mapWithConcurrency(items, 24, async (item) => {
+    const fallback = await getProfileFallback(item);
+    return [item.id, buildFlightDisplayInfo(item, null, fallback)] as const;
+  });
   return Object.fromEntries(pairs);
 }
 
@@ -71,7 +135,11 @@ async function getCachedFullFlightInfo(item: SavedFlightListItem): Promise<Fligh
   if (existing) return existing;
 
   const promise = (async () => {
-    const [saved, fallback] = await Promise.all([getSavedFlight(item.id), getProfileFallback(item)]);
+    const fallback = await getProfileFallback(item);
+    if (hasMaterializedDisplayInfo(item)) {
+      return buildFlightDisplayInfo(item, null, fallback);
+    }
+    const saved = await getSavedFlight(item.id);
     return buildFlightDisplayInfo(item, saved.data?.csv_text ?? null, fallback);
   })();
 
@@ -81,16 +149,22 @@ async function getCachedFullFlightInfo(item: SavedFlightListItem): Promise<Fligh
 
 export async function loadFullFlightListDisplayInfos(
   items: SavedFlightListItem[],
+  options: { limit?: number; concurrency?: number } = {},
 ): Promise<Record<string, FlightDisplayInfo>> {
-  const pairs = await Promise.all(
-    items.map(async (item) => {
+  const selectedItems =
+    typeof options.limit === "number" && options.limit >= 0 ? items.slice(0, options.limit) : items;
+  primeProfileCache(uniqueProfileIds(selectedItems));
+  const pairs = await mapWithConcurrency(
+    selectedItems,
+    options.concurrency ?? DEFAULT_FULL_INFO_CONCURRENCY,
+    async (item) => {
       try {
         return [item.id, await getCachedFullFlightInfo(item)] as const;
       } catch {
         const fallback = await getProfileFallback(item);
         return [item.id, buildFlightDisplayInfo(item, null, fallback)] as const;
       }
-    }),
+    },
   );
   return Object.fromEntries(pairs);
 }
@@ -107,9 +181,17 @@ async function getCachedVideoOk(flightId: string): Promise<boolean> {
   return promise;
 }
 
-export async function loadFlightVideoFlags(items: SavedFlightListItem[]): Promise<Record<string, boolean>> {
-  const pairs = await Promise.all(
-    items.map(async (item) => [item.id, await getCachedVideoOk(item.id)] as const),
+export async function loadFlightVideoFlags(
+  items: SavedFlightListItem[],
+  options: { limit?: number; concurrency?: number } = {},
+): Promise<Record<string, boolean>> {
+  const selectedItems =
+    typeof options.limit === "number" && options.limit >= 0 ? items.slice(0, options.limit) : items;
+  primeVideoCache(selectedItems.map((item) => item.id));
+  const pairs = await mapWithConcurrency(
+    selectedItems,
+    options.concurrency ?? 12,
+    async (item) => [item.id, await getCachedVideoOk(item.id)] as const,
   );
   return Object.fromEntries(pairs);
 }

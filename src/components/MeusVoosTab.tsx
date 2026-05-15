@@ -7,6 +7,7 @@ import {
   getDateBase,
   getFlightDateTimeMs,
   isFutureFlight,
+  type FlightDisplayInfo,
 } from "../lib/flightDisplay";
 import {
   deleteSavedFlight,
@@ -131,6 +132,7 @@ function writeFichaWindowStatus(printWindow: Window, title: string, message: str
 }
 
 type DisplayMode = "cards" | "calendar" | "table";
+const FULL_INFO_PRELOAD_LIMIT = 24;
 
 function defaultDisplayMode(): DisplayMode {
   if (typeof window === "undefined") return "table";
@@ -145,6 +147,21 @@ function readStoredDisplayMode(userId?: string): DisplayMode {
   if (typeof window === "undefined") return defaultDisplayMode();
   const stored = window.localStorage.getItem(displayModeStorageKey(userId));
   return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
+}
+
+function selectFullInfoPreloadItems(
+  items: SavedFlightListItem[],
+  infoById: Record<string, FlightDisplayInfo>,
+): SavedFlightListItem[] {
+  return [...items]
+    .sort((a, b) => {
+      const aFuture = isFutureFlight(a, infoById[a.id]);
+      const bFuture = isFutureFlight(b, infoById[b.id]);
+      if (aFuture !== bFuture) return aFuture ? -1 : 1;
+      const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
+      return aFuture ? diff : -diff;
+    })
+    .slice(0, FULL_INFO_PRELOAD_LIMIT);
 }
 
 function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
@@ -292,8 +309,9 @@ export function MeusVoosTab() {
         return next;
       });
 
+      const preloadItems = selectFullInfoPreloadItems(items, lightInfos);
       const [fullInfos, videoFlags] = await Promise.all([
-        loadFullFlightListDisplayInfos(items),
+        loadFullFlightListDisplayInfos(preloadItems),
         loadFlightVideoFlags(items),
       ]);
       if (cancelled) return;
@@ -330,7 +348,7 @@ export function MeusVoosTab() {
   const groups = useMemo(() => groupFlights(filteredItems, infoById), [filteredItems, infoById]);
   const futureGroups = useMemo(() => {
     const future = filteredItems.filter((item) => isFutureFlight(item, infoById[item.id]));
-    return groupFlights(future, infoById, "asc");
+    return groupFlights(future, infoById, "desc");
   }, [filteredItems, infoById]);
   const pastGroups = useMemo(() => {
     const past = filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id]));

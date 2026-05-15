@@ -12,6 +12,7 @@ import {
 import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getSavedFlight, listStudentFlightHistory, type SavedFlightListItem } from "../../lib/flightsDb";
+import { loadFullFlightListDisplayInfos } from "../../lib/flightListDisplayCache";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { getProfile, type PilotProfile } from "../../lib/rbac";
 import { formatNumber } from "../../lib/weightBalance";
@@ -331,24 +332,9 @@ export function StudentFlightContextPanel({
     if (missing.length === 0) return;
     let cancelled = false;
     void (async () => {
-      const pairs = await Promise.all(
-        missing.map(async (item) => {
-          const [saved, studentRes, instructorRes] = await Promise.all([
-            getSavedFlight(item.id),
-            item.student_user_id ? getProfile(item.student_user_id) : Promise.resolve({ data: null, error: null }),
-            item.instructor_user_id ? getProfile(item.instructor_user_id) : Promise.resolve({ data: null, error: null }),
-          ]);
-          const info = buildFlightDisplayInfo(item, saved.data?.csv_text ?? null, {
-            studentName: studentRes.data?.fullName,
-            studentAnac: studentRes.data?.anacCode,
-            instructorName: instructorRes.data?.fullName,
-            instructorAnac: instructorRes.data?.anacCode,
-          });
-          return [item.id, info] as const;
-        }),
-      );
+      const infoById = await loadFullFlightListDisplayInfos(missing.slice(0, 30), { concurrency: 4 });
       if (!cancelled) {
-        setHistoryInfoById((prev) => ({ ...prev, ...Object.fromEntries(pairs) }));
+        setHistoryInfoById((prev) => ({ ...prev, ...infoById }));
       }
     })();
     return () => {

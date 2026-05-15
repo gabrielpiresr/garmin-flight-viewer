@@ -63,7 +63,7 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
         value={subTab}
         onChange={changeSubTab}
         ariaLabel="Administração de escala"
-        className="mx-auto max-w-7xl"
+        className="w-full"
       />
 
       {openedSubTabs.has("flights") ? (

@@ -26,8 +26,12 @@ import { Skeleton } from "../ui/Skeleton";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { TrainingTracksTab } from "./TrainingTracksTab";
+import { TrainingExercisesTab } from "./TrainingExercisesTab";
+import { NoticesTab } from "./NoticesTab";
+import { RewardsEditor } from "./RewardsEditor";
+import { useOpenedTabs } from "../../lib/routedTabs";
 
-type SettingsSubTab = "email" | "brand" | "rules" | "tracks";
+export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "notices";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -59,11 +63,39 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
+    id: "badges",
+    label: "Badges",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2.5l2.25 4.56 5.03.73-3.64 3.55.86 5.01L10 13.98l-4.5 2.37.86-5.01-3.64-3.55 5.03-.73L10 2.5z" />
+      </svg>
+    ),
+  },
+  {
     id: "tracks",
     label: "Trilhas",
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path fillRule="evenodd" d="M4 3.5A2.5 2.5 0 016.5 1h7A2.5 2.5 0 0116 3.5v13a.75.75 0 01-1.18.615L10 13.742l-4.82 3.373A.75.75 0 014 16.5v-13zM6.5 2.5A1 1 0 005.5 3.5v11.56l4.07-2.85a.75.75 0 01.86 0l4.07 2.85V3.5a1 1 0 00-1-1h-7z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "exercises",
+    label: "Exercícios",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M4.5 2A2.5 2.5 0 002 4.5v11A2.5 2.5 0 004.5 18h11a2.5 2.5 0 002.5-2.5v-11A2.5 2.5 0 0015.5 2h-11zM6 6.75A.75.75 0 016.75 6h6.5a.75.75 0 010 1.5h-6.5A.75.75 0 016 6.75zM6.75 9.25a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5zM6 13.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "notices",
+    label: "Avisos",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M1.5 8.67c0-1.213.84-2.266 2.024-2.49l13.5-2.56a2.25 2.25 0 012.669 2.21v12.34a2.25 2.25 0 01-2.67 2.21l-13.5-2.56A2.532 2.532 0 011.5 15.33V8.67z" />
+        <path d="M20.25 8.99a.75.75 0 011.5 0v5.02a.75.75 0 01-1.5 0V8.99z" />
       </svg>
     ),
   },
@@ -822,6 +854,45 @@ function RulesSettingsPanel() {
             />
             Aluno só consegue solicitar intenções condizentes com seus créditos
           </label>
+          <label className="flex items-center gap-3 rounded-lg border border-indigo-700/40 bg-indigo-950/20 p-3 text-sm text-slate-200 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={form.schedule.allowNightFlights}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  schedule: { ...prev.schedule, allowNightFlights: e.target.checked },
+                }))
+              }
+              className="h-4 w-4 accent-indigo-500"
+            />
+            Permitir voos noturnos
+          </label>
+          {form.schedule.allowNightFlights && (
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-slate-400">
+                Início do voo noturno (hora base)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                step={1}
+                value={form.schedule.nightFlightStartHour}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    schedule: { ...prev.schedule, nightFlightStartHour: Number(e.target.value) },
+                  }))
+                }
+                className="w-32 rounded-lg border border-slate-700/60 bg-slate-950/50 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                placeholder="18"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Voos noturnos serão agendados a partir desta hora (ex: 18 = 18:00).
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -888,17 +959,67 @@ function RulesSettingsPanel() {
   );
 }
 
-export function PlatformSettingsTab() {
-  const [subTab, setSubTab] = useState<SettingsSubTab>("email");
+type PlatformSettingsTabProps = {
+  subTab?: SettingsSubTab;
+  onSubTabChange?: (tab: SettingsSubTab) => void;
+};
+
+export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }: PlatformSettingsTabProps = {}) {
+  const [internalSubTab, setInternalSubTab] = useState<SettingsSubTab>("email");
+  const subTab = controlledSubTab ?? internalSubTab;
+  const openedSubTabs = useOpenedTabs(subTab);
+
+  function changeSubTab(next: SettingsSubTab) {
+    if (onSubTabChange) {
+      onSubTabChange(next);
+      return;
+    }
+    setInternalSubTab(next);
+  }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
-      <Tabs items={SUB_TABS} value={subTab} onChange={setSubTab} ariaLabel="Configurações da plataforma" accent="cyan" />
+    <div className="w-full space-y-4">
+      <Tabs items={SUB_TABS} value={subTab} onChange={changeSubTab} ariaLabel="Configurações da plataforma" accent="cyan" />
 
-      {subTab === "email" ? <EmailSettingsPanel /> : null}
-      {subTab === "brand" ? <BrandSettingsPanel /> : null}
-      {subTab === "rules" ? <RulesSettingsPanel /> : null}
-      {subTab === "tracks" ? <TrainingTracksTab /> : null}
+      {openedSubTabs.has("email") ? (
+        <div hidden={subTab !== "email"}>
+          <EmailSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("brand") ? (
+        <div hidden={subTab !== "brand"}>
+          <BrandSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("rules") ? (
+        <div hidden={subTab !== "rules"}>
+          <RulesSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("badges") ? (
+        <div hidden={subTab !== "badges"}>
+          <RewardsEditor
+            kind="badge"
+            title="Badges da evolução"
+            subtitle="Configure recompensas globais do aluno, exibidas na aba Evolução."
+          />
+        </div>
+      ) : null}
+      {openedSubTabs.has("tracks") ? (
+        <div hidden={subTab !== "tracks"}>
+          <TrainingTracksTab />
+        </div>
+      ) : null}
+      {openedSubTabs.has("exercises") ? (
+        <div hidden={subTab !== "exercises"}>
+          <TrainingExercisesTab />
+        </div>
+      ) : null}
+      {openedSubTabs.has("notices") ? (
+        <div hidden={subTab !== "notices"}>
+          <NoticesTab />
+        </div>
+      ) : null}
     </div>
   );
 }

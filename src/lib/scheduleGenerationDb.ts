@@ -1,5 +1,4 @@
 import { Query } from "appwrite";
-import { decodeFlightRecord } from "./flightRecordCodec";
 import {
   databases,
   isAppwriteConfigured,
@@ -8,8 +7,8 @@ import {
   WEEKLY_PLANS_COL_ID,
 } from "./appwrite";
 import { listAircrafts } from "./aircraftDb";
-import { getProfile, listAssignableInstructors, listAssignableStudents } from "./rbac";
-import { getSavedFlight, listSavedFlights } from "./flightsDb";
+import { listAssignableInstructors, listStudentIdentitiesForSchedule } from "./rbac";
+import { listScheduledFlightsForWeek, listSavedFlights, type SavedFlightListItem } from "./flightsDb";
 import { getSchoolRules } from "./schoolRulesDb";
 import type {
   AircraftWeekSupply,
@@ -55,7 +54,8 @@ type ParsedItem = {
   preferredAircraft: string | null;
   priorityLevel: number;
   notes: string | null;
-  availability: { dayOfWeek: number; period: "morning" | "afternoon"; availabilityType: "available" | "preferred" }[];
+  isNight?: boolean;
+  availability: { dayOfWeek: number; period: "morning" | "afternoon" | "night"; availabilityType: "available" | "preferred" }[];
 };
 
 function isReady(): boolean {
@@ -194,71 +194,58 @@ async function listPlansByWeek(weekStart: string): Promise<WeeklyPlanDoc[]> {
 }
 
 
-function parseDemandMarker(metaText: string | undefined): string | null {
-  if (!metaText) return null;
-  const marker = metaText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("demand:"));
-  if (!marker) return null;
-  return marker.slice("demand:".length).trim() || null;
+function resolveScheduleDemandId(row: SavedFlightListItem): string {
+  if (row.schedule_demand_id) return row.schedule_demand_id;
+  if (row.source_filename.startsWith(MANUAL_SOURCE_PREFIX)) return `manual-${row.id}`;
+  return `legacy-${row.id}`;
 }
 
-function getScheduleDemandId(meta: NonNullable<ReturnType<typeof decodeFlightRecord>["meta"]>, weekStart: string): string | null {
-  if (meta.schedule?.weekStart === weekStart && meta.schedule.demandId) return meta.schedule.demandId;
-  if (!meta.preFlight.objectiveMd.includes(`week:${weekStart}`)) return null;
-  return parseDemandMarker(meta.preFlight.objectiveMd);
-}
+function savedFlightToScheduledFlight(row: SavedFlightListItem): ExistingScheduledFlight | null {
+  const studentId = row.student_user_id;
+  const date = row.flight_date;
+  if (!studentId || !date) return null;
 
-function parseDurationFromFlightTime(flightTime: string | undefined): number {
-  if (!flightTime) return 1;
-  const [hh, mm] = flightTime.split(":");
-  const hours = Number(hh);
-  const minutes = Number(mm);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 1;
-  return Math.max(0.5, hours + minutes / 60);
+  const durationHours =
+    typeof row.duration_sec === "number" && row.duration_sec > 0 ? row.duration_sec / 3600 : 1;
+
+  return {
+    id: row.id,
+    demandId: resolveScheduleDemandId(row),
+    studentId,
+    instructorId: row.instructor_user_id,
+    instructorLabel: null,
+    instructorAnac: null,
+    aircraftRegistration: row.aircraft_ident,
+    date,
+    startTime: row.start_time?.trim() || "06:00",
+    durationHours,
+    isNight: row.is_night ?? false,
+    sourceFilename: row.source_filename,
+  };
 }
 
 async function listExistingGeneratedFlights(
   weekStart: string,
   viewer: { userId: string; role: UserRole },
 ): Promise<ExistingScheduledFlight[]> {
-  const { data } = await listSavedFlights(viewer);
-  if (!data || data.length === 0) return [];
-  const candidateRows = data.filter((row) =>
-    row.source_filename.startsWith(`${AUTO_SOURCE_PREFIX}${weekStart}`) ||
-    row.source_filename.startsWith(`${MANUAL_SOURCE_PREFIX}${weekStart}`),
-  );
-  if (candidateRows.length === 0) return [];
+  let rows: SavedFlightListItem[] = [];
+  const listed = await listScheduledFlightsForWeek(weekStart);
+  if (listed.error) throw listed.error;
+  rows = listed.data;
+
+  if (rows.length === 0) {
+    const { data } = await listSavedFlights(viewer);
+    rows = (data ?? []).filter(
+      (row) =>
+        row.source_filename.startsWith(`${AUTO_SOURCE_PREFIX}${weekStart}`) ||
+        row.source_filename.startsWith(`${MANUAL_SOURCE_PREFIX}${weekStart}`),
+    );
+  }
 
   const out: ExistingScheduledFlight[] = [];
-  for (const row of candidateRows) {
-    const full = await getSavedFlight(row.id);
-    if (!full.data) continue;
-    const decoded = decodeFlightRecord(full.data.csv_text);
-    const meta = decoded.meta;
-    if (!meta) continue;
-
-    const demandId = getScheduleDemandId(meta, weekStart);
-    if (!demandId) continue;
-
-    const durationHours =
-      (typeof row.duration_sec === "number" && row.duration_sec > 0 ? row.duration_sec / 3600 : null) ??
-      parseDurationFromFlightTime(meta.legs[0]?.flightTime);
-
-    out.push({
-      id: row.id,
-      demandId,
-      studentId: meta.header.studentUserId,
-      instructorId: full.data.instructor_user_id ?? row.instructor_user_id ?? null,
-      instructorLabel: meta.header.instructorName ?? null,
-      instructorAnac: meta.header.instructorAnac ?? null,
-      aircraftRegistration: row.aircraft_ident,
-      date: meta.header.date,
-      startTime: meta.header.startTime ?? "06:00",
-      durationHours,
-      sourceFilename: row.source_filename,
-    });
+  for (const row of rows) {
+    const mapped = savedFlightToScheduledFlight(row);
+    if (mapped) out.push(mapped);
   }
   return out;
 }
@@ -334,16 +321,34 @@ export async function getScheduleWeekOptions(filters?: {
   return makeFallbackWeeks();
 }
 
+export type ScheduleWeekDataScope = "full" | "flights-only";
+
+function buildWeekOptionFromStart(weekStart: string): ScheduleWeekOption {
+  const start = new Date(`${weekStart}T12:00:00`);
+  const end = addDays(start, 6);
+  const weekEnd = formatISO(end);
+  return {
+    weekStart,
+    weekEnd,
+    label: formatWeekLabel(weekStart, weekEnd),
+    isClosed: false,
+    scheduleClosedAt: null,
+    isFuture: isFutureWeek(weekStart),
+  };
+}
+
 export async function getScheduleWeekData(params: {
   weekStart: string;
   actorUserId: string;
   actorRole: UserRole;
+  scope?: ScheduleWeekDataScope;
+  week?: ScheduleWeekOption;
 }): Promise<ScheduleWeekData> {
-  const weeks = await getScheduleWeekOptions();
-  const pickedWeek = weeks.find((week) => week.weekStart === params.weekStart);
-  if (!pickedWeek) {
-    throw new Error("Semana inválida.");
-  }
+  const scope = params.scope ?? "full";
+  const pickedWeek =
+    params.week ??
+    (await getScheduleWeekOptions()).find((week) => week.weekStart === params.weekStart) ??
+    buildWeekOptionFromStart(params.weekStart);
 
   if (!isReady() || !databases || !DB_ID || !OP_WEEKS_COL_ID) {
     return {
@@ -356,36 +361,51 @@ export async function getScheduleWeekData(params: {
     };
   }
 
-  const [rules, aircrafts, studentsOptions, instructors, opWeeksRes, planDocs, existingGeneratedFlights] = await Promise.all([
-    getSchoolRules().catch(() => DEFAULT_SCHOOL_RULES),
-    listAircrafts(schoolId),
-    listAssignableStudents(params.actorUserId, params.actorRole),
-    listAssignableInstructors(params.actorRole),
-    databases.listDocuments(DB_ID, OP_WEEKS_COL_ID, [
-      Query.equal("week_start", [params.weekStart]),
-      Query.limit(200),
-    ]),
-    listPlansByWeek(params.weekStart),
-    listExistingGeneratedFlights(params.weekStart, { userId: params.actorUserId, role: params.actorRole }),
-  ]);
+  const loadPlans = scope === "full";
+  const [rules, aircrafts, studentIdentities, instructors, opWeeksRes, planDocs, existingGeneratedFlights] =
+    await Promise.all([
+      getSchoolRules().catch(() => DEFAULT_SCHOOL_RULES),
+      listAircrafts(schoolId),
+      listStudentIdentitiesForSchedule(params.actorUserId),
+      listAssignableInstructors(params.actorRole),
+      databases.listDocuments(DB_ID, OP_WEEKS_COL_ID, [
+        Query.equal("week_start", [params.weekStart]),
+        Query.limit(200),
+      ]),
+      loadPlans ? listPlansByWeek(params.weekStart) : Promise.resolve([] as WeeklyPlanDoc[]),
+      listExistingGeneratedFlights(params.weekStart, { userId: params.actorUserId, role: params.actorRole }),
+    ]);
 
   const aircraftMap = new Map(aircrafts.map((aircraft) => [aircraft.id, aircraft]));
-  const studentsMap = new Map(studentsOptions.map((student) => [student.userId, student.email]));
-  const uniqueStudentIds = [
-    ...new Set(
-      [
-        ...studentsOptions.map((student) => student.userId),
-        ...planDocs.map((plan) => plan.student_id ?? ""),
-      ].filter((id) => id.length > 0),
-    ),
-  ];
-  const profilePairs = await Promise.all(
-    uniqueStudentIds.map(async (studentId) => {
-      const profile = await getProfile(studentId);
-      return [studentId, profile.data] as const;
-    }),
-  );
-  const profileMap = new Map(profilePairs);
+  const identityByUserId = new Map(studentIdentities.map((student) => [student.userId, student]));
+
+  for (const flight of existingGeneratedFlights) {
+    if (!identityByUserId.has(flight.studentId)) {
+      identityByUserId.set(flight.studentId, {
+        userId: flight.studentId,
+        label: flight.studentId,
+        email: null,
+        anacCode: null,
+        weightKg: null,
+        heightCm: null,
+      });
+    }
+  }
+
+  for (const plan of planDocs) {
+    const studentId = plan.student_id ?? "";
+    if (studentId && !identityByUserId.has(studentId)) {
+      identityByUserId.set(studentId, {
+        userId: studentId,
+        label: studentId,
+        email: null,
+        anacCode: null,
+        weightKg: null,
+        heightCm: null,
+      });
+    }
+  }
+
   const supplies: AircraftWeekSupply[] = (opWeeksRes.documents as unknown as OpWeekDoc[]).map((doc) => {
     const registration =
       aircraftMap.get(doc.aircraft_id ?? "")?.registration ??
@@ -404,49 +424,44 @@ export async function getScheduleWeekData(params: {
   });
 
   const demands: StudentRequestDemand[] = [];
-  for (const plan of planDocs) {
-    const studentId = plan.student_id ?? "";
-    const profile = profileMap.get(studentId);
-    const studentLabel =
-      profile?.fullName?.trim() ||
-      studentsMap.get(studentId) ||
-      studentId;
-    const parsedItems = parsePlanItems(plan.items_json);
-    for (const item of parsedItems.filter((entry) =>
-      isValidDemandItem(entry, rules.schedule.minRequestHours, rules.schedule.maxRequestHours),
-    )) {
-      demands.push({
-        demandId: `${plan.$id}-${item.position}`,
-        studentId,
-        studentLabel,
-        weekStart: params.weekStart,
-        durationHours: item.durationHours ?? 1,
-        priorityLevel: (item.priorityLevel ?? 2) as 1 | 2 | 3,
-        flexibilityLevel: (item.flexibilityLevel ?? "medium") as "low" | "medium" | "high",
-        preferredModelId: item.preferredAircraft ?? null,
-        availability: item.availability.map((a) => ({
-          dayOfWeek: a.dayOfWeek,
-          period: a.period,
-          availabilityType: a.availabilityType,
-        })),
-        notes: item.notes ?? null,
-      });
+  if (loadPlans) {
+    for (const plan of planDocs) {
+      const studentId = plan.student_id ?? "";
+      const identity = identityByUserId.get(studentId);
+      const studentLabel = identity?.label || studentId;
+      const parsedItems = parsePlanItems(plan.items_json);
+      for (const item of parsedItems.filter((entry) =>
+        isValidDemandItem(entry, rules.schedule.minRequestHours, rules.schedule.maxRequestHours),
+      )) {
+        demands.push({
+          demandId: `${plan.$id}-${item.position}`,
+          studentId,
+          studentLabel,
+          weekStart: params.weekStart,
+          durationHours: item.durationHours ?? 1,
+          priorityLevel: (item.priorityLevel ?? 2) as 1 | 2 | 3,
+          flexibilityLevel: (item.flexibilityLevel ?? "medium") as "low" | "medium" | "high",
+          preferredModelId: item.preferredAircraft ?? null,
+          isNight: item.isNight ?? false,
+          availability: item.availability.map((a) => ({
+            dayOfWeek: a.dayOfWeek,
+            period: a.period,
+            availabilityType: a.availabilityType,
+          })),
+          notes: item.notes ?? null,
+        });
+      }
     }
   }
 
-  const students: StudentIdentity[] = uniqueStudentIds
-    .filter((studentId) => studentId.length > 0)
-    .map((studentId) => ({
-      userId: studentId,
-      label:
-        profileMap.get(studentId)?.fullName?.trim() ||
-        studentsMap.get(studentId) ||
-        studentId,
-      email: profileMap.get(studentId)?.email || studentsMap.get(studentId) || null,
-      anacCode: profileMap.get(studentId)?.anacCode || null,
-      weightKg: profileMap.get(studentId)?.weightKg ?? null,
-      heightCm: profileMap.get(studentId)?.heightCm ?? null,
-    }));
+  const students: StudentIdentity[] = [...identityByUserId.values()].map((identity) => ({
+    userId: identity.userId,
+    label: identity.label,
+    email: identity.email,
+    anacCode: identity.anacCode,
+    weightKg: identity.weightKg,
+    heightCm: identity.heightCm,
+  }));
 
   return {
     week: pickedWeek,

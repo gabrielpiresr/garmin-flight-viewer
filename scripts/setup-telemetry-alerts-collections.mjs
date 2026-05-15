@@ -29,7 +29,13 @@ const FLIGHT_ALERT_PERMISSIONS = [
   Permission.create(Role.users()),
   Permission.create("users/unverified"),
   Permission.create(Role.label("instrutor")),
+  Permission.read(Role.label("instrutor")),
+  Permission.update(Role.label("instrutor")),
+  Permission.delete(Role.label("instrutor")),
   Permission.create(Role.label("admin")),
+  Permission.read(Role.label("admin")),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
 ];
 
 async function sleep(ms) {

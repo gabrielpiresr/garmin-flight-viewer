@@ -26,6 +26,7 @@ import { Skeleton } from "../ui/Skeleton";
 
 type View = "list" | "detail" | "create";
 type DisplayMode = "cards" | "calendar" | "table";
+const FULL_INFO_PRELOAD_LIMIT = 24;
 
 function defaultDisplayMode(): DisplayMode {
   if (typeof window === "undefined") return "table";
@@ -40,6 +41,21 @@ function readStoredDisplayMode(userId?: string): DisplayMode {
   if (typeof window === "undefined") return defaultDisplayMode();
   const stored = window.localStorage.getItem(displayModeStorageKey(userId));
   return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
+}
+
+function selectFullInfoPreloadItems(
+  items: SavedFlightListItem[],
+  infoById: Record<string, FlightDisplayInfo>,
+): SavedFlightListItem[] {
+  return [...items]
+    .sort((a, b) => {
+      const aFuture = isFutureFlight(a, infoById[a.id]);
+      const bFuture = isFutureFlight(b, infoById[b.id]);
+      if (aFuture !== bFuture) return aFuture ? -1 : 1;
+      const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
+      return aFuture ? diff : -diff;
+    })
+    .slice(0, FULL_INFO_PRELOAD_LIMIT);
 }
 
 function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
@@ -260,7 +276,8 @@ export function InstructorFlightsTab() {
       if (cancelled) return;
       setInfoById((prev) => ({ ...prev, ...lightInfos }));
 
-      const fullInfos = await loadFullFlightListDisplayInfos(items);
+      const preloadItems = selectFullInfoPreloadItems(items, lightInfos);
+      const fullInfos = await loadFullFlightListDisplayInfos(preloadItems);
       if (!cancelled) setInfoById((prev) => ({ ...prev, ...fullInfos }));
     })();
     return () => {
@@ -289,7 +306,7 @@ export function InstructorFlightsTab() {
     () => filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id])),
     [filteredItems, infoById],
   );
-  const futureGroups = useMemo(() => groupFlights(futureItems, infoById, "asc"), [futureItems, infoById]);
+  const futureGroups = useMemo(() => groupFlights(futureItems, infoById, "desc"), [futureItems, infoById]);
   const pastGroups = useMemo(() => groupFlights(pastItems, infoById, "desc"), [pastItems, infoById]);
   const consolidatedSummary = useMemo(() => {
     return filteredItems.reduce(

@@ -117,6 +117,30 @@ export async function listFlightVideos(flightId: string): Promise<{ data: Flight
   }
 }
 
+export async function listFlightVideoFlags(flightIds: string[]): Promise<Record<string, boolean>> {
+  const uniqueIds = Array.from(new Set(flightIds.filter(Boolean)));
+  const flags: Record<string, boolean> = Object.fromEntries(uniqueIds.map((id) => [id, false] as const));
+  if (!isAppwriteConfigured || !databases || !VIDEOS_COL_ID || uniqueIds.length === 0) return flags;
+
+  try {
+    const chunkSize = 25;
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const res = await databases.listDocuments(DB_ID, VIDEOS_COL_ID, [
+        Query.equal("flight_id", chunk),
+        Query.limit(100),
+      ]);
+      for (const doc of res.documents) {
+        const flightId = (doc.flight_id as string | undefined) ?? "";
+        if (flightId) flags[flightId] = true;
+      }
+    }
+    return flags;
+  } catch {
+    return flags;
+  }
+}
+
 export async function deleteFlightVideo(docId: string): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };

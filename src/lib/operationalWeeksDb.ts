@@ -84,18 +84,25 @@ function parseSlots(json: string | null, weekId: string): OperationalSlot[] {
   try {
     const raw = JSON.parse(json) as Record<string, SlotState>;
     return Object.entries(raw).map(([key, state]) => {
-      const [d, h] = key.split("-").map(Number);
+      const parts = key.split("-");
+      const d = Number(parts[0]);
+      const isNight = parts[1] === "night";
+      const h = isNight ? -1 : Number(parts[1]);
       return {
         id: key,
         operational_week_id: weekId,
-        day_of_week: d!,
-        start_hour: h!,
+        day_of_week: d,
+        start_hour: h,
         state,
       };
     });
   } catch {
     return [];
   }
+}
+
+export function isNightSlot(slot: OperationalSlot): boolean {
+  return slot.start_hour === -1;
 }
 
 function serializeDailyCaps(caps: WeekConfigPayload["dailyCaps"]): string {
@@ -108,9 +115,12 @@ function serializeGroupCaps(caps: WeekConfigPayload["groupCaps"]): string {
   return JSON.stringify(caps.map((gc) => ({ maxHours: gc.maxHours, days: gc.days })));
 }
 
-function serializeSlots(slots: WeekConfigPayload["slots"]): string {
+function serializeSlots(slots: WeekConfigPayload["slots"], nightSlots?: WeekConfigPayload["nightSlots"]): string {
   const record: Record<string, SlotState> = {};
   for (const slot of slots) record[`${slot.dayOfWeek}-${slot.startHour}`] = slot.state;
+  if (nightSlots) {
+    for (const ns of nightSlots) record[`${ns.dayOfWeek}-night`] = ns.state;
+  }
   return JSON.stringify(record);
 }
 
@@ -151,7 +161,7 @@ export async function saveWeekConfig(payload: WeekConfigPayload): Promise<WeekCo
 
   const daily_caps_json = serializeDailyCaps(payload.dailyCaps);
   const group_caps_json = serializeGroupCaps(payload.groupCaps);
-  const slots_json = serializeSlots(payload.slots);
+  const slots_json = serializeSlots(payload.slots, payload.nightSlots);
 
   const existing = await databases.listDocuments(DB_ID, OP_WEEKS_COL_ID, [
     Query.equal("aircraft_id", [payload.aircraftId]),

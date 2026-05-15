@@ -34,7 +34,7 @@ const ROLE_LABEL: Record<UserRole, string> = {
 const ROLE_OPTIONS: UserRole[] = ["aluno", "instrutor", "admin"];
 const INSTRUCTOR_DAYS = [1, 2, 3, 4, 5, 6] as const;
 const DAY_LABEL: Record<number, string> = { 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sab" };
-const PERIOD_LABEL: Record<SchedulePeriod, string> = { morning: "Manha", afternoon: "Tarde" };
+const PERIOD_LABEL: Record<SchedulePeriod, string> = { morning: "Manha", afternoon: "Tarde", night: "Noite" };
 const INSTRUCTOR_PREFERENCE_LABEL: Record<InstructorPreferenceLevel, string> = {
   low: "Baixa",
   medium: "Media",
@@ -422,7 +422,7 @@ export function AdminUsersTab() {
     <div className="mx-auto max-w-7xl space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Usuarios</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Usuários</h2>
           <p className="text-xs text-slate-500">Busca rapida, permissoes e historico detalhado sob demanda.</p>
         </div>
         <form
@@ -452,7 +452,7 @@ export function AdminUsersTab() {
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              {pageStart}-{pageEnd} de {total} usuarios
+              {pageStart}-{pageEnd} de {total} usuários
             </p>
             <button
               type="button"
@@ -508,7 +508,7 @@ export function AdminUsersTab() {
                     </button>
                   );
                 })}
-                {users.length === 0 ? <p className="py-8 text-center text-sm text-slate-500">Nenhum usuario encontrado.</p> : null}
+                {users.length === 0 ? <p className="py-8 text-center text-sm text-slate-500">Nenhum usuário encontrado.</p> : null}
               </div>
               <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-800 pt-3">
                 <button
@@ -546,7 +546,7 @@ export function AdminUsersTab() {
                     <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">
                       <div className="h-32 w-24 overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/60">
                         {photoUrl ? (
-                          <img src={photoUrl} alt="Foto ANAC do usuario" className="h-full w-full object-cover" />
+                          <img src={photoUrl} alt="Foto ANAC do usuário" className="h-full w-full object-cover" />
                         ) : (
                           <div className="flex h-full items-center justify-center px-2 text-center text-[11px] text-slate-500">
                             Foto ANAC
@@ -554,7 +554,7 @@ export function AdminUsersTab() {
                         )}
                       </div>
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dados do usuario</p>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dados do usuário</p>
                         <h3 className="mt-1 break-words text-lg font-semibold text-slate-100 [overflow-wrap:anywhere]">{displayName(selectedDetail)}</h3>
                         <p className="break-words text-sm text-slate-400 [overflow-wrap:anywhere]">{selectedDetail.email}</p>
                         <p className="mt-1 break-words text-xs text-slate-600 [overflow-wrap:anywhere]">ID: {selectedDetail.userId}</p>
@@ -774,7 +774,7 @@ export function AdminUsersTab() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(["morning", "afternoon"] as const).map((period) => (
+                          {(["morning", "afternoon", "night"] as const).map((period) => (
                             <tr key={period}>
                               <td className="pr-2 text-right text-[11px] text-slate-500">{PERIOD_LABEL[period]}</td>
                               {INSTRUCTOR_DAYS.map((day) => {
@@ -853,7 +853,7 @@ export function AdminUsersTab() {
             )
           ) : (
             <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
-              Selecione um usuario para ver os dados consolidados.
+              Selecione um usuário para ver os dados consolidados.
             </section>
           )}
         </div>
@@ -871,7 +871,7 @@ export function AdminUsersTab() {
                 Fechar ficha
               </button>
             </div>
-            <FlightDetailView flightId={activeFlightId} onBack={() => setActiveFlightId(null)} backLabel="Voltar ao usuario" />
+            <FlightDetailView flightId={activeFlightId} onBack={() => setActiveFlightId(null)} backLabel="Voltar ao usuário" />
           </div>
         </div>
       ) : null}

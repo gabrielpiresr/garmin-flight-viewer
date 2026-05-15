@@ -3,9 +3,23 @@ import type {
   JourneyTakeoffDoc,
   JourneyTelemetrySummaryDoc,
 } from "./flightTelemetryMetricsDb";
+import type { RewardVisual } from "../types/rewards";
 
 export type JourneyMonthlyPoint = {
   month: string;
+  label: string;
+  flights: number;
+  hours: number;
+  distanceNm: number;
+  landings: number;
+  smoothLandings: number;
+  takeoffs: number;
+};
+
+export type JourneyEvolutionPeriod = "day" | "week" | "month";
+
+export type JourneyEvolutionPoint = {
+  key: string;
   label: string;
   flights: number;
   hours: number;
@@ -32,6 +46,8 @@ export type JourneyBadge = {
   description: string;
   achieved: boolean;
   tone: "emerald" | "sky" | "violet" | "amber";
+  visual?: RewardVisual;
+  progressPct?: number;
 };
 
 export type JourneyMetrics = {
@@ -72,6 +88,7 @@ export type JourneyMetrics = {
     bestMonth: JourneyMonthlyPoint | null;
   };
   monthly: JourneyMonthlyPoint[];
+  evolution: Record<JourneyEvolutionPeriod, JourneyEvolutionPoint[]>;
   weeklyStreak: JourneyWeekPoint[];
   landingDistribution: JourneyLandingDistributionPoint[];
   badges: JourneyBadge[];
@@ -133,12 +150,39 @@ function monthLabel(key: string): string {
   return label.replace(".", "");
 }
 
+function dayKey(iso: string | null | undefined): string | null {
+  return iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? iso.slice(0, 10) : null;
+}
+
+function dayLabel(key: string): string {
+  const date = new Date(`${key}T12:00:00Z`);
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
+}
+
 function weekIndex(iso: string | null | undefined): number | null {
   const date = dateValue(iso);
   if (!date) return null;
   const day = date.getUTCDay() || 7;
   const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - day + 1);
   return Math.floor(start / WEEK_MS);
+}
+
+function weekKey(iso: string | null | undefined): string | null {
+  const date = dateValue(iso);
+  if (!date) return null;
+  const day = date.getUTCDay() || 7;
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - day + 1));
+  return start.toISOString().slice(0, 10);
+}
+
+function weekLabel(key: string): string {
+  const start = new Date(`${key}T12:00:00Z`);
+  const end = new Date(start.getTime() + 6 * DAY_MS);
+  return `${start.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}-${end.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "UTC",
+  })}`;
 }
 
 function parseAerodromes(value: string | null | undefined): string[] {
@@ -200,6 +244,36 @@ function buildMonthly(summaries: JourneyTelemetrySummaryDoc[]): JourneyMonthlyPo
     map.set(key, current);
   });
   return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+}
+
+function buildEvolution(summaries: JourneyTelemetrySummaryDoc[], period: JourneyEvolutionPeriod): JourneyEvolutionPoint[] {
+  const map = new Map<string, JourneyEvolutionPoint>();
+  const keyForPeriod = period === "day" ? dayKey : period === "week" ? weekKey : monthKey;
+  const labelForPeriod = period === "day" ? dayLabel : period === "week" ? weekLabel : monthLabel;
+  summaries.forEach((summary) => {
+    const key = keyForPeriod(summary.flight_date);
+    if (!key) return;
+    const current =
+      map.get(key) ??
+      ({
+        key,
+        label: labelForPeriod(key),
+        flights: 0,
+        hours: 0,
+        distanceNm: 0,
+        landings: 0,
+        smoothLandings: 0,
+        takeoffs: 0,
+      } satisfies JourneyEvolutionPoint);
+    current.flights += 1;
+    current.hours += (finite(summary.duration_sec) ?? 0) / 3600;
+    current.distanceNm += finite(summary.distance_nm) ?? 0;
+    current.landings += summary.landing_count ?? 0;
+    current.smoothLandings += summary.smooth_landing_count ?? 0;
+    current.takeoffs += summary.takeoff_count ?? 0;
+    map.set(key, current);
+  });
+  return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
 }
 
 function buildBadges(metrics: Pick<JourneyMetrics, "streakWeeks" | "totals">): JourneyBadge[] {
@@ -314,6 +388,11 @@ export function aggregateJourneyMetrics({ summaries, landings, takeoffs }: Aggre
   });
 
   const monthly = buildMonthly(summaries);
+  const evolution = {
+    day: buildEvolution(summaries, "day"),
+    week: buildEvolution(summaries, "week"),
+    month: buildEvolution(summaries, "month"),
+  };
   const weekKeys = Array.from(new Set(summaries.map((summary) => weekIndex(summary.flight_date)).filter((week): week is number => week !== null))).sort(
     (a, b) => a - b,
   );
@@ -385,6 +464,7 @@ export function aggregateJourneyMetrics({ summaries, landings, takeoffs }: Aggre
     totals,
     records,
     monthly,
+    evolution,
     weeklyStreak: buildWeeklyStreak(weekKeys),
     landingDistribution: [
       { name: "Suaves", value: smoothLandings },

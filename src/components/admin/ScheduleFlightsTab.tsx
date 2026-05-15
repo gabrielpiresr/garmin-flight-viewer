@@ -1,17 +1,33 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
 import { dispatchNotificationEvent } from "../../lib/notificationsDb";
-import { detectFlightConflicts, type ConflictFlightDraft, type DetectedFlightConflict } from "../../lib/scheduleConflicts";
+import {
+  buildConflictsByFlightId,
+  detectFlightConflicts,
+  type DetectedFlightConflict,
+} from "../../lib/scheduleConflicts";
 import {
   AUTO_SOURCE_PREFIX,
   getScheduleWeekData,
   getScheduleWeekOptions,
   MANUAL_SOURCE_PREFIX,
 } from "../../lib/scheduleGenerationDb";
+import { getSchoolRules } from "../../lib/schoolRulesDb";
+import {
+  buildScheduleHourOptions,
+  hourSelectValue,
+  parseHourSelectValue,
+} from "../../lib/scheduleTimeOptions";
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
-import type { ExistingScheduledFlight, InstructorIdentity, ScheduleWeekData, ScheduleWeekOption } from "../../types/schedule";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
+import type {
+  ExistingScheduledFlight,
+  InstructorIdentity,
+  ScheduleWeekData,
+  ScheduleWeekOption,
+} from "../../types/schedule";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
@@ -64,6 +80,7 @@ type FlightFormDraft = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  isNight?: boolean;
 };
 
 type CalendarFlightItem = {
@@ -78,6 +95,7 @@ type CalendarFlightItem = {
   durationHours: number;
   startTime: string;
   endTime: string;
+  isNight?: boolean;
 };
 
 function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
@@ -128,6 +146,7 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
       date: weekDate,
       startTime: hoursToHHMM(draft.startHour),
       aircraft: draft.aircraftRegistration,
+      isNight: draft.isNight ?? false,
     },
     preFlight: {
       objectiveMd: "",
@@ -153,19 +172,6 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
   };
 }
 
-function toConflictDraft(row: ExistingScheduledFlight, studentLabel: string): ConflictFlightDraft {
-  return {
-    id: row.id,
-    studentId: row.studentId,
-    studentLabel,
-    instructorId: row.instructorId,
-    aircraftRegistration: row.aircraftRegistration ?? "Aeronave",
-    dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
-    startHour: parseStartHour(row.startTime),
-    durationHours: row.durationHours,
-  };
-}
-
 function conflictTypeLabel(type: DetectedFlightConflict["type"]): string {
   if (type === "aircraft_blocked") return "Aeronave bloqueada";
   if (type === "min_gap") return "Menos de 30 min entre voos";
@@ -186,6 +192,15 @@ function resolveInstructorDraft(
   };
 }
 
+type CalendarDropTarget = { dayOfWeek: number; startHour: number; isNight: boolean };
+
+function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
+  const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
+  const strike = unassigned ? "line-through decoration-white/40 decoration-1 opacity-75" : "";
+  const pointer = draggable ? "cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-white/60" : "hover:ring-1 hover:ring-white/60";
+  return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
+}
+
 function CalendarGrid({
   items,
   colorByAircraft,
@@ -193,6 +208,7 @@ function CalendarGrid({
   backgroundSupply,
   weekStart,
   onItemClick,
+  onItemDrop,
 }: {
   items: CalendarFlightItem[];
   colorByAircraft: Map<string, string>;
@@ -200,6 +216,7 @@ function CalendarGrid({
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   weekStart: string;
   onItemClick: (item: CalendarFlightItem) => void;
+  onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
 }) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
@@ -289,16 +306,93 @@ function CalendarGrid({
     return out;
   }, [byDay]);
 
+  const dayTotals = useMemo(() => {
+    const byDay = new Map<number, { flights: number; hours: number }>();
+    for (const day of DAY_ORDER) byDay.set(day, { flights: 0, hours: 0 });
+    for (const item of items) {
+      const row = byDay.get(item.dayOfWeek) ?? { flights: 0, hours: 0 };
+      row.flights += 1;
+      row.hours += item.durationHours;
+      byDay.set(item.dayOfWeek, row);
+    }
+    let cumFlights = 0;
+    let cumHours = 0;
+    const cumulative = new Map<number, { flights: number; hours: number }>();
+    for (const day of DAY_ORDER) {
+      const d = byDay.get(day) ?? { flights: 0, hours: 0 };
+      cumFlights += d.flights;
+      cumHours += d.hours;
+      cumulative.set(day, { flights: cumFlights, hours: Number(cumHours.toFixed(1)) });
+    }
+    return { byDay, cumulative };
+  }, [items]);
+
+  const dayBoardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const nightRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [dragState, setDragState] = useState<{ item: CalendarFlightItem; preview: CalendarDropTarget } | null>(null);
+  const dragEndedRef = useRef(false);
+  const draggable = Boolean(onItemDrop);
+
+  const resolveDropTarget = useCallback(
+    (clientX: number, clientY: number): CalendarDropTarget | null => {
+      for (const day of DAY_ORDER) {
+        const nightEl = nightRowRefs.current.get(day);
+        if (nightEl) {
+          const r = nightEl.getBoundingClientRect();
+          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+            return { dayOfWeek: day, startHour: SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17, isNight: true };
+          }
+        }
+      }
+      for (const day of DAY_ORDER) {
+        const board = dayBoardRefs.current.get(day);
+        if (!board) continue;
+        const r = board.getBoundingClientRect();
+        if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
+        const idx = Math.max(0, Math.min(SLOT_HOURS.length - 1, Math.round((clientY - r.top) / rowHeight)));
+        return { dayOfWeek: day, startHour: SLOT_HOURS[idx] ?? 6, isNight: false };
+      }
+      return null;
+    },
+    [rowHeight],
+  );
+
+  useEffect(() => {
+    if (!dragState) return;
+    function onMove(e: PointerEvent) {
+      const t = resolveDropTarget(e.clientX, e.clientY);
+      if (t) setDragState((p) => (p ? { ...p, preview: t } : p));
+    }
+    function onUp(e: PointerEvent) {
+      setDragState((p) => {
+        if (p && onItemDrop) {
+          dragEndedRef.current = true;
+          onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
+        }
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragState, onItemDrop, resolveDropTarget]);
+
   return (
-    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+    <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
       <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda semanal</p>
-      <div className="overflow-x-auto">
-        <table className="min-w-[680px] table-fixed border-separate border-spacing-1 md:w-full">
+      {draggable ? (
+        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
+      ) : null}
+      <div className="w-full overflow-x-auto">
+        <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
           <thead>
             <tr>
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
               {DAY_ORDER.map((day) => (
-                <th key={day} className="w-[14.2%] pb-1 text-center text-xs font-semibold text-slate-400">
+                <th key={day} className="pb-1 text-center text-xs font-semibold text-slate-400">
                   {formatCalendarDayHeader(weekStart, day)}
                 </th>
               ))}
@@ -317,7 +411,14 @@ function CalendarGrid({
               </td>
               {DAY_ORDER.map((day) => (
                 <td key={day} className="align-top p-0">
-                  <div className="relative rounded-md border border-slate-700/60 bg-slate-800/30" style={{ height: `${boardHeight}px` }}>
+                  <div
+                    ref={(node) => {
+                      if (node) dayBoardRefs.current.set(day, node);
+                      else dayBoardRefs.current.delete(day);
+                    }}
+                    className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
+                    style={{ height: `${boardHeight}px` }}
+                  >
                     {backgroundSupply
                       ? SLOT_HOURS.map((hour, idx) => {
                           const state = backgroundSupply.slotStates[`${day}-${hour}`];
@@ -334,23 +435,42 @@ function CalendarGrid({
                     {SLOT_HOURS.map((hour, idx) => (
                       <div key={`${day}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                     ))}
-                    {(layoutByDay.get(day) ?? []).map((entry) => {
+                    {(layoutByDay.get(day) ?? []).filter((e) => !e.item.isNight).map((entry) => {
                       const item = entry.item;
+                      if (dragState?.item.id === item.id) return null;
                       const hourIdx = hourIndexMap.get(item.startHour) ?? 0;
                       const top = hourIdx * rowHeight;
                       const height = Math.max(rowHeight, item.durationHours * rowHeight);
                       const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
-                      const instructorBorder = item.instructorId
-                        ? borderByInstructor.get(item.instructorId) ?? "border-white/80"
-                        : "border-red-300";
+                      const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
                       return (
-                        <button
+                        <div
                           key={item.id}
-                          type="button"
-                          onClick={() => onItemClick(item)}
-                          className={`absolute overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white hover:ring-1 hover:ring-white/60 ${color} ${instructorBorder}`}
+                          role="button"
+                          tabIndex={0}
+                          onPointerDown={(e) => {
+                            if (!draggable) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            dragEndedRef.current = false;
+                            const target = resolveDropTarget(e.clientX, e.clientY) ?? {
+                              dayOfWeek: item.dayOfWeek,
+                              startHour: item.startHour,
+                              isNight: false,
+                            };
+                            setDragState({ item, preview: target });
+                          }}
+                          onClick={(e) => {
+                            if (dragEndedRef.current) {
+                              dragEndedRef.current = false;
+                              e.preventDefault();
+                              return;
+                            }
+                            onItemClick(item);
+                          }}
+                          className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
@@ -362,13 +482,129 @@ function CalendarGrid({
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                           <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                           <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
-                          {!item.instructorId ? <p className="truncate font-semibold text-amber-100">Sem instrutor</p> : null}
-                        </button>
+                        </div>
                       );
                     })}
+                    {dragState && dragState.preview.dayOfWeek === day && !dragState.preview.isNight ? (() => {
+                      const item = dragState.item;
+                      const entry = (layoutByDay.get(day) ?? []).find((e) => e.item.id === item.id) ?? {
+                        item,
+                        columnIndex: 0,
+                        columnCount: 1,
+                      };
+                      const hourIdx = hourIndexMap.get(dragState.preview.startHour) ?? 0;
+                      const top = hourIdx * rowHeight;
+                      const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                      const widthPercent = 100 / Math.max(1, entry.columnCount);
+                      const leftPercent = entry.columnIndex * widthPercent;
+                      const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                      return (
+                        <div
+                          key="preview"
+                          className={`pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1.5 py-1 text-[10px] text-white shadow-lg ring-2 ring-violet-400/50 ${color}`}
+                          style={{
+                            top: `${top}px`,
+                            height: `${height - 4}px`,
+                            left: `calc(${leftPercent}% + 4px)`,
+                            width: `calc(${widthPercent}% - 8px)`,
+                          }}
+                        >
+                          <p className="truncate font-semibold">{item.studentLabel}</p>
+                          <p className="truncate opacity-80">Solte para confirmar</p>
+                        </div>
+                      );
+                    })() : null}
                   </div>
                 </td>
               ))}
+            </tr>
+            <tr>
+              <td className="pr-2 pt-1 text-right text-[11px] font-mono text-indigo-400/60">Noite</td>
+              {DAY_ORDER.map((day) => {
+                const nightState = backgroundSupply?.slotStates[`${day}-night`];
+                const nightItems = (layoutByDay.get(day) ?? []).filter((e) => e.item.isNight);
+                return (
+                  <td key={day} className="p-0 pt-1">
+                    <div
+                      ref={(node) => {
+                        if (node) nightRowRefs.current.set(day, node);
+                        else nightRowRefs.current.delete(day);
+                      }}
+                      className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightState === "blocked" ? "border-slate-700/40 bg-slate-800/20" : nightState ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
+                    >
+                      {nightItems.length === 0 && !(dragState?.preview.dayOfWeek === day && dragState.preview.isNight) ? (
+                        <p className="text-center text-[10px] text-slate-600">—</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {nightItems.map(({ item }) => {
+                            const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                            const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                            if (dragState?.item.id === item.id) return null;
+                            return (
+                              <div
+                                key={item.id}
+                                role="button"
+                                tabIndex={0}
+                                onPointerDown={(e) => {
+                                  if (!draggable) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  dragEndedRef.current = false;
+                                  setDragState({
+                                    item,
+                                    preview: { dayOfWeek: day, startHour: item.startHour, isNight: true },
+                                  });
+                                }}
+                                onClick={(e) => {
+                                  if (dragEndedRef.current) {
+                                    dragEndedRef.current = false;
+                                    e.preventDefault();
+                                    return;
+                                  }
+                                  onItemClick(item);
+                                }}
+                                className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
+                              >
+                                <p className="truncate font-semibold">{item.studentLabel}</p>
+                                <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                              </div>
+                            );
+                          })}
+                          {dragState && dragState.preview.dayOfWeek === day && dragState.preview.isNight ? (
+                            <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
+                              <p className="truncate font-semibold">{dragState.item.studentLabel}</p>
+                              <p className="truncate opacity-80">Solte para confirmar</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+            <tr>
+              <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Total
+              </td>
+              {DAY_ORDER.map((day) => {
+                const d = dayTotals.byDay.get(day) ?? { flights: 0, hours: 0 };
+                const cum = dayTotals.cumulative.get(day) ?? { flights: 0, hours: 0 };
+                return (
+                  <td key={day} className="p-0 pt-2">
+                    <div className="rounded-md border border-slate-700/50 bg-slate-800/40 px-2 py-2 text-center text-xs leading-snug text-slate-300">
+                      <p>
+                        <span className="text-sm font-semibold text-slate-100">{d.flights}</span> voos ·{" "}
+                        <span className="text-sm font-semibold text-slate-100">{d.hours.toFixed(1)}</span>h
+                      </p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Σ <span className="font-medium text-slate-200">{cum.flights}</span> ·{" "}
+                        <span className="font-medium text-slate-200">{cum.hours.toFixed(1)}</span>h
+                      </p>
+                    </div>
+                  </td>
+                );
+              })}
             </tr>
           </tbody>
         </table>
@@ -395,24 +631,54 @@ export function ScheduleFlightsTab() {
   const [formConflicts, setFormConflicts] = useState<DetectedFlightConflict[]>([]);
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
+  const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
+  weekOptionsRef.current = weekOptions;
+  const loadWeekRequestRef = useRef(0);
+  const lastErrorToastRef = useRef<string | null>(null);
+  const bootstrapUserIdRef = useRef<string | null>(null);
+  const prevActorUserIdRef = useRef<string | undefined>(undefined);
+  const weekDataRef = useRef<ScheduleWeekData | null>(null);
+  weekDataRef.current = weekData;
+
+  const actorUserId = user?.id;
+  const actorRole = user?.role;
 
   const minGapMinutes = 30;
+  const hourOptions = useMemo(() => buildScheduleHourOptions(scheduleRules), [scheduleRules]);
 
   useEffect(() => {
-    if (error) showToast({ variant: "error", message: error });
+    if (!error || error === lastErrorToastRef.current) return;
+    lastErrorToastRef.current = error;
+    showToast({ variant: "error", message: error });
   }, [error, showToast]);
 
   const loadWeek = useCallback(
-    async (weekStart: string) => {
-      if (!user || !weekStart) return;
-      setLoadingWeekData(true);
+    async (weekStart: string, weekOverride?: ScheduleWeekOption, options?: { showSkeleton?: boolean }) => {
+      if (!actorUserId || !actorRole || !weekStart) return;
+
+      const requestId = loadWeekRequestRef.current + 1;
+      loadWeekRequestRef.current = requestId;
+      const showSkeleton = options?.showSkeleton ?? weekDataRef.current === null;
+
+      if (showSkeleton) setLoadingWeekData(true);
       setError(null);
+
       try {
-        const data = await getScheduleWeekData({
-          weekStart,
-          actorUserId: user.id,
-          actorRole: user.role,
-        });
+        const weekOption = weekOverride ?? weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+        const [data, rules] = await Promise.all([
+          getScheduleWeekData({
+            weekStart,
+            actorUserId,
+            actorRole,
+            scope: "flights-only",
+            week: weekOption,
+          }),
+          getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
+        ]);
+        if (loadWeekRequestRef.current !== requestId) return;
+
+        setScheduleRules(rules.schedule);
         setWeekData(data);
         const rows = [...data.existingGeneratedFlights].sort((a, b) => {
           if (a.date !== b.date) return a.date.localeCompare(b.date);
@@ -422,30 +688,66 @@ export function ScheduleFlightsTab() {
         setVisibleAircraft(data.supplies.map((s) => s.aircraftRegistration));
         setVisibleInstructors(["__none__", ...data.instructors.map((s) => s.userId)]);
       } catch (e) {
+        if (loadWeekRequestRef.current !== requestId) return;
         setError((e as Error).message);
         setWeekData(null);
         setFlights([]);
       } finally {
-        setLoadingWeekData(false);
+        if (loadWeekRequestRef.current === requestId) setLoadingWeekData(false);
       }
     },
-    [user],
+    [actorRole, actorUserId],
   );
 
+  const loadWeekRef = useRef(loadWeek);
+  loadWeekRef.current = loadWeek;
+
   useEffect(() => {
-    if (!user) return;
+    if (!actorUserId) {
+      prevActorUserIdRef.current = undefined;
+      bootstrapUserIdRef.current = null;
+      return;
+    }
+    if (prevActorUserIdRef.current === actorUserId) return;
+    prevActorUserIdRef.current = actorUserId;
+    bootstrapUserIdRef.current = null;
+    loadWeekRequestRef.current += 1;
+    setWeekData(null);
+    setFlights([]);
+    setLoadingWeekData(false);
+    lastErrorToastRef.current = null;
+  }, [actorUserId]);
+
+  useEffect(() => {
+    if (!actorUserId) return;
+    if (bootstrapUserIdRef.current === actorUserId) return;
+    bootstrapUserIdRef.current = actorUserId;
+
+    let cancelled = false;
     setLoadingWeeks(true);
+
     void getScheduleWeekOptions()
       .then((weeks) => {
+        if (cancelled) return;
         setWeekOptions(weeks);
         const todayIso = new Date().toISOString().slice(0, 10);
         const defaultWeek = weeks.find((row) => row.weekStart >= todayIso) ?? weeks[weeks.length - 1] ?? null;
         setSelectedWeekStart(defaultWeek?.weekStart ?? "");
-        if (defaultWeek) void loadWeek(defaultWeek.weekStart);
+        if (defaultWeek) {
+          void loadWeekRef.current(defaultWeek.weekStart, defaultWeek, { showSkeleton: true });
+        }
       })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoadingWeeks(false));
-  }, [loadWeek, user]);
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingWeeks(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actorUserId]);
 
   const studentLabelMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -460,14 +762,13 @@ export function ScheduleFlightsTab() {
   }, [weekData]);
 
   const conflictsByFlightId = useMemo(() => {
-    const out = new Map<string, DetectedFlightConflict[]>();
-    if (!weekData) return out;
-    for (const row of flights) {
-      const draft = toConflictDraft(row, studentLabelMap.get(row.studentId) ?? row.studentId);
-      const conflicts = detectFlightConflicts({ draft, supplies: weekData.supplies, flights, minGapMinutes });
-      if (conflicts.length > 0) out.set(row.id, conflicts);
-    }
-    return out;
+    if (!weekData) return new Map<string, DetectedFlightConflict[]>();
+    return buildConflictsByFlightId({
+      flights,
+      supplies: weekData.supplies,
+      minGapMinutes,
+      studentLabelMap,
+    });
   }, [flights, minGapMinutes, studentLabelMap, weekData]);
 
   const colorByAircraft = useMemo(() => {
@@ -521,6 +822,7 @@ export function ScheduleFlightsTab() {
             durationHours: row.durationHours,
             startTime: row.startTime,
             endTime: hoursToHHMM(startHour + row.durationHours),
+            isNight: row.isNight ?? false,
           };
         }),
     [flights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors],
@@ -633,6 +935,7 @@ export function ScheduleFlightsTab() {
       dayOfWeek: 1,
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
+      isNight: false,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -659,8 +962,12 @@ export function ScheduleFlightsTab() {
         (row.instructorId ? instructorById.get(row.instructorId)?.anacCode ?? null : null),
       aircraftRegistration: row.aircraftRegistration ?? "",
       dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
-      startHour: parseStartHour(row.startTime),
+      startHour:
+        (decoded?.header.isNight ?? row.isNight)
+          ? scheduleRules.nightFlightStartHour
+          : parseStartHour(row.startTime),
       durationHours: row.durationHours,
+      isNight: decoded?.header.isNight ?? row.isNight ?? false,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -747,7 +1054,7 @@ export function ScheduleFlightsTab() {
       setFormDraft(null);
       setFormConflicts([]);
       setForceSaveWithConflict(false);
-      await loadWeek(weekData.week.weekStart);
+      await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -773,14 +1080,14 @@ export function ScheduleFlightsTab() {
         },
       });
       showToast({ variant: "success", message: "Voo excluído com sucesso." });
-      if (selectedWeekStart) await loadWeek(selectedWeekStart);
+      if (selectedWeekStart) await loadWeek(selectedWeekStart, undefined, { showSkeleton: false });
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala</h2>
         <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
@@ -795,7 +1102,11 @@ export function ScheduleFlightsTab() {
             onChange={(e) => {
               const value = e.target.value;
               setSelectedWeekStart(value);
-              void loadWeek(value);
+              const week = weekOptions.find((row) => row.weekStart === value);
+              loadWeekRequestRef.current += 1;
+              setWeekData(null);
+              setFlights([]);
+              void loadWeek(value, week, { showSkeleton: true });
             }}
             className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
           >
@@ -819,7 +1130,7 @@ export function ScheduleFlightsTab() {
         </div>
       </section>
 
-      {loadingWeekData ? (
+      {loadingWeekData && !weekData ? (
         <section className="space-y-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -977,6 +1288,23 @@ export function ScheduleFlightsTab() {
             onItemClick={(item) => {
               const selected = flights.find((row) => row.id === item.id);
               if (selected) void openEditModal(selected);
+            }}
+            onItemDrop={(item, target) => {
+              const selected = flights.find((row) => row.id === item.id);
+              if (!selected) return;
+              void (async () => {
+                await openEditModal(selected);
+                setFormDraft((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        dayOfWeek: target.dayOfWeek,
+                        startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
+                        isNight: target.isNight,
+                      }
+                    : prev,
+                );
+              })();
             }}
           />
 
@@ -1256,13 +1584,16 @@ export function ScheduleFlightsTab() {
               <label className="text-xs text-slate-400">
                 Hora
                 <select
-                  value={formDraft.startHour}
-                  onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, startHour: Number(e.target.value) } : prev))}
+                  value={hourSelectValue(formDraft.isNight, formDraft.startHour)}
+                  onChange={(e) => {
+                    const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                    setFormDraft((prev) => (prev ? { ...prev, startHour: parsed.startHour, isNight: parsed.isNight } : prev));
+                  }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 >
-                  {SLOT_HOURS.map((hour) => (
-                    <option key={hour} value={hour}>
-                      {hour}h
+                  {hourOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>

@@ -1,6 +1,6 @@
 export type WeeklyFlightPlanStatus = "draft" | "submitted";
 export type FlexibilityLevel = "low" | "medium" | "high";
-export type AvailabilityPeriod = "morning" | "afternoon";
+export type AvailabilityPeriod = "morning" | "afternoon" | "night";
 export type AvailabilityType = "available" | "preferred";
 
 export type WeeklyFlightPlan = {
@@ -24,6 +24,7 @@ export type WeeklyFlightPlanItem = {
   preferred_aircraft: string | null;
   priority_level: 1 | 2 | 3;
   notes: string | null;
+  isNight?: boolean;
 };
 
 export type WeeklyFlightPlanAvailability = {
@@ -54,6 +55,7 @@ export type SavePlanPayload = {
     preferredAircraft: string | null;
     priorityLevel: 1 | 2 | 3;
     notes: string | null;
+    isNight?: boolean;
     availability: {
       dayOfWeek: number;
       period: AvailabilityPeriod;
@@ -69,6 +71,7 @@ export type FlightItemLocal = {
   preferredAircraft: string | null;
   priorityLevel: 1 | 2 | 3;
   notes: string;
+  isNight: boolean;
   // key: "${dayOfWeek}-${period}" → AvailabilityType | undefined (absent = not selected)
   availability: Record<string, AvailabilityType>;
 };

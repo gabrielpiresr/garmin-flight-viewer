@@ -67,11 +67,7 @@ export function useOpenedTabs<T extends string>(activeTab: T): ReadonlySet<T> {
     });
   }, [activeTab]);
 
-  if (openedTabs.has(activeTab)) return openedTabs;
-
-  const nextOpenedTabs = new Set(openedTabs);
-  nextOpenedTabs.add(activeTab);
-  return nextOpenedTabs;
+  return openedTabs;
 }
 
 export function useRoutedTab<T extends string>(routes: readonly TabRoute<T>[], fallback: T) {

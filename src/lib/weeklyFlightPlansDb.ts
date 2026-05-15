@@ -70,6 +70,7 @@ type SerializedItem = {
   preferredAircraft: string | null;
   priorityLevel: 1 | 2 | 3;
   notes: string | null;
+  isNight?: boolean;
   availability: { dayOfWeek: number; period: AvailabilityPeriod; availabilityType: AvailabilityType }[];
 };
 
@@ -86,6 +87,7 @@ function parseItems(json: string | null, planId: string): WeeklyFlightPlanItemFu
       preferred_aircraft: item.preferredAircraft,
       priority_level: item.priorityLevel,
       notes: item.notes,
+      isNight: item.isNight ?? false,
       availability: item.availability.map((a, j) => ({
         id: `${planId}-item-${i}-avail-${j}`,
         plan_item_id: `${planId}-item-${i}`,
@@ -107,6 +109,7 @@ function serializeItems(items: SavePlanPayload["items"]): string {
     preferredAircraft: item.preferredAircraft,
     priorityLevel: item.priorityLevel,
     notes: item.notes,
+    isNight: item.isNight ?? false,
     availability: item.availability,
   }));
   return JSON.stringify(serialized);
@@ -141,12 +144,12 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
     if (![1, 2, 3].includes(item.priorityLevel)) {
       throw new Error(`Prioridade inválida no voo ${index + 1}.`);
     }
+    const isNight = item.isNight ?? false;
     const availability = item.availability.filter((entry) => {
-      return (
-        [1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek) &&
-        (entry.period === "morning" || entry.period === "afternoon") &&
-        (entry.availabilityType === "available" || entry.availabilityType === "preferred")
-      );
+      if (![ 1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek)) return false;
+      if (!(entry.availabilityType === "available" || entry.availabilityType === "preferred")) return false;
+      if (isNight) return entry.period === "night";
+      return entry.period === "morning" || entry.period === "afternoon";
     });
     if (availability.length === 0) throw new Error(`Informe disponibilidade no voo ${index + 1}.`);
     return {
@@ -156,6 +159,7 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
       preferredAircraft: item.preferredAircraft ? String(item.preferredAircraft).slice(0, 64) : null,
       priorityLevel: item.priorityLevel,
       notes: item.notes ? String(item.notes).slice(0, 512) : null,
+      isNight,
       availability,
     };
   });

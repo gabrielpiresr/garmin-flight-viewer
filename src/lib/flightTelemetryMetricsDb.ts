@@ -124,9 +124,6 @@ async function listMetricDocuments<T extends MetricDocumentBase>(
   collectionId: string,
   viewer: JourneyViewer,
 ): Promise<{ data: T[] | null; error: Error | null }> {
-  // #region agent log
-  fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0a56a4" }, body: JSON.stringify({ sessionId: "0a56a4", runId: "pre-fix", hypothesisId: "H1,H2,H4,H5", location: "src/lib/flightTelemetryMetricsDb.ts:128", message: "Journey metric collection request", data: { databaseId: DB_ID, collectionId, isValidCollectionId: isValidCollectionId(collectionId), isPlaceholder: collectionId.startsWith("your_"), viewerRole: viewer.role, appwriteConfigured: configured() }, timestamp: Date.now() }) }).catch(() => {});
-  // #endregion
   if (!isValidCollectionId(collectionId)) {
     return { data: [], error: null };
   }
@@ -148,10 +145,6 @@ async function listMetricDocuments<T extends MetricDocumentBase>(
     }
     return { data: rows, error: null };
   } catch (e) {
-    const err = e as { message?: string; code?: number; type?: string };
-    // #region agent log
-    fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0a56a4" }, body: JSON.stringify({ sessionId: "0a56a4", runId: "pre-fix", hypothesisId: "H1,H2,H5", location: "src/lib/flightTelemetryMetricsDb.ts:154", message: "Journey metric collection request failed", data: { databaseId: DB_ID, collectionId, isPlaceholder: collectionId.startsWith("your_"), errorMessage: err.message ?? String(e), errorCode: err.code ?? null, errorType: err.type ?? null }, timestamp: Date.now() }) }).catch(() => {});
-    // #endregion
     return { data: null, error: e as Error };
   }
 }

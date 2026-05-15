@@ -11,6 +11,7 @@ import {
   type FlightShareData,
   type FlightShareSticker,
 } from "../lib/flightShareStickers";
+import { TelemetryProcessingProgress } from "./ui/TelemetryProcessingProgress";
 import { useToast } from "./ui/ToastProvider";
 
 type Props = {
@@ -320,10 +321,7 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           {!shareData && !error ? (
-            <div className="flex min-h-[520px] flex-col items-center justify-center gap-3 text-center">
-              <div className="h-12 w-12 animate-spin rounded-full border-2 border-slate-700 border-t-sky-400" />
-              <p className="text-sm text-slate-400">Preparando figurinhas do voo...</p>
-            </div>
+            <TelemetryProcessingProgress className="min-h-[520px]" />
           ) : error ? (
             <div className="mx-auto flex min-h-[520px] max-w-md flex-col items-center justify-center gap-3 text-center">
               <p className="rounded-2xl border border-red-500/30 bg-red-950/30 px-4 py-3 text-sm text-red-100">{error}</p>

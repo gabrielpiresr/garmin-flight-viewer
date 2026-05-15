@@ -22,6 +22,7 @@ export type AdminDashboardSummary = {
   aircraftActive: number;
   telemetryFlights: number;
   flightsWithoutTelemetry: number;
+  futureFlightsWithoutInstructor: number;
   hardLandingCount: number;
   alerts: Record<TelemetryAlertSeverity, number>;
   revenue: number;
@@ -97,6 +98,9 @@ export type AdminDashboardAircraftForecast = {
   hoursNext2Days: number;
   hoursNext5Days: number;
   hoursNext7Days: number;
+  futureFlightsToday: number;
+  futureFlightsNext2Days: number;
+  futureFlightsNext5Days: number;
   futureFlights7Days: number;
   nextFlightAt: string | null;
 };

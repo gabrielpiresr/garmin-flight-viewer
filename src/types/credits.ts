@@ -11,6 +11,7 @@ export type StudentCreditPurchase = {
   hours: number;
   expiresAt: string;
   notes: string;
+  isNight: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string | null;
@@ -72,4 +73,5 @@ export type StudentCreditInput = {
   validityDays: number;
   hours: number;
   notes?: string;
+  isNight?: boolean;
 };

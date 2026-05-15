@@ -18,6 +18,7 @@ type CreditForm = {
   validityDays: string;
   hours: string;
   notes: string;
+  isNight: boolean;
 };
 
 const PAYMENT_METHODS = ["Cartão de crédito à vista", "Parcelado", "PIX"] as const;
@@ -31,6 +32,7 @@ const emptyForm: CreditForm = {
   validityDays: "90",
   hours: "",
   notes: "",
+  isNight: false,
 };
 
 function parseNumber(value: string): number {
@@ -105,6 +107,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
       validityDays: Math.round(parseNumber(form.validityDays)),
       hours: parseNumber(form.hours),
       notes: form.notes,
+      isNight: form.isNight,
     };
   }
 
@@ -119,6 +122,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
       validityDays: String(purchase.validityDays),
       hours: formatNumber(purchase.hours),
       notes: purchase.notes,
+      isNight: purchase.isNight,
     });
     setModalOpen(true);
   }
@@ -265,6 +269,15 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
               <label className="text-xs text-slate-400 md:col-span-2">
                 Observação
                 <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Opcional" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+              </label>
+              <label className="flex items-center gap-3 rounded-lg border border-indigo-700/40 bg-indigo-950/20 p-3 text-sm text-slate-200 md:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.isNight}
+                  onChange={(e) => setForm((prev) => ({ ...prev, isNight: e.target.checked }))}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Hora noturna
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-2">

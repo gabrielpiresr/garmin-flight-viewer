@@ -66,20 +66,24 @@ function makeEmptyItem(durationHours = 1): FlightItemLocal {
     preferredAircraft: null,
     priorityLevel: 2,
     notes: "",
+    isNight: false,
     availability: {},
   };
 }
 
 function itemFullToLocal(item: WeeklyFlightPlanItemFull, rules: SchoolRules): FlightItemLocal {
+  const isNight = (item as { isNight?: boolean }).isNight ?? false;
   const availability: Record<string, AvailabilityType> = {};
   for (const a of item.availability) {
     const period = (a as { period: string }).period;
-    if (period === "morning" || period === "afternoon") {
+    if (period === "night") {
+      availability[`${a.day_of_week}-night`] = a.availability_type;
+    } else if (period === "morning" || period === "afternoon") {
       availability[availKey(a.day_of_week, period)] = a.availability_type;
-      continue;
+    } else {
+      availability[availKey(a.day_of_week, "morning")] = a.availability_type;
+      availability[availKey(a.day_of_week, "afternoon")] = a.availability_type;
     }
-    availability[availKey(a.day_of_week, "morning")] = a.availability_type;
-    availability[availKey(a.day_of_week, "afternoon")] = a.availability_type;
   }
   return {
     localId: item.id,
@@ -91,6 +95,7 @@ function itemFullToLocal(item: WeeklyFlightPlanItemFull, rules: SchoolRules): Fl
     preferredAircraft: item.preferred_aircraft,
     priorityLevel: item.priority_level,
     notes: item.notes ?? "",
+    isNight,
     availability,
   };
 }
@@ -107,10 +112,12 @@ function localItemToPayload(item: FlightItemLocal, position: number): SavePlanPa
     preferredAircraft: item.preferredAircraft,
     priorityLevel: item.priorityLevel,
     notes: item.notes || null,
+    isNight: item.isNight,
     availability: Object.entries(item.availability).map(([key, availType]) => {
       const dashIdx = key.indexOf("-");
       const dayStr = key.slice(0, dashIdx);
-      const period = key.slice(dashIdx + 1) as AvailabilityPeriod;
+      const periodStr = key.slice(dashIdx + 1);
+      const period = (periodStr === "night" ? "night" : periodStr) as AvailabilityPeriod;
       return {
         dayOfWeek: Number(dayStr),
         period,
@@ -187,6 +194,9 @@ function FlightItemCard({ index, item, modelOptions, durationOptions, onChange, 
           Voo {index + 1}
           <span className="ml-2 text-slate-500">· {item.durationHours}h</span>
           <span className="ml-2 text-slate-500">· Prioridade {PRIORITY_LABELS[item.priorityLevel]}</span>
+          {item.isNight && (
+            <span className="ml-2 rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">Noturno</span>
+          )}
           {availCount > 0 && (
             <span className="ml-2 text-slate-600">· {availCount} período{availCount !== 1 ? "s" : ""}</span>
           )}
@@ -203,6 +213,33 @@ function FlightItemCard({ index, item, modelOptions, durationOptions, onChange, 
 
       {expanded && (
         <div className="border-t border-slate-700/60 px-4 pb-4 pt-4 space-y-5">
+          {/* Diurno / Noturno toggle */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">Tipo de voo:</span>
+            <button
+              type="button"
+              onClick={() => onChange({ ...item, isNight: false, availability: {} })}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                !item.isNight
+                  ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                  : "border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300"
+              }`}
+            >
+              Diurno
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange({ ...item, isNight: true, availability: {} })}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                item.isNight
+                  ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-300"
+                  : "border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300"
+              }`}
+            >
+              Noturno
+            </button>
+          </div>
+
           {/* Duration + Priority + Flexibility */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {/* Duration */}
@@ -298,31 +335,61 @@ function FlightItemCard({ index, item, modelOptions, durationOptions, onChange, 
                   </tr>
                 </thead>
                 <tbody>
-                  {PLAN_PERIODS.map((period) => (
-                    <tr key={period.id}>
-                      <td className="pr-2 text-right text-[11px] text-slate-500">{period.label}</td>
-                      {PLAN_DAYS.map((day) => {
-                        const v = item.availability[availKey(day, period.id)];
-                        return (
-                          <td key={day} className="p-0">
-                            <button
-                              type="button"
-                              onClick={() => toggleCell(day, period.id)}
-                              aria-label={`${PLAN_DAY_LABELS[PLAN_DAYS.indexOf(day)]} ${period.label}${v ? ` — ${v === "available" ? "Disponível" : "Preferencial"}` : ""}`}
-                              className={`h-8 w-full rounded-md border transition-all duration-75 ${cellStyle(day, period.id)}`}
-                            >
-                              {v === "preferred" && (
-                                <span className="text-[10px] font-bold">★</span>
-                              )}
-                              {v === "available" && (
-                                <span className="text-[10px]">✓</span>
-                              )}
-                            </button>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                  {!item.isNight
+                    ? PLAN_PERIODS.map((period) => (
+                        <tr key={period.id}>
+                          <td className="pr-2 text-right text-[11px] text-slate-500">{period.label}</td>
+                          {PLAN_DAYS.map((day) => {
+                            const v = item.availability[availKey(day, period.id)];
+                            return (
+                              <td key={day} className="p-0">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCell(day, period.id)}
+                                  aria-label={`${PLAN_DAY_LABELS[PLAN_DAYS.indexOf(day)]} ${period.label}${v ? ` — ${v === "available" ? "Disponível" : "Preferencial"}` : ""}`}
+                                  className={`h-8 w-full rounded-md border transition-all duration-75 ${cellStyle(day, period.id)}`}
+                                >
+                                  {v === "preferred" && <span className="text-[10px] font-bold">★</span>}
+                                  {v === "available" && <span className="text-[10px]">✓</span>}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))
+                    : (
+                        <tr>
+                          <td className="pr-2 text-right text-[11px] font-medium text-indigo-400">Noite</td>
+                          {PLAN_DAYS.map((day) => {
+                            const key = `${day}-night`;
+                            const v = item.availability[key];
+                            const style = v === "preferred"
+                              ? "bg-emerald-600 border-emerald-500 text-white"
+                              : v === "available"
+                              ? "bg-sky-600 border-sky-500 text-white"
+                              : "bg-indigo-950/30 border-indigo-900/50 text-indigo-600 hover:border-indigo-700 hover:bg-indigo-900/40";
+                            return (
+                              <td key={day} className="p-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = cycleAvailability(v);
+                                    const newAvail = { ...item.availability };
+                                    if (next === undefined) delete newAvail[key];
+                                    else newAvail[key] = next;
+                                    onChange({ ...item, availability: newAvail });
+                                  }}
+                                  aria-label={`${PLAN_DAY_LABELS[PLAN_DAYS.indexOf(day)]} Noite${v ? ` — ${v === "available" ? "Disponível" : "Preferencial"}` : ""}`}
+                                  className={`h-8 w-full rounded-md border transition-all duration-75 ${style}`}
+                                >
+                                  {v === "preferred" && <span className="text-[10px] font-bold">★</span>}
+                                  {v === "available" && <span className="text-[10px]">✓</span>}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      )}
                 </tbody>
               </table>
             </div>
@@ -541,6 +608,7 @@ export function AgendamentoTab() {
               flexibilityLevel: source.flexibilityLevel,
               preferredAircraft: source.preferredAircraft,
               priorityLevel: source.priorityLevel,
+              isNight: source.isNight,
               availability: { ...source.availability },
             },
       ),

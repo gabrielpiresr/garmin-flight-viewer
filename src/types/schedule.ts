@@ -34,7 +34,7 @@ export type InstructorIdentity = {
 };
 
 export type InstructorPreferenceLevel = "low" | "medium" | "high";
-export type SchedulePeriod = "morning" | "afternoon";
+export type SchedulePeriod = "morning" | "afternoon" | "night";
 
 export type InstructorWeeklyConfig = {
   instructorId: string;
@@ -57,9 +57,10 @@ export type StudentRequestDemand = {
   priorityLevel: 1 | 2 | 3;
   flexibilityLevel: FlexibilityLevel;
   preferredModelId: string | null;
+  isNight?: boolean;
   availability: Array<{
     dayOfWeek: number;
-    period: "morning" | "afternoon";
+    period: SchedulePeriod;
     availabilityType: AvailabilityType;
   }>;
   notes: string | null;
@@ -86,6 +87,7 @@ export type ExistingScheduledFlight = {
   date: string;
   startTime: string;
   durationHours: number;
+  isNight?: boolean;
   sourceFilename: string;
 };
 
@@ -108,14 +110,17 @@ export type NonAllocationReasonCode =
   | "gapConflict"
   | "existingFlightConflict"
   | "preferenceIncompatible"
-  | "insufficientContiguousTime";
+  | "insufficientContiguousTime"
+  | "nightCapReached"
+  | "insufficientNightCredits";
 
 export type CandidateRejectionCode =
   | "dailyCapReached"
   | "groupCapReached"
   | "gapConflict"
   | "existingFlightConflict"
-  | "insufficientContiguousTime";
+  | "insufficientContiguousTime"
+  | "nightCapReached";
 
 export type ScheduledFlightSuggestion = {
   demandId: string;
@@ -132,6 +137,7 @@ export type ScheduledFlightSuggestion = {
   priorityLevel: 1 | 2 | 3;
   flexibilityLevel: FlexibilityLevel;
   preferredModelId: string | null;
+  isNight?: boolean;
   instructorId: string | null;
   instructorLabel: string | null;
   instructorAnac: string | null;
@@ -188,4 +194,6 @@ export type ScheduleGeneratorInput = {
   instructors?: InstructorIdentity[];
   instructorConfigs?: InstructorWeeklyConfig[];
   minGapMinutes: number;
+  allowNightFlights?: boolean;
+  nightFlightStartHour?: number;
 };

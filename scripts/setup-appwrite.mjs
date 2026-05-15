@@ -20,7 +20,20 @@ const FLIGHT_TAKEOFFS_COL_NAME = "flight_takeoffs";
 
 const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
 const db = new Databases(client);
-const COLLECTION_CREATE_PERMISSIONS = [Permission.create(Role.users())];
+const FLIGHT_DATA_PERMISSIONS = [
+  Permission.create(Role.users()),
+  Permission.read(Role.users()),
+  Permission.update(Role.users()),
+  Permission.delete(Role.users()),
+  Permission.create(Role.label("admin")),
+  Permission.read(Role.label("admin")),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
+  Permission.create(Role.label("instrutor")),
+  Permission.read(Role.label("instrutor")),
+  Permission.update(Role.label("instrutor")),
+  Permission.delete(Role.label("instrutor")),
+];
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,8 +49,18 @@ async function ensureDatabase() {
 async function ensureCollection(databaseId, name) {
   const list = await db.listCollections(databaseId);
   const found = list.collections.find((collection) => collection.name === name);
-  if (found) return found;
-  return db.createCollection(databaseId, ID.unique(), name, COLLECTION_CREATE_PERMISSIONS, true, true);
+  if (found) {
+    const nextPermissions = mergePermissions(found.$permissions, FLIGHT_DATA_PERMISSIONS);
+    if (nextPermissions.length !== found.$permissions.length) {
+      return db.updateCollection(databaseId, found.$id, found.name, nextPermissions, found.documentSecurity, found.enabled);
+    }
+    return found;
+  }
+  return db.createCollection(databaseId, ID.unique(), name, FLIGHT_DATA_PERMISSIONS, true, true);
+}
+
+function mergePermissions(current, required) {
+  return Array.from(new Set([...(current ?? []), ...required]));
 }
 
 async function safeCreateAttribute(createFn, label) {
@@ -84,6 +107,42 @@ async function configureFlights(databaseId, collectionId) {
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "start_time", 8, false), "start_time");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "csv_file_id", 64, false), "csv_file_id");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "csv_text", 10485760, false), "csv_text");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "from_to", 255, false), "from_to");
+  await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "landings", false), "landings");
+  await safeCreateAttribute(
+    () => db.createIntegerAttribute(databaseId, collectionId, "total_flight_minutes", false),
+    "total_flight_minutes",
+  );
+  await safeCreateAttribute(() => db.createFloatAttribute(databaseId, collectionId, "total_miles", false), "total_miles");
+  await safeCreateAttribute(
+    () => db.createBooleanAttribute(databaseId, collectionId, "telemetry_present", false),
+    "telemetry_present",
+  );
+  await safeCreateAttribute(
+    () => db.createStringAttribute(databaseId, collectionId, "instructor_suggestion_md", 65535, false),
+    "instructor_suggestion_md",
+  );
+  await safeCreateAttribute(
+    () => db.createStringAttribute(databaseId, collectionId, "student_suggestion_md", 65535, false),
+    "student_suggestion_md",
+  );
+  await safeCreateAttribute(
+    () => db.createBooleanAttribute(databaseId, collectionId, "instructor_suggestion_present", false),
+    "instructor_suggestion_present",
+  );
+  await safeCreateAttribute(
+    () => db.createBooleanAttribute(databaseId, collectionId, "student_suggestion_present", false),
+    "student_suggestion_present",
+  );
+  await safeCreateAttribute(
+    () => db.createBooleanAttribute(databaseId, collectionId, "weight_balance_complete", false),
+    "weight_balance_complete",
+  );
+  await safeCreateAttribute(() => db.createBooleanAttribute(databaseId, collectionId, "is_night", false), "is_night");
+  await safeCreateAttribute(
+    () => db.createStringAttribute(databaseId, collectionId, "training_mission_ids_json", 4096, false),
+    "training_mission_ids_json",
+  );
 
   await safeCreateIndex(databaseId, collectionId, "flights_student_idx", ["student_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "flights_instructor_idx", ["instructor_user_id"]);

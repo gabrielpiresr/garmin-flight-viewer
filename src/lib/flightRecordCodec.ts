@@ -23,6 +23,7 @@ export type FlightRecordMeta = {
     date: string;
     startTime?: string;
     aircraft: string;
+    isNight?: boolean;
   };
   schedule?: {
     version: "AUTO_SCHEDULE_V1";

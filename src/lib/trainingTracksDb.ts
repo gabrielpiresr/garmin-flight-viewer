@@ -33,6 +33,10 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => asString(item)).filter(Boolean) : [];
+}
+
 function parseStages(value: unknown): TrainingStage[] {
   if (typeof value !== "string" || !value.trim()) return [];
   try {
@@ -53,6 +57,13 @@ function parseStages(value: unknown): TrainingStage[] {
               maneuvers: Array.isArray(mission.maneuvers)
                 ? mission.maneuvers.map((item) => asString(item)).filter(Boolean)
                 : [],
+              maneuverSectionId: asString(mission.maneuverSectionId) || null,
+              maneuverSectionIds: Array.from(
+                new Set([
+                  ...asStringArray(mission.maneuverSectionIds),
+                  asString(mission.maneuverSectionId),
+                ].filter(Boolean)),
+              ),
               order: typeof mission.order === "number" ? mission.order : missionIndex + 1,
             }))
           : [],

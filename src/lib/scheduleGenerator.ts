@@ -30,6 +30,8 @@ const REASON_LABEL: Record<NonAllocationReasonCode, string> = {
   existingFlightConflict: "Conflito com voo já existente na semana",
   preferenceIncompatible: "Preferências incompatíveis com a oferta da semana",
   insufficientContiguousTime: "Não há bloco contínuo de horário para a duração solicitada",
+  nightCapReached: "Limite de 1 voo noturno por aeronave/instrutor por dia atingido",
+  insufficientNightCredits: "Saldo de créditos noturnos insuficiente",
 };
 
 type Candidate = {
@@ -154,11 +156,17 @@ function buildAvailabilitySets(demand: StudentRequestDemand): {
   const preferred = new Set<string>();
   const available = new Set<string>();
   for (const row of demand.availability) {
-    const hours = PERIOD_HOURS[row.period] ?? [];
-    for (const hour of hours) {
-      const key = `${row.dayOfWeek}-${hour}`;
+    if (row.period === "night") {
+      const key = `${row.dayOfWeek}-night`;
       available.add(key);
       if (row.availabilityType === "preferred") preferred.add(key);
+    } else {
+      const hours = PERIOD_HOURS[row.period] ?? [];
+      for (const hour of hours) {
+        const key = `${row.dayOfWeek}-${hour}`;
+        available.add(key);
+        if (row.availabilityType === "preferred") preferred.add(key);
+      }
     }
   }
   return { preferred, available, hasAnyAvailability: demand.availability.length > 0 };
@@ -369,6 +377,9 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
   const usedHoursByAircraftDay = new Map<string, number>();
   const studentOccupiedByStudent = new Map<string, StudentOccupied[]>();
   const studentUsedDays = new Set<string>();
+  const nightFlightsPerAircraftDay = new Map<string, number>();
+  const allowNightFlights = input.allowNightFlights ?? false;
+  const nightFlightStartHour = input.nightFlightStartHour ?? 18;
 
   const allSupplies = input.supplies.filter((supply) => supply.aircraftId.length > 0);
   for (const supply of allSupplies) {
@@ -410,6 +421,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
   const remainingDemands: DemandWorkItem[] = input.demands.map((demand, originalIndex) => ({ demand, originalIndex }));
 
   const buildCandidates = (demand: StudentRequestDemand): CandidateBuildResult => {
+    const isNightDemand = (demand.isNight ?? false) && allowNightFlights;
     const demandAvailability = buildAvailabilitySets(demand);
     const units = Math.max(1, Math.ceil(demand.durationHours));
     const candidates: Candidate[] = [];
@@ -417,34 +429,24 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
 
     for (const supply of allSupplies) {
       for (const day of [1, 2, 3, 4, 5, 6, 0]) {
-        for (let i = 0; i < SLOT_HOURS.length; i += 1) {
-          if (!isContiguousHours(i, units)) {
-            hadNonContiguousAttempt = true;
-            continue;
-          }
-          const hours = SLOT_HOURS.slice(i, i + units);
-          if (hours.length < units) continue;
-          const slotKeys = hours.map((hour) => `${day}-${hour}`);
-          const hasBlocked = slotKeys.some((slotKey) => {
-            const state = supply.slotStates[slotKey];
-            return !state || state === "blocked";
-          });
-          if (hasBlocked) continue;
+        if (isNightDemand) {
+          const nightSlotKey = `${day}-night`;
+          const nightState = supply.slotStates[nightSlotKey];
+          if (!nightState || nightState === "blocked") continue;
 
-          const availabilityCheck = passesAvailability(demandAvailability, day, hours);
-          if (!availabilityCheck.allowed) continue;
+          const nightAvailKey = `${day}-night`;
+          if (demandAvailability.hasAnyAvailability && !demandAvailability.available.has(nightAvailKey)) continue;
+          const timePreferred = demandAvailability.preferred.has(nightAvailKey);
 
-          const startHour = hours[0]!;
+          const startHour = nightFlightStartHour;
           const startMinute = startHour * 60;
           const endMinute = startMinute + Math.round(demand.durationHours * 60);
           const modelPreferred = Boolean(demand.preferredModelId && supply.aircraftModelId === demand.preferredModelId);
-          const operationalPreferenceRank = Math.min(
-            ...slotKeys.map((slotKey) => slotStateRank(supply.slotStates[slotKey])),
-          );
+          const operationalPreferenceRank = slotStateRank(nightState);
           const layer = resolveLayer({
             hasPreferredModel: Boolean(demand.preferredModelId),
             modelPreferred,
-            timePreferred: availabilityCheck.preferred,
+            timePreferred,
           });
           candidates.push({
             aircraftId: supply.aircraftId,
@@ -456,10 +458,55 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
             endMinute,
             durationHours: demand.durationHours,
             layer,
-            timePreferred: availabilityCheck.preferred,
+            timePreferred,
             modelPreferred,
             operationalPreferenceRank,
           });
+        } else {
+          for (let i = 0; i < SLOT_HOURS.length; i += 1) {
+            if (!isContiguousHours(i, units)) {
+              hadNonContiguousAttempt = true;
+              continue;
+            }
+            const hours = SLOT_HOURS.slice(i, i + units);
+            if (hours.length < units) continue;
+            const slotKeys = hours.map((hour) => `${day}-${hour}`);
+            const hasBlocked = slotKeys.some((slotKey) => {
+              const state = supply.slotStates[slotKey];
+              return !state || state === "blocked";
+            });
+            if (hasBlocked) continue;
+
+            const availabilityCheck = passesAvailability(demandAvailability, day, hours);
+            if (!availabilityCheck.allowed) continue;
+
+            const startHour = hours[0]!;
+            const startMinute = startHour * 60;
+            const endMinute = startMinute + Math.round(demand.durationHours * 60);
+            const modelPreferred = Boolean(demand.preferredModelId && supply.aircraftModelId === demand.preferredModelId);
+            const operationalPreferenceRank = Math.min(
+              ...slotKeys.map((slotKey) => slotStateRank(supply.slotStates[slotKey])),
+            );
+            const layer = resolveLayer({
+              hasPreferredModel: Boolean(demand.preferredModelId),
+              modelPreferred,
+              timePreferred: availabilityCheck.preferred,
+            });
+            candidates.push({
+              aircraftId: supply.aircraftId,
+              aircraftRegistration: supply.aircraftRegistration,
+              dayOfWeek: day,
+              weekDate: addDays(input.weekStart, day),
+              startHour,
+              startMinute,
+              endMinute,
+              durationHours: demand.durationHours,
+              layer,
+              timePreferred: availabilityCheck.preferred,
+              modelPreferred,
+              operationalPreferenceRank,
+            });
+          }
         }
       }
     }
@@ -474,6 +521,11 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     const dayKey = `${candidate.aircraftId}-${candidate.dayOfWeek}`;
     const studentDayKey = `${demand.studentId}-${candidate.weekDate}`;
     if (studentUsedDays.has(studentDayKey)) return "existingFlightConflict";
+
+    if (demand.isNight) {
+      const nightAircraftKey = `${candidate.aircraftId}-${candidate.dayOfWeek}`;
+      if ((nightFlightsPerAircraftDay.get(nightAircraftKey) ?? 0) >= 1) return "nightCapReached";
+    }
 
     const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
     const cap = supply?.dailyCaps[candidate.dayOfWeek];
@@ -725,6 +777,11 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     stats.served += 1;
     demandStats.set(demand.studentId, stats);
 
+    if (demand.isNight) {
+      const nightAircraftKey = `${allocated.aircraftId}-${allocated.dayOfWeek}`;
+      nightFlightsPerAircraftDay.set(nightAircraftKey, (nightFlightsPerAircraftDay.get(nightAircraftKey) ?? 0) + 1);
+    }
+
     suggestions.push({
       demandId: demand.demandId,
       studentId: demand.studentId,
@@ -740,6 +797,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       priorityLevel: demand.priorityLevel,
       flexibilityLevel: demand.flexibilityLevel,
       preferredModelId: demand.preferredModelId,
+      isNight: demand.isNight ?? false,
       instructorId: null,
       instructorLabel: null,
       instructorAnac: null,

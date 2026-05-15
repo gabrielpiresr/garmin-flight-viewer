@@ -1,4 +1,5 @@
 import type { AdminUserFlight, AdminUserPlannedFlight, AdminUserProfileSummary } from "./adminUsers";
+import type { StudentTrainingTrack } from "./trainingTrack";
 
 export type AdminStudentAgendaBucketKey = "yesterday" | "today" | "tomorrow" | "week";
 
@@ -23,6 +24,10 @@ export type AdminStudentProgressRow = {
     count: number;
     hours: number;
     landings: number;
+    navigationHours?: number;
+    ifrHours?: number;
+    nightHours?: number;
+    navigationDistanceNm?: number;
     lastFlightAt: string | null;
   };
   planned: {
@@ -35,6 +40,21 @@ export type AdminStudentProgressRow = {
     requestedFlights: number;
     requestedHours: number;
     latestWeekStart: string | null;
+  };
+  trainingProgress: {
+    assignmentId: string | null;
+    trackId: string | null;
+    trackName: string;
+    status: string;
+    completedMissions: number;
+    totalMissions: number;
+    percentComplete: number;
+  };
+  trainingTracks: StudentTrainingTrack[];
+  alertCounts: {
+    risco: number;
+    atencao: number;
+    leve: number;
   };
   agenda: Record<AdminStudentAgendaBucketKey, { flights: number; hours: number }>;
   recentExecutedFlights: AdminUserFlight[];

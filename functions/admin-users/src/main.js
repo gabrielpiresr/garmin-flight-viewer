@@ -27,12 +27,14 @@ const FLIGHT_LANDINGS_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_LANDINGS_COL_ID;
 const FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID;
+const TRAINING_TRACKS_COLLECTION_ID =
+  process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || process.env.APPWRITE_TRAINING_TRACKS_COL_ID;
+const STUDENT_TRACKS_COLLECTION_ID =
+  process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID;
 const MANEUVERS_SECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID;
 const MANEUVERS_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID;
 const MANEUVERS_ARTICLES_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID;
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
-const TRAINING_TRACKS_COLLECTION_ID = process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || "training_tracks";
-const STUDENT_TRACKS_COLLECTION_ID = process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || "student_training_tracks";
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
@@ -87,31 +89,6 @@ const PROFILE_SELECT = [
   "anac_sync_status",
   "anac_sync_error",
   "anac_last_sync_at",
-];
-const TRAINING_TRACK_SELECT = [
-  "$id",
-  "$createdAt",
-  "$updatedAt",
-  "school_id",
-  "name",
-  "is_default",
-  "is_active",
-  "stages_json",
-  "mission_count",
-  "total_minutes",
-  "updated_at",
-];
-const STUDENT_TRACK_SELECT = [
-  "$id",
-  "$createdAt",
-  "$updatedAt",
-  "school_id",
-  "student_user_id",
-  "track_id",
-  "status",
-  "is_primary",
-  "assigned_at",
-  "updated_at",
 ];
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
 const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active"];
@@ -191,6 +168,7 @@ const CREDIT_SELECT = [
   "hours",
   "expires_at",
   "notes",
+  "is_night",
   "created_by",
   "updated_by",
 ];
@@ -226,6 +204,31 @@ const DASHBOARD_ALERT_SELECT = [
   "duration_sec",
 ];
 const DASHBOARD_SEVERITIES = ["risco", "atencao", "leve"];
+const STUDENT_TRACK_SELECT = [
+  "$id",
+  "$createdAt",
+  "$updatedAt",
+  "school_id",
+  "student_user_id",
+  "track_id",
+  "status",
+  "is_primary",
+  "assigned_at",
+  "updated_at",
+];
+const TRAINING_TRACK_SELECT = [
+  "$id",
+  "$createdAt",
+  "$updatedAt",
+  "school_id",
+  "name",
+  "is_default",
+  "is_active",
+  "stages_json",
+  "mission_count",
+  "total_minutes",
+  "updated_at",
+];
 
 function jsonResponse(res, status, payload) {
   return res.json(payload, status);
@@ -276,46 +279,6 @@ function parseItemsJson(value) {
   }
 }
 
-function parseTrainingStages(value) {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function toTrainingTrack(doc) {
-  if (!doc) return null;
-  return {
-    id: doc.$id,
-    schoolId: doc.school_id || "",
-    name: doc.name || "",
-    isDefault: Boolean(doc.is_default),
-    isActive: Boolean(doc.is_active),
-    stages: parseTrainingStages(doc.stages_json),
-    missionCount: Number(doc.mission_count) || 0,
-    totalMinutes: Number(doc.total_minutes) || 0,
-    updatedAt: doc.updated_at || doc.$updatedAt || "",
-    createdAt: doc.$createdAt || "",
-  };
-}
-
-function toStudentTrainingTrack(doc, track) {
-  return {
-    id: doc.$id,
-    schoolId: doc.school_id || "",
-    studentUserId: doc.student_user_id || "",
-    trackId: doc.track_id || "",
-    status: doc.status || "active",
-    isPrimary: Boolean(doc.is_primary),
-    assignedAt: doc.assigned_at || "",
-    updatedAt: doc.updated_at || doc.$updatedAt || "",
-    track: toTrainingTrack(track),
-  };
-}
-
 function parseJsonList(value) {
   if (!value) return [];
   try {
@@ -352,6 +315,11 @@ function parseMiles(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function parseTrainingSnapshot(value) {
+  const parsed = parseJsonObject(value, null);
+  return parsed && typeof parsed === "object" ? parsed : null;
+}
+
 function decodeFlightMeta(csvText) {
   const firstLine = String(csvText || "").replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0]?.trim() || "";
   if (!firstLine.startsWith(META_PREFIX)) return null;
@@ -361,6 +329,20 @@ function decodeFlightMeta(csvText) {
   } catch {
     return null;
   }
+}
+
+function flightTrainingMissionIds(doc, meta) {
+  const ids = new Set();
+  if (doc?.training_mission_id) ids.add(String(doc.training_mission_id));
+  const training = meta?.training || {};
+  if (training.missionId) ids.add(String(training.missionId));
+  for (const id of Array.isArray(training.missionIds) ? training.missionIds : []) {
+    if (id) ids.add(String(id));
+  }
+  for (const snapshot of Array.isArray(training.snapshots) ? training.snapshots : []) {
+    if (snapshot?.missionId) ids.add(String(snapshot.missionId));
+  }
+  return Array.from(ids);
 }
 
 function buildRoute(legs) {
@@ -468,6 +450,7 @@ function sanitizeCreditInput(value) {
     hours: positiveNumber(credit.hours),
     expires_at: addDaysIso(purchaseDate, validityDays),
     notes: String(credit.notes || "").trim() || null,
+    is_night: Boolean(credit.isNight ?? false),
   };
 
   if (!data.user_id) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
@@ -645,6 +628,9 @@ function toFlight(doc) {
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
   const landings = legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings) || 0)), 0);
   const totalMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const navigationMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.navTime), 0);
+  const ifrMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.ifrTime), 0);
+  const nightMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.nightTime), 0);
   const distanceNm = legs.reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
   const durationSec =
     typeof doc.duration_sec === "number" && doc.duration_sec > 0
@@ -652,6 +638,7 @@ function toFlight(doc) {
       : totalMinutes > 0
         ? totalMinutes * 60
         : null;
+  const snapshot = parseTrainingSnapshot(doc.training_snapshot_json) || meta?.training?.snapshot || null;
   return {
     id: doc.$id,
     createdAt: doc.$createdAt || "",
@@ -664,16 +651,21 @@ function toFlight(doc) {
     route: buildRoute(legs),
     landings,
     distanceNm: Number(distanceNm.toFixed(1)),
+    navigationHours: Number((navigationMinutes / 60).toFixed(2)),
+    ifrHours: Number((ifrMinutes / 60).toFixed(2)),
+    nightHours: Number((nightMinutes / 60).toFixed(2)),
+    navigationDistanceNm: Number(distanceNm.toFixed(1)),
     studentName: meta?.header?.studentName || meta?.header?.studentLabel || "",
     studentAnac: meta?.header?.studentAnac || "",
     instructorName: meta?.header?.instructorName || "",
     instructorAnac: meta?.header?.instructorAnac || "",
     scheduleWeekStart: meta?.schedule?.weekStart || null,
     scheduleDemandId: meta?.schedule?.demandId || null,
-    trainingTrackId: doc.training_track_id || meta?.training?.trackId || null,
-    trainingStageId: doc.training_stage_id || meta?.training?.stageId || null,
-    trainingMissionId: doc.training_mission_id || meta?.training?.missionId || null,
-    trainingSnapshot: parseJsonObject(doc.training_snapshot_json, meta?.training?.snapshot || null),
+    trainingTrackId: doc.training_track_id || meta?.training?.trackId || snapshot?.trackId || null,
+    trainingStageId: doc.training_stage_id || meta?.training?.stageId || snapshot?.stageId || null,
+    trainingMissionId: doc.training_mission_id || meta?.training?.missionId || snapshot?.missionId || null,
+    trainingMissionIds: flightTrainingMissionIds(doc, meta),
+    trainingSnapshot: snapshot,
     studentUserId: doc.student_user_id || doc.user_id || null,
     instructorUserId: doc.instructor_user_id || null,
   };
@@ -743,6 +735,10 @@ function summarizeFlights(flights, plans) {
   const requestedFlights = futureIntentions.reduce((acc, plan) => acc + plan.requestedFlightsCount, 0);
   const requestedHours = futureIntentions.reduce((acc, plan) => acc + plan.totalHours, 0);
   const landings = executedFlights.reduce((acc, flight) => acc + (flight.landings || 0), 0);
+  const navigationHours = executedFlights.reduce((acc, flight) => acc + (flight.navigationHours || 0), 0);
+  const ifrHours = executedFlights.reduce((acc, flight) => acc + (flight.ifrHours || 0), 0);
+  const nightHours = executedFlights.reduce((acc, flight) => acc + (flight.nightHours || 0), 0);
+  const navigationDistanceNm = executedFlights.reduce((acc, flight) => acc + (flight.navigationDistanceNm || 0), 0);
 
   return {
     executedFlights,
@@ -752,6 +748,10 @@ function summarizeFlights(flights, plans) {
       count: executedFlights.length,
       hours: Number(executedHours.toFixed(1)),
       landings,
+      navigationHours: Number(navigationHours.toFixed(1)),
+      ifrHours: Number(ifrHours.toFixed(1)),
+      nightHours: Number(nightHours.toFixed(1)),
+      navigationDistanceNm: Number(navigationDistanceNm.toFixed(1)),
       lastFlightAt: executedFlights[0]?.flightDate || executedFlights[0]?.createdAt || null,
     },
     planned: {
@@ -782,7 +782,6 @@ function toUserRecord(user, profile, preference, flights, plans, trainingTracks 
     emailVerification: Boolean(user.emailVerification),
     createdAt: user.$createdAt || "",
     profile: profilePayload,
-    trainingTracks,
     executed: summary.executed,
     planned: summary.planned,
     intentions: summary.intentions,
@@ -790,6 +789,7 @@ function toUserRecord(user, profile, preference, flights, plans, trainingTracks 
     plannedFlights: summary.plannedFlights,
     futureIntentions: summary.futureIntentions,
     flights: summary.executedFlights,
+    trainingTracks,
   };
 }
 
@@ -814,10 +814,10 @@ function toUserSummary(user, profile, preference, flights, plans, trainingTracks
       instructorPreferenceLevel: detail.profile.instructorPreferenceLevel,
       instructorAvailability: detail.profile.instructorAvailability,
     },
-    trainingTracks: detail.trainingTracks,
     executed: detail.executed,
     planned: detail.planned,
     intentions: detail.intentions,
+    trainingTracks: detail.trainingTracks,
   };
 }
 
@@ -872,13 +872,73 @@ function studentDisplayName(record) {
   return record.profile.fullName || record.name || record.email || record.userId;
 }
 
+function primaryTrainingTrack(record) {
+  return (record.trainingTracks || []).find((item) => item.isPrimary) || (record.trainingTracks || [])[0] || null;
+}
+
+function studentTrainingProgress(record) {
+  const assignment = primaryTrainingTrack(record);
+  const track = assignment?.track || null;
+  if (!assignment || !track) {
+    return {
+      assignmentId: assignment?.id || null,
+      trackId: assignment?.trackId || null,
+      trackName: track?.name || "",
+      status: assignment?.status || "",
+      completedMissions: 0,
+      totalMissions: 0,
+      percentComplete: 0,
+    };
+  }
+  const completed = new Set();
+  const trackMissionIds = new Set();
+  for (const stage of track.stages || []) {
+    for (const mission of Array.isArray(stage.missions) ? stage.missions : []) {
+      if (mission?.id) trackMissionIds.add(String(mission.id));
+    }
+  }
+  for (const flight of record.executedFlights || []) {
+    if (flight.trainingTrackId && flight.trainingTrackId !== assignment.trackId) continue;
+    for (const missionId of flight.trainingMissionIds || []) {
+      if (trackMissionIds.has(String(missionId))) completed.add(String(missionId));
+    }
+  }
+  const totalMissions = trackMissionIds.size || Number(track.missionCount) || 0;
+  const percentComplete = totalMissions > 0 ? Math.round((completed.size / totalMissions) * 100) : 0;
+  return {
+    assignmentId: assignment.id,
+    trackId: assignment.trackId,
+    trackName: track.name || assignment.trackId,
+    status: assignment.status,
+    completedMissions: completed.size,
+    totalMissions,
+    percentComplete: Math.max(0, Math.min(100, percentComplete)),
+  };
+}
+
+async function studentAlertCounts() {
+  const counts = new Map();
+  if (!FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID) return counts;
+  const alerts = await listAllDocuments(FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, selectQuery(DASHBOARD_ALERT_SELECT)).catch(() => []);
+  for (const alert of alerts) {
+    const userId = alert.student_user_id;
+    if (!userId) continue;
+    if (!counts.has(userId)) counts.set(userId, { risco: 0, atencao: 0, leve: 0 });
+    const bucket = counts.get(userId);
+    const severity = DASHBOARD_SEVERITIES.includes(alert.severity) ? alert.severity : "leve";
+    bucket[severity] += 1;
+  }
+  return counts;
+}
+
 async function getStudentsProgress(payload = {}) {
   const inactiveDays = clampInactiveDays(payload.inactiveDays);
   const today = asIsoDate(payload.today);
   const yesterday = shiftIsoDay(today, -1);
   const tomorrow = shiftIsoDay(today, 1);
   const week = weekRangeForIso(today);
-  const records = (await buildRecords()).filter((record) => record.role === "aluno");
+  const [recordsRaw, alertCountsByStudent] = await Promise.all([buildRecords(), studentAlertCounts()]);
+  const records = recordsRaw.filter((record) => record.role === "aluno");
 
   const buckets = {
     yesterday: { key: "yesterday", label: "Ontem", students: 0, flights: 0, hours: 0 },
@@ -918,6 +978,9 @@ async function getStudentsProgress(payload = {}) {
       executed: record.executed,
       planned: record.planned,
       intentions: record.intentions,
+      trainingProgress: studentTrainingProgress(record),
+      trainingTracks: record.trainingTracks || [],
+      alertCounts: alertCountsByStudent.get(record.userId) || { risco: 0, atencao: 0, leve: 0 },
       agenda,
       recentExecutedFlights: executedFlights.slice(0, 6),
       upcomingFlights: plannedFlights.slice(0, 6),
@@ -1260,6 +1323,9 @@ function ensureAircraftBucket(map, base) {
       hoursNext2Days: 0,
       hoursNext5Days: 0,
       hoursNext7Days: 0,
+      futureFlightsToday: 0,
+      futureFlightsNext2Days: 0,
+      futureFlightsNext5Days: 0,
       futureFlights7Days: 0,
       nextFlightAt: null,
       executedFlights: 0,
@@ -1290,11 +1356,22 @@ function buildAircraftDashboard({ aircrafts, modelsById, forecastRows, periodRow
     const bucket = ensureAircraftBucket(buckets, row);
     const date = row.flightDate || "";
     const hours = row.hours || 0;
-    if (date === today) bucket.hoursToday += hours;
-    if (date >= today && date <= next2End) bucket.hoursNext2Days += hours;
-    if (date >= today && date <= next5End) bucket.hoursNext5Days += hours;
-    if (date >= today && date <= next7End) bucket.hoursNext7Days += hours;
-    if (date >= today && date <= next7End) bucket.futureFlights7Days += 1;
+    if (date === today) {
+      bucket.hoursToday += hours;
+      bucket.futureFlightsToday += 1;
+    }
+    if (date >= today && date <= next2End) {
+      bucket.hoursNext2Days += hours;
+      bucket.futureFlightsNext2Days += 1;
+    }
+    if (date >= today && date <= next5End) {
+      bucket.hoursNext5Days += hours;
+      bucket.futureFlightsNext5Days += 1;
+    }
+    if (date >= today && date <= next7End) {
+      bucket.hoursNext7Days += hours;
+      bucket.futureFlights7Days += 1;
+    }
     const dateTime = flightDateTimeKey(row);
     if (!bucket.nextFlightAt || dateTime < bucket.nextFlightAt) bucket.nextFlightAt = dateTime;
   }
@@ -1419,8 +1496,11 @@ async function getDashboardSummary(payload = {}) {
   const periodRows = periodFlightDocs
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
     .filter((row) => rowMatchesDashboardFilters(row, filters));
-  const upcomingRows = upcomingPage.documents
+  const futureRowsForOperationalCounts = upcomingPage.documents
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
+    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters));
+  const upcomingRows = futureRowsForOperationalCounts
+    .slice()
     .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters))
     .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)))
     .slice(0, filters.upcomingLimit);
@@ -1472,6 +1552,7 @@ async function getDashboardSummary(payload = {}) {
       aircraftActive: new Set(periodRows.map((row) => row.aircraftIdent).filter(Boolean)).size,
       telemetryFlights: executedRows.filter((row) => row.telemetryPresent).length,
       flightsWithoutTelemetry: executedRows.filter((row) => !row.telemetryPresent).length,
+      futureFlightsWithoutInstructor: futureRowsForOperationalCounts.filter((row) => !row.instructorUserId).length,
       hardLandingCount: executedRows.reduce((acc, row) => acc + row.hardLandingCount, 0),
       alerts: alertCounts,
       revenue: finance.amountPaid,
@@ -1503,6 +1584,9 @@ async function getDashboardSummary(payload = {}) {
       hoursNext2Days: row.hoursNext2Days,
       hoursNext5Days: row.hoursNext5Days,
       hoursNext7Days: row.hoursNext7Days,
+      futureFlightsToday: row.futureFlightsToday,
+      futureFlightsNext2Days: row.futureFlightsNext2Days,
+      futureFlightsNext5Days: row.futureFlightsNext5Days,
       futureFlights7Days: row.futureFlights7Days,
       nextFlightAt: row.nextFlightAt,
     })),
@@ -1613,118 +1697,6 @@ function groupDataByUserId(flights, plans) {
   return { flightsByUser, plansByUser };
 }
 
-async function listTrainingTracks() {
-  if (!TRAINING_TRACKS_COLLECTION_ID) return [];
-  return listAllDocuments(TRAINING_TRACKS_COLLECTION_ID, [
-    sdk.Query.orderAsc("name"),
-    ...selectQuery(TRAINING_TRACK_SELECT),
-  ]);
-}
-
-async function getDefaultTrainingTrack() {
-  if (!TRAINING_TRACKS_COLLECTION_ID) return null;
-  const res = await databases.listDocuments(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, [
-    sdk.Query.equal("is_default", [true]),
-    sdk.Query.limit(1),
-    ...selectQuery(TRAINING_TRACK_SELECT),
-  ]);
-  return res.documents[0] || null;
-}
-
-async function getStudentTrainingTrackDocs(studentUserId) {
-  if (!STUDENT_TRACKS_COLLECTION_ID || !studentUserId) return [];
-  return listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
-    sdk.Query.equal("student_user_id", [studentUserId]),
-    ...selectQuery(STUDENT_TRACK_SELECT),
-  ]);
-}
-
-async function listStudentTrainingTracks(studentUserId) {
-  const [assignments, tracks] = await Promise.all([getStudentTrainingTrackDocs(studentUserId), listTrainingTracks()]);
-  const tracksById = new Map(tracks.map((track) => [track.$id, track]));
-  return assignments
-    .map((assignment) => toStudentTrainingTrack(assignment, tracksById.get(assignment.track_id) || null))
-    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || (a.track?.name || "").localeCompare(b.track?.name || "", "pt-BR"));
-}
-
-async function ensureDefaultTrainingTrackForStudent(studentUserId) {
-  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID || !studentUserId) return;
-  const assignments = await getStudentTrainingTrackDocs(studentUserId);
-  if (assignments.length > 0) return;
-  const track = await getDefaultTrainingTrack();
-  if (!track) return;
-  const now = nowIso();
-  await databases.createDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, sdk.ID.unique(), {
-    school_id: track.school_id || "escola_principal",
-    student_user_id: studentUserId,
-    track_id: track.$id,
-    status: "active",
-    is_primary: true,
-    assigned_at: now,
-    updated_at: now,
-  });
-}
-
-async function assignStudentTrainingTrack(targetUserId, trackId, isPrimary = false) {
-  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID) {
-    throw Object.assign(new Error("Colecoes de trilhas nao configuradas."), { status: 500 });
-  }
-  if (!targetUserId || !trackId) throw Object.assign(new Error("Aluno ou trilha nao informado."), { status: 400 });
-  const track = await databases.getDocument(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, trackId);
-  const existing = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, [
-    sdk.Query.equal("student_user_id", [targetUserId]),
-    sdk.Query.equal("track_id", [trackId]),
-    sdk.Query.limit(1),
-  ]);
-  const now = nowIso();
-  if (isPrimary) await setPrimaryStudentTrainingTrack(targetUserId, trackId);
-  if (existing.documents[0]) {
-    await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, existing.documents[0].$id, {
-      status: "active",
-      is_primary: Boolean(isPrimary),
-      updated_at: now,
-    });
-  } else {
-    await databases.createDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, sdk.ID.unique(), {
-      school_id: track.school_id || "escola_principal",
-      student_user_id: targetUserId,
-      track_id: trackId,
-      status: "active",
-      is_primary: Boolean(isPrimary),
-      assigned_at: now,
-      updated_at: now,
-    });
-  }
-  return listStudentTrainingTracks(targetUserId);
-}
-
-async function setPrimaryStudentTrainingTrack(targetUserId, trackId) {
-  if (!STUDENT_TRACKS_COLLECTION_ID) return [];
-  const assignments = await getStudentTrainingTrackDocs(targetUserId);
-  const now = nowIso();
-  await Promise.all(assignments.map((doc) =>
-    databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, doc.$id, {
-      is_primary: doc.track_id === trackId,
-      updated_at: now,
-    }),
-  ));
-  return listStudentTrainingTracks(targetUserId);
-}
-
-async function removeStudentTrainingTrack(targetUserId, assignmentId) {
-  if (!STUDENT_TRACKS_COLLECTION_ID) return [];
-  if (!targetUserId || !assignmentId) throw Object.assign(new Error("Aluno ou vinculo nao informado."), { status: 400 });
-  await databases.deleteDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, assignmentId);
-  const remaining = await getStudentTrainingTrackDocs(targetUserId);
-  if (remaining.length > 0 && !remaining.some((doc) => doc.is_primary)) {
-    await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, remaining[0].$id, {
-      is_primary: true,
-      updated_at: nowIso(),
-    });
-  }
-  return listStudentTrainingTracks(targetUserId);
-}
-
 function matchesSearch(record, search) {
   const needle = normalizeSearch(search);
   if (!needle) return true;
@@ -1755,12 +1727,20 @@ async function buildRecords({ search = "", onlyUserId = null } = {}) {
   const profileByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
   const instructorPrefByUserId = new Map(instructorPrefs.map((pref) => [pref.user_id, pref]));
   const { flightsByUser, plansByUser } = groupDataByUserId(flights, plans);
+  const trainingByUserId = await getTrainingAssignmentsByUserIds(allUsers.map((user) => user.$id));
 
   return allUsers
     .map((user) => {
       const profile = profileByUserId.get(user.$id) || null;
       const preference = instructorPrefByUserId.get(user.$id) || null;
-      return toUserRecord(user, profile, preference, flightsByUser.get(user.$id) || [], plansByUser.get(user.$id) || []);
+      return toUserRecord(
+        user,
+        profile,
+        preference,
+        flightsByUser.get(user.$id) || [],
+        plansByUser.get(user.$id) || [],
+        trainingByUserId.get(user.$id) || [],
+      );
     })
     .filter((record) => matchesSearch(record, search))
     .sort((a, b) => {
@@ -1784,6 +1764,67 @@ async function findProfileSearchUserIds(search) {
     )
     .map((profile) => profile.user_id)
     .filter(Boolean);
+}
+
+function toTrainingTrack(doc) {
+  if (!doc) return null;
+  const stages = parseJsonList(doc.stages_json);
+  return {
+    id: doc.$id,
+    schoolId: doc.school_id || "",
+    name: doc.name || "",
+    isDefault: doc.is_default !== false,
+    isActive: doc.is_active !== false,
+    stages,
+    missionCount: Number(doc.mission_count) || stages.reduce((acc, stage) => acc + (Array.isArray(stage.missions) ? stage.missions.length : 0), 0),
+    totalMinutes: Number(doc.total_minutes) || 0,
+    updatedAt: doc.updated_at || doc.$updatedAt || "",
+    createdAt: doc.$createdAt || "",
+  };
+}
+
+async function getTrainingAssignmentsByUserIds(userIds = []) {
+  const result = new Map();
+  const cleanIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (!cleanIds.length || !STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID) return result;
+
+  const assignments = [];
+  for (let index = 0; index < cleanIds.length; index += 100) {
+    const chunk = cleanIds.slice(index, index + 100);
+    assignments.push(
+      ...(await listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+        sdk.Query.equal("student_user_id", chunk),
+        ...selectQuery(STUDENT_TRACK_SELECT),
+      ]).catch(() => [])),
+    );
+  }
+
+  const tracks = await listAllDocuments(TRAINING_TRACKS_COLLECTION_ID, selectQuery(TRAINING_TRACK_SELECT)).catch(() => []);
+  const tracksById = new Map(tracks.map((doc) => [doc.$id, toTrainingTrack(doc)]));
+
+  for (const doc of assignments) {
+    const userId = doc.student_user_id;
+    if (!userId) continue;
+    const list = result.get(userId) || [];
+    list.push({
+      id: doc.$id,
+      schoolId: doc.school_id || "",
+      studentUserId: userId,
+      trackId: doc.track_id || "",
+      status: ["active", "completed", "paused"].includes(doc.status) ? doc.status : "active",
+      isPrimary: Boolean(doc.is_primary),
+      assignedAt: doc.assigned_at || doc.$createdAt || "",
+      updatedAt: doc.updated_at || doc.$updatedAt || "",
+      track: tracksById.get(doc.track_id) || null,
+    });
+    result.set(userId, list);
+  }
+
+  for (const list of result.values()) {
+    list.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.assignedAt.localeCompare(b.assignedAt));
+  }
+
+  return result;
 }
 
 async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } = {}) {
@@ -1829,6 +1870,7 @@ async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } 
     getFlightsByUserIds(userIds, { includeCsv: false }),
     getPlansByUserIds(userIds),
   ]);
+  const trainingByUserId = await getTrainingAssignmentsByUserIds(userIds);
   const { flightsByUser, plansByUser } = groupDataByUserId(flights, plans);
   const usersPage = pageUsers.map((user) =>
     toUserSummary(
@@ -1837,6 +1879,7 @@ async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } 
       prefByUserId.get(user.$id) || null,
       flightsByUser.get(user.$id) || [],
       plansByUser.get(user.$id) || [],
+      trainingByUserId.get(user.$id) || [],
     ),
   );
 
@@ -1853,24 +1896,19 @@ async function getUserDetail(targetUserId) {
     throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
   }
   const user = await users.get({ userId: targetUserId });
-  const [[profileByUserId, prefByUserId], flights, plans, trainingTracks] = await Promise.all([
+  const [[profileByUserId, prefByUserId], flights, plans, trainingByUserId] = await Promise.all([
     Promise.all([getProfilesByUserIds([targetUserId]), getInstructorPrefsByUserIds([targetUserId])]),
     getFlightsByUserIds([targetUserId], { includeCsv: true }),
     getPlansByUserIds([targetUserId]),
-    listStudentTrainingTracks(targetUserId),
+    getTrainingAssignmentsByUserIds([targetUserId]),
   ]);
-  const profile = profileByUserId.get(targetUserId) || null;
-  if (normalizeRole(profile?.role) === "aluno" && trainingTracks.length === 0) {
-    await ensureDefaultTrainingTrackForStudent(targetUserId);
-    trainingTracks.push(...(await listStudentTrainingTracks(targetUserId)));
-  }
   return toUserRecord(
     user,
-    profile,
+    profileByUserId.get(targetUserId) || null,
     prefByUserId.get(targetUserId) || null,
     flights,
     plans,
-    trainingTracks,
+    trainingByUserId.get(targetUserId) || [],
   );
 }
 
@@ -1880,7 +1918,6 @@ async function upsertProfile(userId, email, role) {
 
   if (existing) {
     await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, existing.$id, data);
-    if (role === "aluno") await ensureDefaultTrainingTrackForStudent(userId);
     return existing.$id;
   }
 
@@ -1900,7 +1937,6 @@ async function upsertProfile(userId, email, role) {
       sdk.Permission.read(sdk.Role.label("instrutor")),
     ],
   );
-  if (role === "aluno") await ensureDefaultTrainingTrackForStudent(userId);
   return created.$id;
 }
 
@@ -2125,7 +2161,7 @@ function defaultEmailBrandSettings() {
     accentColor: "#10b981",
     appUrl: normalizeAbsoluteUrl(APP_URL),
     supportEmail: "",
-    footerText: "Este e um email automatico da plataforma.",
+    footerText: "Este é um email automático da plataforma.",
   };
 }
 
@@ -2143,6 +2179,8 @@ function defaultSchoolRules() {
       maxRequestHours: 4,
       allowStudentFlightIntentions: true,
       requireCreditsForIntentions: false,
+      allowNightFlights: false,
+      nightFlightStartHour: 18,
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
@@ -2309,6 +2347,13 @@ function publicSchoolRules(settings, updatedAt) {
       requireCreditsForIntentions: Boolean(
         settings?.schedule?.requireCreditsForIntentions ?? defaults.schedule.requireCreditsForIntentions,
       ),
+      allowNightFlights: Boolean(
+        settings?.schedule?.allowNightFlights ?? defaults.schedule.allowNightFlights,
+      ),
+      nightFlightStartHour: (() => {
+        const h = Number(settings?.schedule?.nightFlightStartHour ?? defaults.schedule.nightFlightStartHour);
+        return Number.isFinite(h) && h >= 0 && h <= 23 ? Math.round(h) : defaults.schedule.nightFlightStartHour;
+      })(),
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [
@@ -2476,7 +2521,7 @@ function formatFlightWhen(flight, data) {
   const date = cleanString(data.flightDate) || cleanString(flight?.flightDate);
   const time = cleanString(data.startTime) || cleanString(flight?.startTime);
   if (date && time) return `${date} ${time}`;
-  return date || time || "horario a confirmar";
+  return date || time || "horário a confirmar";
 }
 
 function buildNotificationMessage(event, flight) {
@@ -2489,11 +2534,11 @@ function buildNotificationMessage(event, flight) {
     return {
       eyebrow: "Agenda de voo",
       title: "Voo agendado",
-      intro: "Um novo voo foi confirmado para voce.",
+      intro: "Um novo voo foi confirmado para você.",
       body: `Seu voo em ${aircraft} foi agendado para ${when}.`,
       details: [
         ["Aeronave", aircraft],
-        ["Data e horario", when],
+        ["Data e horário", when],
       ],
       ctaLabel: "Ver voo",
       url,
@@ -2501,27 +2546,27 @@ function buildNotificationMessage(event, flight) {
   }
   if (type === "flight.updated") {
     return {
-      eyebrow: "Atualizacao operacional",
+      eyebrow: "Atualização operacional",
       title: "Voo alterado",
-      intro: "Houve uma alteracao em um voo da sua agenda.",
+      intro: "Houve uma alteração em um voo da sua agenda.",
       body: `Confira os dados atualizados do voo em ${aircraft} previsto para ${when}.`,
       details: [
         ["Aeronave", aircraft],
-        ["Data e horario", when],
+        ["Data e horário", when],
       ],
-      ctaLabel: "Conferir alteracao",
+      ctaLabel: "Conferir alteração",
       url,
     };
   }
   if (type === "flight.cancelled") {
     return {
-      eyebrow: "Atualizacao operacional",
+      eyebrow: "Atualização operacional",
       title: "Voo cancelado",
       intro: "Um voo da sua agenda foi cancelado.",
       body: `O voo em ${aircraft} previsto para ${when} foi cancelado.`,
       details: [
         ["Aeronave", aircraft],
-        ["Data e horario", when],
+        ["Data e horário", when],
       ],
       ctaLabel: "Abrir plataforma",
       url,
@@ -2532,12 +2577,12 @@ function buildNotificationMessage(event, flight) {
     const count = Number(data.requestedFlightsCount || 0);
     return {
       eyebrow: "Planejamento semanal",
-      title: "Intencao de voo enviada",
-      intro: "Recebemos sua solicitacao de voos para a semana.",
-      body: `Recebemos sua intencao${count > 0 ? ` com ${count} voo(s)` : ""}${weekStart ? ` para a semana de ${weekStart}` : ""}. A coordenacao usara essas informacoes para montar a escala.`,
+      title: "Intenção de voo enviada",
+      intro: "Recebemos sua solicitação de voos para a semana.",
+      body: `Recebemos sua intenção${count > 0 ? ` com ${count} voo(s)` : ""}${weekStart ? ` para a semana de ${weekStart}` : ""}. A coordenação usará essas informações para montar a escala.`,
       details: [
         ["Semana", weekStart || "A confirmar"],
-        ["Voos solicitados", count > 0 ? String(count) : "Nao informado"],
+        ["Voos solicitados", count > 0 ? String(count) : "Não informado"],
       ],
       ctaLabel: "Ver planejamento",
       url,
@@ -2548,17 +2593,17 @@ function buildNotificationMessage(event, flight) {
       eyebrow: "Comunicado da escola",
       title: cleanString(data.title) || "Novo aviso",
       intro: "A escola publicou um novo aviso.",
-      body: stripTags(cleanString(data.contentMd)).slice(0, 320) || "Ha um novo aviso publicado pela escola.",
+      body: stripTags(cleanString(data.contentMd)).slice(0, 320) || "Há um novo aviso publicado pela escola.",
       details: [],
       ctaLabel: cleanString(data.ctaUrl) ? "Abrir aviso" : "Ver avisos",
       url: cleanString(data.ctaUrl) || url,
     };
   }
   return {
-    eyebrow: "Notificacao",
-    title: "Nova notificacao",
-    intro: "Ha uma atualizacao disponivel.",
-    body: "Ha uma atualizacao disponivel na plataforma.",
+    eyebrow: "Notificação",
+    title: "Nova notificação",
+    intro: "Há uma atualização disponível.",
+    body: "Há uma atualização disponível na plataforma.",
     details: [],
     ctaLabel: "Abrir plataforma",
     url,
@@ -2644,7 +2689,7 @@ function emailHtml(message, brand) {
               <tr>
                 <td style="padding:22px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:1.6">
                   <strong style="color:#334155">${escapeHtml(brand.schoolName)}</strong><br />
-                  ${escapeHtml(brand.footerText || "Este e um email automatico da plataforma.")}
+                  ${escapeHtml(brand.footerText || "Este é um email automático da plataforma.")}
                   ${brand.supportEmail ? `<br />Suporte: <a href="mailto:${escapeHtml(brand.supportEmail)}" style="color:${escapeHtml(primary)}">${escapeHtml(brand.supportEmail)}</a>` : ""}
                 </td>
               </tr>
@@ -2873,7 +2918,7 @@ function sampleEventForTemplate(templateType) {
       eventType: "notice.published",
       data: {
         title: "Novo comunicado da escola",
-        contentMd: "Confira as orientacoes operacionais para os proximos voos da semana.",
+        contentMd: "Confira as orientações operacionais para os próximos voos da semana.",
       },
     },
   };
@@ -2893,8 +2938,8 @@ async function sendTestEmail(to, templateType) {
       ? {
           eyebrow: "Teste de email",
           title: "Template de email configurado",
-          intro: "As configuracoes de email da plataforma estao funcionando.",
-          body: "Este e um exemplo do visual que os usuarios receberao nos emails transacionais da escola.",
+          intro: "As configurações de email da plataforma estão funcionando.",
+          body: "Este é um exemplo do visual que os usuários receberão nos emails transacionais da escola.",
           details: [
             ["Template", "Teste geral"],
             ["Status", "Configurado"],
@@ -2994,34 +3039,6 @@ module.exports = async ({ req, res, log, error }) => {
         payload.availability,
       );
       return jsonResponse(res, 200, { user });
-    }
-
-    if (action === "assignStudentTrainingTrack") {
-      const trainingTracks = await assignStudentTrainingTrack(
-        String(payload.userId || ""),
-        String(payload.trackId || ""),
-        Boolean(payload.isPrimary),
-      );
-      const user = await getUserDetail(String(payload.userId || ""));
-      return jsonResponse(res, 200, { user, trainingTracks });
-    }
-
-    if (action === "setPrimaryStudentTrainingTrack") {
-      const trainingTracks = await setPrimaryStudentTrainingTrack(
-        String(payload.userId || ""),
-        String(payload.trackId || ""),
-      );
-      const user = await getUserDetail(String(payload.userId || ""));
-      return jsonResponse(res, 200, { user, trainingTracks });
-    }
-
-    if (action === "removeStudentTrainingTrack") {
-      const trainingTracks = await removeStudentTrainingTrack(
-        String(payload.userId || ""),
-        String(payload.assignmentId || ""),
-      );
-      const user = await getUserDetail(String(payload.userId || ""));
-      return jsonResponse(res, 200, { user, trainingTracks });
     }
 
     if (action === "createCredit") {

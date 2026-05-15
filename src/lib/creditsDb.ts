@@ -38,6 +38,7 @@ type CreditDoc = {
   hours?: number;
   expires_at?: string;
   notes?: string;
+  is_night?: boolean;
   created_by?: string;
   updated_by?: string;
 };
@@ -47,6 +48,7 @@ type FlightSource = {
   flightDate: string;
   aircraftIdent: string;
   hours: number;
+  isNight: boolean;
 };
 
 type MutableCredit = StudentCreditPurchase & {
@@ -108,6 +110,7 @@ function toCredit(doc: CreditDoc): StudentCreditPurchase {
     hours: parsePositiveNumber(Number(doc.hours)),
     expiresAt: doc.expires_at || addDaysIso(purchaseDate, validityDays),
     notes: doc.notes || "",
+    isNight: doc.is_night ?? false,
     createdAt: doc.$createdAt || "",
     updatedAt: doc.$updatedAt || "",
     createdBy: doc.created_by || null,
@@ -133,6 +136,7 @@ function toPayload(input: StudentCreditInput, actorUserId?: string) {
     validity_days: validityDays,
     hours: parsePositiveNumber(Number(input.hours)),
     notes: input.notes?.trim() || null,
+    is_night: input.isNight ?? false,
     updated_by: actorUserId || null,
   };
 }
@@ -161,6 +165,27 @@ function validateInput(input: StudentCreditInput) {
   if (!Number.isFinite(input.hours) || input.hours <= 0) throw new Error("Quantidade de horas inválida.");
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const limit = Math.max(1, Math.floor(concurrency));
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function normalizeRegistration(value: string | null | undefined): string {
   return String(value || "").trim().toUpperCase();
 }
@@ -177,8 +202,12 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
 
   const totalMinutes =
     meta?.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0) ||
+    item.total_flight_minutes ||
     (typeof item.duration_sec === "number" ? Math.round(item.duration_sec / 60) : 0);
-  const landings = meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ?? 0;
+  const landings =
+    meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ??
+    item.landings ??
+    0;
   const hours = roundHours(totalMinutes / 60);
   if (hours <= 0 || landings <= 0) return null;
 
@@ -187,6 +216,7 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
     flightDate,
     aircraftIdent: normalizeRegistration(meta?.header.aircraft || item.aircraft_ident),
     hours,
+    isNight: meta?.header.isNight ?? item.is_night ?? false,
   };
 }
 
@@ -198,12 +228,16 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
   if (flightsResult.error) throw flightsResult.error;
 
   const items = flightsResult.data ?? [];
-  const fullFlights = await Promise.all(
-    items.map(async (item) => {
-      const result = await getSavedFlight(item.id);
-      return [item, result.data] as const;
-    }),
-  );
+  const fullFlights = await mapWithConcurrency(items, 4, async (item) => {
+    const hasMaterializedSource =
+      typeof item.total_flight_minutes === "number" &&
+      typeof item.landings === "number" &&
+      item.total_flight_minutes > 0 &&
+      item.landings > 0;
+    if (hasMaterializedSource) return [item, null] as const;
+    const result = await getSavedFlight(item.id);
+    return [item, result.data] as const;
+  });
 
   return fullFlights
     .map(([item, full]) => buildFlightSource(item, full))
@@ -261,7 +295,8 @@ export function buildStudentCreditStatement(params: {
         (credit) =>
           credit.aircraftModelId === aircraftModelId &&
           credit.expiresAt >= flight.flightDate &&
-          credit.remainingHours > EPSILON,
+          credit.remainingHours > EPSILON &&
+          credit.isNight === flight.isNight,
       )
       .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate));
 

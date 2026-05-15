@@ -64,14 +64,20 @@ export function UpcomingFlightsCard({
     }
 
     const items = data ?? [];
-    const infoById = await loadFullFlightListDisplayInfos(items);
-    const rows = items.map((item) => ({
+    const upcomingItems = items
+      .map((item) => ({ item, info: buildBasicFlightListDisplayInfo(item) }))
+      .filter(({ item, info }) => isFutureFlight(item, info))
+      .sort((a, b) => getFlightDateTimeMs(a.item, a.info) - getFlightDateTimeMs(b.item, b.info))
+      .slice(0, limit)
+      .map(({ item }) => item);
+    const infoById = await loadFullFlightListDisplayInfos(upcomingItems, { concurrency: 3 });
+    const rows = upcomingItems.map((item) => ({
       item,
       info: infoById[item.id] ?? buildBasicFlightListDisplayInfo(item),
     }));
     setFlights(rows);
     setLoading(false);
-  }, [configured, user]);
+  }, [configured, limit, user]);
 
   useEffect(() => {
     void load();

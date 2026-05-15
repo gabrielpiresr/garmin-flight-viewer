@@ -7,7 +7,7 @@ import { PilotProfilePanel } from "../PilotProfilePanel";
 
 const DAYS = [1, 2, 3, 4, 5, 6] as const;
 const DAY_LABEL: Record<number, string> = { 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
-const PERIOD_LABEL: Record<SchedulePeriod, string> = { morning: "Manhã", afternoon: "Tarde" };
+const PERIOD_LABEL: Record<SchedulePeriod, string> = { morning: "Manhã", afternoon: "Tarde", night: "Noite" };
 
 export function InstructorProfileTab() {
   const { user } = useAuth();
@@ -89,7 +89,7 @@ export function InstructorProfileTab() {
                 </tr>
               </thead>
               <tbody>
-                {(["morning", "afternoon"] as const).map((period) => (
+                {(["morning", "afternoon", "night"] as const).map((period) => (
                   <tr key={period}>
                     <td className="pr-2 text-right text-[11px] text-slate-500">{PERIOD_LABEL[period]}</td>
                     {DAYS.map((day) => {

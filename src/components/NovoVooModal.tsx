@@ -6,6 +6,7 @@ import { chartDurationSec } from "../lib/flightStats";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { listAssignableStudents, type StudentOption } from "../lib/rbac";
 import CsvWorker from "../workers/csvWorker?worker";
+import { TelemetryProcessingProgress } from "./ui/TelemetryProcessingProgress";
 
 type Phase = "idle" | "parsing" | "ready" | "saving" | "error";
 
@@ -176,10 +177,7 @@ export function NovoVooModal({ onClose, onCreated }: Props) {
                 }}
               />
               {phase === "parsing" ? (
-                <div className="flex flex-col items-center gap-2">
-                  <div className="h-7 w-7 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-                  <span className="text-sm text-sky-300">Lendo CSV…</span>
-                </div>
+                <TelemetryProcessingProgress className="py-4" />
               ) : (
                 <>
                   <span className="text-sm font-medium text-sky-300">

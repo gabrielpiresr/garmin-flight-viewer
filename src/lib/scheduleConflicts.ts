@@ -11,6 +11,7 @@ export type ConflictFlightDraft = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  isNight?: boolean;
 };
 
 export type DetectedFlightConflict = {
@@ -60,12 +61,46 @@ export function detectFlightConflicts(params: {
   }
 
   const supply = params.supplies.find((row) => row.aircraftRegistration === draft.aircraftRegistration);
-  const slotKey = `${draft.dayOfWeek}-${draft.startHour}`;
+  const slotKey = draft.isNight ? `${draft.dayOfWeek}-night` : `${draft.dayOfWeek}-${draft.startHour}`;
   if (!supply || !supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked") {
     conflicts.push({
       type: "aircraft_blocked",
-      message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} ${formatHHMM(draft.startHour)}.`,
+      message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} ${draft.isNight ? "(noturno)" : formatHHMM(draft.startHour)}.`,
     });
+  }
+
+  if (draft.isNight) {
+    const nightOnAircraft = params.flights.filter(
+      (row) =>
+        (!draft.id || row.id !== draft.id) &&
+        row.aircraftRegistration === draft.aircraftRegistration &&
+        row.isNight === true &&
+        new Date(`${row.date}T12:00:00`).getDay() === draft.dayOfWeek,
+    );
+    if (nightOnAircraft.length > 0) {
+      conflicts.push({
+        type: "other",
+        relatedFlightId: nightOnAircraft[0]!.id,
+        message: "Aeronave já possui voo noturno neste dia.",
+      });
+    }
+
+    if (draft.instructorId) {
+      const nightByInstructor = params.flights.filter(
+        (row) =>
+          (!draft.id || row.id !== draft.id) &&
+          row.instructorId === draft.instructorId &&
+          row.isNight === true &&
+          new Date(`${row.date}T12:00:00`).getDay() === draft.dayOfWeek,
+      );
+      if (nightByInstructor.length > 0) {
+        conflicts.push({
+          type: "other",
+          relatedFlightId: nightByInstructor[0]!.id,
+          message: "Instrutor já possui voo noturno neste dia.",
+        });
+      }
+    }
   }
 
   const draftWindow = toMinutes(draft.startHour, draft.durationHours);
@@ -149,4 +184,37 @@ export function detectFlightConflicts(params: {
     if (!unique.has(key)) unique.set(key, conflict);
   }
   return [...unique.values()];
+}
+
+export function buildConflictsByFlightId(params: {
+  flights: ExistingScheduledFlight[];
+  supplies: AircraftWeekSupply[];
+  minGapMinutes: number;
+  studentLabelMap: Map<string, string>;
+}): Map<string, DetectedFlightConflict[]> {
+  const out = new Map<string, DetectedFlightConflict[]>();
+  for (const row of params.flights) {
+    const draft: ConflictFlightDraft = {
+      id: row.id,
+      studentId: row.studentId,
+      studentLabel: params.studentLabelMap.get(row.studentId) ?? row.studentId,
+      instructorId: row.instructorId,
+      aircraftRegistration: row.aircraftRegistration ?? "Aeronave",
+      dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
+      startHour: (() => {
+        const [hh, mm] = row.startTime.split(":").map(Number);
+        return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
+      })(),
+      durationHours: row.durationHours,
+      isNight: row.isNight ?? false,
+    };
+    const conflicts = detectFlightConflicts({
+      draft,
+      supplies: params.supplies,
+      flights: params.flights,
+      minGapMinutes: params.minGapMinutes,
+    });
+    if (conflicts.length > 0) out.set(row.id, conflicts);
+  }
+  return out;
 }

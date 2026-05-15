@@ -6,6 +6,10 @@ import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/
 import { getSavedFlight, updateFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
+  TelemetryProcessingOverlay,
+  TelemetryProcessingProgress,
+} from "./ui/TelemetryProcessingProgress";
+import {
   chartDurationSec,
   formatAltFt,
   formatDuration,
@@ -504,51 +508,38 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   );
 
   if (loading) {
-    return (
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Skeleton className="h-4 w-48" />
-          <div className="flex flex-wrap gap-2">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-6 w-28 rounded-lg" />
-            ))}
-          </div>
-        </div>
-        <Skeleton className="h-56 w-full rounded-xl" />
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-          <Skeleton className="h-48 w-full rounded-xl" />
-          <Skeleton className="h-48 w-full rounded-xl" />
-        </div>
-      </div>
-    );
+    return <TelemetryProcessingProgress className="min-h-[min(420px,60vh)]" />;
   }
 
   if (loadError) {
     return (
-      <div className="space-y-3">
+      <div className="relative min-w-0 space-y-3">
         {uploadPanel}
         <p className="rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-3 text-sm text-red-300">
           {loadError}
         </p>
+        {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       </div>
     );
   }
 
   if (!fileName) {
     return (
-      <div className="space-y-3">
+      <div className="relative min-w-0 space-y-3">
         {uploadPanel}
         <p className="py-12 text-center text-sm text-slate-500">
           {telemetrySources.length > 0
             ? "Arquivos selecionados. Clique em Processar telemetria para validar os dados."
             : "Nenhum arquivo carregado."}
         </p>
+        {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       </div>
     );
   }
 
   return (
-    <div className="min-w-0 flex flex-col gap-2">
+    <div className="relative min-w-0 flex flex-col gap-2">
+      {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       {uploadPanel}
       <TelemetryAlertsPanel alerts={flightAlerts} loading={alertsLoading} />
       <div className="flex flex-wrap items-center justify-between gap-2">

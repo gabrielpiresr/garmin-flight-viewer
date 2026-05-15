@@ -1,6 +1,6 @@
 import { Permission, Query, Role } from "appwrite";
 import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured } from "./appwrite";
-import type { InstructorIdentity, InstructorPreferenceLevel } from "../types/schedule";
+import type { InstructorIdentity, InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -38,9 +38,20 @@ export type PilotProfile = {
   instructorAvailability: InstructorIdentity["defaultAvailability"];
 };
 
+export type PilotProfileSummary = Pick<PilotProfile, "fullName" | "anacCode">;
+
 export type StudentOption = {
   userId: string;
   email: string;
+};
+
+export type ScheduleStudentIdentity = {
+  userId: string;
+  label: string;
+  email: string | null;
+  anacCode: string | null;
+  weightKg: number | null;
+  heightCm: number | null;
 };
 
 type ProfileDoc = {
@@ -106,13 +117,13 @@ function parseInstructorAvailability(value: unknown): InstructorIdentity["defaul
         const type = row.availabilityType;
         return (
           typeof row.dayOfWeek === "number" &&
-          (row.period === "morning" || row.period === "afternoon") &&
+          (row.period === "morning" || row.period === "afternoon" || row.period === "night") &&
           (type === "available" || type === "preferred")
         );
       })
       .map((row) => ({
         dayOfWeek: row.dayOfWeek!,
-        period: row.period as "morning" | "afternoon",
+        period: row.period as SchedulePeriod,
         availabilityType: row.availabilityType as AvailabilityType,
       }));
   } catch {
@@ -269,6 +280,35 @@ export async function getProfile(userId: string): Promise<{ data: PilotProfile |
   }
 }
 
+export async function listProfileSummariesByUserIds(
+  userIds: string[],
+): Promise<Record<string, PilotProfileSummary>> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return {};
+
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return {};
+
+  const out: Record<string, PilotProfileSummary> = {};
+  const chunkSize = 25;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", chunk),
+      Query.limit(chunk.length),
+    ]);
+    for (const doc of res.documents) {
+      const userId = (doc.user_id as string | undefined) ?? "";
+      if (!userId) continue;
+      out[userId] = {
+        fullName: (doc.full_name as string | undefined) ?? "",
+        anacCode: (doc.anac_code as string | undefined) ?? "",
+      };
+    }
+  }
+
+  return out;
+}
+
 export async function ensureProfile(
   userId: string,
   email: string,
@@ -345,6 +385,36 @@ export async function listAssignableStudents(actorUserId: string, actorRole: Use
   }
 
   return [];
+}
+
+/** Uma query em perfis — evita N× getProfile na escala. */
+export async function listStudentIdentitiesForSchedule(actorUserId: string): Promise<ScheduleStudentIdentity[]> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
+
+  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [Query.limit(200)]);
+
+  return res.documents
+    .filter((doc) => {
+      const userId = (doc.user_id as string | undefined) ?? "";
+      const role = normalizeUserRole((doc.role as string | undefined) ?? null);
+      if (!userId || userId === actorUserId) return false;
+      return role !== "admin" && role !== "instrutor";
+    })
+    .map((doc) => {
+      const userId = (doc.user_id as string | undefined) ?? "";
+      const email = (doc.email as string | undefined) ?? "";
+      const fullName = ((doc.full_name as string | undefined) ?? "").trim();
+      return {
+        userId,
+        label: fullName || email || userId,
+        email: email || null,
+        anacCode: (doc.anac_code as string | undefined) || null,
+        weightKg: typeof doc.weight_kg === "number" ? doc.weight_kg : null,
+        heightCm: typeof doc.height_cm === "number" ? doc.height_cm : null,
+      };
+    })
+    .filter((row) => row.userId.length > 0)
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
 }
 
 export async function listAssignableInstructors(actorRole: UserRole): Promise<InstructorIdentity[]> {

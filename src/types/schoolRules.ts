@@ -23,6 +23,8 @@ export type FlightScheduleRules = {
   maxRequestHours: number;
   allowStudentFlightIntentions: boolean;
   requireCreditsForIntentions: boolean;
+  allowNightFlights: boolean;
+  nightFlightStartHour: number;
 };
 
 export type EmailNotificationRule = {
@@ -56,7 +58,7 @@ export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType
   { id: "flight.scheduled", label: "Voo agendado" },
   { id: "flight.updated", label: "Voo alterado" },
   { id: "flight.cancelled", label: "Voo cancelado" },
-  { id: "weeklyPlan.submitted", label: "Intencao enviada" },
+  { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
 ];
 
@@ -72,6 +74,8 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   maxRequestHours: 4,
   allowStudentFlightIntentions: true,
   requireCreditsForIntentions: false,
+  allowNightFlights: false,
+  nightFlightStartHour: 18,
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
@@ -149,6 +153,12 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
         raw.schedule?.allowStudentFlightIntentions ?? DEFAULT_FLIGHT_SCHEDULE_RULES.allowStudentFlightIntentions,
       requireCreditsForIntentions:
         raw.schedule?.requireCreditsForIntentions ?? DEFAULT_FLIGHT_SCHEDULE_RULES.requireCreditsForIntentions,
+      allowNightFlights:
+        raw.schedule?.allowNightFlights ?? DEFAULT_FLIGHT_SCHEDULE_RULES.allowNightFlights,
+      nightFlightStartHour: (() => {
+        const h = Number(raw.schedule?.nightFlightStartHour);
+        return Number.isFinite(h) && h >= 0 && h <= 23 ? Math.round(h) : DEFAULT_FLIGHT_SCHEDULE_RULES.nightFlightStartHour;
+      })(),
     },
     emailNotifications: EMAIL_NOTIFICATION_EVENT_OPTIONS.reduce(
       (acc, item) => ({

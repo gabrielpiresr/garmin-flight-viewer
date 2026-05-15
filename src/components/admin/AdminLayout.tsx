@@ -15,13 +15,11 @@ import { FleetTab } from "./FleetTab";
 import { MaintenanceTab } from "./MaintenanceTab";
 import { TelemetryAlertsTab } from "./TelemetryAlertsTab";
 import { ManobrasTab } from "./ManobrasTab";
-import { NoticesTab } from "./NoticesTab";
-import { PlatformSettingsTab } from "./PlatformSettingsTab";
+import { PlatformSettingsTab, type SettingsSubTab } from "./PlatformSettingsTab";
 import { ScheduleAdminTab, type ScheduleSubTab } from "./ScheduleAdminTab";
 import { AdminStudentsTab } from "./AdminStudentsTab";
 import { AdminUsersTab } from "./AdminUsersTab";
 import { FlightReportsTab } from "./FlightReportsTab";
-import { TrainingExercisesTab } from "./TrainingExercisesTab";
 import { AdminHome } from "./AdminHome";
 
 type AdminSection =
@@ -29,9 +27,7 @@ type AdminSection =
   | "fleet"
   | "telemetry-alerts"
   | "schedule"
-  | "notices"
   | "maneuvers"
-  | "exercises"
   | "reports"
   | "students"
   | "users"
@@ -60,13 +56,12 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "reports",
-    label: "Relatorios",
-    sublabel: "Voos, filtros e exportacoes",
+    id: "schedule",
+    label: "Escala",
+    sublabel: "Voos, disponibilidades e gerador",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
-        <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
+        <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v.75h9V3a.75.75 0 011.5 0v.75h.75a3 3 0 013 3v10.5a3 3 0 01-3 3H5.25a3 3 0 01-3-3V6.75a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm-3 5.25a1.5 1.5 0 011.5-1.5h13.5a1.5 1.5 0 011.5 1.5v.75H3.75V7.5zm4.5 4.5a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-1.5h2.25a.75.75 0 000-1.5H12V10.5a.75.75 0 00-1.5 0V12H8.25z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -83,16 +78,6 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "fleet",
-    label: "Frota",
-    sublabel: "Aviões, modelos e manutenções",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
-      </svg>
-    ),
-  },
-  {
     id: "telemetry-alerts",
     label: "Alertas",
     sublabel: "Telemetria por modelo",
@@ -103,23 +88,23 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "schedule",
-    label: "Escala",
-    sublabel: "Escala, config semanal e gerador",
+    id: "reports",
+    label: "Relatórios",
+    sublabel: "Voos, filtros e exportações",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v.75h9V3a.75.75 0 011.5 0v.75h.75a3 3 0 013 3v10.5a3 3 0 01-3 3H5.25a3 3 0 01-3-3V6.75a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm-3 5.25a1.5 1.5 0 011.5-1.5h13.5a1.5 1.5 0 011.5 1.5v.75H3.75V7.5zm4.5 4.5a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-1.5h2.25a.75.75 0 000-1.5H12V10.5a.75.75 0 00-1.5 0V12H8.25z" clipRule="evenodd" />
+        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
+        <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
       </svg>
     ),
   },
   {
-    id: "notices",
-    label: "Avisos",
-    sublabel: "Feed da home do aluno",
+    id: "fleet",
+    label: "Frota",
+    sublabel: "Aviões, modelos e manutenções",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M1.5 8.67c0-1.213.84-2.266 2.024-2.49l13.5-2.56a2.25 2.25 0 012.669 2.21v12.34a2.25 2.25 0 01-2.67 2.21l-13.5-2.56A2.532 2.532 0 011.5 15.33V8.67z" />
-        <path d="M20.25 8.99a.75.75 0 011.5 0v5.02a.75.75 0 01-1.5 0V8.99z" />
+        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
       </svg>
     ),
   },
@@ -134,18 +119,8 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "exercises",
-    label: "Exercícios",
-    sublabel: "Notas e proficiência da ficha",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M6.32 2.577a49.255 49.255 0 0111.36 0c1.497.174 2.57 1.46 2.57 2.93v11.986c0 1.47-1.073 2.756-2.57 2.93a49.255 49.255 0 01-11.36 0c-1.497-.174-2.57-1.46-2.57-2.93V5.507c0-1.47 1.073-2.756 2.57-2.93zM8.25 6.75A.75.75 0 019 6h6a.75.75 0 010 1.5H9a.75.75 0 01-.75-.75zM9 10.5a.75.75 0 000 1.5h6a.75.75 0 000-1.5H9zm-.75 5.25A.75.75 0 019 15h3a.75.75 0 010 1.5H9a.75.75 0 01-.75-.75z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
     id: "users",
-    label: "Usuarios",
+    label: "Usuários",
     sublabel: "Perfis, permissões e voos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -155,8 +130,8 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "settings",
-    label: "Configuracoes",
-    sublabel: "Email, push e plataforma",
+    label: "Configurações",
+    sublabel: "Email, regras, exercícios e avisos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567l-.108.648a7.52 7.52 0 00-1.705.707l-.535-.38a1.875 1.875 0 00-2.413.205l-.47.47a1.875 1.875 0 00-.205 2.413l.38.535a7.52 7.52 0 00-.707 1.705l-.648.108A1.875 1.875 0 001.25 12.078v.844c0 .917.663 1.699 1.567 1.85l.648.108c.173.603.412 1.174.707 1.705l-.38.535a1.875 1.875 0 00.205 2.413l.47.47c.648.648 1.67.735 2.413.205l.535-.38a7.52 7.52 0 001.705.707l.108.648a1.875 1.875 0 001.85 1.567h.844c.917 0 1.699-.663 1.85-1.567l.108-.648a7.52 7.52 0 001.705-.707l.535.38a1.875 1.875 0 002.413-.205l.47-.47c.648-.648.735-1.67.205-2.413l-.38-.535a7.52 7.52 0 00.707-1.705l.648-.108a1.875 1.875 0 001.567-1.85v-.844c0-.917-.663-1.699-1.567-1.85l-.648-.108a7.52 7.52 0 00-.707-1.705l.38-.535a1.875 1.875 0 00-.205-2.413l-.47-.47a1.875 1.875 0 00-2.413-.205l-.535.38a7.52 7.52 0 00-1.705-.707l-.108-.648a1.875 1.875 0 00-1.85-1.567h-.844zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clipRule="evenodd" />
@@ -209,18 +184,30 @@ const SCHEDULE_ROUTES = [
   { id: "generator", path: "/admin/escala/gerador" },
 ] satisfies readonly TabRoute<ScheduleSubTab>[];
 
+const SETTINGS_ROUTES = [
+  { id: "email", path: "/admin/configuracoes", aliases: ["/admin/configuracoes/email"] },
+  { id: "brand", path: "/admin/configuracoes/aparencia" },
+  { id: "rules", path: "/admin/configuracoes/regras" },
+  { id: "badges", path: "/admin/configuracoes/badges" },
+  { id: "tracks", path: "/admin/configuracoes/trilhas" },
+  { id: "exercises", path: "/admin/configuracoes/exercicios", aliases: ["/admin/exercicios"] },
+  { id: "notices", path: "/admin/configuracoes/avisos", aliases: ["/admin/avisos"] },
+] satisfies readonly TabRoute<SettingsSubTab>[];
+
 const ADMIN_ROUTES = [
   { id: "home", path: "/admin" },
-  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
-  { id: "telemetry-alerts", path: "/admin/alertas" },
   { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
-  { id: "notices", path: "/admin/avisos" },
-  { id: "maneuvers", path: "/admin/manobras" },
-  { id: "exercises", path: "/admin/exercicios" },
-  { id: "reports", path: "/admin/relatorios" },
   { id: "students", path: "/admin/alunos" },
+  { id: "telemetry-alerts", path: "/admin/alertas" },
+  { id: "reports", path: "/admin/relatorios" },
+  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
+  { id: "maneuvers", path: "/admin/manobras" },
   { id: "users", path: "/admin/usuarios" },
-  { id: "settings", path: "/admin/configuracoes" },
+  {
+    id: "settings",
+    path: "/admin/configuracoes",
+    aliases: SETTINGS_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]),
+  },
 ] satisfies readonly TabRoute<AdminSection>[];
 
 export function AdminLayout() {
@@ -230,6 +217,7 @@ export function AdminLayout() {
   const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
   const openedFleetTabs = useOpenedTabs(fleetTab);
   const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
+  const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "email"));
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
 
@@ -240,6 +228,9 @@ export function AdminLayout() {
       }
       if (routeMatches(SCHEDULE_ROUTES)) {
         setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
+      }
+      if (routeMatches(SETTINGS_ROUTES)) {
+        setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "email"));
       }
     };
 
@@ -257,6 +248,10 @@ export function AdminLayout() {
       setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) });
       return;
     }
+    if (target === "settings") {
+      setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) });
+      return;
+    }
     setSection(target);
   }
 
@@ -268,6 +263,11 @@ export function AdminLayout() {
   function changeScheduleTab(next: ScheduleSubTab) {
     setScheduleTab(next);
     setSection("schedule", { path: pathForRoute(SCHEDULE_ROUTES, next) });
+  }
+
+  function changeSettingsTab(next: SettingsSubTab) {
+    setSettingsTab(next);
+    setSection("settings", { path: pathForRoute(SETTINGS_ROUTES, next) });
   }
 
   return (
@@ -393,19 +393,9 @@ export function AdminLayout() {
               <ScheduleAdminTab subTab={scheduleTab} onSubTabChange={changeScheduleTab} />
             </div>
           )}
-          {openedSections.has("notices") && (
-            <div hidden={section !== "notices"}>
-              <NoticesTab />
-            </div>
-          )}
           {openedSections.has("maneuvers") && (
             <div hidden={section !== "maneuvers"}>
               <ManobrasTab />
-            </div>
-          )}
-          {openedSections.has("exercises") && (
-            <div hidden={section !== "exercises"}>
-              <TrainingExercisesTab />
             </div>
           )}
           {openedSections.has("reports") && (
@@ -425,7 +415,7 @@ export function AdminLayout() {
           )}
           {openedSections.has("settings") && (
             <div hidden={section !== "settings"}>
-              <PlatformSettingsTab />
+              <PlatformSettingsTab subTab={settingsTab} onSubTabChange={changeSettingsTab} />
             </div>
           )}
         </main>

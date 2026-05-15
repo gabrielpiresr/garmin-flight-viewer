@@ -73,6 +73,10 @@ function slotKey(day: number, hour: number): string {
   return `${day}-${hour}`;
 }
 
+function nightKey(day: number): string {
+  return `${day}-night`;
+}
+
 export function WeeklyConfigTab() {
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -132,7 +136,10 @@ export function WeeklyConfigTab() {
         })));
         // Matrix
         const matrix: SlotMatrix = {};
-        for (const slot of config.slots) matrix[slotKey(slot.day_of_week, slot.start_hour)] = slot.state;
+        for (const slot of config.slots) {
+        const k = slot.start_hour === -1 ? nightKey(slot.day_of_week) : slotKey(slot.day_of_week, slot.start_hour);
+        matrix[k] = slot.state;
+      }
         setSlotMatrix(matrix);
         setIsOpenForRequests(config.week.is_open_for_requests ?? false);
       } else {
@@ -152,8 +159,7 @@ export function WeeklyConfigTab() {
     }
   }, [selectedAircraftId, selectedWeekIdx, loadConfig]);
 
-  function applyTool(day: number, hour: number) {
-    const key = slotKey(day, hour);
+  function applyKey(key: string) {
     setSlotMatrix((prev) => {
       const next = { ...prev };
       if (activeTool === "clear") {
@@ -165,6 +171,10 @@ export function WeeklyConfigTab() {
     });
   }
 
+  function applyTool(day: number, hour: number) {
+    applyKey(slotKey(day, hour));
+  }
+
   function handleCellMouseDown(day: number, hour: number) {
     isDragging.current = true;
     applyTool(day, hour);
@@ -172,6 +182,15 @@ export function WeeklyConfigTab() {
 
   function handleCellMouseEnter(day: number, hour: number) {
     if (isDragging.current) applyTool(day, hour);
+  }
+
+  function handleNightCellMouseDown(day: number) {
+    isDragging.current = true;
+    applyKey(nightKey(day));
+  }
+
+  function handleNightCellMouseEnter(day: number) {
+    if (isDragging.current) applyKey(nightKey(day));
   }
 
   function handleMouseUp() {
@@ -242,7 +261,10 @@ export function WeeklyConfigTab() {
       setDailyCaps(caps);
       setGroupCaps(config.groupCaps.map((gc) => ({ id: crypto.randomUUID(), maxHours: String(gc.max_hours), days: gc.days ?? [] })));
       const matrix: SlotMatrix = {};
-      for (const slot of config.slots) matrix[slotKey(slot.day_of_week, slot.start_hour)] = slot.state;
+      for (const slot of config.slots) {
+        const k = slot.start_hour === -1 ? nightKey(slot.day_of_week) : slotKey(slot.day_of_week, slot.start_hour);
+        matrix[k] = slot.state;
+      }
       setSlotMatrix(matrix);
     } catch (e) {
       setError((e as Error).message);
@@ -269,10 +291,18 @@ export function WeeklyConfigTab() {
         groupCaps: groupCaps
           .filter((g) => g.days.length > 0 && g.maxHours !== "")
           .map((g) => ({ maxHours: parseFloat(g.maxHours), days: g.days })),
-        slots: Object.entries(slotMatrix).map(([key, state]) => {
-          const [d, h] = key.split("-").map(Number);
-          return { dayOfWeek: d!, startHour: h!, state };
-        }),
+        slots: Object.entries(slotMatrix)
+          .filter(([key]) => !key.endsWith("-night"))
+          .map(([key, state]) => {
+            const [d, h] = key.split("-").map(Number);
+            return { dayOfWeek: d!, startHour: h!, state };
+          }),
+        nightSlots: Object.entries(slotMatrix)
+          .filter(([key]) => key.endsWith("-night"))
+          .map(([key, state]) => {
+            const day = Number(key.split("-")[0]);
+            return { dayOfWeek: day, state };
+          }),
       });
       showToast({ variant: "success", message: "Configuração salva com sucesso." });
     } catch (e) {
@@ -630,6 +660,34 @@ export function WeeklyConfigTab() {
                       })}
                     </tr>
                   ))}
+                  <tr>
+                    <td colSpan={WEEK_DAYS.length + 1} className="pt-1 pb-0.5">
+                      <div className="h-px bg-indigo-900/60" />
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="pr-2 text-right text-[11px] font-medium text-indigo-400">Noturna</td>
+                    {WEEK_DAYS.map((day) => {
+                      const key = nightKey(day);
+                      const state = slotMatrix[key];
+                      const meta = state ? SLOT_META[state] : null;
+                      return (
+                        <td key={day} className="p-0">
+                          <button
+                            type="button"
+                            onMouseDown={() => handleNightCellMouseDown(day)}
+                            onMouseEnter={() => handleNightCellMouseEnter(day)}
+                            className={`h-8 w-full rounded-md border transition-all duration-75 ${
+                              meta
+                                ? `${meta.bg} ${meta.border} opacity-90 hover:opacity-100`
+                                : "border-indigo-900/50 bg-indigo-950/30 hover:border-indigo-700 hover:bg-indigo-900/40"
+                            }`}
+                            aria-label={`${DAY_LABELS[day]} Noturno${state ? ` — ${SLOT_META[state]?.label}` : ""}`}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
                 </tbody>
               </table>
             </div>

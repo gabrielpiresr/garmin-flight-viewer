@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { useAuth } from "../contexts/AuthContext";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
-import { getSavedFlight, listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
+import { getSavedFlight, listSavedFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import {
   listJourneyLandings,
   listJourneyTakeoffs,
@@ -22,11 +22,20 @@ import {
 import {
   aggregateJourneyMetrics,
   type JourneyBadge,
+  type JourneyEvolutionPeriod,
   type JourneyLandingDistributionPoint,
   type JourneyMetrics,
 } from "../lib/journeyMetrics";
+import { renderRichContent } from "../lib/maneuverContent";
+import { listManeuverCatalog } from "../lib/maneuversDb";
+import { completedStagesForTrack, evaluateRewards, rewardsToLegacyBadges } from "../lib/rewardEvaluation";
+import { listJourneyRewards } from "../lib/rewardsDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import { DEFAULT_SCHOOL_RULES } from "../types/schoolRules";
+import type { EvaluatedJourneyReward, JourneyReward } from "../types/rewards";
+import type { ManeuverArticle, ManeuverCatalog } from "../types/maneuver";
 import type { StudentTrainingTrack, TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
+import { RewardIcon } from "./rewards/RewardIcon";
 import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
 
@@ -39,6 +48,7 @@ type JourneyState = {
 type FormationState = {
   tracks: StudentTrainingTrack[];
   flights: Array<SavedFlightListItem & { trainingMissionIds: string[] }>;
+  fullFlights: SavedFlightFull[];
   loading: boolean;
   error: string | null;
 };
@@ -68,6 +78,7 @@ const BADGE_TONE_CLASS: Record<JourneyBadge["tone"], string> = {
   violet: "border-violet-500/40 bg-violet-500/10 text-violet-200",
   amber: "border-amber-500/40 bg-amber-500/10 text-amber-200",
 };
+const SCHOOL_REWARD_COLOR = DEFAULT_SCHOOL_RULES.theme.primaryColor;
 
 const integerFormatter = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 const decimalFormatter = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 1 });
@@ -77,6 +88,10 @@ const MONTHLY_METRICS: Record<MonthlyMetricKey, { label: string; stroke: string;
   distanceNm: { label: "Milhas", stroke: "#a78bfa", gradientId: "journeyDistance" },
   landings: { label: "Pousos", stroke: "#34d399", gradientId: "journeyLandings" },
 };
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 const JOURNEY_SECTIONS: Array<{ id: JourneySection; label: string; icon: ReactNode }> = [
   {
@@ -101,7 +116,7 @@ const JOURNEY_SECTIONS: Array<{ id: JourneySection; label: string; icon: ReactNo
   },
 ];
 
-function useJourneyMetrics(): JourneyState {
+function useJourneyMetrics(enabled: boolean): JourneyState {
   const { user, configured } = useAuth();
   const [state, setState] = useState<JourneyState>({
     metrics: EMPTY_METRICS,
@@ -111,6 +126,12 @@ function useJourneyMetrics(): JourneyState {
 
   useEffect(() => {
     let cancelled = false;
+    if (!enabled) {
+      setState((prev) => ({ ...prev, loading: false }));
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!configured || !user) {
       setState({ metrics: EMPTY_METRICS, loading: false, error: configured ? null : "Appwrite não configurado" });
       return () => {
@@ -127,9 +148,6 @@ function useJourneyMetrics(): JourneyState {
         listJourneyTakeoffs({ userId: currentUser.id, role: currentUser.role }),
       ]);
       if (cancelled) return;
-      // #region agent log
-      fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0a56a4" }, body: JSON.stringify({ sessionId: "0a56a4", runId: "pre-fix", hypothesisId: "H2,H3,H5", location: "src/components/JornadaTab.tsx:90", message: "Journey metric load results", data: { userRole: currentUser.role, summaries: { count: summaries.data?.length ?? null, error: summaries.error?.message ?? null }, landings: { count: landings.data?.length ?? null, error: landings.error?.message ?? null }, takeoffs: { count: takeoffs.data?.length ?? null, error: takeoffs.error?.message ?? null } }, timestamp: Date.now() }) }).catch(() => {});
-      // #endregion
       const error = summaries.error ?? landings.error ?? takeoffs.error;
       if (error) {
         setState({ metrics: EMPTY_METRICS, loading: false, error: error.message });
@@ -150,19 +168,19 @@ function useJourneyMetrics(): JourneyState {
     return () => {
       cancelled = true;
     };
-  }, [configured, user]);
+  }, [configured, enabled, user]);
 
   return state;
 }
 
 function useFormationProgress(): FormationState {
   const { user, configured } = useAuth();
-  const [state, setState] = useState<FormationState>({ tracks: [], flights: [], loading: true, error: null });
+  const [state, setState] = useState<FormationState>({ tracks: [], flights: [], fullFlights: [], loading: true, error: null });
 
   useEffect(() => {
     let cancelled = false;
     if (!configured || !user) {
-      setState({ tracks: [], flights: [], loading: false, error: configured ? null : "Appwrite não configurado" });
+      setState({ tracks: [], flights: [], fullFlights: [], loading: false, error: configured ? null : "Appwrite não configurado" });
       return () => {
         cancelled = true;
       };
@@ -178,22 +196,48 @@ function useFormationProgress(): FormationState {
       if (cancelled) return;
       const error = tracksRes.error ?? flightsRes.error;
       const baseFlights = flightsRes.data ?? [];
-      const trainingFlights = await Promise.all(
-        baseFlights.map(async (flight) => {
-          if (!flight.training_track_id) return { ...flight, trainingMissionIds: flightMissionIds(flight) };
-          const full = await getSavedFlight(flight.id);
-          if (full.error || !full.data) return { ...flight, trainingMissionIds: flightMissionIds(flight) };
-          const meta = decodeFlightRecord(full.data.csv_text).meta;
-          return {
-            ...flight,
-            trainingMissionIds: Array.from(new Set([...(meta?.training?.missionIds ?? []), ...flightMissionIds(flight)].filter(Boolean))),
-          };
-        }),
-      );
+      const initialFlights = baseFlights.map((flight) => ({ ...flight, trainingMissionIds: flightMissionIds(flight) }));
+      setState({
+        tracks: tracksRes.data ?? [],
+        flights: initialFlights,
+        fullFlights: [],
+        loading: false,
+        error: error?.message ?? null,
+      });
+      await wait(1800);
+      const fullFlights: SavedFlightFull[] = [];
+      const fullById = new Map<string, SavedFlightFull>();
+      const flightsNeedingDetails = baseFlights.filter((flight) => flight.training_track_id && flightMissionIds(flight).length === 0);
+      for (const flight of flightsNeedingDetails) {
+        if (cancelled) return;
+        const full = await getSavedFlight(flight.id);
+        if (full.data) {
+          fullFlights.push(full.data);
+          fullById.set(flight.id, full.data);
+        }
+        await wait(25);
+      }
+      const trainingFlights = baseFlights.map((flight) => {
+        const materializedMissionIds = flightMissionIds(flight);
+        const full = fullById.get(flight.id);
+        if (!full) return { ...flight, trainingMissionIds: materializedMissionIds };
+        const meta = decodeFlightRecord(full.csv_text).meta;
+        return {
+          ...flight,
+          trainingMissionIds: Array.from(
+            new Set([
+              ...(meta?.training?.missionIds ?? []),
+              meta?.training?.missionId ?? "",
+              ...materializedMissionIds,
+            ].filter(Boolean)),
+          ),
+        };
+      });
       if (cancelled) return;
       setState({
         tracks: tracksRes.data ?? [],
         flights: trainingFlights,
+        fullFlights,
         loading: false,
         error: error?.message ?? null,
       });
@@ -208,6 +252,35 @@ function useFormationProgress(): FormationState {
   return state;
 }
 
+function useEvaluatedBadges(metrics: JourneyMetrics, formationState: FormationState): JourneyBadge[] {
+  const [badges, setBadges] = useState<JourneyBadge[]>(metrics.badges);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const rewards = await listJourneyRewards({ kind: "badge" });
+      if (cancelled) return;
+      if (rewards.error || rewards.data.length === 0) {
+        setBadges(metrics.badges);
+        return;
+      }
+      const evaluated = evaluateRewards(rewards.data, {
+        journey: metrics,
+        flights: formationState.flights,
+        fullFlights: formationState.fullFlights,
+        formation: null,
+      });
+      setBadges(rewardsToLegacyBadges(evaluated));
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [formationState.flights, formationState.fullFlights, metrics]);
+
+  return badges;
+}
+
 function formatInteger(value: number): string {
   return integerFormatter.format(Math.round(value));
 }
@@ -216,28 +289,24 @@ function formatHours(value: number): string {
   return `${value >= 10 ? integerFormatter.format(Math.round(value)) : decimalFormatter.format(value)} h`;
 }
 
-function formatNm(value: number): string {
-  return `${integerFormatter.format(Math.round(value))} NM`;
-}
-
 function formatMetersFromFt(value: number | null): string {
-  return value === null ? "—" : `${integerFormatter.format(Math.round(value * 0.3048))} m`;
+  return value === null ? "-" : `${integerFormatter.format(Math.round(value * 0.3048))} m`;
 }
 
 function formatSeconds(value: number | null): string {
-  return value === null ? "—" : `${decimalFormatter.format(value)} s`;
+  return value === null ? "-" : `${decimalFormatter.format(value)} s`;
 }
 
 function formatKt(value: number | null): string {
-  return value === null ? "—" : `${decimalFormatter.format(value)} kt`;
+  return value === null ? "-" : `${decimalFormatter.format(value)} kt`;
 }
 
 function formatFpm(value: number | null): string {
-  return value === null ? "—" : `${integerFormatter.format(Math.round(value))} fpm`;
+  return value === null ? "-" : `${integerFormatter.format(Math.round(value))} fpm`;
 }
 
 function formatG(value: number | null): string {
-  return value === null ? "—" : `${decimalFormatter.format(value)} g`;
+  return value === null ? "-" : `${decimalFormatter.format(value)} g`;
 }
 
 function formatPercent(value: number): string {
@@ -250,8 +319,9 @@ function formatDate(value: string | null): string {
   return Number.isNaN(date.getTime()) ? "Sem voos ainda" : date.toLocaleDateString("pt-BR");
 }
 
-function latestMonths(metrics: JourneyMetrics) {
-  return metrics.monthly.slice(-8).map((item) => ({
+function latestEvolution(metrics: JourneyMetrics, period: JourneyEvolutionPeriod) {
+  const limit = period === "day" ? 14 : period === "week" ? 12 : 8;
+  return metrics.evolution[period].slice(-limit).map((item) => ({
     ...item,
     hours: Number(item.hours.toFixed(1)),
     distanceNm: Math.round(item.distanceNm),
@@ -259,7 +329,16 @@ function latestMonths(metrics: JourneyMetrics) {
 }
 
 function flightMissionIds(flight: SavedFlightListItem): string[] {
-  return Array.from(new Set([flight.training_mission_id ?? ""].filter(Boolean)));
+  const fromMaterialized = (() => {
+    if (!flight.training_mission_ids_json) return [];
+    try {
+      const parsed = JSON.parse(flight.training_mission_ids_json);
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && Boolean(id)) : [];
+    } catch {
+      return [];
+    }
+  })();
+  return Array.from(new Set([...fromMaterialized, flight.training_mission_id ?? ""].filter(Boolean)));
 }
 
 function flattenTrackMissions(track: TrainingTrack): Array<{ stage: TrainingStage; mission: TrainingMission }> {
@@ -333,7 +412,7 @@ function WeeklyStreakCard({ metrics, compact = false }: { metrics: JourneyMetric
                   : "bg-slate-800 text-slate-600"
               }`}
             >
-              {week.active ? "✓" : ""}
+              {week.active ? "*" : ""}
             </span>
           </div>
         ))}
@@ -347,10 +426,10 @@ function WeeklyStreakCard({ metrics, compact = false }: { metrics: JourneyMetric
   );
 }
 
-function SectionCard({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+function SectionCard({ title, subtitle, compact = false, children }: { title: string; subtitle?: string; compact?: boolean; children: ReactNode }) {
   return (
-    <section className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-3.5 md:p-4">
-      <div className="mb-3">
+    <section className={`rounded-2xl border border-slate-700/60 bg-slate-900/40 ${compact ? "p-3" : "p-3.5 md:p-4"}`}>
+      <div className={compact ? "mb-2" : "mb-3"}>
         <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">{title}</p>
         {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
       </div>
@@ -359,13 +438,12 @@ function SectionCard({ title, subtitle, children }: { title: string; subtitle?: 
   );
 }
 
-function MetricCard({ label, value, detail, accent }: { label: string; value: string; detail?: string; accent: string }) {
+function MetricCard({ label, value, accent }: { label: string; value: string; accent: string }) {
   return (
     <div className="rounded-2xl border border-slate-700/60 bg-slate-950/35 p-3">
-      <div className={`mb-2 h-1 w-10 rounded-full ${accent}`} />
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{label}</p>
-      <p className="mt-1 text-xl font-bold text-slate-100">{value}</p>
-      {detail ? <p className="mt-1 text-xs text-slate-400">{detail}</p> : null}
+      <div className={`mb-3 h-1 w-10 rounded-full ${accent}`} />
+      <p className="text-2xl font-black leading-none text-slate-100">{value}</p>
+      <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{label}</p>
     </div>
   );
 }
@@ -409,37 +487,11 @@ function ProgressBar({ value }: { value: number }) {
   );
 }
 
-function JourneyHero({ metrics, roleLabel }: { metrics: JourneyMetrics; roleLabel: string }) {
+function JourneyHero({ metrics }: { metrics: JourneyMetrics }) {
   return (
-    <section className="relative overflow-hidden rounded-3xl border border-sky-400/20 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.24),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.2),transparent_36%),rgba(15,23,42,0.88)] p-4 shadow-2xl shadow-slate-950/40">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sky-300/70 to-transparent" />
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px] xl:items-end">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-200/80">Jornada {roleLabel}</p>
-          <h2 className="mt-2 text-2xl font-black tracking-tight text-white md:text-4xl">{metrics.level.name}</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-300">
-            Evolução operacional, consistência nos pousos e recordes pessoais extraídos da telemetria.
-          </p>
-          <div className="mt-4 max-w-2xl">
-            <div className="mb-2 flex items-center justify-between text-xs text-slate-400">
-              <span>Progresso de nível</span>
-              <span>{formatPercent(metrics.level.progressPct)}</span>
-            </div>
-            <ProgressBar value={metrics.level.progressPct} />
-            <p className="mt-2 text-xs text-slate-500">
-              {metrics.level.nextPoints
-                ? `${formatInteger(Math.max(metrics.level.nextPoints - metrics.level.points, 0))} pontos até o próximo nível.`
-                : "Nível máximo alcançado."}
-            </p>
-          </div>
-        </div>
-        <div className="rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3">
-          <p className="text-xs uppercase tracking-widest text-slate-400">Pontos</p>
-          <p className="text-3xl font-black text-emerald-300">{formatInteger(metrics.level.points)}</p>
-          <p className="mt-1 text-xs text-slate-500">{formatInteger(metrics.badges.filter((badge) => badge.achieved).length)} conquistas</p>
-        </div>
-      </div>
-    </section>
+    <div className="max-w-xl">
+      <WeeklyStreakCard metrics={metrics} />
+    </div>
   );
 }
 
@@ -473,7 +525,9 @@ function BadgeCard({ badge }: { badge: JourneyBadge }) {
             badge.achieved ? "border-white/20 bg-white/10 text-white" : "border-slate-700 bg-slate-900 text-slate-600"
           }`}
         >
-          {badge.achieved ? "✓" : "•"}
+          {badge.visual ? (
+            <RewardIcon visual={badge.visual} achieved={badge.achieved} schoolColor={SCHOOL_REWARD_COLOR} className="h-6 w-6" />
+          ) : badge.achieved ? "OK" : "•"}
         </span>
         <div className="min-w-0">
           <p className="font-semibold">{badge.title}</p>
@@ -538,17 +592,180 @@ function LandingDistribution({ metrics }: { metrics: JourneyMetrics }) {
   );
 }
 
-function FormationJourney({ state }: { state: FormationState }) {
+function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
+  return (
+    <div className={`rounded-2xl border p-3 ${reward.achieved ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100" : "border-slate-700/70 bg-slate-950/30 text-slate-500"}`}>
+      <div className="flex items-start gap-3">
+        <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${reward.achieved ? "border-white/20 bg-white/10" : "border-slate-700 bg-slate-900"}`}>
+          <RewardIcon visual={reward.visual} achieved={reward.achieved} schoolColor={SCHOOL_REWARD_COLOR} className="h-7 w-7" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold">{reward.title}</p>
+          <p className="mt-1 text-xs opacity-80">{reward.description}</p>
+          {!reward.achieved ? (
+            <div className="mt-3">
+              <ProgressBar value={reward.progressPct} />
+              <p className="mt-1 text-[11px] text-slate-500">
+                {formatPercent(reward.progressPct)} · {decimalFormatter.format(reward.currentValue)} de {decimalFormatter.format(reward.targetValue)}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-2 text-[11px] text-emerald-200/80">
+              {decimalFormatter.format(reward.currentValue)} de {decimalFormatter.format(reward.targetValue)}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManeuverArticleModal({ article, onClose }: { article: ManeuverArticle; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm" role="dialog" aria-modal="true">
+      <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/50">
+        <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Material de estudo</p>
+            <h3 className="mt-1 break-words text-xl font-semibold text-white [overflow-wrap:anywhere]">{article.title}</h3>
+            {article.summary ? <p className="mt-1 text-sm text-slate-400">{article.summary}</p> : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+          >
+            Fechar
+          </button>
+        </header>
+        <div className="max-h-[calc(88vh-6rem)] overflow-y-auto p-4 text-sm md:p-6 md:text-base">
+          <div className="space-y-4">{renderRichContent(article.contentJson)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormationJourney({ state, metrics }: { state: FormationState; metrics: JourneyMetrics }) {
   const [selectedTrackId, setSelectedTrackId] = useState("");
+  const [selectedStageId, setSelectedStageId] = useState("");
+  const [autoSelectedStageKey, setAutoSelectedStageKey] = useState("");
+  const [trackRewards, setTrackRewards] = useState<JourneyReward[]>([]);
+  const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
+  const [selectedManeuverArticle, setSelectedManeuverArticle] = useState<ManeuverArticle | null>(null);
   const activeTracks = useMemo(
     () => state.tracks.filter((row) => row.status === "active" && row.track).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
     [state.tracks],
+  );
+  const selectedAssignment = activeTracks.find((row) => row.trackId === selectedTrackId) ?? activeTracks[0] ?? null;
+  const track = selectedAssignment?.track ?? null;
+  const trackFlights = useMemo(
+    () => (track ? state.flights.filter((flight) => flight.training_track_id === track.id) : []),
+    [state.flights, track],
+  );
+  const completedMissionIds = useMemo(
+    () => new Set(trackFlights.flatMap((flight) => flight.trainingMissionIds)),
+    [trackFlights],
+  );
+  const missionRows = useMemo(() => (track ? flattenTrackMissions(track) : []), [track]);
+  const firstOpenIndex = missionRows.findIndex((row) => !completedMissionIds.has(row.mission.id));
+  const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
+  const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
+    ...row,
+    index,
+    status: completedMissionIds.has(row.mission.id) ? "done" : index === nextIndex && firstOpenIndex >= 0 ? "next" : "locked",
+  }));
+  const completedCount = timeline.filter((item) => item.status === "done").length;
+  const nextMission = timeline.find((item) => item.status === "next") ?? null;
+  const currentStageId = nextMission?.stage.id ?? timeline[timeline.length - 1]?.stage.id ?? track?.stages[0]?.id ?? "";
+  const currentStageSelectionKey = `${selectedAssignment?.trackId ?? ""}:${currentStageId}`;
+  const visibleStageId = track?.stages.some((stage) => stage.id === selectedStageId) ? selectedStageId : currentStageId;
+  const visibleStage = track?.stages.find((stage) => stage.id === visibleStageId) ?? null;
+  const visibleTimeline = timeline.filter((item) => item.stage.id === visibleStageId);
+  const stageTabs = useMemo(
+    () =>
+      track?.stages.map((stage) => ({
+        id: stage.id,
+        label: `${stage.name}${stage.id === currentStageId ? " · Atual" : ""}`,
+      })) ?? [],
+    [currentStageId, track],
+  );
+  const visibleStageCompletedCount = visibleTimeline.filter((item) => item.status === "done").length;
+  const visibleStageTotalMinutes = visibleTimeline.reduce((acc, item) => acc + item.mission.durationMinutes, 0);
+  const maneuverArticlesBySection = useMemo(() => {
+    const map = new Map<string, ManeuverArticle[]>();
+    maneuverCatalog.articles.forEach((article) => {
+      if (!article.sectionId) return;
+      const list = map.get(article.sectionId) ?? [];
+      list.push(article);
+      map.set(article.sectionId, list);
+    });
+    map.forEach((articles) => articles.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, "pt-BR")));
+    return map;
+  }, [maneuverCatalog.articles]);
+  const completedStageIds = useMemo(() => completedStagesForTrack(track, completedMissionIds), [completedMissionIds, track]);
+  const evaluatedAchievements = useMemo(
+    () =>
+      evaluateRewards(trackRewards, {
+        journey: metrics,
+        flights: state.flights,
+        fullFlights: state.fullFlights,
+        formation: { selectedTrack: track, completedMissionIds, completedStageIds },
+      }),
+    [completedMissionIds, completedStageIds, metrics, state.flights, state.fullFlights, track, trackRewards],
   );
 
   useEffect(() => {
     if (selectedTrackId && activeTracks.some((row) => row.trackId === selectedTrackId)) return;
     setSelectedTrackId(activeTracks.find((row) => row.isPrimary)?.trackId ?? activeTracks[0]?.trackId ?? "");
   }, [activeTracks, selectedTrackId]);
+
+  useEffect(() => {
+    if (!track) {
+      if (selectedStageId) setSelectedStageId("");
+      if (autoSelectedStageKey) setAutoSelectedStageKey("");
+      return;
+    }
+    if (autoSelectedStageKey !== currentStageSelectionKey) {
+      setSelectedStageId(currentStageId);
+      setAutoSelectedStageKey(currentStageSelectionKey);
+      return;
+    }
+    if (selectedStageId && track.stages.some((stage) => stage.id === selectedStageId)) return;
+    setSelectedStageId(currentStageId);
+  }, [autoSelectedStageKey, currentStageId, currentStageSelectionKey, selectedStageId, track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRewards() {
+      if (!track) {
+        setTrackRewards([]);
+        return;
+      }
+      await wait(1000);
+      if (cancelled) return;
+      const result = await listJourneyRewards({ kind: "achievement", trackId: track.id });
+      if (!cancelled) setTrackRewards(result.data);
+    }
+    void loadRewards();
+    return () => {
+      cancelled = true;
+    };
+  }, [track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadManeuvers() {
+      await wait(1200);
+      if (cancelled) return;
+      const result = await listManeuverCatalog(false);
+      if (!cancelled && !result.error) setManeuverCatalog(result.data);
+    }
+    void loadManeuvers();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (state.loading) {
     return (
@@ -562,30 +779,19 @@ function FormationJourney({ state }: { state: FormationState }) {
   if (activeTracks.length === 0) {
     return <EmptyJourneyCard title="Nenhuma trilha ativa vinculada" />;
   }
+  if (!track) {
+    return <EmptyJourneyCard title="Nenhuma trilha ativa vinculada" />;
+  }
 
-  const selectedAssignment = activeTracks.find((row) => row.trackId === selectedTrackId) ?? activeTracks[0]!;
-  const track = selectedAssignment.track!;
-  const trackFlights = state.flights.filter((flight) => flight.training_track_id === track.id);
-  const completedMissionIds = new Set(trackFlights.flatMap((flight) => flight.trainingMissionIds));
-  const missionRows = flattenTrackMissions(track);
-  const firstOpenIndex = missionRows.findIndex((row) => !completedMissionIds.has(row.mission.id));
-  const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
-  const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
-    ...row,
-    index,
-    status: completedMissionIds.has(row.mission.id) ? "done" : index === nextIndex && firstOpenIndex >= 0 ? "next" : "locked",
-  }));
-  const completedCount = timeline.filter((item) => item.status === "done").length;
   const flownHours = trackFlights.reduce((acc, flight) => acc + ((flight.duration_sec ?? 0) / 3600), 0);
   const trackHours = track.totalMinutes / 60;
   const hoursPct = trackHours > 0 ? clampPercent((flownHours / trackHours) * 100) : 0;
   const missionPct = track.missionCount > 0 ? clampPercent((completedCount / track.missionCount) * 100) : 0;
-  const nextMission = timeline.find((item) => item.status === "next") ?? null;
 
   return (
     <div className="space-y-4">
       <section className="relative overflow-hidden rounded-3xl border border-emerald-400/20 bg-[linear-gradient(135deg,rgba(6,78,59,0.84),rgba(15,23,42,0.92)_48%,rgba(88,28,135,0.72))] p-4 shadow-2xl shadow-slate-950/40 md:p-5">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-end">
+        <div className="grid gap-4">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-200/80">Formação</p>
             <h2 className="mt-2 text-2xl font-black tracking-tight text-white md:text-4xl">{track.name}</h2>
@@ -594,8 +800,11 @@ function FormationJourney({ state }: { state: FormationState }) {
             </p>
             {activeTracks.length > 1 ? (
               <select
-                value={selectedAssignment.trackId}
-                onChange={(event) => setSelectedTrackId(event.target.value)}
+                value={selectedAssignment?.trackId ?? ""}
+                onChange={(event) => {
+                  setSelectedTrackId(event.target.value);
+                  setSelectedStageId("");
+                }}
                 className="mt-4 w-full max-w-sm rounded-lg border border-white/15 bg-slate-950/50 px-3 py-2 text-sm text-white outline-none focus:border-emerald-300"
               >
                 {activeTracks.map((row) => (
@@ -606,39 +815,82 @@ function FormationJourney({ state }: { state: FormationState }) {
               </select>
             ) : null}
           </div>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4">
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
             <p className="text-xs uppercase tracking-widest text-emerald-100/70">Próxima missão</p>
-            <p className="mt-1 text-2xl font-black text-white">{nextMission?.mission.name ?? "Trilha completa"}</p>
+            <p className="mt-1 line-clamp-2 text-xl font-black leading-tight text-white">{nextMission?.mission.name ?? "Trilha completa"}</p>
             <p className="mt-1 text-xs text-emerald-50/70">
               {nextMission ? `${nextMission.stage.name} · ${nextMission.mission.durationMinutes} min · ${nextMission.mission.type}` : "Todas as missões foram marcadas."}
             </p>
           </div>
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-100/70">Total de horas</p>
+                <p className="mt-1 text-2xl font-black text-white">{formatPercent(hoursPct)}</p>
+              </div>
+              <p className="text-xs text-emerald-50/70">{formatHours(flownHours)} de {formatHours(trackHours)}</p>
+            </div>
+            <div className="mt-2"><ProgressBar value={hoursPct} /></div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-100/70">Missões completadas</p>
+                <p className="mt-1 text-2xl font-black text-white">{formatPercent(missionPct)}</p>
+              </div>
+              <p className="text-xs text-emerald-50/70">{formatInteger(completedCount)} de {formatInteger(track.missionCount)}</p>
+            </div>
+            <div className="mt-2"><ProgressBar value={missionPct} /></div>
+          </div>
         </div>
       </section>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <SectionCard title="Horas na trilha" subtitle={`${formatHours(flownHours)} de ${formatHours(trackHours)} planejadas`}>
-          <div className="flex items-end justify-between gap-3">
-            <p className="text-3xl font-black text-slate-100">{formatPercent(hoursPct)}</p>
-            <p className="text-sm text-slate-400">{formatInteger(trackFlights.length)} voos vinculados</p>
+      {evaluatedAchievements.length > 0 ? (
+        <SectionCard title="Conquistas" subtitle="Objetivos liberados conforme seu avanço na trilha.">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-2.5">
+            {evaluatedAchievements.map((reward) => (
+              <AchievementCard key={reward.id} reward={reward} />
+            ))}
           </div>
-          <div className="mt-3"><ProgressBar value={hoursPct} /></div>
         </SectionCard>
-        <SectionCard title="Missões completadas" subtitle={`${formatInteger(completedCount)} de ${formatInteger(track.missionCount)} na trilha`}>
-          <div className="flex items-end justify-between gap-3">
-            <p className="text-3xl font-black text-slate-100">{formatPercent(missionPct)}</p>
-            <p className="text-sm text-slate-400">{formatInteger(Math.max(track.missionCount - completedCount, 0))} restantes</p>
-          </div>
-          <div className="mt-3"><ProgressBar value={missionPct} /></div>
-        </SectionCard>
-      </div>
+      ) : null}
 
-      <SectionCard title="Timeline da trilha" subtitle="Arraste para ver missões passadas, atual e futuras.">
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {timeline.map((item) => (
+      <SectionCard title="Missões da trilha" subtitle="Escolha uma fase para ver as missões. A fase atual abre automaticamente.">
+        {stageTabs.length > 0 ? (
+          <Tabs
+            items={stageTabs}
+            value={visibleStageId}
+            onChange={setSelectedStageId}
+            ariaLabel="Fases da trilha de formação"
+            accent="sky"
+            className="mb-3"
+          />
+        ) : null}
+        {visibleStage ? (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+            <span>{formatInteger(visibleStageCompletedCount)} de {formatInteger(visibleTimeline.length)} missões concluídas</span>
+            <span>{formatHours(visibleStageTotalMinutes / 60)} planejadas</span>
+          </div>
+        ) : null}
+        {visibleTimeline.length > 0 ? (
+          <div className="flex gap-3 overflow-x-auto pb-2">
+          {visibleTimeline.map((item) => {
+            const maneuverSectionIds = item.mission.maneuverSectionIds?.length
+              ? item.mission.maneuverSectionIds
+              : [item.mission.maneuverSectionId ?? ""].filter(Boolean);
+            const maneuverArticles = Array.from(
+              new Map(
+                maneuverSectionIds
+                  .flatMap((sectionId) => maneuverArticlesBySection.get(sectionId) ?? [])
+                  .map((article) => [article.id, article]),
+              ).values(),
+            );
+            return (
             <article
               key={item.mission.id}
-              className={`min-h-52 w-64 shrink-0 rounded-2xl border p-3 transition ${
+              className={`w-64 shrink-0 rounded-2xl border p-3 transition ${
                 item.status === "done"
                   ? "border-emerald-400/40 bg-emerald-500/10"
                   : item.status === "next"
@@ -646,53 +898,98 @@ function FormationJourney({ state }: { state: FormationState }) {
                     : "border-slate-700/70 bg-slate-950/30"
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex items-start justify-between gap-2">
                 <span className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-black ${
                   item.status === "done" ? "bg-emerald-400 text-emerald-950" : item.status === "next" ? "bg-amber-300 text-amber-950" : "bg-slate-800 text-slate-500"
                 }`}>
                   {item.status === "done" ? "OK" : item.index + 1}
                 </span>
+                <h3 className="min-w-0 flex-1 pt-0.5 text-base font-black leading-tight text-slate-100">{item.mission.name}</h3>
                 <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-400">
                   {item.status === "done" ? "Concluída" : item.status === "next" ? "Próxima" : "Futura"}
                 </span>
               </div>
-              <p className="mt-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{item.stage.name}</p>
-              <h3 className="mt-1 text-lg font-black text-slate-100">{item.mission.name}</h3>
               <p className="mt-1 text-xs text-slate-400">{item.mission.durationMinutes} min · {item.mission.type}</p>
               {item.mission.maneuvers.length > 0 ? (
-                <ul className="mt-3 space-y-1 text-xs text-slate-400">
+                <ul className="mt-2 space-y-1 text-xs text-slate-400">
                   {item.mission.maneuvers.slice(0, 3).map((maneuver, idx) => (
                     <li key={`${item.mission.id}-${idx}`} className="line-clamp-2">{maneuver}</li>
                   ))}
                 </ul>
               ) : null}
+              {maneuverArticles.length > 0 ? (
+                <div className="mt-3 space-y-1.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Detalhes das manobras:</p>
+                  {maneuverArticles.map((article) => (
+                    <button
+                      key={article.id}
+                      type="button"
+                      onClick={() => setSelectedManeuverArticle(article)}
+                      className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-100 hover:bg-sky-500/20"
+                    >
+                      {article.title}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </article>
-          ))}
-        </div>
+            );
+          })}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-700/70 bg-slate-950/30 p-4 text-sm text-slate-400">
+            Nenhuma missão cadastrada nesta fase.
+          </div>
+        )}
       </SectionCard>
+      {selectedManeuverArticle ? (
+        <ManeuverArticleModal article={selectedManeuverArticle} onClose={() => setSelectedManeuverArticle(null)} />
+      ) : null}
     </div>
   );
 }
 
 export function JornadaTab() {
   const { user } = useAuth();
-  const { metrics, loading, error } = useJourneyMetrics();
   const formationState = useFormationProgress();
+  const [evolutionEnabled, setEvolutionEnabled] = useState(false);
+  const { metrics, loading, error } = useJourneyMetrics(evolutionEnabled);
+  const badges = useEvaluatedBadges(metrics, formationState);
   const [section, setSection] = useState<JourneySection>("formacao");
   const [monthlyMetric, setMonthlyMetric] = useState<MonthlyMetricKey>("hours");
-  const roleLabel = user?.role === "instrutor" ? "do INVA" : "do aluno";
-  const chartData = useMemo(() => latestMonths(metrics), [metrics]);
+  const [evolutionPeriod, setEvolutionPeriod] = useState<JourneyEvolutionPeriod>("month");
+  const chartData = useMemo(() => latestEvolution(metrics, evolutionPeriod), [evolutionPeriod, metrics]);
   const selectedMonthlyMetric = MONTHLY_METRICS[monthlyMetric];
   const relationshipLabel = user?.role === "instrutor" ? "Alunos" : "Instrutores";
   const relationshipValue = user?.role === "instrutor" ? metrics.totals.students : metrics.totals.instructors;
+  const evolutionLoading = !evolutionEnabled || loading;
+
+  useEffect(() => {
+    if (section === "evolucao") {
+      setEvolutionEnabled(true);
+      return;
+    }
+    if (formationState.loading || section !== "formacao" || evolutionEnabled) return;
+    const timer = window.setTimeout(() => setEvolutionEnabled(true), 2500);
+    return () => window.clearTimeout(timer);
+  }, [evolutionEnabled, formationState.loading, section]);
 
   return (
     <div className="min-w-0 space-y-4">
-      <Tabs items={JOURNEY_SECTIONS} value={section} onChange={setSection} ariaLabel="Subabas da jornada" accent="sky" />
+      <Tabs
+        items={JOURNEY_SECTIONS}
+        value={section}
+        onChange={(next) => {
+          setSection(next);
+          if (next === "evolucao") setEvolutionEnabled(true);
+        }}
+        ariaLabel="Subabas da jornada"
+        accent="sky"
+      />
 
       {section === "formacao" ? (
-        <FormationJourney state={formationState} />
-      ) : loading ? (
+        <FormationJourney state={formationState} metrics={metrics} />
+      ) : evolutionLoading ? (
         <JourneySkeletonPage />
       ) : error ? (
         <ErrorCard message={error} />
@@ -700,19 +997,30 @@ export function JornadaTab() {
         <EmptyJourneyCard />
       ) : (
         <>
-      <JourneyHero metrics={metrics} roleLabel={roleLabel} />
+      <JourneyHero metrics={metrics} />
 
-      <div className="grid gap-3 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <WeeklyStreakCard metrics={metrics} />
-        <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-          <MetricCard label="Voos" value={formatInteger(metrics.totals.flights)} detail="Total com telemetria" accent="bg-sky-400" />
-          <MetricCard label="Horas" value={formatHours(metrics.totals.hours)} detail="Tempo total de voo" accent="bg-emerald-400" />
-          <MetricCard label="Milhas navegadas" value={formatNm(metrics.totals.distanceNm)} detail="Distância GPS consolidada" accent="bg-violet-400" />
-          <MetricCard label={relationshipLabel} value={formatInteger(relationshipValue)} detail="Vínculos na jornada" accent="bg-amber-400" />
-          <MetricCard label="Aeronaves" value={formatInteger(metrics.totals.aircraft)} detail="Matrículas diferentes" accent="bg-sky-400" />
-          <MetricCard label="Aeroportos" value={formatInteger(metrics.totals.airports)} detail="Aeródromos visitados" accent="bg-emerald-400" />
-        </div>
+      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <MetricCard label="Voos" value={formatInteger(metrics.totals.flights)} accent="bg-sky-400" />
+          <MetricCard label="Horas" value={decimalFormatter.format(metrics.totals.hours)} accent="bg-emerald-400" />
+          <MetricCard label="Milhas navegadas" value={formatInteger(metrics.totals.distanceNm)} accent="bg-violet-400" />
+          <MetricCard label={relationshipLabel} value={formatInteger(relationshipValue)} accent="bg-amber-400" />
+          <MetricCard label="Aeronave" value={formatInteger(metrics.totals.aircraft)} accent="bg-sky-400" />
+          <MetricCard label="Aeroportos visitados" value={formatInteger(metrics.totals.airports)} accent="bg-emerald-400" />
       </div>
+
+      <SectionCard title="Aeródromos">
+        {metrics.airports.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {metrics.airports.map((airport) => (
+              <span key={airport} className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1.5 text-sm font-semibold text-slate-200">
+                {airport}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">Nenhum aeródromo registrado ainda.</p>
+        )}
+      </SectionCard>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <SummaryDash
@@ -753,25 +1061,44 @@ export function JornadaTab() {
         />
         <SummaryDash
           title="Insights"
-          value={metrics.records.bestMonth?.label ?? "—"}
+          value={metrics.records.bestMonth?.label ?? "-"}
           accent="bg-amber-400"
           rows={[
             {
               label: "Melhor mês",
               value: metrics.records.bestMonth
                 ? `${formatHours(metrics.records.bestMonth.hours)} / ${formatInteger(metrics.records.bestMonth.landings)} pousos`
-                : "—",
+                : "-",
             },
             { label: "Último voo", value: formatDate(metrics.latestFlightDate) },
             { label: "Maior GS", value: formatKt(metrics.records.maxLandingGsKt) },
-            { label: "Conquistas", value: formatInteger(metrics.badges.filter((badge) => badge.achieved).length) },
+            { label: "Badges", value: formatInteger(badges.filter((badge) => badge.achieved).length) },
           ]}
         />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,420px)]">
-        <SectionCard title="Evolução mensal" subtitle="Escolha a métrica exibida no período.">
-          <div className="mb-3 flex flex-wrap gap-2">
+        <SectionCard title="Evolução" subtitle="Escolha a métrica e o período exibido.">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
+              {([
+                ["day", "Dia"],
+                ["week", "Semana"],
+                ["month", "Mês"],
+              ] as const).map(([period, label]) => (
+                <button
+                  key={period}
+                  type="button"
+                  onClick={() => setEvolutionPeriod(period)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                    evolutionPeriod === period ? "bg-emerald-500 text-white" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
             {(Object.keys(MONTHLY_METRICS) as MonthlyMetricKey[]).map((key) => (
               <button
                 key={key}
@@ -784,6 +1111,7 @@ export function JornadaTab() {
                 {MONTHLY_METRICS[key].label}
               </button>
             ))}
+            </div>
           </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -818,9 +1146,9 @@ export function JornadaTab() {
         </SectionCard>
       </div>
 
-      <SectionCard title="Conquistas" subtitle="Badges desbloqueados automaticamente.">
+      <SectionCard title="Badges" subtitle="Badges desbloqueados automaticamente.">
         <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-          {metrics.badges.map((badge) => (
+          {badges.map((badge) => (
             <BadgeCard key={badge.id} badge={badge} />
           ))}
         </div>
@@ -830,3 +1158,6 @@ export function JornadaTab() {
     </div>
   );
 }
+
+
+

@@ -16,6 +16,10 @@ export type AdminUserFlight = {
   route: string;
   landings: number;
   distanceNm: number;
+  navigationHours?: number;
+  ifrHours?: number;
+  nightHours?: number;
+  navigationDistanceNm?: number;
   studentName: string;
   studentAnac: string;
   instructorName: string;
@@ -25,6 +29,7 @@ export type AdminUserFlight = {
   trainingTrackId: string | null;
   trainingStageId: string | null;
   trainingMissionId: string | null;
+  trainingMissionIds?: string[];
   trainingSnapshot: TrainingSelectionSnapshot | null;
   studentUserId: string | null;
   instructorUserId: string | null;
@@ -85,6 +90,10 @@ export type AdminExecutedMetrics = {
   count: number;
   hours: number;
   landings: number;
+  navigationHours?: number;
+  ifrHours?: number;
+  nightHours?: number;
+  navigationDistanceNm?: number;
   lastFlightAt: string | null;
 };
 

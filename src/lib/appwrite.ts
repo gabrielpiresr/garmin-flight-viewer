@@ -3,23 +3,6 @@ import { Account, Client, Databases, Functions, ID, Permission, Role, Storage } 
 const endpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string | undefined;
 const projectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string | undefined;
 
-function debugEnvValue(value: string | undefined) {
-  return {
-    present: Boolean(value),
-    value,
-    isPlaceholder: Boolean(value?.startsWith("your_")),
-  };
-}
-
-function debugEndpointHost(value: string | undefined) {
-  if (!value) return null;
-  try {
-    return new URL(value).host;
-  } catch {
-    return "invalid-url";
-  }
-}
-
 export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | undefined;
 export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
@@ -64,12 +47,10 @@ export const TRAINING_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID as string | undefined) ?? "training_tracks";
 export const STUDENT_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID as string | undefined) ?? "student_training_tracks";
+export const JOURNEY_REWARDS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_JOURNEY_REWARDS_COL_ID as string | undefined) ?? "journey_rewards";
 
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
-
-// #region agent log
-fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0a56a4" }, body: JSON.stringify({ sessionId: "0a56a4", runId: "pre-fix", hypothesisId: "H1,H2,H3,H4", location: "src/lib/appwrite.ts:55", message: "Appwrite client environment snapshot", data: { endpointHost: debugEndpointHost(endpoint), projectId: debugEnvValue(projectId), databaseId: debugEnvValue(import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined), summariesCollectionId: debugEnvValue(FLIGHT_TELEMETRY_SUMMARIES_COL_ID), landingsCollectionId: debugEnvValue(FLIGHT_LANDINGS_COL_ID), takeoffsCollectionId: debugEnvValue(FLIGHT_TAKEOFFS_COL_ID), isAppwriteConfigured }, timestamp: Date.now() }) }).catch(() => {});
-// #endregion
 
 export let client: Client | null = null;
 export let account: Account | null = null;

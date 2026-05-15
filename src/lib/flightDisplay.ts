@@ -89,24 +89,31 @@ export function buildFlightDisplayInfo(
     instructorAnac?: string;
   },
 ): FlightDisplayInfo {
+  const materializedMinutes =
+    typeof item.total_flight_minutes === "number" && item.total_flight_minutes > 0
+      ? item.total_flight_minutes
+      : null;
+  const fallbackMinutes =
+    materializedMinutes ??
+    (typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0);
   const defaultInfo: FlightDisplayInfo = {
     flightDateIso: item.flight_date ?? (item.created_at ?? "").slice(0, 10) ?? null,
     startTime: item.start_time ?? "",
-    endTime: "",
+    endTime: addMinutesToTime(item.start_time ?? "", fallbackMinutes),
     studentName: fallback?.studentName || "—",
     studentAnac: fallback?.studentAnac || "—",
     instructorName: fallback?.instructorName || "",
     instructorAnac: fallback?.instructorAnac || "",
     aircraft: item.aircraft_ident ?? "—",
-    fromTo: "—",
-    landings: 0,
-    totalFlight: "00:00",
-    totalFlightMinutes: typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0,
-    totalMiles: "0.0",
-    telemetryOk: false,
-    instructorSuggestionMd: "",
-    studentSuggestionMd: "",
-    weightBalanceFilled: false,
+    fromTo: item.from_to || "—",
+    landings: item.landings ?? 0,
+    totalFlight: formatMinutes(fallbackMinutes),
+    totalFlightMinutes: fallbackMinutes,
+    totalMiles: typeof item.total_miles === "number" ? item.total_miles.toFixed(1) : "0.0",
+    telemetryOk: item.telemetry_present ?? false,
+    instructorSuggestionMd: item.instructor_suggestion_md ?? "",
+    studentSuggestionMd: item.student_suggestion_md ?? "",
+    weightBalanceFilled: item.weight_balance_complete ?? false,
   };
 
   if (!csvText) return defaultInfo;
