@@ -2239,6 +2239,7 @@ function publicEmailBrandSettings(settings, updatedAt) {
     appUrl: normalizeAbsoluteUrl(settings.appUrl) || defaults.appUrl,
     supportEmail: cleanString(settings.supportEmail),
     footerText: cleanString(settings.footerText) || defaults.footerText,
+    faviconUrl: cleanString(settings.faviconUrl) || null,
     updatedAt: updatedAt || null,
   };
 }
@@ -2340,6 +2341,7 @@ function sanitizeEmailBrandSettingsInput(input) {
     appUrl: normalizeAbsoluteUrl(settings.appUrl),
     supportEmail: cleanString(settings.supportEmail).slice(0, 255),
     footerText: cleanString(settings.footerText).slice(0, 500) || defaults.footerText,
+    faviconUrl: cleanString(settings.faviconUrl).slice(0, 2048) || null,
   };
 }
 
@@ -2365,6 +2367,8 @@ function publicSchoolRules(settings, updatedAt) {
       accentColor: sanitizeHexColor(settings?.theme?.accentColor, defaults.theme.accentColor),
       backgroundColor: sanitizeHexColor(settings?.theme?.backgroundColor, defaults.theme.backgroundColor),
       surfaceColor: sanitizeHexColor(settings?.theme?.surfaceColor, defaults.theme.surfaceColor),
+      fontFamily: typeof settings?.theme?.fontFamily === "string" ? settings.theme.fontFamily.slice(0, 64) : "",
+      colorMode: settings?.theme?.colorMode === "light" ? "light" : "dark",
     },
     schedule: {
       minRequestHours,
