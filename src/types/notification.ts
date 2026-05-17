@@ -38,6 +38,7 @@ export type EmailBrandSettings = {
   appUrl: string;
   supportEmail: string;
   footerText: string;
+  faviconUrl?: string | null;
   updatedAt: string | null;
 };
 
@@ -50,6 +51,7 @@ export type EmailBrandSettingsInput = {
   appUrl?: string | null;
   supportEmail?: string | null;
   footerText?: string | null;
+  faviconUrl?: string | null;
 };
 
 export type PushSubscriptionInput = {

@@ -11,11 +11,25 @@ export type StudentPortalTab =
   | "manobras"
   | "perfil";
 
+export const SCHOOL_FONT_OPTIONS = [
+  { id: "", label: "Padrão do sistema" },
+  { id: "Inter", label: "Inter" },
+  { id: "Poppins", label: "Poppins" },
+  { id: "Roboto", label: "Roboto" },
+  { id: "Lato", label: "Lato" },
+  { id: "Nunito", label: "Nunito" },
+  { id: "Montserrat", label: "Montserrat" },
+] as const;
+
+export type SchoolFontFamily = (typeof SCHOOL_FONT_OPTIONS)[number]["id"];
+
 export type PlatformThemeRules = {
   primaryColor: string;
   accentColor: string;
   backgroundColor: string;
   surfaceColor: string;
+  fontFamily?: SchoolFontFamily | string;
+  colorMode?: "dark" | "light";
 };
 
 export type FlightScheduleRules = {
@@ -67,6 +81,8 @@ export const DEFAULT_PLATFORM_THEME_RULES: PlatformThemeRules = {
   accentColor: "#38bdf8",
   backgroundColor: "#020617",
   surfaceColor: "#0f172a",
+  fontFamily: "",
+  colorMode: "dark",
 };
 
 export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
@@ -145,6 +161,8 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       surfaceColor: isHexColor(raw.theme?.surfaceColor)
         ? raw.theme.surfaceColor
         : DEFAULT_PLATFORM_THEME_RULES.surfaceColor,
+      fontFamily: typeof raw.theme?.fontFamily === "string" ? raw.theme.fontFamily : "",
+      colorMode: raw.theme?.colorMode === "light" ? "light" : "dark",
     },
     schedule: {
       minRequestHours,

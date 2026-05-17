@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "../components/ui/ToastProvider";
+import { getCachedBrandSettings } from "../lib/notificationsDb";
 
 function onlyDigits(value: string): string {
   return value.replace(/\D/g, "");
@@ -46,6 +47,10 @@ export function LoginPage() {
   const { showToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  const brand = getCachedBrandSettings();
+  const schoolName = brand?.schoolName || "";
+  const logoUrl = brand?.logoUrl || "";
   const [signup, setSignup] = useState<SignupForm>(EMPTY_SIGNUP_FORM);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [busy, setBusy] = useState(false);
@@ -115,32 +120,34 @@ export function LoginPage() {
     <div className="flex min-h-screen items-start justify-center overflow-y-auto bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-8 sm:items-center sm:py-12">
       <div className="w-full max-w-md space-y-6 sm:space-y-8">
         <div className="text-center">
-          <p className="text-xs font-medium uppercase tracking-widest text-sky-400/90">EPEAC</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Análise de voo</h1>
-          <p className="mt-2 text-sm text-slate-400">Garmin CSV · Telemetria · Nuvem</p>
+          {logoUrl ? (
+            <img src={logoUrl} alt={schoolName || "Logo"} className="mx-auto mb-3 max-h-16 max-w-[180px] object-contain" />
+          ) : null}
+          {schoolName ? (
+            <h1 className="text-2xl font-bold tracking-tight" style={{ color: "var(--school-primary, #10b981)" }}>
+              {schoolName}
+            </h1>
+          ) : (
+            <div className="mx-auto h-8 w-32 rounded-lg bg-slate-800/60" />
+          )}
+          <p className="mt-2 text-sm text-slate-400">Acesse sua conta para continuar</p>
         </div>
 
         <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-5 shadow-xl backdrop-blur-sm sm:p-6">
           <div className="mb-5 flex gap-2">
             <button
               type="button"
-              onClick={() => {
-                setMode("signin");
-              }}
-              className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
-                mode === "signin" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"
-              }`}
+              onClick={() => { setMode("signin"); }}
+              className="flex-1 rounded-lg py-2 text-sm font-medium transition-colors text-slate-400 hover:text-white"
+              style={mode === "signin" ? { background: "var(--school-primary, #0ea5e9)", color: "#fff" } : undefined}
             >
               Entrar
             </button>
             <button
               type="button"
-              onClick={() => {
-                setMode("signup");
-              }}
-              className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
-                mode === "signup" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"
-              }`}
+              onClick={() => { setMode("signup"); }}
+              className="flex-1 rounded-lg py-2 text-sm font-medium transition-colors text-slate-400 hover:text-white"
+              style={mode === "signup" ? { background: "var(--school-primary, #0ea5e9)", color: "#fff" } : undefined}
             >
               Criar conta
             </button>
@@ -284,7 +291,7 @@ export function LoginPage() {
             type="button"
             disabled={busy || !email || password.length < 6}
             onClick={() => void submit()}
-            className="mt-5 w-full rounded-lg bg-sky-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:opacity-50"
+            className="mt-5 w-full rounded-lg py-2.5 text-sm font-medium text-white transition-colors disabled:opacity-50 school-primary-button"
           >
             {busy ? "Aguarde…" : mode === "signin" ? "Entrar" : "Registrar"}
           </button>

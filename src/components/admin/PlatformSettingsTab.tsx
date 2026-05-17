@@ -18,10 +18,12 @@ import type {
 import {
   DEFAULT_SCHOOL_RULES,
   EMAIL_NOTIFICATION_EVENT_OPTIONS,
+  SCHOOL_FONT_OPTIONS,
   STUDENT_PORTAL_TAB_OPTIONS,
   type SchoolRules,
   type SchoolRulesInput,
 } from "../../types/schoolRules";
+import { applySchoolTheme } from "../../lib/schoolRulesDb";
 import { Skeleton } from "../ui/Skeleton";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
@@ -120,7 +122,7 @@ const emptyForm: EmailSettingsInput = {
 };
 
 const emptyBrandForm: EmailBrandSettingsInput = {
-  schoolName: "Garmin Flight Viewer",
+  schoolName: "",
   logoUrl: "",
   logoFileId: null,
   primaryColor: "#0ea5e9",
@@ -128,6 +130,7 @@ const emptyBrandForm: EmailBrandSettingsInput = {
   appUrl: typeof window !== "undefined" ? window.location.origin : "",
   supportEmail: "",
   footerText: "Este é um email automático da plataforma.",
+  faviconUrl: "",
 };
 
 function toForm(settings: EmailSettings): EmailSettingsInput {
@@ -151,6 +154,7 @@ function toBrandForm(settings: EmailBrandSettings): EmailBrandSettingsInput {
     appUrl: settings.appUrl || (typeof window !== "undefined" ? window.location.origin : ""),
     supportEmail: settings.supportEmail,
     footerText: settings.footerText,
+    faviconUrl: settings.faviconUrl ?? "",
   };
 }
 
@@ -594,6 +598,27 @@ function BrandSettingsPanel() {
             className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
           />
         </label>
+
+        <div className="text-xs text-slate-400 md:col-span-2">
+          <label className="block">
+            URL do favicon
+            <div className="mt-1 flex items-center gap-3">
+              {form.faviconUrl ? (
+                <img src={form.faviconUrl} alt="Favicon" className="h-8 w-8 rounded object-contain" />
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded bg-slate-700 text-[10px] text-slate-400">ico</div>
+              )}
+              <input
+                type="url"
+                value={form.faviconUrl ?? ""}
+                onChange={(e) => setForm((prev) => ({ ...prev, faviconUrl: e.target.value }))}
+                placeholder="https://suaescola.com/favicon.ico"
+                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-slate-600">URL pública de um arquivo .ico, .png ou .svg para o ícone da aba do navegador.</p>
+          </label>
+        </div>
       </div>
 
       <div className="mt-5 flex justify-end border-t border-slate-800 pt-4">
@@ -660,6 +685,7 @@ function RulesSettingsPanel() {
       const saved = await saveSchoolRules(form);
       setSettings(saved);
       setForm(toRulesForm(saved));
+      applySchoolTheme(saved); // apply font + colorMode immediately
       showToast({ variant: "success", message: "Regras da escola salvas." });
     } catch (e) {
       setError((e as Error).message);
@@ -726,18 +752,20 @@ function RulesSettingsPanel() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cores da plataforma</p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {[
-                  ["primaryColor", "Cor principal"],
-                  ["accentColor", "Cor de destaque"],
-                  ["backgroundColor", "Fundo"],
-                  ["surfaceColor", "Cards e menus"],
-                ].map(([key, label]) => (
+                {(
+                  [
+                    ["primaryColor", "Cor principal"],
+                    ["accentColor", "Cor de destaque"],
+                    ["backgroundColor", "Fundo"],
+                    ["surfaceColor", "Cards e menus"],
+                  ] as [string, string][]
+                ).map(([key, label]) => (
                   <label key={key} className="text-xs text-slate-400">
                     {label}
                     <div className="mt-1 flex gap-2">
                       <input
                         type="color"
-                        value={form.theme[key as keyof SchoolRulesInput["theme"]]}
+                        value={String(form.theme[key as keyof SchoolRulesInput["theme"]] ?? "")}
                         onChange={(e) =>
                           setForm((prev) => ({
                             ...prev,
@@ -748,7 +776,7 @@ function RulesSettingsPanel() {
                       />
                       <input
                         type="text"
-                        value={form.theme[key as keyof SchoolRulesInput["theme"]]}
+                        value={String(form.theme[key as keyof SchoolRulesInput["theme"]] ?? "")}
                         onChange={(e) =>
                           setForm((prev) => ({
                             ...prev,
@@ -760,6 +788,61 @@ function RulesSettingsPanel() {
                     </div>
                   </label>
                 ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Fonte e modo de cor</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Fonte da plataforma
+                  <select
+                    value={form.theme.fontFamily ?? ""}
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, theme: { ...prev.theme, fontFamily: e.target.value } }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                  >
+                    {SCHOOL_FONT_OPTIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  {form.theme.fontFamily ? (
+                    <p
+                      className="mt-1 text-xs text-slate-400"
+                      style={{ fontFamily: `'${form.theme.fontFamily}', system-ui` }}
+                    >
+                      Preview: O piloto voou sobre as montanhas.
+                    </p>
+                  ) : null}
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Modo de cor
+                  <div className="mt-1 flex gap-2">
+                    {(["dark", "light"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() =>
+                          setForm((prev) => ({ ...prev, theme: { ...prev.theme, colorMode: mode } }))
+                        }
+                        className={`flex-1 rounded-lg border py-2 text-sm font-medium transition ${
+                          form.theme.colorMode === mode
+                            ? "border-cyan-500 bg-cyan-600/20 text-cyan-300"
+                            : "border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        {mode === "dark" ? "🌙 Escuro" : "☀️ Claro"}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-600">
+                    O modo claro inverte automaticamente os tons de interface.
+                  </p>
+                </label>
               </div>
             </div>
           </div>

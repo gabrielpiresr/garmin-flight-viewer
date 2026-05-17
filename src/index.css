@@ -11,7 +11,8 @@
   --radius-4xl: 1.3rem;
 }
 
-:root {
+:root,
+[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0c0f14;
   --panel: #121826;
@@ -22,6 +23,36 @@
   --school-accent: #38bdf8;
   --school-bg: #020617;
   --school-surface: #0f172a;
+  --body-text: #e2e8f0;
+}
+
+/* Light mode — remaps Tailwind v4 slate CSS vars so all bg-slate-*, text-slate-*,
+   border-slate-* utilities automatically render with light-theme values. */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --border: #e2e8f0;
+  --muted: #64748b;
+  --accent: #0284c7;
+  --school-bg: #f1f5f9;
+  --school-surface: #ffffff;
+  --body-text: #0f172a;
+
+  /* Remap Tailwind v4 slate palette (dark end ↔ light end) */
+  --color-slate-950: #f8fafc;
+  --color-slate-900: #f1f5f9;
+  --color-slate-800: #e2e8f0;
+  --color-slate-700: #cbd5e1;
+  --color-slate-600: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-400: #475569;
+  --color-slate-300: #334155;
+  --color-slate-200: #1e293b;
+  --color-slate-100: #0f172a;
+  --color-slate-50: #020617;
+  /* text-white becomes dark on light backgrounds */
+  --color-white: #0f172a;
 }
 
 html {
@@ -31,8 +62,8 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  color: #e2e8f0;
-  font-family: system-ui, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  color: var(--body-text, #e2e8f0);
+  font-family: var(--school-font, system-ui, "Segoe UI", Roboto, Ubuntu, sans-serif);
 }
 
 .leaflet-container {

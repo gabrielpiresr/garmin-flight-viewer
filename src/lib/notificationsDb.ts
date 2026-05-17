@@ -41,6 +41,15 @@ function cacheBrandSettings(settings: EmailBrandSettings) {
   }
 }
 
+export function getCachedBrandSettings(): EmailBrandSettings | null {
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(BRAND_CACHE_KEY) : null;
+    return raw ? (JSON.parse(raw) as EmailBrandSettings) : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseResponse(body: string | undefined): NotificationResponse {
   if (!body) return {};
   try {
