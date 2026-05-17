@@ -23,11 +23,11 @@ export function AuthPanel() {
 
   if (!configured) {
     return (
-      <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-xs text-amber-100/90">
-        Defina <code className="text-amber-200">VITE_APPWRITE_ENDPOINT</code>,{" "}
-        <code className="text-amber-200">VITE_APPWRITE_PROJECT_ID</code>,{" "}
-        <code className="text-amber-200">VITE_APPWRITE_DATABASE_ID</code> e{" "}
-        <code className="text-amber-200">VITE_APPWRITE_COLLECTION_ID</code> no <code>.env.local</code> para ativar
+      <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-xs text-amber-400/90">
+        Defina <code className="text-amber-400">VITE_APPWRITE_ENDPOINT</code>,{" "}
+        <code className="text-amber-400">VITE_APPWRITE_PROJECT_ID</code>,{" "}
+        <code className="text-amber-400">VITE_APPWRITE_DATABASE_ID</code> e{" "}
+        <code className="text-amber-400">VITE_APPWRITE_COLLECTION_ID</code> no <code>.env.local</code> para ativar
         login e nuvem.
       </div>
     );

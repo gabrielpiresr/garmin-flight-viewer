@@ -199,7 +199,7 @@ export function getManeuverEditorExtensions(placeholder = "Escreva o artigo...")
       protocols: ["http", "https"],
       validate: (href) => isSafeUrl(href),
       HTMLAttributes: {
-        class: "text-sky-300 underline underline-offset-2 hover:text-sky-200",
+        class: "text-sky-400 underline underline-offset-2 hover:text-sky-500",
         rel: "noreferrer",
       },
     }),

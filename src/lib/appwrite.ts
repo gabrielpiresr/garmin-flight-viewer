@@ -14,6 +14,8 @@ export const SCHOOL_ID = import.meta.env.VITE_SCHOOL_ID as string | undefined;
 export const ADMIN_USER_ID = import.meta.env.VITE_ADMIN_USER_ID as string | undefined;
 export const AIRCRAFT_MODELS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID as string | undefined;
 export const AIRCRAFTS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFTS_COL_ID as string | undefined;
+export const AERODROMES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AERODROMES_COL_ID as string | undefined) ?? "aerodromes";
 export const MAINTENANCE_RULES_COL_ID = import.meta.env.VITE_APPWRITE_MAINTENANCE_RULES_COL_ID as string | undefined;
 export const OP_WEEKS_COL_ID = import.meta.env.VITE_APPWRITE_OP_WEEKS_COL_ID as string | undefined;
 

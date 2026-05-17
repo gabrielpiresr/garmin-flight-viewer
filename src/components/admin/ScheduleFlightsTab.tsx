@@ -1175,10 +1175,10 @@ export function ScheduleFlightsTab() {
           ))}
           <article className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-3">
             <div className="mb-2 h-20 w-full rounded-md bg-violet-500/20" />
-            <p className="text-sm font-semibold text-violet-100">Total</p>
-            <p className="mt-1 text-xs text-violet-200">{totalSummary.hours.toFixed(1)}h na semana</p>
-            <p className="text-xs text-violet-200">{totalSummary.flights} voos</p>
-            <p className="text-xs text-violet-200">{totalSummary.students} alunos</p>
+            <p className="text-sm font-semibold text-violet-400">Total</p>
+            <p className="mt-1 text-xs text-violet-400">{totalSummary.hours.toFixed(1)}h na semana</p>
+            <p className="text-xs text-violet-400">{totalSummary.flights} voos</p>
+            <p className="text-xs text-violet-400">{totalSummary.students} alunos</p>
           </article>
         </section>
       ) : null}
@@ -1196,8 +1196,8 @@ export function ScheduleFlightsTab() {
                 </article>
               ))}
               <article className="rounded-xl border border-red-300 bg-amber-500/10 p-3">
-                <p className="text-sm font-semibold text-amber-100">Sem instrutor</p>
-                <p className="mt-1 text-xs text-amber-200">{unassignedInstructorCount} voos</p>
+                <p className="text-sm font-semibold text-amber-400">Sem instrutor</p>
+                <p className="mt-1 text-xs text-amber-400">{unassignedInstructorCount} voos</p>
               </article>
             </div>
           </section>
@@ -1274,7 +1274,7 @@ export function ScheduleFlightsTab() {
           </section>
 
           {unassignedInstructorCount > 0 ? (
-            <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
               {unassignedInstructorCount} voo(s) nesta escala estão sem instrutor.
             </section>
           ) : null}
@@ -1314,7 +1314,7 @@ export function ScheduleFlightsTab() {
               <button
                 type="button"
                 onClick={() => openCreateModal()}
-                className="rounded-lg border border-violet-500/60 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-600/20"
+                className="rounded-lg border border-violet-500/60 px-3 py-2 text-xs font-semibold text-violet-400 hover:bg-violet-600/20"
               >
                 Adicionar voo
               </button>
@@ -1613,7 +1613,7 @@ export function ScheduleFlightsTab() {
             </div>
 
             {formConflicts.length > 0 ? (
-              <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
                 <p className="font-semibold">Conflitos detectados:</p>
                 <ul className="mt-1 space-y-1">
                   {formConflicts.map((conflict, index) => (
@@ -1626,12 +1626,12 @@ export function ScheduleFlightsTab() {
                   <button
                     type="button"
                     onClick={() => setForceSaveWithConflict(true)}
-                    className="mt-2 rounded border border-amber-300/40 px-2 py-1 text-[11px] text-amber-100 hover:bg-amber-500/20"
+                    className="mt-2 rounded border border-amber-300/40 px-2 py-1 text-[11px] text-amber-400 hover:bg-amber-500/20"
                   >
                     Entendi os conflitos, quero salvar mesmo assim
                   </button>
                 ) : (
-                  <p className="mt-2 text-[11px] text-amber-100">Conflitos aceitos. O salvamento será permitido.</p>
+                  <p className="mt-2 text-[11px] text-amber-400">Conflitos aceitos. O salvamento será permitido.</p>
                 )}
               </div>
             ) : null}

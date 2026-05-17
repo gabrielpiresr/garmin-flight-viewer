@@ -95,7 +95,7 @@ export function PilotProfilePanel({
           ) : null}
         </div>
 
-        {message ? <p className="text-xs text-amber-200">{message}</p> : null}
+        {message ? <p className="text-xs text-amber-400">{message}</p> : null}
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {field("Nome completo", profile.fullName)}

@@ -57,8 +57,8 @@ function yesNoTag(ok: boolean, yes: string, no: string): string {
 const AIRCRAFT_COLORS = [
   "bg-sky-900/60 text-sky-200 border-sky-600/50",
   "bg-violet-900/60 text-violet-200 border-violet-600/50",
-  "bg-emerald-900/60 text-emerald-200 border-emerald-600/50",
-  "bg-amber-900/60 text-amber-200 border-amber-600/50",
+  "bg-emerald-900/60 text-emerald-400 border-emerald-600/50",
+  "bg-amber-900/60 text-amber-400 border-amber-600/50",
   "bg-fuchsia-900/60 text-fuchsia-200 border-fuchsia-600/50",
 ];
 
@@ -72,7 +72,7 @@ function aircraftColor(registration: string): string {
 function FutureWeightBalanceCta({ ok, onClick }: { ok: boolean; onClick: () => void }) {
   return (
     <div className="inline-flex items-center gap-2">
-      {ok ? <span className="rounded bg-emerald-900/40 px-2 py-1 text-[11px] font-semibold text-emerald-200">OK</span> : null}
+      {ok ? <span className="rounded bg-emerald-900/40 px-2 py-1 text-[11px] font-semibold text-emerald-400">OK</span> : null}
       <button
         type="button"
         onClick={(event) => {
@@ -90,9 +90,9 @@ function FutureWeightBalanceCta({ ok, onClick }: { ok: boolean; onClick: () => v
 function FutureStudentSuggestionStatus({ suggestion }: { suggestion?: string }) {
   const text = suggestion?.trim();
   if (!text) {
-    return <span className="rounded bg-amber-900/40 px-2 py-1 text-[11px] font-semibold text-amber-200">Pendente</span>;
+    return <span className="rounded bg-amber-900/40 px-2 py-1 text-[11px] font-semibold text-amber-400">Pendente</span>;
   }
-  return <span className="text-xs text-emerald-200">OK - {text}</span>;
+  return <span className="text-xs text-emerald-400">OK - {text}</span>;
 }
 
 function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" | "default" }) {
@@ -602,7 +602,7 @@ export function MeusVoosTab() {
       </div>
 
       {err && (
-        <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+        <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-400">
           {err}
         </p>
       )}
@@ -815,11 +815,11 @@ export function MeusVoosTab() {
                               Status:{" "}
                               {isPastFlight ? (
                                 <>
-                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
+                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-200"}`}>
                                     {yesNoTag(Boolean(info.telemetryOk), "telemetria ok", "telemetria ausente")}
                                   </span>
                                   {" "}
-                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.videoOk ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"}`}>
+                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.videoOk ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-200"}`}>
                                     {yesNoTag(Boolean(info.videoOk), "video ok", "video ausente")}
                                   </span>
                                 </>

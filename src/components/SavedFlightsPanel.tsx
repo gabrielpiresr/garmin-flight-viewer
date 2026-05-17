@@ -48,7 +48,7 @@ export function SavedFlightsPanel({ onOpen, refreshKey }: Props) {
           Atualizar
         </button>
       </div>
-      {err ? <p className="mt-2 text-xs text-amber-200">{err}</p> : null}
+      {err ? <p className="mt-2 text-xs text-amber-400">{err}</p> : null}
       {loading && items.length === 0 ? <p className="mt-2 text-xs text-slate-500">Carregando…</p> : null}
       {!loading && items.length === 0 ? (
         <p className="mt-2 text-xs text-slate-500">Nenhum voo salvo ainda. Importe um CSV e use “Salvar na nuvem”.</p>

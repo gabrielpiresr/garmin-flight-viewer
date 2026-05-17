@@ -1730,7 +1730,7 @@ export function ScheduleGenerationTab() {
       ) : null}
 
       {weekOptions.length === 0 && !bootLoading ? (
-        <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+        <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
           Não há semanas futuras abertas para o gerador no momento.
         </section>
       ) : null}
@@ -1738,7 +1738,7 @@ export function ScheduleGenerationTab() {
       {weekData && savedPreviewAt && !preview ? (
         <section className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-            <p className="text-sky-200">Existe um preview salvo para esta semana ({new Date(savedPreviewAt).toLocaleString("pt-BR")}).</p>
+            <p className="text-sky-400">Existe um preview salvo para esta semana ({new Date(savedPreviewAt).toLocaleString("pt-BR")}).</p>
             <button
               type="button"
               onClick={() => {
@@ -1919,7 +1919,7 @@ export function ScheduleGenerationTab() {
                 </div>
               </div>
             ) : (
-              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
                 Nenhum instrutor encontrado nos perfis. Cadastre perfis com papel de instrutor antes de fechar a escala.
               </p>
             )}
@@ -1933,7 +1933,7 @@ export function ScheduleGenerationTab() {
                   type="button"
                   onClick={() => void handleRegenerateFromRules()}
                   disabled={!weekData}
-                  className="rounded-lg border border-amber-500/60 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-600/15 disabled:opacity-40"
+                  className="rounded-lg border border-amber-500/60 px-3 py-2 text-xs font-semibold text-amber-400 hover:bg-amber-600/15 disabled:opacity-40"
                 >
                   Rodar preview novamente
                 </button>
@@ -1948,7 +1948,7 @@ export function ScheduleGenerationTab() {
             </div>
 
             {savedPreviewAt ? (
-              <div className="mb-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+              <div className="mb-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-400">
                 Preview salvo em {new Date(savedPreviewAt).toLocaleString("pt-BR")}.
               </div>
             ) : null}
@@ -1960,7 +1960,7 @@ export function ScheduleGenerationTab() {
             ) : null}
 
             {unassignedInstructorCount > 0 ? (
-              <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
                 {unassignedInstructorCount} voo(s) sem instrutor. A escala pode ser salva, mas esses voos ficam destacados na agenda.
               </div>
             ) : null}
@@ -2139,8 +2139,8 @@ export function ScheduleGenerationTab() {
                 </article>
               ))}
               <article className="rounded-xl border border-red-300 bg-amber-500/10 p-3">
-                <p className="text-sm font-semibold text-amber-100">Sem instrutor</p>
-                <p className="mt-1 text-xs text-amber-200">{unassignedInstructorCount} voos</p>
+                <p className="text-sm font-semibold text-amber-400">Sem instrutor</p>
+                <p className="mt-1 text-xs text-amber-400">{unassignedInstructorCount} voos</p>
               </article>
             </div>
           </section>
@@ -2562,7 +2562,7 @@ export function ScheduleGenerationTab() {
                 Depois que a escala for fechada, não será possível reabrir essa semana no gerador para editar ou gerar
                 novamente.
               </p>
-              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
                 Revise conflitos, alunos e horários antes de confirmar.
               </p>
             </div>

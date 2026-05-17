@@ -350,7 +350,7 @@ export function TrainingTracksTab() {
               onClick={() => selectTrack(track)}
               className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
                 selectedId === track.id
-                  ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-100"
+                  ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-400"
                   : "border-slate-700/60 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60"
               }`}
             >
@@ -416,7 +416,7 @@ export function TrainingTracksTab() {
               onClick={() => setEditorTab(id)}
               className={`border-b-2 px-3 py-2 text-sm font-semibold ${
                 editorTab === id
-                  ? "border-cyan-400 text-cyan-100"
+                  ? "border-cyan-400 text-cyan-400"
                   : "border-transparent text-slate-400 hover:border-slate-600 hover:text-slate-200"
               }`}
             >

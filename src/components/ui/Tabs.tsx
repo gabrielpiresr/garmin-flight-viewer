@@ -18,9 +18,9 @@ type TabsProps<T extends string> = {
 };
 
 const ACTIVE_CLASSES: Record<TabAccent, string> = {
-  cyan: "border-cyan-400 text-cyan-100",
-  sky: "border-sky-400 text-sky-100",
-  violet: "border-violet-400 text-violet-100",
+  cyan: "border-cyan-400 text-cyan-400",
+  sky: "border-sky-400 text-sky-400",
+  violet: "border-violet-400 text-violet-400",
 };
 
 export function Tabs<T extends string>({

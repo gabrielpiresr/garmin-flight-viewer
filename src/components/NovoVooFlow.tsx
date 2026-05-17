@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { buildAerodromeOptions, listAerodromes, type AerodromeOption } from "../lib/aerodromesDb";
 import { SCHOOL_ID } from "../lib/appwrite";
 import { listAircrafts } from "../lib/aircraftDb";
 import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
@@ -424,6 +425,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [loadedInstructorWeightKg, setLoadedInstructorWeightKg] = useState<number | null>(null);
   const [studentsLoading, setStudentsLoading] = useState(false);
   const [aircraftLoading, setAircraftLoading] = useState(false);
+  const [aerodromesLoading, setAerodromesLoading] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(Boolean(initialFlightId));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -441,6 +443,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [flightDate, setFlightDate] = useState(todayIso());
   const [startTime, setStartTime] = useState("");
   const [aircraft, setAircraft] = useState("");
+  const [aerodromeOptions, setAerodromeOptions] = useState<AerodromeOption[]>([]);
 
   const [objectiveMd, setObjectiveMd] = useState("");
   const [briefingMd, setBriefingMd] = useState(DEFAULT_BRIEFING);
@@ -537,6 +540,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       .then((res) => setAircrafts(res))
       .catch((e) => setError((e as Error).message))
       .finally(() => setAircraftLoading(false));
+  }, []);
+
+  useEffect(() => {
+    setAerodromesLoading(true);
+    void listAerodromes()
+      .then((res) => setAerodromeOptions(buildAerodromeOptions(res)))
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setAerodromesLoading(false));
   }, []);
 
   useEffect(() => {
@@ -652,8 +663,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 id: leg.id || crypto.randomUUID(),
                 date: leg.date || todayIso(),
                 role: leg.role || BOARD_ROLE_OPTIONS[0],
-                dep: leg.dep || "",
-                arr: leg.arr || "",
+                dep: (leg.dep || "").toUpperCase(),
+                arr: (leg.arr || "").toUpperCase(),
                 landings: Number.isFinite(leg.landings) ? leg.landings : 0,
                 flightTime: leg.flightTime || "",
                 navTime: leg.navTime || "",
@@ -844,8 +855,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       id: leg.id,
       date: leg.date,
       role: leg.role,
-      dep: leg.dep.trim(),
-      arr: leg.arr.trim(),
+      dep: leg.dep.trim().toUpperCase(),
+      arr: leg.arr.trim().toUpperCase(),
       landings: Math.max(0, Math.round(leg.landings || 0)),
       flightTime: leg.flightTime.trim(),
       navTime: leg.navTime.trim(),
@@ -876,6 +887,18 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
   const updateLeg = (id: string, patch: Partial<LegDraft>) => {
     setLegs((prev) => prev.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
+  };
+
+  const renderAerodromeSelect = (leg: LegDraft, field: "dep" | "arr") => {
+    return (
+      <AerodromeCombobox
+        value={leg[field]}
+        options={aerodromeOptions}
+        disabled={!canEdit || aerodromesLoading}
+        loading={aerodromesLoading}
+        onChange={(icao) => updateLeg(leg.id, { [field]: icao.toUpperCase() })}
+      />
+    );
   };
 
   const addLeg = () => setLegs((prev) => [...prev, emptyLeg()]);
@@ -1407,10 +1430,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                     </select>
                   </Input>
                   <Input label="DEP">
-                    <input type="text" value={leg.dep} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { dep: e.target.value.toUpperCase() })} className={inputClass} />
+                    {renderAerodromeSelect(leg, "dep")}
                   </Input>
                   <Input label="ARR">
-                    <input type="text" value={leg.arr} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { arr: e.target.value.toUpperCase() })} className={inputClass} />
+                    {renderAerodromeSelect(leg, "arr")}
                   </Input>
                   <Input label="Pousos">
                     <input type="number" min={0} value={leg.landings} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { landings: Number(e.target.value) || 0 })} className={inputClass} />
@@ -1743,6 +1766,110 @@ function Input({ label, children }: { label: string; children: ReactNode }) {
       <span className="mb-1 block text-[11px] text-slate-500">{label}</span>
       {children}
     </label>
+  );
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function AerodromeCombobox({
+  value,
+  options,
+  disabled,
+  loading,
+  onChange,
+}: {
+  value: string;
+  options: AerodromeOption[];
+  disabled: boolean;
+  loading: boolean;
+  onChange: (icao: string) => void;
+}) {
+  const normalizedValue = value.trim().toUpperCase();
+  const selectedOption = useMemo(
+    () => options.find((option) => option.icao === normalizedValue) ?? null,
+    [normalizedValue, options],
+  );
+  const [query, setQuery] = useState(selectedOption?.label ?? normalizedValue);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) setQuery(selectedOption?.label ?? normalizedValue);
+  }, [normalizedValue, open, selectedOption]);
+
+  const filteredOptions = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(query);
+    const ranked = normalizedQuery
+      ? options.filter((option) =>
+          normalizeSearchText(`${option.icao} ${option.ciad} ${option.name} ${option.municipality} ${option.uf} ${option.label}`).includes(
+            normalizedQuery,
+          ),
+        )
+      : options;
+    return ranked.slice(0, 80);
+  }, [options, query]);
+
+  const selectOption = (option: AerodromeOption) => {
+    onChange(option.icao);
+    setQuery(option.label);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        value={query}
+        disabled={disabled}
+        placeholder={loading ? "Carregando aeródromos..." : "Digite ICAO, nome ou cidade"}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => {
+          const next = e.target.value;
+          setQuery(next);
+          setOpen(true);
+          if (!next.trim()) onChange("");
+        }}
+        onBlur={() => {
+          window.setTimeout(() => {
+            const exact = options.find((option) => option.icao === query.trim().toUpperCase());
+            if (exact) {
+              selectOption(exact);
+              return;
+            }
+            setOpen(false);
+            setQuery(selectedOption?.label ?? normalizedValue);
+          }, 120);
+        }}
+        className={inputClass}
+      />
+      {open && !disabled && (
+        <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-700 bg-slate-950 text-xs text-slate-100 shadow-xl shadow-slate-950/40">
+          {filteredOptions.length > 0 ? (
+            filteredOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  selectOption(option);
+                }}
+                className="block w-full px-2.5 py-2 text-left hover:bg-slate-800 focus:bg-slate-800 focus:outline-none"
+              >
+                <span className="block font-medium text-slate-100">{option.label}</span>
+                <span className="block text-[11px] text-slate-500">{option.ciad}</span>
+              </button>
+            ))
+          ) : (
+            <div className="px-2.5 py-2 text-slate-500">Nenhum aeródromo encontrado</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

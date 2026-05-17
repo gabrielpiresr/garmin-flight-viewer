@@ -31,7 +31,7 @@ function parseInline(text: string, keyPrefix: string): ReactNode[] {
           <a
             key={`${keyPrefix}-l-${idx}`}
             href={href}
-            className="break-words text-sky-300 underline underline-offset-2 hover:text-sky-200 [overflow-wrap:anywhere]"
+            className="break-words text-sky-400 underline underline-offset-2 hover:text-sky-500 [overflow-wrap:anywhere]"
             target={external ? "_blank" : undefined}
             rel={external ? "noreferrer" : undefined}
           >

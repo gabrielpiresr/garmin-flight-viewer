@@ -336,7 +336,7 @@ export function ManobrasTab() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Manobras</p>
-            <h2 className="text-xl font-semibold text-white">Gestão do material de estudo</h2>
+            <h2 className="text-xl font-semibold text-slate-100">Gestão do material de estudo</h2>
             <p className="mt-1 text-sm text-slate-500">
               Selecione uma seção, revise seus artigos e abra os formulários apenas quando precisar editar.
             </p>
@@ -376,7 +376,7 @@ export function ManobrasTab() {
                 onClick={() => handleSelectSection(section.id)}
                 className={`block w-full border-b border-slate-800/80 px-3 py-3 text-left text-sm transition last:border-b-0 ${
                   section.id === selectedSectionId
-                    ? "rounded-xl border-b-transparent bg-emerald-500/10 text-emerald-100"
+                    ? "rounded-xl border-b-transparent bg-emerald-500/10 text-emerald-400"
                     : "text-slate-300 hover:rounded-xl hover:bg-slate-800/70"
                 }`}
               >
@@ -394,7 +394,7 @@ export function ManobrasTab() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Seção selecionada</p>
-                    <h3 className="mt-1 break-words text-xl font-semibold text-white">
+                    <h3 className="mt-1 break-words text-xl font-semibold text-slate-100">
                       {selectedSection ? `${selectedSection.order}. ${selectedSection.title}` : "Selecione uma seção"}
                     </h3>
                     {selectedSection?.description ? <p className="mt-1 text-sm text-slate-500">{selectedSection.description}</p> : null}
@@ -581,7 +581,7 @@ export function ManobrasTab() {
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wider text-sky-400/80">Artigos</p>
-                    <h3 className="text-lg font-semibold text-white">{selectedSection?.title ?? "Selecione uma seção"}</h3>
+                    <h3 className="text-lg font-semibold text-slate-100">{selectedSection?.title ?? "Selecione uma seção"}</h3>
                   </div>
                   <button type="button" onClick={openArticleCreate} disabled={!selectedSectionId} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50">
                     Novo artigo

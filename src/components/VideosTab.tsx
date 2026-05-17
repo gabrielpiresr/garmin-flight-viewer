@@ -492,7 +492,7 @@ function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry:
         <span className="h-2 w-2 rounded-full bg-amber-400" />
         Helper local não encontrado
       </div>
-      <p className="mt-1.5 text-xs text-amber-200/70">
+      <p className="mt-1.5 text-xs text-amber-400/80">
         Para processar vídeos, baixe e execute o <strong>Garmin Flight Video Helper</strong> na sua máquina. Ele deve estar rodando em segundo plano.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">

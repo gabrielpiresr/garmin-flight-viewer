@@ -73,10 +73,10 @@ const TOOLTIP_STYLE = {
 };
 const PIE_COLORS = ["#34d399", "#fbbf24", "#fb7185"];
 const BADGE_TONE_CLASS: Record<JourneyBadge["tone"], string> = {
-  emerald: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
-  sky: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  violet: "border-violet-500/40 bg-violet-500/10 text-violet-200",
-  amber: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  emerald: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+  sky: "border-sky-500/40 bg-sky-500/10 text-sky-400",
+  violet: "border-violet-500/40 bg-violet-500/10 text-violet-400",
+  amber: "border-amber-500/40 bg-amber-500/10 text-amber-400",
 };
 const SCHOOL_REWARD_COLOR = DEFAULT_SCHOOL_RULES.theme.primaryColor;
 
@@ -383,7 +383,7 @@ function EmptyJourneyCard({ title = "Jornada pronta para decolar" }: { title?: s
 
 function ErrorCard({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-400">
       Não foi possível carregar a Jornada: {message}
     </div>
   );
@@ -398,11 +398,11 @@ function WeeklyStreakCard({ metrics, compact = false }: { metrics: JourneyMetric
       <p className={`${compact ? "mt-1 text-3xl" : "mt-2 text-4xl"} font-black leading-none text-amber-300`}>
         {formatInteger(metrics.streakWeeks)}
       </p>
-      <p className="mt-1 text-xs font-bold lowercase tracking-wide text-amber-200">semanas streak</p>
+      <p className="mt-1 text-xs font-bold lowercase tracking-wide text-amber-400">semanas streak</p>
       <div className="mt-3 grid grid-cols-7 gap-1.5">
         {metrics.weeklyStreak.map((week) => (
           <div key={week.label} className="space-y-1">
-            <p className={`text-[9px] font-bold ${week.current ? "text-amber-200" : "text-slate-500"}`}>{week.label}</p>
+            <p className={`text-[9px] font-bold ${week.current ? "text-amber-400" : "text-slate-500"}`}>{week.label}</p>
             <span
               className={`mx-auto flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-black ${
                 week.active
@@ -594,7 +594,7 @@ function LandingDistribution({ metrics }: { metrics: JourneyMetrics }) {
 
 function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
   return (
-    <div className={`rounded-2xl border p-3 ${reward.achieved ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100" : "border-slate-700/70 bg-slate-950/30 text-slate-500"}`}>
+    <div className={`rounded-2xl border p-3 ${reward.achieved ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-slate-700/70 bg-slate-950/30 text-slate-500"}`}>
       <div className="flex items-start gap-3">
         <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${reward.achieved ? "border-white/20 bg-white/10" : "border-slate-700 bg-slate-900"}`}>
           <RewardIcon visual={reward.visual} achieved={reward.achieved} schoolColor={SCHOOL_REWARD_COLOR} className="h-7 w-7" />
@@ -610,7 +610,7 @@ function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
               </p>
             </div>
           ) : (
-            <p className="mt-2 text-[11px] text-emerald-200/80">
+            <p className="mt-2 text-[11px] text-emerald-400/80">
               {decimalFormatter.format(reward.currentValue)} de {decimalFormatter.format(reward.targetValue)}
             </p>
           )}
@@ -627,7 +627,7 @@ function ManeuverArticleModal({ article, onClose }: { article: ManeuverArticle; 
         <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-4 py-3">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Material de estudo</p>
-            <h3 className="mt-1 break-words text-xl font-semibold text-white [overflow-wrap:anywhere]">{article.title}</h3>
+            <h3 className="mt-1 break-words text-xl font-semibold text-slate-100 [overflow-wrap:anywhere]">{article.title}</h3>
             {article.summary ? <p className="mt-1 text-sm text-slate-400">{article.summary}</p> : null}
           </div>
           <button
@@ -793,7 +793,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
       <section className="relative overflow-hidden rounded-3xl border border-emerald-400/20 bg-[linear-gradient(135deg,rgba(6,78,59,0.84),rgba(15,23,42,0.92)_48%,rgba(88,28,135,0.72))] p-4 shadow-2xl shadow-slate-950/40 md:p-5">
         <div className="grid gap-4">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-200/80">Formação</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-400/80">Formação</p>
             <h2 className="mt-2 text-2xl font-black tracking-tight text-white md:text-4xl">{track.name}</h2>
             <p className="mt-2 max-w-3xl text-sm leading-5 text-emerald-50/80">
               Progresso da trilha, missões conquistadas e próximo objetivo em uma linha do tempo navegável.
@@ -818,7 +818,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
         </div>
         <div className="mt-4 grid gap-2 md:grid-cols-3">
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
-            <p className="text-xs uppercase tracking-widest text-emerald-100/70">Próxima missão</p>
+            <p className="text-xs uppercase tracking-widest text-emerald-300/90">Próxima missão</p>
             <p className="mt-1 line-clamp-2 text-xl font-black leading-tight text-white">{nextMission?.mission.name ?? "Trilha completa"}</p>
             <p className="mt-1 text-xs text-emerald-50/70">
               {nextMission ? `${nextMission.stage.name} · ${nextMission.mission.durationMinutes} min · ${nextMission.mission.type}` : "Todas as missões foram marcadas."}
@@ -827,7 +827,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-100/70">Total de horas</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/90">Total de horas</p>
                 <p className="mt-1 text-2xl font-black text-white">{formatPercent(hoursPct)}</p>
               </div>
               <p className="text-xs text-emerald-50/70">{formatHours(flownHours)} de {formatHours(trackHours)}</p>
@@ -837,7 +837,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-100/70">Missões completadas</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/90">Missões completadas</p>
                 <p className="mt-1 text-2xl font-black text-white">{formatPercent(missionPct)}</p>
               </div>
               <p className="text-xs text-emerald-50/70">{formatInteger(completedCount)} de {formatInteger(track.missionCount)}</p>
@@ -925,7 +925,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
                       key={article.id}
                       type="button"
                       onClick={() => setSelectedManeuverArticle(article)}
-                      className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-100 hover:bg-sky-500/20"
+                      className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"
                     >
                       {article.title}
                     </button>

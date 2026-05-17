@@ -257,7 +257,7 @@ export function RewardsEditor({ kind, trackId = null, title, subtitle, schoolCol
                   <p className="mt-1 line-clamp-2 text-sm text-slate-400">{item.description || "Sem descrição."}</p>
                 </div>
               </div>
-              <button type="button" onClick={() => startEdit(item)} className="rounded-lg border border-cyan-600/60 px-3 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/10">
+              <button type="button" onClick={() => startEdit(item)} className="rounded-lg border border-cyan-600/60 px-3 py-2 text-sm font-semibold text-cyan-400 hover:bg-cyan-500/10">
                 Ver / editar
               </button>
             </div>
@@ -273,7 +273,7 @@ export function RewardsEditor({ kind, trackId = null, title, subtitle, schoolCol
       {editing ? (
         <div className="space-y-4 rounded-xl border border-cyan-500/30 bg-slate-950/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-cyan-100">
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-cyan-400">
               {selected ? `Editar ${itemLabel}` : `Novo ${itemLabel}`}
             </h4>
             <div className="flex gap-2">
@@ -337,7 +337,7 @@ export function RewardsEditor({ kind, trackId = null, title, subtitle, schoolCol
                         }
                         className={`rounded-lg border p-2 text-center text-xs ${
                           visual.type === "libraryIcon" && visual.iconId === icon.id
-                            ? "border-cyan-400 bg-cyan-500/10 text-cyan-100"
+                            ? "border-cyan-400 bg-cyan-500/10 text-cyan-400"
                             : "border-slate-700 bg-slate-950/60 text-slate-400 hover:text-slate-200"
                         }`}
                       >

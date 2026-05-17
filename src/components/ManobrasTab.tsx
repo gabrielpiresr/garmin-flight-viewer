@@ -104,7 +104,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Curso de manobras</p>
-            <h2 className="text-xl font-semibold text-white">Material de estudo</h2>
+            <h2 className="text-xl font-semibold text-slate-100">Material de estudo</h2>
             <p className="mt-1 max-w-2xl text-sm text-slate-500">
               Consulte procedimentos, sequências, erros comuns e referências publicadas pela escola.
             </p>
@@ -149,7 +149,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
                 onClick={() => selectSection(section.id)}
                 className={`block w-full border-b border-slate-800/80 px-3 py-3 text-left text-sm transition last:border-b-0 ${
                   selectedSection?.id === section.id
-                    ? "rounded-xl border-b-transparent bg-emerald-500/10 text-emerald-100"
+                    ? "rounded-xl border-b-transparent bg-emerald-500/10 text-emerald-400"
                     : "text-slate-300 hover:rounded-xl hover:bg-slate-800/70"
                 }`}
               >
@@ -166,7 +166,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
           <div className="grid min-w-0 gap-4 xl:grid-cols-[18rem_1fr]">
             <aside className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-3">
               <p className="px-2 text-xs font-semibold uppercase tracking-widest text-sky-400/80">Nesta seção</p>
-              <h3 className="mt-1 px-2 text-base font-semibold text-white">{selectedSection?.title ?? "Selecione uma seção"}</h3>
+              <h3 className="mt-1 px-2 text-base font-semibold text-slate-100">{selectedSection?.title ?? "Selecione uma seção"}</h3>
               <div className="mt-4 space-y-3">
                 {selectedSectionContent.looseArticles.map((article) => (
                   <button
@@ -174,7 +174,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
                     type="button"
                     onClick={() => setSelectedArticleId(article.id)}
                     className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                      selectedArticle?.id === article.id ? "bg-sky-500/10 text-sky-100" : "text-slate-300 hover:bg-slate-800"
+                      selectedArticle?.id === article.id ? "bg-sky-500/10 text-sky-400" : "text-slate-300 hover:bg-slate-800"
                     }`}
                   >
                     {article.title}
@@ -189,7 +189,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
                         type="button"
                         onClick={() => setSelectedArticleId(article.id)}
                         className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                          selectedArticle?.id === article.id ? "bg-sky-500/10 text-sky-100" : "text-slate-300 hover:bg-slate-800"
+                          selectedArticle?.id === article.id ? "bg-sky-500/10 text-sky-400" : "text-slate-300 hover:bg-slate-800"
                         }`}
                       >
                         {article.title}
@@ -207,7 +207,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
                     <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">
                       Material de estudo
                     </p>
-                    <h3 className="break-words text-2xl font-semibold text-white [overflow-wrap:anywhere]">{selectedArticle.title}</h3>
+                    <h3 className="break-words text-2xl font-semibold text-slate-100 [overflow-wrap:anywhere]">{selectedArticle.title}</h3>
                     {selectedArticle.summary ? <p className="text-sm text-slate-400">{selectedArticle.summary}</p> : null}
                     {selectedArticle.tags.length ? (
                       <div className="flex flex-wrap gap-2">
