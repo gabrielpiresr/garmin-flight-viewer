@@ -537,10 +537,10 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       )}
 
       {(points.length > 0 || chartData.length > 0) && (
-        <div className="h-[calc(100vh-1.5rem)] min-h-[520px] md:min-h-[700px]">
-          <div className={`grid h-full min-h-0 gap-2 ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+        <div className="min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]">
+          <div className={`grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
             {chartData.length > 0 && (
-              <div className="min-h-0 overflow-y-auto">
+              <div className="min-h-0 xl:overflow-y-auto xl:pr-1">
                 {selectedSegment ? (
                   <SegmentSummary segment={selectedSegment} />
                 ) : (
@@ -558,12 +558,12 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
               </div>
             )}
 
-            <div className="grid h-full min-h-0 min-w-0 grid-rows-2 gap-2">
+            <div className="grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2">
               {points.length >= 2 ? (
                 <FlightMap
                   points={points}
                   selectedRangeT={selectedRangeT}
-                  className="h-full min-h-0 w-full overflow-hidden rounded-xl border border-slate-700"
+                  className="h-[420px] max-h-[70vh] min-h-[360px] w-full overflow-hidden rounded-xl border border-slate-700 sm:h-[520px] xl:h-full xl:max-h-none xl:min-h-0"
                   hoverCallbackRef={hoverCallbackRef}
                   boundsCallbackRef={boundsCallbackRef}
                 />
@@ -573,7 +573,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                 </p>
               )}
 
-              <div className="min-h-0 min-w-0">
+              <div className="h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0">
                 <FlightCharts
                   chartData={chartData}
                   hasTime={hasChartTime}

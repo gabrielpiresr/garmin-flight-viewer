@@ -623,63 +623,76 @@ function VideoCard({
   const isPending = !isReady && !isFailed;
 
   return (
-    <li className="flex flex-col gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 sm:flex-row sm:items-center">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-base">
-        🎬
-      </div>
-
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-medium text-slate-100">
-            Vídeo do voo
-          </p>
-          <StatusBadge status={video.processing_status} />
-        </div>
-        <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
-          {video.file_size != null && <span>{formatBytes(video.file_size)}</span>}
-          {video.duration_sec != null && (
-            <span> · {formatDurationSec(video.duration_sec)}</span>
-          )}
-          {video.original_files_count != null && video.original_files_count > 1 && (
-            <span> · {video.original_files_count} arquivos</span>
-          )}
-          <span> · {formatDate(video.created_at)}</span>
-        </p>
-      </div>
-
-      <div className="flex w-full shrink-0 flex-wrap items-center gap-3 sm:w-auto sm:justify-end">
+    <li className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+      <div className="flex flex-col gap-4">
         {isReady && video.file_url && (
-          <a
-            href={video.file_url}
-            download
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-sky-400 hover:bg-slate-700 hover:text-sky-300 sm:flex-none"
-          >
-            ↓ Baixar
-          </a>
+          <video
+            src={video.file_url}
+            controls
+            preload="metadata"
+            className="aspect-video w-full rounded-lg border border-slate-800 bg-black"
+          />
         )}
-        {isPending && (
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-        )}
-        {isFailed && isInstructor && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="text-xs text-amber-400 underline-offset-4 hover:underline"
-          >
-            Tentar novamente
-          </button>
-        )}
-        {isInstructor && (
-          <button
-            type="button"
-            onClick={onDelete}
-            className="text-xs text-slate-600 underline-offset-4 hover:text-red-400 hover:underline"
-          >
-            Apagar
-          </button>
-        )}
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-base">
+            🎬
+          </div>
+
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate text-sm font-medium text-slate-100">
+                Vídeo do voo
+              </p>
+              <StatusBadge status={video.processing_status} />
+            </div>
+            <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
+              {video.file_size != null && <span>{formatBytes(video.file_size)}</span>}
+              {video.duration_sec != null && (
+                <span> · {formatDurationSec(video.duration_sec)}</span>
+              )}
+              {video.original_files_count != null && video.original_files_count > 1 && (
+                <span> · {video.original_files_count} arquivos</span>
+              )}
+              <span> · {formatDate(video.created_at)}</span>
+            </p>
+          </div>
+
+          <div className="flex w-full shrink-0 flex-wrap items-center gap-3 sm:w-auto sm:justify-end">
+            {isReady && video.file_url && (
+              <a
+                href={video.file_url}
+                download
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-sky-400 hover:bg-slate-700 hover:text-sky-300 sm:flex-none"
+              >
+                ↓ Baixar
+              </a>
+            )}
+            {isPending && (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+            )}
+            {isFailed && isInstructor && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="text-xs text-amber-400 underline-offset-4 hover:underline"
+              >
+                Tentar novamente
+              </button>
+            )}
+            {isInstructor && (
+              <button
+                type="button"
+                onClick={onDelete}
+                className="text-xs text-slate-600 underline-offset-4 hover:text-red-400 hover:underline"
+              >
+                Apagar
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </li>
   );

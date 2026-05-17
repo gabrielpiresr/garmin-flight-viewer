@@ -287,6 +287,7 @@ pub async fn compress_video(
             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             "-c:a", "aac",
             "-b:a", "128k",
+            "-movflags", "+faststart",
             "-y",
             "-progress", "pipe:2",
             "-nostats",

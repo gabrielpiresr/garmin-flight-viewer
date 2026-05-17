@@ -70,6 +70,7 @@ export function FlightDetailView({
 }: Props) {
   const { user } = useAuth();
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("ficha");
+  const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set(["ficha"]));
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [studentUserId, setStudentUserId] = useState<string | null>(null);
 
@@ -88,6 +89,15 @@ export function FlightDetailView({
       cancelled = true;
     };
   }, [canSeeStudentContext, flightId]);
+
+  useEffect(() => {
+    setVisitedSubTabs((current) => {
+      if (current.has(activeSubTab)) return current;
+      const next = new Set(current);
+      next.add(activeSubTab);
+      return next;
+    });
+  }, [activeSubTab]);
 
   const subTabs: SubTabConfig[] = useMemo(() => {
     const buildTab = (id: SubTab): SubTabConfig => ({ id, ...SUB_TAB_CONFIG[id] });
@@ -133,22 +143,38 @@ export function FlightDetailView({
       <Tabs items={subTabs} value={activeSubTab} onChange={setActiveSubTab} ariaLabel="Detalhes do voo" />
 
       <div className="min-h-0 min-w-0 flex-1">
-        {activeSubTab === "telemetria" ? (
-          <TelemetriaTab flightId={flightId} parsedResult={parsedResult} />
-        ) : activeSubTab === "videos" ? (
-          <VideosTab flightId={flightId} />
-        ) : activeSubTab === "aluno" && studentUserId ? (
-          <StudentFlightContextPanel studentUserId={studentUserId} currentFlightId={flightId} />
-        ) : flightId ? (
-          <NovoVooFlow
-            initialFlightId={flightId}
-            embedded
-            initialStepId={fichaInitialStepId}
-            hideStepMenu={hideFichaStepMenu}
-          />
-        ) : (
-          <p className="p-8 text-center text-sm text-slate-500">Salve o voo para editar a ficha.</p>
-        )}
+        {visitedSubTabs.has("ficha") ? (
+          <div hidden={activeSubTab !== "ficha"} className="min-h-0 min-w-0">
+            {flightId ? (
+              <NovoVooFlow
+                initialFlightId={flightId}
+                embedded
+                initialStepId={fichaInitialStepId}
+                hideStepMenu={hideFichaStepMenu}
+              />
+            ) : (
+              <p className="p-8 text-center text-sm text-slate-500">Salve o voo para editar a ficha.</p>
+            )}
+          </div>
+        ) : null}
+
+        {visitedSubTabs.has("telemetria") ? (
+          <div hidden={activeSubTab !== "telemetria"} className="min-h-0 min-w-0">
+            <TelemetriaTab flightId={flightId} parsedResult={parsedResult} />
+          </div>
+        ) : null}
+
+        {visitedSubTabs.has("videos") ? (
+          <div hidden={activeSubTab !== "videos"} className="min-h-0 min-w-0">
+            <VideosTab flightId={flightId} />
+          </div>
+        ) : null}
+
+        {visitedSubTabs.has("aluno") && studentUserId ? (
+          <div hidden={activeSubTab !== "aluno"} className="min-h-0 min-w-0">
+            <StudentFlightContextPanel studentUserId={studentUserId} currentFlightId={flightId} />
+          </div>
+        ) : null}
       </div>
       {flightId && shareModalOpen ? (
         <FlightShareStickersModal flightId={flightId} onClose={() => setShareModalOpen(false)} />

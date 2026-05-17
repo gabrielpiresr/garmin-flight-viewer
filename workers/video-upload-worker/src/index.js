@@ -50,7 +50,7 @@ async function handleInitiate(request, env) {
   const upload = await env.FLIGHT_VIDEOS.createMultipartUpload(key, {
     httpMetadata: {
       contentType: "video/mp4",
-      contentDisposition: "attachment",
+      contentDisposition: "inline",
     },
   });
 

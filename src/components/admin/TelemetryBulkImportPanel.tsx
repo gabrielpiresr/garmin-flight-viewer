@@ -3,14 +3,15 @@ import { useAuth } from "../../contexts/AuthContext";
 import { attachFlightTelemetry } from "../../lib/attachFlightTelemetry";
 import {
   buildAutoAssignments,
+  flightForLogMatchFromRow,
   parseTelemetryLogFilename,
   unallocatedReasonLabel,
   type BulkLogFile,
-  type FlightForLogMatch,
   type LogFileAssignment,
   type MatchConfidence,
   type UnallocatedFile,
 } from "../../lib/telemetryLogFilename";
+import { MAX_TELEMETRY_CSV_FILES } from "../../lib/telemetryCsvMerge";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
 import { TelemetryProcessingProgress } from "../ui/TelemetryProcessingProgress";
 import { useToast } from "../ui/ToastProvider";
@@ -56,25 +57,16 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
     return flights.filter((row) => (row.aircraftIdent ?? "") === bulkAircraft);
   }, [bulkAircraft, flights]);
 
-  const matchPool: FlightForLogMatch[] = useMemo(
-    () =>
-      bulkPool.map((row) => ({
-        id: row.id,
-        flightDate: row.flightDate,
-        startTime: row.startTime,
-        firstDepIcao: row.firstDepIcao,
-        lastArrIcao: row.lastArrIcao,
-        aircraftIdent: row.aircraftIdent,
-        route: row.route,
-      })),
-    [bulkPool],
-  );
+  const matchPool = useMemo(() => bulkPool.map(flightForLogMatchFromRow), [bulkPool]);
 
   const fileById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files]);
-  const assignmentByFlightId = useMemo(() => {
-    const map = new Map<string, LogFileAssignment>();
+  const assignmentsByFlightId = useMemo(() => {
+    const map = new Map<string, LogFileAssignment[]>();
     for (const item of assignments) {
-      if (item.flightId) map.set(item.flightId, item);
+      if (!item.flightId) continue;
+      const list = map.get(item.flightId) ?? [];
+      list.push(item);
+      map.set(item.flightId, list);
     }
     return map;
   }, [assignments]);
@@ -84,7 +76,11 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
     [assignments, fileById],
   );
 
-  const readyCount = useMemo(() => assignments.filter((item) => item.flightId).length, [assignments]);
+  const readyFlightCount = useMemo(
+    () => new Set(assignments.filter((item) => item.flightId).map((item) => item.flightId)).size,
+    [assignments],
+  );
+  const readyFileCount = useMemo(() => assignments.filter((item) => item.flightId).length, [assignments]);
 
   const applyAutoMatch = useCallback(
     (nextFiles: BulkLogFile[]) => {
@@ -114,11 +110,19 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
   };
 
   const assignFileToFlight = (fileId: string, flightId: string | null, confidence: MatchConfidence = "manual") => {
+    if (flightId) {
+      const countOnFlight = assignments.filter((item) => item.flightId === flightId && item.fileId !== fileId).length;
+      if (countOnFlight >= MAX_TELEMETRY_CSV_FILES) {
+        showToast({
+          variant: "error",
+          message: `No máximo ${MAX_TELEMETRY_CSV_FILES} CSVs por voo.`,
+        });
+        return;
+      }
+    }
     setAssignments((current) => {
       const withoutFile = current.filter((item) => item.fileId !== fileId);
-      const withoutFlight =
-        flightId == null ? withoutFile : withoutFile.filter((item) => item.flightId !== flightId);
-      return [...withoutFlight, { fileId, flightId, confidence }];
+      return [...withoutFile, { fileId, flightId, confidence }];
     });
     setUnallocated((current) => current.filter((item) => item.fileId !== fileId));
   };
@@ -137,41 +141,56 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
 
   const handleImport = async () => {
     if (!user || user.role !== "admin") return;
-    const pairs = assignments.filter((item) => item.flightId);
-    if (!pairs.length) {
+    const byFlight = new Map<string, LogFileAssignment[]>();
+    for (const item of assignments) {
+      if (!item.flightId) continue;
+      const list = byFlight.get(item.flightId) ?? [];
+      list.push(item);
+      byFlight.set(item.flightId, list);
+    }
+    if (!byFlight.size) {
       showToast({ variant: "error", message: "Associe pelo menos um arquivo a um voo." });
       return;
     }
 
     setImporting(true);
-    let ok = 0;
-    let failed = 0;
+    let okFlights = 0;
+    let failedFlights = 0;
 
-    for (const pair of pairs) {
-      const file = fileById.get(pair.fileId);
-      if (!file || !pair.flightId) continue;
-      const text = await file.file.text();
+    for (const [flightId, pairs] of byFlight) {
+      const sortedPairs = [...pairs].sort((a, b) => {
+        const aMs = fileById.get(a.fileId)?.parsed?.localMs ?? 0;
+        const bMs = fileById.get(b.fileId)?.parsed?.localMs ?? 0;
+        return aMs - bMs;
+      });
+      const telemetryFiles = await Promise.all(
+        sortedPairs.map(async (pair) => {
+          const file = fileById.get(pair.fileId);
+          if (!file) throw new Error("Arquivo não encontrado.");
+          return { name: file.name, text: await file.file.text() };
+        }),
+      );
       const result = await attachFlightTelemetry({
-        flightId: pair.flightId,
+        flightId,
         actorUserId: user.id,
         actorRole: user.role,
-        telemetryFiles: [{ name: file.name, text }],
+        telemetryFiles,
       });
       if (result.error) {
-        failed += 1;
-        showToast({ variant: "error", message: `${file.name}: ${result.error.message}` });
+        failedFlights += 1;
+        showToast({ variant: "error", message: `Voo ${flightId.slice(0, 8)}…: ${result.error.message}` });
       } else {
-        ok += 1;
+        okFlights += 1;
       }
     }
 
     setImporting(false);
     showToast({
-      variant: failed ? "error" : "success",
-      message: `Importação concluída: ${ok} ok${failed ? `, ${failed} falha(s)` : ""}.`,
+      variant: failedFlights ? "error" : "success",
+      message: `Importação: ${okFlights} voo(s)${failedFlights ? `, ${failedFlights} falha(s)` : ""} (${readyFileCount} arquivo(s) mesclados).`,
     });
 
-    if (ok > 0) {
+    if (okFlights > 0) {
       setFiles([]);
       setAssignments([]);
       setUnallocated([]);
@@ -189,7 +208,8 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
         <div>
           <h2 className="text-sm font-semibold text-slate-100">Importação em massa</h2>
           <p className="mt-1 text-xs text-slate-500">
-            Associe logs Garmin aos voos do filtro atual. Padrão: log_AAAAMMDD_HHMMSS_ICAO (horário Zulu).
+            Vários CSVs podem ir para o mesmo voo (ex.: reinício do Garmin). Padrão: log_AAAAMMDD_HHMMSS_ICAO — segmentos
+            extras devem bater com uma perna da rota e cair na duração do voo.
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -248,39 +268,48 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
               </p>
               <div className="max-h-80 space-y-2 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/50 p-2">
                 {bulkPool.map((flight) => {
-                  const linked = assignmentByFlightId.get(flight.id);
-                  const linkedFile = linked ? fileById.get(linked.fileId) : null;
+                  const linked = assignmentsByFlightId.get(flight.id) ?? [];
+                  const linkedFiles = linked
+                    .map((item) => ({ assignment: item, file: fileById.get(item.fileId) }))
+                    .filter((entry): entry is { assignment: LogFileAssignment; file: BulkLogFile } => Boolean(entry.file));
+                  const bestConfidence = linkedFiles[0]?.assignment.confidence ?? "manual";
                   return (
                     <div
                       key={flight.id}
                       onDragOver={(e: DragEvent) => e.preventDefault()}
                       onDrop={() => handleDropOnFlight(flight.id)}
                       className={`rounded-lg border p-3 transition ${
-                        linkedFile && linked ? confidenceClass(linked.confidence) : "border-dashed border-slate-700 bg-slate-900/30"
+                        linkedFiles.length ? confidenceClass(bestConfidence) : "border-dashed border-slate-700 bg-slate-900/30"
                       }`}
                     >
                       <p className="text-sm font-medium text-slate-100">{flightLabel(flight)}</p>
                       <p className="mt-0.5 text-xs text-slate-500">
                         {flight.studentName} · {flight.instructorName || "Sem INVA"}
+                        {linkedFiles.length > 1 ? ` · ${linkedFiles.length} arquivos` : ""}
                       </p>
-                      {linkedFile ? (
-                        <div
-                          draggable
-                          onDragStart={() => setDragFileId(linkedFile.id)}
-                          onDragEnd={() => setDragFileId(null)}
-                          className="mt-2 flex items-center justify-between gap-2 rounded border border-slate-700/80 bg-slate-950/80 px-2 py-1.5"
-                        >
-                          <span className="min-w-0 truncate text-xs text-slate-200">{linkedFile.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => assignFileToFlight(linkedFile.id, null, "manual")}
-                            className="shrink-0 text-[10px] text-slate-400 hover:text-slate-200"
-                          >
-                            Remover
-                          </button>
+                      {linkedFiles.length ? (
+                        <div className="mt-2 space-y-1.5">
+                          {linkedFiles.map(({ file }) => (
+                            <div
+                              key={file.id}
+                              draggable
+                              onDragStart={() => setDragFileId(file.id)}
+                              onDragEnd={() => setDragFileId(null)}
+                              className="flex items-center justify-between gap-2 rounded border border-slate-700/80 bg-slate-950/80 px-2 py-1.5"
+                            >
+                              <span className="min-w-0 truncate text-xs text-slate-200">{file.name}</span>
+                              <button
+                                type="button"
+                                onClick={() => assignFileToFlight(file.id, null, "manual")}
+                                className="shrink-0 text-[10px] text-slate-400 hover:text-slate-200"
+                              >
+                                Remover
+                              </button>
+                            </div>
+                          ))}
                         </div>
                       ) : (
-                        <p className="mt-2 text-[11px] text-slate-500">Arraste um arquivo aqui</p>
+                        <p className="mt-2 text-[11px] text-slate-500">Arraste um ou mais arquivos aqui</p>
                       )}
                     </div>
                   );
@@ -338,14 +367,16 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
           ) : null}
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-3">
-            <p className="text-xs text-slate-500">{readyCount} associação(ões) pronta(s) para importar</p>
+            <p className="text-xs text-slate-500">
+              {readyFlightCount} voo(s), {readyFileCount} arquivo(s) prontos (mesclados por voo na importação)
+            </p>
             <button
               type="button"
-              disabled={!readyCount}
+              disabled={!readyFlightCount}
               onClick={() => void handleImport()}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
             >
-              Importar {readyCount} arquivo(s)
+              Importar {readyFlightCount} voo(s)
             </button>
           </div>
         </>

@@ -269,11 +269,36 @@ function buildActorOwnedPermissions(actorUserId: string) {
 }
 
 function canSetClientSidePermission(permission: string, actorUserId: string, actorRole: UserRole): boolean {
+  if (permission.includes('("any")')) return true;
   if (permission.includes(`("user:${actorUserId}")`)) return true;
   if (permission.includes('("users")') || permission.includes('("users/unverified")')) return true;
   if (actorRole === "admin" && permission.includes('("label:admin")')) return true;
   if (actorRole === "instrutor" && permission.includes('("label:instrutor")')) return true;
   return false;
+}
+
+/** Client sessions cannot assign permissions for other users (e.g. the linked student). */
+function filterClientSidePermissions(
+  permissions: string[],
+  actorUserId: string,
+  actorRole: UserRole,
+): string[] {
+  return Array.from(
+    new Set(permissions.filter((permission) => canSetClientSidePermission(permission, actorUserId, actorRole))),
+  );
+}
+
+function resolveClientFlightPermissions(
+  actorUserId: string,
+  actorRole: UserRole,
+  studentUserId?: string | null,
+  instructorUserId?: string | null,
+  existing?: string[],
+): string[] {
+  const full = existing?.length
+    ? mergeFlightDocumentPermissions(existing, actorUserId, actorRole, studentUserId, instructorUserId)
+    : buildFlightDocumentPermissions(actorUserId, actorRole, studentUserId, instructorUserId);
+  return filterClientSidePermissions(full, actorUserId, actorRole);
 }
 
 function buildFlightDocumentPermissions(
@@ -570,7 +595,7 @@ export async function insertFlight(payload: {
     }
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
-    const permissions = buildFlightDocumentPermissions(
+    const permissions = resolveClientFlightPermissions(
       payload.actorUserId,
       payload.actorRole,
       payload.studentUserId,
@@ -662,12 +687,12 @@ export async function updateFlight(id: string, payload: {
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);
-    const permissions = mergeFlightDocumentPermissions(
-      (current.$permissions as string[] | undefined) ?? [],
+    const permissions = resolveClientFlightPermissions(
       payload.actorUserId,
       payload.actorRole,
       payload.studentUserId,
       payload.instructorUserId,
+      (current.$permissions as string[] | undefined) ?? [],
     );
 
     let csvFileId: string | null = null;
