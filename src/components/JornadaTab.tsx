@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import { useAuth } from "../contexts/AuthContext";
+import { listAerodromes, type Aerodrome } from "../lib/aerodromesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, listSavedFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import {
@@ -49,6 +50,19 @@ type FormationState = {
   tracks: StudentTrainingTrack[];
   flights: Array<SavedFlightListItem & { trainingMissionIds: string[] }>;
   fullFlights: SavedFlightFull[];
+  loading: boolean;
+  error: string | null;
+};
+
+type VisitedAerodrome = Aerodrome & {
+  code: string;
+  x: number;
+  y: number;
+};
+
+type VisitedAerodromesState = {
+  points: VisitedAerodrome[];
+  missingCodes: string[];
   loading: boolean;
   error: string | null;
 };
@@ -169,6 +183,79 @@ function useJourneyMetrics(enabled: boolean): JourneyState {
       cancelled = true;
     };
   }, [configured, enabled, user]);
+
+  return state;
+}
+
+function projectBrazilPoint(latitude: number, longitude: number): { x: number; y: number } {
+  const x = ((longitude + 74) / 40) * 100;
+  const y = ((6 - latitude) / 40) * 100;
+  return {
+    x: Math.max(5, Math.min(95, x)),
+    y: Math.max(5, Math.min(95, y)),
+  };
+}
+
+function useVisitedAerodromes(codes: string[], enabled: boolean): VisitedAerodromesState {
+  const [state, setState] = useState<VisitedAerodromesState>({ points: [], missingCodes: [], loading: false, error: null });
+  const codesKey = useMemo(() => codes.map((code) => code.trim().toUpperCase()).filter(Boolean).sort().join("|"), [codes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const wantedCodes = codesKey.split("|").filter(Boolean);
+    if (!enabled || wantedCodes.length === 0) {
+      setState({ points: [], missingCodes: [], loading: false, error: null });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    async function load() {
+      setState((prev) => ({ ...prev, loading: true, error: null }));
+      try {
+        const aerodromes = await listAerodromes();
+        if (cancelled) return;
+        const byCode = new Map<string, Aerodrome>();
+        aerodromes.forEach((aerodrome) => {
+          [aerodrome.icao, aerodrome.ciad].filter(Boolean).forEach((code) => {
+            if (!byCode.has(code)) byCode.set(code, aerodrome);
+          });
+        });
+
+        const points: VisitedAerodrome[] = [];
+        const missingCodes: string[] = [];
+        wantedCodes.forEach((code) => {
+          const aerodrome = byCode.get(code);
+          const latitude = aerodrome?.latitudeGeoPoint;
+          const longitude = aerodrome?.longitudeGeoPoint;
+          if (!aerodrome || latitude == null || longitude == null) {
+            missingCodes.push(code);
+            return;
+          }
+          points.push({
+            ...aerodrome,
+            code,
+            ...projectBrazilPoint(latitude, longitude),
+          });
+        });
+        setState({ points, missingCodes, loading: false, error: null });
+      } catch (err) {
+        if (!cancelled) {
+          setState({
+            points: [],
+            missingCodes: wantedCodes,
+            loading: false,
+            error: err instanceof Error ? err.message : "Erro ao carregar aerodromos",
+          });
+        }
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [codesKey, enabled]);
 
   return state;
 }
@@ -435,6 +522,101 @@ function SectionCard({ title, subtitle, compact = false, children }: { title: st
       </div>
       {children}
     </section>
+  );
+}
+
+function BrazilVisitedMap({ state, totalAirports }: { state: VisitedAerodromesState; totalAirports: number }) {
+  const knownCount = state.points.length;
+  const pathPoints = state.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const topPlaces = state.points.slice(0, 8);
+
+  return (
+    <SectionCard title="Mapa da jornada" subtitle="Aerodromos visitados no Brasil.">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-center">
+        <div className="relative min-h-72 overflow-hidden rounded-2xl border border-sky-400/15 bg-[radial-gradient(circle_at_20%_18%,rgba(14,165,233,0.18),transparent_30%),linear-gradient(135deg,rgba(8,47,73,0.68),rgba(15,23,42,0.96)_55%,rgba(6,78,59,0.52))] p-3">
+          <div className="absolute left-4 top-4 z-10 rounded-xl border border-white/10 bg-[rgba(15,23,42,0.75)] px-3 py-2 shadow-lg shadow-slate-950/30">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-sky-300/90">Territorio explorado</p>
+            <p className="mt-0.5 text-2xl font-black leading-none text-white">{formatInteger(totalAirports)}</p>
+          </div>
+          <svg viewBox="0 0 100 100" role="img" aria-label="Mapa simplificado do Brasil com aerodromos visitados" className="h-72 w-full">
+            <defs>
+              <linearGradient id="journeyBrazilFill" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stopColor="#22c55e" stopOpacity="0.95" />
+                <stop offset="55%" stopColor="#14b8a6" stopOpacity="0.72" />
+                <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.58" />
+              </linearGradient>
+              <filter id="journeyPinGlow" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="1.6" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <path
+              d="M47 6 L56 9 L62 15 L72 18 L76 27 L83 33 L82 42 L88 51 L82 61 L75 68 L70 78 L59 83 L51 94 L43 88 L35 88 L27 81 L20 72 L16 61 L10 52 L16 43 L14 33 L22 27 L29 17 L39 14 Z"
+              fill="url(#journeyBrazilFill)"
+              stroke="#7dd3fc"
+              strokeWidth="1.4"
+              strokeLinejoin="round"
+              opacity="0.9"
+            />
+            <path
+              d="M47 6 L56 9 L62 15 L72 18 L76 27 L83 33 L82 42 L88 51 L82 61 L75 68 L70 78 L59 83 L51 94 L43 88 L35 88 L27 81 L20 72 L16 61 L10 52 L16 43 L14 33 L22 27 L29 17 L39 14 Z"
+              fill="none"
+              stroke="#ecfeff"
+              strokeOpacity="0.22"
+              strokeWidth="4"
+              strokeLinejoin="round"
+            />
+            {pathPoints && state.points.length > 1 ? (
+              <polyline points={pathPoints} fill="none" stroke="#facc15" strokeDasharray="2.2 2.4" strokeLinecap="round" strokeWidth="0.9" opacity="0.65" />
+            ) : null}
+            {state.points.map((point, index) => (
+              <g key={`${point.code}-${point.id}`} transform={`translate(${point.x} ${point.y})`} filter="url(#journeyPinGlow)">
+                <title>{[point.code, point.name, [point.municipality, point.uf].filter(Boolean).join("/")].filter(Boolean).join(" - ")}</title>
+                <circle r="3.2" fill="#facc15" stroke="#fff7ed" strokeWidth="1" />
+                <circle r="6.3" fill="none" stroke="#fde68a" strokeOpacity="0.24" strokeWidth="1.4" />
+                <text y="-5.7" textAnchor="middle" className="fill-white text-[4px] font-black">
+                  {index + 1}
+                </text>
+              </g>
+            ))}
+          </svg>
+        </div>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
+              <p className="text-2xl font-black text-emerald-300">{formatInteger(knownCount)}</p>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-emerald-400/80">No mapa</p>
+            </div>
+            <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-3">
+              <p className="text-2xl font-black text-amber-300">{formatInteger(state.missingCodes.length)}</p>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-amber-400/80">Sem posicao</p>
+            </div>
+          </div>
+          {state.loading ? (
+            <Skeleton className="h-32 rounded-2xl" />
+          ) : state.error ? (
+            <p className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-sm text-amber-300">{state.error}</p>
+          ) : topPlaces.length > 0 ? (
+            <div className="space-y-2">
+              {topPlaces.map((point) => (
+                <div key={`place-${point.code}-${point.id}`} className="rounded-xl border border-slate-700/70 bg-slate-950/35 px-3 py-2">
+                  <p className="text-sm font-black text-slate-100">{point.code}</p>
+                  <p className="line-clamp-1 text-xs text-slate-400">{[point.name, point.municipality, point.uf].filter(Boolean).join(" - ")}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-xl border border-dashed border-slate-700/80 bg-slate-950/30 p-3 text-sm text-slate-500">
+              Coordenadas ainda nao encontradas para os aerodromos visitados.
+            </p>
+          )}
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -963,6 +1145,7 @@ export function JornadaTab() {
   const relationshipLabel = user?.role === "instrutor" ? "Alunos" : "Instrutores";
   const relationshipValue = user?.role === "instrutor" ? metrics.totals.students : metrics.totals.instructors;
   const evolutionLoading = !evolutionEnabled || loading;
+  const visitedAerodromes = useVisitedAerodromes(metrics.airports, section === "evolucao" && metrics.airports.length > 0);
 
   useEffect(() => {
     if (section === "evolucao") {
@@ -1021,6 +1204,8 @@ export function JornadaTab() {
           <p className="text-sm text-slate-500">Nenhum aeródromo registrado ainda.</p>
         )}
       </SectionCard>
+
+      <BrazilVisitedMap state={visitedAerodromes} totalAirports={metrics.totals.airports} />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <SummaryDash

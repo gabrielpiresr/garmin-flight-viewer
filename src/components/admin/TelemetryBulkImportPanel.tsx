@@ -352,10 +352,10 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
 
           {unallocated.length ? (
             <div className="rounded-lg border border-rose-500/30 bg-rose-950/15 p-3">
-              <p className="text-xs font-semibold text-rose-200">Não alocados automaticamente ({unallocated.length})</p>
+              <p className="text-xs font-semibold text-rose-400">Não alocados automaticamente ({unallocated.length})</p>
               <ul className="mt-2 space-y-1">
                 {unallocated.map((item) => (
-                  <li key={item.fileId} className="text-xs text-rose-100/90">
+                  <li key={item.fileId} className="text-xs text-rose-400">
                     <span className="font-medium">{item.name}</span>
                     {" — "}
                     {unallocatedReasonLabel(item.reason)}

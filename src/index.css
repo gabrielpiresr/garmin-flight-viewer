@@ -92,6 +92,20 @@
 
   --color-purple-300: #7e22ce;
   --color-purple-400: #9333ea;
+
+  --color-pink-300: #be185d;
+  --color-pink-400: #db2777;
+  --color-pink-500: #be185d;
+
+  --color-fuchsia-300: #a21caf;
+  --color-fuchsia-400: #c026d3;
+  --color-fuchsia-500: #a21caf;
+
+  --color-rose-300: #be123c;
+  --color-rose-400: #e11d48;
+
+  --color-teal-300: #0f766e;
+  --color-teal-400: #0d9488;
 }
 
 html {

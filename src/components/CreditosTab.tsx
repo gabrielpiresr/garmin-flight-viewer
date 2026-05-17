@@ -54,7 +54,7 @@ export function CreditosTab() {
   if (error) {
     return (
       <section className="rounded-2xl border border-red-500/30 bg-red-950/20 p-5">
-        <p className="text-sm text-red-200">{error}</p>
+        <p className="text-sm text-red-400">{error}</p>
       </section>
     );
   }
