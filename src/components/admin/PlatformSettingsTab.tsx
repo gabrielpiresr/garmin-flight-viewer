@@ -751,13 +751,14 @@ function RulesSettingsPanel() {
 
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cores da plataforma</p>
+              <p className="mt-1 text-[11px] text-slate-600">
+                Fundo e cards são definidos automaticamente pelo modo de cor escolhido abaixo.
+              </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {(
                   [
                     ["primaryColor", "Cor principal"],
                     ["accentColor", "Cor de destaque"],
-                    ["backgroundColor", "Fundo"],
-                    ["surfaceColor", "Cards e menus"],
                   ] as [string, string][]
                 ).map(([key, label]) => (
                   <label key={key} className="text-xs text-slate-400">
@@ -847,30 +848,37 @@ function RulesSettingsPanel() {
             </div>
           </div>
 
-          <div
-            className="rounded-2xl border p-4"
-            style={{
-              background: form.theme.backgroundColor,
-              borderColor: form.theme.primaryColor,
-              color: "#e2e8f0",
-            }}
-          >
-            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: form.theme.accentColor }}>
-              Preview do aluno
-            </p>
-            <div className="mt-3 rounded-xl p-3" style={{ background: form.theme.surfaceColor }}>
-              <div className="mb-3 h-2 w-20 rounded-full" style={{ background: form.theme.primaryColor }} />
-              <p className="text-sm font-semibold">Portal do aluno</p>
-              <p className="mt-1 text-xs text-slate-400">Navegação, cards e ações principais usarão essas cores.</p>
-              <button
-                type="button"
-                className="mt-4 rounded-lg px-4 py-2 text-xs font-semibold"
-                style={{ background: form.theme.primaryColor, color: "#ffffff" }}
+          {(() => {
+            const isLight = form.theme.colorMode === "light";
+            const previewBg = isLight ? "#f8fafc" : "#020617";
+            const previewPanel = isLight ? "#ffffff" : "#0f172a";
+            const previewText = isLight ? "#0f172a" : "#e2e8f0";
+            const previewMuted = isLight ? "#475569" : "#94a3b8";
+            return (
+              <div
+                className="rounded-2xl border p-4"
+                style={{ background: previewBg, borderColor: form.theme.primaryColor, color: previewText }}
               >
-                Enviar planejamento
-              </button>
-            </div>
-          </div>
+                <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: form.theme.accentColor }}>
+                  Preview do aluno
+                </p>
+                <div className="mt-3 rounded-xl p-3" style={{ background: previewPanel }}>
+                  <div className="mb-3 h-2 w-20 rounded-full" style={{ background: form.theme.primaryColor }} />
+                  <p className="text-sm font-semibold" style={{ color: previewText }}>Portal do aluno</p>
+                  <p className="mt-1 text-xs" style={{ color: previewMuted }}>
+                    Navegação, cards e ações principais usarão essas cores.
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-4 rounded-lg px-4 py-2 text-xs font-semibold"
+                    style={{ background: form.theme.primaryColor, color: "#ffffff" }}
+                  >
+                    Enviar planejamento
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

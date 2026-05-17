@@ -104,11 +104,12 @@ export function applySchoolTheme(
   const theme = "theme" in rules ? rules.theme : rules;
   const root = document.documentElement;
 
-  // Existing color vars
+  // Brand colors (primary/accent are always from admin config)
   root.style.setProperty("--school-primary", theme.primaryColor);
   root.style.setProperty("--school-accent", theme.accentColor);
-  root.style.setProperty("--school-bg", theme.backgroundColor);
-  root.style.setProperty("--school-surface", theme.surfaceColor);
+  // --school-bg and --school-surface are intentionally NOT set here:
+  // they are derived automatically from [data-theme] in index.css so that
+  // switching colorMode correctly changes background/surface colors.
 
   // Color mode (dark / light) — triggers CSS [data-theme] overrides
   root.dataset.theme = theme.colorMode === "light" ? "light" : "dark";
