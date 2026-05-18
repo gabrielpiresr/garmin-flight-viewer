@@ -867,43 +867,69 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     <div className="space-y-2">
       <div
         ref={containerRef}
-        className={`relative aspect-video w-full overflow-hidden rounded-lg border border-slate-800 bg-black ${
-          isPlayerFullscreen ? "[&_video]:max-h-full [&_video]:max-w-full" : ""
-        }`}
+        className="relative aspect-video w-full rounded-lg border border-slate-800 bg-black flex items-center justify-center overflow-hidden"
       >
-        <video
-          ref={videoRef}
-          src={video.file_url}
-          controls
-          preload="metadata"
-          playsInline
-          className="h-full w-full bg-black"
-        />
-        {hasTelemetry && (
-          <div className="pointer-events-none absolute inset-0">
-            <TelemetryBrandMark brand={brand} compact={overlayStyle === "compact"} />
-            {overlayStyle === "hud" ? (
-              <HudTelemetryOverlay
-                airspeedArcs={airspeedArcs}
-                altitudeChartRef={altitudeChartRef}
-                canvasRef={canvasRef}
-                currentPoint={currentPoint}
-                enabledWidgets={enabledWidgets}
-                speedChartRef={speedChartRef}
-                verticalSpeedFpm={verticalSpeedFpm}
-              />
-            ) : (
-              <CompactTelemetryOverlay
-                airspeedArcs={airspeedArcs}
-                altitudeChartRef={altitudeChartRef}
-                canvasRef={canvasRef}
-                currentPoint={currentPoint}
-                enabledWidgets={enabledWidgets}
-                speedChartRef={speedChartRef}
-                verticalSpeedFpm={verticalSpeedFpm}
-              />
+        {orientation === "vertical" ? (
+          <div className="relative h-full aspect-[9/16] overflow-hidden">
+            <video
+              ref={videoRef}
+              src={video.file_url}
+              controls
+              preload="metadata"
+              playsInline
+              className="h-full w-full object-cover bg-black"
+            />
+            {hasTelemetry && (
+              <div className="pointer-events-none absolute inset-0">
+                <TelemetryBrandMark brand={brand} compact />
+                <VerticalCompactOverlay
+                  altitudeChartRef={altitudeChartRef}
+                  canvasRef={canvasRef}
+                  currentPoint={currentPoint}
+                  enabledWidgets={enabledWidgets}
+                  speedChartRef={speedChartRef}
+                  verticalSpeedFpm={verticalSpeedFpm}
+                />
+              </div>
             )}
           </div>
+        ) : (
+          <>
+            <video
+              ref={videoRef}
+              src={video.file_url}
+              controls
+              preload="metadata"
+              playsInline
+              className="h-full w-full bg-black"
+            />
+            {hasTelemetry && (
+              <div className="pointer-events-none absolute inset-0">
+                <TelemetryBrandMark brand={brand} compact={overlayStyle === "compact"} />
+                {overlayStyle === "hud" ? (
+                  <HudTelemetryOverlay
+                    airspeedArcs={airspeedArcs}
+                    altitudeChartRef={altitudeChartRef}
+                    canvasRef={canvasRef}
+                    currentPoint={currentPoint}
+                    enabledWidgets={enabledWidgets}
+                    speedChartRef={speedChartRef}
+                    verticalSpeedFpm={verticalSpeedFpm}
+                  />
+                ) : (
+                  <CompactTelemetryOverlay
+                    airspeedArcs={airspeedArcs}
+                    altitudeChartRef={altitudeChartRef}
+                    canvasRef={canvasRef}
+                    currentPoint={currentPoint}
+                    enabledWidgets={enabledWidgets}
+                    speedChartRef={speedChartRef}
+                    verticalSpeedFpm={verticalSpeedFpm}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -915,12 +941,26 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
                 <button
                   key={style}
                   type="button"
-                  onClick={() => setOverlayStyle(style)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium ${
-                    overlayStyle === style ? "bg-emerald-500/20 text-emerald-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                  onClick={() => { setOverlayStyle(style); }}
+                  disabled={orientation === "vertical"}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                    overlayStyle === style && orientation !== "vertical" ? "bg-emerald-500/20 text-emerald-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
                   }`}
                 >
                   {style === "hud" ? "HUD" : "Compacto"}
+                </button>
+              ))}
+              <span className="self-center text-slate-700">|</span>
+              {(["horizontal", "vertical"] as const).map((o) => (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => setOrientation(o)}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                    orientation === o ? "bg-violet-500/20 text-violet-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  {o === "horizontal" ? "↔ Horiz." : "↕ Vertical"}
                 </button>
               ))}
             </div>
@@ -951,8 +991,51 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           </button>
         </div>
       )}
+
+      {/* Seleção de trecho */}
+      <div className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 p-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-slate-500">Trecho:</span>
+          <button
+            type="button"
+            onClick={() => setTrimStartSec(currentTimeSec)}
+            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
+            title="Marcar tempo atual como início"
+          >
+            ✂ Início{trimStartSec !== null ? ` ${formatDurationSec(trimStartSec)}` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTrimEndSec(currentTimeSec)}
+            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
+            title="Marcar tempo atual como fim"
+          >
+            ✂ Fim{trimEndSec !== null ? ` ${formatDurationSec(trimEndSec)}` : ""}
+          </button>
+          {(trimStartSec !== null || trimEndSec !== null) && (
+            <button
+              type="button"
+              onClick={() => { setTrimStartSec(null); setTrimEndSec(null); }}
+              className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-700 hover:text-red-400"
+            >
+              × Limpar
+            </button>
+          )}
+        </div>
+        {trimStartSec !== null && trimEndSec !== null && trimEndSec > trimStartSec && (
+          <p className="text-[10px] text-slate-500">
+            Trecho selecionado: {formatDurationSec(trimStartSec)} → {formatDurationSec(trimEndSec)}{" "}
+            ({formatDurationSec(trimEndSec - trimStartSec)})
+            {hasTelemetry ? " · use 'Baixar com widgets' para baixar o trecho" : ""}
+          </p>
+        )}
+        {trimStartSec !== null && trimEndSec !== null && trimEndSec <= trimStartSec && (
+          <p className="text-[10px] text-red-400">O fim deve ser depois do início.</p>
+        )}
+      </div>
+
       {exportError && (
-        <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">{exportError}</p>
+        <HelperOfflinePanel error={exportError} />
       )}
       {video.telemetry_source === "gopro" && !video.telemetry_present && (
         <p className="rounded-md border border-amber-500/30 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200">
