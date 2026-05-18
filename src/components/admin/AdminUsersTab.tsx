@@ -19,9 +19,11 @@ import type { InstructorPreferenceLevel, SchedulePeriod } from "../../types/sche
 import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlannedFlight } from "../../types/adminUsers";
 import type { TrainingTrack } from "../../types/trainingTrack";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
+import { StudentObservationsSection } from "./StudentObservationsSection";
 import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
+import { useAuth } from "../../contexts/AuthContext";
 
 const PAGE_SIZE = 25;
 
@@ -186,6 +188,7 @@ function IntentionCard({ plan }: { plan: AdminUserPlannedFlight }) {
 
 export function AdminUsersTab() {
   const { showToast } = useToast();
+  const { user: authUser } = useAuth();
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -419,7 +422,7 @@ export function AdminUsersTab() {
   const canGoNext = offset + PAGE_SIZE < total;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5">
+    <div className="w-full space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Usuários</h2>
@@ -735,7 +738,15 @@ export function AdminUsersTab() {
                     <AdminUserCreditsSection
                       studentUserId={selectedDetail.userId}
                       studentName={displayName(selectedDetail)}
+                      anacCode={selectedDetail.profile.anacCode || "-"}
                     />
+
+                    {authUser ? (
+                      <StudentObservationsSection
+                        studentUserId={selectedDetail.userId}
+                        currentUser={{ id: authUser.id, name: authUser.name || authUser.email, role: "admin" }}
+                      />
+                    ) : null}
                   </>
                 ) : null}
 

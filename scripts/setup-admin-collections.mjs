@@ -27,6 +27,13 @@ const AIRCRAFTS_PERMS = [
   Permission.read(Role.users()),
 ];
 
+const AIRCRAFT_MODELS_PERMS = [
+  ...ADMIN_PERMS,
+  Permission.read(Role.label("instrutor")),
+  Permission.read(Role.label("aluno")),
+  Permission.read(Role.users()),
+];
+
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -73,9 +80,22 @@ async function idx(colId, key, attributes, orders = ["ASC"]) {
   }
 }
 
+async function ensureCollectionWithPerms(name, permissions) {
+  const list = await db.listCollections(DATABASE_ID);
+  const found = list.collections.find((c) => c.name === name);
+  if (found) {
+    await db.updateCollection(DATABASE_ID, found.$id, name, permissions, true, true);
+    console.log(`  • Collection "${name}" already exists (${found.$id}) — permissions updated`);
+    return found;
+  }
+  const col = await db.createCollection(DATABASE_ID, ID.unique(), name, permissions, true, true);
+  console.log(`  ✓ Created collection "${name}" (${col.$id})`);
+  return col;
+}
+
 async function setupAircraftModels() {
   console.log("\n[1/8] aircraft_models...");
-  const col = await ensureCollection("aircraft_models");
+  const col = await ensureCollectionWithPerms("aircraft_models", AIRCRAFT_MODELS_PERMS);
   const id = col.$id;
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "name", 128, true), "name");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "manufacturer", 128, true), "manufacturer");
@@ -222,6 +242,37 @@ async function setupOperationalSlots() {
   return id;
 }
 
+const OBS_PERMS = [
+  Permission.read(Role.label("admin")),
+  Permission.create(Role.label("admin")),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
+  Permission.read(Role.label("instrutor")),
+  Permission.create(Role.label("instrutor")),
+];
+
+async function setupStudentObservations() {
+  console.log("\n[9/9] student_observations...");
+  const list = await db.listCollections(DATABASE_ID);
+  const found = list.collections.find((c) => c.name === "student_observations");
+  let col;
+  if (found) {
+    console.log(`  • Collection "student_observations" already exists (${found.$id})`);
+    col = found;
+  } else {
+    col = await db.createCollection(DATABASE_ID, ID.unique(), "student_observations", OBS_PERMS, true, true);
+    console.log(`  ✓ Created collection "student_observations" (${col.$id})`);
+  }
+  const id = col.$id;
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "student_user_id", 36, true), "student_user_id");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "author_user_id", 36, true), "author_user_id");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "author_name", 128, true), "author_name");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "author_role", 20, true), "author_role");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "content", 2048, true), "content");
+  await idx(id, "obs_student_idx", ["student_user_id"]);
+  return id;
+}
+
 async function main() {
   console.log("=== Appwrite Admin Collections Setup ===");
   console.log(`Database: ${DATABASE_ID}\n`);
@@ -234,6 +285,7 @@ async function main() {
   const groupCapsId = await setupGroupCaps();
   const groupCapDaysId = await setupGroupCapDays();
   const slotsId = await setupOperationalSlots();
+  const obsId = await setupStudentObservations();
 
   console.log("\n=== Setup Complete ===");
   console.log("Add these to your .env.local:\n");
@@ -246,6 +298,7 @@ async function main() {
   console.log(`VITE_APPWRITE_GROUP_CAPS_COL_ID=${groupCapsId}`);
   console.log(`VITE_APPWRITE_GROUP_CAP_DAYS_COL_ID=${groupCapDaysId}`);
   console.log(`VITE_APPWRITE_OP_SLOTS_COL_ID=${slotsId}`);
+  console.log(`VITE_APPWRITE_STUDENT_OBSERVATIONS_COL_ID=${obsId}`);
 }
 
 main().catch((error) => {

@@ -966,6 +966,45 @@ export function TelemetryAlertsTab() {
   );
 }
 
+type SortDirection = "asc" | "desc";
+type AlertColumnKey = "ruleName" | "student" | "instructor" | "aircraft" | "model" | "flightDate" | "matchedAt" | "severity";
+
+type AlertColumnDef = {
+  key: AlertColumnKey;
+  label: string;
+  sortable: boolean;
+  sortValue: (alert: FlightTelemetryAlertDoc, profileMap: AlertProfileMap, modelNameById: Map<string, string>) => string | number | null;
+};
+
+const ALERT_COLUMNS: AlertColumnDef[] = [
+  { key: "ruleName",   label: "Alerta",     sortable: true,  sortValue: (a) => a.ruleName },
+  { key: "student",    label: "Aluno",      sortable: true,  sortValue: (a, pm) => formatPerson(pm, a.studentUserId, "") },
+  { key: "instructor", label: "INVA",       sortable: true,  sortValue: (a, pm) => formatPerson(pm, a.instructorUserId, "") },
+  { key: "aircraft",   label: "Avião",      sortable: true,  sortValue: (a) => a.aircraftIdent ?? "" },
+  { key: "model",      label: "Modelo",     sortable: true,  sortValue: (a, _pm, mnb) => mnb.get(a.modelId) ?? "" },
+  { key: "flightDate", label: "Data",       sortable: true,  sortValue: (a) => a.flightDate ?? "" },
+  { key: "matchedAt",  label: "Horário",    sortable: true,  sortValue: (a) => a.matchedAt ?? "" },
+  { key: "ruleName",   label: "Parâmetros", sortable: false, sortValue: () => null },
+  { key: "severity",   label: "Gravidade",  sortable: true,  sortValue: (a) => a.severity },
+];
+
+function sortAlertRows(
+  rows: FlightTelemetryAlertDoc[],
+  column: AlertColumnDef | undefined,
+  direction: SortDirection,
+  profileMap: AlertProfileMap,
+  modelNameById: Map<string, string>,
+): FlightTelemetryAlertDoc[] {
+  if (!column) return rows;
+  const mul = direction === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = column.sortValue(a, profileMap, modelNameById);
+    const bv = column.sortValue(b, profileMap, modelNameById);
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * mul;
+    return String(av ?? "").localeCompare(String(bv ?? ""), "pt-BR", { numeric: true }) * mul;
+  });
+}
+
 function TriggeredTelemetryAlertsPanel({
   alerts,
   filters,
@@ -997,7 +1036,23 @@ function TriggeredTelemetryAlertsPanel({
   profileMap: AlertProfileMap;
   totalCount: number;
 }) {
-  const modelNameById = new Map(models.map((model) => [model.id, model.name]));
+  const modelNameById = useMemo(() => new Map(models.map((model) => [model.id, model.name])), [models]);
+
+  const [sortKey, setSortKey] = useState<AlertColumnKey>("flightDate");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+
+  function handleSort(col: AlertColumnDef) {
+    if (!col.sortable) return;
+    if (sortKey === col.key) setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(col.key); setSortDirection("asc"); }
+  }
+
+  const sortColumn = useMemo(() => ALERT_COLUMNS.find((c) => c.key === sortKey), [sortKey]);
+  const sortedAlerts = useMemo(
+    () => sortAlertRows(alerts, sortColumn, sortDirection, profileMap, modelNameById),
+    [alerts, sortColumn, sortDirection, profileMap, modelNameById],
+  );
+
   const hasActiveFilters =
     Boolean(filters.fromDate) ||
     Boolean(filters.toDate) ||
@@ -1087,19 +1142,27 @@ function TriggeredTelemetryAlertsPanel({
         <div className="overflow-x-auto rounded border border-slate-800 bg-slate-900/30">
           <div className="min-w-[1320px]">
             <div className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] gap-3 border-b border-slate-800 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-              <span>Alerta</span>
-              <span>Aluno</span>
-              <span>INVA</span>
-              <span>Avião</span>
-              <span>Modelo</span>
-              <span>Data</span>
-              <span>Horário</span>
-              <span>Parâmetros</span>
-              <span>Gravidade</span>
+              {ALERT_COLUMNS.map((col) =>
+                col.sortable ? (
+                  <button
+                    key={col.label}
+                    type="button"
+                    onClick={() => handleSort(col)}
+                    className="flex items-center gap-1 text-left hover:text-slate-200"
+                  >
+                    <span>{col.label}</span>
+                    {sortKey === col.key
+                      ? <span className="text-emerald-300">{sortDirection === "asc" ? "↑" : "↓"}</span>
+                      : <span className="text-slate-700">↕</span>}
+                  </button>
+                ) : (
+                  <span key={col.label}>{col.label}</span>
+                )
+              )}
               <span>Ação</span>
             </div>
             <div className="divide-y divide-slate-800">
-              {alerts.map((alert) => (
+              {sortedAlerts.map((alert) => (
                 <div
                   key={alert.id}
                   className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] items-center gap-3 px-4 py-2.5 text-sm text-slate-300 transition hover:bg-slate-800/40"

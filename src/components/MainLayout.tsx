@@ -8,6 +8,7 @@ import { AlunoProfileDashboard } from "./AlunoProfileDashboard";
 import { CreditosTab } from "./CreditosTab";
 import { JornadaTab } from "./JornadaTab";
 import { ManobrasTab } from "./ManobrasTab";
+import { ManuaisTab } from "./ManuaisTab";
 import { MeusVoosTab } from "./MeusVoosTab";
 import { NoticeFeed } from "./NoticeFeed";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
@@ -91,7 +92,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: "manuais",
     label: "Manuais",
-    sublabel: "Em breve",
+    sublabel: "Materiais e documentos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
@@ -131,15 +132,6 @@ const SECTION_ROUTES = [
   { id: "manobras", path: "/aluno/manobras" },
   { id: "perfil", path: "/aluno/perfil" },
 ] satisfies readonly TabRoute<Section>[];
-
-function EmptySection({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-10 text-center md:p-12">
-      <p className="text-base font-medium text-slate-300">{title}</p>
-      <p className="mt-1 text-sm text-slate-500">{description}</p>
-    </div>
-  );
-}
 
 export function MainLayout() {
   const { user, signOut } = useAuth();
@@ -291,10 +283,7 @@ export function MainLayout() {
           )}
           {openedSections.has("manuais") && (
             <div hidden={section !== "manuais"}>
-              <EmptySection
-                title="Manuais em breve"
-                description="Os materiais de consulta ficarão disponíveis aqui quando forem publicados."
-              />
+              <ManuaisTab />
             </div>
           )}
           {openedSections.has("manobras") && (

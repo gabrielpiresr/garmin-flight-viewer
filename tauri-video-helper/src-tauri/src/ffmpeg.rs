@@ -5,11 +5,12 @@ use tokio::process::Command;
 use tracing::{error, info};
 
 pub fn find_ffmpeg(resource_dir: &Path) -> Option<PathBuf> {
-    let bundled = resource_dir.join("ffmpeg.exe");
-    if bundled.exists() {
-        return Some(bundled);
+    for name in ffmpeg_binary_names("ffmpeg") {
+        let bundled = resource_dir.join(name);
+        if bundled.exists() {
+            return Some(bundled);
+        }
     }
-    // Fallback para PATH
     if which_in_path("ffmpeg") {
         return Some(PathBuf::from("ffmpeg"));
     }
@@ -17,14 +18,24 @@ pub fn find_ffmpeg(resource_dir: &Path) -> Option<PathBuf> {
 }
 
 pub fn find_ffprobe(resource_dir: &Path) -> Option<PathBuf> {
-    let bundled = resource_dir.join("ffprobe.exe");
-    if bundled.exists() {
-        return Some(bundled);
+    for name in ffmpeg_binary_names("ffprobe") {
+        let bundled = resource_dir.join(name);
+        if bundled.exists() {
+            return Some(bundled);
+        }
     }
     if which_in_path("ffprobe") {
         return Some(PathBuf::from("ffprobe"));
     }
     None
+}
+
+fn ffmpeg_binary_names(base: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![format!("{base}.exe")]
+    } else {
+        vec![base.to_string()]
+    }
 }
 
 fn which_in_path(name: &str) -> bool {

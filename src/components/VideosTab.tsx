@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { account } from "../lib/appwrite";
 import { Skeleton } from "./ui/Skeleton";
@@ -10,14 +10,40 @@ import {
   type FlightVideo,
 } from "../lib/flightVideosDb";
 import { getWorkerConfig, isVideoStorageConfigured } from "../lib/videoStorage";
+import { getAircraftByRegistration } from "../lib/aircraftDb";
+import { getModelById } from "../lib/aircraftModelsDb";
+import { SCHOOL_ID } from "../lib/appwrite";
+import { getSavedFlight } from "../lib/flightsDb";
+import {
+  parseAvailableWidgets,
+  parseVideoTelemetryJson,
+  pointAtVideoTime,
+  verticalSpeedFpmAtTime,
+  type AirspeedArcLimits,
+  type VideoTelemetryPoint,
+  type VideoTelemetryWidget,
+} from "../lib/videoTelemetry";
+import {
+  buildVideoRouteMap,
+  drawVideoRouteMapBase,
+  drawVideoRouteMapMarker,
+  type VideoRouteMapData,
+} from "../lib/videoRouteMap";
+import type { AircraftModel } from "../types/admin";
+import {
+  CompactTelemetryOverlay,
+  drawTelemetryChart,
+  HudTelemetryOverlay,
+  TelemetryBrandMark,
+  type TelemetryOverlayStyle,
+} from "./VideoTelemetryOverlay";
 
 const HELPER_URL = "http://localhost:7842";
 
 type HelperStatus = "checking" | "online" | "offline";
-
 type SelectedFile = { name: string; file: File };
 
-type ProcessStage = "concat" | "watermark" | "compress" | "upload" | "done" | "error";
+type ProcessStage = "telemetry-detect" | "concat" | "watermark" | "compress" | "upload" | "done" | "error";
 
 type ProgressPayload = {
   stage: ProcessStage;
@@ -26,9 +52,13 @@ type ProgressPayload = {
   file_url?: string;
   file_size?: number;
   duration_sec?: number;
+  telemetry_present?: boolean;
+  telemetry_source?: string;
+  available_widgets?: string[];
 };
 
 const STAGE_LABELS: Record<ProcessStage, string> = {
+  "telemetry-detect": "Procurando telemetria GPS...",
   concat: "Concatenando vídeos…",
   watermark: "Aplicando watermark…",
   compress: "Compactando…",
@@ -54,6 +84,24 @@ function formatDurationSec(sec: number): string {
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function isVideoUploadFile(name: string): boolean {
+  return /\.(mp4|mov|avi|mkv|mts|m2ts|webm)$/i.test(name);
+}
+
+function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
+  try {
+    const raw = window.localStorage.getItem("gfv:emailBrandSettings");
+    if (!raw) return { schoolName: "Escola", logoUrl: "" };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      schoolName: typeof parsed.schoolName === "string" && parsed.schoolName.trim() ? parsed.schoolName : "Escola",
+      logoUrl: typeof parsed.logoUrl === "string" ? parsed.logoUrl : "",
+    };
+  } catch {
+    return { schoolName: "Escola", logoUrl: "" };
+  }
 }
 
 export function VideosTab({ flightId }: { flightId: string | undefined }) {
@@ -152,6 +200,10 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 
   const handleGenerate = async () => {
     if (!flightId || !user || selectedFiles.length === 0) return;
+    if (!selectedFiles.some((item) => isVideoUploadFile(item.name))) {
+      setProcessingError("Selecione pelo menos um arquivo de video. O SRT deve acompanhar o MP4/MOV, nao substituir o video.");
+      return;
+    }
 
     const workerConfig = getWorkerConfig();
     if (!workerConfig) {
@@ -167,7 +219,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     const { id: docId, error: docError } = await createFlightVideoDoc({
       flightId,
       uploadedBy: user.id,
-      originalFilesCount: selectedFiles.length,
+      originalFilesCount: selectedFiles.filter((item) => isVideoUploadFile(item.name)).length,
     });
     if (docError || !docId) {
       setProcessingError(docError?.message ?? "Erro ao criar registro do vídeo");
@@ -342,7 +394,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept="video/*,.mp4,.mov,.avi,.mkv,.mts,.m2ts"
+            accept="video/*,.mp4,.mov,.avi,.mkv,.mts,.m2ts,.srt"
             className="hidden"
             onChange={handleFilesSelected}
           />
@@ -607,6 +659,324 @@ function ProcessingProgress({
   );
 }
 
+function toKt(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  return Number(value);
+}
+
+function modelToAirspeedArcs(model: AircraftModel | null): AirspeedArcLimits | null {
+  if (!model) return null;
+  const arcs: AirspeedArcLimits = {
+    whiteMin: toKt(model.white_arc_min_kt),
+    whiteMax: toKt(model.white_arc_max_kt),
+    greenMin: toKt(model.green_arc_min_kt),
+    greenMax: toKt(model.green_arc_max_kt),
+    yellowMin: toKt(model.yellow_arc_min_kt),
+    yellowMax: toKt(model.yellow_arc_max_kt),
+    vne: toKt(model.vne_kt),
+  };
+  const hasArc = Object.values(arcs).some((value) => value != null);
+  return hasArc ? arcs : null;
+}
+
+function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const altitudeChartRef = useRef<HTMLCanvasElement>(null);
+  const speedChartRef = useRef<HTMLCanvasElement>(null);
+  const points = useMemo(() => parseVideoTelemetryJson(video.telemetry_json), [video.telemetry_json]);
+  const available = useMemo(() => expandAvailableTelemetryWidgets(parseAvailableWidgets(video.available_widgets), points), [points, video.available_widgets]);
+  const defaultWidgets = useMemo(() => available.filter((w) => w !== "route").slice(0, 4), [available]);
+  const [enabledWidgets, setEnabledWidgets] = useState<VideoTelemetryWidget[]>(defaultWidgets);
+  const [overlayStyle, setOverlayStyle] = useState<TelemetryOverlayStyle>("hud");
+  const [currentPoint, setCurrentPoint] = useState<VideoTelemetryPoint | null>(null);
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [airspeedArcs, setAirspeedArcs] = useState<AirspeedArcLimits | null>(null);
+  const [routeMap, setRouteMap] = useState<VideoRouteMapData | null>(null);
+  const [isPlayerFullscreen, setIsPlayerFullscreen] = useState(false);
+  const [trimStartSec, setTrimStartSec] = useState<number | null>(null);
+  const [trimEndSec, setTrimEndSec] = useState<number | null>(null);
+  const [orientation, setOrientation] = useState<"horizontal" | "vertical">("horizontal");
+  const brand = useMemo(() => getCachedVideoBrand(), []);
+
+  const verticalSpeedFpm = useMemo(
+    () => verticalSpeedFpmAtTime(points, currentTimeSec),
+    [points, currentTimeSec],
+  );
+
+  useEffect(() => {
+    setEnabledWidgets(defaultWidgets);
+  }, [defaultWidgets, video.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const flight = await getSavedFlight(video.flight_id);
+      if (cancelled || !flight.data?.aircraft_ident) {
+        if (!cancelled) setAirspeedArcs(null);
+        return;
+      }
+      const aircraft = await getAircraftByRegistration(flight.data.aircraft_ident, SCHOOL_ID ?? "");
+      if (cancelled || !aircraft?.model_id) {
+        if (!cancelled) setAirspeedArcs(null);
+        return;
+      }
+      const model = await getModelById(aircraft.model_id);
+      if (cancelled) return;
+      setAirspeedArcs(modelToAirspeedArcs(model));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [video.flight_id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (points.length < 2) {
+      setRouteMap(null);
+      return;
+    }
+    void buildVideoRouteMap(points).then((map) => {
+      if (!cancelled) setRouteMap(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [points]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || points.length === 0) return;
+    const update = () => {
+      setCurrentPoint(pointAtVideoTime(points, el.currentTime));
+      setCurrentTimeSec(el.currentTime);
+    };
+    update();
+    el.addEventListener("timeupdate", update);
+    el.addEventListener("seeked", update);
+    return () => {
+      el.removeEventListener("timeupdate", update);
+      el.removeEventListener("seeked", update);
+    };
+  }, [points, video.id]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    drawVideoRouteMapBase(canvas, routeMap, points, overlayStyle);
+  }, [points, routeMap, overlayStyle]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, overlayStyle);
+  }, [points, currentPoint, routeMap, overlayStyle]);
+
+  const redrawCharts = useCallback(() => {
+    if (altitudeChartRef.current) drawTelemetryChart(altitudeChartRef.current, points, currentPoint, "altitude");
+    if (speedChartRef.current) drawTelemetryChart(speedChartRef.current, points, currentPoint, "speed");
+  }, [points, currentPoint]);
+
+  useEffect(() => {
+    redrawCharts();
+  }, [redrawCharts, enabledWidgets, overlayStyle]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => redrawCharts());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [redrawCharts]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const video = videoRef.current;
+    if (!container || !video) return;
+
+    let swappingToContainer = false;
+    const onFullscreenChange = () => {
+      const active = document.fullscreenElement;
+      if (active === video && !swappingToContainer) {
+        swappingToContainer = true;
+        void document.exitFullscreen().then(() =>
+          container.requestFullscreen().finally(() => {
+            swappingToContainer = false;
+          }),
+        );
+        return;
+      }
+      setIsPlayerFullscreen(active === container);
+    };
+
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  const hasTelemetry = video.telemetry_present && points.length > 1 && available.length > 0;
+
+  function toggleWidget(widget: VideoTelemetryWidget) {
+    setEnabledWidgets((current) =>
+      current.includes(widget) ? current.filter((item) => item !== widget) : [...current, widget],
+    );
+  }
+
+  async function handleRenderedDownload() {
+    const exportWidgets = enabledWidgets.filter((w) => w !== "route");
+    if (exportWidgets.length === 0) {
+      setExportError("Selecione altitude, velocidade ou rumo para gerar o MP4.");
+      return;
+    }
+    const workerConfig = getWorkerConfig();
+    if (!workerConfig) {
+      setExportError("Storage nao configurado para exportar o MP4.");
+      return;
+    }
+    setExporting(true);
+    setExportError(null);
+    try {
+      const res = await fetch(`${HELPER_URL}/render-overlay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl: video.file_url,
+          telemetryJson: video.telemetry_json,
+          widgets: exportWidgets,
+          cfWorkerUrl: workerConfig.url,
+          cfWorkerSecret: workerConfig.secret,
+          outputKey: `flight-${video.flight_id}-${video.id}-telemetry-${Date.now()}.mp4`,
+        }),
+      });
+      const payload = await res.json() as { fileUrl?: string; error?: string };
+      if (!res.ok || !payload.fileUrl) throw new Error(payload.error ?? `Helper retornou ${res.status}`);
+      window.open(payload.fileUrl, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setExportError((e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div
+        ref={containerRef}
+        className={`relative aspect-video w-full overflow-hidden rounded-lg border border-slate-800 bg-black ${
+          isPlayerFullscreen ? "[&_video]:max-h-full [&_video]:max-w-full" : ""
+        }`}
+      >
+        <video
+          ref={videoRef}
+          src={video.file_url}
+          controls
+          preload="metadata"
+          playsInline
+          className="h-full w-full bg-black"
+        />
+        {hasTelemetry && (
+          <div className="pointer-events-none absolute inset-0">
+            <TelemetryBrandMark brand={brand} compact={overlayStyle === "compact"} />
+            {overlayStyle === "hud" ? (
+              <HudTelemetryOverlay
+                airspeedArcs={airspeedArcs}
+                altitudeChartRef={altitudeChartRef}
+                canvasRef={canvasRef}
+                currentPoint={currentPoint}
+                enabledWidgets={enabledWidgets}
+                speedChartRef={speedChartRef}
+                verticalSpeedFpm={verticalSpeedFpm}
+              />
+            ) : (
+              <CompactTelemetryOverlay
+                airspeedArcs={airspeedArcs}
+                altitudeChartRef={altitudeChartRef}
+                canvasRef={canvasRef}
+                currentPoint={currentPoint}
+                enabledWidgets={enabledWidgets}
+                speedChartRef={speedChartRef}
+                verticalSpeedFpm={verticalSpeedFpm}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      {hasTelemetry && (
+        <div className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/35 p-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {(["hud", "compact"] as TelemetryOverlayStyle[]).map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  onClick={() => setOverlayStyle(style)}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                    overlayStyle === style ? "bg-emerald-500/20 text-emerald-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  {style === "hud" ? "HUD" : "Compacto"}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {available.map((widget) => (
+                <button
+                  key={widget}
+                  type="button"
+                  onClick={() => toggleWidget(widget)}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                    enabledWidgets.includes(widget)
+                      ? "bg-sky-500/20 text-sky-200"
+                      : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  {widgetLabel(widget)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleRenderedDownload()}
+            disabled={exporting || enabledWidgets.every((w) => w === "route")}
+            className="rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700 disabled:opacity-50"
+          >
+            {exporting ? "Gerando MP4..." : "Baixar com widgets"}
+          </button>
+        </div>
+      )}
+      {exportError && (
+        <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">{exportError}</p>
+      )}
+      {video.telemetry_source === "gopro" && !video.telemetry_present && (
+        <p className="rounded-md border border-amber-500/30 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200">
+          Track GoPro detectado, mas o parser GPMF completo ainda nao extraiu pontos para overlay.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function widgetLabel(widget: VideoTelemetryWidget): string {
+  if (widget === "route") return "Rota";
+  if (widget === "altitude") return "Altitude";
+  if (widget === "speed") return "Velocidade";
+  if (widget === "heading") return "Rumo";
+  if (widget === "altitudeChart") return "Graf. altitude";
+  return "Graf. velocidade";
+}
+
+function expandAvailableTelemetryWidgets(available: VideoTelemetryWidget[], points: VideoTelemetryPoint[]): VideoTelemetryWidget[] {
+  const set = new Set(available);
+  if (points.some((p) => Number.isFinite(p.altitude))) set.add("altitudeChart");
+  if (points.some((p) => Number.isFinite(p.speed))) set.add("speedChart");
+  return Array.from(set);
+}
+
+
 function VideoCard({
   video,
   isInstructor,
@@ -626,12 +996,7 @@ function VideoCard({
     <li className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
       <div className="flex flex-col gap-4">
         {isReady && video.file_url && (
-          <video
-            src={video.file_url}
-            controls
-            preload="metadata"
-            className="aspect-video w-full rounded-lg border border-slate-800 bg-black"
-          />
+          <TelemetryVideoPlayer video={video} />
         )}
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

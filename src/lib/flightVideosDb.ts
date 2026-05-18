@@ -15,6 +15,10 @@ export type FlightVideo = {
   duration_sec: number | null;
   original_files_count: number | null;
   processing_status: ProcessingStatus;
+  telemetry_present: boolean;
+  telemetry_source: "gopro" | "dji_srt" | "none" | string;
+  telemetry_json: string;
+  available_widgets: string;
   created_at: string;
 };
 
@@ -108,6 +112,10 @@ export async function listFlightVideos(flightId: string): Promise<{ data: Flight
       duration_sec: (d.duration_sec as number | null | undefined) ?? null,
       original_files_count: (d.original_files_count as number | null | undefined) ?? null,
       processing_status: (d.processing_status as ProcessingStatus) ?? "processing",
+      telemetry_present: Boolean(d.telemetry_present),
+      telemetry_source: (d.telemetry_source as string | null | undefined) ?? "none",
+      telemetry_json: (d.telemetry_json as string | null | undefined) ?? "",
+      available_widgets: (d.available_widgets as string | null | undefined) ?? "[]",
       created_at: d.$createdAt,
     }));
 

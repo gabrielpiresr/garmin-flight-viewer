@@ -74,6 +74,16 @@ export async function listModels(): Promise<AircraftModel[]> {
   return res.documents.map((d) => toModel(d as Record<string, unknown>));
 }
 
+export async function getModelById(modelId: string): Promise<AircraftModel | null> {
+  if (!modelId || !isReady() || !databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) return null;
+  try {
+    const doc = await databases.getDocument(DB_ID, AIRCRAFT_MODELS_COL_ID, modelId);
+    return toModel(doc as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
 export async function createModel(data: {
   name: string;
   manufacturer: string;

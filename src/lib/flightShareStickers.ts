@@ -69,7 +69,7 @@ export type FlightShareData = {
 };
 
 export type FlightShareSticker = {
-  id: FlightShareStickerId;
+  id: string;
   title: string;
   description: string;
   fileName: string;
@@ -270,7 +270,7 @@ async function urlToDataUrl(url: string): Promise<string | null> {
   }
 }
 
-async function loadBrand(): Promise<FlightShareBrand> {
+export async function loadFlightShareBrand(): Promise<FlightShareBrand> {
   try {
     logBrandDebug("loading brand settings for stickers");
     const settings = await getEmailBrandSettings();
@@ -360,7 +360,7 @@ function logoHref(data: FlightShareData): string | null {
 
 export async function loadFlightShareData(flightId: string): Promise<FlightShareData> {
   logBrandDebug("loading flight share data", { flightId });
-  const [flight, brand] = await Promise.all([getSavedFlight(flightId), loadBrand()]);
+  const [flight, brand] = await Promise.all([getSavedFlight(flightId), loadFlightShareBrand()]);
   if (flight.error || !flight.data) {
     throw flight.error ?? new Error("Voo não encontrado.");
   }

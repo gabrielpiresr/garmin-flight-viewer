@@ -153,6 +153,9 @@ function normalizeTimeInput(raw: string): string {
   const digits = raw.replace(/\D/g, "").slice(0, 4);
   if (!digits) return "";
   if (digits.length <= 2) return digits;
+  const hh = Number(digits.slice(0, 2));
+  const mm = Number(digits.slice(2).padEnd(2, "0"));
+  if (hh > 6 || (hh === 6 && mm > 0)) return "06:00";
   return `${digits.slice(0, 2)}:${digits.slice(2)}`;
 }
 
@@ -203,7 +206,7 @@ function mergeExerciseGrades(
       exerciseId: exercise.id,
       title: exercise.title,
       acceptableProficiency: exercise.acceptableProficiency,
-      grade: null,
+      grade: "4" as ExerciseGrade,
       order: exercise.order,
     }) satisfies FlightExerciseGrade);
   return [...mergedSaved, ...newCatalogRows].sort((a, b) => a.order - b.order);
@@ -1453,8 +1456,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                   <Input label="Tempo de Serviço">
                     <input type="text" placeholder="HH:MM" value={leg.serviceTime} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { serviceTime: normalizeTimeInput(e.target.value) })} className={inputClass} />
                   </Input>
-                  <Input label="Distância">
-                    <input type="text" value={leg.distance} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { distance: e.target.value })} className={inputClass} />
+                  <Input label="Distância (NM)">
+                    <input type="number" min={0} step="any" value={leg.distance} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { distance: e.target.value })} className={inputClass} />
                   </Input>
                 </div>
               </div>

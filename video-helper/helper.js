@@ -86,6 +86,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /progress/:jobId — SSE
+  if (url === "/render-overlay" && req.method === "POST") {
+    let body;
+    try { body = await readJson(req); } catch { return json(res, { error: "JSON invalido" }, 400); }
+    try {
+      const result = await renderTelemetryOverlay(body);
+      return json(res, result);
+    } catch (e) {
+      return json(res, { error: e.message }, 500);
+    }
+  }
+
   const progressMatch = url.match(/^\/progress\/([^/]+)$/);
   if (progressMatch && req.method === "GET") {
     const [, jobId] = progressMatch;
@@ -154,13 +165,17 @@ async function runPipeline(req, job) {
   console.log(`[${jobId}] Encoder selecionado: ${encoder}`);
 
   const tmpDir = path.join(os.tmpdir(), `flight-${sessionId}`);
-  const videoFiles = fileOrder.map(({ index, name }) =>
+  const uploadedFiles = fileOrder.map(({ index, name }) =>
     path.join(tmpDir, `input_${index}_${sanitizeFilename(name)}`)
   );
+  const videoFiles = uploadedFiles.filter((file) => isVideoFile(file));
+  const sidecarFiles = uploadedFiles.filter((file) => isSrtFile(file));
 
   for (const f of videoFiles) {
     if (!fs.existsSync(f)) return fail(`Arquivo não encontrado no servidor: ${f}`);
   }
+
+  if (videoFiles.length === 0) return fail("Selecione pelo menos um arquivo de video.");
 
   const joinedPath = path.join(tmpDir, "joined.mp4");
   const finalPath = path.join(tmpDir, "final.mp4");
@@ -170,6 +185,14 @@ async function runPipeline(req, job) {
 
   try {
     // ── Stage 1: Concat ──────────────────────────────────────────────────────
+    progress("telemetry-detect", 0);
+    const telemetry = await detectVideoTelemetry(ffmpeg, ffprobe, videoFiles, sidecarFiles, tmpDir);
+    progress("telemetry-detect", 100, {
+      telemetry_present: telemetry.telemetryPresent,
+      telemetry_source: telemetry.source,
+      available_widgets: telemetry.availableWidgets,
+    });
+
     progress("concat", 0);
     if (job.cancelled) return fail("Cancelado");
 
@@ -202,12 +225,19 @@ async function runPipeline(req, job) {
 
     // Atualizar Appwrite
     await updateAppwrite(appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
-      flightVideoDocId, sessionJwt, fileUrl, fileSize, finalDuration);
+      flightVideoDocId, sessionJwt, fileUrl, fileSize, finalDuration, telemetry);
 
     // Limpar temporários
     cleanup(tmpDir);
 
-    progress("done", 100, { file_url: fileUrl, file_size: fileSize, duration_sec: finalDuration });
+    progress("done", 100, {
+      file_url: fileUrl,
+      file_size: fileSize,
+      duration_sec: finalDuration,
+      telemetry_present: telemetry.telemetryPresent,
+      telemetry_source: telemetry.source,
+      available_widgets: telemetry.availableWidgets,
+    });
     console.log(`[${jobId}] Concluído: ${fileUrl}`);
 
   } catch (e) {
@@ -245,6 +275,260 @@ function probeDuration(ffprobe, file) {
     p.stdout.on("data", (d) => (out += d));
     p.on("close", () => resolve(parseFloat(out.trim()) || null));
   });
+}
+
+function isVideoFile(file) {
+  return /\.(mp4|mov|avi|mkv|mts|m2ts|webm)$/i.test(file);
+}
+
+function isSrtFile(file) {
+  return /\.srt$/i.test(file);
+}
+
+async function detectVideoTelemetry(ffmpeg, ffprobe, videoFiles, sidecarFiles, tmpDir) {
+  const allPoints = [];
+  let source = "none";
+  let sawGoproTrack = false;
+  let offsetMs = 0;
+
+  for (let i = 0; i < videoFiles.length; i++) {
+    const video = videoFiles[i];
+    const durationSec = ffprobe ? (await probeDuration(ffprobe, video)) ?? 0 : 0;
+
+    const sidecar = findMatchingSrt(video, sidecarFiles, i);
+    let srtText = sidecar && fs.existsSync(sidecar) ? fs.readFileSync(sidecar, "utf8") : "";
+
+    if (!srtText && ffmpeg) {
+      const embeddedPath = path.join(tmpDir, `embedded_${i}.srt`);
+      if (await extractEmbeddedSrt(ffmpeg, video, embeddedPath)) {
+        srtText = fs.readFileSync(embeddedPath, "utf8");
+      }
+    }
+
+    if (srtText) {
+      const points = parseDjiSrtTelemetry(srtText, offsetMs);
+      if (points.length > 0) {
+        allPoints.push(...points);
+        source = "dji_srt";
+      }
+    } else if (ffprobe && await hasGoproMetadataTrack(ffprobe, video)) {
+      const points = await extractGoproGps9Telemetry(ffmpeg, video, tmpDir, i, offsetMs);
+      if (points.length > 0) {
+        allPoints.push(...points);
+        source = "gopro";
+      } else {
+        sawGoproTrack = true;
+      }
+    }
+
+    offsetMs += Math.max(0, durationSec * 1000);
+  }
+
+  const normalized = normalizeTelemetryPoints(allPoints);
+  const availableWidgets = inferAvailableWidgets(normalized);
+  return {
+    telemetryPresent: normalized.length > 1,
+    source: normalized.length > 1 ? source : (sawGoproTrack ? "gopro" : "none"),
+    availableWidgets,
+    telemetryJson: JSON.stringify({ version: 1, points: downsamplePoints(normalized, 1200) }),
+  };
+}
+
+async function extractGoproGps9Telemetry(ffmpeg, videoFile, tmpDir, index, offsetMs) {
+  if (!ffmpeg) return [];
+  const output = path.join(tmpDir, `gopro_${index}.gpmd.bin`);
+  const ok = await new Promise((resolve) => {
+    const p = spawn(ffmpeg, ["-y", "-i", videoFile, "-map", "0:m:handler_name:GoPro MET", "-c", "copy", "-f", "data", output], { stdio: "ignore" });
+    p.on("close", (code) => resolve(code === 0 && fs.existsSync(output) && fs.statSync(output).size > 0));
+    p.on("error", () => resolve(false));
+  });
+  if (!ok) return [];
+  return parseGoproGps9Binary(fs.readFileSync(output), offsetMs);
+}
+
+function parseGoproGps9Binary(buffer, offsetMs) {
+  const items = parseGpmfItems(buffer);
+  const points = [];
+  for (const item of items) {
+    if (item.key !== "GPS9" || item.size < 32) continue;
+    for (let i = 0; i < item.repeat; i++) {
+      const o = item.data + i * item.size;
+      if (o + 32 > buffer.length) continue;
+      const lat = buffer.readInt32BE(o) / 10000000;
+      const lon = buffer.readInt32BE(o + 4) / 10000000;
+      const altitude = buffer.readInt32BE(o + 8) / 1000;
+      const speed = buffer.readInt32BE(o + 12) / 1000;
+      const gpsSeconds = buffer.readInt32BE(o + 24) / 1000;
+      const fix = buffer.readUInt16BE(o + 30);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+      if (fix <= 0 || (lat === 0 && lon === 0)) continue;
+      const firstSeconds = points.length > 0 ? points[0].gpsSeconds : gpsSeconds;
+      points.push({
+        timeMs: Math.max(0, offsetMs + (gpsSeconds - firstSeconds) * 1000),
+        lat,
+        lon,
+        altitude,
+        speed,
+        heading: null,
+        gpsSeconds,
+      });
+    }
+  }
+  return points.map(({ gpsSeconds, ...point }) => point);
+}
+
+function parseGpmfItems(buffer) {
+  const items = [];
+  const walk = (start, end, depth = 0) => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      const key = buffer.toString("latin1", offset, offset + 4);
+      const type = String.fromCharCode(buffer[offset + 4]);
+      const size = buffer[offset + 5];
+      const repeat = buffer.readUInt16BE(offset + 6);
+      const bytes = size * repeat;
+      const data = offset + 8;
+      const next = data + bytes + ((4 - (bytes % 4)) % 4);
+      if (!/^[A-Z0-9_]{4}$/.test(key) || next > buffer.length || next <= offset) {
+        offset += 1;
+        continue;
+      }
+      items.push({ key, type, size, repeat, offset, data, bytes, depth });
+      if (key === "DEVC" || key === "STRM") walk(data, data + bytes, depth + 1);
+      offset = next;
+    }
+  };
+  walk(0, buffer.length);
+  return items;
+}
+
+function findMatchingSrt(videoFile, sidecarFiles, index) {
+  if (sidecarFiles.length === 0) return null;
+  const videoBase = path.basename(videoFile).replace(/^input_\d+_/, "").replace(/\.[^.]+$/, "").toLowerCase();
+  return sidecarFiles.find((srt) => {
+    const srtBase = path.basename(srt).replace(/^input_\d+_/, "").replace(/\.[^.]+$/, "").toLowerCase();
+    return srtBase === videoBase;
+  }) ?? sidecarFiles[index] ?? sidecarFiles[0] ?? null;
+}
+
+function extractEmbeddedSrt(ffmpeg, videoFile, outputSrt) {
+  return new Promise((resolve) => {
+    const p = spawn(ffmpeg, ["-y", "-i", videoFile, "-map", "0:s:0", outputSrt], { stdio: "ignore" });
+    p.on("close", (code) => resolve(code === 0 && fs.existsSync(outputSrt) && fs.statSync(outputSrt).size > 0));
+    p.on("error", () => resolve(false));
+  });
+}
+
+async function hasGoproMetadataTrack(ffprobe, videoFile) {
+  try {
+    const out = await new Promise((resolve) => {
+      const p = spawn(ffprobe, ["-v", "error", "-show_streams", "-of", "json", videoFile]);
+      let stdout = "";
+      p.stdout.on("data", (d) => (stdout += d));
+      p.on("close", () => resolve(stdout));
+      p.on("error", () => resolve(""));
+    });
+    return /gpmd|gpmf|GoPro MET|GoPro/i.test(String(out));
+  } catch {
+    return false;
+  }
+}
+
+function parseDjiSrtTelemetry(text, offsetMs) {
+  const blocks = text.replace(/\r/g, "").split(/\n\s*\n/);
+  const points = [];
+  for (const block of blocks) {
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (lines.length < 2) continue;
+    const timeLine = lines.find((line) => line.includes("-->"));
+    if (!timeLine) continue;
+    const startMs = parseSrtTimestamp(timeLine.split("-->")[0]);
+    if (startMs === null) continue;
+    const body = lines.filter((line) => !/^\d+$/.test(line) && !line.includes("-->")).join(" ");
+    const lat = pickNumber(body, [
+      /latitude\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /\[lat(?:itude)?\s*[:=]\s*(-?\d+(?:\.\d+)?)\]/i,
+      /GPS\s*\(\s*(-?\d+(?:\.\d+)?)[,\s]+-?\d+(?:\.\d+)?/i,
+    ]);
+    const lon = pickNumber(body, [
+      /longitude\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /\[(?:lon|lng|longitude)\s*[:=]\s*(-?\d+(?:\.\d+)?)\]/i,
+      /GPS\s*\(\s*-?\d+(?:\.\d+)?[,\s]+(-?\d+(?:\.\d+)?)/i,
+    ]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
+    const altitude = pickNumber(body, [
+      /rel_alt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /abs_alt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /altitude\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /\balt\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+    ]);
+    const speed = pickNumber(body, [
+      /speed\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /vel(?:ocity)?\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /h_speed\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+    ]);
+    const heading = pickNumber(body, [
+      /heading\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+      /yaw\s*[:=]\s*(-?\d+(?:\.\d+)?)/i,
+    ]);
+    points.push({
+      timeMs: Math.max(0, offsetMs + startMs),
+      lat,
+      lon,
+      altitude: Number.isFinite(altitude) ? altitude : null,
+      speed: Number.isFinite(speed) ? speed : null,
+      heading: Number.isFinite(heading) ? normalizeHeadingDeg(heading) : null,
+    });
+  }
+  return points;
+}
+
+function parseSrtTimestamp(value) {
+  const m = String(value).trim().match(/(\d+):(\d+):(\d+)[,.](\d+)/);
+  if (!m) return null;
+  const [, hh, mm, ss, ms] = m;
+  return ((Number(hh) * 60 + Number(mm)) * 60 + Number(ss)) * 1000 + Number(ms.padEnd(3, "0").slice(0, 3));
+}
+
+function pickNumber(text, patterns) {
+  for (const pattern of patterns) {
+    const m = text.match(pattern);
+    if (m?.[1] !== undefined) {
+      const n = Number(String(m[1]).replace(",", "."));
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+
+function normalizeHeadingDeg(value) {
+  return ((value % 360) + 360) % 360;
+}
+
+function normalizeTelemetryPoints(points) {
+  return points
+    .filter((p) => Number.isFinite(p.timeMs) && Number.isFinite(p.lat) && Number.isFinite(p.lon))
+    .sort((a, b) => a.timeMs - b.timeMs)
+    .filter((p, i, arr) => i === 0 || p.timeMs !== arr[i - 1].timeMs || p.lat !== arr[i - 1].lat || p.lon !== arr[i - 1].lon);
+}
+
+function inferAvailableWidgets(points) {
+  if (points.length < 2) return [];
+  const widgets = ["route"];
+  if (points.some((p) => Number.isFinite(p.altitude))) widgets.push("altitude", "altitudeChart");
+  if (points.some((p) => Number.isFinite(p.speed))) widgets.push("speed", "speedChart");
+  if (points.some((p) => Number.isFinite(p.heading))) widgets.push("heading");
+  return widgets;
+}
+
+function downsamplePoints(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const out = [];
+  const step = (points.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(points[Math.round(i * step)]);
+  }
+  return out;
 }
 
 // ─── Seleção de encoder de vídeo ─────────────────────────────────────────────
@@ -432,19 +716,174 @@ async function uploadMultipart(workerUrl, secret, key, data, onProgress) {
 
 // ─── Appwrite ──────────────────────────────────────────────────────────────────
 
-async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, fileUrl, fileSize, durationSec) {
+async function renderTelemetryOverlay(req) {
+  const {
+    videoUrl,
+    telemetryJson,
+    widgets = [],
+    cfWorkerUrl,
+    cfWorkerSecret,
+    outputKey = `telemetry-export-${Date.now()}.mp4`,
+    trimStartSec,
+    trimEndSec,
+    orientation = "horizontal",
+  } = req;
+  if (!videoUrl) throw new Error("videoUrl obrigatorio.");
+  if (!cfWorkerUrl || !cfWorkerSecret) throw new Error("Storage nao configurado.");
+
+  const enabled = Array.isArray(widgets) ? widgets.filter((w) => ["altitude", "speed", "heading"].includes(w)) : [];
+  if (enabled.length === 0) throw new Error("Selecione pelo menos altitude, velocidade ou rumo para exportar.");
+
+  const parsed = typeof telemetryJson === "string" ? JSON.parse(telemetryJson || "{}") : telemetryJson;
+  const points = normalizeTelemetryPoints(Array.isArray(parsed?.points) ? parsed.points : []);
+  if (points.length < 2) throw new Error("Telemetria insuficiente para gerar overlay.");
+
+  const ffmpeg = findBin("ffmpeg");
+  if (!ffmpeg) throw new Error("ffmpeg nao encontrado.");
+  const encoder = await detectEncoder(ffmpeg);
+
+  const isVertical = orientation === "vertical";
+  const tmpDir = path.join(os.tmpdir(), `flight-overlay-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const inputPath = path.join(tmpDir, "input.mp4");
+  const assPath = path.join(tmpDir, "overlay.ass");
+  const outputPath = path.join(tmpDir, "output.mp4");
+
+  try {
+    const response = await fetch(videoUrl);
+    if (!response.ok) throw new Error(`Download do video falhou: ${response.status}`);
+    fs.writeFileSync(inputPath, Buffer.from(await response.arrayBuffer()));
+    fs.writeFileSync(assPath, buildTelemetryAss(points, enabled, isVertical), "utf8");
+
+    // Input seeking rápido (antes de -i)
+    const seekArgs = [];
+    if (Number.isFinite(trimStartSec) && trimStartSec > 0) seekArgs.push("-ss", String(trimStartSec));
+
+    // Duração de saída (relativa ao -ss se usado)
+    const durationArgs = [];
+    if (Number.isFinite(trimEndSec) && trimEndSec > 0) {
+      const duration = Number.isFinite(trimStartSec) ? trimEndSec - trimStartSec : trimEndSec;
+      if (duration > 0) durationArgs.push("-t", String(duration));
+    }
+
+    // Filtro de vídeo: [crop +] subtitles
+    const assEscaped = escapeFilterPath(assPath);
+    const cropPrefix = isVertical
+      ? "crop=trunc(ih*9/16/2)*2:ih:(iw-trunc(ih*9/16/2)*2)/2:0,"
+      : "";
+    const vf = `${cropPrefix}subtitles='${assEscaped}'`;
+
+    await runFfmpeg(ffmpeg, [
+      ...seekArgs,
+      "-i", inputPath,
+      ...durationArgs,
+      "-vf", vf,
+      ...encoderArgs(encoder),
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "128k",
+      "-movflags", "+faststart",
+      "-threads", "0",
+      "-y", outputPath,
+    ], 0, () => {}, { mustSucceed: true });
+
+    const fileBytes = fs.readFileSync(outputPath);
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, outputKey, fileBytes, () => {});
+    return { ok: true, fileUrl, fileSize: fileBytes.length };
+  } finally {
+    cleanup(tmpDir);
+  }
+}
+
+function buildTelemetryAss(points, widgets, isVertical = false) {
+  const endMs = Math.max(...points.map((p) => p.timeMs));
+  const playResX = isVertical ? 608 : 1920;
+  const lines = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${playResX}`,
+    "PlayResY: 1080",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    "Style: Telemetry,Arial,44,&H00FFFFFF,&H00FFFFFF,&H90000000,&HAA000000,1,0,0,0,100,100,0,0,3,3,0,7,46,46,46,1",
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+  ];
+
+  for (let t = 0; t <= endMs + 1000; t += 1000) {
+    const p = pointAtTime(points, t);
+    if (!p) continue;
+    const text = formatOverlayText(p, widgets).replace(/\n/g, "\\N");
+    lines.push(`Dialogue: 0,${assTime(t)},${assTime(t + 1000)},Telemetry,,0,0,0,,${text}`);
+  }
+  return lines.join("\n");
+}
+
+function pointAtTime(points, timeMs) {
+  let best = points[0];
+  for (const point of points) {
+    if (point.timeMs > timeMs) break;
+    best = point;
+  }
+  return best ?? null;
+}
+
+function formatOverlayText(point, widgets) {
+  const rows = [];
+  if (widgets.includes("speed") && Number.isFinite(point.speed)) rows.push(`VEL ${formatSpeedForOverlay(point.speed)}`);
+  if (widgets.includes("altitude") && Number.isFinite(point.altitude)) rows.push(`ALT ${Math.round(point.altitude * 3.28084)} ft`);
+  if (widgets.includes("heading") && Number.isFinite(point.heading)) rows.push(`HDG ${Math.round(point.heading)} deg`);
+  return rows.join("\n") || "TELEMETRIA";
+}
+
+function formatSpeedForOverlay(speed) {
+  return `${Math.round(speed * 1.94384)} kt`;
+}
+
+function assTime(ms) {
+  const total = Math.max(0, Math.floor(ms / 10));
+  const cs = total % 100;
+  const secTotal = Math.floor(total / 100);
+  const s = secTotal % 60;
+  const minTotal = Math.floor(secTotal / 60);
+  const m = minTotal % 60;
+  const h = Math.floor(minTotal / 60);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function escapeFilterPath(filePath) {
+  return filePath.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
+}
+
+async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, fileUrl, fileSize, durationSec, telemetry) {
   if (!jwt || !colId) return;
   const url = `${endpoint}/databases/${dbId}/collections/${colId}/documents/${docId}`;
+  const headers = {
+    "X-Appwrite-Project": projectId,
+    "X-Appwrite-JWT": jwt,
+    "Content-Type": "application/json",
+  };
+  const baseData = { file_url: fileUrl, file_size: fileSize, duration_sec: durationSec, processing_status: "ready" };
+  const fullRes = await fetch(url, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      data: {
+        ...baseData,
+        telemetry_present: Boolean(telemetry?.telemetryPresent),
+        telemetry_source: telemetry?.source ?? "none",
+        telemetry_json: telemetry?.telemetryJson ?? "",
+        available_widgets: JSON.stringify(telemetry?.availableWidgets ?? []),
+      },
+    }),
+  });
+  if (fullRes.ok) return;
   await fetch(url, {
     method: "PATCH",
-    headers: {
-      "X-Appwrite-Project": projectId,
-      "X-Appwrite-JWT": jwt,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      data: { file_url: fileUrl, file_size: fileSize, duration_sec: durationSec, processing_status: "ready" },
-    }),
+    headers,
+    body: JSON.stringify({ data: baseData }),
   });
 }
 

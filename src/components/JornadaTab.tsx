@@ -38,6 +38,7 @@ import { DEFAULT_SCHOOL_RULES } from "../types/schoolRules";
 import type { EvaluatedJourneyReward, JourneyReward } from "../types/rewards";
 import type { ManeuverArticle, ManeuverCatalog } from "../types/maneuver";
 import type { StudentTrainingTrack, TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
+import { JourneyShareStickersModal } from "./JourneyShareStickersModal";
 import { RewardIcon } from "./rewards/RewardIcon";
 import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
@@ -1139,6 +1140,7 @@ export function JornadaTab() {
   const { metrics, loading, error } = useJourneyMetrics(evolutionEnabled);
   const badges = useEvaluatedBadges(metrics, formationState);
   const [section, setSection] = useState<JourneySection>("formacao");
+  const [shareModalOpen, setShareModalOpen] = useState(false);
   const [monthlyMetric, setMonthlyMetric] = useState<MonthlyMetricKey>("hours");
   const [evolutionPeriod, setEvolutionPeriod] = useState<JourneyEvolutionPeriod>("month");
   const chartData = useMemo(() => latestEvolution(metrics, evolutionPeriod), [evolutionPeriod, metrics]);
@@ -1170,6 +1172,25 @@ export function JornadaTab() {
         ariaLabel="Subabas da jornada"
         accent="sky"
       />
+      {section === "evolucao" ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              if (!evolutionLoading && metrics.hasData) setShareModalOpen(true);
+            }}
+            disabled={evolutionLoading || !metrics.hasData}
+            className="inline-flex items-center gap-2 rounded-full border border-pink-500/30 bg-gradient-to-r from-fuchsia-500/15 via-pink-500/15 to-orange-400/15 px-3 py-1.5 text-sm font-semibold text-pink-100 transition hover:border-pink-400/60 hover:from-fuchsia-500/25 hover:via-pink-500/25 hover:to-orange-400/25 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
+              <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
+              <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
+            </svg>
+            Compartilhar
+          </button>
+        </div>
+      ) : null}
 
       {section === "formacao" ? (
         <FormationJourney state={formationState} metrics={metrics} />
@@ -1341,6 +1362,9 @@ export function JornadaTab() {
       </SectionCard>
         </>
       )}
+      {shareModalOpen ? (
+        <JourneyShareStickersModal onClose={() => setShareModalOpen(false)} />
+      ) : null}
     </div>
   );
 }

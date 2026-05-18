@@ -5,7 +5,7 @@ import { deriveRoleFromLabels, ensureProfile, getUserRole, type UserRole } from 
 
 const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
-type AppwriteUser = { id: string; email: string; role: UserRole; schoolId: string };
+type AppwriteUser = { id: string; email: string; name: string; role: UserRole; schoolId: string };
 export type SignUpProfileInput = {
   fullName: string;
   cpf: string;
@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
         const role = profileRole === "aluno" ? labelRole : profileRole;
         await ensureProfile(u.$id, u.email, role);
-        setUser({ id: u.$id, email: u.email, role, schoolId: DEFAULT_SCHOOL_ID });
+        setUser({ id: u.$id, email: u.email, name: u.name, role, schoolId: DEFAULT_SCHOOL_ID });
       })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
@@ -62,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
       const role = profileRole === "aluno" ? labelRole : profileRole;
       await ensureProfile(u.$id, u.email, role);
-      setUser({ id: u.$id, email: u.email, role, schoolId: DEFAULT_SCHOOL_ID });
+      setUser({ id: u.$id, email: u.email, name: u.name, role, schoolId: DEFAULT_SCHOOL_ID });
       return { error: null };
     } catch (e) {
       return { error: e as Error };
@@ -112,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      setUser({ id: u.$id, email: u.email, role: "aluno", schoolId: DEFAULT_SCHOOL_ID });
+      setUser({ id: u.$id, email: u.email, name: u.name, role: "aluno", schoolId: DEFAULT_SCHOOL_ID });
       return { error: null, anacSyncPending };
     } catch (e) {
       return { error: e as Error, anacSyncPending: true };

@@ -336,27 +336,25 @@ function UpcomingFlightsBoard({ flights, onOpenReports }: { flights: AdminDashbo
       {flights.length ? (
         <div className="divide-y divide-slate-800">
           {flights.map((flight) => (
-            <div key={flight.id} className="grid gap-2 py-3 sm:grid-cols-[4.5rem_minmax(0,1fr)] sm:items-center">
-              <div className="shrink-0">
-                <p className="text-sm font-semibold capitalize text-slate-100">{fmtDayMonth(flight.flightDate)}</p>
-                <p className="text-xs font-medium text-white">{fmtTime(flight.startTime)}</p>
-                <p className="mt-0.5 text-[11px] text-slate-400">{flightDurationLabel(flight)}</p>
+            <div key={flight.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
+              <div className="w-32 shrink-0">
+                <span className="text-sm font-semibold capitalize text-slate-100">{fmtDayMonth(flight.flightDate)}</span>
+                <span className="ml-1.5 text-xs font-medium text-white">{fmtTime(flight.startTime)}</span>
               </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`inline-flex max-w-full shrink-0 rounded-md border px-2 py-0.5 font-mono text-xs font-semibold ${aircraftTagClass(flight.aircraftIdent)}`}
-                  >
-                    {flight.aircraftIdent || "Sem avião"}
-                  </span>
-                  {flight.aircraftNickname ? (
-                    <span className="truncate text-xs text-slate-500">{flight.aircraftNickname}</span>
-                  ) : null}
-                </div>
-                <p className="mt-1 truncate text-xs text-slate-500">
+              <span className="w-14 shrink-0 text-xs text-slate-400">{flightDurationLabel(flight)}</span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span className={`inline-flex rounded-md border px-2 py-0.5 font-mono text-xs font-semibold ${aircraftTagClass(flight.aircraftIdent)}`}>
+                  {flight.aircraftIdent || "Sem avião"}
+                </span>
+                {flight.aircraftNickname ? (
+                  <span className="text-xs text-slate-500">{flight.aircraftNickname}</span>
+                ) : null}
+              </div>
+              <div className="min-w-0 flex-1">
+                <span className="truncate text-xs text-slate-400">
                   {flight.studentName || "Aluno não informado"} · {flight.instructorName || "Instrutor não informado"}
-                </p>
-                {flight.modelName ? <p className="truncate text-[11px] text-slate-600">{flight.modelName}</p> : null}
+                </span>
+                {flight.modelName ? <span className="ml-2 text-[11px] text-slate-600">{flight.modelName}</span> : null}
               </div>
             </div>
           ))}

@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+
+function formatBRL(value: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
+function formatExpiration(purchaseDate: string, validityDays: string): string | null {
+  if (!purchaseDate || !validityDays) return null;
+  const days = Math.round(Number(validityDays.replace(",", ".")));
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const d = new Date(`${purchaseDate}T12:00:00`);
+  d.setDate(d.getDate() + days);
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(d);
+}
 import { createAdminUserCredit, deleteAdminUserCredit, updateAdminUserCredit } from "../../lib/adminUsersDb";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { listModels } from "../../lib/aircraftModelsDb";
@@ -44,7 +57,7 @@ function formatNumber(value: number): string {
   return Number.isFinite(value) ? String(value).replace(".", ",") : "";
 }
 
-export function AdminUserCreditsSection({ studentUserId, studentName }: { studentUserId: string; studentName: string }) {
+export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }: { studentUserId: string; studentName: string; anacCode?: string }) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [models, setModels] = useState<AircraftModel[]>([]);
@@ -93,6 +106,18 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
   const selectedModel = useMemo(
     () => models.find((model) => model.id === form.aircraftModelId) ?? null,
     [form.aircraftModelId, models],
+  );
+
+  const valorPorHora = useMemo(() => {
+    const paid = parseNumber(form.amountPaid);
+    const hrs = parseNumber(form.hours);
+    if (!paid || !hrs) return null;
+    return paid / hrs;
+  }, [form.amountPaid, form.hours]);
+
+  const expiracaoFormatada = useMemo(
+    () => formatExpiration(form.purchaseDate, form.validityDays),
+    [form.purchaseDate, form.validityDays],
   );
 
   function toInput(): StudentCreditInput {
@@ -222,6 +247,30 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
                 Fechar
               </button>
             </div>
+
+            <div className="mb-4 rounded-lg border border-slate-700/60 bg-slate-800/40 px-4 py-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500">Resumo do aluno</p>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
+                <div>
+                  <span className="text-slate-500">Nome</span>
+                  <p className="mt-0.5 font-medium text-slate-200">{studentName}</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">Código ANAC</span>
+                  <p className="mt-0.5 font-medium text-slate-200">{anacCode || "-"}</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">Valor por hora</span>
+                  <p className="mt-0.5 font-medium text-slate-200">
+                    {valorPorHora != null ? formatBRL(valorPorHora) : "-"}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-slate-500">Expiração</span>
+                  <p className="mt-0.5 font-medium text-slate-200">{expiracaoFormatada ?? "-"}</p>
+                </div>
+              </div>
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <label className="text-xs text-slate-400">
                 Data
@@ -238,7 +287,10 @@ export function AdminUserCreditsSection({ studentUserId, studentName }: { studen
               </label>
               <label className="text-xs text-slate-400">
                 Valor pago
-                <input value={form.amountPaid} onChange={(e) => setForm((prev) => ({ ...prev, amountPaid: e.target.value }))} placeholder="0,00" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500" />
+                <div className="mt-1 flex rounded-lg border border-slate-700 bg-slate-800 focus-within:border-cyan-500">
+                  <span className="flex items-center border-r border-slate-700 px-3 text-sm text-slate-400">R$</span>
+                  <input value={form.amountPaid} onChange={(e) => setForm((prev) => ({ ...prev, amountPaid: e.target.value }))} placeholder="0,00" className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none" />
+                </div>
               </label>
               <label className="text-xs text-slate-400">
                 Pagamento

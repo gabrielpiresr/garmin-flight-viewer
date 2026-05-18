@@ -51,6 +51,14 @@ export const STUDENT_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID as string | undefined) ?? "student_training_tracks";
 export const JOURNEY_REWARDS_COL_ID =
   (import.meta.env.VITE_APPWRITE_JOURNEY_REWARDS_COL_ID as string | undefined) ?? "journey_rewards";
+export const STUDENT_OBSERVATIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_STUDENT_OBSERVATIONS_COL_ID as string | undefined) ?? "student_observations";
+export const INSTRUCTOR_STUDENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID as string | undefined) ?? "instructor_students";
+
+// Manuais
+export const MANUALS_BUCKET_ID = import.meta.env.VITE_APPWRITE_MANUALS_BUCKET_ID as string | undefined;
+export const MANUALS_COL_ID = import.meta.env.VITE_APPWRITE_MANUALS_COL_ID as string | undefined;
 
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 

@@ -213,6 +213,10 @@ async function configureFlightVideos(databaseId, collectionId) {
   await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "file_size", false), "file_size");
   await safeCreateAttribute(() => db.createFloatAttribute(databaseId, collectionId, "duration_sec", false), "duration_sec");
   await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "original_files_count", false), "original_files_count");
+  await safeCreateAttribute(() => db.createBooleanAttribute(databaseId, collectionId, "telemetry_present", false), "telemetry_present");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "telemetry_source", 32, false), "telemetry_source");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "telemetry_json", 1048576, false), "telemetry_json");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "available_widgets", 512, false), "available_widgets");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "created_at", 64, false), "created_at");
   await safeCreateIndex(databaseId, collectionId, "flight_videos_flight_idx", ["flight_id"]);
 }

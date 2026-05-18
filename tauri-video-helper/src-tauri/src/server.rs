@@ -45,6 +45,7 @@ pub async fn start(app_handle: AppHandle) {
         .route("/health", get(health))
         .route("/pick-files", post(pick_files))
         .route("/process", post(process))
+        .route("/render-overlay", post(render_overlay))
         .route("/progress/:job_id", get(progress_sse))
         .route("/cancel/:job_id", post(cancel))
         .layer(cors)
@@ -180,6 +181,28 @@ async fn progress_sse(
                 });
             Sse::new(stream).with_keep_alive(KeepAlive::default()).into_response()
         }
+    }
+}
+
+// POST /render-overlay
+async fn render_overlay(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<crate::overlay::RenderOverlayReq>,
+) -> impl IntoResponse {
+    match crate::overlay::run(req, state.resource_dir.clone()).await {
+        Ok(res) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "fileUrl": res.file_url,
+                "fileSize": res.file_size,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
     }
 }
 

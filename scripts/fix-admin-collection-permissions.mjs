@@ -25,6 +25,14 @@ const ADMIN_PERMS = [
   Permission.delete(Role.user(ADMIN_USER_ID)),
 ];
 
+/** Leitura de modelos para aluno/instrutor (HUD de arcos no vídeo). */
+const AIRCRAFT_MODELS_COLLECTION_PERMS = [
+  ...ADMIN_PERMS,
+  Permission.read(Role.label("instrutor")),
+  Permission.read(Role.label("aluno")),
+  Permission.read(Role.users()),
+];
+
 const AIRCRAFTS_COLLECTION_PERMS = [
   ...ADMIN_PERMS,
   Permission.read(Role.label("instrutor")),
@@ -68,7 +76,12 @@ async function main() {
       continue;
     }
     try {
-      const permissions = colName === "aircrafts" ? AIRCRAFTS_COLLECTION_PERMS : ADMIN_PERMS;
+      const permissions =
+        colName === "aircrafts"
+          ? AIRCRAFTS_COLLECTION_PERMS
+          : colName === "aircraft_models"
+            ? AIRCRAFT_MODELS_COLLECTION_PERMS
+            : ADMIN_PERMS;
       await db.updateCollection(DATABASE_ID, col.$id, colName, permissions, true, true);
       console.log(`  ✓ Fixed: ${colName} (${col.$id})`);
       if (colName === "aircrafts") {
