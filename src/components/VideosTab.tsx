@@ -848,6 +848,9 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           cfWorkerUrl: workerConfig.url,
           cfWorkerSecret: workerConfig.secret,
           outputKey: `flight-${video.flight_id}-${video.id}-telemetry-${Date.now()}.mp4`,
+          trimStartSec: trimStartSec ?? undefined,
+          trimEndSec: trimEndSec ?? undefined,
+          orientation,
         }),
       });
       const payload = await res.json() as { fileUrl?: string; error?: string };
