@@ -1,4 +1,6 @@
+import L from "leaflet";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CircleMarker, MapContainer, Popup, TileLayer, Tooltip as LeafletTooltip, useMap } from "react-leaflet";
 import {
   Area,
   AreaChart,
@@ -12,7 +14,7 @@ import {
   YAxis,
 } from "recharts";
 import { useAuth } from "../contexts/AuthContext";
-import { listAerodromes, type Aerodrome } from "../lib/aerodromesDb";
+import { listAerodromesByCodes, type Aerodrome } from "../lib/aerodromesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, listSavedFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import {
@@ -56,8 +58,6 @@ type FormationState = {
 
 type VisitedAerodrome = Aerodrome & {
   code: string;
-  x: number;
-  y: number;
 };
 
 type VisitedAerodromesState = {
@@ -187,15 +187,6 @@ function useJourneyMetrics(enabled: boolean): JourneyState {
   return state;
 }
 
-function projectBrazilPoint(latitude: number, longitude: number): { x: number; y: number } {
-  const x = ((longitude + 74) / 40) * 100;
-  const y = ((6 - latitude) / 40) * 100;
-  return {
-    x: Math.max(5, Math.min(95, x)),
-    y: Math.max(5, Math.min(95, y)),
-  };
-}
-
 function useVisitedAerodromes(codes: string[], enabled: boolean): VisitedAerodromesState {
   const [state, setState] = useState<VisitedAerodromesState>({ points: [], missingCodes: [], loading: false, error: null });
   const codesKey = useMemo(() => codes.map((code) => code.trim().toUpperCase()).filter(Boolean).sort().join("|"), [codes]);
@@ -213,7 +204,7 @@ function useVisitedAerodromes(codes: string[], enabled: boolean): VisitedAerodro
     async function load() {
       setState((prev) => ({ ...prev, loading: true, error: null }));
       try {
-        const aerodromes = await listAerodromes();
+        const aerodromes = await listAerodromesByCodes(wantedCodes);
         if (cancelled) return;
         const byCode = new Map<string, Aerodrome>();
         aerodromes.forEach((aerodrome) => {
@@ -235,7 +226,6 @@ function useVisitedAerodromes(codes: string[], enabled: boolean): VisitedAerodro
           points.push({
             ...aerodrome,
             code,
-            ...projectBrazilPoint(latitude, longitude),
           });
         });
         setState({ points, missingCodes, loading: false, error: null });
@@ -525,64 +515,75 @@ function SectionCard({ title, subtitle, compact = false, children }: { title: st
   );
 }
 
+function FitVisitedAerodromes({ points }: { points: VisitedAerodrome[] }) {
+  const map = useMap();
+  const boundsKey = points.map((point) => `${point.code}:${point.latitudeGeoPoint},${point.longitudeGeoPoint}`).join("|");
+
+  useEffect(() => {
+    const positions = points
+      .map((point) => [point.latitudeGeoPoint, point.longitudeGeoPoint] as [number | null, number | null])
+      .filter((position): position is [number, number] => position[0] !== null && position[1] !== null);
+    if (positions.length === 0) {
+      map.setView([-14.235, -51.9253], 4);
+    } else if (positions.length === 1) {
+      map.setView(positions[0], 10);
+    } else {
+      map.fitBounds(L.latLngBounds(positions), { padding: [44, 44], maxZoom: 10 });
+    }
+  }, [boundsKey, map, points]);
+
+  return null;
+}
+
 function BrazilVisitedMap({ state, totalAirports }: { state: VisitedAerodromesState; totalAirports: number }) {
   const knownCount = state.points.length;
-  const pathPoints = state.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
   const topPlaces = state.points.slice(0, 8);
 
   return (
     <SectionCard title="Mapa da jornada" subtitle="Aerodromos visitados no Brasil.">
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-center">
-        <div className="relative min-h-72 overflow-hidden rounded-2xl border border-sky-400/15 bg-[radial-gradient(circle_at_20%_18%,rgba(14,165,233,0.18),transparent_30%),linear-gradient(135deg,rgba(8,47,73,0.68),rgba(15,23,42,0.96)_55%,rgba(6,78,59,0.52))] p-3">
-          <div className="absolute left-4 top-4 z-10 rounded-xl border border-white/10 bg-[rgba(15,23,42,0.75)] px-3 py-2 shadow-lg shadow-slate-950/30">
+        <div className="relative h-[28rem] overflow-hidden rounded-2xl border border-sky-400/20 bg-slate-950">
+          <div className="pointer-events-none absolute left-4 top-4 z-[500] rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 shadow-lg shadow-slate-950/30 backdrop-blur">
             <p className="text-[10px] font-bold uppercase tracking-widest text-sky-300/90">Territorio explorado</p>
             <p className="mt-0.5 text-2xl font-black leading-none text-white">{formatInteger(totalAirports)}</p>
           </div>
-          <svg viewBox="0 0 100 100" role="img" aria-label="Mapa simplificado do Brasil com aerodromos visitados" className="h-72 w-full">
-            <defs>
-              <linearGradient id="journeyBrazilFill" x1="0" x2="1" y1="0" y2="1">
-                <stop offset="0%" stopColor="#22c55e" stopOpacity="0.95" />
-                <stop offset="55%" stopColor="#14b8a6" stopOpacity="0.72" />
-                <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.58" />
-              </linearGradient>
-              <filter id="journeyPinGlow" x="-80%" y="-80%" width="260%" height="260%">
-                <feGaussianBlur stdDeviation="1.6" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-            <path
-              d="M47 6 L56 9 L62 15 L72 18 L76 27 L83 33 L82 42 L88 51 L82 61 L75 68 L70 78 L59 83 L51 94 L43 88 L35 88 L27 81 L20 72 L16 61 L10 52 L16 43 L14 33 L22 27 L29 17 L39 14 Z"
-              fill="url(#journeyBrazilFill)"
-              stroke="#7dd3fc"
-              strokeWidth="1.4"
-              strokeLinejoin="round"
-              opacity="0.9"
+          <MapContainer center={[-14.235, -51.9253]} zoom={4} className="h-full w-full" scrollWheelZoom zoomControl>
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+              maxZoom={18}
+              url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
             />
-            <path
-              d="M47 6 L56 9 L62 15 L72 18 L76 27 L83 33 L82 42 L88 51 L82 61 L75 68 L70 78 L59 83 L51 94 L43 88 L35 88 L27 81 L20 72 L16 61 L10 52 L16 43 L14 33 L22 27 L29 17 L39 14 Z"
-              fill="none"
-              stroke="#ecfeff"
-              strokeOpacity="0.22"
-              strokeWidth="4"
-              strokeLinejoin="round"
-            />
-            {pathPoints && state.points.length > 1 ? (
-              <polyline points={pathPoints} fill="none" stroke="#facc15" strokeDasharray="2.2 2.4" strokeLinecap="round" strokeWidth="0.9" opacity="0.65" />
-            ) : null}
-            {state.points.map((point, index) => (
-              <g key={`${point.code}-${point.id}`} transform={`translate(${point.x} ${point.y})`} filter="url(#journeyPinGlow)">
-                <title>{[point.code, point.name, [point.municipality, point.uf].filter(Boolean).join("/")].filter(Boolean).join(" - ")}</title>
-                <circle r="3.2" fill="#facc15" stroke="#fff7ed" strokeWidth="1" />
-                <circle r="6.3" fill="none" stroke="#fde68a" strokeOpacity="0.24" strokeWidth="1.4" />
-                <text y="-5.7" textAnchor="middle" className="fill-white text-[4px] font-black">
-                  {index + 1}
-                </text>
-              </g>
-            ))}
-          </svg>
+            {state.points.map((point) => {
+              if (point.latitudeGeoPoint === null || point.longitudeGeoPoint === null) return null;
+              const place = [point.municipality, point.uf].filter(Boolean).join(" - ");
+              return (
+                <CircleMarker
+                  key={`${point.code}-${point.id}`}
+                  center={[point.latitudeGeoPoint, point.longitudeGeoPoint]}
+                  radius={8}
+                  pathOptions={{ color: "#f8fafc", fillColor: "#facc15", fillOpacity: 0.95, weight: 2 }}
+                >
+                  <LeafletTooltip permanent direction="right" offset={[10, 0]} className="journey-airport-label">
+                    {point.code}
+                  </LeafletTooltip>
+                  <Popup>
+                    <div className="min-w-40">
+                      <strong>{point.code}</strong>
+                      <br />
+                      {point.name || "Aerodromo"}
+                      {place ? (
+                        <>
+                          <br />
+                          {place}
+                        </>
+                      ) : null}
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              );
+            })}
+            <FitVisitedAerodromes points={state.points} />
+          </MapContainer>
         </div>
 
         <div className="space-y-3">

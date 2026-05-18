@@ -4,6 +4,7 @@ import App from "./App";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ToastProvider } from "./components/ui/ToastProvider";
 import { preloadBranding } from "./lib/schoolRulesDb";
+import "leaflet/dist/leaflet.css";
 import "./index.css";
 
 // Apply cached branding synchronously before React renders to eliminate FOUC.

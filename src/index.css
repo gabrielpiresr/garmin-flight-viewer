@@ -158,6 +158,22 @@ body {
   font-size: 11px;
 }
 
+.journey-airport-label {
+  border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  border-radius: 0.35rem !important;
+  background: rgba(248, 250, 252, 0.92) !important;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18) !important;
+  color: #0f172a !important;
+  font-size: 11px !important;
+  font-weight: 900 !important;
+  letter-spacing: 0.04em;
+  padding: 2px 6px !important;
+}
+
+.journey-airport-label::before {
+  display: none;
+}
+
 .ProseMirror p.is-editor-empty:first-child::before {
   color: #64748b;
   content: attr(data-placeholder);

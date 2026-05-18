@@ -27,7 +27,8 @@
     "appwrite:setup-exercises": "node scripts/setup-training-exercises-collection.mjs",
     "appwrite:setup-tracks": "node scripts/setup-training-tracks.mjs",
     "appwrite:setup-rewards": "node scripts/setup-journey-rewards.mjs",
-    "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs"
+    "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs",
+    "appwrite:import-aerodromes": "node scripts/import-aerodromes.mjs"
   },
   "dependencies": {
     "@tiptap/extension-image": "^3.23.2",
