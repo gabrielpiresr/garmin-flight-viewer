@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
+import { HelpCenterTab } from "../HelpCenterTab";
 import { JornadaTab } from "../JornadaTab";
 import { ManobrasTab } from "../ManobrasTab";
 import { NoticeFeed } from "../NoticeFeed";
@@ -10,7 +11,7 @@ import { InstructorHome } from "./InstructorHome";
 import { InstructorProfileTab } from "./InstructorProfileTab";
 import { InstructorStudentsTab } from "./InstructorStudentsTab";
 
-type InstructorSection = "home" | "journey" | "flights" | "notices" | "manuals" | "maneuvers" | "students" | "profile";
+type InstructorSection = "home" | "journey" | "flights" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help";
 
 type NavItem = {
   id: InstructorSection;
@@ -104,6 +105,16 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "help",
+    label: "Ajuda",
+    sublabel: "Central de ajuda",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12Zm9.75-5.25a3.375 3.375 0 00-3.356 3H10.2a1.875 1.875 0 113.675.519c-.261.493-.694.801-1.166 1.104l-.259.166c-.538.348-1.2.777-1.2 1.711v.75h1.5v-.59c.056-.061.22-.174.514-.365l.253-.163c.566-.363 1.266-.812 1.684-1.603A3.375 3.375 0 0012 6.75Zm0 10.5a1.125 1.125 0 100-2.25 1.125 1.125 0 000 2.25Z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -115,6 +126,7 @@ const SECTION_ROUTES = [
   { id: "maneuvers", path: "/instrutor/manobras" },
   { id: "students", path: "/instrutor/alunos" },
   { id: "profile", path: "/instrutor/perfil" },
+  { id: "help", path: "/instrutor/ajuda" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
 function EmptySection({ title }: { title: string }) {
@@ -246,6 +258,11 @@ export function InstructorLayout() {
           {openedSections.has("profile") && (
             <div hidden={section !== "profile"}>
               <InstructorProfileTab />
+            </div>
+          )}
+          {openedSections.has("help") && (
+            <div hidden={section !== "help"}>
+              <HelpCenterTab />
             </div>
           )}
         </main>

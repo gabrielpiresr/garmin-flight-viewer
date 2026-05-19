@@ -6,6 +6,7 @@ import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from ".
 import { AgendamentoTab } from "./AgendamentoTab";
 import { AlunoProfileDashboard } from "./AlunoProfileDashboard";
 import { CreditosTab } from "./CreditosTab";
+import { HelpCenterTab } from "./HelpCenterTab";
 import { JornadaTab } from "./JornadaTab";
 import { ManobrasTab } from "./ManobrasTab";
 import { ManuaisTab } from "./ManuaisTab";
@@ -119,6 +120,16 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "ajuda",
+    label: "Ajuda",
+    sublabel: "Central de ajuda",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12Zm9.75-5.25a3.375 3.375 0 00-3.356 3H10.2a1.875 1.875 0 113.675.519c-.261.493-.694.801-1.166 1.104l-.259.166c-.538.348-1.2.777-1.2 1.711v.75h1.5v-.59c.056-.061.22-.174.514-.365l.253-.163c.566-.363 1.266-.812 1.684-1.603A3.375 3.375 0 0012 6.75Zm0 10.5a1.125 1.125 0 100-2.25 1.125 1.125 0 000 2.25Z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -131,6 +142,7 @@ const SECTION_ROUTES = [
   { id: "manuais", path: "/aluno/manuais" },
   { id: "manobras", path: "/aluno/manobras" },
   { id: "perfil", path: "/aluno/perfil" },
+  { id: "ajuda", path: "/aluno/ajuda" },
 ] satisfies readonly TabRoute<Section>[];
 
 export function MainLayout() {
@@ -294,6 +306,11 @@ export function MainLayout() {
           {openedSections.has("perfil") && (
             <div hidden={section !== "perfil"}>
               <AlunoProfileDashboard />
+            </div>
+          )}
+          {openedSections.has("ajuda") && (
+            <div hidden={section !== "ajuda"}>
+              <HelpCenterTab />
             </div>
           )}
         </main>

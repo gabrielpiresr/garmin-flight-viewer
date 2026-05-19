@@ -216,6 +216,7 @@ const SETTINGS_ROUTES = [
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
   { id: "exercises", path: "/admin/configuracoes/exercicios", aliases: ["/admin/exercicios"] },
   { id: "notices", path: "/admin/configuracoes/avisos", aliases: ["/admin/avisos"] },
+  { id: "help", path: "/admin/configuracoes/central-ajuda" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
 const ADMIN_ROUTES = [

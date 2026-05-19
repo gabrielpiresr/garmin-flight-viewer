@@ -341,7 +341,7 @@ export function TrainingTracksTab() {
           className="w-full rounded-lg bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-500"
         >
           Nova trilha
-        ↓</button>
+        </button>
         <div className="space-y-2">
           {tracks.map((track) => (
             <button
@@ -359,7 +359,7 @@ export function TrainingTracksTab() {
                 {track.missionCount} missões · {formatMinutes(track.totalMinutes)}
                 {track.isDefault ? " · default" : ""}
               </span>
-            ↓</button>
+            </button>
           ))}
           {tracks.length === 0 ? <p className="rounded-lg border border-slate-800 p-3 text-sm text-slate-500">Nenhuma trilha cadastrada.</p> : null}
         </div>
@@ -382,7 +382,7 @@ export function TrainingTracksTab() {
             className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60"
           >
             {saving ? "Salvando..." : "Salvar trilha"}
-          ↓</button>
+          </button>
         </div>
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
@@ -421,7 +421,7 @@ export function TrainingTracksTab() {
               }`}
             >
               {label}
-            ↓</button>
+            </button>
           ))}
         </div>
 
@@ -446,7 +446,7 @@ export function TrainingTracksTab() {
                   aria-label="Arrastar etapa"
                 >
                   <GripIcon />
-                ↓</button>
+                </button>
                 <label className="min-w-0 flex-1 text-xs text-slate-400">
                   Etapa
                   <input
@@ -458,7 +458,7 @@ export function TrainingTracksTab() {
                 </label>
                 <button type="button" onClick={() => setDraft((prev) => ({ ...prev, stages: prev.stages.filter((_, idx) => idx !== stageIndex) }))} className="rounded border border-red-900/60 px-2 py-2 text-xs text-red-300 hover:bg-red-950/40">
                   Remover
-                ↓</button>
+                </button>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -522,11 +522,11 @@ export function TrainingTracksTab() {
                 >
                   <EyeIcon />
                   {openStageIds.has(stage.id) ? "Ocultar missões" : "Mostrar missões"}
-                ↓</button>
+                </button>
                 <button type="button" onClick={() => addMission(stageIndex)} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
                   <PlusIcon />
                   Adicionar missão
-                ↓</button>
+                </button>
               </div>
             </div>
           ))}
@@ -538,7 +538,7 @@ export function TrainingTracksTab() {
           className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
         >
           Adicionar etapa
-        ↓</button>
+        </button>
         </>
         ) : selected ? (
           <RewardsEditor
@@ -556,4 +556,3 @@ export function TrainingTracksTab() {
     </div>
   );
 }
-

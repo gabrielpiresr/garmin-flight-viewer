@@ -17,6 +17,7 @@ import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { getProfile, type PilotProfile } from "../../lib/rbac";
 import { formatNumber } from "../../lib/weightBalance";
 import type { StudentCreditStatement } from "../../types/credits";
+import { StudentObservationsSection } from "../admin/StudentObservationsSection";
 import { CreditStatementView } from "../CreditStatementView";
 import { TelemetriaTab } from "../TelemetriaTab";
 import { VideosTab } from "../VideosTab";
@@ -493,6 +494,13 @@ export function StudentFlightContextPanel({
           </div>
         </div>
       </section>
+
+      {(user?.role === "admin" || user?.role === "instrutor") ? (
+        <StudentObservationsSection
+          studentUserId={studentUserId}
+          currentUser={{ id: user.id, name: user.name || user.email, role: user.role }}
+        />
+      ) : null}
 
       {creditStatement ? (
         <CreditStatementView

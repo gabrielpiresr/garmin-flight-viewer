@@ -9,6 +9,7 @@ export type StudentPortalTab =
   | "avisos"
   | "manuais"
   | "manobras"
+  | "ajuda"
   | "perfil";
 
 export const SCHOOL_FONT_OPTIONS = [
@@ -65,6 +66,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "avisos", label: "Avisos" },
   { id: "manuais", label: "Manuais" },
   { id: "manobras", label: "Manobras" },
+  { id: "ajuda", label: "Ajuda" },
   { id: "perfil", label: "Perfil" },
 ];
 

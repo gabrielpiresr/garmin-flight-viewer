@@ -20,6 +20,8 @@ type AuthState = {
   user: AppwriteUser | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  requestPasswordReset: (email: string, redirectUrl: string) => Promise<{ error: Error | null }>;
+  completePasswordReset: (userId: string, secret: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (
     email: string,
     password: string,
@@ -63,6 +65,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const role = profileRole === "aluno" ? labelRole : profileRole;
       await ensureProfile(u.$id, u.email, role);
       setUser({ id: u.$id, email: u.email, name: u.name, role, schoolId: DEFAULT_SCHOOL_ID });
+      return { error: null };
+    } catch (e) {
+      return { error: e as Error };
+    }
+  }, []);
+
+  const requestPasswordReset = useCallback(async (email: string, redirectUrl: string) => {
+    if (!account) return { error: new Error("Appwrite nao configurado") };
+    try {
+      await account.createRecovery({ email, url: redirectUrl });
+      return { error: null };
+    } catch (e) {
+      return { error: e as Error };
+    }
+  }, []);
+
+  const completePasswordReset = useCallback(async (userId: string, secret: string, password: string) => {
+    if (!account) return { error: new Error("Appwrite nao configurado") };
+    try {
+      await account.updateRecovery({ userId, secret, password });
       return { error: null };
     } catch (e) {
       return { error: e as Error };
@@ -129,8 +151,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({ user, loading, signIn, signUp, signOut, configured: isAppwriteConfigured }),
-    [user, loading, signIn, signUp, signOut],
+    () => ({
+      user,
+      loading,
+      signIn,
+      requestPasswordReset,
+      completePasswordReset,
+      signUp,
+      signOut,
+      configured: isAppwriteConfigured,
+    }),
+    [user, loading, signIn, requestPasswordReset, completePasswordReset, signUp, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

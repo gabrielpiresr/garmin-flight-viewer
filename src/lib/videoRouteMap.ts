@@ -200,6 +200,28 @@ function paintMarker(
   ctx.stroke();
 }
 
+function canvasDisplaySize(canvas: HTMLCanvasElement, fallbackWidth: number, fallbackHeight: number): { width: number; height: number } {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = rect.width > 0 ? Math.round(rect.width * dpr) : fallbackWidth;
+  const height = rect.height > 0 ? Math.round(rect.height * dpr) : fallbackHeight;
+  return { width: Math.max(1, width), height: Math.max(1, height) };
+}
+
+function applyRouteMapViewport(
+  ctx: CanvasRenderingContext2D,
+  targetWidth: number,
+  targetHeight: number,
+  sourceWidth: number,
+  sourceHeight: number,
+): void {
+  const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const offsetX = (targetWidth - sourceWidth * scale) / 2;
+  const offsetY = (targetHeight - sourceHeight * scale) / 2;
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(scale, scale);
+}
+
 /** Pinta fundo + rota (chamar quando map/points mudam). */
 export function drawVideoRouteMapBase(
   canvas: HTMLCanvasElement,
@@ -209,22 +231,27 @@ export function drawVideoRouteMapBase(
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  const width = map?.width ?? 320;
-  const height = map?.height ?? 224;
+  const sourceWidth = map?.width ?? 320;
+  const sourceHeight = map?.height ?? 224;
+  const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
   ctx.clearRect(0, 0, width, height);
 
-  const routePts = map?.routePoints.length ? map.routePoints : projectFallbackRoute(points, width, height);
+  const routePts = map?.routePoints.length ? map.routePoints : projectFallbackRoute(points, sourceWidth, sourceHeight);
+
+  ctx.save();
+  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
 
   if (map && map.tiles.length > 0) {
     paintTiles(ctx, map);
   } else {
     ctx.fillStyle = fallbackStyle === "hud" ? "#1e3a4f" : "rgba(15,23,42,.85)";
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, sourceWidth, sourceHeight);
   }
 
   paintRouteLine(ctx, routePts);
+  ctx.restore();
 }
 
 /** Redesenha mapa + marcador usando tiles em cache (síncrono, sem piscar). */
@@ -239,7 +266,13 @@ export function drawVideoRouteMapMarker(
   if (!current) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  paintMarker(ctx, map, current, map?.width ?? 320, map?.height ?? 224);
+  const sourceWidth = map?.width ?? 320;
+  const sourceHeight = map?.height ?? 224;
+  const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
+  ctx.save();
+  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
+  paintMarker(ctx, map, current, sourceWidth, sourceHeight);
+  ctx.restore();
 }
 
 /** Desenho completo (export / fallback). */
@@ -253,6 +286,14 @@ export function drawVideoRouteMap(
   drawVideoRouteMapBase(canvas, map, points, fallbackStyle);
   if (current) {
     const ctx = canvas.getContext("2d");
-    if (ctx) paintMarker(ctx, map, current, map?.width ?? 320, map?.height ?? 224);
+    if (ctx) {
+      const sourceWidth = map?.width ?? 320;
+      const sourceHeight = map?.height ?? 224;
+      const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
+      ctx.save();
+      applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
+      paintMarker(ctx, map, current, sourceWidth, sourceHeight);
+      ctx.restore();
+    }
   }
 }

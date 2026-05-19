@@ -1,0 +1,71 @@
+{
+  "name": "flight-video-helper-app",
+  "version": "1.0.0",
+  "description": "Flight Video Helper — runs the local video processing server",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.flightschool.videohelper",
+    "productName": "Flight Video Helper",
+    "copyright": "Copyright © 2025 Flight School",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../video-helper/helper.js",
+        "to": "helper.js"
+      },
+      {
+        "from": "../video-helper/watermark.png",
+        "to": "watermark.png"
+      },
+      {
+        "from": "../video-helper/ffmpeg.exe",
+        "to": "ffmpeg.exe"
+      },
+      {
+        "from": "../video-helper/ffprobe.exe",
+        "to": "ffprobe.exe"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Flight Video Helper",
+      "uninstallDisplayName": "Flight Video Helper"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.png",
+      "extraResources": [
+        {
+          "from": "../video-helper/ffmpeg",
+          "to": "ffmpeg"
+        },
+        {
+          "from": "../video-helper/ffprobe",
+          "to": "ffprobe"
+        }
+      ]
+    }
+  }
+}

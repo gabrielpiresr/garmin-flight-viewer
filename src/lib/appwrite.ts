@@ -30,6 +30,11 @@ export const MANEUVERS_ARTICLES_COL_ID =
   (import.meta.env.VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID as string | undefined) ?? "6a0461d0001a1ceefdad";
 export const MANEUVERS_MEDIA_BUCKET_ID =
   (import.meta.env.VITE_APPWRITE_MANEUVERS_MEDIA_BUCKET_ID as string | undefined) ?? BUCKET_ID;
+export const HELP_SECTIONS_COL_ID = import.meta.env.VITE_APPWRITE_HELP_SECTIONS_COL_ID as string | undefined;
+export const HELP_SUBSECTIONS_COL_ID = import.meta.env.VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID as string | undefined;
+export const HELP_ARTICLES_COL_ID = import.meta.env.VITE_APPWRITE_HELP_ARTICLES_COL_ID as string | undefined;
+export const HELP_MEDIA_BUCKET_ID =
+  (import.meta.env.VITE_APPWRITE_HELP_MEDIA_BUCKET_ID as string | undefined) ?? BUCKET_ID;
 export const INSTRUCTOR_PREFS_COL_ID = import.meta.env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID as string | undefined;
 export const STUDENT_CREDITS_COL_ID = import.meta.env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID as string | undefined;
 export const PLATFORM_SETTINGS_COL_ID = import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID as string | undefined;

@@ -35,7 +35,18 @@ function upsertEnvLine(filePath, key, value) {
 }
 
 async function upsertVariable(functions, key, value, secret = false) {
-  const existing = await functions.listVariables({ functionId });
+  const variables = [];
+  let offset = 0;
+  while (true) {
+    const page = await functions.listVariables({
+      functionId,
+      queries: [sdk.Query.limit(100), sdk.Query.offset(offset)],
+    });
+    variables.push(...(page.variables || []));
+    if (!page.variables || page.variables.length < 100 || variables.length >= (page.total || 0)) break;
+    offset += 100;
+  }
+  const existing = { variables };
   const current = existing.variables.find((variable) => variable.key === key);
   if (current) {
     await functions.updateVariable({
@@ -130,6 +141,12 @@ async function main() {
     process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID;
   const maneuversArticlesCollectionId =
     process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID;
+  const helpSectionsCollectionId =
+    process.env.APPWRITE_HELP_SECTIONS_COLLECTION_ID || env.VITE_APPWRITE_HELP_SECTIONS_COL_ID;
+  const helpSubsectionsCollectionId =
+    process.env.APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID || env.VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID;
+  const helpArticlesCollectionId =
+    process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_HELP_ARTICLES_COL_ID;
   const platformSettingsCollectionId =
     process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
   const trainingTracksCollectionId =
@@ -164,6 +181,9 @@ async function main() {
   if (!maneuversSectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID");
   if (!maneuversSubsectionsCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID");
   if (!maneuversArticlesCollectionId) missing.push("VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID");
+  if (!helpSectionsCollectionId) missing.push("VITE_APPWRITE_HELP_SECTIONS_COL_ID");
+  if (!helpSubsectionsCollectionId) missing.push("VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID");
+  if (!helpArticlesCollectionId) missing.push("VITE_APPWRITE_HELP_ARTICLES_COL_ID");
   if (!platformSettingsCollectionId) missing.push("VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID");
   if (!pushSubscriptionsCollectionId) missing.push("VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID");
   if (!notificationDeliveriesCollectionId) missing.push("VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID");
@@ -189,6 +209,9 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID", maneuversSectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID", maneuversSubsectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID", maneuversArticlesCollectionId);
+  await upsertVariable(functions, "APPWRITE_HELP_SECTIONS_COLLECTION_ID", helpSectionsCollectionId);
+  await upsertVariable(functions, "APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID", helpSubsectionsCollectionId);
+  await upsertVariable(functions, "APPWRITE_HELP_ARTICLES_COLLECTION_ID", helpArticlesCollectionId);
   await upsertVariable(functions, "APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", platformSettingsCollectionId);
   await upsertVariable(functions, "APPWRITE_TRAINING_TRACKS_COLLECTION_ID", trainingTracksCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);

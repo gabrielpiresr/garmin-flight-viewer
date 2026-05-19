@@ -1,4 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { ExportModal, type ExportProgress } from "./ExportModal";
+import { renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
 import { useAuth } from "../contexts/AuthContext";
 import { account } from "../lib/appwrite";
 import { Skeleton } from "./ui/Skeleton";
@@ -35,6 +37,7 @@ import {
   drawTelemetryChart,
   HudTelemetryOverlay,
   TelemetryBrandMark,
+  VerticalCompactOverlay,
   type TelemetryOverlayStyle,
 } from "./VideoTelemetryOverlay";
 
@@ -694,13 +697,17 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [airspeedArcs, setAirspeedArcs] = useState<AirspeedArcLimits | null>(null);
   const [routeMap, setRouteMap] = useState<VideoRouteMapData | null>(null);
-  const [isPlayerFullscreen, setIsPlayerFullscreen] = useState(false);
   const [trimStartSec, setTrimStartSec] = useState<number | null>(null);
   const [trimEndSec, setTrimEndSec] = useState<number | null>(null);
   const [orientation, setOrientation] = useState<"horizontal" | "vertical">("horizontal");
+  const [verticalCropPct, setVerticalCropPct] = useState(50);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const brand = useMemo(() => getCachedVideoBrand(), []);
+  const verticalDragRef = useRef<{ startX: number; startCrop: number } | null>(null);
+  const currentTimeRef = useRef(0);
 
   const verticalSpeedFpm = useMemo(
     () => verticalSpeedFpmAtTime(points, currentTimeSec),
@@ -747,42 +754,95 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     };
   }, [points]);
 
+  const syncPlaybackState = useCallback((el: HTMLVideoElement) => {
+    const time = el.currentTime;
+    currentTimeRef.current = time;
+    setCurrentTimeSec(time);
+    setCurrentPoint(points.length > 0 ? pointAtVideoTime(points, time) : null);
+  }, [points]);
+
+  // The 16:9 and 9:16 previews mount different <video> elements. Rebind listeners
+  // when orientation changes so widgets and the trim playhead keep following playback.
   useEffect(() => {
     const el = videoRef.current;
-    if (!el || points.length === 0) return;
-    const update = () => {
-      setCurrentPoint(pointAtVideoTime(points, el.currentTime));
-      setCurrentTimeSec(el.currentTime);
+    if (!el) return;
+
+    let restoredTime = false;
+    const restoreAndSync = () => {
+      if (!restoredTime) {
+        const targetTime = currentTimeRef.current;
+        const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null;
+        const clampedTime = duration === null ? targetTime : Math.max(0, Math.min(duration, targetTime));
+        if (clampedTime > 0 && Math.abs(el.currentTime - clampedTime) > 0.25) {
+          try {
+            el.currentTime = clampedTime;
+            restoredTime = true;
+          } catch {
+            // Some browsers reject seeks before metadata is ready; loadedmetadata will retry.
+          }
+        } else {
+          restoredTime = true;
+        }
+      }
+      syncPlaybackState(el);
     };
-    update();
+    const update = () => syncPlaybackState(el);
+
+    if (el.readyState >= 1) restoreAndSync();
+    else update();
+
+    el.addEventListener("loadedmetadata", restoreAndSync);
+    el.addEventListener("loadeddata", restoreAndSync);
+    el.addEventListener("durationchange", restoreAndSync);
     el.addEventListener("timeupdate", update);
     el.addEventListener("seeked", update);
+    el.addEventListener("play", update);
     return () => {
+      el.removeEventListener("loadedmetadata", restoreAndSync);
+      el.removeEventListener("loadeddata", restoreAndSync);
+      el.removeEventListener("durationchange", restoreAndSync);
       el.removeEventListener("timeupdate", update);
       el.removeEventListener("seeked", update);
+      el.removeEventListener("play", update);
     };
-  }, [points, video.id]);
+  }, [orientation, syncPlaybackState, video.id]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    drawVideoRouteMapBase(canvas, routeMap, points, overlayStyle);
-  }, [points, routeMap, overlayStyle]);
+    // Double-rAF: first frame commits the DOM (new canvas mounts), second frame draws after layout
+    let raf1: number;
+    let raf2: number;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        drawVideoRouteMapBase(canvas, routeMap, points, overlayStyle);
+      });
+    });
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
+  }, [points, routeMap, overlayStyle, orientation]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, overlayStyle);
-  }, [points, currentPoint, routeMap, overlayStyle]);
+  }, [points, currentPoint, routeMap, overlayStyle, orientation]);
+
+  const chartPoints = useMemo(() => {
+    if (trimStartSec === null && trimEndSec === null) return points;
+    const startMs = (trimStartSec ?? 0) * 1000;
+    const endMs = (trimEndSec ?? (points.at(-1)?.timeMs ?? Infinity) + 1) * 1000;
+    return points.filter((p) => p.timeMs >= startMs && p.timeMs <= endMs);
+  }, [points, trimStartSec, trimEndSec]);
 
   const redrawCharts = useCallback(() => {
-    if (altitudeChartRef.current) drawTelemetryChart(altitudeChartRef.current, points, currentPoint, "altitude");
-    if (speedChartRef.current) drawTelemetryChart(speedChartRef.current, points, currentPoint, "speed");
-  }, [points, currentPoint]);
+    if (altitudeChartRef.current) drawTelemetryChart(altitudeChartRef.current, chartPoints, currentPoint, "altitude");
+    if (speedChartRef.current) drawTelemetryChart(speedChartRef.current, chartPoints, currentPoint, "speed");
+  }, [chartPoints, currentPoint]);
 
   useEffect(() => {
-    redrawCharts();
-  }, [redrawCharts, enabledWidgets, overlayStyle]);
+    const raf = requestAnimationFrame(() => redrawCharts());
+    return () => cancelAnimationFrame(raf);
+  }, [redrawCharts, enabledWidgets, overlayStyle, orientation]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -809,7 +869,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         );
         return;
       }
-      setIsPlayerFullscreen(active === container);
+      // fullscreen state tracked externally if needed
     };
 
     document.addEventListener("fullscreenchange", onFullscreenChange);
@@ -835,29 +895,98 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       setExportError("Storage nao configurado para exportar o MP4.");
       return;
     }
+
+    const startSec = trimStartSec ?? 0;
+    const endSec = trimEndSec ?? (points.length > 0 ? points[points.length - 1].timeMs / 1000 : 0);
+    if (endSec <= startSec) {
+      setExportError("Trecho inválido — marque início antes do fim.");
+      return;
+    }
+
+    const jobId = `overlay-${Date.now()}`;
+    const blank: ExportProgress = {
+      stage: "render", renderPct: 0, uploadPct: 0, processPct: 0, finalizePct: 0,
+    };
+
     setExporting(true);
     setExportError(null);
+    setExportProgress(blank);
+
+    const upd = (patch: Partial<ExportProgress>) =>
+      setExportProgress((p) => ({ ...(p ?? blank), ...patch }));
+
     try {
-      const res = await fetch(`${HELPER_URL}/render-overlay`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoUrl: video.file_url,
-          telemetryJson: video.telemetry_json,
-          widgets: exportWidgets,
+      // Stage 1 — render overlay video in browser
+      const containerH = containerRef.current?.clientHeight ?? 720;
+      const containerW = containerRef.current?.clientWidth ?? 1280;
+      // For vertical: actual 9:16 column width = containerH × (9/16)
+      const playerWidth = orientation === "vertical" ? Math.round(containerH * 9 / 16) : containerW;
+      const playerHeight = containerH;
+      const overlay = await renderOverlayVideo({
+        points,
+        widgets: exportWidgets,
+        startSec,
+        endSec,
+        orientation,
+        brand: brand?.schoolName ?? "",
+        playerWidth,
+        playerHeight,
+        overlayStyle,
+        airspeedArcs,
+        onProgress: (stage, pct) => {
+          if (stage === "render") upd({ stage: "render", renderPct: pct });
+        },
+      });
+
+      // Stage 2 — upload overlay to helper + start composite job
+      upd({ stage: "upload", renderPct: 1 });
+      await uploadOverlayAndComposite(
+        HELPER_URL,
+        overlay,
+        {
+          videoUrl: video.file_url!,
           cfWorkerUrl: workerConfig.url,
           cfWorkerSecret: workerConfig.secret,
           outputKey: `flight-${video.flight_id}-${video.id}-telemetry-${Date.now()}.mp4`,
           trimStartSec: trimStartSec ?? undefined,
           trimEndSec: trimEndSec ?? undefined,
           orientation,
-        }),
+          verticalCropPct: orientation === "vertical" ? verticalCropPct : undefined,
+          jobId,
+        },
+        (pct) => upd({ uploadPct: pct }),
+      );
+
+      // Stages 3 & 4 — watch SSE progress from helper
+      upd({ stage: "process", uploadPct: 1 });
+      await new Promise<void>((resolve, reject) => {
+        const es = new EventSource(`${HELPER_URL}/progress/${jobId}`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data as string) as {
+              stage: string; percent: number; fileUrl?: string; message?: string;
+            };
+            if (data.stage === "upload") {
+              upd({ stage: "finalize", processPct: 1, finalizePct: data.percent / 100 });
+            } else if (data.stage === "done") {
+              upd({ stage: "done", finalizePct: 1, fileUrl: data.fileUrl });
+              es.close();
+              resolve();
+            } else if (data.stage === "error") {
+              es.close();
+              reject(new Error(data.message ?? "Erro no helper"));
+            } else {
+              upd({ stage: "process", processPct: data.percent / 100 });
+            }
+          } catch { /* ignore parse errors */ }
+        };
+        es.onerror = () => { es.close(); reject(new Error("Conexão com helper perdida")); };
       });
-      const payload = await res.json() as { fileUrl?: string; error?: string };
-      if (!res.ok || !payload.fileUrl) throw new Error(payload.error ?? `Helper retornou ${res.status}`);
-      window.open(payload.fileUrl, "_blank", "noopener,noreferrer");
+
     } catch (e) {
-      setExportError((e as Error).message);
+      const msg = (e as Error).message;
+      setExportError(msg);
+      upd({ stage: "error", errorMsg: msg });
     } finally {
       setExporting(false);
     }
@@ -870,7 +999,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         className="relative aspect-video w-full rounded-lg border border-slate-800 bg-black flex items-center justify-center overflow-hidden"
       >
         {orientation === "vertical" ? (
-          <div className="relative h-full aspect-[9/16] overflow-hidden">
+          <div className="relative h-full aspect-[9/16] overflow-hidden select-none">
             <video
               ref={videoRef}
               src={video.file_url}
@@ -878,9 +1007,10 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
               preload="metadata"
               playsInline
               className="h-full w-full object-cover bg-black"
+              style={{ objectPosition: `${verticalCropPct}% center` }}
             />
             {hasTelemetry && (
-              <div className="pointer-events-none absolute inset-0">
+              <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[7%]">
                 <TelemetryBrandMark brand={brand} compact />
                 <VerticalCompactOverlay
                   altitudeChartRef={altitudeChartRef}
@@ -892,6 +1022,26 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
                 />
               </div>
             )}
+            {/* Drag zone: cobre área acima dos controles nativos para arrastar o enquadramento */}
+            <div
+              className="absolute inset-x-0 top-0 bottom-[12%] z-10 cursor-ew-resize"
+              onPointerDown={(e) => {
+                (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                verticalDragRef.current = { startX: e.clientX, startCrop: verticalCropPct };
+              }}
+              onPointerMove={(e) => {
+                if (!verticalDragRef.current) return;
+                const el = e.currentTarget as HTMLElement;
+                const deltaX = e.clientX - verticalDragRef.current.startX;
+                const deltaPct = (deltaX / el.clientWidth) * 100;
+                setVerticalCropPct(Math.max(0, Math.min(100, verticalDragRef.current.startCrop - deltaPct)));
+              }}
+              onPointerUp={() => { verticalDragRef.current = null; }}
+              onPointerCancel={() => { verticalDragRef.current = null; }}
+            />
+            <div className="pointer-events-none absolute bottom-[13%] left-1/2 -translate-x-1/2 rounded bg-black/40 px-2 py-0.5 text-[9px] text-white/60">
+              ← arraste para enquadrar →
+            </div>
           </div>
         ) : (
           <>
@@ -904,7 +1054,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
               className="h-full w-full bg-black"
             />
             {hasTelemetry && (
-              <div className="pointer-events-none absolute inset-0">
+              <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[13%]">
                 <TelemetryBrandMark brand={brand} compact={overlayStyle === "compact"} />
                 {overlayStyle === "hud" ? (
                   <HudTelemetryOverlay
@@ -950,19 +1100,6 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
                   {style === "hud" ? "HUD" : "Compacto"}
                 </button>
               ))}
-              <span className="self-center text-slate-700">|</span>
-              {(["horizontal", "vertical"] as const).map((o) => (
-                <button
-                  key={o}
-                  type="button"
-                  onClick={() => setOrientation(o)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium ${
-                    orientation === o ? "bg-violet-500/20 text-violet-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                  }`}
-                >
-                  {o === "horizontal" ? "↔ Horiz." : "↕ Vertical"}
-                </button>
-              ))}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {available.map((widget) => (
@@ -981,20 +1118,41 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
               ))}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void handleRenderedDownload()}
-            disabled={exporting || enabledWidgets.every((w) => w === "route")}
-            className="rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700 disabled:opacity-50"
-          >
-            {exporting ? "Gerando MP4..." : "Baixar com widgets"}
-          </button>
         </div>
       )}
 
-      {/* Seleção de trecho */}
+      {/* Seleção de trecho + orientação */}
       <div className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 p-2">
         <div className="flex flex-wrap items-center gap-1.5">
+          {/* Botões de orientação — à esquerda, junto dos botões de corte */}
+          {(["horizontal", "vertical"] as const).map((o) => (
+            <button
+              key={o}
+              type="button"
+              onClick={() => {
+                if (videoRef.current) currentTimeRef.current = videoRef.current.currentTime;
+                setOrientation(o);
+              }}
+              title={o === "horizontal" ? "Horizontal (16:9)" : "Vertical (9:16)"}
+              className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium ${
+                orientation === o ? "bg-violet-500/20 text-violet-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              {o === "horizontal" ? (
+                <span
+                  className="inline-block rounded-sm border-[1.5px] border-current"
+                  style={{ width: 18, height: 11 }}
+                />
+              ) : (
+                <span
+                  className="inline-block rounded-sm border-[1.5px] border-current"
+                  style={{ width: 10, height: 16 }}
+                />
+              )}
+              <span>{o === "horizontal" ? "16:9" : "9:16"}</span>
+            </button>
+          ))}
+          <span className="text-[11px] font-medium text-slate-600">|</span>
           <span className="text-[11px] font-medium text-slate-500">Trecho:</span>
           <button
             type="button"
@@ -1024,23 +1182,65 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         </div>
         {trimStartSec !== null && trimEndSec !== null && trimEndSec > trimStartSec && (
           <p className="text-[10px] text-slate-500">
-            Trecho selecionado: {formatDurationSec(trimStartSec)} → {formatDurationSec(trimEndSec)}{" "}
+            Trecho: {formatDurationSec(trimStartSec)} → {formatDurationSec(trimEndSec)}{" "}
             ({formatDurationSec(trimEndSec - trimStartSec)})
-            {hasTelemetry ? " · use 'Baixar com widgets' para baixar o trecho" : ""}
           </p>
         )}
         {trimStartSec !== null && trimEndSec !== null && trimEndSec <= trimStartSec && (
           <p className="text-[10px] text-red-400">O fim deve ser depois do início.</p>
         )}
+        {/* Timeline visual do corte */}
+        {(video.duration_sec ?? 0) > 0 && (
+          <TrimTimeline
+            durationSec={video.duration_sec!}
+            currentTimeSec={currentTimeSec}
+            trimStartSec={trimStartSec}
+            trimEndSec={trimEndSec}
+            onSeek={(t) => {
+              currentTimeRef.current = t;
+              setCurrentTimeSec(t);
+              setCurrentPoint(points.length > 0 ? pointAtVideoTime(points, t) : null);
+              if (videoRef.current) videoRef.current.currentTime = t;
+            }}
+          />
+        )}
+        {/* Botão de download */}
+        <button
+          type="button"
+          onClick={() => setShowDownloadModal(true)}
+          className="mt-0.5 self-start rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700"
+        >
+          ↓ Baixar
+        </button>
       </div>
 
-      {exportError && (
+      {exportError && !exportProgress && (
         <HelperOfflinePanel error={exportError} />
       )}
       {video.telemetry_source === "gopro" && !video.telemetry_present && (
         <p className="rounded-md border border-amber-500/30 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200">
           Track GoPro detectado, mas o parser GPMF completo ainda nao extraiu pontos para overlay.
         </p>
+      )}
+
+      {showDownloadModal && (
+        <DownloadChoiceModal
+          videoUrl={video.file_url!}
+          hasTelemetry={hasTelemetry}
+          exporting={exporting}
+          onClose={() => setShowDownloadModal(false)}
+          onDownloadWithWidgets={() => {
+            setShowDownloadModal(false);
+            void handleRenderedDownload();
+          }}
+        />
+      )}
+
+      {exportProgress && (
+        <ExportModal
+          progress={exportProgress}
+          onClose={() => { setExportProgress(null); setExporting(false); }}
+        />
       )}
     </div>
   );
@@ -1110,17 +1310,7 @@ function VideoCard({
           </div>
 
           <div className="flex w-full shrink-0 flex-wrap items-center gap-3 sm:w-auto sm:justify-end">
-            {isReady && video.file_url && (
-              <a
-                href={video.file_url}
-                download
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-sky-400 hover:bg-slate-700 hover:text-sky-300 sm:flex-none"
-              >
-                ↓ Baixar
-              </a>
-            )}
+            {/* Download is handled within TelemetryVideoPlayer via DownloadChoiceModal */}
             {isPending && (
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
             )}
@@ -1146,6 +1336,156 @@ function VideoCard({
         </div>
       </div>
     </li>
+  );
+}
+
+function HelperOfflinePanel({ error }: { error: string }) {
+  const isConnError = error.toLowerCase().includes("fetch") || error.toLowerCase().includes("connect") || error.toLowerCase().includes("econnrefused") || error.toLowerCase().includes("network");
+
+  if (!isConnError) {
+    return (
+      <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">{error}</p>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 space-y-2 text-xs text-amber-200">
+      <p className="font-semibold">Helper não encontrado</p>
+      <p>Para baixar vídeos com telemetria, instale o Flight Video Helper:</p>
+      <ol className="list-decimal list-inside space-y-0.5 text-amber-300">
+        <li>Baixe o instalador para seu sistema (Windows ou Mac)</li>
+        <li>Abra o instalador e siga os passos</li>
+        <li>O ícone aparecerá na bandeja do sistema — pronto!</li>
+      </ol>
+      <p className="text-amber-400/70 text-[10px]">Erro: {error}</p>
+    </div>
+  );
+}
+
+function TrimTimeline({
+  durationSec,
+  currentTimeSec,
+  trimStartSec,
+  trimEndSec,
+  onSeek,
+}: {
+  durationSec: number;
+  currentTimeSec: number;
+  trimStartSec: number | null;
+  trimEndSec: number | null;
+  onSeek: (t: number) => void;
+}) {
+  const dur = Math.max(1, durationSec);
+  const pct = (t: number) => `${Math.max(0, Math.min(100, (t / dur) * 100))}%`;
+
+  return (
+    <div
+      className="relative mt-1 h-5 w-full cursor-pointer rounded bg-slate-800"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ratio = (e.clientX - rect.left) / rect.width;
+        onSeek(Math.max(0, Math.min(dur, ratio * dur)));
+      }}
+    >
+      {/* Trim region highlight */}
+      {trimStartSec !== null && trimEndSec !== null && trimEndSec > trimStartSec && (
+        <div
+          className="absolute top-0 h-full rounded bg-sky-500/25"
+          style={{ left: pct(trimStartSec), width: pct(trimEndSec - trimStartSec) }}
+        />
+      )}
+      {/* Start marker */}
+      {trimStartSec !== null && (
+        <div
+          className="absolute top-0 flex h-full flex-col items-center"
+          style={{ left: pct(trimStartSec) }}
+        >
+          <div className="h-full w-0.5 bg-sky-400" />
+          <span className="absolute -top-4 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-1 text-[9px] text-sky-300">
+            {formatDurationSec(trimStartSec)}
+          </span>
+        </div>
+      )}
+      {/* End marker */}
+      {trimEndSec !== null && (
+        <div
+          className="absolute top-0 flex h-full flex-col items-center"
+          style={{ left: pct(trimEndSec) }}
+        >
+          <div className="h-full w-0.5 bg-amber-400" />
+          <span className="absolute -top-4 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-1 text-[9px] text-amber-300">
+            {formatDurationSec(trimEndSec)}
+          </span>
+        </div>
+      )}
+      {/* Playhead */}
+      <div
+        className="absolute top-0 h-full w-0.5 bg-white/70"
+        style={{ left: pct(currentTimeSec) }}
+      />
+    </div>
+  );
+}
+
+function DownloadChoiceModal({
+  videoUrl,
+  hasTelemetry,
+  exporting,
+  onClose,
+  onDownloadWithWidgets,
+}: {
+  videoUrl: string;
+  hasTelemetry: boolean;
+  exporting: boolean;
+  onClose: () => void;
+  onDownloadWithWidgets: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="mb-4 text-sm font-semibold text-slate-100">Como deseja baixar?</p>
+        <div className="flex flex-col gap-3">
+          <a
+            href={videoUrl}
+            download
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-700"
+            onClick={onClose}
+          >
+            <span className="text-lg">🎬</span>
+            <div>
+              <p className="font-medium">Vídeo completo</p>
+              <p className="text-xs text-slate-500">Sem instrumentos e sem corte</p>
+            </div>
+          </a>
+          {hasTelemetry && (
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={onDownloadWithWidgets}
+              className="flex items-center gap-3 rounded-lg border border-sky-700/50 bg-sky-950/40 px-4 py-3 text-sm text-sky-200 hover:bg-sky-900/40 disabled:opacity-50"
+            >
+              <span className="text-lg">📊</span>
+              <div className="text-left">
+                <p className="font-medium">Vídeo com corte e instrumentos</p>
+                <p className="text-xs text-sky-400/70">Aplica trecho e overlay de telemetria</p>
+              </div>
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full text-center text-xs text-slate-600 hover:text-slate-400"
+        >
+          Cancelar
+        </button>
+      </div>
+    </div>
   );
 }
 

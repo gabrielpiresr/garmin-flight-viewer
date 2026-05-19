@@ -34,6 +34,9 @@ const STUDENT_TRACKS_COLLECTION_ID =
 const MANEUVERS_SECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID;
 const MANEUVERS_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID;
 const MANEUVERS_ARTICLES_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID;
+const HELP_SECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SECTIONS_COLLECTION_ID;
+const HELP_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID;
+const HELP_ARTICLES_COLLECTION_ID = process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID;
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
@@ -2080,6 +2083,13 @@ function maneuverCollectionId(kind) {
   return "";
 }
 
+function helpCollectionId(kind) {
+  if (kind === "section") return HELP_SECTIONS_COLLECTION_ID;
+  if (kind === "subsection") return HELP_SUBSECTIONS_COLLECTION_ID;
+  if (kind === "article") return HELP_ARTICLES_COLLECTION_ID;
+  return "";
+}
+
 function sanitizeManeuverData(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw Object.assign(new Error("Dados da manobra nao informados."), { status: 400 });
@@ -2107,11 +2117,38 @@ async function deleteManeuverDocument(kind, documentId) {
   await databases.deleteDocument(DATABASE_ID, collectionId, documentId);
 }
 
+function sanitizeHelpData(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw Object.assign(new Error("Dados da central de ajuda não informados."), { status: 400 });
+  }
+  return data;
+}
+
+async function createHelpDocument(kind, data) {
+  const collectionId = helpCollectionId(kind);
+  if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
+  return databases.createDocument(DATABASE_ID, collectionId, sdk.ID.unique(), sanitizeHelpData(data));
+}
+
+async function updateHelpDocument(kind, documentId, data) {
+  const collectionId = helpCollectionId(kind);
+  if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
+  if (!documentId) throw Object.assign(new Error("Documento da central de ajuda não informado."), { status: 400 });
+  return databases.updateDocument(DATABASE_ID, collectionId, documentId, sanitizeHelpData(data));
+}
+
+async function deleteHelpDocument(kind, documentId) {
+  const collectionId = helpCollectionId(kind);
+  if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
+  if (!documentId) throw Object.assign(new Error("Documento da central de ajuda não informado."), { status: 400 });
+  await databases.deleteDocument(DATABASE_ID, collectionId, documentId);
+}
+
 const EMAIL_SETTINGS_KEY = "email";
 const EMAIL_BRAND_SETTINGS_KEY = "emailBrand";
 const SCHOOL_RULES_KEY = "schoolRules";
 const NOTIFICATION_CHANNELS = ["email", "push"];
-const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "perfil"];
+const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
 const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.cancelled", "weeklyPlan.submitted", "notice.published"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
@@ -3130,6 +3167,51 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "deleteManeuverArticle") {
       await deleteManeuverDocument("article", String(payload.documentId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createHelpSection") {
+      const document = await createHelpDocument("section", payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "updateHelpSection") {
+      const document = await updateHelpDocument("section", String(payload.documentId || ""), payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "deleteHelpSection") {
+      await deleteHelpDocument("section", String(payload.documentId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createHelpSubsection") {
+      const document = await createHelpDocument("subsection", payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "updateHelpSubsection") {
+      const document = await updateHelpDocument("subsection", String(payload.documentId || ""), payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "deleteHelpSubsection") {
+      await deleteHelpDocument("subsection", String(payload.documentId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createHelpArticle") {
+      const document = await createHelpDocument("article", payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "updateHelpArticle") {
+      const document = await updateHelpDocument("article", String(payload.documentId || ""), payload.data);
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "deleteHelpArticle") {
+      await deleteHelpDocument("article", String(payload.documentId || ""));
       return jsonResponse(res, 200, { ok: true });
     }
 

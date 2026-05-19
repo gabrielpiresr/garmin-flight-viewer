@@ -10,7 +10,8 @@ const { spawn, execSync } = require("child_process");
 
 const PORT = 7842;
 const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB por parte no upload multipart
-const HELPER_DIR = path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
+const HELPER_DIR = process.env.HELPER_RESOURCES
+  || path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
 
 // ─── Estado dos jobs ───────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ function sendProgress(jobId, data) {
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Filename");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Params");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -85,7 +86,43 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /progress/:jobId — SSE
+  // POST /composite-overlay — recebe overlay WebM do browser e faz composite com vídeo fonte
+  if (url === "/composite-overlay" && req.method === "POST") {
+    const paramsStr = req.headers["x-params"] || "{}";
+    let params;
+    try { params = JSON.parse(paramsStr); } catch { return json(res, { error: "X-Params inválido" }, 400); }
+    const { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+            orientation, frameCount, fps, durationSec, jobId } = params;
+    if (!videoUrl || !cfWorkerUrl || !cfWorkerSecret || !jobId) {
+      return json(res, { error: "Parâmetros obrigatórios faltando" }, 400);
+    }
+
+    const overlayChunks = [];
+    for await (const chunk of req) overlayChunks.push(chunk);
+    const overlayBuffer = Buffer.concat(overlayChunks);
+    console.log(`[composite-overlay] overlay recebido: ${overlayBuffer.length} bytes, primeiros bytes: ${overlayBuffer.slice(0, 8).toString("hex")}`);
+    if (overlayBuffer.length === 0) return json(res, { error: "Overlay vazio" }, 400);
+
+    const job = createJob(jobId);
+    json(res, { ok: true, jobId });
+
+    setImmediate(async () => {
+      try {
+        const fileUrl = await compositeOverlay(
+          { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+            orientation, fps: fps || 30, durationSec, overlayBuffer },
+          job, jobId,
+        );
+        sendProgress(jobId, { stage: "done", percent: 100, fileUrl });
+      } catch (e) {
+        console.error(`[${jobId}] composite error:`, e.message);
+        sendProgress(jobId, { stage: "error", percent: 0, message: e.message });
+      }
+    });
+    return;
+  }
+
+  // POST /render-overlay — (legado, mantido para compatibilidade)
   if (url === "/render-overlay" && req.method === "POST") {
     let body;
     try { body = await readJson(req); } catch { return json(res, { error: "JSON invalido" }, 400); }
@@ -621,9 +658,9 @@ async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, outp
   ], duration, onProgress, { mustSucceed: true });
 }
 
-function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false } = {}) {
+function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false, cwd } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const p = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) });
     let stderr = "";
 
     p.stderr.on("data", (chunk) => {
@@ -767,15 +804,15 @@ async function renderTelemetryOverlay(req) {
     }
 
     // Filtro de vídeo: [crop +] subtitles
-    const assEscaped = escapeFilterPath(assPath);
+    // Usa nomes relativos para evitar problemas com drive letter (C:) no Windows
     const cropPrefix = isVertical
       ? "crop=trunc(ih*9/16/2)*2:ih:(iw-trunc(ih*9/16/2)*2)/2:0,"
       : "";
-    const vf = `${cropPrefix}subtitles='${assEscaped}'`;
+    const vf = `${cropPrefix}subtitles=overlay.ass`;
 
     await runFfmpeg(ffmpeg, [
       ...seekArgs,
-      "-i", inputPath,
+      "-i", "input.mp4",
       ...durationArgs,
       "-vf", vf,
       ...encoderArgs(encoder),
@@ -783,12 +820,121 @@ async function renderTelemetryOverlay(req) {
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart",
       "-threads", "0",
-      "-y", outputPath,
-    ], 0, () => {}, { mustSucceed: true });
+      "-y", "output.mp4",
+    ], 0, () => {}, { mustSucceed: true, cwd: tmpDir });
 
     const fileBytes = fs.readFileSync(outputPath);
     const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, outputKey, fileBytes, () => {});
     return { ok: true, fileUrl, fileSize: fileBytes.length };
+  } finally {
+    cleanup(tmpDir);
+  }
+}
+
+// Magic that identifies the JPEG-frames binary format sent by the browser: "JFRS"
+const JFRS_MAGIC = 0x4a465253;
+
+function extractJpegFrames(overlayBuffer, tmpDir) {
+  const frameCount = overlayBuffer.readUInt32BE(4);
+  let offset = 8;
+  for (let i = 0; i < frameCount; i++) {
+    const frameSize = overlayBuffer.readUInt32BE(offset);
+    offset += 4;
+    fs.writeFileSync(
+      path.join(tmpDir, `frame_${String(i).padStart(6, "0")}.png`),
+      overlayBuffer.slice(offset, offset + frameSize),
+    );
+    offset += frameSize;
+  }
+  return frameCount;
+}
+
+async function compositeOverlay(
+  { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+    orientation, fps, durationSec, overlayBuffer },
+  job, jobId,
+) {
+  const ffmpeg = findBin("ffmpeg");
+  if (!ffmpeg) throw new Error("ffmpeg não encontrado.");
+  const encoder = await detectEncoder(ffmpeg);
+
+  const isVertical = orientation === "vertical";
+  const tmpDir = path.join(os.tmpdir(), `flight-composite-${jobId || Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    sendProgress(jobId, { stage: "process", percent: 2 });
+
+    // Download source video
+    const response = await fetch(videoUrl);
+    if (!response.ok) throw new Error(`Download do vídeo falhou: ${response.status}`);
+    fs.writeFileSync(path.join(tmpDir, "input.mp4"), Buffer.from(await response.arrayBuffer()));
+
+    sendProgress(jobId, { stage: "process", percent: 12 });
+
+    // Detect overlay format
+    const isJpegFrames = overlayBuffer.length >= 8 &&
+      overlayBuffer.readUInt32BE(0) === JFRS_MAGIC;
+
+    let overlayInputArgs;
+    if (isJpegFrames) {
+      const frameCount = extractJpegFrames(overlayBuffer, tmpDir);
+      console.log(`[${jobId}] JPEG frames extraídos: ${frameCount} @ ${fps}fps`);
+      overlayInputArgs = ["-framerate", String(fps || 10), "-i", "frame_%06d.png"];
+    } else {
+      // Legacy WebM overlay
+      fs.writeFileSync(path.join(tmpDir, "overlay.webm"), overlayBuffer);
+      console.log(`[${jobId}] overlay WebM: ${overlayBuffer.length} bytes`);
+      overlayInputArgs = ["-r", String(fps || 30), "-i", "overlay.webm"];
+    }
+
+    // Input seeking (fast seek before -i for source video)
+    const seekArgs = [];
+    if (Number.isFinite(trimStartSec) && trimStartSec > 0) seekArgs.push("-ss", String(trimStartSec));
+
+    const durationArgs = [];
+    if (Number.isFinite(trimEndSec) && trimEndSec > 0) {
+      const dur = Number.isFinite(trimStartSec) && trimStartSec > 0 ? trimEndSec - trimStartSec : trimEndSec;
+      if (dur > 0) durationArgs.push("-t", String(dur));
+    }
+
+    // filter_complex: chromakey overlay on top of scaled/cropped source.
+    // Higher similarity/blend tolerances to handle JPEG compression artifacts on the green background.
+    const baseFilter = isVertical
+      ? `[1:v]crop=trunc(ih*9/16/2)*2:ih:(iw-trunc(ih*9/16/2)*2)/2:0,scale=608:1080[base]`
+      : `[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[base]`;
+    const filterComplex =
+      `${baseFilter};[base][0:v]overlay=0:0,format=yuv420p[outv]`;
+
+    const effectiveDuration = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
+
+    await runFfmpeg(ffmpeg, [
+      // Input 0: overlay (JPEG frames or WebM)
+      ...overlayInputArgs,
+      // Input 1: source video with optional seek
+      ...seekArgs, "-i", "input.mp4",
+      ...durationArgs,
+      "-filter_complex", filterComplex,
+      "-map", "[outv]", "-map", "1:a?",
+      ...encoderArgs(encoder),
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "128k",
+      "-movflags", "+faststart",
+      "-threads", "0",
+      "-y", "output.mp4",
+    ], effectiveDuration, (pct) => {
+      if (!job.cancelled) sendProgress(jobId, { stage: "process", percent: 12 + Math.round(pct * 0.73) });
+    }, { mustSucceed: true, cwd: tmpDir });
+
+    sendProgress(jobId, { stage: "upload", percent: 0 });
+
+    const fileBytes = fs.readFileSync(path.join(tmpDir, "output.mp4"));
+    const key = outputKey || `telemetry-export-${Date.now()}.mp4`;
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, key, fileBytes, (pct) => {
+      sendProgress(jobId, { stage: "upload", percent: pct });
+    });
+
+    return fileUrl;
   } finally {
     cleanup(tmpDir);
   }

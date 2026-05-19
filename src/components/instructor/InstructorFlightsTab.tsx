@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
-  formatMinutes,
   getDateBase,
   getFlightDateTimeMs,
   isFutureFlight,
@@ -9,16 +8,20 @@ import {
 } from "../../lib/flightDisplay";
 import {
   deleteSavedFlight,
+  getSavedFlight,
   listSavedFlights,
   updateInstructorFlightSuggestion,
   type SavedFlightListItem,
 } from "../../lib/flightsDb";
+import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
+import { decodeFlightRecord } from "../../lib/flightRecordCodec";
 import {
   buildBasicFlightListDisplayInfo,
   invalidateFlightListDisplayCache,
   loadFullFlightListDisplayInfos,
   loadLightFlightListDisplayInfos,
 } from "../../lib/flightListDisplayCache";
+import { listFlightVideoFlags } from "../../lib/flightVideosDb";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
@@ -100,26 +103,70 @@ function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" 
   );
 }
 
+function writeFichaWindowStatus(printWindow: Window, title: string, message: string) {
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+  <html lang="pt-BR">
+    <head>
+      <meta charset="utf-8" />
+      <title>${title}</title>
+      <style>
+        body { margin: 0; background: #020617; color: #e2e8f0; font-family: Arial, sans-serif; }
+        main { min-height: 100vh; display: grid; place-items: center; padding: 24px; text-align: center; }
+        h1 { margin: 0 0 8px; font-size: 20px; }
+        p { margin: 0; color: #94a3b8; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <div>
+          <h1>${title}</h1>
+          <p>${message}</p>
+        </div>
+      </main>
+    </body>
+  </html>`);
+  printWindow.document.close();
+}
+
 function formatDate(item: SavedFlightListItem, info?: FlightDisplayInfo): string {
   const iso = info?.flightDateIso ?? item.created_at.slice(0, 10);
   const date = new Date(`${iso}T12:00:00`);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString("pt-BR");
 }
 
+function statusClass(ok: boolean): string {
+  return ok ? "text-emerald-300" : "text-amber-300";
+}
+
+function statusLabel(ok: boolean): string {
+  return ok ? "Sim" : "Pendente";
+}
+
+function landingCountClass(info?: FlightDisplayInfo): string {
+  return (info?.landings ?? 0) > 0 ? "text-slate-300" : "text-amber-300";
+}
+
 function FlightCard({
   item,
   info,
   future,
+  videoAttached,
   onOpen,
   onDelete,
   onEditSuggestion,
+  onExportFicha,
+  exportingFicha,
 }: {
   item: SavedFlightListItem;
   info?: FlightDisplayInfo;
   future: boolean;
+  videoAttached: boolean;
   onOpen: () => void;
   onDelete: () => void;
   onEditSuggestion: () => void;
+  onExportFicha?: () => void;
+  exportingFicha?: boolean;
 }) {
   const d = getDateBase(item, info);
   const day = d.getDate();
@@ -162,23 +209,30 @@ function FlightCard({
             <p>Aluno: <span className="text-slate-300">{info?.studentName ?? "—"}</span></p>
             <p>ANAC aluno: <span className="text-slate-300">{info?.studentAnac ?? "—"}</span></p>
             <p>Matrícula: <span className="text-slate-300">{info?.aircraft ?? "—"}</span></p>
-            <p>From-To: <span className="text-slate-300">{info?.fromTo ?? "—"}</span></p>
-            <p>Pousos: <span className="text-slate-300">{info?.landings ?? 0}</span></p>
             <p>Total voo: <span className="text-slate-300">{info?.totalFlight ?? "00:00"}</span></p>
-            <p className="sm:col-span-2 lg:col-span-4">
-              Sugestão INVA:{" "}
-              <span className={info?.instructorSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
-                {info?.instructorSuggestionMd ? "preenchida" : "pendente"}
-              </span>
-            </p>
             {future ? (
-              <p className="sm:col-span-2 lg:col-span-4">
-                Sugestao aluno:{" "}
-                <span className={info?.studentSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
-                  {info?.studentSuggestionMd ? "preenchida" : "pendente"}
-                </span>
-              </p>
-            ) : null}
+              <>
+                <p>
+                  Sugestão INVA:{" "}
+                  <span className={statusClass(Boolean(info?.instructorSuggestionMd))}>
+                    {info?.instructorSuggestionMd ? "preenchida" : "pendente"}
+                  </span>
+                </p>
+                <p>
+                  Sugestao aluno:{" "}
+                  <span className={statusClass(Boolean(info?.studentSuggestionMd))}>
+                    {info?.studentSuggestionMd ? "preenchida" : "pendente"}
+                  </span>
+                </p>
+              </>
+            ) : (
+              <>
+                <p>Rota: <span className="text-slate-300">{info?.fromTo ?? "—"}</span></p>
+                <p>Pousos: <span className={landingCountClass(info)}>{info?.landings ?? 0}</span></p>
+                <p>Telemetria: <span className={statusClass(Boolean(info?.telemetryOk))}>{statusLabel(Boolean(info?.telemetryOk))}</span></p>
+                <p>Vídeo: <span className={statusClass(videoAttached)}>{statusLabel(videoAttached)}</span></p>
+              </>
+            )}
           </div>
         </div>
 
@@ -193,6 +247,23 @@ function FlightCard({
               className="w-full rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500"
             >
               Sugestão INVA
+            </button>
+          ) : null}
+          {!future && onExportFicha ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onExportFicha();
+              }}
+              disabled={exportingFicha}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-70"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+              </svg>
+              {exportingFicha ? "Gerando..." : "Ficha"}
             </button>
           ) : null}
           <button
@@ -217,6 +288,7 @@ export function InstructorFlightsTab() {
   const [selectedFlightId, setSelectedFlightId] = useState<string | undefined>();
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [infoById, setInfoById] = useState<Record<string, FlightDisplayInfo>>({});
+  const [videoFlagsById, setVideoFlagsById] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -226,6 +298,7 @@ export function InstructorFlightsTab() {
   const [suggestionDraft, setSuggestionDraft] = useState("");
   const [suggestionSaving, setSuggestionSaving] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!user || !configured) {
@@ -260,6 +333,7 @@ export function InstructorFlightsTab() {
     let cancelled = false;
     if (items.length === 0) {
       setInfoById({});
+      setVideoFlagsById({});
       return;
     }
 
@@ -280,6 +354,21 @@ export function InstructorFlightsTab() {
       const fullInfos = await loadFullFlightListDisplayInfos(preloadItems);
       if (!cancelled) setInfoById((prev) => ({ ...prev, ...fullInfos }));
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ids = items.map((item) => item.id);
+    if (ids.length === 0) {
+      setVideoFlagsById({});
+      return;
+    }
+    void listFlightVideoFlags(ids).then((flags) => {
+      if (!cancelled) setVideoFlagsById(flags);
+    });
     return () => {
       cancelled = true;
     };
@@ -308,24 +397,46 @@ export function InstructorFlightsTab() {
   );
   const futureGroups = useMemo(() => groupFlights(futureItems, infoById, "desc"), [futureItems, infoById]);
   const pastGroups = useMemo(() => groupFlights(pastItems, infoById, "desc"), [pastItems, infoById]);
-  const consolidatedSummary = useMemo(() => {
-    return filteredItems.reduce(
-      (acc, item) => {
-        const info = infoById[item.id];
-        return {
-          flights: acc.flights + 1,
-          minutes: acc.minutes + (info?.totalFlightMinutes ?? (item.duration_sec ? Math.round(item.duration_sec / 60) : 0)),
-          landings: acc.landings + (info?.landings ?? 0),
-        };
-      },
-      { flights: 0, minutes: 0, landings: 0 },
-    );
-  }, [filteredItems, infoById]);
   const dataLoading = loading && items.length === 0;
 
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
     setView("detail");
+  };
+
+  const exportFicha = async (id: string) => {
+    setErr(null);
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      setErr("NÃ£o foi possÃ­vel abrir a janela de impressÃ£o. Verifique o bloqueador de pop-ups.");
+      return;
+    }
+    writeFichaWindowStatus(printWindow, "Preparando ficha", "Carregando dados do voo...");
+    setExportingFichaId(id);
+    const { data, error } = await getSavedFlight(id);
+    setExportingFichaId(null);
+
+    if (error || !data) {
+      const message = error?.message ?? "Voo nÃ£o encontrado.";
+      setErr(message);
+      writeFichaWindowStatus(printWindow, "Falha ao gerar ficha", message);
+      return;
+    }
+
+    const decoded = decodeFlightRecord(data.csv_text);
+    if (!decoded.meta) {
+      const message = "Ficha do voo sem metadados estruturados para exportar.";
+      setErr(message);
+      writeFichaWindowStatus(printWindow, "Falha ao gerar ficha", message);
+      return;
+    }
+
+    const result = exportFlightFichaPdf({
+      meta: decoded.meta,
+      telemetryCsv: decoded.telemetryCsv,
+      telemetryFileName: data.source_filename,
+    }, { targetWindow: printWindow });
+    if (!result.ok) setErr(result.error ?? "NÃ£o foi possÃ­vel exportar o PDF.");
   };
 
   const handleDelete = async (id: string) => {
@@ -444,22 +555,6 @@ export function InstructorFlightsTab() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {dataLoading ? (
-          <>
-            <SummaryCardSkeleton />
-            <SummaryCardSkeleton />
-            <SummaryCardSkeleton />
-          </>
-        ) : (
-          <>
-            <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
-            <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
-            <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
-          </>
-        )}
-      </div>
-
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
         <input
           type="text"
@@ -528,6 +623,8 @@ export function InstructorFlightsTab() {
             title="Voos futuros"
             groups={futureGroups}
             infoById={infoById}
+            videoFlagsById={videoFlagsById}
+            variant="future"
             emptyLabel="Nenhum voo futuro."
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
@@ -537,9 +634,13 @@ export function InstructorFlightsTab() {
             title="Voos antigos"
             groups={pastGroups}
             infoById={infoById}
+            videoFlagsById={videoFlagsById}
+            variant="past"
             emptyLabel="Nenhum voo antigo."
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
+            onExportFicha={(id) => void exportFicha(id)}
+            exportingFichaId={exportingFichaId}
           />
           <button
             type="button"
@@ -566,6 +667,7 @@ export function InstructorFlightsTab() {
                         item={item}
                         info={infoById[item.id]}
                         future
+                        videoAttached={videoFlagsById[item.id] ?? false}
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
                         onEditSuggestion={() => openSuggestion(item.id)}
@@ -594,9 +696,12 @@ export function InstructorFlightsTab() {
                         item={item}
                         info={infoById[item.id]}
                         future={false}
+                        videoAttached={videoFlagsById[item.id] ?? false}
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
                         onEditSuggestion={() => openSuggestion(item.id)}
+                        onExportFicha={() => void exportFicha(item.id)}
+                        exportingFicha={exportingFichaId === item.id}
                       />
                     ))}
                   </ul>
@@ -690,42 +795,32 @@ export function InstructorFlightsTab() {
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-slate-100">{value}</p>
-    </div>
-  );
-}
-
-function SummaryCardSkeleton() {
-  return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
-      <Skeleton className="h-3 w-16" />
-      <Skeleton className="mt-2 h-5 w-20" />
-    </div>
-  );
-}
-
 function FlightTableSection({
   title,
   groups,
   infoById,
+  videoFlagsById,
+  variant,
   emptyLabel,
   onOpen,
   onDelete,
   onEditSuggestion,
+  onExportFicha,
+  exportingFichaId,
 }: {
   title: string;
   groups: { label: string; flights: SavedFlightListItem[] }[];
   infoById: Record<string, FlightDisplayInfo>;
+  videoFlagsById: Record<string, boolean>;
+  variant: "future" | "past";
   emptyLabel: string;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onEditSuggestion?: (id: string) => void;
+  onExportFicha?: (id: string) => void;
+  exportingFichaId?: string | null;
 }) {
-  const showSuggestionColumn = Boolean(onEditSuggestion);
+  const isFutureSection = variant === "future";
   return (
     <section className="space-y-3">
       <SectionTitle title={title} tone={title.toLowerCase().includes("futuro") ? "future" : "past"} />
@@ -746,10 +841,20 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">ANAC</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
-                    <th className="px-3 py-2 font-semibold">Rota</th>
                     <th className="px-3 py-2 font-semibold">Horas</th>
-                    <th className="px-3 py-2 font-semibold">Pousos</th>
-                    {showSuggestionColumn ? <th className="px-3 py-2 font-semibold">Sugestao</th> : null}
+                    {isFutureSection ? (
+                      <>
+                        <th className="px-3 py-2 font-semibold">Sugestão INVA</th>
+                        <th className="px-3 py-2 font-semibold">Sugestão aluno</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="px-3 py-2 font-semibold">Rota</th>
+                        <th className="px-3 py-2 font-semibold">Pousos</th>
+                        <th className="px-3 py-2 font-semibold">Telemetria</th>
+                        <th className="px-3 py-2 font-semibold">Vídeo</th>
+                      </>
+                    )}
                     <th className="px-3 py-2 font-semibold">Ações</th>
                   </tr>
                 </thead>
@@ -775,30 +880,29 @@ function FlightTableSection({
                         <td className="px-3 py-2">{info?.studentName ?? "—"}</td>
                         <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
                         <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
-                        <td className="px-3 py-2">{info?.fromTo ?? "—"}</td>
                         <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
-                        <td className="px-3 py-2">{info?.landings ?? 0}</td>
-                        {showSuggestionColumn ? (
-                          <td className="px-3 py-2">
-                            <div className="space-y-1">
-                              <p>
-                                INVA:{" "}
-                                <span className={info?.instructorSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
-                                  {info?.instructorSuggestionMd ? "Preenchida" : "Pendente"}
-                                </span>
-                              </p>
-                              <p>
-                                Aluno:{" "}
-                                <span className={info?.studentSuggestionMd ? "text-emerald-300" : "text-amber-300"}>
-                                  {info?.studentSuggestionMd ? "Preenchida" : "Pendente"}
-                                </span>
-                              </p>
-                            </div>
-                          </td>
-                        ) : null}
+                        {isFutureSection ? (
+                          <>
+                            <td className={`px-3 py-2 ${statusClass(Boolean(info?.instructorSuggestionMd))}`}>
+                              {info?.instructorSuggestionMd ? "Preenchida" : "Pendente"}
+                            </td>
+                            <td className={`px-3 py-2 ${statusClass(Boolean(info?.studentSuggestionMd))}`}>
+                              {info?.studentSuggestionMd ? "Preenchida" : "Pendente"}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-3 py-2">{info?.fromTo ?? "—"}</td>
+                            <td className={`px-3 py-2 ${landingCountClass(info)}`}>{info?.landings ?? 0}</td>
+                            <td className={`px-3 py-2 ${statusClass(Boolean(info?.telemetryOk))}`}>{statusLabel(Boolean(info?.telemetryOk))}</td>
+                            <td className={`px-3 py-2 ${statusClass(videoFlagsById[item.id] ?? false)}`}>
+                              {statusLabel(videoFlagsById[item.id] ?? false)}
+                            </td>
+                          </>
+                        )}
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
-                            {onEditSuggestion ? (
+                            {isFutureSection && onEditSuggestion ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -808,6 +912,23 @@ function FlightTableSection({
                                 className="text-sky-300 underline-offset-4 hover:underline"
                               >
                                 Sugestão
+                              </button>
+                            ) : null}
+                            {!isFutureSection && onExportFicha ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onExportFicha(item.id);
+                                }}
+                                disabled={exportingFichaId === item.id}
+                                className="inline-flex items-center gap-1.5 rounded border border-sky-600/40 bg-sky-600/10 px-2 py-1 text-xs font-semibold text-sky-400 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-70"
+                              >
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                  <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                  <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                </svg>
+                                {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
                               </button>
                             ) : null}
                             <button

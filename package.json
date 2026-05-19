@@ -23,6 +23,7 @@
     "appwrite:setup-notices": "node scripts/setup-notices-collections.mjs",
     "appwrite:setup-notifications": "node scripts/setup-notifications-collections.mjs",
     "appwrite:setup-maneuvers": "node scripts/setup-maneuvers-collections.mjs",
+    "appwrite:setup-help-center": "node scripts/setup-help-center-collections.mjs",
     "appwrite:import-maneuvers": "node scripts/import-maneuvers-content.mjs",
     "appwrite:setup-exercises": "node scripts/setup-training-exercises-collection.mjs",
     "appwrite:setup-tracks": "node scripts/setup-training-tracks.mjs",

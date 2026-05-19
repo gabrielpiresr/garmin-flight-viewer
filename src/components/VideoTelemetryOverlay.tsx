@@ -32,12 +32,9 @@ const HUD_TAPE_BG = "bg-slate-900/42";
 /** HUD tapes: each column centered in its lateral third (not screen center). */
 const HUD_TAPE_HEIGHT = "h-[56%]";
 const HUD_TAPE_ANCHOR = "absolute top-1/2 -translate-x-1/2 -translate-y-1/2";
-/** Horizontal center of SPD / ALT columns within left & right zones. */
-const HUD_SPEED_TAPE_X = "left-[27%]";
-const HUD_ALT_TAPE_X = "left-[73%]";
 /** Left corner (map/charts) stays clear of speed column. */
 const HUD_LEFT_CORNER_MAX = "calc(22%-1rem)";
-const HUD_CHARTS_BOTTOM = "bottom-8";
+const HUD_CHARTS_BOTTOM = "bottom-2";
 
 function tapeSpan(kind: TapeKind): number {
   if (kind === "speed") return 60;
@@ -68,7 +65,7 @@ function tapeStep(kind: TapeKind): number {
 }
 
 function invertTapeScale(kind: TapeKind): boolean {
-  return kind === "speed";
+  return kind === "speed" || kind === "altitude";
 }
 
 function valueToTapePx(value: number, min: number, max: number, pxPerUnit: number, invert: boolean): number {
@@ -193,7 +190,7 @@ function HudScrollingTape({
             const y = valueToTapePx(tick, min, max, pxPerUnit, invert);
             return (
               <div key={tick} className="absolute left-0 right-0 flex items-center" style={{ top: `${y}px` }}>
-                <span className="w-5 text-right text-[9px] tabular-nums text-white/85">{formatTickLabel(kind, tick)}</span>
+                <span className={`${kind === "altitude" ? "w-7" : "w-5"} text-right text-[9px] tabular-nums text-white/85`}>{formatTickLabel(kind, tick)}</span>
                 <span className="ml-auto mr-2 h-px w-3 bg-white/75" />
               </div>
             );
@@ -327,12 +324,14 @@ function HudSideTapeColumns({
   airspeedArcs,
   altFt,
   enabledWidgets,
+  hasLeftWidgets,
   speedKt,
   verticalSpeedFpm,
 }: {
   airspeedArcs: AirspeedArcLimits | null;
   altFt: number | null;
   enabledWidgets: VideoTelemetryWidget[];
+  hasLeftWidgets: boolean;
   speedKt: number | null;
   verticalSpeedFpm: number | null;
 }) {
@@ -340,10 +339,13 @@ function HudSideTapeColumns({
   const showAlt = enabledWidgets.includes("altitude") && altFt != null;
   if (!showSpeed && !showAlt) return null;
 
+  const speedX = hasLeftWidgets ? "left-[27%]" : "left-[22%]";
+  const altX = hasLeftWidgets ? "left-[73%]" : "left-[78%]";
+
   return (
     <>
       {showSpeed && (
-        <div className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${HUD_SPEED_TAPE_X} ${HUD_TAPE_HEIGHT}`}>
+        <div className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${speedX} ${HUD_TAPE_HEIGHT}`}>
           <HudScrollingTape
             inCluster
             kind="speed"
@@ -357,7 +359,7 @@ function HudSideTapeColumns({
       )}
       {showAlt && (
         <div
-          className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${HUD_ALT_TAPE_X} flex ${HUD_TAPE_HEIGHT} w-[12.5rem] items-stretch gap-0.5`}
+          className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${altX} flex ${HUD_TAPE_HEIGHT} w-[12.5rem] items-stretch gap-0.5`}
         >
           <HudScrollingTape embedded kind="altitude" label="ALT" unit="ft" value={altFt} side="right" />
           <HudVsiTape value={verticalSpeedFpm ?? 0} side="right" />
@@ -420,7 +422,7 @@ export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
         enabledWidgets={enabledWidgets}
         speedChartRef={speedChartRef}
       />
-      <div className="absolute bottom-14 left-3 flex max-w-[46%] flex-wrap items-end gap-2">
+      <div className="absolute bottom-2 left-3 flex max-w-[46%] flex-wrap items-end gap-2">
         {enabledWidgets.includes("speed") && (
           <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
         )}
@@ -441,10 +443,88 @@ export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
   );
 }
 
+/** Layout compacto otimizado para o frame 9:16 (modo vertical). */
+export type VerticalOverlayProps = Omit<TelemetryOverlayProps, "airspeedArcs">;
+
+export function VerticalCompactOverlay({
+  altitudeChartRef,
+  canvasRef,
+  currentPoint,
+  enabledWidgets,
+  speedChartRef,
+  verticalSpeedFpm,
+}: VerticalOverlayProps) {
+  const hasRoute = enabledWidgets.includes("route");
+  const hasAltChart = enabledWidgets.includes("altitudeChart");
+  const hasSpeedChart = enabledWidgets.includes("speedChart");
+  const hasCharts = hasAltChart || hasSpeedChart;
+
+  return (
+    <>
+      {/* Mapa de rota — topo, largura total, acima dos gráficos (apenas se há gráficos) */}
+      {hasRoute && hasCharts && (
+        <canvas
+          ref={canvasRef}
+          className="absolute top-14 left-2 right-2 h-28 w-[calc(100%-1rem)] rounded-xl border border-white/15"
+        />
+      )}
+
+      {/* Coluna inferior: gráficos lado a lado + pills */}
+      <div className="absolute bottom-0 left-2 right-2 flex flex-col gap-1.5">
+        {/* Mapa sem gráficos — ocupa o lugar dos gráficos */}
+        {hasRoute && !hasCharts && (
+          <canvas
+            ref={canvasRef}
+            className="w-full h-28 rounded-xl border border-white/15"
+          />
+        )}
+        {hasCharts && (
+          <div className="flex flex-row gap-1.5">
+            {hasAltChart && (
+              <div className="flex-1 min-w-0 rounded-xl border border-white/15 bg-black/55 p-1">
+                <p className="mb-0.5 text-[9px] font-bold tracking-wide text-sky-100">ALT FT</p>
+                <canvas ref={altitudeChartRef} className="h-[102px] w-full" />
+              </div>
+            )}
+            {hasSpeedChart && (
+              <div className="flex-1 min-w-0 rounded-xl border border-white/15 bg-black/55 p-1">
+                <p className="mb-0.5 text-[9px] font-bold tracking-wide text-sky-100">SPD KT</p>
+                <canvas ref={speedChartRef} className="h-[102px] w-full" />
+              </div>
+            )}
+          </div>
+        )}
+        {/* Pills inline */}
+        <div className="flex flex-row flex-wrap items-center gap-1.5 pb-0.5">
+          {enabledWidgets.includes("speed") && (
+            <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
+          )}
+          {enabledWidgets.includes("altitude") && (
+            <>
+              <TelemetryPill label="ALT" value={formatVideoAltitude(currentPoint?.altitude ?? null)} />
+              <TelemetryPill
+                label="VS"
+                value={verticalSpeedFpm != null ? `${formatVerticalSpeedFpm(verticalSpeedFpm)} fpm` : "-"}
+              />
+            </>
+          )}
+          {enabledWidgets.includes("heading") && (
+            <TelemetryPill label="HDG" value={formatVideoHeading(currentPoint?.heading ?? null)} />
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function HudTelemetryOverlay(props: TelemetryOverlayProps) {
   const { airspeedArcs, altitudeChartRef, canvasRef, currentPoint, enabledWidgets, speedChartRef, verticalSpeedFpm } = props;
   const speedKt = speedMpsToKt(currentPoint?.speed ?? null);
   const altFt = altitudeMToFt(currentPoint?.altitude ?? null);
+  const hasLeftWidgets =
+    enabledWidgets.includes("route") ||
+    enabledWidgets.includes("altitudeChart") ||
+    enabledWidgets.includes("speedChart");
 
   return (
     <>
@@ -457,6 +537,7 @@ export function HudTelemetryOverlay(props: TelemetryOverlayProps) {
         airspeedArcs={airspeedArcs}
         altFt={altFt}
         enabledWidgets={enabledWidgets}
+        hasLeftWidgets={hasLeftWidgets}
         speedKt={speedKt}
         verticalSpeedFpm={verticalSpeedFpm}
       />
@@ -570,8 +651,10 @@ export function drawTelemetryChart(
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const rect = canvas.getBoundingClientRect();
-  const width = Math.max(200, Math.round(rect.width * (window.devicePixelRatio || 1)));
-  const height = Math.max(80, Math.round(rect.height * (window.devicePixelRatio || 1)));
+  // Fall back to pre-set canvas dimensions for off-screen elements (used during video export)
+  const dpr = window.devicePixelRatio || 1;
+  const width = rect.width > 0 ? Math.round(rect.width * dpr) : Math.max(200, canvas.width);
+  const height = rect.height > 0 ? Math.round(rect.height * dpr) : Math.max(80, canvas.height);
   canvas.width = width;
   canvas.height = height;
   ctx.clearRect(0, 0, width, height);
@@ -586,7 +669,7 @@ export function drawTelemetryChart(
   const rawMax = Math.max(...valid);
   const yAxis = key === "speed" ? speedChartYAxis(rawMin, rawMax) : altitudeChartYAxis(rawMin, rawMax);
   const { min, max, step, gridLines } = yAxis;
-  const leftPad = Math.min(48, width * 0.12);
+  const leftPad = Math.max(40, Math.min(52, width * 0.16));
   const rightPad = 10;
   const topPad = 8;
   const bottomPad = 22;

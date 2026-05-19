@@ -40,6 +40,9 @@ const collectionEnvByName = {
   maneuver_sections: "VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID",
   maneuver_subsections: "VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID",
   maneuver_articles: "VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID",
+  help_sections: "VITE_APPWRITE_HELP_SECTIONS_COL_ID",
+  help_subsections: "VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID",
+  help_articles: "VITE_APPWRITE_HELP_ARTICLES_COL_ID",
   platform_settings: "VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID",
   push_subscriptions: "VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID",
   notification_deliveries: "VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID",
@@ -107,6 +110,8 @@ for (const collection of collections) {
 
 const maneuversBucketId = await findBucketId(storage, "maneuver-media");
 if (maneuversBucketId) env.VITE_APPWRITE_MANEUVERS_MEDIA_BUCKET_ID = maneuversBucketId;
+const helpBucketId = await findBucketId(storage, "help-media");
+if (helpBucketId) env.VITE_APPWRITE_HELP_MEDIA_BUCKET_ID = helpBucketId;
 
 writeEnv(envPath, env);
 console.log(`Synced ${collections.length} collections to .env.local.`);
