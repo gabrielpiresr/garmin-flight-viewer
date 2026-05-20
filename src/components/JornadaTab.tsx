@@ -16,7 +16,7 @@ import {
 import { useAuth } from "../contexts/AuthContext";
 import { listAerodromesByCodes, type Aerodrome } from "../lib/aerodromesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
-import { getSavedFlight, listSavedFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
+import { getSavedFlight, listAllSavedFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import {
   listJourneyLandings,
   listJourneyTakeoffs,
@@ -269,7 +269,7 @@ function useFormationProgress(): FormationState {
       setState((prev) => ({ ...prev, loading: true, error: null }));
       const [tracksRes, flightsRes] = await Promise.all([
         listStudentTrainingTracks(currentUser.id),
-        listSavedFlights({ userId: currentUser.id, role: currentUser.role }),
+        listAllSavedFlights({ userId: currentUser.id, role: currentUser.role }),
       ]);
       if (cancelled) return;
       const error = tracksRes.error ?? flightsRes.error;

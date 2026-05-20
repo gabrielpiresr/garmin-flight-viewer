@@ -147,6 +147,10 @@ async function setupAircrafts() {
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "model_id", 64, true), "model_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "registration", 16, true), "registration");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "nickname", 64, false), "nickname");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "serial_number", 64, false), "serial_number");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "owner_name", 256, false), "owner_name");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "operator_name", 256, false), "operator_name");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "logbook_sequence_number", 64, false), "logbook_sequence_number");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "image_url", 1024, false), "image_url");
   await attr(() => db.createBooleanAttribute(DATABASE_ID, id, "active", true), "active");
   await attr(() => db.createFloatAttribute(DATABASE_ID, id, "wb_empty_weight_kg", false), "wb_empty_weight_kg");

@@ -3,7 +3,7 @@ import type { UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 import type { AdminDashboardData, AdminDashboardParams } from "../types/adminDashboard";
-import type { AdminFlightReportPage } from "../types/adminFlightReports";
+import type { AdminFlightReportPage, AdminFlightReportParams } from "../types/adminFlightReports";
 import type { AdminStudentsProgressData, AdminStudentsProgressParams } from "../types/adminStudents";
 import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types/adminUsers";
 import type { StudentCreditInput } from "../types/credits";
@@ -13,6 +13,7 @@ type AdminUsersResponse = {
   users?: AdminUserSummary[];
   user?: AdminUserDetail;
   flights?: AdminFlightReportPage["flights"];
+  nextCursor?: string | null;
   dashboard?: AdminDashboardData;
   studentsProgress?: AdminStudentsProgressData;
   trainingTracks?: StudentTrainingTrack[];
@@ -64,9 +65,14 @@ export async function getAdminUserDetail(userId: string): Promise<AdminUserDetai
   return response.user;
 }
 
-export async function listAdminFlightReports(): Promise<AdminFlightReportPage> {
-  const response = await executeAdminUsers({ action: "listFlightReports" });
-  return { flights: response.flights ?? [] };
+export async function listAdminFlightReports(params: AdminFlightReportParams = {}): Promise<AdminFlightReportPage> {
+  const response = await executeAdminUsers({ action: "listFlightReports", ...params });
+  return {
+    flights: response.flights ?? [],
+    total: response.total ?? response.flights?.length ?? 0,
+    limit: response.limit ?? params.limit ?? 100,
+    nextCursor: response.nextCursor ?? null,
+  };
 }
 
 export async function getAdminDashboardSummary(params: AdminDashboardParams): Promise<AdminDashboardData> {

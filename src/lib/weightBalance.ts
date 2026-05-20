@@ -12,6 +12,7 @@ export type WeightBalanceFuelInput = {
 };
 
 export type WeightBalanceInputs = {
+  personsOnBoard: number | null;
   occupantsWeightKg: number | null;
   baggageWeightKg: number | null;
   rampFuel: WeightBalanceFuelInput;
@@ -131,6 +132,7 @@ export function aircraftToWeightBalanceSnapshot(aircraft: Aircraft | null | unde
 
 export function emptyWeightBalanceInputs(defaultOccupantsWeightKg: number | null = null): WeightBalanceInputs {
   return {
+    personsOnBoard: 2,
     occupantsWeightKg: defaultOccupantsWeightKg,
     baggageWeightKg: null,
     rampFuel: createEmptyFuelInput("l"),
@@ -257,14 +259,20 @@ export function calculateWeightBalance(
 
 export function buildWeightBalanceMeta(params: {
   aircraft: WeightBalanceAircraftSnapshot;
-  inputs: Omit<WeightBalanceInputs, "rampFuel" | "taxiFuel" | "tripFuel"> & {
+  inputs: Omit<WeightBalanceInputs, "rampFuel" | "taxiFuel" | "tripFuel" | "personsOnBoard"> & {
+    personsOnBoard?: number | null;
     rampFuel: Pick<WeightBalanceFuelInput, "value" | "unit">;
     taxiFuel: Pick<WeightBalanceFuelInput, "value" | "unit">;
     tripFuel: Pick<WeightBalanceFuelInput, "value" | "unit">;
   };
   updatedAt?: string;
 }): FlightWeightBalanceMeta {
+  const personsOnBoard =
+    typeof params.inputs.personsOnBoard === "number" && Number.isFinite(params.inputs.personsOnBoard)
+      ? Math.max(1, Math.round(params.inputs.personsOnBoard))
+      : 2;
   const inputs: WeightBalanceInputs = {
+    personsOnBoard,
     occupantsWeightKg: params.inputs.occupantsWeightKg,
     baggageWeightKg: params.inputs.baggageWeightKg,
     rampFuel: fuelInput(params.inputs.rampFuel.value, params.inputs.rampFuel.unit, params.aircraft.fuelDensityKgPerL),

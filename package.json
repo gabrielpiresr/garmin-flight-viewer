@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "appwrite:setup": "node scripts/setup-appwrite.mjs",
+    "appwrite:setup-performance": "node scripts/setup-performance-indexes.mjs",
     "appwrite:setup-telemetry": "node scripts/setup-telemetry-metrics-collections.mjs",
     "appwrite:setup-telemetry-alerts": "node scripts/setup-telemetry-alerts-collections.mjs",
     "appwrite:migrate:flights": "node scripts/migrate-flight-ownership.mjs",
@@ -30,7 +31,15 @@
     "appwrite:setup-rewards": "node scripts/setup-journey-rewards.mjs",
     "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs",
     "appwrite:import-aerodromes": "node scripts/import-aerodromes.mjs",
-    "appwrite:setup-manuals": "node scripts/setup-manuals.mjs"
+    "appwrite:setup-manuals": "node scripts/setup-manuals.mjs",
+    "appwrite:setup-broadcast": "node scripts/setup-broadcast-collections.mjs",
+    "appwrite:setup-maintenance": "node scripts/setup-maintenance-collections.mjs",
+    "appwrite:migrate:maintenance-checklists": "node scripts/migrate-maintenance-checklists.mjs",
+    "appwrite:setup-logbook-anac": "node scripts/setup-logbook-anac.mjs",
+    "appwrite:setup-flight-status": "node scripts/setup-flight-status.mjs",
+    "appwrite:migrate:anac-fields": "node scripts/migrate-anac-fields.mjs",
+    "videos:reconcile": "node scripts/reconcile-processing-videos.mjs",
+    "videos:reconcile:watch": "node scripts/reconcile-processing-videos.mjs --watch"
   },
   "dependencies": {
     "@tiptap/extension-image": "^3.23.2",

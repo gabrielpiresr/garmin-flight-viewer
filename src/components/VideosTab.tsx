@@ -9,8 +9,13 @@ import {
   deleteFlightVideo,
   listFlightVideos,
   updateFlightVideoFailed,
+  updateFlightVideoReady,
   type FlightVideo,
 } from "../lib/flightVideosDb";
+import {
+  hasStuckProcessingVideos,
+  reconcileProcessingVideosFromR2,
+} from "../lib/reconcileFlightVideoFromR2";
 import { getWorkerConfig, isVideoStorageConfigured } from "../lib/videoStorage";
 import { getAircraftByRegistration } from "../lib/aircraftDb";
 import { getModelById } from "../lib/aircraftModelsDb";
@@ -58,17 +63,9 @@ type ProgressPayload = {
   telemetry_present?: boolean;
   telemetry_source?: string;
   available_widgets?: string[];
+  telemetry_json?: string;
 };
 
-const STAGE_LABELS: Record<ProcessStage, string> = {
-  "telemetry-detect": "Procurando telemetria GPS...",
-  concat: "Concatenando vídeos…",
-  watermark: "Aplicando watermark…",
-  compress: "Compactando…",
-  upload: "Enviando para armazenamento…",
-  done: "Concluído",
-  error: "Erro no processamento",
-};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -89,6 +86,12 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function fmt(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function isVideoUploadFile(name: string): boolean {
   return /\.(mp4|mov|avi|mkv|mts|m2ts|webm)$/i.test(name);
 }
@@ -105,6 +108,70 @@ function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
   } catch {
     return { schoolName: "Escola", logoUrl: "" };
   }
+}
+
+function uploadFileToHelper(
+  sessionId: string,
+  index: number,
+  item: SelectedFile,
+  onProgress: (progress: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const inactivityMs = 120_000;
+    let settled = false;
+    let inactivityTimer: number | null = null;
+
+    const cleanup = () => {
+      if (inactivityTimer !== null) window.clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+    };
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const resetInactivityTimer = () => {
+      cleanup();
+      inactivityTimer = window.setTimeout(() => {
+        xhr.abort();
+        finish(new Error("Sem resposta do helper durante o envio. Verifique se o helper do terminal esta recebendo conexoes na porta 7842."));
+      }, inactivityMs);
+    };
+
+    xhr.open("POST", `${HELPER_URL}/receive-file/${sessionId}/${index}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-Filename", item.name);
+
+    xhr.upload.onloadstart = () => {
+      onProgress(0);
+      resetInactivityTimer();
+    };
+    xhr.upload.onprogress = (event) => {
+      resetInactivityTimer();
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.max(0, Math.min(1, event.loaded / event.total)));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(1);
+        finish();
+      } else {
+        finish(new Error(`status ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => finish(new Error("Falha de rede ao conectar com o helper"));
+    xhr.onabort = () => finish(new Error("Envio cancelado"));
+    xhr.ontimeout = () => finish(new Error("Tempo esgotado ao enviar para o helper"));
+
+    resetInactivityTimer();
+    xhr.send(item.file);
+  });
 }
 
 export function VideosTab({ flightId }: { flightId: string | undefined }) {
@@ -124,6 +191,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 
   const [isSending, setIsSending] = useState(false);
   const [sendingIdx, setSendingIdx] = useState(0);
+  const [sendingFileProgress, setSendingFileProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragIndexRef = useRef<number | null>(null);
   const evtSourceRef = useRef<EventSource | null>(null);
@@ -142,14 +210,40 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     if (!flightId) return;
     setLoadingVideos(true);
     const { data } = await listFlightVideos(flightId);
+    let list = data ?? [];
+    if (list.length > 0 && isVideoStorageConfigured()) {
+      const fixed = await reconcileProcessingVideosFromR2(flightId, list);
+      if (fixed > 0) {
+        const refreshed = await listFlightVideos(flightId);
+        if (refreshed.data) list = refreshed.data;
+      }
+    }
     setLoadingVideos(false);
-    if (data) setVideos(data);
+    setVideos(list);
   }, [flightId]);
 
   useEffect(() => {
     void checkHelper();
     void loadVideos();
   }, [checkHelper, loadVideos]);
+
+  // Enquanto houver vídeo em processing sem URL, reconsultar R2 periodicamente
+  useEffect(() => {
+    if (!flightId || !hasStuckProcessingVideos(videos)) return;
+    const interval = window.setInterval(() => {
+      void loadVideos();
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [flightId, videos, loadVideos]);
+
+  // Ao voltar para a aba, tentar reconciliar de novo
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void loadVideos();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadVideos]);
 
   // Impedir fechamento acidental durante envio ou processamento
   useEffect(() => {
@@ -239,7 +333,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
         sessionJwt = jwtResult.jwt;
       }
     } catch {
-      // sem JWT o helper não atualizará o Appwrite, mas continua
+      // sem JWT o helper não atualizará o Appwrite, mas continua (frontend reconcilia no R2)
     }
 
     // 3. Transmitir cada arquivo para o helper via streaming HTTP
@@ -248,19 +342,12 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 
     for (let i = 0; i < selectedFiles.length; i++) {
       setSendingIdx(i);
-      const { file, name } = selectedFiles[i];
+      setSendingFileProgress(0);
       try {
-        const res = await fetch(`${HELPER_URL}/receive-file/${sessionId}/${i}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "X-Filename": name,
-          },
-          body: file,
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
+        await uploadFileToHelper(sessionId, i, selectedFiles[i], setSendingFileProgress);
       } catch (e) {
         setIsSending(false);
+        setSendingFileProgress(0);
         await updateFlightVideoFailed(docId);
         setProcessingError(`Erro ao enviar "${selectedFiles[i].name}": ${(e as Error).message}`);
         setProcessingJobId(null);
@@ -269,6 +356,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     }
 
     setIsSending(false);
+    setSendingFileProgress(0);
 
     // 4. Disparar processamento no helper
     const appwriteEndpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string;
@@ -310,13 +398,83 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     const evtSource = new EventSource(`${HELPER_URL}/progress/${docId}`);
     evtSourceRef.current = evtSource;
 
-    evtSource.onmessage = (e) => {
+    evtSource.onmessage = async (e) => {
       const payload = JSON.parse(e.data) as ProgressPayload;
       setProgressStage(payload.stage);
       setProgress(payload.percent);
 
+      if (payload.stage === "telemetry-detect" && payload.percent === 100) {
+        // #region agent log
+        fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
+          body: JSON.stringify({
+            sessionId: "673562",
+            location: "VideosTab.tsx:SSE",
+            message: "telemetry-detect done",
+            data: {
+              telemetry_present: payload.telemetry_present,
+              telemetry_source: payload.telemetry_source,
+              available_widgets: payload.available_widgets,
+            },
+            hypothesisId: "C",
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+      }
+
       if (payload.stage === "done") {
         evtSource.close();
+        // #region agent log
+        fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
+          body: JSON.stringify({
+            sessionId: "673562",
+            location: "VideosTab.tsx:SSE",
+            message: "process done — frontend update",
+            data: {
+              telemetry_present: payload.telemetry_present,
+              telemetry_source: payload.telemetry_source,
+              hasFileUrl: Boolean(payload.file_url),
+              sessionJwtLen: sessionJwt.length,
+            },
+            hypothesisId: "D",
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        if (payload.file_url) {
+          const readyResult = await updateFlightVideoReady(docId, {
+            fileUrl: payload.file_url,
+            fileSize: payload.file_size ?? null,
+            durationSec: payload.duration_sec ?? null,
+            telemetryPresent: payload.telemetry_present,
+            telemetrySource: payload.telemetry_source,
+            telemetryJson: payload.telemetry_json,
+            availableWidgets: payload.available_widgets,
+          });
+          // #region agent log
+          fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
+            body: JSON.stringify({
+              sessionId: "673562",
+              location: "VideosTab.tsx:SSE",
+              message: "updateFlightVideoReady result",
+              data: {
+                ok: !readyResult.error,
+                error: readyResult.error?.message ?? null,
+                telemetryJsonBytes: payload.telemetry_json?.length ?? 0,
+              },
+              hypothesisId: "D",
+              runId: "post-fix",
+              timestamp: Date.now(),
+            }),
+          }).catch(() => {});
+          // #endregion
+        }
         setIsDone(true);
         void loadVideos();
       } else if (payload.stage === "error") {
@@ -372,8 +530,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
   const isActive = isSending || (!!processingJobId && !isDone);
   const showPickButton = isInstructor && selectedFiles.length === 0 && !isActive && !isDone;
   const showFileSelection = isInstructor && selectedFiles.length > 0 && !isActive && !isDone;
-  const showSendingUI = isSending;
-  const showProcessingUI = !!processingJobId && !isSending && !isDone;
+  const showProgressUI = isSending || (!!processingJobId && !isDone);
 
   return (
     <div className="space-y-6">
@@ -426,25 +583,13 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
             />
           )}
 
-          {/* UI de envio ao helper */}
-          {showSendingUI && (
-            <div className="mt-4 space-y-3">
-              <div className="flex items-center gap-2 text-xs text-slate-400">
-                <div className="h-3 w-3 animate-spin rounded-full border border-sky-400 border-t-transparent" />
-                Enviando arquivo {sendingIdx + 1} de {selectedFiles.length}…
-              </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-                <div
-                  className="h-full rounded-full bg-sky-600 transition-all duration-300"
-                  style={{ width: `${Math.round(((sendingIdx) / selectedFiles.length) * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* UI de progresso */}
-          {showProcessingUI && progressStage && (
-            <ProcessingProgress
+          {/* UI de envio + processamento unificada */}
+          {showProgressUI && (
+            <UploadProgress
+              isSending={isSending}
+              sendingIdx={sendingIdx}
+              sendingFileProgress={sendingFileProgress}
+              totalFiles={selectedFiles.length}
               stage={progressStage}
               percent={progress}
               onCancel={() => void handleCancel()}
@@ -630,34 +775,119 @@ function FileSelectionList({
   );
 }
 
-function ProcessingProgress({
+type PipelineStep = { key: "sending" | ProcessStage; label: string };
+
+const UPLOAD_PIPELINE: PipelineStep[] = [
+  { key: "sending", label: "Enviando arquivos ao helper" },
+  { key: "telemetry-detect", label: "Procurando telemetria GPS" },
+  { key: "concat", label: "Concatenando vídeos" },
+  { key: "watermark", label: "Aplicando watermark" },
+  { key: "compress", label: "Compactando" },
+  { key: "upload", label: "Enviando para armazenamento" },
+];
+
+function UploadProgress({
+  isSending,
+  sendingIdx,
+  sendingFileProgress,
+  totalFiles,
   stage,
   percent,
   onCancel,
 }: {
-  stage: ProcessStage;
+  isSending: boolean;
+  sendingIdx: number;
+  sendingFileProgress: number;
+  totalFiles: number;
+  stage: ProcessStage | null;
   percent: number;
   onCancel: () => void;
 }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(Date.now());
+
+  useEffect(() => {
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)),
+      500,
+    );
+    return () => clearInterval(id);
+  }, []);
+
+  const currentKey: "sending" | ProcessStage = isSending ? "sending" : (stage ?? "concat");
+  const currentIdx = UPLOAD_PIPELINE.findIndex((p) => p.key === currentKey);
+
+  const canClose = !isSending;
+
   return (
-    <div className="mt-4 space-y-3">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-300">{STAGE_LABELS[stage]}</span>
-        <span className="text-slate-500">{percent}%</span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
-        <div
-          className="h-full rounded-full bg-sky-500 transition-all duration-300"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="text-xs text-slate-500 underline-offset-4 hover:text-red-400 hover:underline"
+    <div className="mt-4 space-y-4">
+      {/* Aviso contextual */}
+      <p
+        className={`flex items-center gap-1.5 text-[11px] ${canClose ? "text-slate-400" : "text-amber-400"}`}
       >
-        Cancelar
-      </button>
+        <span>{canClose ? "ℹ" : "⚠"}</span>
+        <span>
+          {canClose
+            ? "Pode fechar esta aba — o processamento continua em segundo plano no helper"
+            : "Não feche nem recarregue esta aba enquanto os arquivos são enviados"}
+        </span>
+      </p>
+
+      {/* Pipeline de etapas */}
+      <div className="space-y-2.5">
+        {UPLOAD_PIPELINE.map(({ key, label }, i) => {
+          const isActive = key === currentKey;
+          const isPast = i < currentIdx;
+          const pct = isPast
+            ? 1
+            : isActive
+              ? key === "sending"
+                ? (sendingIdx + sendingFileProgress) / Math.max(totalFiles, 1)
+                : percent / 100
+              : 0;
+          const pctLabel = isPast ? "✓" : isActive ? `${Math.round(pct * 100)}%` : "—";
+
+          return (
+            <div key={key}>
+              <div className="mb-1 flex items-center justify-between">
+                <span
+                  className={`text-xs font-medium ${isActive ? "text-sky-300" : isPast ? "text-emerald-400" : "text-slate-600"}`}
+                >
+                  {i + 1}. {label}
+                  {isActive && key === "sending" && totalFiles > 1 && (
+                    <span className="ml-1.5 font-normal text-slate-500">
+                      (arquivo {sendingIdx + 1} de {totalFiles})
+                    </span>
+                  )}
+                </span>
+                <span
+                  className={`text-[11px] tabular-nums ${isActive ? "text-sky-400" : isPast ? "text-emerald-500" : "text-slate-700"}`}
+                >
+                  {pctLabel}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${isActive ? "bg-sky-500" : isPast ? "bg-emerald-500" : "bg-slate-700"}`}
+                  style={{ width: `${Math.round(pct * 100)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Rodapé: tempo decorrido + cancelar */}
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-slate-500">Decorrido: {fmt(elapsed)}</span>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs text-slate-500 underline-offset-4 hover:text-red-400 hover:underline"
+        >
+          Cancelar
+        </button>
+      </div>
     </div>
   );
 }

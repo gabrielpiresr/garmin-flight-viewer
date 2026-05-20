@@ -13,6 +13,25 @@ const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB por parte no upload multipart
 const HELPER_DIR = process.env.HELPER_RESOURCES
   || path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
 
+// #region agent log
+const AGENT_DEBUG_ENDPOINT = "http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1";
+const AGENT_DEBUG_SESSION = "673562";
+function agentDebugLog(location, message, data, hypothesisId) {
+  fetch(AGENT_DEBUG_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": AGENT_DEBUG_SESSION },
+    body: JSON.stringify({
+      sessionId: AGENT_DEBUG_SESSION,
+      location,
+      message,
+      data,
+      hypothesisId,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+}
+// #endregion
+
 // ─── Estado dos jobs ───────────────────────────────────────────────────────────
 
 const jobs = new Map(); // jobId → { listeners: res[], buffer: string[], cancelled: bool, cancel: fn }
@@ -40,6 +59,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Params");
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -65,11 +85,27 @@ const server = http.createServer(async (req, res) => {
 
     const filePath = path.join(tmpDir, `input_${index}_${filename}`);
     const ws = fs.createWriteStream(filePath);
+    const expectedBytes = Number(req.headers["content-length"] || 0);
+    const startedAt = Date.now();
+    let receivedBytes = 0;
+
+    req.on("data", (chunk) => {
+      receivedBytes += chunk.length;
+    });
+    req.on("aborted", () => {
+      console.warn(`[receive-file] upload abortado: ${filename} (${receivedBytes}/${expectedBytes || "?"} bytes)`);
+      ws.destroy(new Error("Upload abortado pelo browser"));
+    });
+
+    console.log(`[receive-file] recebendo ${filename} (${expectedBytes || "tamanho desconhecido"} bytes)`);
 
     try {
       await pipe(req, ws);
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(`[receive-file] recebido ${filename}: ${receivedBytes} bytes em ${elapsedSec}s`);
       return json(res, { ok: true });
     } catch (e) {
+      console.error(`[receive-file] erro ao receber ${filename}: ${e.message}`);
       return json(res, { error: e.message }, 500);
     }
   }
@@ -261,8 +297,11 @@ async function runPipeline(req, job) {
     const finalDuration = ffprobe ? (await probeDuration(ffprobe, finalPath)) ?? totalDuration : totalDuration;
 
     // Atualizar Appwrite
-    await updateAppwrite(appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
+    const appwriteOk = await updateAppwrite(appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
       flightVideoDocId, sessionJwt, fileUrl, fileSize, finalDuration, telemetry);
+    if (!appwriteOk) {
+      console.warn(`[${jobId}] Appwrite não atualizado — o browser deve finalizar via SDK`);
+    }
 
     // Limpar temporários
     cleanup(tmpDir);
@@ -274,6 +313,7 @@ async function runPipeline(req, job) {
       telemetry_present: telemetry.telemetryPresent,
       telemetry_source: telemetry.source,
       available_widgets: telemetry.availableWidgets,
+      telemetry_json: telemetry.telemetryJson,
     });
     console.log(`[${jobId}] Concluído: ${fileUrl}`);
 
@@ -328,6 +368,16 @@ async function detectVideoTelemetry(ffmpeg, ffprobe, videoFiles, sidecarFiles, t
   let sawGoproTrack = false;
   let offsetMs = 0;
 
+  // #region agent log
+  agentDebugLog("helper.js:detectVideoTelemetry", "start", {
+    videoCount: videoFiles.length,
+    sidecarCount: sidecarFiles.length,
+    hasFfmpeg: Boolean(ffmpeg),
+    hasFfprobe: Boolean(ffprobe),
+    videos: videoFiles.map((f) => path.basename(f)),
+  }, "A");
+  // #endregion
+
   for (let i = 0; i < videoFiles.length; i++) {
     const video = videoFiles[i];
     const durationSec = ffprobe ? (await probeDuration(ffprobe, video)) ?? 0 : 0;
@@ -349,13 +399,32 @@ async function detectVideoTelemetry(ffmpeg, ffprobe, videoFiles, sidecarFiles, t
         source = "dji_srt";
       }
     } else if (ffprobe && await hasGoproMetadataTrack(ffprobe, video)) {
+      const hasGopro = true;
       const points = await extractGoproGps9Telemetry(ffmpeg, video, tmpDir, i, offsetMs);
+      // #region agent log
+      agentDebugLog("helper.js:detectVideoTelemetry", "gopro branch", {
+        index: i,
+        video: path.basename(video),
+        hasGoproTrack: hasGopro,
+        rawPoints: points.length,
+        fileSize: fs.existsSync(video) ? fs.statSync(video).size : 0,
+      }, "B");
+      // #endregion
       if (points.length > 0) {
         allPoints.push(...points);
         source = "gopro";
       } else {
         sawGoproTrack = true;
       }
+    } else {
+      // #region agent log
+      agentDebugLog("helper.js:detectVideoTelemetry", "no srt/gopro", {
+        index: i,
+        video: path.basename(video),
+        hasFfprobe: Boolean(ffprobe),
+        hasGoproTrack: ffprobe ? await hasGoproMetadataTrack(ffprobe, video) : false,
+      }, "A");
+      // #endregion
     }
 
     offsetMs += Math.max(0, durationSec * 1000);
@@ -363,24 +432,59 @@ async function detectVideoTelemetry(ffmpeg, ffprobe, videoFiles, sidecarFiles, t
 
   const normalized = normalizeTelemetryPoints(allPoints);
   const availableWidgets = inferAvailableWidgets(normalized);
-  return {
+  const result = {
     telemetryPresent: normalized.length > 1,
     source: normalized.length > 1 ? source : (sawGoproTrack ? "gopro" : "none"),
     availableWidgets,
     telemetryJson: JSON.stringify({ version: 1, points: downsamplePoints(normalized, 1200) }),
   };
+  // #region agent log
+  agentDebugLog("helper.js:detectVideoTelemetry", "result", {
+    rawPoints: allPoints.length,
+    normalizedPoints: normalized.length,
+    telemetryPresent: result.telemetryPresent,
+    source: result.source,
+    sawGoproTrack,
+    telemetryJsonBytes: Buffer.byteLength(result.telemetryJson, "utf8"),
+    widgets: availableWidgets,
+  }, "C");
+  // #endregion
+  return result;
 }
 
 async function extractGoproGps9Telemetry(ffmpeg, videoFile, tmpDir, index, offsetMs) {
   if (!ffmpeg) return [];
   const output = path.join(tmpDir, `gopro_${index}.gpmd.bin`);
+  let exitCode = -1;
+  let binSize = 0;
   const ok = await new Promise((resolve) => {
     const p = spawn(ffmpeg, ["-y", "-i", videoFile, "-map", "0:m:handler_name:GoPro MET", "-c", "copy", "-f", "data", output], { stdio: "ignore" });
-    p.on("close", (code) => resolve(code === 0 && fs.existsSync(output) && fs.statSync(output).size > 0));
+    p.on("close", (code) => {
+      exitCode = code;
+      binSize = fs.existsSync(output) ? fs.statSync(output).size : 0;
+      resolve(code === 0 && binSize > 0);
+    });
     p.on("error", () => resolve(false));
   });
+  // #region agent log
+  agentDebugLog("helper.js:extractGoproGps9Telemetry", "ffmpeg extract", {
+    index,
+    video: path.basename(videoFile),
+    ok,
+    exitCode,
+    binSize,
+  }, "B");
+  // #endregion
   if (!ok) return [];
-  return parseGoproGps9Binary(fs.readFileSync(output), offsetMs);
+  const parsed = parseGoproGps9Binary(fs.readFileSync(output), offsetMs);
+  // #region agent log
+  agentDebugLog("helper.js:extractGoproGps9Telemetry", "parsed", {
+    index,
+    parsedPoints: parsed.length,
+    gps9Items: parseGpmfItems(fs.readFileSync(output)).filter((it) => it.key === "GPS9").length,
+  }, "C");
+  // #endregion
+  return parsed;
 }
 
 function parseGoproGps9Binary(buffer, offsetMs) {
@@ -398,7 +502,9 @@ function parseGoproGps9Binary(buffer, offsetMs) {
       const gpsSeconds = buffer.readInt32BE(o + 24) / 1000;
       const fix = buffer.readUInt16BE(o + 30);
       if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
-      if (fix <= 0 || (lat === 0 && lon === 0)) continue;
+      // GoPro recente pode gravar fix=0 com lat/lon válidos — só descarta (0,0) ou fix negativo
+      if (lat === 0 && lon === 0) continue;
+      if (fix < 0) continue;
       const firstSeconds = points.length > 0 ? points[0].gpsSeconds : gpsSeconds;
       points.push({
         timeMs: Math.max(0, offsetMs + (gpsSeconds - firstSeconds) * 1000),
@@ -1004,7 +1110,7 @@ function escapeFilterPath(filePath) {
 }
 
 async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, fileUrl, fileSize, durationSec, telemetry) {
-  if (!jwt || !colId) return;
+  if (!jwt || !colId) return false;
   const url = `${endpoint}/databases/${dbId}/collections/${colId}/documents/${docId}`;
   const headers = {
     "X-Appwrite-Project": projectId,
@@ -1025,12 +1131,31 @@ async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, file
       },
     }),
   });
-  if (fullRes.ok) return;
-  await fetch(url, {
+  // #region agent log
+  const fullBody = await fullRes.text().catch(() => "");
+  agentDebugLog("helper.js:updateAppwrite", "full patch", {
+    ok: fullRes.ok,
+    status: fullRes.status,
+    telemetryPresent: Boolean(telemetry?.telemetryPresent),
+    telemetrySource: telemetry?.source ?? "none",
+    telemetryJsonBytes: Buffer.byteLength(telemetry?.telemetryJson ?? "", "utf8"),
+    hasJwt: Boolean(jwt),
+    responseSnippet: fullBody.slice(0, 200),
+  }, "D");
+  // #endregion
+  if (fullRes.ok) return true;
+  const fallbackRes = await fetch(url, {
     method: "PATCH",
     headers,
     body: JSON.stringify({ data: baseData }),
   });
+  // #region agent log
+  agentDebugLog("helper.js:updateAppwrite", "fallback patch", {
+    ok: fallbackRes.ok,
+    status: fallbackRes.status,
+  }, "D");
+  // #endregion
+  return fallbackRes.ok;
 }
 
 // ─── Utilitários ───────────────────────────────────────────────────────────────
@@ -1084,9 +1209,49 @@ function registerAutoStart() {
   } catch {}
 }
 
+// ─── CLI: testar telemetria em arquivo local ───────────────────────────────────
+
+async function cliDetectTelemetry(videoPath) {
+  const resolved = path.resolve(videoPath);
+  if (!fs.existsSync(resolved)) {
+    console.error("Arquivo não encontrado:", resolved);
+    process.exit(1);
+  }
+  const ffmpeg = findBin("ffmpeg");
+  const ffprobe = findBin("ffprobe");
+  const tmpDir = path.join(os.tmpdir(), `flight-cli-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try {
+    const telemetry = await detectVideoTelemetry(ffmpeg, ffprobe, [resolved], [], tmpDir);
+    console.log(JSON.stringify({
+      file: resolved,
+      telemetry_present: telemetry.telemetryPresent,
+      telemetry_source: telemetry.source,
+      available_widgets: telemetry.availableWidgets,
+      telemetry_json_bytes: Buffer.byteLength(telemetry.telemetryJson, "utf8"),
+      point_count: (() => {
+        try { return JSON.parse(telemetry.telemetryJson).points?.length ?? 0; } catch { return 0; }
+      })(),
+    }, null, 2));
+  } finally {
+    cleanup(tmpDir);
+  }
+}
+
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
-server.listen(PORT, "127.0.0.1", () => {
+const cliTelemetryArg = process.argv.indexOf("--detect-telemetry");
+if (cliTelemetryArg >= 0) {
+  const videoArg = process.argv[cliTelemetryArg + 1];
+  if (!videoArg) {
+    console.error("Uso: node helper.js --detect-telemetry \"C:\\caminho\\video.MP4\"");
+    process.exit(1);
+  }
+  cliDetectTelemetry(videoArg).catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+} else server.listen(PORT, "127.0.0.1", () => {
   console.log("╔══════════════════════════════════════════════════╗");
   console.log("║     Flight Video Helper — rodando                ║");
   console.log(`║     http://127.0.0.1:${PORT}                       ║`);
@@ -1095,7 +1260,7 @@ server.listen(PORT, "127.0.0.1", () => {
   registerAutoStart();
 });
 
-server.on("error", (e) => {
+if (cliTelemetryArg < 0) server.on("error", (e) => {
   if (e.code === "EADDRINUSE") {
     console.error(`Porta ${PORT} já em uso. O helper já está rodando?`);
     process.exit(1);

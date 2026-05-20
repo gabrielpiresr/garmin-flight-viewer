@@ -2,7 +2,7 @@ import { Query } from "appwrite";
 import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, storage } from "./appwrite";
 
 const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
-import { decodeFlightRecord, encodeFlightRecord } from "./flightRecordCodec";
+import { decodeFlightRecord, decodeFlightRecordMeta, encodeFlightRecord, type FlightRecordMeta } from "./flightRecordCodec";
 import type { FlightWeightBalanceMeta } from "./weightBalance";
 import { clearFlightTelemetryMetrics, replaceFlightTelemetryMetrics } from "./flightTelemetryMetricsDb";
 import { clearFlightTelemetryAlerts, replaceFlightTelemetryAlertsForFlight } from "./flightTelemetryAlertsDb";
@@ -13,6 +13,14 @@ import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
+
+export type FlightStatus = "Previsto" | "Cancelado" | "Realizado";
+
+export const FLIGHT_STATUS_OPTIONS: FlightStatus[] = ["Previsto", "Cancelado", "Realizado"];
+
+export function normalizeFlightStatus(value: unknown): FlightStatus {
+  return FLIGHT_STATUS_OPTIONS.includes(value as FlightStatus) ? (value as FlightStatus) : "Previsto";
+}
 
 export type SavedFlightListItem = {
   id: string;
@@ -42,9 +50,21 @@ export type SavedFlightListItem = {
   training_mission_ids_json: string | null;
   schedule_week_start: string | null;
   schedule_demand_id: string | null;
+  flight_seq_number: number | null;
+  instructor_signed: boolean | null;
+  student_signed: boolean | null;
+  admin_operator_signed: boolean | null;
+  instructor_signed_at: string | null;
+  flight_status: FlightStatus;
 };
 
 export type SavedFlightFull = SavedFlightListItem & { csv_text: string };
+export type SavedFlightsPage = {
+  data: SavedFlightListItem[] | null;
+  error: Error | null;
+  total: number;
+  nextCursor: string | null;
+};
 
 const LEGACY_FLIGHT_LIST_SELECT = [
   "$id",
@@ -79,10 +99,12 @@ const MATERIALIZED_FLIGHT_LIST_FIELDS = [
 ];
 
 const SCHEDULE_FLIGHT_LIST_FIELDS = ["schedule_week_start", "schedule_demand_id"];
+const SIGNATURE_FLIGHT_LIST_FIELDS = ["instructor_signed", "student_signed", "admin_operator_signed", "instructor_signed_at"];
+const STATUS_FLIGHT_LIST_FIELDS = ["flight_status"];
 
 const FLIGHT_LIST_SELECT = [...LEGACY_FLIGHT_LIST_SELECT, ...MATERIALIZED_FLIGHT_LIST_FIELDS];
 
-const FLIGHT_LIST_SELECT_WITH_SCHEDULE = [...FLIGHT_LIST_SELECT, ...SCHEDULE_FLIGHT_LIST_FIELDS];
+const FLIGHT_LIST_SELECT_WITH_SCHEDULE = [...FLIGHT_LIST_SELECT, ...SCHEDULE_FLIGHT_LIST_FIELDS, ...SIGNATURE_FLIGHT_LIST_FIELDS, ...STATUS_FLIGHT_LIST_FIELDS];
 
 function isSchemaAttributeError(error: unknown): boolean {
   const message = ((error as { message?: string })?.message ?? String(error)).toLowerCase();
@@ -130,6 +152,12 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
     training_mission_ids_json: (d.training_mission_ids_json as string | null | undefined) ?? null,
     schedule_week_start: (d.schedule_week_start as string | null | undefined) ?? null,
     schedule_demand_id: (d.schedule_demand_id as string | null | undefined) ?? null,
+    flight_seq_number: readNumber(d.flight_seq_number),
+    instructor_signed: readBoolean(d.instructor_signed),
+    student_signed: readBoolean(d.student_signed),
+    admin_operator_signed: readBoolean(d.admin_operator_signed),
+    instructor_signed_at: (d.instructor_signed_at as string | null | undefined) ?? null,
+    flight_status: normalizeFlightStatus(d.flight_status),
   };
 }
 
@@ -240,7 +268,7 @@ function getFlightScheduleFields(csvText: string): { flight_date: string | null;
   const meta = decodeFlightRecord(csvText).meta;
   return {
     flight_date: meta?.header.date || null,
-    start_time: meta?.header.startTime?.trim() || null,
+    start_time: meta?.header.departureTimeUtc?.trim() || meta?.header.startTime?.trim() || null,
   };
 }
 
@@ -257,6 +285,14 @@ function toStorageCsvFileName(sourceFilename: string): string {
   if (/\.csv$/i.test(trimmed)) return trimmed;
   const safeBase = trimmed.replace(/\.[^.\\/]+$/, "").trim() || "telemetria";
   return `${safeBase}.csv`;
+}
+
+async function assertFlightNotLocked(id: string): Promise<{ locked: boolean; error: Error | null }> {
+  const doc = await databases!.getDocument(DB_ID, COL_ID, id, [Query.select(["instructor_signed"])]);
+  if (doc.instructor_signed) {
+    return { locked: true, error: new Error("Este voo está bloqueado pois foi assinado pelo instrutor.") };
+  }
+  return { locked: false, error: null };
 }
 
 function buildActorOwnedPermissions(actorUserId: string) {
@@ -451,46 +487,91 @@ export async function listScheduledFlightsForWeek(weekStart: string): Promise<{
 
 export async function listSavedFlights(
   viewer: { userId: string; role: UserRole },
-): Promise<{ data: SavedFlightListItem[] | null; error: Error | null }> {
+  options: { limit?: number; cursor?: string | null } = {},
+): Promise<SavedFlightsPage> {
+  const limit = Math.min(100, Math.max(1, Math.round(options.limit ?? 50)));
+  const roleQueries: string[] = [];
+  if (viewer.role === "aluno") {
+    roleQueries.push(Query.equal("student_user_id", [viewer.userId]));
+  } else if (viewer.role === "instrutor") {
+    roleQueries.push(Query.equal("instructor_user_id", [viewer.userId]));
+  }
+  const toPage = (res: { documents: Array<{ [key: string]: unknown; $id: string; $createdAt: string }>; total: number }): SavedFlightsPage => ({
+    data: res.documents.map(toSavedFlightListItem),
+    error: null,
+    total: res.total,
+    nextCursor: res.documents.length === limit ? res.documents[res.documents.length - 1]?.$id ?? null : null,
+  });
   if (!isAppwriteConfigured || !databases) {
-    return { data: null, error: new Error("Appwrite não configurado") };
+    return { data: null, error: new Error("Appwrite nao configurado"), total: 0, nextCursor: null };
   }
   try {
     const queries = [
-      Query.select(FLIGHT_LIST_SELECT),
+      Query.select(FLIGHT_LIST_SELECT_WITH_SCHEDULE),
       Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
-      Query.orderDesc("$createdAt"),
-      Query.limit(200),
+      ...roleQueries,
+      Query.orderDesc("flight_date"),
+      Query.orderDesc("start_time"),
+      Query.limit(limit),
     ];
-    if (viewer.role === "aluno") {
-      queries.push(Query.equal("student_user_id", [viewer.userId]));
-    } else if (viewer.role === "instrutor") {
-      queries.push(Query.equal("instructor_user_id", [viewer.userId]));
-    }
+    if (options.cursor) queries.push(Query.cursorAfter(options.cursor));
 
     const res = await databases.listDocuments(DB_ID, COL_ID, queries);
-    const data = res.documents.map(toSavedFlightListItem);
-    return { data, error: null };
+    return toPage(res);
   } catch (e) {
-    if (!isSchemaAttributeError(e)) return { data: null, error: e as Error };
+    if (!isSchemaAttributeError(e)) return { data: null, error: e as Error, total: 0, nextCursor: null };
     try {
       const queries = [
-        Query.select(LEGACY_FLIGHT_LIST_SELECT),
+        Query.select(FLIGHT_LIST_SELECT),
         Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
-        Query.orderDesc("$createdAt"),
-        Query.limit(200),
+        ...roleQueries,
+        Query.orderDesc("flight_date"),
+        Query.orderDesc("start_time"),
+        Query.limit(limit),
       ];
-      if (viewer.role === "aluno") {
-        queries.push(Query.equal("student_user_id", [viewer.userId]));
-      } else if (viewer.role === "instrutor") {
-        queries.push(Query.equal("instructor_user_id", [viewer.userId]));
-      }
+      if (options.cursor) queries.push(Query.cursorAfter(options.cursor));
       const res = await databases.listDocuments(DB_ID, COL_ID, queries);
-      return { data: res.documents.map(toSavedFlightListItem), error: null };
+      return toPage(res);
     } catch (fallbackError) {
-      return { data: null, error: fallbackError as Error };
+      if (!isSchemaAttributeError(fallbackError)) {
+        return { data: null, error: fallbackError as Error, total: 0, nextCursor: null };
+      }
+      try {
+        const queries = [
+          Query.select(LEGACY_FLIGHT_LIST_SELECT),
+          Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+          ...roleQueries,
+          Query.orderDesc("$createdAt"),
+          Query.limit(limit),
+        ];
+        if (options.cursor) queries.push(Query.cursorAfter(options.cursor));
+        const res = await databases.listDocuments(DB_ID, COL_ID, queries);
+        return toPage(res);
+      } catch (legacyError) {
+        return { data: null, error: legacyError as Error, total: 0, nextCursor: null };
+      }
     }
   }
+}
+
+export async function listAllSavedFlights(
+  viewer: { userId: string; role: UserRole },
+  options: { pageSize?: number; maxItems?: number } = {},
+): Promise<{ data: SavedFlightListItem[] | null; error: Error | null }> {
+  const pageSize = Math.min(100, Math.max(1, Math.round(options.pageSize ?? 100)));
+  const maxItems = Math.max(pageSize, Math.round(options.maxItems ?? 2000));
+  const rows: SavedFlightListItem[] = [];
+  let cursor: string | null = null;
+
+  while (rows.length < maxItems) {
+    const page = await listSavedFlights(viewer, { limit: pageSize, cursor });
+    if (page.error) return { data: null, error: page.error };
+    rows.push(...(page.data ?? []));
+    if (!page.nextCursor || (page.data?.length ?? 0) === 0) break;
+    cursor = page.nextCursor;
+  }
+
+  return { data: rows, error: null };
 }
 
 export async function listStudentFlightHistory(params: {
@@ -529,6 +610,159 @@ export async function listStudentFlightHistory(params: {
   } catch (e) {
     return { data: null, error: e as Error };
   }
+}
+
+export async function listFlightsByAircraft(params: {
+  aircraftIdent: string;
+  fromDate?: string | null;
+  toDate?: string | null;
+  limit?: number;
+  cursor?: string | null;
+}): Promise<SavedFlightsPage> {
+  const limit = Math.min(100, Math.max(1, Math.round(params.limit ?? 50)));
+  const aircraftIdent = params.aircraftIdent.trim();
+  if (!aircraftIdent) {
+    return { data: [], error: null, total: 0, nextCursor: null };
+  }
+  if (!isAppwriteConfigured || !databases) {
+    return { data: null, error: new Error("Appwrite não configurado"), total: 0, nextCursor: null };
+  }
+  try {
+    const queries = [
+      Query.select([...FLIGHT_LIST_SELECT_WITH_SCHEDULE, "flight_seq_number"]),
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+      Query.equal("aircraft_ident", [aircraftIdent]),
+      Query.orderAsc("flight_date"),
+      Query.orderAsc("flight_seq_number"),
+      Query.orderAsc("start_time"),
+      Query.limit(limit),
+    ];
+    if (params.fromDate) queries.push(Query.greaterThanEqual("flight_date", [params.fromDate]));
+    if (params.toDate) queries.push(Query.lessThanEqual("flight_date", [params.toDate]));
+    if (params.cursor) queries.push(Query.cursorAfter(params.cursor));
+
+    const res = await databases.listDocuments(DB_ID, COL_ID, queries);
+    return {
+      data: res.documents.map(toSavedFlightListItem),
+      error: null,
+      total: res.total,
+      nextCursor: res.documents.length === limit ? res.documents[res.documents.length - 1]?.$id ?? null : null,
+    };
+  } catch (e) {
+    return { data: null, error: e as Error, total: 0, nextCursor: null };
+  }
+}
+
+const META_PREFIX = "#GFV_META_V1:";
+/** Bytes suficientes para a 1ª linha (meta JSON em base64). Nunca baixa telemetria. */
+const META_ONLY_FETCH_BYTES = 96 * 1024;
+
+function firstRecordLine(text: string): string {
+  const normalized = text.replace(/^\uFEFF/, "");
+  const lineEnd = normalized.search(/\r?\n/);
+  return lineEnd >= 0 ? normalized.slice(0, lineEnd + 1) : normalized;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const limit = Math.max(1, Math.floor(concurrency));
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * Carrega somente FlightRecordMeta — sem telemetria.
+ * Usa csv_text inline (1ª linha) ou Range HTTP no arquivo de storage.
+ */
+export async function getFlightRecordMetaOnly(
+  flightId: string,
+): Promise<{ meta: FlightRecordMeta | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { meta: null, error: new Error("Appwrite não configurado") };
+  }
+  try {
+    const d = await databases.getDocument(DB_ID, COL_ID, flightId, [Query.select(["csv_text", "csv_file_id"])]);
+    const inline = ((d.csv_text as string | null | undefined) ?? "").trim();
+    const csvFileId = (d.csv_file_id as string | null | undefined) ?? null;
+
+    let prefix = "";
+    if (inline.startsWith(META_PREFIX)) {
+      prefix = firstRecordLine(inline);
+    } else if (csvFileId && storage && BUCKET_ID) {
+      const url = storage.getFileDownload(BUCKET_ID, csvFileId);
+      const res = await fetch(url.toString(), {
+        credentials: "include",
+        headers: { Range: `bytes=0-${META_ONLY_FETCH_BYTES - 1}` },
+      });
+      if (res.ok || res.status === 206) {
+        prefix = firstRecordLine(await res.text());
+      } else if (inline.startsWith(META_PREFIX)) {
+        prefix = firstRecordLine(inline);
+      }
+    } else if (inline) {
+      prefix = firstRecordLine(inline);
+    }
+
+    return { meta: prefix ? decodeFlightRecordMeta(prefix) : null, error: null };
+  } catch (e) {
+    return { meta: null, error: e as Error };
+  }
+}
+
+export async function getFlightRecordMetaBatch(
+  flightIds: string[],
+  options: { concurrency?: number } = {},
+): Promise<Map<string, FlightRecordMeta | null>> {
+  const map = new Map<string, FlightRecordMeta | null>();
+  if (flightIds.length === 0) return map;
+
+  const concurrency = options.concurrency ?? 10;
+  const results = await mapWithConcurrency(flightIds, concurrency, async (id) => {
+    const { meta, error } = await getFlightRecordMetaOnly(id);
+    return { id, meta, error };
+  });
+
+  for (const row of results) {
+    map.set(row.id, row.meta);
+  }
+  return map;
+}
+
+export async function listAllFlightsByAircraft(params: {
+  aircraftIdent: string;
+  fromDate?: string | null;
+  toDate?: string | null;
+}): Promise<{ data: SavedFlightListItem[] | null; error: Error | null }> {
+  const rows: SavedFlightListItem[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const page = await listFlightsByAircraft({
+      aircraftIdent: params.aircraftIdent,
+      fromDate: params.fromDate,
+      toDate: params.toDate,
+      limit: 100,
+      cursor,
+    });
+    if (page.error) return { data: null, error: page.error };
+    rows.push(...(page.data ?? []));
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return { data: rows, error: null };
 }
 
 export async function getSavedFlight(id: string): Promise<{ data: SavedFlightFull | null; error: Error | null }> {
@@ -594,6 +828,18 @@ export async function insertFlight(payload: {
       return { id: null, error: new Error("Apenas instrutor ou admin pode enviar voos.") };
     }
 
+    let flight_seq_number: number | null = null;
+    if (payload.aircraft_ident && databases && DB_ID && COL_ID) {
+      const res = await databases.listDocuments(DB_ID, COL_ID, [
+        Query.equal("aircraft_ident", [payload.aircraft_ident]),
+        Query.orderDesc("flight_seq_number"),
+        Query.limit(1),
+        Query.select(["flight_seq_number"]),
+      ]);
+      const last = res.documents[0]?.flight_seq_number;
+      flight_seq_number = typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
+    }
+
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const permissions = resolveClientFlightPermissions(
       payload.actorUserId,
@@ -620,7 +866,7 @@ export async function insertFlight(payload: {
         created_by_role: payload.actorRole,
         name: buildInternalFlightName(payload),
         source_filename: payload.source_filename,
-        csv_text: payload.csv_text,
+        csv_text: csvFileId ? "" : payload.csv_text,
         csv_file_id: csvFileId,
         aircraft_ident: payload.aircraft_ident ?? null,
         duration_sec: payload.duration_sec ?? null,
@@ -630,6 +876,8 @@ export async function insertFlight(payload: {
         training_stage_id: payload.trainingStageId ?? null,
         training_mission_id: payload.trainingMissionId ?? null,
         training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
+        flight_seq_number,
+        flight_status: "Previsto",
       },
       csvText: payload.csv_text,
       trainingMissionId: payload.trainingMissionId,
@@ -675,6 +923,7 @@ export async function updateFlight(id: string, payload: {
   trainingSnapshot?: TrainingSelectionSnapshot | null;
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
   telemetryAlertParsed?: ParseResult | null;
+  flightStatus?: FlightStatus | null;
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
@@ -684,6 +933,9 @@ export async function updateFlight(id: string, payload: {
     if (!canUpload) {
       return { error: new Error("Apenas instrutor ou admin pode atualizar voos.") };
     }
+
+    const lockCheck = await assertFlightNotLocked(id);
+    if (lockCheck.error && lockCheck.locked) return { error: lockCheck.error };
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);
@@ -713,7 +965,7 @@ export async function updateFlight(id: string, payload: {
         created_by_role: payload.actorRole,
         name: buildInternalFlightName(payload),
         source_filename: payload.source_filename,
-        csv_text: payload.csv_text,
+        csv_text: csvFileId ? "" : payload.csv_text,
         csv_file_id: csvFileId,
         aircraft_ident: payload.aircraft_ident ?? null,
         duration_sec: payload.duration_sec ?? null,
@@ -723,6 +975,7 @@ export async function updateFlight(id: string, payload: {
         training_stage_id: payload.trainingStageId ?? null,
         training_mission_id: payload.trainingMissionId ?? null,
         training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
+        flight_status: normalizeFlightStatus(payload.flightStatus ?? current.flight_status),
       },
       csvText: payload.csv_text,
       trainingMissionId: payload.trainingMissionId,
@@ -751,6 +1004,29 @@ export async function updateFlight(id: string, payload: {
   }
 }
 
+export async function updateFlightStatus(id: string, payload: {
+  actorUserId: string;
+  actorRole: UserRole;
+  status: FlightStatus;
+}): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite nÃ£o configurado") };
+  }
+  try {
+    if (payload.actorRole !== "instrutor" && payload.actorRole !== "admin") {
+      return { error: new Error("Apenas INVA ou admin pode alterar o status do voo.") };
+    }
+    const lockCheck = await assertFlightNotLocked(id);
+    if (lockCheck.error && lockCheck.locked) return { error: lockCheck.error };
+    await databases.updateDocument(DB_ID, COL_ID, id, {
+      flight_status: normalizeFlightStatus(payload.status),
+    });
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
 export async function updateStudentFlightSuggestion(id: string, payload: {
   actorUserId: string;
   suggestionMd: string;
@@ -765,6 +1041,9 @@ export async function updateStudentFlightSuggestion(id: string, payload: {
     }
     if (saved.data.student_user_id !== payload.actorUserId) {
       return { error: new Error("Você só pode atualizar a sugestão dos seus próprios voos.") };
+    }
+    if (saved.data.instructor_signed) {
+      return { error: new Error("Este voo está bloqueado pois foi assinado pelo instrutor.") };
     }
 
     const decoded = decodeFlightRecord(saved.data.csv_text);
@@ -820,6 +1099,9 @@ export async function updateFlightWeightBalance(id: string, payload: {
     if (!canUpdate) {
       return { error: new Error("Você não tem permissão para atualizar o peso e balanceamento deste voo.") };
     }
+    if (saved.data.instructor_signed) {
+      return { error: new Error("Este voo está bloqueado pois foi assinado pelo instrutor.") };
+    }
 
     const decoded = decodeFlightRecord(saved.data.csv_text);
     if (!decoded.meta) {
@@ -866,6 +1148,9 @@ export async function updateInstructorFlightSuggestion(id: string, payload: {
     if (saved.data.instructor_user_id !== payload.actorUserId) {
       return { error: new Error("Você só pode atualizar a sugestão dos voos atribuídos a você.") };
     }
+    if (saved.data.instructor_signed) {
+      return { error: new Error("Este voo já foi assinado e não pode mais ser alterado.") };
+    }
 
     const decoded = decodeFlightRecord(saved.data.csv_text);
     if (!decoded.meta) {
@@ -905,6 +1190,11 @@ export async function deleteSavedFlight(id: string): Promise<{ error: Error | nu
     return { error: new Error("Appwrite não configurado") };
   }
   try {
+    const lockCheck = await assertFlightNotLocked(id);
+    if (lockCheck.error && lockCheck.locked) {
+      return { error: new Error("Não é possível apagar um voo assinado pelo instrutor.") };
+    }
+
     // Try to delete the associated CSV file from Storage as well
     if (storage && BUCKET_ID) {
       try {

@@ -55,7 +55,10 @@ export function UpcomingFlightsCard({
     }
     setLoading(true);
     setError(null);
-    const { data, error: listError } = await listSavedFlights({ userId: user.id, role: user.role });
+    const { data, error: listError } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: Math.max(50, limit * 4) },
+    );
     if (listError) {
       setError(listError.message);
       setFlights([]);

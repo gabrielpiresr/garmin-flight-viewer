@@ -159,13 +159,14 @@ function buildLegsTable(meta: FlightRecordMeta): string {
           <th>Noturno</th>
           <th>Serviço</th>
           <th>Distância</th>
+          <th>Comb. (L)</th>
         </tr>
       </thead>
       <tbody>
         ${meta.legs.map((leg) => `
           <tr>
             <td>${escapeHtml(leg.date)}</td>
-            <td>${escapeHtml(leg.role)}</td>
+            <td>${escapeHtml([leg.studentRole, leg.instructorRole || leg.role].filter(Boolean).join(" / "))}</td>
             <td>${escapeHtml(leg.dep)}</td>
             <td>${escapeHtml(leg.arr)}</td>
             <td>${escapeHtml(leg.landings)}</td>
@@ -175,6 +176,7 @@ function buildLegsTable(meta: FlightRecordMeta): string {
             <td>${escapeHtml(leg.nightTime)}</td>
             <td>${escapeHtml(leg.serviceTime)}</td>
             <td>${escapeHtml(leg.distance)}</td>
+            <td>${leg.fuelLiters != null ? escapeHtml(leg.fuelLiters.toFixed(1)) : "-"}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -238,6 +240,7 @@ function buildWeightBalanceSection(meta: FlightRecordMeta): string {
       ["Status", wb.results.isWithinLimits ? "Dentro do envelope" : "Verificar envelope"],
     ], 2)}
     ${fieldTable([
+      ["Pessoas a bordo", wb.inputs.personsOnBoard != null ? String(wb.inputs.personsOnBoard) : "2"],
       ["Peso ocupantes", `${formatNumber(wb.inputs.occupantsWeightKg)} kg`],
       ["Peso bagagem", `${formatNumber(wb.inputs.baggageWeightKg)} kg`],
       ["Combustível inicial", `${formatNumber(wb.inputs.rampFuel.value)} ${wb.inputs.rampFuel.unit === "l" ? "L" : "kg"} / ${formatNumber(wb.inputs.rampFuel.weightKg)} kg`],
@@ -268,6 +271,48 @@ function buildWeightBalanceSection(meta: FlightRecordMeta): string {
     </table>
     ${issues.length > 0 ? `<div class="warning-box"><strong>Atenção:</strong><ul>${issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul></div>` : ""}
   `;
+}
+
+const FLIGHT_NATURE_LABELS: Record<string, string> = {
+  AE: "autorização especial",
+  CQ: "exame prático de proficiência",
+  EX: "experiência",
+  NR: "voo não regular",
+  RE: "voo regular",
+  PV: "caráter privado",
+  SA: "serviço aéreo especializado",
+  TN: "treinamento",
+  TR: "traslado da aeronave",
+};
+
+function formatFlightNature(value?: string | null): string {
+  const raw = (value ?? "").trim();
+  const code = raw.slice(0, 2).toUpperCase();
+  const label = FLIGHT_NATURE_LABELS[code];
+  if (label) return `${code}, ${label}`;
+  if (raw.toLowerCase().includes("instru") || raw.toLowerCase().includes("trein")) return "TN, treinamento";
+  return raw || "TN, treinamento";
+}
+
+function hasTechnicalChoice(value: string | undefined, emptyValue: string): boolean {
+  return Boolean(value?.trim() && value.trim() !== emptyValue);
+}
+
+function buildTechnicalLogSection(meta: FlightRecordMeta): string {
+  const discrepancyCode = meta.technicalLog?.discrepancyCode || "Sem discrepâncias";
+  const occurrenceCode = meta.technicalLog?.occurrenceCode || "Sem ocorrências";
+  const hasDiscrepancy = hasTechnicalChoice(discrepancyCode, "Sem discrepâncias");
+  const hasOccurrence = hasTechnicalChoice(occurrenceCode, "Sem ocorrências");
+  return [
+    narrativeBox("Discrepância encontrada", discrepancyCode),
+    hasDiscrepancy ? narrativeBox("Descrição da discrepância", meta.technicalLog?.discrepancies ?? "") : "",
+    narrativeBox("Ocorrência encontrada", occurrenceCode),
+    hasOccurrence ? narrativeBox("Detalhe da ocorrência", meta.technicalLog?.occurrences ?? "") : "",
+    narrativeBox(
+      "Detectado por",
+      meta.header.instructorName || meta.header.instructorAnac || "Instrutor",
+    ),
+  ].join("");
 }
 
 function telemetryKeyHasData(data: ChartRow[], key: string): boolean {
@@ -536,7 +581,14 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
           ["CANAC instrutor", meta.header.instructorAnac],
           ["Data", meta.header.date],
           ["Horário de início", meta.header.startTime],
+          ["Partida (local)", meta.header.departureTimeUtc ?? meta.header.startTime ?? "-"],
+          ["Decolagem (local)", meta.header.takeoffTimeUtc ?? "-"],
+          ["Pouso (local)", meta.header.landingTimeUtc ?? "-"],
+          ["Corte motor (local)", meta.header.engineCutoffTimeUtc ?? "-"],
           ["Aeronave / matrícula", meta.header.aircraft],
+          ["Nº do voo (aeronave)", meta.header.flightSeqNumber != null ? String(meta.header.flightSeqNumber) : "-"],
+          ["Natureza do voo", formatFlightNature(meta.header.flightNature)],
+          ["Carga transportada", meta.header.cargo || "Sem transporte de carga"],
         ], 2))}
 
         ${section("Pré voo", [
@@ -551,6 +603,15 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
         ${section("Exercícios", buildExercisesTable(meta))}
 
         ${section("Peso e balanceamento", buildWeightBalanceSection(meta))}
+
+        ${section("Diário técnico (ANAC Res. 457)", buildTechnicalLogSection(meta))}
+
+        ${section("Manutenção", fieldTable([
+          ["Última intervenção", "-"],
+          ["Próxima intervenção", "-"],
+          ["Horas de célula no voo", "-"],
+          ["Responsável pela aprovação", "-"],
+        ], 2))}
 
         ${section("Risco e parecer", [
           narrativeBox("Comentários", meta.risk.commentsMd),

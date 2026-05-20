@@ -16,6 +16,12 @@ import {
   updateStudentFlightSuggestion,
   type SavedFlightListItem,
 } from "../lib/flightsDb";
+import {
+  listSignaturesForFlight,
+  signFlight,
+  type FlightSignaturesForFlight,
+  type SignerRole,
+} from "../lib/flightSignaturesDb";
 import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import {
@@ -52,6 +58,20 @@ function groupFlights(
 
 function yesNoTag(ok: boolean, yes: string, no: string): string {
   return ok ? yes : no;
+}
+
+function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
+  return item.flight_status === "Previsto" && isFutureFlight(item, info);
+}
+
+function FlightStatusBadge({ status }: { status: SavedFlightListItem["flight_status"] }) {
+  const cls =
+    status === "Realizado"
+      ? "bg-emerald-900/40 text-emerald-300"
+      : status === "Cancelado"
+        ? "bg-red-950/40 text-red-300"
+        : "bg-sky-900/40 text-sky-300";
+  return <span className={`rounded px-2 py-1 text-[11px] font-semibold ${cls}`}>{status}</span>;
 }
 
 const AIRCRAFT_COLORS = [
@@ -132,6 +152,7 @@ function writeFichaWindowStatus(printWindow: Window, title: string, message: str
 }
 
 type DisplayMode = "cards" | "calendar" | "table";
+const FLIGHT_PAGE_SIZE = 50;
 const FULL_INFO_PRELOAD_LIMIT = 24;
 
 function defaultDisplayMode(): DisplayMode {
@@ -155,8 +176,8 @@ function selectFullInfoPreloadItems(
 ): SavedFlightListItem[] {
   return [...items]
     .sort((a, b) => {
-      const aFuture = isFutureFlight(a, infoById[a.id]);
-      const bFuture = isFutureFlight(b, infoById[b.id]);
+      const aFuture = isScheduledFlightStatus(a, infoById[a.id]);
+      const bFuture = isScheduledFlightStatus(b, infoById[b.id]);
       if (aFuture !== bFuture) return aFuture ? -1 : 1;
       const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
       return aFuture ? diff : -diff;
@@ -223,7 +244,10 @@ export function MeusVoosTab() {
   const [detailOpenOptions, setDetailOpenOptions] = useState<DetailOpenOptions>({});
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [totalFlights, setTotalFlights] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [infoById, setInfoById] = useState<Record<string, FlightCardInfo>>({});
   const [aircraftOptions, setAircraftOptions] = useState<string[]>([]);
@@ -235,6 +259,11 @@ export function MeusVoosTab() {
   const [studentSuggestionFlightId, setStudentSuggestionFlightId] = useState<string | null>(null);
   const [shareFlightId, setShareFlightId] = useState<string | null>(null);
   const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
+  const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
+  const [signingFlightId, setSigningFlightId] = useState<string | null>(null);
+  const [signingRole, setSigningRole] = useState<SignerRole | null>(null);
+  const [signingInProgress, setSigningInProgress] = useState(false);
+  const [signingError, setSigningError] = useState<string | null>(null);
   const [studentSuggestionDraft, setStudentSuggestionDraft] = useState("");
   const [studentSuggestionSaving, setStudentSuggestionSaving] = useState(false);
   const [studentSuggestionError, setStudentSuggestionError] = useState<string | null>(null);
@@ -248,14 +277,41 @@ export function MeusVoosTab() {
     }
     setLoading(true);
     setErr(null);
-    const { data, error } = await listSavedFlights({ userId: user.id, role: user.role });
+    const { data, error, nextCursor: cursor, total } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE },
+    );
     setLoading(false);
     if (error) {
       setErr(error.message);
       return;
     }
     setItems(data ?? []);
+    setNextCursor(cursor);
+    setTotalFlights(total);
   }, [user, configured]);
+
+  const loadMore = useCallback(async () => {
+    if (!user || !configured || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setErr(null);
+    const { data, error, nextCursor: cursor, total } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE, cursor: nextCursor },
+    );
+    setLoadingMore(false);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setItems((prev) => {
+      const byId = new Map(prev.map((item) => [item.id, item]));
+      for (const item of data ?? []) byId.set(item.id, item);
+      return Array.from(byId.values());
+    });
+    setNextCursor(cursor);
+    setTotalFlights(total);
+  }, [configured, loadingMore, nextCursor, user]);
 
   useEffect(() => {
     void refresh();
@@ -331,6 +387,61 @@ export function MeusVoosTab() {
     };
   }, [items]);
 
+  useEffect(() => {
+    if (items.length === 0) return;
+    const pastIds = items
+      .filter((item) => !isScheduledFlightStatus(item, infoById[item.id]))
+      .map((item) => item.id);
+    if (pastIds.length === 0) return;
+    void (async () => {
+      const results = await Promise.all(pastIds.map((id) => listSignaturesForFlight(id)));
+      setSignaturesByFlightId((prev) => {
+        const next = { ...prev };
+        pastIds.forEach((id, i) => {
+          if (results[i]?.data) next[id] = results[i].data!;
+        });
+        return next;
+      });
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
+  const handleSign = async () => {
+    if (!user || !signingFlightId || !signingRole) return;
+    setSigningInProgress(true);
+    setSigningError(null);
+    const flightRes = await getSavedFlight(signingFlightId);
+    if (flightRes.error || !flightRes.data) {
+      setSigningError(flightRes.error?.message ?? "Voo não encontrado.");
+      setSigningInProgress(false);
+      return;
+    }
+    const res = await signFlight({
+      flightId: signingFlightId,
+      actorUserId: user.id,
+      actorRole: user.role,
+      signerRole: signingRole,
+      csvText: flightRes.data.csv_text,
+    });
+    setSigningInProgress(false);
+    if (res.error) {
+      setSigningError(res.error.message);
+      return;
+    }
+    if (res.data) {
+      setSignaturesByFlightId((prev) => ({
+        ...prev,
+        [signingFlightId]: {
+          ...(prev[signingFlightId] ?? { student: null, instructor: null, admin_operator: null }),
+          [signingRole === "admin_operator" ? "admin_operator" : signingRole]: res.data,
+        },
+      }));
+    }
+    setRefreshKey((k) => k + 1);
+    setSigningFlightId(null);
+    setSigningRole(null);
+  };
+
   const filteredItems = useMemo(() => {
     const inf = instructorFilter.trim().toLowerCase();
     const af = aircraftFilter.trim().toLowerCase();
@@ -347,11 +458,11 @@ export function MeusVoosTab() {
 
   const groups = useMemo(() => groupFlights(filteredItems, infoById), [filteredItems, infoById]);
   const futureGroups = useMemo(() => {
-    const future = filteredItems.filter((item) => isFutureFlight(item, infoById[item.id]));
+    const future = filteredItems.filter((item) => isScheduledFlightStatus(item, infoById[item.id]));
     return groupFlights(future, infoById, "desc");
   }, [filteredItems, infoById]);
   const pastGroups = useMemo(() => {
-    const past = filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id]));
+    const past = filteredItems.filter((item) => !isScheduledFlightStatus(item, infoById[item.id]));
     return groupFlights(past, infoById, "desc");
   }, [filteredItems, infoById]);
   const consolidatedSummary = useMemo(() => {
@@ -464,6 +575,11 @@ export function MeusVoosTab() {
   };
 
   const handleDelete = async (id: string) => {
+    const item = items.find((i) => i.id === id);
+    if (item?.instructor_signed) {
+      setErr("Não é possível apagar um voo assinado pelo instrutor.");
+      return;
+    }
     if (!confirm("Apagar este voo da nuvem?")) return;
     const { error } = await deleteSavedFlight(id);
     if (error) {
@@ -652,13 +768,14 @@ export function MeusVoosTab() {
               openFlight(id);
             }}
           />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
         </div>
       ) : displayMode === "table" ? (
         <div className="space-y-6">
@@ -686,13 +803,14 @@ export function MeusVoosTab() {
             exportingFichaId={exportingFichaId}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
           />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
         </div>
       ) : (
         <div className="space-y-6">
@@ -711,7 +829,7 @@ export function MeusVoosTab() {
                   const dateLabel = info?.flightDateIso
                     ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
                     : d.toLocaleDateString("pt-BR");
-                  const isPastFlight = !isFutureFlight(f, info);
+                  const isPastFlight = !isScheduledFlightStatus(f, info);
                   if (isStudentView) {
                     return (
                       <li
@@ -813,6 +931,8 @@ export function MeusVoosTab() {
                             <p>ANAC instrutor: <span className="text-slate-300">{info.instructorAnac ?? ""}</span></p>
                             <p className="sm:col-span-2 lg:col-span-2">
                               Status:{" "}
+                              <FlightStatusBadge status={f.flight_status} />
+                              {" "}
                               {isPastFlight ? (
                                 <>
                                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-400"}`}>
@@ -823,9 +943,7 @@ export function MeusVoosTab() {
                                     {yesNoTag(Boolean(info.videoOk), "video ok", "video ausente")}
                                   </span>
                                 </>
-                              ) : (
-                                <span className="rounded bg-sky-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-sky-400">agendado</span>
-                              )}
+                              ) : null}
                             </p>
                           </div>
                           )}
@@ -834,40 +952,63 @@ export function MeusVoosTab() {
                         {(isPastFlight || canManageFlights) && (
                           <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:items-end">
                             {isPastFlight ? (
-                              <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
-                                <ShareFlightButton
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setShareFlightId(f.id);
-                                  }}
-                                  iconOnly
-                                />
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openFlight(f.id);
-                                  }}
-                                  className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
-                                >
-                                  Detalhes
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void exportFicha(f.id);
-                                  }}
-                                  disabled={exportingFichaId === f.id}
-                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
-                                >
-                                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
-                                    <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
-                                  </svg>
-                                  {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
-                                </button>
-                              </div>
+                              <>
+                                <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-2 text-xs">
+                                  <p className="mb-1.5 font-semibold uppercase tracking-wider text-slate-500">Assinaturas</p>
+                                  <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
+                                  {user?.role === "instrutor" && f.instructor_user_id === user.id && !signaturesByFlightId[f.id]?.instructor ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSigningFlightId(f.id);
+                                        setSigningRole("instructor");
+                                        setSigningError(null);
+                                      }}
+                                      className="mt-1.5 rounded bg-violet-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-500"
+                                    >
+                                      Assinar como INVA
+                                    </button>
+                                  ) : null}
+                                  {f.instructor_signed ? (
+                                    <p className="mt-1.5 text-[10px] font-semibold text-amber-400">Ficha bloqueada</p>
+                                  ) : null}
+                                </div>
+                                <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+                                  <ShareFlightButton
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setShareFlightId(f.id);
+                                    }}
+                                    iconOnly
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openFlight(f.id);
+                                    }}
+                                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                  >
+                                    Detalhes
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void exportFicha(f.id);
+                                    }}
+                                    disabled={exportingFichaId === f.id}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
+                                  >
+                                    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                      <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                    </svg>
+                                    {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
+                                  </button>
+                                </div>
+                              </>
                             ) : null}
                             {canManageFlights && (
                               <button
@@ -876,7 +1017,8 @@ export function MeusVoosTab() {
                                   e.stopPropagation();
                                   void handleDelete(f.id);
                                 }}
-                                className="w-full text-left text-sm text-red-400/80 underline-offset-4 hover:underline sm:w-auto sm:text-right"
+                                disabled={Boolean(f.instructor_signed)}
+                                className="w-full text-left text-sm text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:text-right"
                               >
                                 Apagar
                               </button>
@@ -940,6 +1082,24 @@ export function MeusVoosTab() {
                                   <p>ANAC instrutor: <span className="text-slate-300">{info?.instructorAnac ?? ""}</span></p>
                                 </div>
                               </div>
+                              <div className="mt-2 min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3 text-xs">
+                                <p className="mb-2 font-semibold uppercase tracking-wider text-slate-500">Assinaturas</p>
+                                <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
+                                {!signaturesByFlightId[f.id]?.student ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSigningFlightId(f.id);
+                                      setSigningRole("student");
+                                      setSigningError(null);
+                                    }}
+                                    className="mt-2 rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                                  >
+                                    Assinar como aluno
+                                  </button>
+                                ) : null}
+                              </div>
                               <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto sm:justify-end">
                                 <ShareFlightButton
                                   onClick={(e) => {
@@ -984,13 +1144,53 @@ export function MeusVoosTab() {
               )}
             </section>
           ) : null}
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
+        </div>
+      )}
+      {signingFlightId && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+            <h3 className="text-base font-semibold text-slate-100">Confirmar assinatura eletrônica</h3>
+            <p className="mt-2 text-sm text-slate-400">
+              {signingRole === "instructor"
+                ? "Ao assinar como instrutor, a ficha do voo ficará bloqueada para edição."
+                : "Ao assinar, você atesta que as informações deste voo estão corretas."}
+            </p>
+            {signingError && (
+              <p className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-400">
+                {signingError}
+              </p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSigningFlightId(null);
+                  setSigningRole(null);
+                  setSigningError(null);
+                }}
+                disabled={signingInProgress}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSign()}
+                disabled={signingInProgress}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition ${signingRole === "instructor" ? "bg-violet-600 hover:bg-violet-500" : "bg-emerald-600 hover:bg-emerald-500"}`}
+              >
+                {signingInProgress ? "Assinando..." : "Confirmar assinatura"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {shareFlightId ? (
@@ -1072,6 +1272,34 @@ export function MeusVoosTab() {
   );
 }
 
+function FlightSignBadge({ label, signed, signedAt }: { label: string; signed: boolean; signedAt?: string }) {
+  const dateStr = signedAt ? new Date(signedAt).toLocaleDateString("pt-BR") : null;
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+        signed ? "bg-emerald-900/40 text-emerald-400" : "bg-slate-800 text-slate-500"
+      }`}
+    >
+      {signed ? "✓ " : "– "}
+      {label}
+      {signed && dateStr ? ` ${dateStr}` : ""}
+    </span>
+  );
+}
+
+function FlightSignatureBadges({ sigs }: { sigs: FlightSignaturesForFlight | undefined }) {
+  if (!sigs) {
+    return <span className="text-[10px] text-slate-500">Carregando...</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      <FlightSignBadge label="Aluno" signed={Boolean(sigs.student)} signedAt={sigs.student?.signed_at} />
+      <FlightSignBadge label="Instrutor" signed={Boolean(sigs.instructor)} signedAt={sigs.instructor?.signed_at} />
+      <FlightSignBadge label="Operador" signed={Boolean(sigs.admin_operator)} signedAt={sigs.admin_operator?.signed_at} />
+    </div>
+  );
+}
+
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
@@ -1086,6 +1314,49 @@ function SummaryCardSkeleton() {
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
       <Skeleton className="h-3 w-16" />
       <Skeleton className="mt-2 h-5 w-20" />
+    </div>
+  );
+}
+
+function FlightListPagingActions({
+  hasMore,
+  loadingMore,
+  loaded,
+  total,
+  onLoadMore,
+  onRefresh,
+}: {
+  hasMore: boolean;
+  loadingMore: boolean;
+  loaded: number;
+  total: number;
+  onLoadMore: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      {total > 0 ? (
+        <span className="text-xs text-slate-600">
+          {Math.min(loaded, total)} de {total} voos carregados
+        </span>
+      ) : null}
+      {hasMore ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+        >
+          {loadingMore ? "Carregando..." : "Carregar mais"}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={onRefresh}
+        className="text-xs text-slate-500 underline-offset-4 hover:underline"
+      >
+        Atualizar lista
+      </button>
     </div>
   );
 }
@@ -1152,7 +1423,7 @@ function FlightTableSection({
                   {group.flights.map((item) => {
                     const info = infoById[item.id];
                     const d = getDateBase(item, info);
-                    const isFuture = isFutureFlight(item, info);
+                    const isFuture = isScheduledFlightStatus(item, info);
                     const dateLabel = info?.flightDateIso
                       ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
                       : d.toLocaleDateString("pt-BR");
@@ -1208,13 +1479,14 @@ function FlightTableSection({
                           </td>
                         ) : null}
                         <td className="px-3 py-2">
-                          {isFuture ? (
-                            <span className="text-sky-300">Agendado</span>
-                          ) : (
+                          <div className="flex flex-col gap-1">
+                            <FlightStatusBadge status={item.flight_status} />
+                          {!isFuture ? (
                             <span className={info?.telemetryOk ? "text-emerald-300" : "text-amber-300"}>
                               {info?.telemetryOk ? "Telemetria ok" : "Sem telemetria"}
                             </span>
-                          )}
+                          ) : null}
+                          </div>
                         </td>
                         {onDelete || onShare || onExportFicha ? (
                           <td className="px-3 py-2">

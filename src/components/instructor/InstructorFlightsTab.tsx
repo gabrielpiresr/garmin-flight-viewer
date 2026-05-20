@@ -13,8 +13,13 @@ import {
   updateInstructorFlightSuggestion,
   type SavedFlightListItem,
 } from "../../lib/flightsDb";
+import {
+  listSignaturesForFlight,
+  signFlight,
+  type FlightSignaturesForFlight,
+} from "../../lib/flightSignaturesDb";
+import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
-import { decodeFlightRecord } from "../../lib/flightRecordCodec";
 import {
   buildBasicFlightListDisplayInfo,
   invalidateFlightListDisplayCache,
@@ -29,6 +34,7 @@ import { Skeleton } from "../ui/Skeleton";
 
 type View = "list" | "detail" | "create";
 type DisplayMode = "cards" | "calendar" | "table";
+const FLIGHT_PAGE_SIZE = 50;
 const FULL_INFO_PRELOAD_LIMIT = 24;
 
 function defaultDisplayMode(): DisplayMode {
@@ -52,13 +58,27 @@ function selectFullInfoPreloadItems(
 ): SavedFlightListItem[] {
   return [...items]
     .sort((a, b) => {
-      const aFuture = isFutureFlight(a, infoById[a.id]);
-      const bFuture = isFutureFlight(b, infoById[b.id]);
+      const aFuture = isScheduledFlightStatus(a, infoById[a.id]);
+      const bFuture = isScheduledFlightStatus(b, infoById[b.id]);
       if (aFuture !== bFuture) return aFuture ? -1 : 1;
       const diff = getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]);
       return aFuture ? diff : -diff;
     })
     .slice(0, FULL_INFO_PRELOAD_LIMIT);
+}
+
+function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
+  return item.flight_status === "Previsto" && isFutureFlight(item, info);
+}
+
+function FlightStatusBadge({ status }: { status: SavedFlightListItem["flight_status"] }) {
+  const cls =
+    status === "Realizado"
+      ? "bg-emerald-900/40 text-emerald-300"
+      : status === "Cancelado"
+        ? "bg-red-950/40 text-red-300"
+        : "bg-sky-900/40 text-sky-300";
+  return <span className={`rounded px-2 py-1 text-[11px] font-semibold ${cls}`}>{status}</span>;
 }
 
 function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
@@ -147,6 +167,20 @@ function landingCountClass(info?: FlightDisplayInfo): string {
   return (info?.landings ?? 0) > 0 ? "text-slate-300" : "text-amber-300";
 }
 
+function SigBadge({ signed, label }: { signed: boolean; label: string }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+        signed
+          ? "border-emerald-500/40 bg-emerald-900/30 text-emerald-300"
+          : "border-slate-600/40 bg-slate-800/40 text-slate-500"
+      }`}
+    >
+      {signed ? "✓" : "○"} {label}
+    </span>
+  );
+}
+
 function FlightCard({
   item,
   info,
@@ -157,6 +191,9 @@ function FlightCard({
   onEditSuggestion,
   onExportFicha,
   exportingFicha,
+  sigs,
+  onSign,
+  canSignAsInstructor,
 }: {
   item: SavedFlightListItem;
   info?: FlightDisplayInfo;
@@ -167,6 +204,9 @@ function FlightCard({
   onEditSuggestion: () => void;
   onExportFicha?: () => void;
   exportingFicha?: boolean;
+  sigs?: FlightSignaturesForFlight | null;
+  onSign?: () => void;
+  canSignAsInstructor?: boolean;
 }) {
   const d = getDateBase(item, info);
   const day = d.getDate();
@@ -196,11 +236,7 @@ function FlightCard({
             <span className="shrink-0 rounded border border-sky-600/50 bg-sky-900/60 px-1.5 py-0.5 text-xs font-medium text-sky-200">
               {info?.aircraft ?? item.aircraft_ident ?? "—"}
             </span>
-            {future ? (
-              <span className="shrink-0 rounded border border-violet-600/40 bg-violet-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">
-                Futuro
-              </span>
-            ) : null}
+            <FlightStatusBadge status={item.flight_status} />
           </div>
 
           <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
@@ -266,13 +302,33 @@ function FlightCard({
               {exportingFicha ? "Gerando..." : "Ficha"}
             </button>
           ) : null}
+          {!future && canSignAsInstructor && !sigs?.instructor ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSign?.();
+              }}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-violet-600/40 bg-violet-900/30 px-3 py-2 text-xs font-semibold text-violet-300 hover:bg-violet-900/50"
+            >
+              Assinar como INVA
+            </button>
+          ) : null}
+          {!future && sigs !== undefined ? (
+            <div className="flex flex-wrap gap-1">
+              <SigBadge signed={Boolean(sigs?.student)} label="Aluno" />
+              <SigBadge signed={Boolean(sigs?.instructor)} label="INVA" />
+              <SigBadge signed={Boolean(sigs?.admin_operator)} label="Oper." />
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
-            className="text-left text-xs text-red-400/80 underline-offset-4 hover:underline sm:text-right"
+            disabled={Boolean(item.instructor_signed)}
+            className="text-left text-xs text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40 sm:text-right"
           >
             Apagar
           </button>
@@ -290,6 +346,9 @@ export function InstructorFlightsTab() {
   const [infoById, setInfoById] = useState<Record<string, FlightDisplayInfo>>({});
   const [videoFlagsById, setVideoFlagsById] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [totalFlights, setTotalFlights] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [search, setSearch] = useState("");
@@ -299,22 +358,57 @@ export function InstructorFlightsTab() {
   const [suggestionSaving, setSuggestionSaving] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
+  const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
+  const [signingFlightId, setSigningFlightId] = useState<string | null>(null);
+  const [signingFlightMeta, setSigningFlightMeta] = useState<FlightRecordMeta | null>(null);
+  const [signingFlightMetaLoading, setSigningFlightMetaLoading] = useState(false);
+  const [signingInProgress, setSigningInProgress] = useState(false);
+  const [signingError, setSigningError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!user || !configured) {
       setItems([]);
+      setNextCursor(null);
+      setTotalFlights(0);
       return;
     }
     setLoading(true);
     setErr(null);
-    const { data, error } = await listSavedFlights({ userId: user.id, role: user.role });
+    const { data, error, nextCursor: cursor, total } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE },
+    );
     setLoading(false);
     if (error) {
       setErr(error.message);
       return;
     }
     setItems(data ?? []);
+    setNextCursor(cursor);
+    setTotalFlights(total);
   }, [configured, user]);
+
+  const loadMore = useCallback(async () => {
+    if (!user || !configured || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setErr(null);
+    const { data, error, nextCursor: cursor, total } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE, cursor: nextCursor },
+    );
+    setLoadingMore(false);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setItems((prev) => {
+      const byId = new Map(prev.map((item) => [item.id, item]));
+      for (const item of data ?? []) byId.set(item.id, item);
+      return [...byId.values()];
+    });
+    setNextCursor(cursor);
+    setTotalFlights(total);
+  }, [configured, loadingMore, nextCursor, user]);
 
   useEffect(() => {
     void refresh();
@@ -374,6 +468,24 @@ export function InstructorFlightsTab() {
     };
   }, [items]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const past = items.filter((item) => !isScheduledFlightStatus(item, infoById[item.id]));
+    if (past.length === 0) {
+      setSignaturesByFlightId({});
+      return;
+    }
+    void Promise.all(past.map((item) => listSignaturesForFlight(item.id))).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, FlightSignaturesForFlight> = {};
+      for (let i = 0; i < past.length; i++) {
+        if (results[i].data) map[past[i].id] = results[i].data!;
+      }
+      setSignaturesByFlightId(map);
+    });
+    return () => { cancelled = true; };
+  }, [items, infoById]);
+
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return items;
@@ -388,11 +500,11 @@ export function InstructorFlightsTab() {
   }, [infoById, items, search]);
 
   const futureItems = useMemo(
-    () => filteredItems.filter((item) => isFutureFlight(item, infoById[item.id])),
+    () => filteredItems.filter((item) => isScheduledFlightStatus(item, infoById[item.id])),
     [filteredItems, infoById],
   );
   const pastItems = useMemo(
-    () => filteredItems.filter((item) => !isFutureFlight(item, infoById[item.id])),
+    () => filteredItems.filter((item) => !isScheduledFlightStatus(item, infoById[item.id])),
     [filteredItems, infoById],
   );
   const futureGroups = useMemo(() => groupFlights(futureItems, infoById, "desc"), [futureItems, infoById]);
@@ -440,6 +552,11 @@ export function InstructorFlightsTab() {
   };
 
   const handleDelete = async (id: string) => {
+    const item = items.find((f) => f.id === id);
+    if (item?.instructor_signed) {
+      setErr("Não é possível apagar um voo assinado pelo instrutor.");
+      return;
+    }
     if (!window.confirm("Apagar este voo da nuvem?")) return;
     const { error } = await deleteSavedFlight(id);
     if (error) {
@@ -448,6 +565,78 @@ export function InstructorFlightsTab() {
     }
     invalidateFlightListDisplayCache([id]);
     setRefreshKey((k) => k + 1);
+  };
+
+  const openSignModal = async (id: string) => {
+    setSigningFlightId(id);
+    setSigningFlightMeta(null);
+    setSigningError(null);
+    setSigningFlightMetaLoading(true);
+    const { data } = await getSavedFlight(id);
+    setSigningFlightMetaLoading(false);
+    if (data) setSigningFlightMeta(decodeFlightRecord(data.csv_text).meta);
+  };
+
+  const handleSign = async () => {
+    if (!user || !signingFlightId) return;
+    setSigningInProgress(true);
+    setSigningError(null);
+    const { data: flightData, error: fetchErr } = await getSavedFlight(signingFlightId);
+    if (fetchErr || !flightData) {
+      setSigningError(fetchErr?.message ?? "Voo não encontrado.");
+      setSigningInProgress(false);
+      return;
+    }
+
+    // Validate legs before signing
+    const { meta: decodedMeta } = decodeFlightRecord(flightData.csv_text);
+    if (decodedMeta) {
+      const totalLandings = decodedMeta.legs.reduce((sum, leg) => sum + (leg.landings || 0), 0);
+      const totalMinutes = decodedMeta.legs.reduce((sum, leg) => {
+        const parts = (leg.flightTime || "").split(":").map(Number);
+        return sum + (parts[0] ?? 0) * 60 + (parts[1] ?? 0);
+      }, 0);
+      if (totalLandings === 0) {
+        setSigningError("Não é possível assinar: nenhum pouso registrado nas pernas do voo.");
+        setSigningInProgress(false);
+        return;
+      }
+      if (totalMinutes <= 0) {
+        setSigningError("Não é possível assinar: duração total do voo é zero.");
+        setSigningInProgress(false);
+        return;
+      }
+    }
+
+    const { data, error } = await signFlight({
+      flightId: signingFlightId,
+      actorUserId: user.id,
+      actorRole: user.role,
+      signerRole: "instructor",
+      csvText: flightData.csv_text,
+    });
+    setSigningInProgress(false);
+    if (error) {
+      setSigningError(error.message);
+      return;
+    }
+    if (data) {
+      setSignaturesByFlightId((prev) => ({
+        ...prev,
+        [signingFlightId]: {
+          ...(prev[signingFlightId] ?? { student: null, admin_operator: null }),
+          instructor: data,
+        },
+      }));
+      setItems((prev) =>
+        prev.map((f) =>
+          f.id === signingFlightId
+            ? { ...f, instructor_signed: true, instructor_signed_at: data.signed_at }
+            : f,
+        ),
+      );
+    }
+    setSigningFlightId(null);
   };
 
   const openSuggestion = (id: string) => {
@@ -609,13 +798,14 @@ export function InstructorFlightsTab() {
       ) : displayMode === "calendar" ? (
         <div className="space-y-4">
           <FlightsAgendaBoard items={filteredItems} infoById={infoById} onOpen={openFlight} />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
         </div>
       ) : displayMode === "table" ? (
         <div className="space-y-6">
@@ -641,14 +831,20 @@ export function InstructorFlightsTab() {
             onDelete={(id) => void handleDelete(id)}
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
+            signaturesByFlightId={signaturesByFlightId}
+            onSign={(id) => void openSignModal(id)}
+            canSignAsInstructor={(item) =>
+              user?.role === "instrutor" && item.instructor_user_id === user.id
+            }
           />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
         </div>
       ) : (
         <div className="space-y-6">
@@ -702,6 +898,11 @@ export function InstructorFlightsTab() {
                         onEditSuggestion={() => openSuggestion(item.id)}
                         onExportFicha={() => void exportFicha(item.id)}
                         exportingFicha={exportingFichaId === item.id}
+                        sigs={signaturesByFlightId[item.id] ?? null}
+                        onSign={() => void openSignModal(item.id)}
+                        canSignAsInstructor={
+                          user?.role === "instrutor" && item.instructor_user_id === user.id
+                        }
                       />
                     ))}
                   </ul>
@@ -710,13 +911,133 @@ export function InstructorFlightsTab() {
             )}
           </section>
 
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline"
-          >
-            Atualizar lista
-          </button>
+          <FlightListPagingActions
+            hasMore={Boolean(nextCursor)}
+            loadingMore={loadingMore}
+            loaded={items.length}
+            total={totalFlights}
+            onLoadMore={() => void loadMore()}
+            onRefresh={() => void refresh()}
+          />
+        </div>
+      )}
+
+      {signingFlightId && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
+          <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-700/60 px-5 py-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Assinatura eletrônica</p>
+                <h3 className="text-lg font-semibold text-slate-100">Assinar como INVA</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); }}
+                disabled={signingInProgress}
+                className="rounded-lg border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              {(() => {
+                const f = items.find((x) => x.id === signingFlightId);
+                const i = signingFlightId ? infoById[signingFlightId] : undefined;
+                return f ? (
+                  <div className="grid gap-x-4 gap-y-1 rounded-xl border border-slate-700/60 bg-slate-950/25 p-3 text-xs text-slate-400 sm:grid-cols-2">
+                    <p>Data: <span className="text-slate-300">{formatDate(f, i)}</span></p>
+                    <p>Aeronave: <span className="text-slate-300">{i?.aircraft ?? f.aircraft_ident ?? "—"}</span></p>
+                    <p>Aluno: <span className="text-slate-300">{i?.studentName ?? "—"}</span></p>
+                    <p>Total de voo: <span className="text-slate-300">{i?.totalFlight ?? "—"}</span></p>
+                    <p>Pousos: <span className="text-slate-300">{i?.landings ?? "—"}</span></p>
+                    <p>Rota: <span className="text-slate-300">{i?.fromTo ?? "—"}</span></p>
+                  </div>
+                ) : null;
+              })()}
+
+              {signingFlightMetaLoading && (
+                <div className="h-24 animate-pulse rounded-lg bg-slate-800/40" />
+              )}
+
+              {signingFlightMeta && signingFlightMeta.legs.length > 0 && (
+                <div>
+                  <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Pernas</p>
+                  <div className="overflow-x-auto rounded-xl border border-slate-700/60 bg-slate-950/25">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-700/60 text-[10px] uppercase tracking-wider text-slate-500">
+                          <th className="px-3 py-1.5 text-left font-semibold">Dep.</th>
+                          <th className="px-3 py-1.5 text-left font-semibold">Arr.</th>
+                          <th className="px-3 py-1.5 text-left font-semibold">Pousos</th>
+                          <th className="px-3 py-1.5 text-left font-semibold">Tempo voo</th>
+                          <th className="px-3 py-1.5 text-left font-semibold">Nav.</th>
+                          <th className="px-3 py-1.5 text-left font-semibold">Noturno</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {signingFlightMeta.legs.map((leg) => (
+                          <tr key={leg.id} className="text-slate-300">
+                            <td className="px-3 py-1.5">{leg.dep || "—"}</td>
+                            <td className="px-3 py-1.5">{leg.arr || "—"}</td>
+                            <td className="px-3 py-1.5">{leg.landings}</td>
+                            <td className="px-3 py-1.5">{leg.flightTime || "—"}</td>
+                            <td className="px-3 py-1.5">{leg.navTime || "—"}</td>
+                            <td className="px-3 py-1.5">{leg.nightTime || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      {signingFlightMeta.legs.length > 1 && (() => {
+                        const totalLandings = signingFlightMeta.legs.reduce((s, l) => s + (l.landings || 0), 0);
+                        return (
+                          <tfoot>
+                            <tr className="border-t border-slate-700/60 font-semibold text-slate-300">
+                              <td className="px-3 py-1.5 text-slate-500" colSpan={2}>Total</td>
+                              <td className="px-3 py-1.5">{totalLandings}</td>
+                              <td className="px-3 py-1.5">{infoById[signingFlightId!]?.totalFlight ?? "—"}</td>
+                              <td colSpan={2} />
+                            </tr>
+                          </tfoot>
+                        );
+                      })()}
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <p className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+                Ao assinar, a ficha deste voo ficará <strong>bloqueada para edição</strong>. Esta ação não pode ser desfeita.
+              </p>
+            </div>
+
+            <div className="shrink-0 border-t border-slate-700/60 px-5 py-3">
+
+            {signingError ? (
+              <p className="mb-2 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-200">
+                {signingError}
+              </p>
+            ) : null}
+
+            <div className="flex flex-col justify-end gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); }}
+                disabled={signingInProgress}
+                className="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60 sm:w-auto"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSign()}
+                disabled={signingInProgress}
+                className="w-full rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60 sm:w-auto"
+              >
+                {signingInProgress ? "Assinando..." : "Confirmar assinatura"}
+              </button>
+            </div>
+          </div>
+        </div>
         </div>
       )}
 
@@ -795,6 +1116,49 @@ export function InstructorFlightsTab() {
   );
 }
 
+function FlightListPagingActions({
+  hasMore,
+  loadingMore,
+  loaded,
+  total,
+  onLoadMore,
+  onRefresh,
+}: {
+  hasMore: boolean;
+  loadingMore: boolean;
+  loaded: number;
+  total: number;
+  onLoadMore: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      {total > 0 ? (
+        <span className="text-xs text-slate-500">
+          {Math.min(loaded, total)} de {total} voos carregados
+        </span>
+      ) : null}
+      {hasMore ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+        >
+          {loadingMore ? "Carregando..." : "Carregar mais"}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={onRefresh}
+        className="text-xs text-slate-500 underline-offset-4 hover:underline"
+      >
+        Atualizar lista
+      </button>
+    </div>
+  );
+}
+
 function FlightTableSection({
   title,
   groups,
@@ -807,6 +1171,9 @@ function FlightTableSection({
   onEditSuggestion,
   onExportFicha,
   exportingFichaId,
+  signaturesByFlightId,
+  onSign,
+  canSignAsInstructor,
 }: {
   title: string;
   groups: { label: string; flights: SavedFlightListItem[] }[];
@@ -819,6 +1186,9 @@ function FlightTableSection({
   onEditSuggestion?: (id: string) => void;
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
+  signaturesByFlightId?: Record<string, FlightSignaturesForFlight>;
+  onSign?: (id: string) => void;
+  canSignAsInstructor?: (item: SavedFlightListItem) => boolean;
 }) {
   const isFutureSection = variant === "future";
   return (
@@ -841,6 +1211,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">ANAC</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
+                    <th className="px-3 py-2 font-semibold">Status</th>
                     <th className="px-3 py-2 font-semibold">Horas</th>
                     {isFutureSection ? (
                       <>
@@ -855,12 +1226,14 @@ function FlightTableSection({
                         <th className="px-3 py-2 font-semibold">Vídeo</th>
                       </>
                     )}
+                    {!isFutureSection ? <th className="px-3 py-2 font-semibold">Assinaturas</th> : null}
                     <th className="px-3 py-2 font-semibold">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/80">
                   {group.flights.map((item) => {
                     const info = infoById[item.id];
+                    const sigs = signaturesByFlightId?.[item.id] ?? null;
                     return (
                       <tr
                         key={item.id}
@@ -880,6 +1253,7 @@ function FlightTableSection({
                         <td className="px-3 py-2">{info?.studentName ?? "—"}</td>
                         <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
                         <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
+                        <td className="px-3 py-2"><FlightStatusBadge status={item.flight_status} /></td>
                         <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
                         {isFutureSection ? (
                           <>
@@ -900,6 +1274,15 @@ function FlightTableSection({
                             </td>
                           </>
                         )}
+                        {!isFutureSection ? (
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap gap-1">
+                              <SigBadge signed={Boolean(sigs?.student)} label="Aluno" />
+                              <SigBadge signed={Boolean(sigs?.instructor)} label="INVA" />
+                              <SigBadge signed={Boolean(sigs?.admin_operator)} label="Oper." />
+                            </div>
+                          </td>
+                        ) : null}
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
                             {isFutureSection && onEditSuggestion ? (
@@ -931,13 +1314,26 @@ function FlightTableSection({
                                 {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
                               </button>
                             ) : null}
+                            {!isFutureSection && onSign && canSignAsInstructor?.(item) && !sigs?.instructor ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSign(item.id);
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-violet-600/40 bg-violet-900/30 px-2 py-1 text-xs font-semibold text-violet-300 hover:bg-violet-900/50"
+                              >
+                                Assinar INVA
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onDelete(item.id);
                               }}
-                              className="text-red-400/80 underline-offset-4 hover:underline"
+                              disabled={Boolean(item.instructor_signed)}
+                              className="text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               Apagar
                             </button>

@@ -59,17 +59,34 @@ export async function updateFlightVideoReady(docId: string, data: {
   fileUrl: string;
   fileSize: number | null;
   durationSec: number | null;
+  telemetryPresent?: boolean;
+  telemetrySource?: string;
+  telemetryJson?: string;
+  availableWidgets?: string[];
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
   }
   try {
-    await databases.updateDocument(DB_ID, VIDEOS_COL_ID, docId, {
+    const patch: Record<string, unknown> = {
       file_url: data.fileUrl,
       file_size: data.fileSize,
       duration_sec: data.durationSec,
       processing_status: "ready",
-    });
+    };
+    if (data.telemetryPresent !== undefined) {
+      patch.telemetry_present = data.telemetryPresent;
+    }
+    if (data.telemetrySource !== undefined) {
+      patch.telemetry_source = data.telemetrySource;
+    }
+    if (data.telemetryJson !== undefined) {
+      patch.telemetry_json = data.telemetryJson;
+    }
+    if (data.availableWidgets !== undefined) {
+      patch.available_widgets = JSON.stringify(data.availableWidgets);
+    }
+    await databases.updateDocument(DB_ID, VIDEOS_COL_ID, docId, patch);
     return { error: null };
   } catch (e) {
     return { error: e as Error };

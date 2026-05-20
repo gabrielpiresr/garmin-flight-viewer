@@ -13,8 +13,11 @@ const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID;
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID;
 const INSTRUCTOR_STUDENTS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID;
 const BUCKET_ID = process.env.APPWRITE_BUCKET_ID || "";
+const SCHOOL_ID = process.env.SCHOOL_ID || process.env.APPWRITE_SCHOOL_ID || "escola_principal";
 
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
+const META_PREFIX = "#GFV_META_V1:";
+const TELEMETRY_FILES_PREFIX = "#GFV_TELEMETRY_FILES_V1:";
 
 function jsonResponse(res, status, payload) {
   return res.json(payload, status);
@@ -37,6 +40,122 @@ async function hasInstructorStudentRelation(instructorUserId, studentUserId) {
   return res.total > 0;
 }
 
+function decodeBase64Json(encoded) {
+  try {
+    return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function decodeFlightRecord(recordText) {
+  const normalized = String(recordText || "").replace(/^\uFEFF/, "");
+  const lines = normalized.split(/\r?\n/);
+  const first = String(lines[0] || "").trim();
+  if (!first.startsWith(META_PREFIX)) return { meta: null, telemetryCsv: normalized };
+
+  const meta = decodeBase64Json(first.slice(META_PREFIX.length).trim());
+  const second = String(lines[1] || "").trim();
+  if (second.startsWith(TELEMETRY_FILES_PREFIX)) {
+    const parsed = decodeBase64Json(second.slice(TELEMETRY_FILES_PREFIX.length).trim());
+    const files = Array.isArray(parsed?.files) ? parsed.files : [];
+    const telemetryCsv = files
+      .map((file) => (typeof file?.text === "string" ? file.text.trim() : ""))
+      .filter(Boolean)
+      .join("\n");
+    return { meta, telemetryCsv: telemetryCsv || lines.slice(2).join("\n") };
+  }
+
+  return { meta, telemetryCsv: lines.slice(1).join("\n") };
+}
+
+function parseDurationToMinutes(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const hhmm = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (hhmm) return Number(hhmm[1] || "0") * 60 + Number(hhmm[2] || "0");
+  const asDecimal = Number(raw.replace(",", "."));
+  return Number.isFinite(asDecimal) && asDecimal > 0 ? Math.round(asDecimal * 60) : 0;
+}
+
+function parseMiles(value) {
+  const normalized = String(value || "").replace(/[^\d.,-]/g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function isWeightBalanceComplete(meta) {
+  const weightBalance = meta?.weightBalance;
+  return Boolean(
+    weightBalance &&
+      weightBalance.inputs?.occupantsWeightKg != null &&
+      weightBalance.inputs?.baggageWeightKg != null &&
+      weightBalance.inputs?.rampFuel?.value != null &&
+      weightBalance.inputs?.taxiFuel?.value != null &&
+      weightBalance.inputs?.tripFuel?.value != null &&
+      weightBalance.results?.isComplete,
+  );
+}
+
+function buildMaterializedFields(csvText, fallbackMissionId) {
+  const decoded = decodeFlightRecord(csvText);
+  const meta = decoded.meta;
+  const training = meta?.training || {};
+  const missionIds = Array.from(new Set([...(training.missionIds || []), training.missionId || "", fallbackMissionId || ""].filter(Boolean)));
+  if (!meta) {
+    return {
+      flight_date: null,
+      start_time: null,
+      from_to: null,
+      landings: null,
+      total_flight_minutes: null,
+      total_miles: null,
+      telemetry_present: decoded.telemetryCsv.trim().length > 0,
+      instructor_suggestion_md: null,
+      student_suggestion_md: null,
+      instructor_suggestion_present: false,
+      student_suggestion_present: false,
+      weight_balance_complete: false,
+      is_night: false,
+      training_mission_ids_json: missionIds.length > 0 ? JSON.stringify(missionIds) : null,
+      schedule_week_start: null,
+      schedule_demand_id: null,
+    };
+  }
+
+  const airports = [];
+  for (const leg of meta.legs || []) {
+    const dep = String(leg.dep || "").trim().toUpperCase();
+    const arr = String(leg.arr || "").trim().toUpperCase();
+    if (dep && airports[airports.length - 1] !== dep) airports.push(dep);
+    if (arr && airports[airports.length - 1] !== arr) airports.push(arr);
+  }
+  const totalFlightMinutes = (meta.legs || []).reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const landings = (meta.legs || []).reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings || 0))), 0);
+  const totalMiles = (meta.legs || []).reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
+  const instructorSuggestion = String(meta.preFlight?.instructorSuggestionMd || "").trim();
+  const studentSuggestion = String(meta.preFlight?.studentSuggestionMd || "").trim();
+
+  return {
+    flight_date: meta.header?.date || null,
+    start_time: String(meta.header?.startTime || "").trim() || null,
+    from_to: airports.length > 0 ? airports.join(" -> ") : null,
+    landings,
+    total_flight_minutes: totalFlightMinutes,
+    total_miles: Number(totalMiles.toFixed(1)),
+    telemetry_present: decoded.telemetryCsv.trim().length > 0,
+    instructor_suggestion_md: instructorSuggestion || null,
+    student_suggestion_md: studentSuggestion || null,
+    instructor_suggestion_present: instructorSuggestion.length > 0,
+    student_suggestion_present: studentSuggestion.length > 0,
+    weight_balance_complete: isWeightBalanceComplete(meta),
+    is_night: meta.header?.isNight ?? false,
+    training_mission_ids_json: missionIds.length > 0 ? JSON.stringify(missionIds) : null,
+    schedule_week_start: meta.schedule?.weekStart || null,
+    schedule_demand_id: meta.schedule?.demandId || null,
+  };
+}
+
 module.exports = async ({ req, res, log, error }) => {
   try {
     if (!DATABASE_ID || !FLIGHTS_COLLECTION_ID || !PROFILES_COLLECTION_ID || !INSTRUCTOR_STUDENTS_COLLECTION_ID) {
@@ -54,6 +173,7 @@ module.exports = async ({ req, res, log, error }) => {
     const csvText = String(payload.csv_text || "");
     const aircraftIdent = payload.aircraft_ident ? String(payload.aircraft_ident) : null;
     const durationSec = payload.duration_sec == null ? null : Number(payload.duration_sec);
+    const materializedFields = buildMaterializedFields(csvText, payload.trainingMissionId || payload.training_mission_id || null);
 
     if (!studentUserId || !sourceFilename || !csvText) {
       return jsonResponse(res, 400, { message: "Missing required fields." });
@@ -101,16 +221,25 @@ module.exports = async ({ req, res, log, error }) => {
       FLIGHTS_COLLECTION_ID,
       sdk.ID.unique(),
       {
+        school_id: SCHOOL_ID,
         user_id: studentUserId,
         student_user_id: studentUserId,
         instructor_user_id: userId,
         created_by_role: actorRole,
-        name: [aircraftIdent, sourceFilename].filter(Boolean).join(" ") || "Voo",
+        name: [aircraftIdent, materializedFields.flight_date, materializedFields.start_time].filter(Boolean).join(" ") || sourceFilename || "Voo",
         source_filename: sourceFilename,
         csv_text: csvFileId ? "" : csvText,
         csv_file_id: csvFileId,
         aircraft_ident: aircraftIdent,
         duration_sec: Number.isFinite(durationSec) ? durationSec : null,
+        flight_date: materializedFields.flight_date,
+        start_time: materializedFields.start_time,
+        training_track_id: payload.trainingTrackId || payload.training_track_id || null,
+        training_stage_id: payload.trainingStageId || payload.training_stage_id || null,
+        training_mission_id: payload.trainingMissionId || payload.training_mission_id || null,
+        training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : payload.training_snapshot_json || null,
+        flight_status: "Previsto",
+        ...materializedFields,
       },
       permissions,
     );

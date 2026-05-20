@@ -17,6 +17,12 @@ export const AIRCRAFTS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFTS_COL_ID a
 export const AERODROMES_COL_ID =
   (import.meta.env.VITE_APPWRITE_AERODROMES_COL_ID as string | undefined) ?? "aerodromes";
 export const MAINTENANCE_RULES_COL_ID = import.meta.env.VITE_APPWRITE_MAINTENANCE_RULES_COL_ID as string | undefined;
+export const MAINTENANCE_PROGRAM_ITEMS_COL_ID =
+  import.meta.env.VITE_APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID as string | undefined;
+export const MAINTENANCE_WORK_ORDERS_COL_ID =
+  import.meta.env.VITE_APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID as string | undefined;
+export const MAINTENANCE_ATTACHMENTS_COL_ID =
+  import.meta.env.VITE_APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID as string | undefined;
 export const OP_WEEKS_COL_ID = import.meta.env.VITE_APPWRITE_OP_WEEKS_COL_ID as string | undefined;
 
 // Student planning collections
@@ -49,6 +55,12 @@ export const TELEMETRY_ALERT_RULES_COL_ID =
   (import.meta.env.VITE_APPWRITE_TELEMETRY_ALERT_RULES_COL_ID as string | undefined) ?? "telemetry_alert_rules";
 export const FLIGHT_TELEMETRY_ALERTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID as string | undefined) ?? "flight_telemetry_alerts";
+export const FLIGHT_SIGNATURES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_SIGNATURES_COL_ID as string | undefined) ?? "flight_signatures";
+export const LOGBOOK_OPENING_SIGNATURES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_LOGBOOK_OPENING_SIGNATURES_COL_ID as string | undefined) ?? "logbook_opening_signatures";
+export const FLIGHT_DISCREPANCIES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_DISCREPANCIES_COL_ID as string | undefined) ?? "flight_discrepancies";
 export const TRAINING_EXERCISES_COL_ID = import.meta.env.VITE_APPWRITE_TRAINING_EXERCISES_COL_ID as string | undefined;
 export const TRAINING_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID as string | undefined) ?? "training_tracks";
@@ -64,6 +76,10 @@ export const INSTRUCTOR_STUDENTS_COL_ID =
 // Manuais
 export const MANUALS_BUCKET_ID = import.meta.env.VITE_APPWRITE_MANUALS_BUCKET_ID as string | undefined;
 export const MANUALS_COL_ID = import.meta.env.VITE_APPWRITE_MANUALS_COL_ID as string | undefined;
+
+// Email MKT
+export const BROADCAST_SEGMENTS_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_SEGMENTS_COL_ID as string | undefined;
+export const BROADCAST_MESSAGES_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_MESSAGES_COL_ID as string | undefined;
 
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 

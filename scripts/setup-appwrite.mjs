@@ -143,12 +143,14 @@ async function configureFlights(databaseId, collectionId) {
     () => db.createStringAttribute(databaseId, collectionId, "training_mission_ids_json", 4096, false),
     "training_mission_ids_json",
   );
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "flight_status", 16, false), "flight_status");
 
   await safeCreateIndex(databaseId, collectionId, "flights_student_idx", ["student_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "flights_instructor_idx", ["instructor_user_id"]);
   await safeCreateIndex(databaseId, collectionId, "flights_date_idx", ["flight_date"]);
   await safeCreateIndex(databaseId, collectionId, "flights_date_time_idx", ["flight_date", "start_time"], ["ASC", "ASC"]);
   await safeCreateIndex(databaseId, collectionId, "flights_aircraft_date_idx", ["aircraft_ident", "flight_date"], ["ASC", "ASC"]);
+  await safeCreateIndex(databaseId, collectionId, "flights_status_idx", ["flight_status"]);
 }
 
 async function configureProfiles(databaseId, collectionId) {

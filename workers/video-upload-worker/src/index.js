@@ -6,6 +6,7 @@
 //   PUT  /upload/part       headers: x-upload-id, x-upload-key, x-part-number, x-secret
 //                           body: bytes do chunk → { etag, partNumber }
 //   POST /upload/complete   { uploadId, key, parts: [{partNumber, etag}], secret } → { fileUrl }
+//   POST /storage/list      { prefix, secret } → { objects: [{ key, size, uploaded, fileUrl }], truncated }
 //   GET  /health            → { ok: true }
 
 const CORS = {
@@ -36,6 +37,10 @@ export default {
 
     if (url.pathname === "/upload/complete" && request.method === "POST") {
       return handleComplete(request, env);
+    }
+
+    if (url.pathname === "/storage/list" && request.method === "POST") {
+      return handleList(request, env);
     }
 
     return new Response("Not found", { status: 404, headers: CORS });
@@ -85,6 +90,24 @@ async function handleComplete(request, env) {
 
   const fileUrl = `${env.R2_PUBLIC_URL}/${key}`;
   return json({ fileUrl });
+}
+
+async function handleList(request, env) {
+  const body = await request.json().catch(() => null);
+  if (!body || body.secret !== env.WORKER_SECRET) return err("Unauthorized", 401);
+
+  const prefix = typeof body.prefix === "string" ? body.prefix : "";
+  const limit = Math.min(Math.max(Number(body.limit) || 200, 1), 1000);
+  const listed = await env.FLIGHT_VIDEOS.list({ prefix, limit });
+
+  const objects = listed.objects.map((obj) => ({
+    key: obj.key,
+    size: obj.size,
+    uploaded: obj.uploaded instanceof Date ? obj.uploaded.toISOString() : obj.uploaded ?? null,
+    fileUrl: `${env.R2_PUBLIC_URL}/${obj.key}`,
+  }));
+
+  return json({ objects, truncated: listed.truncated === true });
 }
 
 function json(data) {

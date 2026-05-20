@@ -64,6 +64,7 @@ const AIRCRAFT_COLOR_CLASSES = [
   "bg-fuchsia-600/90 border-fuchsia-400/70",
   "bg-rose-600/90 border-rose-400/70",
 ];
+const RESEND_RATE_LIMIT_INTERVAL_MS = 250;
 const INSTRUCTOR_BORDER_CLASSES = [
   "border-lime-300",
   "border-orange-300",
@@ -113,6 +114,10 @@ function parseStartHour(startTime: string): number {
 
 function scheduleSignature(date: string, startTime: string, endTime: string): string {
   return `${date}|${startTime}|${endTime}`;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
@@ -1404,8 +1409,9 @@ export function ScheduleGenerationTab() {
 
       setPersistedCount(successCount);
       const closed = await closeScheduleWeek(weekData.week.weekStart);
-      for (const event of notificationEvents) {
-        void dispatchNotificationEvent({
+      for (let i = 0; i < notificationEvents.length; i += 1) {
+        const event = notificationEvents[i];
+        const result = await dispatchNotificationEvent({
           eventType: event.eventType,
           flightId: event.flightId,
           dedupeKey:
@@ -1419,6 +1425,16 @@ export function ScheduleGenerationTab() {
             startTime: event.startTime,
           },
         });
+        if (result.error) {
+          console.warn("Falha ao disparar notificacao da escala", {
+            flightId: event.flightId,
+            eventType: event.eventType,
+            message: result.error.message,
+          });
+        }
+        if (i < notificationEvents.length - 1) {
+          await wait(RESEND_RATE_LIMIT_INTERVAL_MS);
+        }
       }
       setLastClosedWeekMessage(
         `Semana ${weekData.week.label} fechada em ${new Date(closed.closedAt).toLocaleString("pt-BR")}.`,

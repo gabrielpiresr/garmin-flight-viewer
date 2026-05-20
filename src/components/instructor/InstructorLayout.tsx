@@ -1,15 +1,22 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
-import { HelpCenterTab } from "../HelpCenterTab";
-import { JornadaTab } from "../JornadaTab";
-import { ManobrasTab } from "../ManobrasTab";
-import { NoticeFeed } from "../NoticeFeed";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
-import { InstructorFlightsTab } from "./InstructorFlightsTab";
-import { InstructorHome } from "./InstructorHome";
-import { InstructorProfileTab } from "./InstructorProfileTab";
-import { InstructorStudentsTab } from "./InstructorStudentsTab";
+
+const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
+const InstructorFlightsTab = lazy(() =>
+  import("./InstructorFlightsTab").then((module) => ({ default: module.InstructorFlightsTab })),
+);
+const InstructorHome = lazy(() => import("./InstructorHome").then((module) => ({ default: module.InstructorHome })));
+const InstructorProfileTab = lazy(() =>
+  import("./InstructorProfileTab").then((module) => ({ default: module.InstructorProfileTab })),
+);
+const InstructorStudentsTab = lazy(() =>
+  import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
+);
+const JornadaTab = lazy(() => import("../JornadaTab").then((module) => ({ default: module.JornadaTab })));
+const ManobrasTab = lazy(() => import("../ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
+const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 
 type InstructorSection = "home" | "journey" | "flights" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help";
 
@@ -138,6 +145,19 @@ function EmptySection({ title }: { title: string }) {
   );
 }
 
+function TabLoading() {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6">
+      <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+      <div className="mt-4 h-24 animate-pulse rounded bg-slate-800/70" />
+    </div>
+  );
+}
+
+function LazyTab({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<TabLoading />}>{children}</Suspense>;
+}
+
 export function InstructorLayout() {
   const { user, signOut } = useAuth();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
@@ -222,22 +242,30 @@ export function InstructorLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
-              <InstructorHome onOpenFlights={() => setSection("flights")} />
+              <LazyTab>
+                <InstructorHome onOpenFlights={() => setSection("flights")} />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("journey") && (
             <div hidden={section !== "journey"}>
-              <JornadaTab />
+              <LazyTab>
+                <JornadaTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("flights") && (
             <div hidden={section !== "flights"}>
-              <InstructorFlightsTab />
+              <LazyTab>
+                <InstructorFlightsTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("notices") && (
             <div hidden={section !== "notices"}>
-              <NoticeFeed className="w-full max-w-4xl" />
+              <LazyTab>
+                <NoticeFeed className="w-full max-w-4xl" />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("manuals") && (
@@ -247,22 +275,30 @@ export function InstructorLayout() {
           )}
           {openedSections.has("maneuvers") && (
             <div hidden={section !== "maneuvers"}>
-              <ManobrasTab />
+              <LazyTab>
+                <ManobrasTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("students") && (
             <div hidden={section !== "students"} className="flex min-h-[calc(100vh-12rem)] flex-col">
-              <InstructorStudentsTab />
+              <LazyTab>
+                <InstructorStudentsTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("profile") && (
             <div hidden={section !== "profile"}>
-              <InstructorProfileTab />
+              <LazyTab>
+                <InstructorProfileTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("help") && (
             <div hidden={section !== "help"}>
-              <HelpCenterTab />
+              <LazyTab>
+                <HelpCenterTab />
+              </LazyTab>
             </div>
           )}
         </main>

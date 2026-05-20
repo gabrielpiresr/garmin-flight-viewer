@@ -1,4 +1,4 @@
-export type AdminFlightReportStatus = "executado" | "futuro";
+export type AdminFlightReportStatus = "Previsto" | "Cancelado" | "Realizado";
 
 export type FlightReportGroupKey = "day" | "week" | "month" | "year" | "model" | "aircraft" | "instructor" | "student";
 
@@ -150,4 +150,19 @@ export type AdminFlightReportRow = {
 
 export type AdminFlightReportPage = {
   flights: AdminFlightReportRow[];
+  total: number;
+  limit: number;
+  nextCursor: string | null;
+};
+
+export type AdminFlightReportParams = {
+  fromDate?: string;
+  toDate?: string;
+  aircrafts?: string[];
+  models?: string[];
+  instructors?: string[];
+  students?: string[];
+  status?: AdminFlightReportStatus | "all";
+  limit?: number;
+  cursor?: string | null;
 };

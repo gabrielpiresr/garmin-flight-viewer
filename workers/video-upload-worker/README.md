@@ -48,7 +48,17 @@ npx wrangler secret put R2_SECRET_ACCESS_KEY
 # Secret Access Key do token R2
 ```
 
-### 6. Atualizar .env.local do app web
+### 6. Reconciliar vídeos presos em "processing"
+
+Após deploy com `POST /storage/list`:
+
+```bash
+# no root do projeto (com .env.local + APPWRITE_API_KEY)
+npm run videos:reconcile
+npm run videos:reconcile:watch   # repete a cada 60s
+```
+
+### 7. Atualizar .env.local do app web
 
 ```env
 VITE_CF_WORKER_URL=https://video-upload.SEU-SUBDOMINIO.workers.dev

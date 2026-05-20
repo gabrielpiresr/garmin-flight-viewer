@@ -40,6 +40,8 @@ const HELP_ARTICLES_COLLECTION_ID = process.env.APPWRITE_HELP_ARTICLES_COLLECTIO
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
+const BROADCAST_SEGMENTS_COLLECTION_ID = process.env.APPWRITE_BROADCAST_SEGMENTS_COLLECTION_ID;
+const BROADCAST_MESSAGES_COLLECTION_ID = process.env.APPWRITE_BROADCAST_MESSAGES_COLLECTION_ID;
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
 const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
@@ -48,11 +50,15 @@ const APP_URL = process.env.APP_URL || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
+const VALID_FLIGHT_STATUSES = new Set(["Previsto", "Cancelado", "Realizado"]);
 const VALID_INSTRUCTOR_PREFERENCES = new Set(["low", "medium", "high"]);
 const VALID_AVAILABILITY_TYPES = new Set(["available", "preferred"]);
 const META_PREFIX = "#GFV_META_V1:";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
+const RESEND_EMAIL_INTERVAL_MS = 250;
+const RESEND_EMAIL_MAX_ATTEMPTS = 3;
+let nextResendEmailAt = 0;
 const FLIGHT_SELECT = [
   "$id",
   "$createdAt",
@@ -70,10 +76,19 @@ const FLIGHT_SELECT = [
   "training_stage_id",
   "training_mission_id",
   "training_snapshot_json",
+  "flight_status",
 ];
 const FLIGHT_DETAIL_SELECT = [
   ...FLIGHT_SELECT,
   "csv_text",
+  "from_to",
+  "landings",
+  "total_flight_minutes",
+  "total_miles",
+  "telemetry_present",
+  "training_mission_ids_json",
+  "schedule_week_start",
+  "schedule_demand_id",
 ];
 const PROFILE_SELECT = [
   "$id",
@@ -270,6 +285,12 @@ function clampOffset(value) {
   return Math.max(0, Math.round(parsed));
 }
 
+function clampReportLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 100;
+  return Math.min(200, Math.max(1, Math.round(parsed)));
+}
+
 function selectQuery(fields) {
   return typeof sdk.Query.select === "function" ? [sdk.Query.select(fields)] : [];
 }
@@ -339,6 +360,9 @@ function decodeFlightMeta(csvText) {
 function flightTrainingMissionIds(doc, meta) {
   const ids = new Set();
   if (doc?.training_mission_id) ids.add(String(doc.training_mission_id));
+  for (const id of parseJsonList(doc?.training_mission_ids_json)) {
+    if (id) ids.add(String(id));
+  }
   const training = meta?.training || {};
   if (training.missionId) ids.add(String(training.missionId));
   for (const id of Array.isArray(training.missionIds) ? training.missionIds : []) {
@@ -390,6 +414,11 @@ function isFutureFlight(flight) {
 
 function isCompletedFlight(flight) {
   return (flight.durationSec || 0) > 0 && (flight.landings || 0) > 0;
+}
+
+function normalizeFlightStatus(value, flight) {
+  if (VALID_FLIGHT_STATUSES.has(value)) return value;
+  return isFutureFlight(flight) ? "Previsto" : "Realizado";
 }
 
 function parseInstructorAvailability(value) {
@@ -536,6 +565,22 @@ async function listDocumentsPage(collectionId, queries = []) {
   };
 }
 
+async function listDocumentsByFieldIn(collectionId, field, values, queries = [], batchSize = 50) {
+  if (!collectionId) return [];
+  const cleanValues = Array.from(new Set((values || []).filter(Boolean)));
+  if (!cleanValues.length) return [];
+  const docs = [];
+  for (let i = 0; i < cleanValues.length; i += batchSize) {
+    docs.push(
+      ...(await listAllDocuments(collectionId, [
+        sdk.Query.equal(field, cleanValues.slice(i, i + batchSize)),
+        ...queries,
+      ])),
+    );
+  }
+  return docs;
+}
+
 async function getUsersByIds(userIds) {
   const out = [];
   for (const userId of userIds) {
@@ -647,15 +692,23 @@ function toFlight(doc) {
   const meta = decodeFlightMeta(doc.csv_text);
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
   const { firstDepIcao, lastArrIcao } = extractLegIcaos(legs);
-  const landings = legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings) || 0)), 0);
+  const materializedRoute = String(doc.from_to || "").trim();
+  const routeParts = materializedRoute.split("->").map((part) => part.trim()).filter(Boolean);
+  const landings =
+    typeof doc.landings === "number"
+      ? doc.landings
+      : legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings) || 0)), 0);
   const totalMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
   const navigationMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.navTime), 0);
   const ifrMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.ifrTime), 0);
   const nightMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.nightTime), 0);
-  const distanceNm = legs.reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
+  const distanceNm =
+    typeof doc.total_miles === "number" ? doc.total_miles : legs.reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
   const durationSec =
     typeof doc.duration_sec === "number" && doc.duration_sec > 0
       ? doc.duration_sec
+      : typeof doc.total_flight_minutes === "number" && doc.total_flight_minutes > 0
+        ? doc.total_flight_minutes * 60
       : totalMinutes > 0
         ? totalMinutes * 60
         : null;
@@ -665,11 +718,15 @@ function toFlight(doc) {
     createdAt: doc.$createdAt || "",
     updatedAt: doc.$updatedAt || "",
     sourceFilename: doc.source_filename || "",
+    flightStatus: normalizeFlightStatus(doc.flight_status, {
+      flightDate: doc.flight_date || meta?.header?.date || (doc.$createdAt || "").slice(0, 10) || null,
+      startTime: doc.start_time || meta?.header?.startTime || null,
+    }),
     aircraftIdent: meta?.header?.aircraft || doc.aircraft_ident || null,
     durationSec,
     flightDate: doc.flight_date || meta?.header?.date || (doc.$createdAt || "").slice(0, 10) || null,
     startTime: doc.start_time || meta?.header?.startTime || null,
-    route: buildRoute(legs),
+    route: buildRoute(legs) || materializedRoute,
     landings,
     distanceNm: Number(distanceNm.toFixed(1)),
     navigationHours: Number((navigationMinutes / 60).toFixed(2)),
@@ -680,8 +737,8 @@ function toFlight(doc) {
     studentAnac: meta?.header?.studentAnac || "",
     instructorName: meta?.header?.instructorName || "",
     instructorAnac: meta?.header?.instructorAnac || "",
-    scheduleWeekStart: meta?.schedule?.weekStart || null,
-    scheduleDemandId: meta?.schedule?.demandId || null,
+    scheduleWeekStart: doc.schedule_week_start || meta?.schedule?.weekStart || null,
+    scheduleDemandId: doc.schedule_demand_id || meta?.schedule?.demandId || null,
     trainingTrackId: doc.training_track_id || meta?.training?.trackId || snapshot?.trackId || null,
     trainingStageId: doc.training_stage_id || meta?.training?.stageId || snapshot?.stageId || null,
     trainingMissionId: doc.training_mission_id || meta?.training?.missionId || snapshot?.missionId || null,
@@ -689,8 +746,8 @@ function toFlight(doc) {
     trainingSnapshot: snapshot,
     studentUserId: doc.student_user_id || doc.user_id || null,
     instructorUserId: doc.instructor_user_id || null,
-    firstDepIcao,
-    lastArrIcao,
+    firstDepIcao: firstDepIcao || routeParts[0] || null,
+    lastArrIcao: lastArrIcao || routeParts[routeParts.length - 1] || null,
     telemetryPresentOnDoc: Boolean(doc.telemetry_present),
   };
 }
@@ -1221,7 +1278,7 @@ function dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, mo
   const durationSec = flight.durationSec ?? telemetry?.telemetryDurationSec ?? null;
   const distanceNm = flight.distanceNm || telemetry?.telemetryDistanceNm || 0;
   const landings = Math.max(flight.landings || 0, telemetry?.landingCount || 0);
-  const status = isFutureFlight(flight) ? "futuro" : "executado";
+  const status = flight.flightStatus;
 
   return {
     id: flight.id,
@@ -1402,7 +1459,7 @@ function buildAircraftDashboard({ aircrafts, modelsById, forecastRows, periodRow
 
   for (const row of periodRows) {
     const bucket = ensureAircraftBucket(buckets, row);
-    if (row.status === "futuro") {
+    if (row.status === "Previsto") {
       bucket.futureFlights += 1;
       continue;
     }
@@ -1526,19 +1583,19 @@ async function getDashboardSummary(payload = {}) {
     .filter((row) => rowMatchesDashboardFilters(row, filters));
   const futureRowsForOperationalCounts = upcomingPage.documents
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
-    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters));
+    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters));
   const upcomingRows = futureRowsForOperationalCounts
     .slice()
-    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters))
+    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters))
     .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)))
     .slice(0, filters.upcomingLimit);
   const forecastRows = forecastFlightDocs
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
-    .filter((row) => row.status === "futuro" && rowMatchesDashboardFilters(row, filters));
+    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters));
   const alertRows = alertDocs.map((doc) => dashboardAlertRow(doc, aircraftByRegistration, modelsById, profilesByUserId));
 
-  const executedRows = periodRows.filter((row) => row.status === "executado");
-  const futureRows = periodRows.filter((row) => row.status === "futuro");
+  const executedRows = periodRows.filter((row) => row.status === "Realizado");
+  const futureRows = periodRows.filter((row) => row.status === "Previsto");
   const alertCounts = DASHBOARD_SEVERITIES.reduce((acc, severity) => {
     acc[severity] = alertBucketsRaw[severity]?.total || 0;
     return acc;
@@ -1637,19 +1694,75 @@ async function getDashboardSummary(payload = {}) {
   };
 }
 
-async function listFlightReports() {
-  const [usersList, profiles, flights, aircrafts, models, telemetrySummaries, landingMetrics] = await Promise.all([
-    listAllUsers(),
-    listAllDocuments(PROFILES_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID]), ...selectQuery(PROFILE_SELECT)]),
-    listAllDocuments(FLIGHTS_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID]), sdk.Query.orderDesc("flight_date"), ...selectQuery(FLIGHT_DETAIL_SELECT)]),
+function stringList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  const single = String(value || "").trim();
+  return single ? [single] : [];
+}
+
+function dateQuery(field, fromDate, toDate) {
+  const out = [];
+  if (fromDate) out.push(sdk.Query.greaterThanEqual(field, fromDate));
+  if (toDate) out.push(sdk.Query.lessThanEqual(field, toDate));
+  return out;
+}
+
+function reportValueMatches(values, ...candidates) {
+  if (!values.length) return true;
+  const normalized = new Set(values.map((value) => normalizeSearch(value)));
+  return candidates.some((candidate) => normalized.has(normalizeSearch(candidate)));
+}
+
+function rowMatchesReportFilters(row, filters) {
+  if (filters.status !== "all" && row.status !== filters.status) return false;
+  if (!reportValueMatches(filters.aircrafts, row.aircraftIdent, row.aircraftId)) return false;
+  if (!reportValueMatches(filters.models, row.modelName, row.modelId)) return false;
+  if (!reportValueMatches(filters.instructors, row.instructorName, row.instructorUserId)) return false;
+  if (!reportValueMatches(filters.students, row.studentName, row.studentUserId)) return false;
+  return true;
+}
+
+async function listFlightReports(params = {}) {
+  const limit = clampReportLimit(params.limit);
+  const cursor = String(params.cursor || "").trim();
+  const filters = {
+    fromDate: String(params.fromDate || "").trim(),
+    toDate: String(params.toDate || "").trim(),
+    aircrafts: stringList(params.aircrafts || params.aircraftIdents),
+    models: stringList(params.models || params.modelIds),
+    instructors: stringList(params.instructors || params.instructorUserIds),
+    students: stringList(params.students || params.studentUserIds),
+    status: VALID_FLIGHT_STATUSES.has(params.status) ? params.status : "all",
+  };
+
+  const flightQueries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...dateQuery("flight_date", filters.fromDate, filters.toDate),
+    ...dashboardEqualQuery("aircraft_ident", stringList(params.aircraftIdents)),
+    ...dashboardEqualQuery("instructor_user_id", stringList(params.instructorUserIds)),
+    ...dashboardEqualQuery("student_user_id", stringList(params.studentUserIds)),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.orderDesc("start_time"),
+    sdk.Query.limit(limit),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ];
+  if (cursor) flightQueries.push(sdk.Query.cursorAfter(cursor));
+
+  const flightsPage = await listDocumentsPage(FLIGHTS_COLLECTION_ID, flightQueries);
+  const flights = flightsPage.documents;
+  const flightIds = flights.map((flight) => flight.$id);
+  const userIds = Array.from(new Set(flights.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]).filter(Boolean)));
+
+  const [usersList, profilesByUserId, aircrafts, models, telemetrySummaries, landingMetrics] = await Promise.all([
+    getUsersByIds(userIds),
+    getProfilesByUserIds(userIds),
     listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
     listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
-    listAllDocuments(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, selectQuery(TELEMETRY_SUMMARY_SELECT)),
-    listAllDocuments(FLIGHT_LANDINGS_COLLECTION_ID, selectQuery(LANDING_METRIC_SELECT)),
+    listDocumentsByFieldIn(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", flightIds, selectQuery(TELEMETRY_SUMMARY_SELECT)),
+    listDocumentsByFieldIn(FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", flightIds, selectQuery(LANDING_METRIC_SELECT)),
   ]);
 
   const usersById = new Map(usersList.map((user) => [user.$id, user]));
-  const profilesByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
   const modelsById = new Map(models.map((model) => [model.$id, model]));
   const aircraftByRegistration = new Map(
     aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
@@ -1673,7 +1786,7 @@ async function listFlightReports() {
     if (telemetry && fastestLandingIasByFlightId.has(flight.id)) {
       telemetry.fastestLandingIasKt = fastestLandingIasByFlightId.get(flight.id);
     }
-    const status = isFutureFlight(flight) ? "futuro" : "executado";
+    const status = flight.flightStatus;
     const durationSec = flight.durationSec ?? telemetry?.telemetryDurationSec ?? null;
     const distanceNm = flight.distanceNm || telemetry?.telemetryDistanceNm || 0;
 
@@ -1696,8 +1809,15 @@ async function listFlightReports() {
     };
   });
 
+  const filteredRows = rows
+    .filter((row) => rowMatchesReportFilters(row, filters))
+    .sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
+
   return {
-    flights: rows.sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a))),
+    flights: filteredRows,
+    total: flightsPage.total,
+    limit,
+    nextCursor: flights.length === limit ? flights[flights.length - 1]?.$id || null : null,
   };
 }
 
@@ -2801,6 +2921,42 @@ async function logDelivery(eventType, dedupeKey, channel, recipientUserId, statu
   );
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isResendRateLimitError(error) {
+  const statusCode = Number(error?.statusCode || error?.status || error?.response?.status || 0);
+  const message = String(error?.message || error?.name || "").toLowerCase();
+  return statusCode === 429 || message.includes("rate limit") || message.includes("too many requests");
+}
+
+async function waitForResendEmailSlot() {
+  const now = Date.now();
+  const waitMs = Math.max(0, nextResendEmailAt - now);
+  nextResendEmailAt = Math.max(now, nextResendEmailAt) + RESEND_EMAIL_INTERVAL_MS;
+  if (waitMs > 0) await sleep(waitMs);
+}
+
+async function sendResendEmail(operation) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= RESEND_EMAIL_MAX_ATTEMPTS; attempt += 1) {
+    await waitForResendEmailSlot();
+    try {
+      const result = await operation();
+      if (!result?.error || !isResendRateLimitError(result.error) || attempt === RESEND_EMAIL_MAX_ATTEMPTS) {
+        return result;
+      }
+      lastError = result.error;
+    } catch (err) {
+      if (!isResendRateLimitError(err) || attempt === RESEND_EMAIL_MAX_ATTEMPTS) throw err;
+      lastError = err;
+    }
+    await sleep(RESEND_EMAIL_INTERVAL_MS * attempt);
+  }
+  return { error: lastError || new Error("Falha no Resend.") };
+}
+
 async function sendEmailToUser(settings, brand, user, message) {
   const apiKey = cleanString(settings.resendApiKey);
   const fromEmail = cleanString(settings.fromEmail);
@@ -2809,14 +2965,14 @@ async function sendEmailToUser(settings, brand, user, message) {
   if (!user?.email) return { status: "skipped", reason: "Usuario sem email." };
   const resend = new Resend(apiKey);
   const fromName = cleanString(settings.fromName);
-  const result = await resend.emails.send({
+  const result = await sendResendEmail(() => resend.emails.send({
     from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
     to: [user.email],
     replyTo: cleanString(settings.replyTo) || undefined,
     subject: emailSubject(settings, message),
     text: message.body,
     html: emailHtml(message, brand),
-  });
+  }));
   if (result?.error) throw new Error(result.error.message || "Falha no Resend.");
   return { status: "sent", providerMessageId: result?.data?.id || null };
 }
@@ -2964,6 +3120,293 @@ async function deletePushSubscription(actorUserId, endpoint) {
   }
 }
 
+// ── Email MKT / Broadcast ────────────────────────────────────────────────────
+
+function progressRangeOk(value, range) {
+  if (!range) return true;
+  const toNum = (v) => { const n = parseFloat(String(v ?? "")); return Number.isFinite(n) ? n : null; };
+  const min = toNum(range.min);
+  const max = toNum(range.max);
+  const current = value ?? 0;
+  if (min !== null && current < min) return false;
+  if (max !== null && current > max) return false;
+  return true;
+}
+
+function hasStudentFilter(sf) {
+  if (!sf) return false;
+  return Object.keys(sf).some((k) => {
+    const v = sf[k];
+    if (Array.isArray(v)) return v.length > 0;
+    if (v && typeof v === "object") return (v.min ?? "") !== "" || (v.max ?? "") !== "";
+    return false;
+  });
+}
+
+async function resolveRecipientEmails(filter) {
+  if (filter?.role === "custom") {
+    const raw = Array.isArray(filter.customEmails) ? filter.customEmails : [];
+    const seen = new Set();
+    return raw
+      .map((e) => cleanString(e))
+      .filter((e) => e && e.includes("@") && !seen.has(e) && seen.add(e))
+      .map((email) => ({ userId: null, email, name: email }));
+  }
+  const role = filter?.role;
+  const sf = filter?.studentFilter;
+
+  // When filtering alunos with progress-based criteria, use the rich student progress data
+  if (role === "aluno" && hasStudentFilter(sf)) {
+    const todayIso = nowIso().slice(0, 10);
+    const progressData = await getStudentsProgress({ today: todayIso, inactiveDays: 365 });
+    const byEmail = new Map();
+    for (const student of progressData.students) {
+      if (!student.email) continue;
+      // null means never flew → treat as Infinity so they pass any "min days" check
+      if (!progressRangeOk(student.daysSinceLastFlight ?? Infinity, sf.daysWithoutFlying)) continue;
+      if (sf.tracks?.length && !sf.tracks.includes(student.trainingProgress?.trackName)) continue;
+      if (!progressRangeOk(student.executed?.hours, sf.hours)) continue;
+      if (!progressRangeOk(student.trainingProgress?.percentComplete, sf.progress)) continue;
+      if (!progressRangeOk(student.executed?.count, sf.flights)) continue;
+      if (!progressRangeOk(student.executed?.landings, sf.landings)) continue;
+      if (!byEmail.has(student.email)) {
+        byEmail.set(student.email, { userId: student.userId || null, email: student.email, name: student.name || student.email });
+      }
+    }
+    return Array.from(byEmail.values());
+  }
+
+  const allProfiles = await listAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery(["user_id", "role", "email", "full_name"]),
+  ]);
+  const byEmail = new Map();
+  for (const p of allProfiles) {
+    if (!p.email) continue;
+    if (role && role !== "todos" && p.role !== role) continue;
+    if (!byEmail.has(p.email)) {
+      byEmail.set(p.email, { userId: p.user_id || null, email: p.email, name: cleanString(p.full_name) || p.email });
+    }
+  }
+  return Array.from(byEmail.values());
+}
+
+function toSegmentDoc(doc) {
+  return {
+    id: doc.$id,
+    name: doc.name || "",
+    description: doc.description || "",
+    resendAudienceId: doc.resend_audience_id || null,
+    memberCount: doc.member_count ?? 0,
+    createdAt: doc.$createdAt,
+    createdBy: doc.created_by || null,
+    recipientFilter: parseJsonObject(doc.recipient_filter_json, null),
+  };
+}
+
+function toMessageDoc(doc) {
+  return {
+    id: doc.$id,
+    segmentId: doc.segment_id || null,
+    segmentName: doc.segment_name || null,
+    resendBroadcastId: doc.resend_broadcast_id || null,
+    subject: doc.subject || "",
+    bodyHtml: doc.body_html || null,
+    sentAt: doc.sent_at || null,
+    sentBy: doc.sent_by || null,
+    recipientCount: doc.recipient_count ?? 0,
+    status: doc.status || "draft",
+  };
+}
+
+async function getResendAccountInfo() {
+  const { settings } = await loadEmailSettings();
+  const apiKey = cleanString(settings.resendApiKey);
+  if (!apiKey) return null;
+  try {
+    const resp = await fetch("https://api.resend.com/me", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
+async function previewBroadcastRecipients(filter) {
+  const recipients = await resolveRecipientEmails(filter);
+  return { recipients: recipients.map((r) => ({ email: r.email, name: r.name })), total: recipients.length };
+}
+
+async function listBroadcastSegments() {
+  if (!BROADCAST_SEGMENTS_COLLECTION_ID)
+    throw Object.assign(new Error("Coleção de segmentos não configurada."), { status: 500 });
+  const docs = await listAllDocuments(BROADCAST_SEGMENTS_COLLECTION_ID, [sdk.Query.orderDesc("$createdAt")]);
+  return docs.map(toSegmentDoc);
+}
+
+async function createBroadcastSegment(actorUserId, { name, description, filter }) {
+  if (!BROADCAST_SEGMENTS_COLLECTION_ID)
+    throw Object.assign(new Error("Coleção de segmentos não configurada."), { status: 500 });
+  const segName = cleanString(name);
+  if (!segName) throw Object.assign(new Error("Nome do segmento é obrigatório."), { status: 400 });
+
+  const { settings } = await loadEmailSettings();
+  const apiKey = cleanString(settings.resendApiKey);
+  if (!apiKey) throw Object.assign(new Error("Resend não configurado. Configure a API key em Configurações."), { status: 400 });
+
+  const recipients = await resolveRecipientEmails(filter);
+  if (!recipients.length) throw Object.assign(new Error("Nenhum destinatário encontrado para o filtro selecionado."), { status: 400 });
+
+  const resend = new Resend(apiKey);
+
+  const audienceResult = await resend.audiences.create({ name: segName });
+  if (audienceResult.error) throw Object.assign(new Error(audienceResult.error.message || "Falha ao criar audience no Resend."), { status: 502 });
+  const audienceId = audienceResult.data.id;
+
+  const batchSize = 10;
+  for (let i = 0; i < recipients.length; i += batchSize) {
+    const batch = recipients.slice(i, i + batchSize);
+    await Promise.all(
+      batch.map((r) => {
+        const nameParts = r.name && r.name !== r.email ? r.name.split(" ") : [];
+        return resend.contacts.create({
+          audienceId,
+          email: r.email,
+          firstName: nameParts[0] || undefined,
+          lastName: nameParts.slice(1).join(" ") || undefined,
+          unsubscribed: false,
+        });
+      }),
+    );
+  }
+
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    BROADCAST_SEGMENTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      name: segName,
+      description: cleanString(description || ""),
+      resend_audience_id: audienceId,
+      recipient_filter_json: JSON.stringify(filter || {}),
+      member_count: recipients.length,
+      created_by: actorUserId || null,
+    },
+    ADMIN_DOC_PERMS,
+  );
+  return toSegmentDoc(doc);
+}
+
+async function deleteBroadcastSegment(segmentId) {
+  if (!BROADCAST_SEGMENTS_COLLECTION_ID)
+    throw Object.assign(new Error("Coleção de segmentos não configurada."), { status: 500 });
+  if (!segmentId) throw Object.assign(new Error("ID do segmento não informado."), { status: 400 });
+
+  const doc = await databases.getDocument(DATABASE_ID, BROADCAST_SEGMENTS_COLLECTION_ID, segmentId);
+  const audienceId = doc.resend_audience_id;
+
+  if (audienceId) {
+    const { settings } = await loadEmailSettings();
+    const apiKey = cleanString(settings.resendApiKey);
+    if (apiKey) {
+      const resend = new Resend(apiKey);
+      const removeResult = await resend.audiences.remove(audienceId).catch((err) => ({ error: err }));
+      if (removeResult?.error) {
+        console.warn("Falha ao remover audience no Resend:", removeResult.error?.message || removeResult.error);
+      }
+    }
+  }
+
+  await databases.deleteDocument(DATABASE_ID, BROADCAST_SEGMENTS_COLLECTION_ID, segmentId);
+}
+
+async function listBroadcastMessages({ limit, offset } = {}) {
+  if (!BROADCAST_MESSAGES_COLLECTION_ID)
+    throw Object.assign(new Error("Coleção de mensagens não configurada."), { status: 500 });
+  const safeLimit = Math.min(Math.max(Number(limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const res = await databases.listDocuments(DATABASE_ID, BROADCAST_MESSAGES_COLLECTION_ID, [
+    sdk.Query.orderDesc("sent_at"),
+    sdk.Query.limit(safeLimit),
+    sdk.Query.offset(safeOffset),
+  ]);
+  return {
+    messages: (res.documents || []).map(toMessageDoc),
+    total: res.total || 0,
+  };
+}
+
+async function createAndSendBroadcast(actorUserId, { segmentId, subject, bodyHtml, testEmail, confirmSend }) {
+  if (!BROADCAST_SEGMENTS_COLLECTION_ID || !BROADCAST_MESSAGES_COLLECTION_ID)
+    throw Object.assign(new Error("Coleções de broadcast não configuradas."), { status: 500 });
+  if (!segmentId) throw Object.assign(new Error("Segmento não informado."), { status: 400 });
+  if (!cleanString(subject)) throw Object.assign(new Error("Assunto é obrigatório."), { status: 400 });
+  if (!cleanString(bodyHtml)) throw Object.assign(new Error("Conteúdo HTML é obrigatório."), { status: 400 });
+
+  const { settings } = await loadEmailSettings();
+  const apiKey = cleanString(settings.resendApiKey);
+  const fromEmail = cleanString(settings.fromEmail);
+  const fromName = cleanString(settings.fromName);
+  if (!apiKey || !fromEmail) throw Object.assign(new Error("Resend não configurado. Configure a API key e email remetente."), { status: 400 });
+
+  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+  const resend = new Resend(apiKey);
+
+  // Test-only mode: just send a transactional preview, no broadcast created
+  if (confirmSend !== true) {
+    const to = cleanString(testEmail);
+    if (!to) throw Object.assign(new Error("Email de teste não informado."), { status: 400 });
+    const result = await sendResendEmail(() => resend.emails.send({
+      from,
+      to: [to],
+      subject: `[TESTE] ${cleanString(subject)}`,
+      html: bodyHtml,
+    }));
+    if (result?.error) throw Object.assign(new Error(result.error.message || "Falha ao enviar email de teste."), { status: 502 });
+    return null;
+  }
+
+  const segDoc = await databases.getDocument(DATABASE_ID, BROADCAST_SEGMENTS_COLLECTION_ID, segmentId);
+  const audienceId = segDoc.resend_audience_id;
+  if (!audienceId) throw Object.assign(new Error("Segmento não possui audience no Resend. Recrie o segmento."), { status: 400 });
+
+  const broadcastResult = await resend.broadcasts.create({
+    audienceId,
+    from,
+    subject: cleanString(subject),
+    html: bodyHtml,
+    name: cleanString(subject),
+  });
+  if (broadcastResult.error) throw Object.assign(new Error(broadcastResult.error.message || "Falha ao criar broadcast no Resend."), { status: 502 });
+  const broadcastId = broadcastResult.data.id;
+
+  const sendResult = await resend.broadcasts.send(broadcastId);
+  if (sendResult.error) throw Object.assign(new Error(sendResult.error.message || "Falha ao enviar broadcast no Resend."), { status: 502 });
+
+  const msgDoc = await databases.createDocument(
+    DATABASE_ID,
+    BROADCAST_MESSAGES_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      segment_id: segmentId,
+      segment_name: segDoc.name || "",
+      resend_broadcast_id: broadcastId,
+      subject: cleanString(subject),
+      body_html: bodyHtml,
+      sent_at: nowIso(),
+      sent_by: actorUserId || null,
+      recipient_count: segDoc.member_count ?? 0,
+      status: "sent",
+    },
+    ADMIN_DOC_PERMS,
+  );
+  return toMessageDoc(msgDoc);
+}
+
+// ── /Email MKT ───────────────────────────────────────────────────────────────
+
 function sampleEventForTemplate(templateType) {
   const eventType = NOTIFICATION_CHANNELS.includes(templateType) ? "test" : cleanString(templateType || "test");
   const samples = {
@@ -3033,6 +3476,7 @@ module.exports = async ({ req, res, log, error }) => {
     const actorUserId = req.headers["x-appwrite-user-id"];
     const payload = req.bodyJson || {};
     const action = String(payload.action || "listSummaries");
+    log(`[action=${action}] userId=${actorUserId || "(none)"}`);
 
     if (action === "registerPushSubscription") {
       await registerPushSubscription(actorUserId, payload.subscription);
@@ -3221,7 +3665,7 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "listFlightReports") {
-      const report = await listFlightReports();
+      const report = await listFlightReports(payload);
       return jsonResponse(res, 200, report);
     }
 
@@ -3242,6 +3686,51 @@ module.exports = async ({ req, res, log, error }) => {
         offset: payload.offset,
       });
       return jsonResponse(res, 200, page);
+    }
+
+    if (action === "getResendAccountInfo") {
+      const accountInfo = await getResendAccountInfo();
+      return jsonResponse(res, 200, { accountInfo });
+    }
+
+    if (action === "previewBroadcastRecipients") {
+      const result = await previewBroadcastRecipients(payload.filter);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "listBroadcastSegments") {
+      const segments = await listBroadcastSegments();
+      return jsonResponse(res, 200, { segments });
+    }
+
+    if (action === "createBroadcastSegment") {
+      const segment = await createBroadcastSegment(actorUserId, {
+        name: String(payload.name || ""),
+        description: String(payload.description || ""),
+        filter: payload.filter,
+      });
+      return jsonResponse(res, 200, { segment });
+    }
+
+    if (action === "deleteBroadcastSegment") {
+      await deleteBroadcastSegment(String(payload.segmentId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "listBroadcastMessages") {
+      const result = await listBroadcastMessages({ limit: payload.limit, offset: payload.offset });
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "createAndSendBroadcast") {
+      const broadcastMessage = await createAndSendBroadcast(actorUserId, {
+        segmentId: String(payload.segmentId || ""),
+        subject: String(payload.subject || ""),
+        bodyHtml: String(payload.bodyHtml || ""),
+        testEmail: payload.testEmail ? String(payload.testEmail) : null,
+        confirmSend: payload.confirmSend === true,
+      });
+      return jsonResponse(res, 200, { broadcastMessage });
     }
 
     return jsonResponse(res, 400, { message: "Acao invalida." });

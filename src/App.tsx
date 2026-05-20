@@ -1,10 +1,21 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { useAuth } from "./contexts/AuthContext";
-import { MainLayout } from "./components/MainLayout";
-import { AdminLayout } from "./components/admin/AdminLayout";
-import { InstructorLayout } from "./components/instructor/InstructorLayout";
 import { LoginPage } from "./pages/LoginPage";
 import { refreshBrandCache } from "./lib/schoolRulesDb";
+
+const MainLayout = lazy(() => import("./components/MainLayout").then((module) => ({ default: module.MainLayout })));
+const AdminLayout = lazy(() => import("./components/admin/AdminLayout").then((module) => ({ default: module.AdminLayout })));
+const InstructorLayout = lazy(() =>
+  import("./components/instructor/InstructorLayout").then((module) => ({ default: module.InstructorLayout })),
+);
+
+function AppLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950">
+      <div className="h-10 w-10 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+    </div>
+  );
+}
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -15,11 +26,7 @@ export default function App() {
   }, [user?.id]);
 
   if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-      </div>
-    );
+    return <AppLoading />;
   }
 
   if (!user) {
@@ -27,12 +34,24 @@ export default function App() {
   }
 
   if (user.role === "admin") {
-    return <AdminLayout />;
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <AdminLayout />
+      </Suspense>
+    );
   }
 
   if (user.role === "instrutor") {
-    return <InstructorLayout />;
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <InstructorLayout />
+      </Suspense>
+    );
   }
 
-  return <MainLayout />;
+  return (
+    <Suspense fallback={<AppLoading />}>
+      <MainLayout />
+    </Suspense>
+  );
 }

@@ -5,28 +5,55 @@
  * Uso:
  *   node scripts/migrate-add-school-id.mjs
  */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client, Databases, Query } from "node-appwrite";
 
-const ENDPOINT   = "https://sfo.cloud.appwrite.io/v1";
-const PROJECT_ID = "6a01ac8a0009fbf94f05";
-const API_KEY    = "standard_c331b1343cf97b580560d1ea341a2609e4100195659849c17a5dcaab8b73c4d82bb840b4edc0209884a51c958fe3bc275a98230f570a51a9e2debe9a929af6ae069a2fa3268917905550c2bdb4a17fa79de223af4a17d7b0a8ec7a9daf0e4a3dd4d7657d269497813807cd6ae835d3e9ee905d45522c42f38188c41311393f6a";
-const DATABASE_ID = "6a01afae001bc352d1b1";
-const DEFAULT_SCHOOL_ID = "escola_principal";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, "..");
+const envPath = path.join(root, ".env.local");
+
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const entries = {};
+  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const idx = trimmed.indexOf("=");
+    entries[trimmed.slice(0, idx)] = trimmed.slice(idx + 1);
+  }
+  return entries;
+}
+
+const fileEnv = parseEnvFile(envPath);
+const env = (key, fallbackKey) => process.env[key] || fileEnv[key] || (fallbackKey ? fileEnv[fallbackKey] : undefined);
+
+const ENDPOINT = env("APPWRITE_ENDPOINT", "VITE_APPWRITE_ENDPOINT");
+const PROJECT_ID = env("APPWRITE_PROJECT_ID", "VITE_APPWRITE_PROJECT_ID");
+const API_KEY = process.env.APPWRITE_API_KEY || fileEnv.APPWRITE_API_KEY;
+const DATABASE_ID = env("APPWRITE_DATABASE_ID", "VITE_APPWRITE_DATABASE_ID");
+const DEFAULT_SCHOOL_ID = process.env.SCHOOL_ID || fileEnv.VITE_SCHOOL_ID || "escola_principal";
+
+if (!ENDPOINT || !PROJECT_ID || !API_KEY || !DATABASE_ID) {
+  console.error("Missing Appwrite env. Required: endpoint, project, database and APPWRITE_API_KEY.");
+  process.exit(1);
+}
 
 // Coleções que precisam receber school_id.
 // journey_rewards, training_tracks e student_training_tracks já têm school_id.
 // aircrafts já tem school_id.
 const COLLECTIONS = [
-  { id: "6a01ebb50034d5067723", name: "profiles" },
-  { id: "6a01afb1002232d33950", name: "flights" },
-  { id: "6a0378e600388c30bade", name: "student_credits" },
-  { id: "6a023d7d00137ede2f5b", name: "weekly_plans" },
-  { id: "6a035e790029550365f7", name: "instructor_prefs" },
-  { id: "6a0461a3001603e99577", name: "maneuvers_sections" },
-  { id: "6a0461c5002ac4794ec4", name: "maneuvers_subsections" },
-  { id: "6a0461d0001a1ceefdad", name: "maneuvers_articles" },
-  { id: "6a02403b003260123bab", name: "notices" },
-];
+  { id: env("APPWRITE_PROFILES_COLLECTION_ID", "VITE_APPWRITE_PROFILES_COLLECTION_ID"), name: "profiles" },
+  { id: env("APPWRITE_FLIGHTS_COLLECTION_ID", "VITE_APPWRITE_COLLECTION_ID"), name: "flights" },
+  { id: env("APPWRITE_STUDENT_CREDITS_COLLECTION_ID", "VITE_APPWRITE_STUDENT_CREDITS_COL_ID"), name: "student_credits" },
+  { id: env("APPWRITE_WEEKLY_PLANS_COLLECTION_ID", "VITE_APPWRITE_WEEKLY_PLANS_COL_ID"), name: "weekly_plans" },
+  { id: env("APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", "VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID"), name: "instructor_prefs" },
+  { id: env("APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID", "VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID"), name: "maneuvers_sections" },
+  { id: env("APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID", "VITE_APPWRITE_MANEUVERS_SUBSECTIONS_COL_ID"), name: "maneuvers_subsections" },
+  { id: env("APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID", "VITE_APPWRITE_MANEUVERS_ARTICLES_COL_ID"), name: "maneuvers_articles" },
+  { id: env("APPWRITE_NOTICES_COLLECTION_ID", "VITE_APPWRITE_NOTICES_COL_ID"), name: "notices" },
+].filter((collection) => collection.id);
 
 const client = new Client()
   .setEndpoint(ENDPOINT)

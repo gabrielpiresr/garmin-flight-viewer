@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts, createAircraft, updateAircraft, toggleAircraftActive, uploadAircraftPhoto } from "../../lib/aircraftDb";
 import { listModels } from "../../lib/aircraftModelsDb";
-import type { Aircraft, AircraftModel } from "../../types/admin";
+import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
+import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
+import type { Aircraft, AircraftModel, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -12,6 +14,10 @@ const emptyForm = {
   model_id: "",
   registration: "",
   nickname: "",
+  serial_number: "",
+  owner_name: "",
+  operator_name: "",
+  logbook_sequence_number: "",
   image_url: "",
   active: true,
   wb_empty_weight_kg: "",
@@ -26,10 +32,26 @@ const emptyForm = {
   wb_max_weight_kg: "",
   wb_arm_min_mm: "",
   wb_arm_max_mm: "",
+  logbook_opening_date: "",
+  logbook_ttaf: "",
+  logbook_landings: "",
+  logbook_engine_hours: "",
+  logbook_propeller_hours: "",
+  logbook_tach_hours: "",
+  logbook_cycles: "",
 };
 
 type FilterState = "all" | "active" | "inactive";
 type AircraftForm = typeof emptyForm;
+type RecurrenceRules = { hours: number | null; days: number | null };
+type UpcomingMaintenance = {
+  id: string;
+  code: string;
+  title: string;
+  remainingHours: number | null;
+  remainingDays: number | null;
+  forecast: string;
+};
 
 function numberToFormValue(value: number | null | undefined, fallback = ""): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : fallback;
@@ -38,6 +60,205 @@ function numberToFormValue(value: number | null | undefined, fallback = ""): str
 function nullableNumber(value: string): number | null {
   const parsed = Number(value.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseRecurrenceRules(value: string): RecurrenceRules {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return { hours: null, days: null };
+    const hoursRule = parsed.find((rule) => rule?.type === "hours");
+    const calendarRule = parsed.find((rule) => rule?.type === "calendar" && rule?.unit === "days");
+    return {
+      hours: typeof hoursRule?.value === "number" ? hoursRule.value : null,
+      days: typeof calendarRule?.value === "number" ? calendarRule.value : null,
+    };
+  } catch {
+    return { hours: null, days: null };
+  }
+}
+
+function daysBetween(from: Date, to: Date): number {
+  return Math.ceil((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function formatHours(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "sem regra por horas";
+  return `${Math.max(0, value).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} h`;
+}
+
+function formatDays(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "sem regra por dias";
+  return `${Math.max(0, value)} dia${Math.max(0, value) === 1 ? "" : "s"}`;
+}
+
+function formatDate(value: number): string {
+  return new Date(value).toLocaleDateString("pt-BR");
+}
+
+function maintenanceTone(item: UpcomingMaintenance): string {
+  const values = [item.remainingHours, item.remainingDays].filter((value): value is number => value != null);
+  if (values.some((value) => value < 5)) return "border-red-500/40 bg-red-500/10 text-red-200";
+  if (values.some((value) => value < 20)) return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  return "border-slate-800 bg-slate-950/30 text-slate-300";
+}
+
+function latestBaseline(orders: MaintenanceWorkOrder[]): MaintenanceWorkOrder | null {
+  return orders
+    .filter((order) => order.work_order_type === "migration_baseline")
+    .sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())[0] ?? null;
+}
+
+function latestDate(orders: MaintenanceWorkOrder[]): Date | null {
+  const dates = orders
+    .map((order) => order.completed_at ?? order.released_at ?? order.opened_at)
+    .map((value) => new Date(value))
+    .filter((date) => !Number.isNaN(date.getTime()));
+  if (dates.length === 0) return null;
+  return new Date(Math.max(...dates.map((date) => date.getTime())));
+}
+
+function nextDueHours(currentHours: number | null, itemOrders: MaintenanceWorkOrder[], interval: number | null): number | null {
+  if (interval == null || interval <= 0 || currentHours == null) return null;
+  const latestPerformed = itemOrders
+    .filter((order) => order.work_order_type !== "migration_baseline")
+    .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
+  const dueAt = latestPerformed ? latestPerformed.aircraft_ttaf + interval : Math.ceil((currentHours + 0.0001) / interval) * interval;
+  return Number((dueAt - currentHours).toFixed(1));
+}
+
+function buildUpcomingMaintenance(params: {
+  aircraft: Aircraft;
+  modelItems: MaintenanceProgramItem[];
+  aircraftOrders: MaintenanceWorkOrder[];
+  currentHours: number | null;
+  scheduledFlights: SavedFlightListItem[];
+}): UpcomingMaintenance[] {
+  const opening = resolveAircraftOpening(params.aircraft, params.aircraftOrders);
+  const baselineDate = opening.baselineMs ? new Date(opening.baselineMs) : null;
+  const now = new Date();
+
+  return params.modelItems
+    .map((item) => {
+      const rules = parseRecurrenceRules(item.recurrence_rules);
+      const itemOrders = params.aircraftOrders.filter((order) => order.maintenance_program_item_id === item.id);
+      const remainingHours = nextDueHours(params.currentHours, itemOrders, rules.hours);
+      const lastItemDate = latestDate(itemOrders.filter((order) => order.work_order_type !== "migration_baseline"));
+      const referenceDate = lastItemDate ?? baselineDate;
+      const dueDate = referenceDate && rules.days != null ? new Date(referenceDate.getTime() + rules.days * 86_400_000) : null;
+      return {
+        id: item.id,
+        code: item.code,
+        title: item.title,
+        remainingHours,
+        remainingDays: dueDate ? daysBetween(now, dueDate) : null,
+        forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights),
+      };
+    })
+    .sort((a, b) => (a.remainingHours ?? Number.POSITIVE_INFINITY) - (b.remainingHours ?? Number.POSITIVE_INFINITY));
+}
+
+function flightDurationHours(flight: SavedFlightListItem): number {
+  if (typeof flight.total_flight_minutes === "number" && Number.isFinite(flight.total_flight_minutes)) {
+    return flight.total_flight_minutes / 60;
+  }
+  if (typeof flight.duration_sec === "number" && Number.isFinite(flight.duration_sec)) {
+    return flight.duration_sec / 3600;
+  }
+  return 0;
+}
+
+function flightDateMs(flight: SavedFlightListItem): number {
+  const date = flight.flight_date ?? flight.created_at;
+  const time = flight.start_time ? `T${flight.start_time}` : "";
+  const ms = new Date(`${date}${time}`).getTime();
+  return Number.isFinite(ms) ? ms : new Date(flight.created_at).getTime();
+}
+
+function aircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[]): SavedFlightListItem[] {
+  const normalizedRegistration = aircraft.registration.trim().toUpperCase();
+  return flights.filter((flight) => (flight.aircraft_ident ?? "").trim().toUpperCase() === normalizedRegistration);
+}
+
+function scheduledAircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[]): SavedFlightListItem[] {
+  const now = Date.now();
+  return aircraftFlights(aircraft, flights)
+    .filter((flight) => flightDateMs(flight) > now)
+    .filter((flight) => flightDurationHours(flight) > 0)
+    .sort((a, b) => flightDateMs(a) - flightDateMs(b));
+}
+
+function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: SavedFlightListItem[]): string {
+  if (remainingHours == null || !Number.isFinite(remainingHours)) return "sem previsão por horas";
+  if (remainingHours <= 0) return "atingida agora";
+  let accumulated = 0;
+  let lastFlightMs: number | null = null;
+  for (const flight of scheduledFlights) {
+    const flightMs = flightDateMs(flight);
+    lastFlightMs = flightMs;
+    accumulated += flightDurationHours(flight);
+    if (accumulated >= remainingHours) return `prevista para ${formatDate(flightMs)}`;
+  }
+  return lastFlightMs ? `depois do dia ${formatDate(lastFlightMs)}` : "sem voos programados";
+}
+
+type AircraftOpening = {
+  baselineMs: number;
+  ttaf: number | null;
+  landings: number | null;
+  cycles: number | null;
+};
+
+function resolveAircraftOpening(aircraft: Aircraft, orders: MaintenanceWorkOrder[]): AircraftOpening {
+  if (aircraft.logbook_ttaf != null) {
+    return {
+      baselineMs: aircraft.logbook_opening_date ? new Date(aircraft.logbook_opening_date).getTime() : 0,
+      ttaf: aircraft.logbook_ttaf,
+      landings: aircraft.logbook_landings,
+      cycles: aircraft.logbook_cycles,
+    };
+  }
+  const bl = latestBaseline(orders);
+  if (!bl) return { baselineMs: 0, ttaf: null, landings: null, cycles: null };
+  return {
+    baselineMs: new Date(bl.opened_at).getTime(),
+    ttaf: bl.aircraft_ttaf,
+    landings: bl.aircraft_total_landings,
+    cycles: bl.cycles,
+  };
+}
+
+function currentAircraftHoursFromBaseline(params: {
+  aircraft: Aircraft;
+  orders: MaintenanceWorkOrder[];
+  flights: SavedFlightListItem[];
+}): number | null {
+  const opening = resolveAircraftOpening(params.aircraft, params.orders);
+  if (opening.ttaf == null) return null;
+  const now = Date.now();
+  const flownHours = aircraftFlights(params.aircraft, params.flights)
+    .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
+    .filter((flight) => flightDateMs(flight) <= now)
+    .reduce((sum, flight) => sum + flightDurationHours(flight), 0);
+  return Number((opening.ttaf + flownHours).toFixed(1));
+}
+
+function currentAircraftTotalsFromBaseline(params: {
+  aircraft: Aircraft;
+  orders: MaintenanceWorkOrder[];
+  flights: SavedFlightListItem[];
+}): { hours: number | null; cycles: number | null; landings: number | null } {
+  const opening = resolveAircraftOpening(params.aircraft, params.orders);
+  const hours = currentAircraftHoursFromBaseline(params);
+  if (opening.ttaf == null) return { hours, cycles: null, landings: null };
+  const flown = aircraftFlights(params.aircraft, params.flights)
+    .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
+    .filter((flight) => flightDateMs(flight) <= Date.now());
+  const additionalLandings = flown.reduce((sum, flight) => sum + (flight.landings ?? 0), 0);
+  return {
+    hours,
+    cycles: opening.cycles == null ? null : opening.cycles + additionalLandings,
+    landings: opening.landings == null ? null : opening.landings + additionalLandings,
+  };
 }
 
 function weightBalancePayload(form: AircraftForm) {
@@ -54,6 +275,13 @@ function weightBalancePayload(form: AircraftForm) {
     wb_max_weight_kg: nullableNumber(form.wb_max_weight_kg),
     wb_arm_min_mm: nullableNumber(form.wb_arm_min_mm),
     wb_arm_max_mm: nullableNumber(form.wb_arm_max_mm),
+    logbook_opening_date: form.logbook_opening_date.trim() || null,
+    logbook_ttaf: nullableNumber(form.logbook_ttaf),
+    logbook_landings: nullableNumber(form.logbook_landings),
+    logbook_engine_hours: nullableNumber(form.logbook_engine_hours),
+    logbook_propeller_hours: nullableNumber(form.logbook_propeller_hours),
+    logbook_tach_hours: nullableNumber(form.logbook_tach_hours),
+    logbook_cycles: nullableNumber(form.logbook_cycles),
   };
 }
 
@@ -87,6 +315,9 @@ export function FleetTab() {
   const { showToast } = useToast();
   const [aircrafts, setAircrafts] = useState<Aircraft[]>([]);
   const [models, setModels] = useState<AircraftModel[]>([]);
+  const [workOrders, setWorkOrders] = useState<MaintenanceWorkOrder[]>([]);
+  const [flights, setFlights] = useState<SavedFlightListItem[]>([]);
+  const [programItemsByModel, setProgramItemsByModel] = useState<Record<string, MaintenanceProgramItem[]>>({});
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,14 +337,29 @@ export function FleetTab() {
     setLoadingAircrafts(true);
     setLoadingModels(true);
     setError(null);
-    listAircrafts(schoolId)
-      .then(setAircrafts)
+    Promise.all([
+      listAircrafts(schoolId),
+      listModels(),
+      listWorkOrders(),
+      listAllSavedFlights({ userId: "admin", role: "admin" }, { pageSize: 100, maxItems: 5000 }),
+    ])
+      .then(async ([aircraftRows, modelRows, orderRows, flightRows]) => {
+        setAircrafts(aircraftRows);
+        setModels(modelRows);
+        setWorkOrders(orderRows);
+        if (flightRows.error) throw flightRows.error;
+        setFlights(flightRows.data ?? []);
+const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
+        const programEntries = await Promise.all(
+          uniqueModelIds.map(async (modelId) => [modelId, await listProgramItemsByModel(modelId)] as const),
+        );
+        setProgramItemsByModel(Object.fromEntries(programEntries));
+      })
       .catch((e: Error) => setError(e.message))
-      .finally(() => setLoadingAircrafts(false));
-    listModels()
-      .then(setModels)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoadingModels(false));
+      .finally(() => {
+        setLoadingAircrafts(false);
+        setLoadingModels(false);
+      });
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -130,6 +376,10 @@ export function FleetTab() {
       model_id: ac.model_id,
       registration: ac.registration,
       nickname: ac.nickname ?? "",
+      serial_number: ac.serial_number ?? "",
+      owner_name: ac.owner_name ?? "",
+      operator_name: ac.operator_name ?? "",
+      logbook_sequence_number: ac.logbook_sequence_number ?? "",
       image_url: ac.image_url ?? "",
       active: ac.active,
       wb_empty_weight_kg: numberToFormValue(ac.wb_empty_weight_kg),
@@ -144,6 +394,13 @@ export function FleetTab() {
       wb_max_weight_kg: numberToFormValue(ac.wb_max_weight_kg),
       wb_arm_min_mm: numberToFormValue(ac.wb_arm_min_mm),
       wb_arm_max_mm: numberToFormValue(ac.wb_arm_max_mm),
+      logbook_opening_date: ac.logbook_opening_date ?? "",
+      logbook_ttaf: numberToFormValue(ac.logbook_ttaf),
+      logbook_landings: numberToFormValue(ac.logbook_landings),
+      logbook_engine_hours: numberToFormValue(ac.logbook_engine_hours),
+      logbook_propeller_hours: numberToFormValue(ac.logbook_propeller_hours),
+      logbook_tach_hours: numberToFormValue(ac.logbook_tach_hours),
+      logbook_cycles: numberToFormValue(ac.logbook_cycles),
     });
     setPhotoFile(null);
     setEditingId(ac.id);
@@ -160,6 +417,10 @@ export function FleetTab() {
           model_id: form.model_id,
           registration: form.registration.trim(),
           nickname: form.nickname.trim() || null,
+          serial_number: form.serial_number.trim() || null,
+          owner_name: form.owner_name.trim() || null,
+          operator_name: form.operator_name.trim() || null,
+          logbook_sequence_number: form.logbook_sequence_number.trim() || null,
           image_url: imageUrl,
           active: form.active,
           ...weightBalancePayload(form),
@@ -171,6 +432,10 @@ export function FleetTab() {
           model_id: form.model_id,
           registration: form.registration.trim(),
           nickname: form.nickname.trim() || undefined,
+          serial_number: form.serial_number.trim() || null,
+          owner_name: form.owner_name.trim() || null,
+          operator_name: form.operator_name.trim() || null,
+          logbook_sequence_number: form.logbook_sequence_number.trim() || null,
           image_url: imageUrl ?? undefined,
           active: form.active,
           ...weightBalancePayload(form),
@@ -195,7 +460,15 @@ export function FleetTab() {
     }
   }
 
-  const modelMap = Object.fromEntries(models.map((m) => [m.id, m]));
+
+  const modelMap = useMemo(() => Object.fromEntries(models.map((m) => [m.id, m])), [models]);
+  const workOrdersByAircraft = useMemo(() => {
+    const grouped: Record<string, MaintenanceWorkOrder[]> = {};
+    for (const order of workOrders) {
+      grouped[order.aircraft_id] = [...(grouped[order.aircraft_id] ?? []), order];
+    }
+    return grouped;
+  }, [workOrders]);
 
   const visible = aircrafts.filter((a) => {
     if (filter === "active") return a.active;
@@ -207,7 +480,7 @@ export function FleetTab() {
   const inactiveCount = aircrafts.filter((a) => !a.active).length;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="w-full space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -274,6 +547,15 @@ export function FleetTab() {
               />
             </div>
             <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Número de série</label>
+              <input
+                type="text"
+                value={form.serial_number}
+                onChange={(e) => setForm((f) => ({ ...f, serial_number: e.target.value }))}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
               <label className="mb-1.5 block text-xs font-medium text-slate-400">Modelo *</label>
               <select
                 value={form.model_id}
@@ -285,6 +567,33 @@ export function FleetTab() {
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Proprietário</label>
+              <input
+                type="text"
+                value={form.owner_name}
+                onChange={(e) => setForm((f) => ({ ...f, owner_name: e.target.value }))}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Operador</label>
+              <input
+                type="text"
+                value={form.operator_name}
+                onChange={(e) => setForm((f) => ({ ...f, operator_name: e.target.value }))}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Nº diário de bordo</label>
+              <input
+                type="text"
+                value={form.logbook_sequence_number}
+                onChange={(e) => setForm((f) => ({ ...f, logbook_sequence_number: e.target.value }))}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+              />
             </div>
             <div className="sm:col-span-2">
               <label className="mb-1.5 block text-xs font-medium text-slate-400">Foto do avião</label>
@@ -390,6 +699,56 @@ export function FleetTab() {
                 />
               </div>
             </div>
+            <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
+              <div>
+                <h4 className="text-sm font-semibold text-slate-200">Abertura do diário de bordo</h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  Horas e contadores no momento da abertura do diário. Servem de base para cálculo de horas totais.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">Data de abertura</label>
+                  <input
+                    type="date"
+                    value={form.logbook_opening_date}
+                    onChange={(e) => setForm((f) => ({ ...f, logbook_opening_date: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <WbNumberField
+                  label="TTAF (h)"
+                  value={form.logbook_ttaf}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_ttaf: value }))}
+                  placeholder="ex: 1250.5"
+                />
+                <WbNumberField
+                  label="Pousos totais"
+                  value={form.logbook_landings}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_landings: value }))}
+                />
+                <WbNumberField
+                  label="Horas motor (h)"
+                  value={form.logbook_engine_hours}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_engine_hours: value }))}
+                />
+                <WbNumberField
+                  label="Horas hélice (h)"
+                  value={form.logbook_propeller_hours}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_propeller_hours: value }))}
+                />
+                <WbNumberField
+                  label="Horas tacômetro (h)"
+                  value={form.logbook_tach_hours}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_tach_hours: value }))}
+                />
+                <WbNumberField
+                  label="Ciclos"
+                  value={form.logbook_cycles}
+                  onChange={(value) => setForm((f) => ({ ...f, logbook_cycles: value }))}
+                />
+              </div>
+            </div>
           </div>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
@@ -416,7 +775,7 @@ export function FleetTab() {
 
       {/* Cards grid */}
       {loadingAircrafts ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/50">
               <Skeleton className="h-28 w-full rounded-none" />
@@ -448,10 +807,21 @@ export function FleetTab() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {visible.map((ac) => {
             const model = modelMap[ac.model_id];
             const img = ac.image_url ?? model?.default_image;
+            const aircraftOrders = workOrdersByAircraft[ac.id] ?? [];
+            const scheduledFlights = scheduledAircraftFlights(ac, flights);
+            const totals = currentAircraftTotalsFromBaseline({ aircraft: ac, orders: aircraftOrders, flights });
+            const currentHours = totals.hours;
+const upcoming = buildUpcomingMaintenance({
+              aircraft: ac,
+              modelItems: programItemsByModel[ac.model_id] ?? [],
+              aircraftOrders,
+              currentHours,
+              scheduledFlights,
+            });
             return (
               <div
                 key={ac.id}
@@ -494,6 +864,40 @@ export function FleetTab() {
                         {model.name}
                       </span>
                     ) : null}
+                  </div>
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Horas da aeronave</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-200">
+                      {currentHours == null ? "Sem abertura" : `${formatHours(currentHours)} totais`}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Ciclos {totals.cycles ?? "-"} · Pousos {totals.landings ?? "-"}
+                    </p>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Próximas manutenções</p>
+                      <span className="text-[11px] text-slate-500">{upcoming.length} item{upcoming.length === 1 ? "" : "s"}</span>
+                    </div>
+                    {upcoming.length === 0 ? (
+                      <p className="mt-2 text-xs text-slate-500">Nenhum programa cadastrado para este modelo.</p>
+                    ) : (
+                      <div className="mt-2 space-y-2">
+                        {upcoming.map((item) => (
+                          <div key={item.id} className={`rounded-md border px-2.5 py-2 ${maintenanceTone(item)}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="min-w-0 text-xs font-medium">
+                                <span className="font-mono">{item.code}</span> · {item.title}
+                              </p>
+                              <p className="text-xs font-semibold">
+                                {formatHours(item.remainingHours)} / {formatDays(item.remainingDays)}
+                              </p>
+                            </div>
+                            <p className="mt-1 text-[11px] opacity-80">{item.forecast}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
                     <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Peso e balanceamento</p>

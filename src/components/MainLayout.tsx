@@ -1,19 +1,22 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
-import { AgendamentoTab } from "./AgendamentoTab";
-import { AlunoProfileDashboard } from "./AlunoProfileDashboard";
-import { CreditosTab } from "./CreditosTab";
-import { HelpCenterTab } from "./HelpCenterTab";
-import { JornadaTab } from "./JornadaTab";
-import { ManobrasTab } from "./ManobrasTab";
-import { ManuaisTab } from "./ManuaisTab";
-import { MeusVoosTab } from "./MeusVoosTab";
-import { NoticeFeed } from "./NoticeFeed";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
-import { StudentHome } from "./StudentHome";
+
+const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
+const AlunoProfileDashboard = lazy(() =>
+  import("./AlunoProfileDashboard").then((module) => ({ default: module.AlunoProfileDashboard })),
+);
+const CreditosTab = lazy(() => import("./CreditosTab").then((module) => ({ default: module.CreditosTab })));
+const HelpCenterTab = lazy(() => import("./HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
+const JornadaTab = lazy(() => import("./JornadaTab").then((module) => ({ default: module.JornadaTab })));
+const ManobrasTab = lazy(() => import("./ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
+const ManuaisTab = lazy(() => import("./ManuaisTab").then((module) => ({ default: module.ManuaisTab })));
+const MeusVoosTab = lazy(() => import("./MeusVoosTab").then((module) => ({ default: module.MeusVoosTab })));
+const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
+const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ default: module.StudentHome })));
 
 type Section = StudentPortalTab;
 
@@ -145,6 +148,19 @@ const SECTION_ROUTES = [
   { id: "ajuda", path: "/aluno/ajuda" },
 ] satisfies readonly TabRoute<Section>[];
 
+function TabLoading() {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6">
+      <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+      <div className="mt-4 h-24 animate-pulse rounded bg-slate-800/70" />
+    </div>
+  );
+}
+
+function LazyTab({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<TabLoading />}>{children}</Suspense>;
+}
+
 export function MainLayout() {
   const { user, signOut } = useAuth();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
@@ -262,55 +278,75 @@ export function MainLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
-              <StudentHome
-                onOpenFlights={() => openSection("meus-voos")}
-                onOpenNotices={() => openSection("avisos")}
-              />
+              <LazyTab>
+                <StudentHome
+                  onOpenFlights={() => openSection("meus-voos")}
+                  onOpenNotices={() => openSection("avisos")}
+                />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("jornada") && (
             <div hidden={section !== "jornada"}>
-              <JornadaTab />
+              <LazyTab>
+                <JornadaTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("meus-voos") && (
             <div hidden={section !== "meus-voos"}>
-              <MeusVoosTab />
+              <LazyTab>
+                <MeusVoosTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("agendamento") && (
             <div hidden={section !== "agendamento"}>
-              <AgendamentoTab />
+              <LazyTab>
+                <AgendamentoTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("creditos") && (
             <div hidden={section !== "creditos"}>
-              <CreditosTab />
+              <LazyTab>
+                <CreditosTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("avisos") && (
             <div hidden={section !== "avisos"}>
-              <NoticeFeed className="w-full max-w-4xl" eyebrow="Avisos" title="Comunicados da escola" />
+              <LazyTab>
+                <NoticeFeed className="w-full max-w-4xl" eyebrow="Avisos" title="Comunicados da escola" />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("manuais") && (
             <div hidden={section !== "manuais"}>
-              <ManuaisTab />
+              <LazyTab>
+                <ManuaisTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("manobras") && (
             <div hidden={section !== "manobras"}>
-              <ManobrasTab />
+              <LazyTab>
+                <ManobrasTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("perfil") && (
             <div hidden={section !== "perfil"}>
-              <AlunoProfileDashboard />
+              <LazyTab>
+                <AlunoProfileDashboard />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("ajuda") && (
             <div hidden={section !== "ajuda"}>
-              <HelpCenterTab />
+              <LazyTab>
+                <HelpCenterTab />
+              </LazyTab>
             </div>
           )}
         </main>

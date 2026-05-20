@@ -49,6 +49,17 @@ function toAircraft(doc: Record<string, unknown>): Aircraft {
     model_id: (doc.model_id as string) ?? "",
     registration: (doc.registration as string) ?? "",
     nickname: (doc.nickname as string | null) ?? null,
+    serial_number: (doc.serial_number as string | null | undefined) ?? null,
+    owner_name: (doc.owner_name as string | null | undefined) ?? null,
+    operator_name: (doc.operator_name as string | null | undefined) ?? null,
+    logbook_sequence_number: (doc.logbook_sequence_number as string | null | undefined) ?? null,
+    logbook_opening_date: (doc.logbook_opening_date as string | null | undefined) ?? null,
+    logbook_ttaf: (doc.logbook_ttaf as number | null | undefined) ?? null,
+    logbook_landings: (doc.logbook_landings as number | null | undefined) ?? null,
+    logbook_engine_hours: (doc.logbook_engine_hours as number | null | undefined) ?? null,
+    logbook_propeller_hours: (doc.logbook_propeller_hours as number | null | undefined) ?? null,
+    logbook_tach_hours: (doc.logbook_tach_hours as number | null | undefined) ?? null,
+    logbook_cycles: (doc.logbook_cycles as number | null | undefined) ?? null,
     image_url: (doc.image_url as string | null) ?? null,
     active: (doc.active as boolean) ?? true,
     wb_empty_weight_kg: (doc.wb_empty_weight_kg as number | null | undefined) ?? null,
@@ -80,6 +91,13 @@ type AircraftWeightBalanceData = Partial<{
   wb_max_weight_kg: number | null;
   wb_arm_min_mm: number | null;
   wb_arm_max_mm: number | null;
+  logbook_opening_date: string | null;
+  logbook_ttaf: number | null;
+  logbook_landings: number | null;
+  logbook_engine_hours: number | null;
+  logbook_propeller_hours: number | null;
+  logbook_tach_hours: number | null;
+  logbook_cycles: number | null;
 }>;
 
 export async function listAircrafts(schoolId: string): Promise<Aircraft[]> {
@@ -110,6 +128,10 @@ export async function createAircraft(data: {
   model_id: string;
   registration: string;
   nickname?: string;
+  serial_number?: string | null;
+  owner_name?: string | null;
+  operator_name?: string | null;
+  logbook_sequence_number?: string | null;
   image_url?: string;
   active?: boolean;
 } & AircraftWeightBalanceData): Promise<Aircraft> {
@@ -123,6 +145,10 @@ export async function createAircraft(data: {
       model_id: data.model_id,
       registration: data.registration.toUpperCase(),
       nickname: data.nickname ?? null,
+      serial_number: data.serial_number ?? null,
+      owner_name: data.owner_name ?? null,
+      operator_name: data.operator_name ?? null,
+      logbook_sequence_number: data.logbook_sequence_number ?? null,
       image_url: data.image_url ?? null,
       active: data.active ?? true,
       wb_empty_weight_kg: data.wb_empty_weight_kg ?? null,
@@ -137,6 +163,13 @@ export async function createAircraft(data: {
       wb_max_weight_kg: data.wb_max_weight_kg ?? null,
       wb_arm_min_mm: data.wb_arm_min_mm ?? null,
       wb_arm_max_mm: data.wb_arm_max_mm ?? null,
+      logbook_opening_date: data.logbook_opening_date ?? null,
+      logbook_ttaf: data.logbook_ttaf ?? null,
+      logbook_landings: data.logbook_landings ?? null,
+      logbook_engine_hours: data.logbook_engine_hours ?? null,
+      logbook_propeller_hours: data.logbook_propeller_hours ?? null,
+      logbook_tach_hours: data.logbook_tach_hours ?? null,
+      logbook_cycles: data.logbook_cycles ?? null,
     },
     adminScopedPermissions(),
   );
@@ -145,7 +178,17 @@ export async function createAircraft(data: {
 
 export async function updateAircraft(
   id: string,
-  data: Partial<{ model_id: string; registration: string; nickname: string | null; image_url: string | null; active: boolean }> & AircraftWeightBalanceData,
+  data: Partial<{
+    model_id: string;
+    registration: string;
+    nickname: string | null;
+    serial_number: string | null;
+    owner_name: string | null;
+    operator_name: string | null;
+    logbook_sequence_number: string | null;
+    image_url: string | null;
+    active: boolean;
+  }> & AircraftWeightBalanceData,
 ): Promise<Aircraft> {
   if (!databases || !DB_ID || !AIRCRAFTS_COL_ID) throw new Error("Appwrite não configurado");
   const payload = { ...data };

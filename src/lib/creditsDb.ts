@@ -7,7 +7,7 @@ import { listModels } from "./aircraftModelsDb";
 import { decodeFlightRecord } from "./flightRecordCodec";
 import {
   getSavedFlight,
-  listSavedFlights,
+  listAllSavedFlights,
   listStudentFlightHistory,
   type SavedFlightFull,
   type SavedFlightListItem,
@@ -225,7 +225,7 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
 async function listFlightSourcesForStudent(viewer: { userId: string; role: UserRole }, studentUserId: string) {
   const flightsResult =
     viewer.role === "aluno"
-      ? await listSavedFlights({ userId: viewer.userId, role: viewer.role })
+      ? await listAllSavedFlights({ userId: viewer.userId, role: viewer.role })
       : await listStudentFlightHistory({ actorUserId: viewer.userId, actorRole: viewer.role, studentUserId });
   if (flightsResult.error) throw flightsResult.error;
 

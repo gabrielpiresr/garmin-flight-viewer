@@ -22,8 +22,16 @@ export type FlightRecordMeta = {
     instructorAnac?: string;
     date: string;
     startTime?: string;
+    /** Horário local (ficha); nomes *Utc por compatibilidade. UTC só no diário de bordo. */
+    departureTimeUtc?: string;
+    engineCutoffTimeUtc?: string;
+    takeoffTimeUtc?: string;
+    landingTimeUtc?: string;
     aircraft: string;
     isNight?: boolean;
+    flightSeqNumber?: number;
+    flightNature?: string;
+    cargo?: string;
   };
   schedule?: {
     version: "AUTO_SCHEDULE_V1";
@@ -50,6 +58,8 @@ export type FlightRecordMeta = {
     id: string;
     date: string;
     role: string;
+    studentRole?: string;
+    instructorRole?: string;
     dep: string;
     arr: string;
     landings: number;
@@ -59,9 +69,18 @@ export type FlightRecordMeta = {
     nightTime: string;
     serviceTime: string;
     distance: string;
+    fuelLiters?: number | null;
   }>;
   exercises?: FlightExerciseGrade[];
   weightBalance?: FlightWeightBalanceMeta;
+  technicalLog?: {
+    discrepancyCode?: string;
+    discrepancies: string;
+    correctiveActions: string;
+    occurrenceCode?: string;
+    occurrences?: string;
+  };
+  maintenanceSnapshot?: null;
   risk: {
     commentsMd: string;
     dangerMd: string;
@@ -95,6 +114,19 @@ export function encodeFlightRecord(payload: {
   const csv = payload.telemetryCsv.trim();
   if (!csv) return `${META_PREFIX}${metaEncoded}\n`;
   return `${META_PREFIX}${metaEncoded}\n${csv}`;
+}
+
+/** Decodifica apenas o bloco de meta (primeira linha). Não processa telemetria. */
+export function decodeFlightRecordMeta(recordPrefix: string): FlightRecordMeta | null {
+  const normalized = (recordPrefix ?? "").replace(/^\uFEFF/, "");
+  const firstLine = normalized.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (!firstLine.startsWith(META_PREFIX)) return null;
+  try {
+    const raw = fromBase64(firstLine.slice(META_PREFIX.length).trim());
+    return JSON.parse(raw) as FlightRecordMeta;
+  } catch {
+    return null;
+  }
 }
 
 export function decodeFlightRecord(recordText: string): {

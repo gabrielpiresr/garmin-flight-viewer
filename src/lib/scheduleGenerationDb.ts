@@ -8,7 +8,7 @@ import {
 } from "./appwrite";
 import { listAircrafts } from "./aircraftDb";
 import { listAssignableInstructors, listStudentIdentitiesForSchedule } from "./rbac";
-import { listScheduledFlightsForWeek, listSavedFlights, type SavedFlightListItem } from "./flightsDb";
+import { listAllSavedFlights, listScheduledFlightsForWeek, type SavedFlightListItem } from "./flightsDb";
 import { getSchoolRules } from "./schoolRulesDb";
 import type {
   AircraftWeekSupply,
@@ -100,6 +100,23 @@ function getWeekMonday(date: Date): Date {
   return d;
 }
 
+/** Monday (ISO date) of the week that contains the given instant. */
+export function getCurrentWeekStart(): string {
+  return formatISO(getWeekMonday(new Date()));
+}
+
+export function pickDefaultScheduleWeek(weeks: ScheduleWeekOption[]): ScheduleWeekOption | null {
+  if (weeks.length === 0) return null;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const currentMonday = getCurrentWeekStart();
+  return (
+    weeks.find((week) => week.weekStart === currentMonday) ??
+    weeks.find((week) => week.weekStart <= todayIso && week.weekEnd >= todayIso) ??
+    weeks[weeks.length - 1] ??
+    null
+  );
+}
+
 function addDays(date: Date, n: number): Date {
   const d = new Date(date);
   d.setDate(d.getDate() + n);
@@ -118,9 +135,9 @@ function formatWeekLabel(weekStart: string, weekEnd: string): string {
   return `${dd(start)}/${mm(start)} - ${dd(end)}/${mm(end)} ${end.getFullYear()}`;
 }
 
-function isFutureWeek(weekStart: string): boolean {
+function isFutureWeek(weekStart: string, weekEnd?: string): boolean {
   const todayIso = new Date().toISOString().slice(0, 10);
-  return weekStart > todayIso;
+  return (weekEnd || weekStart) >= todayIso;
 }
 
 function parseDailyCaps(json: string | null | undefined): Record<number, number> {
@@ -163,10 +180,15 @@ function parseSlotStates(json: string | null | undefined): Record<string, SlotSt
   }
 }
 
-function makeFallbackWeeks(): ScheduleWeekOption[] {
+/** Same window as WeeklyConfigTab: 2 past weeks + current + 9 ahead (12 total). */
+export const SCHEDULE_PICKER_WEEKS_BEFORE = 2;
+export const SCHEDULE_PICKER_WEEKS_AHEAD = 9;
+
+/** Fixed week list for schedule/disponibilidade pickers (not limited to DB rows). */
+export function generateScheduleWeekPickerOptions(): ScheduleWeekOption[] {
   const monday = getWeekMonday(new Date());
   const weeks: ScheduleWeekOption[] = [];
-  for (let i = -1; i < 8; i += 1) {
+  for (let i = -SCHEDULE_PICKER_WEEKS_BEFORE; i < SCHEDULE_PICKER_WEEKS_AHEAD + 1; i += 1) {
     const start = addDays(monday, i * 7);
     const end = addDays(start, 6);
     const weekStart = formatISO(start);
@@ -177,10 +199,59 @@ function makeFallbackWeeks(): ScheduleWeekOption[] {
       label: formatWeekLabel(weekStart, weekEnd),
       isClosed: false,
       scheduleClosedAt: null,
-      isFuture: isFutureWeek(weekStart),
+      isFuture: isFutureWeek(weekStart, weekEnd),
     });
   }
   return weeks;
+}
+
+function makeFallbackWeeks(): ScheduleWeekOption[] {
+  return generateScheduleWeekPickerOptions();
+}
+
+async function loadWeekClosedMetadata(): Promise<
+  Map<string, { isClosed: boolean; scheduleClosedAt: string | null }>
+> {
+  const map = new Map<string, { isClosed: boolean; scheduleClosedAt: string | null }>();
+  if (!isReady() || !databases || !DB_ID || !OP_WEEKS_COL_ID) return map;
+
+  const result = await databases
+    .listDocuments(DB_ID, OP_WEEKS_COL_ID, [Query.orderDesc("week_start"), Query.limit(200)])
+    .catch(() => null);
+  if (!result) return map;
+
+  for (const doc of result.documents as unknown as OpWeekDoc[]) {
+    const weekStart = doc.week_start ?? "";
+    if (!weekStart) continue;
+    const scheduleClosedAt = doc.schedule_closed_at ?? null;
+    const existing = map.get(weekStart);
+    if (!existing) {
+      map.set(weekStart, { isClosed: Boolean(scheduleClosedAt), scheduleClosedAt });
+      continue;
+    }
+    map.set(weekStart, {
+      isClosed: existing.isClosed || Boolean(scheduleClosedAt),
+      scheduleClosedAt: existing.scheduleClosedAt ?? scheduleClosedAt,
+    });
+  }
+  return map;
+}
+
+/** Picker options for Escala / Disponibilidades: full date range + closed flags from DB. */
+export async function getScheduleWeekPickerOptions(): Promise<ScheduleWeekOption[]> {
+  const base = generateScheduleWeekPickerOptions();
+  const closedByStart = await loadWeekClosedMetadata();
+  if (closedByStart.size === 0) return base;
+
+  return base.map((week) => {
+    const meta = closedByStart.get(week.weekStart);
+    if (!meta) return week;
+    return {
+      ...week,
+      isClosed: meta.isClosed,
+      scheduleClosedAt: meta.scheduleClosedAt,
+    };
+  });
 }
 
 async function listPlansByWeek(weekStart: string): Promise<WeeklyPlanDoc[]> {
@@ -234,7 +305,7 @@ async function listExistingGeneratedFlights(
   rows = listed.data;
 
   if (rows.length === 0) {
-    const { data } = await listSavedFlights(viewer);
+    const { data } = await listAllSavedFlights(viewer);
     rows = (data ?? []).filter(
       (row) =>
         row.source_filename.startsWith(`${AUTO_SOURCE_PREFIX}${weekStart}`) ||
@@ -256,7 +327,7 @@ export async function getScheduleWeekOptions(filters?: {
 }): Promise<ScheduleWeekOption[]> {
   if (!isReady() || !databases || !DB_ID || !OP_WEEKS_COL_ID) return makeFallbackWeeks();
 
-  const [weeksRes, submittedPlansRes] = await Promise.all([
+  const [weeksResult, submittedPlansResult] = await Promise.allSettled([
     databases.listDocuments(DB_ID, OP_WEEKS_COL_ID, [Query.orderDesc("week_start"), Query.limit(200)]),
     databases.listDocuments(DB_ID, WEEKLY_PLANS_COL_ID!, [
       Query.equal("status", ["submitted"]),
@@ -265,8 +336,17 @@ export async function getScheduleWeekOptions(filters?: {
     ]),
   ]);
 
+  const opWeekDocs =
+    weeksResult.status === "fulfilled"
+      ? (weeksResult.value.documents as unknown as OpWeekDoc[])
+      : [];
+  const submittedPlanDocs =
+    submittedPlansResult.status === "fulfilled"
+      ? (submittedPlansResult.value.documents as unknown as WeeklyPlanDoc[])
+      : [];
+
   const map = new Map<string, ScheduleWeekOption>();
-  for (const doc of weeksRes.documents as unknown as OpWeekDoc[]) {
+  for (const doc of opWeekDocs) {
     const weekStart = doc.week_start ?? "";
     const weekEnd = doc.week_end ?? "";
     if (!weekStart || !weekEnd) continue;
@@ -278,7 +358,7 @@ export async function getScheduleWeekOptions(filters?: {
       label: formatWeekLabel(weekStart, weekEnd),
       isClosed: Boolean(scheduleClosedAt),
       scheduleClosedAt,
-      isFuture: isFutureWeek(weekStart),
+      isFuture: isFutureWeek(weekStart, weekEnd),
     };
     if (!existing) {
       map.set(weekStart, next);
@@ -294,7 +374,7 @@ export async function getScheduleWeekOptions(filters?: {
     });
   }
 
-  for (const doc of submittedPlansRes.documents as unknown as WeeklyPlanDoc[]) {
+  for (const doc of submittedPlanDocs) {
     const weekStart = doc.week_start ?? "";
     if (!weekStart) continue;
     if (map.has(weekStart)) continue;
@@ -307,17 +387,18 @@ export async function getScheduleWeekOptions(filters?: {
       label: formatWeekLabel(weekStart, weekEnd),
       isClosed: false,
       scheduleClosedAt: null,
-      isFuture: isFutureWeek(weekStart),
+      isFuture: isFutureWeek(weekStart, weekEnd),
     });
   }
 
-  const weeks = [...map.values()]
-    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+  const allWeeks = [...map.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
+  const weeks = allWeeks
     .filter((week) => (filters?.onlyFuture ? week.isFuture : true))
     .filter((week) => (filters?.excludeClosed ? !week.isClosed : true));
 
   if (weeks.length > 0) return weeks;
-  if (filters?.onlyFuture || filters?.excludeClosed) return [];
+  if (allWeeks.length > 0) return allWeeks;
   return makeFallbackWeeks();
 }
 
@@ -333,7 +414,7 @@ function buildWeekOptionFromStart(weekStart: string): ScheduleWeekOption {
     label: formatWeekLabel(weekStart, weekEnd),
     isClosed: false,
     scheduleClosedAt: null,
-    isFuture: isFutureWeek(weekStart),
+    isFuture: isFutureWeek(weekStart, weekEnd),
   };
 }
 

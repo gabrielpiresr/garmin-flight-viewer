@@ -88,7 +88,12 @@ export function NoTelemetryTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const page = await listAdminFlightReports();
+      const page = await listAdminFlightReports({
+        fromDate: filterState.fromDate,
+        toDate: filterState.toDate,
+        status: "Realizado",
+        limit: 200,
+      });
       setRows(page.flights);
     } catch (err) {
       showToast({
@@ -98,14 +103,14 @@ export function NoTelemetryTab() {
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [filterState.fromDate, filterState.toDate, showToast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const withoutTelemetry = useMemo(
-    () => rows.filter((row) => row.status === "executado" && isWithoutTelemetry(row)),
+    () => rows.filter((row) => row.status === "Realizado" && isWithoutTelemetry(row)),
     [rows],
   );
 

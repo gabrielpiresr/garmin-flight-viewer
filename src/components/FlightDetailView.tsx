@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
 import { getSavedFlight } from "../lib/flightsDb";
+import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
 import { NovoVooFlow, type NovoVooStepId } from "./NovoVooFlow";
@@ -74,6 +75,13 @@ export function FlightDetailView({
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [studentUserId, setStudentUserId] = useState<string | null>(null);
 
+  // Instructor signature state
+  const isInstructorUser = user?.role === "instrutor" || user?.role === "admin";
+  const [instructorSignedAlready, setInstructorSignedAlready] = useState(false);
+  const [showSignModal, setShowSignModal] = useState(false);
+  const [signingInProgress, setSigningInProgress] = useState(false);
+  const [signingError, setSigningError] = useState<string | null>(null);
+
   const canSeeStudentContext = showStudentTab && (user?.role === "instrutor" || user?.role === "admin");
 
   useEffect(() => {
@@ -99,6 +107,13 @@ export function FlightDetailView({
     });
   }, [activeSubTab]);
 
+  useEffect(() => {
+    if (!flightId || !isInstructorUser) return;
+    void getFlightLockStatus(flightId).then(({ instructor_signed }) => {
+      setInstructorSignedAlready(instructor_signed);
+    });
+  }, [flightId, isInstructorUser]);
+
   const subTabs: SubTabConfig[] = useMemo(() => {
     const buildTab = (id: SubTab): SubTabConfig => ({ id, ...SUB_TAB_CONFIG[id] });
     const tabs: SubTabConfig[] = [
@@ -109,6 +124,32 @@ export function FlightDetailView({
     if (canSeeStudentContext && studentUserId) tabs.push(buildTab("aluno"));
     return tabs;
   }, [canSeeStudentContext, studentUserId]);
+
+  const handleSignFromFicha = async () => {
+    if (!user || !flightId) return;
+    setSigningInProgress(true);
+    setSigningError(null);
+    const { data: flightData, error: fetchErr } = await getSavedFlight(flightId);
+    if (fetchErr || !flightData) {
+      setSigningError(fetchErr?.message ?? "Voo não encontrado.");
+      setSigningInProgress(false);
+      return;
+    }
+    const { error } = await signFlight({
+      flightId,
+      actorUserId: user.id,
+      actorRole: user.role,
+      signerRole: "instructor",
+      csvText: flightData.csv_text,
+    });
+    setSigningInProgress(false);
+    if (error) {
+      setSigningError(error.message);
+      return;
+    }
+    setInstructorSignedAlready(true);
+    setShowSignModal(false);
+  };
 
   return (
     <div className="flex min-h-[calc(100vh-8.5rem)] min-w-0 flex-col gap-3">
@@ -151,6 +192,8 @@ export function FlightDetailView({
                 embedded
                 initialStepId={fichaInitialStepId}
                 hideStepMenu={hideFichaStepMenu}
+                instructorAlreadySigned={instructorSignedAlready}
+                onSaveAndSign={isInstructorUser && !instructorSignedAlready ? () => setShowSignModal(true) : undefined}
               />
             ) : (
               <p className="p-8 text-center text-sm text-slate-500">Salve o voo para editar a ficha.</p>
@@ -179,6 +222,56 @@ export function FlightDetailView({
       {flightId && shareModalOpen ? (
         <FlightShareStickersModal flightId={flightId} onClose={() => setShareModalOpen(false)} />
       ) : null}
+
+      {showSignModal && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Assinatura eletrônica</p>
+                <h3 className="text-base font-semibold text-slate-100">Assinar como INVA</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowSignModal(false); setSigningError(null); }}
+                disabled={signingInProgress}
+                className="rounded-lg border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <p className="mb-4 rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+              As alterações foram salvas. Ao confirmar, a ficha ficará <strong>bloqueada para edição</strong>.
+            </p>
+
+            {signingError && (
+              <p className="mb-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-300">
+                {signingError}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowSignModal(false); setSigningError(null); }}
+                disabled={signingInProgress}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSignFromFicha()}
+                disabled={signingInProgress}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60"
+              >
+                {signingInProgress ? "Assinando..." : "Confirmar assinatura"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

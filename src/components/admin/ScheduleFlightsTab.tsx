@@ -11,7 +11,10 @@ import {
 import {
   AUTO_SOURCE_PREFIX,
   getScheduleWeekData,
-  getScheduleWeekOptions,
+  generateScheduleWeekPickerOptions,
+  getCurrentWeekStart,
+  getScheduleWeekPickerOptions,
+  pickDefaultScheduleWeek,
   MANUAL_SOURCE_PREFIX,
 } from "../../lib/scheduleGenerationDb";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
@@ -636,7 +639,6 @@ export function ScheduleFlightsTab() {
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
   const lastErrorToastRef = useRef<string | null>(null);
-  const bootstrapUserIdRef = useRef<string | null>(null);
   const prevActorUserIdRef = useRef<string | undefined>(undefined);
   const weekDataRef = useRef<ScheduleWeekData | null>(null);
   weekDataRef.current = weekData;
@@ -705,12 +707,10 @@ export function ScheduleFlightsTab() {
   useEffect(() => {
     if (!actorUserId) {
       prevActorUserIdRef.current = undefined;
-      bootstrapUserIdRef.current = null;
       return;
     }
     if (prevActorUserIdRef.current === actorUserId) return;
     prevActorUserIdRef.current = actorUserId;
-    bootstrapUserIdRef.current = null;
     loadWeekRequestRef.current += 1;
     setWeekData(null);
     setFlights([]);
@@ -720,28 +720,24 @@ export function ScheduleFlightsTab() {
 
   useEffect(() => {
     if (!actorUserId) return;
-    if (bootstrapUserIdRef.current === actorUserId) return;
-    bootstrapUserIdRef.current = actorUserId;
 
     let cancelled = false;
-    setLoadingWeeks(true);
+    const baseWeeks = generateScheduleWeekPickerOptions();
+    const defaultWeek = pickDefaultScheduleWeek(baseWeeks);
+    setWeekOptions(baseWeeks);
+    setSelectedWeekStart(defaultWeek?.weekStart ?? "");
+    setLoadingWeeks(false);
+    if (defaultWeek) {
+      void loadWeekRef.current(defaultWeek.weekStart, defaultWeek, { showSkeleton: true });
+    }
 
-    void getScheduleWeekOptions()
+    void getScheduleWeekPickerOptions()
       .then((weeks) => {
         if (cancelled) return;
         setWeekOptions(weeks);
-        const todayIso = new Date().toISOString().slice(0, 10);
-        const defaultWeek = weeks.find((row) => row.weekStart >= todayIso) ?? weeks[weeks.length - 1] ?? null;
-        setSelectedWeekStart(defaultWeek?.weekStart ?? "");
-        if (defaultWeek) {
-          void loadWeekRef.current(defaultWeek.weekStart, defaultWeek, { showSkeleton: true });
-        }
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingWeeks(false);
       });
 
     return () => {
@@ -1110,12 +1106,16 @@ export function ScheduleFlightsTab() {
             }}
             className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
           >
-            {weekOptions.map((week) => (
-              <option key={week.weekStart} value={week.weekStart}>
-                {week.label}
-                {week.isClosed ? " (Fechada)" : ""}
-              </option>
-            ))}
+            {weekOptions.length === 0 ? <option value="">Nenhuma semana encontrada</option> : null}
+            {weekOptions.map((week) => {
+              const isCurrentWeek = week.weekStart === getCurrentWeekStart();
+              const suffix = week.isClosed ? " (Fechada)" : "";
+              return (
+                <option key={week.weekStart} value={week.weekStart}>
+                  {isCurrentWeek ? `▶ Semana atual — ${week.label}${suffix}` : `${week.label}${suffix}`}
+                </option>
+              );
+            })}
           </select>
         </div>
         <div className="flex items-end md:col-span-2">
@@ -1129,6 +1129,12 @@ export function ScheduleFlightsTab() {
           </button>
         </div>
       </section>
+
+      {error ? (
+        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          {error}
+        </p>
+      ) : null}
 
       {loadingWeekData && !weekData ? (
         <section className="space-y-4">

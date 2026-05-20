@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { deleteSavedFlight, listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
 
+const FLIGHT_PAGE_SIZE = 50;
+
 type Props = {
   onOpen: (id: string) => void;
   refreshKey: number;
@@ -11,23 +13,55 @@ export function SavedFlightsPanel({ onOpen, refreshKey }: Props) {
   const { user, configured } = useAuth();
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!user || !configured) {
       setItems([]);
+      setNextCursor(null);
+      setTotal(0);
       return;
     }
     setLoading(true);
     setErr(null);
-    const { data, error } = await listSavedFlights({ userId: user.id, role: user.role });
+    const { data, error, nextCursor: cursor, total: nextTotal } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE },
+    );
     setLoading(false);
     if (error) {
       setErr(error.message);
       return;
     }
     setItems(data ?? []);
+    setNextCursor(cursor);
+    setTotal(nextTotal);
   }, [user, configured]);
+
+  const loadMore = useCallback(async () => {
+    if (!user || !configured || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setErr(null);
+    const { data, error, nextCursor: cursor, total: nextTotal } = await listSavedFlights(
+      { userId: user.id, role: user.role },
+      { limit: FLIGHT_PAGE_SIZE, cursor: nextCursor },
+    );
+    setLoadingMore(false);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setItems((prev) => {
+      const byId = new Map(prev.map((item) => [item.id, item]));
+      for (const item of data ?? []) byId.set(item.id, item);
+      return [...byId.values()];
+    });
+    setNextCursor(cursor);
+    setTotal(nextTotal);
+  }, [configured, loadingMore, nextCursor, user]);
 
   useEffect(() => {
     void refresh();
@@ -88,6 +122,23 @@ export function SavedFlightsPanel({ onOpen, refreshKey }: Props) {
           </li>
         ))}
       </ul>
+      {nextCursor ? (
+        <div className="mt-3 flex items-center justify-between gap-3">
+          {total > 0 ? (
+            <span className="text-xs text-slate-500">
+              {Math.min(items.length, total)} de {total}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="text-xs font-medium text-sky-400 hover:underline disabled:cursor-wait disabled:opacity-60"
+            onClick={() => void loadMore()}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "Carregando..." : "Carregar mais"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
