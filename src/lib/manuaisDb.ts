@@ -1,8 +1,7 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, MANUALS_BUCKET_ID, MANUALS_COL_ID, SCHOOL_ID, storage } from "./appwrite";
+import { databases, ID, isAppwriteConfigured, MANUALS_BUCKET_ID, MANUALS_COL_ID, DEFAULT_SCHOOL_ID, storage } from "./appwrite";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 export type Manual = {
   id: string;

@@ -94,6 +94,7 @@ export function AdminSignaturesTab() {
   const [signingInProgress, setSigningInProgress] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
   const [signingSuccess, setSigningSuccess] = useState<string | null>(null);
+  const [signingPassword, setSigningPassword] = useState("");
 
   const loadItems = useCallback(
     async (cursor?: string | null) => {
@@ -135,12 +136,14 @@ export function AdminSignaturesTab() {
     setSigningConfirmed(false);
     setSigningError(null);
     setSigningSuccess(null);
+    setSigningPassword("");
   }
 
   function closeSignModal() {
     setSigningRow(null);
     setSigningConfirmed(false);
     setSigningError(null);
+    setSigningPassword("");
   }
 
   async function openDetailModal(row: PendingAdminSignatureRow) {
@@ -166,8 +169,14 @@ export function AdminSignaturesTab() {
 
   async function handleSign() {
     if (!user || !signingRow || !signingConfirmed) return;
+    if (!signingPassword) {
+      setSigningError("Informe sua senha para assinar.");
+      return;
+    }
     setSigningInProgress(true);
     setSigningError(null);
+    const passwordForSigning = signingPassword;
+    setSigningPassword("");
 
     const flightRes = await getSavedFlight(signingRow.id);
     if (flightRes.error || !flightRes.data) {
@@ -182,6 +191,7 @@ export function AdminSignaturesTab() {
       actorRole: user.role,
       signerRole: "admin_operator",
       csvText: flightRes.data.csv_text,
+      password: passwordForSigning,
     });
 
     setSigningInProgress(false);
@@ -212,7 +222,6 @@ export function AdminSignaturesTab() {
     <div className="space-y-5">
       {/* Header */}
       <div>
-        <h2 className="text-lg font-semibold text-slate-100">Assinaturas</h2>
         <p className="mt-0.5 text-sm text-slate-400">
           Fichas de voo assinadas pelo instrutor aguardando assinatura do operador (prazo: 15 dias)
         </p>
@@ -605,6 +614,19 @@ export function AdminSignaturesTab() {
                   <span className="text-sm text-slate-300">Confirmo que revisei a ficha deste voo</span>
                 </label>
 
+                <label className="mt-4 block">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">Senha</span>
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={signingPassword}
+                    onChange={(event) => setSigningPassword(event.target.value)}
+                    disabled={signingInProgress}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500 disabled:opacity-60"
+                    placeholder="Confirme sua senha"
+                  />
+                </label>
+
                 {signingError && (
                   <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-400">
                     {signingError}
@@ -623,7 +645,7 @@ export function AdminSignaturesTab() {
                   <button
                     type="button"
                     onClick={() => void handleSign()}
-                    disabled={!signingConfirmed || signingInProgress}
+                    disabled={!signingConfirmed || signingInProgress || !signingPassword}
                     className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 transition"
                   >
                     {signingInProgress ? "Assinando..." : "Confirmar assinatura"}

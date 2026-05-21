@@ -3,14 +3,12 @@ import {
   databases,
   ID,
   isAppwriteConfigured,
-  LOGBOOK_OPENING_SIGNATURES_COL_ID,
-  SCHOOL_ID,
+  LOGBOOK_OPENING_SIGNATURES_COL_ID, DEFAULT_SCHOOL_ID,
 } from "./appwrite";
 import type { UserRole } from "./rbac";
 import type { Aircraft, AircraftModel } from "../types/admin";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 export type LogbookOpeningSnapshot = {
   diaryNumber: string;

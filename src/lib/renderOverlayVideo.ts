@@ -93,7 +93,7 @@ export async function renderOverlayVideo(
 export interface CompositeParams {
   videoUrl: string;
   cfWorkerUrl: string;
-  cfWorkerSecret: string;
+  cfWorkerToken: string;
   outputKey: string;
   trimStartSec?: number;
   trimEndSec?: number;

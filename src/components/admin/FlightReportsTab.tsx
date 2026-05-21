@@ -418,7 +418,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "sourceFilename", label: "Arquivo", category: "base", detailOnly: true, format: (row) => row.sourceFilename || "" },
   { key: "route", label: "Rota", category: "operation", detailOnly: true, format: (row) => row.route || "" },
   { key: "durationSec", label: "Duração", category: "operation", compact: true, sortable: true, format: (row) => formatDuration(row.durationSec), sortValue: (row) => row.durationSec ?? 0 },
-  { key: "hours", label: "Horas", category: "operation", compact: true, sortable: true, format: (row) => fmtNumber(row.hours, 2), sortValue: (row) => row.hours ?? 0 },
+  { key: "hours", label: "Duração", category: "operation", compact: true, sortable: true, format: (row) => row.hours != null && Number.isFinite(row.hours) ? fmtNumber(row.hours, 1) + "h" : "", sortValue: (row) => row.hours ?? 0 },
   { key: "landings", label: "Pousos", category: "operation", compact: true, sortable: true, format: (row) => fmtInt(row.landings), sortValue: (row) => row.landings ?? 0 },
   { key: "distanceNm", label: "Dist. (NM)", category: "operation", compact: true, sortable: true, format: (row) => fmtNumber(row.distanceNm, 1), sortValue: (row) => row.distanceNm ?? 0 },
   { key: "flightCount", label: "Voos", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.flightCount : 1), sortValue: (row) => (isGroupedRow(row) ? row.flightCount : 1) },

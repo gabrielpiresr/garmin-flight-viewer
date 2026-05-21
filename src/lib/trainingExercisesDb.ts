@@ -3,13 +3,12 @@ import {
   databases,
   ID,
   isAppwriteConfigured,
-  SCHOOL_ID,
+  DEFAULT_SCHOOL_ID,
   TRAINING_EXERCISES_COL_ID,
 } from "./appwrite";
 import type { TrainingExercise, TrainingExerciseInput } from "../types/trainingExercise";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 function isTrainingExercisesConfigured(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && TRAINING_EXERCISES_COL_ID);

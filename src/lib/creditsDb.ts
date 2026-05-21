@@ -1,7 +1,9 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, STUDENT_CREDITS_COL_ID } from "./appwrite";
+import { databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, DEFAULT_SCHOOL_ID, STUDENT_CREDITS_COL_ID } from "./appwrite";
+import { getSchoolCosts } from "./schoolCostsDb";
+import type { StudentPaymentMethod } from "../types/costs";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
 import { listAircrafts } from "./aircraftDb";
 import { listModels } from "./aircraftModelsDb";
 import { decodeFlightRecord } from "./flightRecordCodec";
@@ -379,6 +381,24 @@ export async function listStudentCredits(userId: string): Promise<StudentCreditP
 export async function createStudentCredit(input: StudentCreditInput, actorUserId: string): Promise<StudentCreditPurchase> {
   if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Coleção de créditos não configurada.");
   validateInput(input);
+
+  let costSnapshotJson: string | null = null;
+  try {
+    const schoolCosts = await getSchoolCosts();
+    const method = input.paymentMethod as StudentPaymentMethod;
+    const methodCost = schoolCosts.paymentMethodCosts[method] ?? { fixedCost: 0, percentCost: 0 };
+    const totalCostCalculated = methodCost.fixedCost + (input.amountPaid * methodCost.percentCost) / 100;
+    costSnapshotJson = JSON.stringify({
+      enrollmentCost: schoolCosts.enrollmentCost,
+      paymentMethodFixedCost: methodCost.fixedCost,
+      paymentMethodPercentCost: methodCost.percentCost,
+      totalCostCalculated,
+      appliedAt: new Date().toISOString(),
+    });
+  } catch {
+    // non-blocking — proceed without snapshot if costs unavailable
+  }
+
   const doc = await databases.createDocument(
     DB_ID,
     STUDENT_CREDITS_COL_ID,
@@ -387,6 +407,7 @@ export async function createStudentCredit(input: StudentCreditInput, actorUserId
       ...toPayload(input, actorUserId),
       school_id: DEFAULT_SCHOOL_ID,
       created_by: actorUserId || null,
+      ...(costSnapshotJson ? { cost_snapshot_json: costSnapshotJson } : {}),
     },
     buildCreditPermissions(input.userId, actorUserId),
   );
@@ -400,7 +421,29 @@ export async function updateStudentCredit(
 ): Promise<StudentCreditPurchase> {
   if (!isReady() || !databases || !DB_ID || !STUDENT_CREDITS_COL_ID) throw new Error("Coleção de créditos não configurada.");
   validateInput(input);
-  const doc = await databases.updateDocument(DB_ID, STUDENT_CREDITS_COL_ID, creditId, toPayload(input, actorUserId));
+
+  let costSnapshotJson: string | null = null;
+  try {
+    const schoolCosts = await getSchoolCosts();
+    const method = input.paymentMethod as StudentPaymentMethod;
+    const methodCost = schoolCosts.paymentMethodCosts[method] ?? { fixedCost: 0, percentCost: 0 };
+    const totalCostCalculated = methodCost.fixedCost + (input.amountPaid * methodCost.percentCost) / 100;
+    costSnapshotJson = JSON.stringify({
+      enrollmentCost: schoolCosts.enrollmentCost,
+      paymentMethodFixedCost: methodCost.fixedCost,
+      paymentMethodPercentCost: methodCost.percentCost,
+      totalCostCalculated,
+      appliedAt: new Date().toISOString(),
+    });
+  } catch {
+    // non-blocking — proceed without snapshot if costs unavailable
+  }
+
+  const payload = {
+    ...toPayload(input, actorUserId),
+    ...(costSnapshotJson ? { cost_snapshot_json: costSnapshotJson } : {}),
+  };
+  const doc = await databases.updateDocument(DB_ID, STUDENT_CREDITS_COL_ID, creditId, payload);
   return toCredit(doc as unknown as CreditDoc);
 }
 

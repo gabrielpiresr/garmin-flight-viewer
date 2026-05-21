@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts } from "../../lib/aircraftDb";
-import { decodeFlightRecord } from "../../lib/flightRecordCodec";
+import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
 import {
   getFlightRecordMetaBatch,
@@ -173,6 +173,7 @@ export function DiarioDeBordoTab() {
   const [discrepancies, setDiscrepancies] = useState<FlightDiscrepancy[]>([]);
   const [openingSignature, setOpeningSignature] = useState<LogbookOpeningSignature | null>(null);
   const [allAircraftFlights, setAllAircraftFlights] = useState<SavedFlightListItem[]>([]);
+  const [allAircraftMetaByFlightId, setAllAircraftMetaByFlightId] = useState<Map<string, FlightRecordMeta | null>>(new Map());
 
   useEffect(() => {
     void listAircrafts(schoolId).then(setAircrafts).catch(() => setAircrafts([]));
@@ -218,7 +219,9 @@ export function DiarioDeBordoTab() {
       setDiscrepancies(aircraftIdent ? await listFlightDiscrepancies(aircraftIdent) : []);
       setOpeningSignature(aircraft ? await getActiveLogbookOpeningSignature(aircraft.id) : null);
       const allFlights = await listAllFlightsByAircraft({ aircraftIdent });
-      setAllAircraftFlights(allFlights.data ?? rows);
+      const allRows = allFlights.data ?? rows;
+      setAllAircraftFlights(allRows);
+      setAllAircraftMetaByFlightId(await getFlightRecordMetaBatch(allRows.map((flight) => flight.id), { concurrency: 12 }));
 
       const profileIds = new Set<string>();
       for (const flight of rows) {
@@ -260,6 +263,7 @@ export function DiarioDeBordoTab() {
                 programItems,
                 workOrders,
                 flights: rows,
+                metaByFlightId,
                 asOfMs: flightAsOfMs(flight),
               })
             : {
@@ -325,12 +329,16 @@ export function DiarioDeBordoTab() {
     const currentProgramItems = programItems.length > 0 || !modelId ? programItems : await listProgramItemsByModel(modelId);
     const currentWorkOrders = workOrders.length > 0 ? workOrders : await listWorkOrders();
     const currentFlights = allAircraftFlights.length > 0 ? allAircraftFlights : (await listAllFlightsByAircraft({ aircraftIdent })).data ?? [];
+    const currentMetaByFlightId = allAircraftFlights.length > 0
+      ? allAircraftMetaByFlightId
+      : await getFlightRecordMetaBatch(currentFlights.map((flight) => flight.id), { concurrency: 12 });
     const currentDiscrepancies = discrepancies.length > 0 ? discrepancies : await listFlightDiscrepancies(aircraftIdent);
     const currentMaintenance = buildMaintenanceAsOfFlight({
       aircraft: selectedAircraft,
       programItems: currentProgramItems,
       workOrders: currentWorkOrders,
       flights: currentFlights,
+      metaByFlightId: currentMetaByFlightId,
       asOfMs: Date.now(),
     });
     if (!exportLogbookPdf({

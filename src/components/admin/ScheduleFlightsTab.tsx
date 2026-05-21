@@ -1015,19 +1015,19 @@ export function ScheduleFlightsTab() {
         const nextSignature = scheduleSignature(nextDate, nextStartTime, formDraft.durationHours);
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
-        if (previousSignature !== nextSignature) {
-          void dispatchNotificationEvent({
-            eventType: "flight.updated",
-            flightId: formDraft.id,
-            dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
-            actorUserId: user.id,
-            data: {
-              aircraft: formDraft.aircraftRegistration,
-              flightDate: nextDate,
-              startTime: nextStartTime,
-            },
-          });
-        }
+        void dispatchNotificationEvent({
+          eventType: "flight.updated",
+          flightId: formDraft.id,
+          dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
+          recipientUserIds: [formDraft.studentId],
+          actorUserId: user.id,
+          data: {
+            aircraft: formDraft.aircraftRegistration,
+            flightDate: nextDate,
+            startTime: nextStartTime,
+            studentUserId: formDraft.studentId,
+          },
+        });
         showToast({ variant: "success", message: "Voo atualizado com sucesso." });
       } else {
         const result = await insertFlight(payload);
@@ -1036,12 +1036,14 @@ export function ScheduleFlightsTab() {
           void dispatchNotificationEvent({
             eventType: "flight.scheduled",
             flightId: result.id,
-            dedupeKey: `flight.scheduled:${result.id}`,
+            dedupeKey: `flight.scheduled:${result.id}:${Date.now()}`,
+            recipientUserIds: [formDraft.studentId],
             actorUserId: user.id,
             data: {
               aircraft: formDraft.aircraftRegistration,
               flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
               startTime: hoursToHHMM(formDraft.startHour),
+              studentUserId: formDraft.studentId,
             },
           });
         }
@@ -1285,34 +1287,84 @@ export function ScheduleFlightsTab() {
             </section>
           ) : null}
 
-          <CalendarGrid
-            items={calendarItems}
-            colorByAircraft={colorByAircraft}
-            borderByInstructor={borderByInstructor}
-            backgroundSupply={selectedSupplyForBackground}
-            weekStart={weekData.week.weekStart}
-            onItemClick={(item) => {
-              const selected = flights.find((row) => row.id === item.id);
-              if (selected) void openEditModal(selected);
-            }}
-            onItemDrop={(item, target) => {
-              const selected = flights.find((row) => row.id === item.id);
-              if (!selected) return;
-              void (async () => {
-                await openEditModal(selected);
-                setFormDraft((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        dayOfWeek: target.dayOfWeek,
-                        startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
-                        isNight: target.isNight,
-                      }
-                    : prev,
-                );
-              })();
-            }}
-          />
+          {/* Mobile daily list */}
+          <div className="space-y-3 md:hidden">
+            {DAY_ORDER.map((day) => {
+              const dayItems = calendarItems.filter((item) => item.dayOfWeek === day);
+              if (dayItems.length === 0) return null;
+              return (
+                <div key={day}>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-widest text-slate-500">
+                    {formatCalendarDayHeader(weekData.week.weekStart, day)}
+                  </p>
+                  <ul className="space-y-2">
+                    {dayItems.map((item) => {
+                      const bg = colorByAircraft.get(item.aircraftRegistration) ?? "bg-slate-700";
+                      return (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const selected = flights.find((row) => row.id === item.id);
+                              if (selected) void openEditModal(selected);
+                            }}
+                            className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 text-left"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`h-2.5 w-2.5 rounded-sm ${bg}`} />
+                                <span className="text-xs font-medium text-slate-200">{item.aircraftRegistration || "—"}</span>
+                                <span className="text-xs text-slate-400">{item.startTime} – {item.endTime}</span>
+                                {item.isNight ? <span className="rounded border border-slate-600 px-1 py-0.5 text-[10px] text-slate-400">Noturno</span> : null}
+                              </div>
+                            </div>
+                            <p className="mt-1 truncate text-xs text-slate-400">
+                              {item.studentLabel} · {item.instructorLabel ?? "Sem INVA"}
+                            </p>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
+            {calendarItems.length === 0 ? (
+              <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">Nenhum voo nesta semana.</p>
+            ) : null}
+          </div>
+
+          {/* Desktop calendar grid */}
+          <div className="hidden md:block">
+            <CalendarGrid
+              items={calendarItems}
+              colorByAircraft={colorByAircraft}
+              borderByInstructor={borderByInstructor}
+              backgroundSupply={selectedSupplyForBackground}
+              weekStart={weekData.week.weekStart}
+              onItemClick={(item) => {
+                const selected = flights.find((row) => row.id === item.id);
+                if (selected) void openEditModal(selected);
+              }}
+              onItemDrop={(item, target) => {
+                const selected = flights.find((row) => row.id === item.id);
+                if (!selected) return;
+                void (async () => {
+                  await openEditModal(selected);
+                  setFormDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          dayOfWeek: target.dayOfWeek,
+                          startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
+                          isNight: target.isNight,
+                        }
+                      : prev,
+                  );
+                })();
+              }}
+            />
+          </div>
 
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

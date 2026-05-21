@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts, createAircraft, updateAircraft, toggleAircraftActive, uploadAircraftPhoto } from "../../lib/aircraftDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
-import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
+import { getFlightRecordMetaBatch, listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
+import { flightAircraftHours } from "../../lib/flightHours";
+import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import type { Aircraft, AircraftModel, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
@@ -39,6 +41,12 @@ const emptyForm = {
   logbook_propeller_hours: "",
   logbook_tach_hours: "",
   logbook_cycles: "",
+  cost_hangar_monthly: "",
+  cost_insurance_monthly: "",
+  cost_leasing_monthly: "",
+  cost_per_flight_hour: "",
+  cost_maintenance_reserve_monthly: "",
+  cost_other_fixed_monthly: "",
 };
 
 type FilterState = "all" | "active" | "inactive";
@@ -60,6 +68,11 @@ function numberToFormValue(value: number | null | undefined, fallback = ""): str
 function nullableNumber(value: string): number | null {
   const parsed = Number(value.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function nullablePositiveNumber(value: string): number | null {
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function parseRecurrenceRules(value: string): RecurrenceRules {
@@ -132,6 +145,7 @@ function buildUpcomingMaintenance(params: {
   aircraftOrders: MaintenanceWorkOrder[];
   currentHours: number | null;
   scheduledFlights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
 }): UpcomingMaintenance[] {
   const opening = resolveAircraftOpening(params.aircraft, params.aircraftOrders);
   const baselineDate = opening.baselineMs ? new Date(opening.baselineMs) : null;
@@ -151,20 +165,14 @@ function buildUpcomingMaintenance(params: {
         title: item.title,
         remainingHours,
         remainingDays: dueDate ? daysBetween(now, dueDate) : null,
-        forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights),
+        forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights, params.metaByFlightId),
       };
     })
     .sort((a, b) => (a.remainingHours ?? Number.POSITIVE_INFINITY) - (b.remainingHours ?? Number.POSITIVE_INFINITY));
 }
 
-function flightDurationHours(flight: SavedFlightListItem): number {
-  if (typeof flight.total_flight_minutes === "number" && Number.isFinite(flight.total_flight_minutes)) {
-    return flight.total_flight_minutes / 60;
-  }
-  if (typeof flight.duration_sec === "number" && Number.isFinite(flight.duration_sec)) {
-    return flight.duration_sec / 3600;
-  }
-  return 0;
+function flightDurationHours(flight: SavedFlightListItem, metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): number {
+  return flightAircraftHours(flight, metaByFlightId.get(flight.id));
 }
 
 function flightDateMs(flight: SavedFlightListItem): number {
@@ -179,15 +187,15 @@ function aircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[]): Sa
   return flights.filter((flight) => (flight.aircraft_ident ?? "").trim().toUpperCase() === normalizedRegistration);
 }
 
-function scheduledAircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[]): SavedFlightListItem[] {
+function scheduledAircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): SavedFlightListItem[] {
   const now = Date.now();
   return aircraftFlights(aircraft, flights)
     .filter((flight) => flightDateMs(flight) > now)
-    .filter((flight) => flightDurationHours(flight) > 0)
+    .filter((flight) => flightDurationHours(flight, metaByFlightId) > 0)
     .sort((a, b) => flightDateMs(a) - flightDateMs(b));
 }
 
-function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: SavedFlightListItem[]): string {
+function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): string {
   if (remainingHours == null || !Number.isFinite(remainingHours)) return "sem previsão por horas";
   if (remainingHours <= 0) return "atingida agora";
   let accumulated = 0;
@@ -195,7 +203,7 @@ function predictByScheduledFlights(remainingHours: number | null, scheduledFligh
   for (const flight of scheduledFlights) {
     const flightMs = flightDateMs(flight);
     lastFlightMs = flightMs;
-    accumulated += flightDurationHours(flight);
+    accumulated += flightDurationHours(flight, metaByFlightId);
     if (accumulated >= remainingHours) return `prevista para ${formatDate(flightMs)}`;
   }
   return lastFlightMs ? `depois do dia ${formatDate(lastFlightMs)}` : "sem voos programados";
@@ -231,6 +239,7 @@ function currentAircraftHoursFromBaseline(params: {
   aircraft: Aircraft;
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
 }): number | null {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
   if (opening.ttaf == null) return null;
@@ -238,7 +247,7 @@ function currentAircraftHoursFromBaseline(params: {
   const flownHours = aircraftFlights(params.aircraft, params.flights)
     .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
     .filter((flight) => flightDateMs(flight) <= now)
-    .reduce((sum, flight) => sum + flightDurationHours(flight), 0);
+    .reduce((sum, flight) => sum + flightDurationHours(flight, params.metaByFlightId), 0);
   return Number((opening.ttaf + flownHours).toFixed(1));
 }
 
@@ -246,6 +255,7 @@ function currentAircraftTotalsFromBaseline(params: {
   aircraft: Aircraft;
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
 }): { hours: number | null; cycles: number | null; landings: number | null } {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
   const hours = currentAircraftHoursFromBaseline(params);
@@ -282,6 +292,12 @@ function weightBalancePayload(form: AircraftForm) {
     logbook_propeller_hours: nullableNumber(form.logbook_propeller_hours),
     logbook_tach_hours: nullableNumber(form.logbook_tach_hours),
     logbook_cycles: nullableNumber(form.logbook_cycles),
+    cost_hangar_monthly: nullablePositiveNumber(form.cost_hangar_monthly),
+    cost_insurance_monthly: nullablePositiveNumber(form.cost_insurance_monthly),
+    cost_leasing_monthly: nullablePositiveNumber(form.cost_leasing_monthly),
+    cost_per_flight_hour: nullablePositiveNumber(form.cost_per_flight_hour),
+    cost_maintenance_reserve_monthly: nullablePositiveNumber(form.cost_maintenance_reserve_monthly),
+    cost_other_fixed_monthly: nullablePositiveNumber(form.cost_other_fixed_monthly),
   };
 }
 
@@ -317,6 +333,7 @@ export function FleetTab() {
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [workOrders, setWorkOrders] = useState<MaintenanceWorkOrder[]>([]);
   const [flights, setFlights] = useState<SavedFlightListItem[]>([]);
+  const [flightMetaById, setFlightMetaById] = useState<Map<string, FlightRecordMeta | null>>(new Map());
   const [programItemsByModel, setProgramItemsByModel] = useState<Record<string, MaintenanceProgramItem[]>>({});
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
@@ -348,7 +365,9 @@ export function FleetTab() {
         setModels(modelRows);
         setWorkOrders(orderRows);
         if (flightRows.error) throw flightRows.error;
-        setFlights(flightRows.data ?? []);
+        const flightList = flightRows.data ?? [];
+        setFlights(flightList);
+        setFlightMetaById(await getFlightRecordMetaBatch(flightList.map((flight) => flight.id), { concurrency: 12 }));
 const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
         const programEntries = await Promise.all(
           uniqueModelIds.map(async (modelId) => [modelId, await listProgramItemsByModel(modelId)] as const),
@@ -401,6 +420,12 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
       logbook_propeller_hours: numberToFormValue(ac.logbook_propeller_hours),
       logbook_tach_hours: numberToFormValue(ac.logbook_tach_hours),
       logbook_cycles: numberToFormValue(ac.logbook_cycles),
+      cost_hangar_monthly: numberToFormValue(ac.cost_hangar_monthly),
+      cost_insurance_monthly: numberToFormValue(ac.cost_insurance_monthly),
+      cost_leasing_monthly: numberToFormValue(ac.cost_leasing_monthly),
+      cost_per_flight_hour: numberToFormValue(ac.cost_per_flight_hour),
+      cost_maintenance_reserve_monthly: numberToFormValue(ac.cost_maintenance_reserve_monthly),
+      cost_other_fixed_monthly: numberToFormValue(ac.cost_other_fixed_monthly),
     });
     setPhotoFile(null);
     setEditingId(ac.id);
@@ -750,6 +775,41 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
               </div>
             </div>
           </div>
+          <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-200">Custos</h4>
+              <p className="mt-1 text-xs text-slate-500">Valores para controle interno. Não visíveis para alunos ou instrutores.</p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {(
+                [
+                  { key: "cost_hangar_monthly", label: "Hangaragem mensal" },
+                  { key: "cost_insurance_monthly", label: "Seguro mensal" },
+                  { key: "cost_leasing_monthly", label: "Leasing mensal" },
+                  { key: "cost_per_flight_hour", label: "Custo estimado por hora de voo (sem combustível)" },
+                  { key: "cost_maintenance_reserve_monthly", label: "Reserva mensal de manutenção e outros gastos" },
+                  { key: "cost_other_fixed_monthly", label: "Outros custos fixos mensais" },
+                ] as const
+              ).map(({ key, label }) => (
+                <div key={key}>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">{label}</label>
+                  <div className="flex rounded-lg border border-slate-700 bg-slate-800 focus-within:border-emerald-500">
+                    <span className="flex items-center border-r border-slate-700 px-3 text-sm text-slate-400">R$</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form[key]}
+                      onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                      placeholder="0"
+                      className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
@@ -812,8 +872,8 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
             const model = modelMap[ac.model_id];
             const img = ac.image_url ?? model?.default_image;
             const aircraftOrders = workOrdersByAircraft[ac.id] ?? [];
-            const scheduledFlights = scheduledAircraftFlights(ac, flights);
-            const totals = currentAircraftTotalsFromBaseline({ aircraft: ac, orders: aircraftOrders, flights });
+            const scheduledFlights = scheduledAircraftFlights(ac, flights, flightMetaById);
+            const totals = currentAircraftTotalsFromBaseline({ aircraft: ac, orders: aircraftOrders, flights, metaByFlightId: flightMetaById });
             const currentHours = totals.hours;
 const upcoming = buildUpcomingMaintenance({
               aircraft: ac,
@@ -821,6 +881,7 @@ const upcoming = buildUpcomingMaintenance({
               aircraftOrders,
               currentHours,
               scheduledFlights,
+              metaByFlightId: flightMetaById,
             });
             return (
               <div

@@ -49,6 +49,7 @@ function toModel(doc: Record<string, unknown>): AircraftModel {
     op_best_climb_after_takeoff_kt: (doc.op_best_climb_after_takeoff_kt as number | null | undefined) ?? null,
     fuel_consumption_lph: (doc.fuel_consumption_lph as number | null | undefined) ?? null,
     created_at: (doc.$createdAt as string) ?? "",
+    deleted_at: (doc.deleted_at as string | null | undefined) ?? null,
   };
 }
 
@@ -71,7 +72,11 @@ export type OperationalLimitPayload = {
 
 export async function listModels(): Promise<AircraftModel[]> {
   if (!isReady() || !databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) return [];
-  const res = await databases.listDocuments(DB_ID, AIRCRAFT_MODELS_COL_ID, [Query.orderAsc("name"), Query.limit(200)]);
+  const res = await databases.listDocuments(DB_ID, AIRCRAFT_MODELS_COL_ID, [
+    Query.isNull("deleted_at"),
+    Query.orderAsc("name"),
+    Query.limit(200),
+  ]);
   return res.documents.map((d) => toModel(d as Record<string, unknown>));
 }
 
@@ -153,6 +158,7 @@ export async function createModel(data: {
       op_touchdown_ias_attention_kt: data.op_touchdown_ias_attention_kt ?? null,
       op_touchdown_ias_danger_kt: data.op_touchdown_ias_danger_kt ?? null,
       op_best_climb_after_takeoff_kt: data.op_best_climb_after_takeoff_kt ?? null,
+      deleted_at: null,
     },
     [
       Permission.read(Role.user(ADMIN_USER_ID!)),
@@ -198,5 +204,5 @@ export async function updateModel(
 
 export async function deleteModel(id: string): Promise<void> {
   if (!databases || !DB_ID || !AIRCRAFT_MODELS_COL_ID) throw new Error("Appwrite não configurado");
-  await databases.deleteDocument(DB_ID, AIRCRAFT_MODELS_COL_ID, id);
+  await databases.updateDocument(DB_ID, AIRCRAFT_MODELS_COL_ID, id, { deleted_at: new Date().toISOString() });
 }

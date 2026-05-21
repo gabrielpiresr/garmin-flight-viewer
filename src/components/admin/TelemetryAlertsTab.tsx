@@ -1139,61 +1139,106 @@ function TriggeredTelemetryAlertsPanel({
           Nenhum alerta disparado encontrado.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded border border-slate-800 bg-slate-900/30">
-          <div className="min-w-[1320px]">
-            <div className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] gap-3 border-b border-slate-800 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-              {ALERT_COLUMNS.map((col) =>
-                col.sortable ? (
-                  <button
-                    key={col.label}
-                    type="button"
-                    onClick={() => handleSort(col)}
-                    className="flex items-center gap-1 text-left hover:text-slate-200"
-                  >
-                    <span>{col.label}</span>
-                    {sortKey === col.key
-                      ? <span className="text-emerald-300">{sortDirection === "asc" ? "↑" : "↓"}</span>
-                      : <span className="text-slate-700">↕</span>}
-                  </button>
-                ) : (
-                  <span key={col.label}>{col.label}</span>
-                )
-              )}
-              <span>Ação</span>
-            </div>
-            <div className="divide-y divide-slate-800">
-              {sortedAlerts.map((alert) => (
-                <div
-                  key={alert.id}
-                  className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] items-center gap-3 px-4 py-2.5 text-sm text-slate-300 transition hover:bg-slate-800/40"
-                >
-                  <span className="min-w-0 truncate font-medium text-slate-100">{alert.ruleName}</span>
-                  <span className="min-w-0 truncate">{formatPerson(profileMap, alert.studentUserId, "Aluno")}</span>
-                  <span className="min-w-0 truncate">{formatPerson(profileMap, alert.instructorUserId, "Sem INVA")}</span>
-                  <span className="min-w-0 truncate">{alert.aircraftIdent ?? "Aeronave"}</span>
-                  <span className="min-w-0 truncate">{modelNameById.get(alert.modelId) ?? "Modelo"}</span>
-                  <span>{formatFlightDate(alert.flightDate)}</span>
-                  <span>{formatAlertTime(alert.matchedAt)}</span>
-                  <span className="min-w-0 truncate">{formatTriggeredParameters(alert)}</span>
-                  <span>
-                    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[alert.severity]}`}>
-                      {severityLabel(alert.severity)}
-                    </span>
-                  </span>
-                  <span>
-                    <button
-                      type="button"
-                      onClick={() => onOpenAlert(alert)}
-                      className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/20"
-                    >
-                      Ver telemetria
-                    </button>
-                  </span>
+        <>
+          {/* Mobile cards */}
+          <div className="space-y-2 md:hidden">
+            {sortedAlerts.map((alert) => (
+              <div
+                key={alert.id}
+                className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[alert.severity]}`}>
+                        {severityLabel(alert.severity)}
+                      </span>
+                      <span className="truncate text-sm font-semibold text-slate-100">{alert.ruleName}</span>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-slate-400">
+                      {formatPerson(profileMap, alert.studentUserId, "Aluno")} · {formatPerson(profileMap, alert.instructorUserId, "Sem INVA")}
+                    </p>
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-slate-500">
+                      <p className="truncate">Avião: <span className="text-slate-300">{alert.aircraftIdent ?? "—"}</span></p>
+                      <p className="truncate">Modelo: <span className="text-slate-300">{modelNameById.get(alert.modelId) ?? "—"}</span></p>
+                      <p>Data: <span className="text-slate-300">{formatFlightDate(alert.flightDate)}</span></p>
+                      <p>Horário: <span className="text-slate-300">{formatAlertTime(alert.matchedAt)}</span></p>
+                      {formatTriggeredParameters(alert) ? (
+                        <p className="col-span-2 truncate">Parâmetros: <span className="text-slate-300">{formatTriggeredParameters(alert)}</span></p>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
-              ))}
+                <div className="mt-3 flex justify-end border-t border-slate-800/50 pt-2.5">
+                  <button
+                    type="button"
+                    onClick={() => onOpenAlert(alert)}
+                    className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/20"
+                  >
+                    Ver telemetria
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden overflow-x-auto rounded border border-slate-800 bg-slate-900/30 md:block">
+            <div className="min-w-[1320px]">
+              <div className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] gap-3 border-b border-slate-800 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                {ALERT_COLUMNS.map((col) =>
+                  col.sortable ? (
+                    <button
+                      key={col.label}
+                      type="button"
+                      onClick={() => handleSort(col)}
+                      className="flex items-center gap-1 text-left hover:text-slate-200"
+                    >
+                      <span>{col.label}</span>
+                      {sortKey === col.key
+                        ? <span className="text-emerald-300">{sortDirection === "asc" ? "↑" : "↓"}</span>
+                        : <span className="text-slate-700">↕</span>}
+                    </button>
+                  ) : (
+                    <span key={col.label}>{col.label}</span>
+                  )
+                )}
+                <span>Ação</span>
+              </div>
+              <div className="divide-y divide-slate-800">
+                {sortedAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_0.95fr_0.75fr_0.75fr_1.1fr_0.75fr_0.85fr] items-center gap-3 px-4 py-2.5 text-sm text-slate-300 transition hover:bg-slate-800/40"
+                  >
+                    <span className="min-w-0 truncate font-medium text-slate-100">{alert.ruleName}</span>
+                    <span className="min-w-0 truncate">{formatPerson(profileMap, alert.studentUserId, "Aluno")}</span>
+                    <span className="min-w-0 truncate">{formatPerson(profileMap, alert.instructorUserId, "Sem INVA")}</span>
+                    <span className="min-w-0 truncate">{alert.aircraftIdent ?? "Aeronave"}</span>
+                    <span className="min-w-0 truncate">{modelNameById.get(alert.modelId) ?? "Modelo"}</span>
+                    <span>{formatFlightDate(alert.flightDate)}</span>
+                    <span>{formatAlertTime(alert.matchedAt)}</span>
+                    <span className="min-w-0 truncate">{formatTriggeredParameters(alert)}</span>
+                    <span>
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[alert.severity]}`}>
+                        {severityLabel(alert.severity)}
+                      </span>
+                    </span>
+                    <span>
+                      <button
+                        type="button"
+                        onClick={() => onOpenAlert(alert)}
+                        className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/20"
+                      >
+                        Ver telemetria
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

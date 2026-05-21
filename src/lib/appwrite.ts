@@ -7,10 +7,14 @@ export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | und
 export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
 export const ADMIN_USERS_FUNCTION_ID = import.meta.env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID as string | undefined;
+export const SIGN_FLIGHT_FUNCTION_ID =
+  (import.meta.env.VITE_APPWRITE_SIGN_FLIGHT_FUNCTION_ID as string | undefined) ?? "sign-flight";
 export const WEB_PUSH_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY as string | undefined;
 
 // Admin — frota e configuração operacional
 export const SCHOOL_ID = import.meta.env.VITE_SCHOOL_ID as string | undefined;
+/** Único ponto de fallback para school_id. Importar daqui em vez de redeclarar localmente. */
+export const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 export const ADMIN_USER_ID = import.meta.env.VITE_ADMIN_USER_ID as string | undefined;
 export const AIRCRAFT_MODELS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID as string | undefined;
 export const AIRCRAFTS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFTS_COL_ID as string | undefined;
@@ -23,6 +27,8 @@ export const MAINTENANCE_WORK_ORDERS_COL_ID =
   import.meta.env.VITE_APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID as string | undefined;
 export const MAINTENANCE_ATTACHMENTS_COL_ID =
   import.meta.env.VITE_APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID as string | undefined;
+export const FUELINGS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FUELINGS_COL_ID as string | undefined) ?? "aircraft_fuelings";
 export const OP_WEEKS_COL_ID = import.meta.env.VITE_APPWRITE_OP_WEEKS_COL_ID as string | undefined;
 
 // Student planning collections
@@ -72,6 +78,23 @@ export const STUDENT_OBSERVATIONS_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_OBSERVATIONS_COL_ID as string | undefined) ?? "student_observations";
 export const INSTRUCTOR_STUDENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID as string | undefined) ?? "instructor_students";
+
+// Custos e financeiro
+export const INSTRUCTOR_COSTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_COSTS_COL_ID as string | undefined) ?? "instructor_costs";
+export const SCHOOL_COSTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SCHOOL_COSTS_COL_ID as string | undefined) ?? "school_costs";
+export const FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID as string | undefined) ?? "flight_instructor_payments";
+export const SCHOOL_PRODUCTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SCHOOL_PRODUCTS_COL_ID as string | undefined) ?? "school_products";
+export const PRODUCT_SALES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PRODUCT_SALES_COL_ID as string | undefined) ?? "product_sales";
+export const FINANCIAL_MONTHLY_CLOSINGS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COL_ID as string | undefined) ?? "financial_monthly_closings";
+export const FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID as string | undefined) ??
+  "financial_monthly_closing_lines";
 
 // Manuais
 export const MANUALS_BUCKET_ID = import.meta.env.VITE_APPWRITE_MANUALS_BUCKET_ID as string | undefined;

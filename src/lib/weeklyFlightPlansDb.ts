@@ -6,11 +6,10 @@ import {
   Permission,
   Role,
   OP_WEEKS_COL_ID,
-  SCHOOL_ID,
+  DEFAULT_SCHOOL_ID,
   WEEKLY_PLANS_COL_ID,
 } from "./appwrite";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import { getSchoolRules } from "./schoolRulesDb";
 import type { OperationalWeek } from "../types/admin";
 import type {
@@ -148,6 +147,9 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
       throw new Error(`Prioridade inválida no voo ${index + 1}.`);
     }
     const isNight = item.isNight ?? false;
+    if (isNight && !rules.schedule.allowNightFlights) {
+      throw new Error(`Voos noturnos não estão habilitados pela escola (voo ${index + 1}).`);
+    }
     const availability = item.availability.filter((entry) => {
       if (![ 1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek)) return false;
       if (!(entry.availabilityType === "available" || entry.availabilityType === "preferred")) return false;

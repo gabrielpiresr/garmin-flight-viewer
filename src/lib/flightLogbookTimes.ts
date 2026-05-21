@@ -38,6 +38,39 @@ export type ComputedFlightEventTimes = {
   marginMinutes: number;
 };
 
+/** Voo previsto: só exige partida e corte (corte > partida), sem tempo nas pernas. */
+export function computeScheduledBlockTimes(params: {
+  departureTimeUtc: string;
+  engineCutoffTimeUtc: string;
+}): Pick<ComputedFlightEventTimes, "departureTimeUtc" | "engineCutoffTimeUtc" | "blockMinutes"> & {
+  flightMinutes: number;
+  marginMinutes: number;
+  takeoffTimeUtc?: string;
+  landingTimeUtc?: string;
+} | { error: string } {
+  const depMin = parseTimeToMinutes(params.departureTimeUtc);
+  const cutoffMin = parseTimeToMinutes(params.engineCutoffTimeUtc);
+
+  if (depMin === null || cutoffMin === null) {
+    return { error: "Informe horário de partida e corte dos motores no formato HH:MM." };
+  }
+
+  if (cutoffMin <= depMin) {
+    return {
+      error:
+        "O horário de corte deve ser posterior à partida no mesmo dia (ex.: partida 06:00 → corte 07:00 ou depois).",
+    };
+  }
+
+  return {
+    departureTimeUtc: formatMinutesAsTime(depMin),
+    engineCutoffTimeUtc: formatMinutesAsTime(cutoffMin),
+    blockMinutes: cutoffMin - depMin,
+    flightMinutes: 0,
+    marginMinutes: 0,
+  };
+}
+
 export function computeFlightEventTimes(params: {
   departureTimeUtc: string;
   engineCutoffTimeUtc: string;

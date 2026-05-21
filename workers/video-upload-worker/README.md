@@ -62,5 +62,6 @@ npm run videos:reconcile:watch   # repete a cada 60s
 
 ```env
 VITE_CF_WORKER_URL=https://video-upload.SEU-SUBDOMINIO.workers.dev
-VITE_CF_WORKER_SECRET=a_mesma_senha_do_WORKER_SECRET
+# O frontend nao recebe o segredo.
+# Configure WORKER_SECRET somente no Worker e na Appwrite Function admin-users.
 ```

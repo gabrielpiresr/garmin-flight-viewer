@@ -302,12 +302,6 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
       return;
     }
 
-    const workerConfig = getWorkerConfig();
-    if (!workerConfig) {
-      setProcessingError("Storage não configurado. Adicione VITE_CF_WORKER_URL e VITE_CF_WORKER_SECRET no .env.local.");
-      return;
-    }
-
     setProcessingError(null);
     setProgress(0);
     setProgressStage("concat");
@@ -365,6 +359,21 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     const videosColId = import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string;
     const videoKey = `flight-${flightId}-${Date.now()}.mp4`;
     const fileOrder = selectedFiles.map((f, i) => ({ index: i, name: f.name }));
+    let workerConfig: { url: string; token: string } | null = null;
+    try {
+      workerConfig = await getWorkerConfig({ mode: "upload", flightId, key: videoKey });
+    } catch (e) {
+      await updateFlightVideoFailed(docId);
+      setProcessingError((e as Error).message);
+      setProcessingJobId(null);
+      return;
+    }
+    if (!workerConfig) {
+      await updateFlightVideoFailed(docId);
+      setProcessingError("Storage não configurado. Verifique a Function administrativa e as variáveis CF_WORKER_URL/WORKER_SECRET.");
+      setProcessingJobId(null);
+      return;
+    }
 
     try {
       const res = await fetch(`${HELPER_URL}/process`, {
@@ -375,7 +384,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
           sessionId,
           fileOrder,
           cfWorkerUrl: workerConfig.url,
-          cfWorkerSecret: workerConfig.secret,
+          cfWorkerToken: workerConfig.token,
           videoKey,
           appwriteEndpoint,
           appwriteProjectId,
@@ -545,7 +554,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
           {/* Aviso de storage não configurado */}
           {!isVideoStorageConfigured() && (
             <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
-              Storage não configurado. Adicione <code>VITE_CF_WORKER_URL</code> e <code>VITE_CF_WORKER_SECRET</code> no <code>.env.local</code>.
+              Storage não configurado. Verifique a Function administrativa e as variáveis <code>CF_WORKER_URL</code>/<code>WORKER_SECRET</code>.
             </div>
           )}
 
@@ -1120,12 +1129,6 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       setExportError("Selecione altitude, velocidade ou rumo para gerar o MP4.");
       return;
     }
-    const workerConfig = getWorkerConfig();
-    if (!workerConfig) {
-      setExportError("Storage nao configurado para exportar o MP4.");
-      return;
-    }
-
     const startSec = trimStartSec ?? 0;
     const endSec = trimEndSec ?? (points.length > 0 ? points[points.length - 1].timeMs / 1000 : 0);
     if (endSec <= startSec) {
@@ -1134,6 +1137,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     }
 
     const jobId = `overlay-${Date.now()}`;
+    const outputKey = `flight-${video.flight_id}-${video.id}-telemetry-${Date.now()}.mp4`;
     const blank: ExportProgress = {
       stage: "render", renderPct: 0, uploadPct: 0, processPct: 0, finalizePct: 0,
     };
@@ -1146,6 +1150,12 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       setExportProgress((p) => ({ ...(p ?? blank), ...patch }));
 
     try {
+      const workerConfig = await getWorkerConfig({ mode: "upload", flightId: video.flight_id, key: outputKey });
+      if (!workerConfig) {
+        setExportError("Storage nao configurado para exportar o MP4.");
+        setExporting(false);
+        return;
+      }
       // Stage 1 — render overlay video in browser
       const containerH = containerRef.current?.clientHeight ?? 720;
       const containerW = containerRef.current?.clientWidth ?? 1280;
@@ -1176,8 +1186,8 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         {
           videoUrl: video.file_url!,
           cfWorkerUrl: workerConfig.url,
-          cfWorkerSecret: workerConfig.secret,
-          outputKey: `flight-${video.flight_id}-${video.id}-telemetry-${Date.now()}.mp4`,
+          cfWorkerToken: workerConfig.token,
+          outputKey,
           trimStartSec: trimStartSec ?? undefined,
           trimEndSec: trimEndSec ?? undefined,
           orientation,

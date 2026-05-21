@@ -18,6 +18,27 @@ const WEEKLY_PLANS_COLLECTION_ID =
   process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || process.env.APPWRITE_WEEKLY_PLANS_COL_ID;
 const INSTRUCTOR_PREFS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID;
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID;
+const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
+const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || process.env.APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
+const INSTRUCTOR_COSTS_COLLECTION_ID =
+  process.env.APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID || process.env.APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
+const FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID ||
+  "flight_instructor_payments";
+const FUELINGS_COLLECTION_ID = process.env.APPWRITE_FUELINGS_COLLECTION_ID || process.env.APPWRITE_FUELINGS_COL_ID || "aircraft_fuelings";
+const MAINTENANCE_WORK_ORDERS_COLLECTION_ID =
+  process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID ||
+  process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID ||
+  "maintenance_work_orders";
+const FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID =
+  process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID ||
+  process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COL_ID ||
+  "financial_monthly_closings";
+const FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID =
+  process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID ||
+  process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID ||
+  "financial_monthly_closing_lines";
 const AIRCRAFTS_COLLECTION_ID = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFTS_COL_ID;
 const AIRCRAFT_MODELS_COLLECTION_ID =
   process.env.APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFT_MODELS_COL_ID;
@@ -46,6 +67,8 @@ const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
 const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
 const APP_URL = process.env.APP_URL || "";
+const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
+const WORKER_SECRET = process.env.WORKER_SECRET || "";
 // Identificador único da escola — usado para isolar dados em ambiente multi-tenant.
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 
@@ -332,6 +355,15 @@ function parseDurationToMinutes(value) {
   if (hhmm) return Number(hhmm[1] || "0") * 60 + Number(hhmm[2] || "0");
   const asDecimal = Number(raw.replace(",", "."));
   return Number.isFinite(asDecimal) && asDecimal > 0 ? Math.round(asDecimal * 60) : 0;
+}
+
+function parseClockMinutes(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
 }
 
 function parseMiles(value) {
@@ -804,8 +836,17 @@ function toProfile(profile, preference) {
   };
 }
 
-function summarizeFlights(flights, plans) {
-  const normalizedFlights = flights.map(toFlight).sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
+function summarizeFlights(flights, plans, profilesByUserId = new Map()) {
+  const normalizedFlights = flights
+    .map((doc) => {
+      const flight = toFlight(doc);
+      // Resolve instructor name from profiles when CSV metadata didn't embed it
+      if (flight.instructorUserId && !flight.instructorName) {
+        flight.instructorName = dashboardProfileName(flight.instructorUserId, profilesByUserId);
+      }
+      return flight;
+    })
+    .sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
   const plannedFlights = normalizedFlights
     .filter(isFutureFlight)
     .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)));
@@ -849,10 +890,10 @@ function summarizeFlights(flights, plans) {
   };
 }
 
-function toUserRecord(user, profile, preference, flights, plans, trainingTracks = []) {
+function toUserRecord(user, profile, preference, flights, plans, trainingTracks = [], profilesByUserId = new Map()) {
   const role = VALID_ROLES.has(profile?.role) ? profile.role : deriveRoleFromLabels(user.labels || []);
   const profilePayload = toProfile(profile, preference);
-  const summary = summarizeFlights(flights, plans);
+  const summary = summarizeFlights(flights, plans, profilesByUserId);
 
   return {
     userId: user.$id,
@@ -1889,6 +1930,7 @@ async function buildRecords({ search = "", onlyUserId = null } = {}) {
         flightsByUser.get(user.$id) || [],
         plansByUser.get(user.$id) || [],
         trainingByUserId.get(user.$id) || [],
+        profileByUserId, // already contains all profiles — resolves instructor names too
       );
     })
     .filter((record) => matchesSearch(record, search))
@@ -2052,6 +2094,9 @@ async function getUserDetail(targetUserId) {
     getPlansByUserIds([targetUserId]),
     getTrainingAssignmentsByUserIds([targetUserId]),
   ]);
+  // Resolve instructor names: collect unique instructor_user_id values from this user's flights
+  const instructorIds = [...new Set(flights.map((f) => f.instructor_user_id).filter(Boolean))];
+  const instructorProfilesByUserId = await getProfilesByUserIds(instructorIds);
   return toUserRecord(
     user,
     profileByUserId.get(targetUserId) || null,
@@ -2059,6 +2104,7 @@ async function getUserDetail(targetUserId) {
     flights,
     plans,
     trainingByUserId.get(targetUserId) || [],
+    instructorProfilesByUserId,
   );
 }
 
@@ -2077,7 +2123,6 @@ async function upsertProfile(userId, email, role) {
     sdk.ID.unique(),
     data,
     [
-      sdk.Permission.read(sdk.Role.users()),
       sdk.Permission.read(sdk.Role.user(userId)),
       sdk.Permission.update(sdk.Role.user(userId)),
       sdk.Permission.delete(sdk.Role.user(userId)),
@@ -2196,6 +2241,1026 @@ async function deleteCredit(creditId, userId) {
   await databases.deleteDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, creditId);
 }
 
+// --- Financial DRE ---------------------------------------------------------
+
+const FINANCIAL_VALUE_TYPES = {
+  money: "money",
+  percent: "percent",
+  number: "number",
+  hours: "hours",
+};
+
+const DRE_LEVEL1_SECTIONS = [
+  { key: "section_revenue", label: "Receita" },
+  { key: "section_commercial_deductions", label: "Deducoes e Perdas Comerciais" },
+  { key: "section_variable_costs", label: "Custos Variaveis" },
+  { key: "section_operational_margin", label: "Margem Operacional" },
+  { key: "section_fixed_costs", label: "Custos Fixos" },
+  { key: "section_ebitda", label: "EBITDA (Resultado Operacional)" },
+  { key: "section_taxes", label: "Impostos" },
+  { key: "section_net_profit", label: "Lucro liquido" },
+];
+
+const DRE_SECTION_LABELS = Object.fromEntries(DRE_LEVEL1_SECTIONS.map((section) => [section.key, section.label]));
+const LEGACY_DRE_SECTION_KEY_MAP = {
+  section_revenue_taxes: "section_taxes",
+  section_operational_costs: "section_variable_costs",
+  section_gross_profit: "section_operational_margin",
+  section_asset_variation: "section_variable_costs",
+};
+
+function normalizeDreSectionKey(key) {
+  const raw = String(key || "").trim();
+  return DRE_SECTION_LABELS[raw] ? raw : LEGACY_DRE_SECTION_KEY_MAP[raw] || raw;
+}
+
+const DEFAULT_PAYMENT_METHOD_COSTS = {
+  "Cartao de credito a vista": { fixedCost: 0, percentCost: 0 },
+  "Cartão de crédito à vista": { fixedCost: 0, percentCost: 0 },
+  Parcelado: { fixedCost: 0, percentCost: 0 },
+  PIX: { fixedCost: 0, percentCost: 0 },
+};
+
+function roundMoney(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
+}
+
+function roundHours(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
+}
+
+function dreMonthKey(value) {
+  const raw = String(value || "").trim();
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw.slice(0, 7);
+  return new Date().toISOString().slice(0, 7);
+}
+
+function monthStart(month) {
+  return `${dreMonthKey(month)}-01`;
+}
+
+function monthEnd(month) {
+  const [year, monthNumber] = dreMonthKey(month).split("-").map(Number);
+  return new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
+}
+
+function monthLabel(month) {
+  const [year, monthNumber] = dreMonthKey(month).split("-").map(Number);
+  const date = new Date(Date.UTC(year, monthNumber - 1, 1, 12));
+  return date.toLocaleDateString("pt-BR", { month: "short", year: "numeric", timeZone: "UTC" }).replace(".", "");
+}
+
+function listMonthKeys(fromMonth, toMonth) {
+  const from = dreMonthKey(fromMonth);
+  const to = dreMonthKey(toMonth);
+  const [fromYear, fromNumber] = from.split("-").map(Number);
+  const [toYear, toNumber] = to.split("-").map(Number);
+  const startIndex = fromYear * 12 + fromNumber - 1;
+  const endIndex = toYear * 12 + toNumber - 1;
+  const safeStart = Math.min(startIndex, endIndex);
+  const safeEnd = Math.max(startIndex, endIndex);
+  const months = [];
+  for (let index = safeStart; index <= safeEnd && months.length < 36; index += 1) {
+    const year = Math.floor(index / 12);
+    const month = (index % 12) + 1;
+    months.push(`${year}-${String(month).padStart(2, "0")}`);
+  }
+  return months;
+}
+
+function currentMonthKey() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function isPastMonth(month) {
+  return dreMonthKey(month) < currentMonthKey();
+}
+
+function parseMaybeJson(value, fallback) {
+  if (!value || typeof value !== "string") return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function flightBlockMinutes(doc) {
+  const meta = decodeFlightMeta(doc?.csv_text);
+  const departureMinutes = parseClockMinutes(meta?.header?.departureTimeUtc);
+  const cutoffMinutes = parseClockMinutes(meta?.header?.engineCutoffTimeUtc);
+  if (departureMinutes !== null && cutoffMinutes !== null && cutoffMinutes > departureMinutes) {
+    return cutoffMinutes - departureMinutes;
+  }
+  return 0;
+}
+
+function parseTaxConfigDoc(doc) {
+  const parsed = parseMaybeJson(doc?.tax_config_json, {});
+  const deductions = (raw) => ({
+    aircraftCosts: Boolean(raw?.aircraftCosts),
+    fuelCosts: Boolean(raw?.fuelCosts),
+    instructorTransfer: Boolean(raw?.instructorTransfer),
+    paymentMethodFees: Boolean(raw?.paymentMethodFees),
+    workOrderCosts: Boolean(raw?.workOrderCosts),
+  });
+  return {
+    revenueRatePercent: Number(parsed.revenueRatePercent || 0),
+    grossProfitRatePercent: Number(parsed.grossProfitRatePercent || 0),
+    netProfitRatePercent: Number(parsed.netProfitRatePercent || 0),
+    grossProfitDeductions: deductions(parsed.grossProfitDeductions),
+    netProfitDeductions: deductions(parsed.netProfitDeductions),
+  };
+}
+
+function parsePaymentMethodCostsDoc(doc) {
+  const parsed = parseMaybeJson(doc?.payment_method_costs_json, {});
+  return { ...DEFAULT_PAYMENT_METHOD_COSTS, ...(parsed && typeof parsed === "object" ? parsed : {}) };
+}
+
+function parseManualDreLinesDoc(doc) {
+  const parsed = parseMaybeJson(doc?.manual_dre_lines_json, []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const id = String(entry.id || "").trim();
+      const name = String(entry.name || "").trim();
+      const sectionKey = normalizeDreSectionKey(entry.sectionKey);
+      if (!id || !name || !DRE_SECTION_LABELS[sectionKey]) return null;
+      return {
+        id,
+        name,
+        defaultAmount: roundMoney(entry.defaultAmount),
+        sectionKey,
+        active: entry.active !== false,
+        createdAt: String(entry.createdAt || ""),
+        updatedAt: String(entry.updatedAt || ""),
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseManualDreValuesDoc(doc) {
+  const parsed = parseMaybeJson(doc?.manual_dre_values_json, {});
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const result = {};
+  for (const [month, values] of Object.entries(parsed)) {
+    if (!/^\d{4}-\d{2}$/.test(month) || !values || typeof values !== "object" || Array.isArray(values)) continue;
+    result[month] = {};
+    for (const [lineId, amount] of Object.entries(values)) {
+      const n = Number(amount);
+      if (lineId && Number.isFinite(n)) result[month][lineId] = roundMoney(n);
+    }
+  }
+  return result;
+}
+
+function numValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function docDate(doc, ...keys) {
+  for (const key of keys) {
+    const value = String(doc?.[key] || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  }
+  return "";
+}
+
+function inMonth(doc, month, ...keys) {
+  const date = docDate(doc, ...keys);
+  return date >= monthStart(month) && date <= monthEnd(month);
+}
+
+function normalizeAircraftIdent(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function userLabel(userId, usersById, profilesByUserId) {
+  if (!userId) return "Não informado";
+  const profile = profilesByUserId.get(userId);
+  const user = usersById.get(userId);
+  return profile?.full_name || user?.name || user?.email || userId;
+}
+
+function addBreakdown(target, key, label, amount, valueType = "money", meta = undefined) {
+  if (!target[key]) target[key] = [];
+  const existing = target[key].find((item) => item.label === label);
+  if (existing && existing.valueType === valueType) {
+    existing.amount = roundMoney(existing.amount + amount);
+    return;
+  }
+  target[key].push({ label, amount: roundMoney(amount), valueType, ...(meta ? { meta } : {}) });
+}
+
+function sumBreakdown(items) {
+  return (items || []).reduce((acc, item) => acc + numValue(item.amount), 0);
+}
+
+function signedBreakdown(breakdown, multiplier) {
+  const result = {};
+  for (const [key, items] of Object.entries(breakdown || {})) {
+    result[key] = (items || []).map((item) => ({
+      ...item,
+      amount: item.valueType === "money" ? roundMoney(numValue(item.amount) * multiplier) : item.amount,
+    }));
+  }
+  return result;
+}
+
+function paymentFee(amount, paymentMethod, paymentMethodCosts) {
+  const entry = paymentMethodCosts[paymentMethod] || paymentMethodCosts[String(paymentMethod || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")];
+  if (!entry) return 0;
+  return numValue(entry.fixedCost) + (numValue(amount) * numValue(entry.percentCost)) / 100;
+}
+
+function creditCostSnapshot(doc) {
+  const parsed = parseMaybeJson(doc?.cost_snapshot_json, null);
+  if (!parsed || typeof parsed !== "object") return null;
+  return {
+    enrollmentCost: numValue(parsed.enrollmentCost),
+    totalCostCalculated: numValue(parsed.totalCostCalculated),
+  };
+}
+
+function aircraftFixedCost(aircraft) {
+  return (
+    numValue(aircraft?.cost_hangar_monthly) +
+    numValue(aircraft?.cost_insurance_monthly) +
+    numValue(aircraft?.cost_leasing_monthly) +
+    numValue(aircraft?.cost_other_fixed_monthly)
+  );
+}
+
+function aircraftMaintenanceReserve(aircraft) {
+  return numValue(aircraft?.cost_maintenance_reserve_monthly);
+}
+
+function workOrderCost(order) {
+  const technical = parseMaybeJson(order?.technical_json, {});
+  return {
+    parts: numValue(technical.parts_cost),
+    labor: numValue(technical.labor_cost),
+    other: numValue(technical.other_costs),
+  };
+}
+
+async function safeListAllDocuments(collectionId, queries = []) {
+  if (!collectionId) return [];
+  try {
+    return await listAllDocuments(collectionId, queries);
+  } catch {
+    return [];
+  }
+}
+
+async function getFinancialSchoolCosts() {
+  let doc = {};
+  try {
+    const res = await databases.listDocuments(DATABASE_ID, SCHOOL_COSTS_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.limit(1),
+    ]);
+    doc = res.documents?.[0] || {};
+  } catch {
+    doc = {};
+  }
+  return {
+    id: doc.$id || null,
+    enrollmentCost: numValue(doc.enrollment_cost),
+    paymentMethodCosts: parsePaymentMethodCostsDoc(doc),
+    taxConfig: parseTaxConfigDoc(doc),
+    manualDreLines: parseManualDreLinesDoc(doc),
+    manualDreValues: parseManualDreValuesDoc(doc),
+  };
+}
+
+async function fetchFinancialBaseData(fromMonth, toMonth) {
+  const fromDate = monthStart(fromMonth);
+  const toDate = monthEnd(toMonth);
+  const schoolFilter = sdk.Query.equal("school_id", [SCHOOL_ID]);
+  const [
+    flights,
+    credits,
+    productSales,
+    instructorPayments,
+    fuelings,
+    workOrders,
+    aircrafts,
+    models,
+    instructorCosts,
+    profiles,
+    schoolCosts,
+  ] = await Promise.all([
+    safeListAllDocuments(FLIGHTS_COLLECTION_ID, [
+      schoolFilter,
+      sdk.Query.greaterThanEqual("flight_date", fromDate),
+      sdk.Query.lessThanEqual("flight_date", toDate),
+    ]),
+    safeListAllDocuments(STUDENT_CREDITS_COLLECTION_ID, [schoolFilter]),
+    safeListAllDocuments(PRODUCT_SALES_COLLECTION_ID, [
+      schoolFilter,
+      sdk.Query.greaterThanEqual("sale_date", fromDate),
+      sdk.Query.lessThanEqual("sale_date", toDate),
+    ]),
+    safeListAllDocuments(FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, [schoolFilter]),
+    safeListAllDocuments(FUELINGS_COLLECTION_ID, [
+      schoolFilter,
+      sdk.Query.greaterThanEqual("occurred_at", fromDate),
+      sdk.Query.lessThanEqual("occurred_at", toDate),
+    ]),
+    safeListAllDocuments(MAINTENANCE_WORK_ORDERS_COLLECTION_ID),
+    safeListAllDocuments(AIRCRAFTS_COLLECTION_ID, [schoolFilter]),
+    safeListAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID),
+    safeListAllDocuments(INSTRUCTOR_COSTS_COLLECTION_ID, [schoolFilter]),
+    safeListAllDocuments(PROFILES_COLLECTION_ID, [schoolFilter]),
+    getFinancialSchoolCosts(),
+  ]);
+
+  const userIds = Array.from(
+    new Set(
+      [
+        ...flights.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]),
+        ...credits.map((doc) => doc.user_id),
+        ...productSales.map((doc) => doc.user_id),
+        ...instructorCosts.map((doc) => doc.instructor_user_id),
+      ].filter(Boolean),
+    ),
+  );
+  const usersList = await getUsersByIds(userIds).catch(() => []);
+
+  return {
+    flights,
+    credits,
+    productSales,
+    instructorPayments,
+    fuelings,
+    workOrders,
+    aircrafts,
+    models,
+    instructorCosts,
+    usersById: new Map(usersList.map((user) => [user.$id, user])),
+    profilesByUserId: new Map(profiles.map((profile) => [profile.user_id, profile])),
+    schoolCosts,
+  };
+}
+
+function completedFinancialFlights(data, month) {
+  return data.flights
+    .filter((flight) => inMonth(flight, month, "flight_date", "$createdAt"))
+    .filter((flight) => flight.instructor_signed === true || flight.flight_status === "Realizado")
+    .map((flight) => {
+      const aircraftIdent = normalizeAircraftIdent(flight.aircraft_ident);
+      const aircraft = data.aircrafts.find((row) => normalizeAircraftIdent(row.registration) === aircraftIdent) || null;
+      const model = aircraft ? data.models.find((row) => row.$id === aircraft.model_id) : null;
+      const minutes = flightBlockMinutes(flight);
+      return {
+        doc: flight,
+        id: flight.$id,
+        date: docDate(flight, "flight_date", "$createdAt"),
+        hours: roundHours(minutes / 60),
+        aircraft,
+        aircraftIdent,
+        model,
+        studentUserId: flight.student_user_id || flight.user_id || null,
+        instructorUserId: flight.instructor_user_id || null,
+        isNight: Boolean(flight.is_night),
+        typeLabel: flight.training_mission_id || flight.training_track_id || "Voo",
+      };
+    });
+}
+
+function creditDateSortKey(credit) {
+  return `${docDate(credit, "purchase_date", "$createdAt") || "9999-12-31"}:${credit.$createdAt || ""}:${credit.$id || ""}`;
+}
+
+function computeFirstCreditEnrollmentCost(month, data) {
+  const firstCreditByStudent = new Map();
+  for (const credit of data.credits) {
+    const userId = credit.user_id || "";
+    if (!userId) continue;
+    const current = firstCreditByStudent.get(userId);
+    if (!current || creditDateSortKey(credit).localeCompare(creditDateSortKey(current)) < 0) {
+      firstCreditByStudent.set(userId, credit);
+    }
+  }
+
+  const byStudent = [];
+  const byCredit = [];
+  let total = 0;
+  for (const [userId, credit] of firstCreditByStudent.entries()) {
+    if (!inMonth(credit, month, "purchase_date", "$createdAt")) continue;
+    const snapshot = creditCostSnapshot(credit);
+    const amount = roundMoney(snapshot?.enrollmentCost ?? data.schoolCosts.enrollmentCost);
+    if (amount <= 0) continue;
+    total += amount;
+    byStudent.push({
+      label: userLabel(userId, data.usersById, data.profilesByUserId),
+      amount,
+      valueType: "money",
+      meta: { creditId: credit.$id || null, purchaseDate: docDate(credit, "purchase_date", "$createdAt") || null },
+    });
+    byCredit.push({
+      label: credit.$id || "Credito sem ID",
+      amount,
+      valueType: "money",
+      meta: { student: userLabel(userId, data.usersById, data.profilesByUserId), purchaseDate: docDate(credit, "purchase_date", "$createdAt") || null },
+    });
+  }
+
+  return {
+    amount: roundMoney(total),
+    breakdown: {
+      by_student: byStudent,
+      by_credit: byCredit,
+      total: [{ label: "Total", amount: roundMoney(total), valueType: "money" }],
+    },
+  };
+}
+
+function makeLine(key, parentKey, level, section, label, valueType, formulaLabel, amount, breakdown, extra = {}) {
+  return { key, parentKey, level, section, label, valueType, formulaLabel, amount: roundMoney(amount), breakdown: breakdown || {}, ...extra };
+}
+
+function selectedDeductionTotal(deductions, buckets) {
+  return (
+    (deductions.aircraftCosts ? buckets.aircraft : 0) +
+    (deductions.fuelCosts ? buckets.fuel : 0) +
+    (deductions.instructorTransfer ? buckets.instructor : 0) +
+    (deductions.paymentMethodFees ? buckets.paymentFees : 0) +
+    (deductions.workOrderCosts ? buckets.workOrders : 0)
+  );
+}
+
+function manualAmountForMonth(line, month, valuesByMonth) {
+  const monthly = valuesByMonth?.[month] || {};
+  return Object.prototype.hasOwnProperty.call(monthly, line.id) ? roundMoney(monthly[line.id]) : roundMoney(line.defaultAmount);
+}
+
+function manualLinesForMonth(month, schoolCosts) {
+  const valuesByMonth = schoolCosts.manualDreValues || {};
+  return (schoolCosts.manualDreLines || [])
+    .filter((line) => line.active !== false && DRE_SECTION_LABELS[line.sectionKey])
+    .map((line) => ({
+      ...line,
+      amount: manualAmountForMonth(line, month, valuesByMonth),
+    }));
+}
+
+function manualImpactBySection(manualLines) {
+  const impact = Object.fromEntries(DRE_LEVEL1_SECTIONS.map((section) => [section.key, 0]));
+  for (const line of manualLines) {
+    const sectionKey = normalizeDreSectionKey(line.sectionKey);
+    impact[sectionKey] = roundMoney((impact[sectionKey] || 0) + numValue(line.amount));
+  }
+  return impact;
+}
+
+function injectManualDreLines(rows, manualLines) {
+  if (!manualLines.length) return rows;
+  const result = [];
+  for (const row of rows) {
+    result.push(row);
+    if (row.level !== 1) continue;
+    const sectionManualLines = manualLines.filter((line) => normalizeDreSectionKey(line.sectionKey) === row.key);
+    for (const line of sectionManualLines) {
+      result.push(
+        makeLine(
+          `manual_${line.id}`,
+          row.key,
+          2,
+          row.section,
+          line.name,
+          "money",
+          "Lancamento manual",
+          line.amount,
+          {
+            manual: [{ label: line.name, amount: line.amount, valueType: "money" }],
+          },
+          { isManual: true, manualLineId: line.id },
+        ),
+      );
+    }
+  }
+  return result;
+}
+
+function computeOpenFinancialMonth(month, data) {
+  const flights = completedFinancialFlights(data, month);
+  const monthCredits = data.credits.filter((credit) => inMonth(credit, month, "purchase_date", "$createdAt"));
+  const monthSales = data.productSales.filter((sale) => inMonth(sale, month, "sale_date", "$createdAt"));
+  const monthFuelings = data.fuelings.filter((fueling) => inMonth(fueling, month, "occurred_at", "$createdAt"));
+  const monthWorkOrders = data.workOrders.filter((order) => inMonth(order, month, "opened_at", "$createdAt"));
+  const monthPayments = data.instructorPayments.filter((payment) => inMonth(payment, month, "calculated_at", "$createdAt"));
+  const studentAmountByFlightId = new Map();
+  for (const payment of data.instructorPayments) {
+    const flightId = payment.flight_id || "";
+    if (!flightId) continue;
+    studentAmountByFlightId.set(flightId, roundMoney((studentAmountByFlightId.get(flightId) || 0) + numValue(payment.student_amount_calculated)));
+  }
+
+  const by = {};
+  let flightRevenue = 0;
+  for (const flight of flights) {
+    const amount = studentAmountByFlightId.get(flight.id) || 0;
+    flightRevenue += amount;
+    addBreakdown(by, "by_student", userLabel(flight.studentUserId, data.usersById, data.profilesByUserId), amount);
+    addBreakdown(by, "by_aircraft", flight.aircraftIdent || "Não informado", amount);
+    addBreakdown(by, "by_instructor", userLabel(flight.instructorUserId, data.usersById, data.profilesByUserId), amount);
+    addBreakdown(by, "by_model", flight.model?.name || "Modelo não informado", amount);
+  }
+  flightRevenue = roundMoney(flightRevenue);
+  const enrollmentCost = computeFirstCreditEnrollmentCost(month, data);
+
+  const productBreakdown = {};
+  let productRevenue = 0;
+  let productPriceDeviation = 0;
+  for (const sale of monthSales) {
+    productRevenue += numValue(sale.amount_paid);
+    productPriceDeviation += numValue(sale.amount_paid) - numValue(sale.ideal_price);
+    addBreakdown(productBreakdown, "by_product", sale.product_name || "Produto nao informado", numValue(sale.amount_paid));
+    addBreakdown(productBreakdown, "by_payment_method", sale.payment_method || "Não informado", numValue(sale.amount_paid));
+  }
+  productBreakdown.price_deviation = [{ label: "Desvio de preço ideal", amount: roundMoney(productPriceDeviation), valueType: "money" }];
+  productRevenue = roundMoney(productRevenue);
+
+  const cashCreditBreakdown = {};
+  let cashCredits = 0;
+  let cashCreditHours = 0;
+  for (const credit of monthCredits) {
+    const amount = numValue(credit.amount_paid);
+    const hours = numValue(credit.hours);
+    cashCredits += amount;
+    cashCreditHours += hours;
+    addBreakdown(cashCreditBreakdown, "by_student", userLabel(credit.user_id, data.usersById, data.profilesByUserId), amount);
+    addBreakdown(cashCreditBreakdown, "by_payment_method", credit.payment_method || "Não informado", amount);
+    addBreakdown(cashCreditBreakdown, "hours_sold", "Horas vendidas", hours, "hours");
+  }
+  cashCredits = roundMoney(cashCredits);
+  cashCreditHours = roundHours(cashCreditHours);
+  cashCreditBreakdown.total = [
+    { label: "Créditos de horas vendidos", amount: cashCredits, valueType: "money" },
+    { label: "Horas vendidas", amount: cashCreditHours, valueType: "hours" },
+  ];
+  const manualLines = manualLinesForMonth(month, data.schoolCosts);
+  const manualImpact = manualImpactBySection(manualLines);
+  const manualRevenue = manualImpact.section_revenue || 0;
+  const manualCashRevenue = manualImpact.section_cash_revenue || 0;
+  const manualCommercialDeductions = manualImpact.section_commercial_deductions || 0;
+  const manualVariableCosts = manualImpact.section_variable_costs || 0;
+  const manualOperationalMargin = manualImpact.section_operational_margin || 0;
+  const manualFixedCosts = manualImpact.section_fixed_costs || 0;
+  const manualEbitda = manualImpact.section_ebitda || 0;
+  const manualTaxes = manualImpact.section_taxes || 0;
+  const manualNetProfit = manualImpact.section_net_profit || 0;
+  const cashProducts = productRevenue;
+  const cashRevenue = roundMoney(cashCredits + cashProducts + manualCashRevenue);
+
+  const grossRevenueBase = roundMoney(flightRevenue + productRevenue);
+  const grossRevenue = roundMoney(grossRevenueBase + manualRevenue);
+  const revenueTaxBase = roundMoney(-1 * (grossRevenueBase * data.schoolCosts.taxConfig.revenueRatePercent) / 100);
+  const revenueTax = revenueTaxBase;
+  const flightRevenueTax = roundMoney(-1 * (flightRevenue * data.schoolCosts.taxConfig.revenueRatePercent) / 100);
+  const productRevenueTax = roundMoney(-1 * (productRevenue * data.schoolCosts.taxConfig.revenueRatePercent) / 100);
+  const flightRevenueAfterTax = roundMoney(flightRevenue + flightRevenueTax);
+  const productRevenueAfterTax = roundMoney(productRevenue + productRevenueTax);
+  const revenueAfterTax = roundMoney(grossRevenue + revenueTax);
+
+  let paymentFeesCredits = 0;
+  for (const credit of monthCredits) {
+    const snapshot = creditCostSnapshot(credit);
+    paymentFeesCredits += snapshot?.totalCostCalculated ?? paymentFee(numValue(credit.amount_paid), credit.payment_method, data.schoolCosts.paymentMethodCosts);
+  }
+  let paymentFeesProducts = 0;
+  for (const sale of monthSales) {
+    paymentFeesProducts += paymentFee(numValue(sale.amount_paid), sale.payment_method, data.schoolCosts.paymentMethodCosts);
+  }
+  const paymentFees = roundMoney(-1 * (paymentFeesCredits + paymentFeesProducts));
+
+  const instructorVariableRaw = roundMoney(monthPayments.reduce((acc, item) => acc + numValue(item.total_calculated), 0));
+  const instructorFixedRaw = roundMoney(
+    data.instructorCosts.reduce((acc, item) => acc + numValue(item.monthly_fixed_cost), 0),
+  );
+  const instructorVariable = roundMoney(-1 * instructorVariableRaw);
+  const instructorFixed = roundMoney(-1 * instructorFixedRaw);
+
+  const fuelCostRaw = roundMoney(monthFuelings.reduce((acc, item) => acc + numValue(item.total_value), 0));
+  const fuelCost = roundMoney(-1 * fuelCostRaw);
+  const fuelLiters = monthFuelings.reduce((acc, item) => acc + numValue(item.quantity_liters), 0);
+  const workOrderParts = monthWorkOrders.reduce((acc, item) => acc + workOrderCost(item).parts, 0);
+  const workOrderLabor = monthWorkOrders.reduce((acc, item) => acc + workOrderCost(item).labor, 0);
+  const workOrderOther = monthWorkOrders.reduce((acc, item) => acc + workOrderCost(item).other, 0);
+  const workOrderTotalRaw = roundMoney(workOrderParts + workOrderLabor + workOrderOther);
+  const workOrderTotal = roundMoney(-1 * workOrderTotalRaw);
+
+  const aircraftEstimated = roundMoney(
+    flights.reduce((acc, flight) => acc + flight.hours * numValue(flight.aircraft?.cost_per_flight_hour), 0),
+  );
+  const flownAircraftIds = new Set(flights.map((flight) => flight.aircraft?.$id).filter(Boolean));
+  const aircraftFixedRaw = roundMoney(data.aircrafts.filter((aircraft) => flownAircraftIds.has(aircraft.$id)).reduce((acc, aircraft) => acc + aircraftFixedCost(aircraft), 0));
+  const aircraftFixed = roundMoney(-1 * aircraftFixedRaw);
+  const aircraftMaintenanceReserveMonthly = roundMoney(
+    data.aircrafts.filter((aircraft) => flownAircraftIds.has(aircraft.$id)).reduce((acc, aircraft) => acc + aircraftMaintenanceReserve(aircraft), 0),
+  );
+  const enrollmentAllocated = roundMoney(-1 * enrollmentCost.amount);
+  const commercialDeductions = roundMoney(paymentFees + enrollmentAllocated + manualCommercialDeductions);
+  const variableCosts = roundMoney(instructorVariable + fuelCost + workOrderTotal + manualVariableCosts);
+  const operationalMargin = roundMoney(grossRevenue + commercialDeductions + variableCosts + manualOperationalMargin);
+  const fixedCosts = roundMoney(instructorFixed + aircraftFixed + manualFixedCosts);
+  const ebitda = roundMoney(operationalMargin + fixedCosts + manualEbitda);
+  const assetVariationTotal = roundMoney(-1 * (aircraftEstimated + aircraftMaintenanceReserveMonthly));
+  const totalOperationalCosts = roundMoney(commercialDeductions + variableCosts + fixedCosts);
+  const totalHours = roundHours(flights.reduce((acc, flight) => acc + flight.hours, 0));
+
+  const grossProfitTax = roundMoney(-1 * (Math.max(0, operationalMargin) * data.schoolCosts.taxConfig.grossProfitRatePercent) / 100);
+  const netBeforeTax = roundMoney(ebitda + revenueTax + grossProfitTax + manualTaxes);
+  const netProfitTax = roundMoney(-1 * (Math.max(0, netBeforeTax) * data.schoolCosts.taxConfig.netProfitRatePercent) / 100);
+  const totalTaxes = roundMoney(revenueTax + grossProfitTax + netProfitTax + manualTaxes);
+  const finalNet = roundMoney(ebitda + totalTaxes + manualNetProfit);
+
+  const lineRows = [
+    makeLine("section_revenue", null, 1, "Receitas", "Receitas", "money", "", grossRevenue),
+    makeLine("revenue_flights", "section_revenue", 2, "Receitas", "Receita reconhecida de voos", "money", "flight_instructor_payments.student_amount_calculated", flightRevenue, by),
+    makeLine("revenue_products", "section_revenue", 2, "Receitas", "Receita de produtos e serviços", "money", "product_sales.amount_paid", productRevenue, productBreakdown),
+    makeLine("gross_operational_revenue", "section_revenue", 2, "Receitas", "Receita bruta operacional", "money", "Voos + produtos/serviços", grossRevenue, {
+      by_source: [
+        { label: "Voos", amount: flightRevenue, valueType: "money" },
+        { label: "Produtos/serviços", amount: productRevenue, valueType: "money" },
+      ],
+      source_share: [
+        { label: "Voos", amount: grossRevenue ? roundMoney((flightRevenue / grossRevenue) * 100) : 0, valueType: "percent" },
+        { label: "Produtos/serviços", amount: grossRevenue ? roundMoney((productRevenue / grossRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+    makeLine("section_cash_revenue", null, 1, "Receita (fluxo de caixa)", "Receita (fluxo de caixa)", "money", "", cashRevenue),
+    makeLine("cash_revenue_flight_credits", "section_cash_revenue", 2, "Receita (fluxo de caixa)", "Venda de créditos de horas", "money", "Créditos de horas vendidos no mês", cashCredits, cashCreditBreakdown),
+    makeLine("cash_revenue_products", "section_cash_revenue", 2, "Receita (fluxo de caixa)", "Venda de produtos e serviços", "money", "product_sales.amount_paid", cashProducts, productBreakdown),
+    makeLine("cash_gross_revenue", "section_cash_revenue", 2, "Receita (fluxo de caixa)", "Receita bruta de caixa", "money", "Créditos vendidos + produtos/serviços vendidos", cashRevenue, {
+      by_source: [
+        { label: "Créditos de horas vendidos", amount: cashCredits, valueType: "money" },
+        { label: "Produtos/serviços vendidos", amount: cashProducts, valueType: "money" },
+      ],
+      source_share: [
+        { label: "Créditos de horas vendidos", amount: cashRevenue ? roundMoney((cashCredits / cashRevenue) * 100) : 0, valueType: "percent" },
+        { label: "Produtos/serviços vendidos", amount: cashRevenue ? roundMoney((cashProducts / cashRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+    makeLine("section_commercial_deductions", null, 1, "Deduções e Perdas Comerciais", "Deduções e Perdas Comerciais", "money", "", commercialDeductions),
+    makeLine("payment_fees", "section_commercial_deductions", 2, "Deduções e Perdas Comerciais", "Taxas/custos de recebimento", "money", "Custos fixos e percentuais por método", paymentFees, {
+      payment_fees: [
+        { label: "Créditos de horas", amount: roundMoney(-1 * paymentFeesCredits), valueType: "money" },
+        { label: "Produtos/serviços", amount: roundMoney(-1 * paymentFeesProducts), valueType: "money" },
+        { label: "Total", amount: paymentFees, valueType: "money" },
+      ],
+    }),
+    makeLine("allocated_enrollment_cost", "section_commercial_deductions", 2, "Deduções e Perdas Comerciais", "Custo de matrícula alocado", "money", "Custo integral no primeiro crédito comprado pelo aluno", enrollmentAllocated, signedBreakdown(enrollmentCost.breakdown, -1)),
+    makeLine("total_commercial_deductions", "section_commercial_deductions", 2, "Deduções e Perdas Comerciais", "Total de deduções e perdas comerciais", "money", "Soma das deduções e perdas comerciais", commercialDeductions, {
+      total: [{ label: "Total", amount: commercialDeductions, valueType: "money" }],
+    }),
+    makeLine("section_variable_costs", null, 1, "Custos Variáveis", "Custos Variáveis", "money", "", variableCosts),
+    makeLine("instructor_variable_transfer", "section_variable_costs", 2, "Custos Variáveis", "Repasse variável de instrutores", "money", "flight_instructor_payments.total_calculated", instructorVariable, {
+      instructors: monthPayments.map((payment) => ({
+        label: userLabel(payment.instructor_user_id, data.usersById, data.profilesByUserId),
+        amount: roundMoney(-1 * numValue(payment.total_calculated)),
+        valueType: "money",
+      })),
+      total: [{ label: "Total", amount: instructorVariable, valueType: "money" }],
+    }),
+    makeLine("fuel_cost", "section_variable_costs", 2, "Custos Variáveis", "Abastecimentos / combustível", "money", "aircraft_fuelings.total_value", fuelCost, {
+      fuel: [
+        { label: "Litros", amount: roundMoney(fuelLiters), valueType: "number" },
+        { label: "Preço médio por litro", amount: fuelLiters ? roundMoney(fuelCost / fuelLiters) : 0, valueType: "money" },
+        { label: "Custo por hora voada", amount: totalHours ? roundMoney(fuelCost / totalHours) : 0, valueType: "money" },
+        { label: "Total", amount: fuelCost, valueType: "money" },
+      ],
+    }),
+    makeLine("work_order_cost", "section_variable_costs", 2, "Custos Variáveis", "Manutenção real / OS", "money", "Peças + mão de obra + outros", workOrderTotal, {
+      work_orders: [
+        { label: "Peças", amount: roundMoney(-1 * workOrderParts), valueType: "money" },
+        { label: "Mão de obra", amount: roundMoney(-1 * workOrderLabor), valueType: "money" },
+        { label: "Outros custos", amount: roundMoney(-1 * workOrderOther), valueType: "money" },
+        { label: "Total", amount: workOrderTotal, valueType: "money" },
+      ],
+    }),
+    makeLine("total_variable_costs", "section_variable_costs", 2, "Custos Variáveis", "Total de custos variáveis", "money", "Soma dos custos variáveis", variableCosts, {
+      total: [{ label: "Total", amount: variableCosts, valueType: "money" }],
+    }),
+    makeLine("section_operational_margin", null, 1, "Margem Operacional", "Margem Operacional", "money", "", operationalMargin),
+    makeLine("operational_margin_result", "section_operational_margin", 2, "Margem Operacional", "Margem Operacional", "money", "Receita + deduções/perdas comerciais + custos variáveis", operationalMargin, {
+      margin: [
+        { label: "Valor", amount: operationalMargin, valueType: "money" },
+        { label: "Margem operacional percentual", amount: grossRevenue ? roundMoney((operationalMargin / grossRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+    makeLine("section_fixed_costs", null, 1, "Custos Fixos", "Custos Fixos", "money", "", fixedCosts),
+    makeLine("instructor_fixed_cost", "section_fixed_costs", 2, "Custos Fixos", "Custo fixo mensal de instrutores", "money", "Custos fixos mensais configurados", instructorFixed, {
+      instructors: data.instructorCosts
+        .filter((item) => numValue(item.monthly_fixed_cost) > 0)
+        .map((item) => ({ label: userLabel(item.instructor_user_id, data.usersById, data.profilesByUserId), amount: roundMoney(-1 * numValue(item.monthly_fixed_cost)), valueType: "money" })),
+      per_hour: [{ label: "Custo fixo por hora voada", amount: totalHours ? roundMoney(instructorFixed / totalHours) : 0, valueType: "money" }],
+    }),
+    makeLine("aircraft_fixed_cost", "section_fixed_costs", 2, "Custos Fixos", "Custos fixos das aeronaves", "money", "Hangaragem + seguro + leasing + outros custos fixos", aircraftFixed, {
+      aircrafts: data.aircrafts
+        .filter((aircraft) => flownAircraftIds.has(aircraft.$id))
+        .map((aircraft) => ({ label: aircraft.registration || aircraft.$id, amount: roundMoney(-1 * aircraftFixedCost(aircraft)), valueType: "money" })),
+      total: [{ label: "Total", amount: aircraftFixed, valueType: "money" }],
+    }),
+    makeLine("total_fixed_costs", "section_fixed_costs", 2, "Custos Fixos", "Total de custos fixos", "money", "Soma dos custos fixos", fixedCosts, {
+      total: [{ label: "Total", amount: fixedCosts, valueType: "money" }],
+    }),
+    makeLine("section_ebitda", null, 1, "EBITDA (Resultado Operacional)", "EBITDA (Resultado Operacional)", "money", "", ebitda),
+    makeLine("ebitda_result", "section_ebitda", 2, "EBITDA (Resultado Operacional)", "EBITDA (Resultado Operacional)", "money", "Margem Operacional + Custos Fixos", ebitda, {
+      margin: [
+        { label: "Valor", amount: ebitda, valueType: "money" },
+        { label: "Margem EBITDA percentual", amount: grossRevenue ? roundMoney((ebitda / grossRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+    makeLine("section_taxes", null, 1, "Impostos", "Impostos", "money", "", totalTaxes),
+    makeLine("revenue_tax", "section_taxes", 2, "Impostos", "Imposto sobre faturamento", "money", "Receita bruta x alíquota", revenueTax, {
+      taxes: [
+        { label: "Imposto sobre voos", amount: flightRevenueTax, valueType: "money" },
+        { label: "Imposto sobre produtos/serviços", amount: productRevenueTax, valueType: "money" },
+        { label: "Total", amount: revenueTax, valueType: "money" },
+      ],
+    }),
+    makeLine("gross_profit_tax", "section_taxes", 2, "Impostos", "Imposto sobre margem operacional", "money", "MAX(0, margem operacional) x alíquota", grossProfitTax, {
+      tax: [
+        { label: "Imposto calculado", amount: grossProfitTax, valueType: "money" },
+        { label: "Base de cálculo", amount: operationalMargin, valueType: "money" },
+      ],
+    }),
+    makeLine("net_profit_tax", "section_taxes", 2, "Impostos", "Imposto sobre lucro líquido", "money", "MAX(0, EBITDA + impostos anteriores) x alíquota", netProfitTax, {
+      tax: [{ label: "Valor do imposto", amount: netProfitTax, valueType: "money" }],
+    }),
+    makeLine("total_taxes", "section_taxes", 2, "Impostos", "Total de impostos", "money", "Soma dos impostos", totalTaxes, {
+      tax: [{ label: "Total", amount: totalTaxes, valueType: "money" }],
+    }),
+    makeLine("section_net_profit", null, 1, "Lucro Líquido", "Lucro Líquido", "money", "", finalNet),
+    makeLine("net_profit_before_tax", "section_net_profit", 2, "Lucro Líquido", "Resultado antes do imposto final", "money", "EBITDA + impostos sobre faturamento/margem", netBeforeTax, {
+      margin: [
+        { label: "Valor", amount: netBeforeTax, valueType: "money" },
+        { label: "Margem antes do imposto final", amount: grossRevenue ? roundMoney((netBeforeTax / grossRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+    makeLine("final_net_result", "section_net_profit", 2, "Lucro Líquido", "Resultado líquido final", "money", "EBITDA + impostos", finalNet, {
+      margin: [
+        { label: "Valor", amount: finalNet, valueType: "money" },
+        { label: "Margem líquida final", amount: grossRevenue ? roundMoney((finalNet / grossRevenue) * 100) : 0, valueType: "percent" },
+      ],
+    }),
+  ];
+
+  const signedLineRows = injectManualDreLines(lineRows, manualLines);
+  const pendingPurchased = roundHours(data.credits.reduce((acc, credit) => acc + numValue(credit.hours), 0));
+  const pendingConsumed = roundHours(flights.reduce((acc, flight) => acc + flight.hours, 0));
+  const cards = [
+    { key: "cash_received", label: "Caixa recebido no período", valueType: "money", total: roundMoney(cashCredits + cashProducts), details: { total: [{ label: "Créditos de horas vendidos", amount: cashCredits, valueType: "money" }, { label: "Produtos/serviços vendidos", amount: cashProducts, valueType: "money" }, { label: "Total", amount: roundMoney(cashCredits + cashProducts), valueType: "money" }] } },
+    { key: "student_pending_credit", label: "Credito pendente dos alunos", valueType: "hours", total: roundHours(Math.max(0, pendingPurchased - pendingConsumed)), details: { total: [{ label: "Total comprado", amount: pendingPurchased, valueType: "hours" }, { label: "Total consumido", amount: pendingConsumed, valueType: "hours" }, { label: "Saldo pendente", amount: roundHours(Math.max(0, pendingPurchased - pendingConsumed)), valueType: "hours" }] } },
+    { key: "flown_hours", label: "Horas voadas no periodo", valueType: "hours", total: totalHours, details: { total: [{ label: "Total", amount: totalHours, valueType: "hours" }] } },
+    { key: "revenue_per_hour", label: "Receita media por hora voada", valueType: "money", total: totalHours ? roundMoney(flightRevenue / totalHours) : 0, details: {} },
+    { key: "cost_per_hour", label: "Custo medio por hora voada", valueType: "money", total: totalHours ? roundMoney(totalOperationalCosts / totalHours) : 0, details: {} },
+    { key: "result_per_hour", label: "Resultado por hora voada", valueType: "money", total: totalHours ? roundMoney(finalNet / totalHours) : 0, details: {} },
+    { key: "fuel_per_hour", label: "Combustivel por hora", valueType: "money", total: totalHours ? roundMoney(fuelCost / totalHours) : 0, details: {} },
+    { key: "instructor_per_hour", label: "Instrutor por hora", valueType: "money", total: totalHours ? roundMoney((instructorVariable + instructorFixed) / totalHours) : 0, details: {} },
+    { key: "maintenance_per_hour", label: "Manutenção por hora", valueType: "money", total: totalHours ? roundMoney(workOrderTotal / totalHours) : 0, details: {} },
+  ];
+
+  return { lines: signedLineRows, cards };
+}
+
+function mergeMonthlyLines(months, monthlyRows) {
+  const byKey = new Map();
+  for (const month of months) {
+    for (const row of monthlyRows.get(month.key)?.lines || []) {
+      const line = byKey.get(row.key) || {
+        key: row.key,
+        parentKey: row.parentKey,
+        level: row.level,
+        section: row.section,
+        label: row.label,
+        valueType: row.valueType,
+        formulaLabel: row.formulaLabel,
+        values: {},
+        breakdown: {},
+        ...(row.isManual ? { isManual: true, manualLineId: row.manualLineId || row.key.replace(/^manual_/, "") } : {}),
+      };
+      line.values[month.key] = row.amount;
+      if (row.breakdown && Object.keys(row.breakdown).length > 0) line.breakdown[month.key] = row.breakdown;
+      byKey.set(row.key, line);
+    }
+  }
+  for (const line of byKey.values()) {
+    for (const month of months) {
+      if (!(month.key in line.values)) line.values[month.key] = 0;
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function mergeMonthlyCards(months, monthlyRows) {
+  const byKey = new Map();
+  for (const month of months) {
+    for (const card of monthlyRows.get(month.key)?.cards || []) {
+      const merged = byKey.get(card.key) || {
+        key: card.key,
+        label: card.label,
+        valueType: card.valueType,
+        values: {},
+        total: 0,
+        details: {},
+      };
+      merged.values[month.key] = card.total;
+      merged.total = roundMoney(merged.total + card.total);
+      merged.details[month.key] = card.details?.total || [];
+      byKey.set(card.key, merged);
+    }
+  }
+  for (const card of byKey.values()) {
+    for (const month of months) {
+      if (!(month.key in card.values)) card.values[month.key] = 0;
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+async function findFinancialClosings(months) {
+  const docs = await safeListAllDocuments(FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("month", months),
+  ]);
+  const latestByMonth = new Map();
+  for (const doc of docs) {
+    const current = latestByMonth.get(doc.month);
+    if (!current || String(doc.$updatedAt || doc.$createdAt || "").localeCompare(String(current.$updatedAt || current.$createdAt || "")) > 0) {
+      latestByMonth.set(doc.month, doc);
+    }
+  }
+  return latestByMonth;
+}
+
+async function loadClosedFinancialMonth(closing) {
+  const lineDocs = await safeListAllDocuments(FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID, [
+    sdk.Query.equal("closing_id", [closing.$id]),
+    sdk.Query.orderAsc("sort_order"),
+  ]);
+  return {
+    lines: lineDocs.map((doc) => {
+      const lineKey = doc.line_key || "";
+      return makeLine(
+        lineKey,
+        doc.parent_line_key || null,
+        numValue(doc.level),
+        doc.section || "",
+        doc.label || "",
+        doc.value_type || "money",
+        doc.formula_label || "",
+        numValue(doc.amount),
+        parseMaybeJson(doc.breakdown_json, {}),
+        lineKey.startsWith("manual_") ? { isManual: true, manualLineId: lineKey.replace(/^manual_/, "") } : {},
+      );
+    }),
+    cards: parseMaybeJson(closing.cards_json, []),
+  };
+}
+
+async function buildFinancialDre(params) {
+  const monthKeys = listMonthKeys(params.fromMonth, params.toMonth);
+  const closings = await findFinancialClosings(monthKeys);
+  const months = monthKeys.map((key) => {
+    const closing = closings.get(key);
+    const status = closing?.status === "closed" ? "closed" : closing?.status === "reopened" ? "reopened" : "open";
+    return { key, label: monthLabel(key), status, closingId: closing?.$id || null, isPast: isPastMonth(key) };
+  });
+  const data = await fetchFinancialBaseData(monthKeys[0], monthKeys[monthKeys.length - 1]);
+  const monthlyRows = new Map();
+  for (const month of months) {
+    const closing = closings.get(month.key);
+    if (closing?.status === "closed") {
+      monthlyRows.set(month.key, await loadClosedFinancialMonth(closing));
+    } else {
+      monthlyRows.set(month.key, computeOpenFinancialMonth(month.key, data));
+    }
+  }
+  return {
+    fromMonth: monthKeys[0],
+    toMonth: monthKeys[monthKeys.length - 1],
+    months,
+    lines: mergeMonthlyLines(months, monthlyRows),
+    cards: mergeMonthlyCards(months, monthlyRows),
+    generatedAt: nowIso(),
+  };
+}
+
+async function deleteClosingLines(closingId) {
+  const docs = await safeListAllDocuments(FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID, [sdk.Query.equal("closing_id", [closingId])]);
+  await Promise.all(docs.map((doc) => databases.deleteDocument(DATABASE_ID, FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID, doc.$id).catch(() => null)));
+}
+
+async function closeFinancialMonth(actorUserId, month, notes) {
+  const key = dreMonthKey(month);
+  if (!isPastMonth(key)) throw Object.assign(new Error("Somente meses passados podem ser fechados."), { status: 400 });
+  const data = await fetchFinancialBaseData(key, key);
+  const computed = computeOpenFinancialMonth(key, data);
+  const existing = (await findFinancialClosings([key])).get(key);
+  const payload = {
+    school_id: SCHOOL_ID,
+    month: key,
+    status: "closed",
+    closed_at: nowIso(),
+    closed_by: actorUserId,
+    reopened_at: existing?.reopened_at || null,
+    reopened_by: existing?.reopened_by || null,
+    notes: String(notes || "").slice(0, 2048),
+    cards_json: JSON.stringify(computed.cards),
+  };
+  const closing = existing
+    ? await databases.updateDocument(DATABASE_ID, FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID, existing.$id, payload)
+    : await databases.createDocument(DATABASE_ID, FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID, sdk.ID.unique(), payload, ADMIN_DOC_PERMS);
+  await deleteClosingLines(closing.$id);
+  for (let index = 0; index < computed.lines.length; index += 1) {
+    const line = computed.lines[index];
+    await databases.createDocument(
+      DATABASE_ID,
+      FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID,
+      sdk.ID.unique(),
+      {
+        closing_id: closing.$id,
+        line_key: line.key,
+        parent_line_key: line.parentKey,
+        level: line.level,
+        section: line.section,
+        label: line.label,
+        amount: line.amount,
+        value_type: line.valueType,
+        formula_label: line.formulaLabel,
+        breakdown_json: JSON.stringify(line.breakdown || {}),
+        sort_order: index,
+      },
+      ADMIN_DOC_PERMS,
+    );
+  }
+  return buildFinancialDre({ fromMonth: key, toMonth: key });
+}
+
+async function reopenFinancialMonth(actorUserId, month) {
+  const key = dreMonthKey(month);
+  const existing = (await findFinancialClosings([key])).get(key);
+  if (!existing) return buildFinancialDre({ fromMonth: key, toMonth: key });
+  await databases.updateDocument(DATABASE_ID, FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID, existing.$id, {
+    status: "reopened",
+    reopened_at: nowIso(),
+    reopened_by: actorUserId,
+  });
+  return buildFinancialDre({ fromMonth: key, toMonth: key });
+}
+
+async function findSchoolCostsDocument() {
+  const res = await databases.listDocuments(DATABASE_ID, SCHOOL_COSTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.limit(1),
+  ]);
+  return res.documents?.[0] || null;
+}
+
+async function saveFinancialDreManualValue(actorUserId, month, lineId, amount) {
+  const key = dreMonthKey(month);
+  const closing = (await findFinancialClosings([key])).get(key);
+  if (closing?.status === "closed") throw Object.assign(new Error("Mes fechado nao permite edicao manual da DRE."), { status: 400 });
+  const safeLineId = String(lineId || "").trim();
+  if (!safeLineId) throw Object.assign(new Error("Lancamento manual nao informado."), { status: 400 });
+  const doc = await findSchoolCostsDocument();
+  const manualLines = parseManualDreLinesDoc(doc || {});
+  if (!manualLines.some((line) => line.id === safeLineId && line.active !== false)) {
+    throw Object.assign(new Error("Lancamento manual nao encontrado."), { status: 404 });
+  }
+  const manualValues = parseManualDreValuesDoc(doc || {});
+  manualValues[key] = { ...(manualValues[key] || {}), [safeLineId]: roundMoney(amount) };
+  const payload = {
+    school_id: SCHOOL_ID,
+    manual_dre_lines_json: JSON.stringify(manualLines),
+    manual_dre_values_json: JSON.stringify(manualValues),
+    updated_at: nowIso(),
+    updated_by: actorUserId || null,
+  };
+  if (doc?.$id) {
+    await databases.updateDocument(DATABASE_ID, SCHOOL_COSTS_COLLECTION_ID, doc.$id, payload);
+  } else {
+    await databases.createDocument(DATABASE_ID, SCHOOL_COSTS_COLLECTION_ID, sdk.ID.unique(), {
+      ...payload,
+      enrollment_cost: 0,
+      payment_method_costs_json: JSON.stringify(DEFAULT_PAYMENT_METHOD_COSTS),
+      tax_config_json: JSON.stringify(parseTaxConfigDoc({})),
+    }, ADMIN_DOC_PERMS);
+  }
+  return buildFinancialDre({ fromMonth: key, toMonth: key });
+}
+
 function maneuverCollectionId(kind) {
   if (kind === "section") return MANEUVERS_SECTIONS_COLLECTION_ID;
   if (kind === "subsection") return MANEUVERS_SUBSECTIONS_COLLECTION_ID;
@@ -2269,7 +3334,7 @@ const EMAIL_BRAND_SETTINGS_KEY = "emailBrand";
 const SCHOOL_RULES_KEY = "schoolRules";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
-const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.cancelled", "weeklyPlan.submitted", "notice.published"];
+const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.cancelled", "weeklyPlan.submitted", "notice.published", "schedule.published"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
   sdk.Permission.update(sdk.Role.label("admin")),
@@ -2278,6 +3343,116 @@ const ADMIN_DOC_PERMS = [
 
 function cleanString(value) {
   return String(value || "").trim();
+}
+
+async function resolveActorUserId(req) {
+  const headerId = cleanString(req.headers["x-appwrite-user-id"]);
+  if (headerId) return headerId;
+  const jwt = cleanString(req.headers["x-appwrite-user-jwt"]);
+  if (!jwt) return null;
+  const endpoint = process.env.APPWRITE_FUNCTION_API_ENDPOINT || process.env.APPWRITE_ENDPOINT || "";
+  const projectId = process.env.APPWRITE_FUNCTION_PROJECT_ID || process.env.APPWRITE_PROJECT_ID || "";
+  if (!endpoint || !projectId) return null;
+  const userClient = new sdk.Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
+  const account = new sdk.Account(userClient);
+  try {
+    const user = await account.get();
+    return user?.$id || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveFlightNotificationRecipients(safeEvent, flight) {
+  const fromEvent = Array.isArray(safeEvent.recipientUserIds)
+    ? safeEvent.recipientUserIds.map(cleanString).filter(Boolean)
+    : [];
+  const data = safeEvent.data && typeof safeEvent.data === "object" ? safeEvent.data : {};
+  const fromData = cleanString(data.studentUserId);
+  const fromFlight = cleanString(flight?.studentUserId);
+  return Array.from(new Set([...fromEvent, fromData, fromFlight].filter(Boolean)));
+}
+
+function base64UrlEncode(value) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function signWorkerToken(payload) {
+  if (!WORKER_SECRET) throw Object.assign(new Error("Worker secret nao configurado."), { status: 500 });
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  const signature = crypto.createHmac("sha256", WORKER_SECRET).update(encoded).digest("hex");
+  return `${encoded}.${signature}`;
+}
+
+async function requireVideoUploader(actorUserId, flightId) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const [profile, actor] = await Promise.all([getProfileByUserId(actorUserId), users.get({ userId: actorUserId })]);
+  const profileRole = normalizeRole(profile?.role);
+  const labelRole = deriveRoleFromLabels(actor?.labels || []);
+  const role = profileRole === "aluno" ? labelRole : profileRole;
+  if (role !== "admin" && role !== "instrutor") {
+    throw Object.assign(new Error("Apenas admin ou instrutor pode enviar videos."), { status: 403 });
+  }
+  if (role === "admin") return;
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, [
+    sdk.Query.select(["instructor_user_id"]),
+  ]);
+  if (flight.instructor_user_id !== actorUserId) {
+    throw Object.assign(new Error("Instrutor nao vinculado a este voo."), { status: 403 });
+  }
+}
+
+async function getVideoWorkerConfig(actorUserId, payload) {
+  if (!CF_WORKER_URL || !WORKER_SECRET) {
+    throw Object.assign(new Error("Worker de video nao configurado."), { status: 500 });
+  }
+  const mode = cleanString(payload.mode);
+  const flightId = cleanString(payload.flightId);
+  await requireVideoUploader(actorUserId, flightId);
+
+  const now = Math.floor(Date.now() / 1000);
+  const base = {
+    sub: actorUserId,
+    flightId,
+    iat: now,
+    exp: now + 15 * 60,
+    nonce: crypto.randomUUID(),
+  };
+
+  if (mode === "upload") {
+    const rawKey = cleanString(payload.key);
+    if (!rawKey || rawKey.includes("..") || rawKey.includes("/") || !rawKey.endsWith(".mp4")) {
+      throw Object.assign(new Error("Chave de video invalida."), { status: 400 });
+    }
+    const expectedPrefix = `flight-${flightId}-`;
+    if (!rawKey.startsWith(expectedPrefix)) {
+      throw Object.assign(new Error("Chave de video fora do escopo do voo."), { status: 400 });
+    }
+    return {
+      workerUrl: CF_WORKER_URL,
+      uploadToken: signWorkerToken({ ...base, action: "upload", key: `flights/${rawKey}` }),
+    };
+  }
+
+  if (mode === "list") {
+    const prefix = cleanString(payload.prefix);
+    const expectedPrefix = `flights/flight-${flightId}-`;
+    if (!prefix || prefix !== expectedPrefix) {
+      throw Object.assign(new Error("Prefixo de listagem invalido."), { status: 400 });
+    }
+    return {
+      workerUrl: CF_WORKER_URL,
+      uploadToken: signWorkerToken({ ...base, action: "list", prefix }),
+    };
+  }
+
+  throw Object.assign(new Error("Modo de worker invalido."), { status: 400 });
 }
 
 function nowIso() {
@@ -2294,6 +3469,16 @@ function escapeHtml(value) {
 
 function stripTags(value) {
   return String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function sanitizeHtml(value) {
+  let html = String(value || "");
+  html = html.replace(/<\s*(script|iframe|object|embed|form|input|button|meta|link|style)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "");
+  html = html.replace(/<\s*(script|iframe|object|embed|form|input|button|meta|link|style)\b[^>]*\/?>/gi, "");
+  html = html.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  html = html.replace(/\s+(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"');
+  html = html.replace(/\s+(href|src)\s*=\s*javascript:[^\s>]+/gi, ' $1="#"');
+  return html.trim();
 }
 
 function endpointHash(endpoint) {
@@ -2713,6 +3898,20 @@ function formatFlightWhen(flight, data) {
   return date || time || "horário a confirmar";
 }
 
+function formatDurationHours(durationHours) {
+  const h = Math.floor(durationHours);
+  const m = Math.round((durationHours - h) * 60);
+  if (h > 0 && m > 0) return `${h}h${String(m).padStart(2, "0")}`;
+  if (h > 0) return `${h}h`;
+  return `${m}min`;
+}
+
+function formatFlightDateLabel(isoDate) {
+  const [y, mo, d] = (isoDate || "").split("-");
+  if (!y || !mo || !d) return isoDate || "";
+  return `${d}/${mo}/${y}`;
+}
+
 function buildNotificationMessage(event, flight) {
   const type = cleanString(event.eventType);
   const data = event.data && typeof event.data === "object" ? event.data : {};
@@ -2788,6 +3987,20 @@ function buildNotificationMessage(event, flight) {
       url: cleanString(data.ctaUrl) || url,
     };
   }
+  if (type === "schedule.published") {
+    const weekLabel = cleanString(data.weekLabel) || cleanString(data.weekStart) || "esta semana";
+    const flights = Array.isArray(data.flights) ? data.flights : [];
+    return {
+      eyebrow: "Escala de voos",
+      title: "Sua escala está confirmada",
+      intro: `A escala de voos para ${weekLabel} foi publicada.`,
+      body: "Confira abaixo os voos programados para você nesta semana.",
+      details: [],
+      flights,
+      ctaLabel: "Ver agenda",
+      url,
+    };
+  }
   return {
     eyebrow: "Notificação",
     title: "Nova notificação",
@@ -2834,6 +4047,16 @@ function emailHtml(message, brand) {
       </table>
     `
     : "";
+  const flightsHtml = Array.isArray(message.flights) && message.flights.length > 0
+    ? `<div style="margin-top:20px">${message.flights.map((f) => {
+        const personRow = f.instructorName
+          ? `<tr><td style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.04em;width:40%;vertical-align:top;padding:3px 0">Instrutor</td><td style="color:#0f172a;font-size:14px;font-weight:700;padding:3px 0">${escapeHtml(String(f.instructorName))}</td></tr>`
+          : f.studentName
+          ? `<tr><td style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.04em;width:40%;vertical-align:top;padding:3px 0">Aluno</td><td style="color:#0f172a;font-size:14px;font-weight:700;padding:3px 0">${escapeHtml(String(f.studentName))}</td></tr>`
+          : "";
+        return `<div style="margin-bottom:12px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px"><div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e2e8f0">${escapeHtml(formatFlightDateLabel(String(f.date || "")))}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.04em;width:40%;vertical-align:top;padding:3px 0">Início</td><td style="color:#0f172a;font-size:14px;font-weight:700;padding:3px 0">${escapeHtml(String(f.startTime || "—"))}</td></tr><tr><td style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.04em;vertical-align:top;padding:3px 0">Duração</td><td style="color:#0f172a;font-size:14px;font-weight:700;padding:3px 0">${escapeHtml(formatDurationHours(Number(f.durationHours) || 0))}</td></tr><tr><td style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.04em;vertical-align:top;padding:3px 0">Avião</td><td style="color:#0f172a;font-size:14px;font-weight:700;padding:3px 0">${escapeHtml(String(f.aircraft || "—"))}</td></tr>${personRow}</table></div>`;
+      }).join("")}</div>`
+    : "";
   return `
     <div style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 12px">
@@ -2859,7 +4082,7 @@ function emailHtml(message, brand) {
                       ? `<div style="margin-top:20px;padding:14px 16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:14px;line-height:1.6">${escapeHtml(customNotice)}</div>`
                       : ""
                   }
-                  ${detailsHtml}
+                  ${flightsHtml || detailsHtml}
                   ${
                     actionUrl
                       ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:26px">
@@ -3019,6 +4242,35 @@ async function isAdmin(actorUserId) {
   }
 }
 
+const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.cancelled"]);
+
+async function authorizeDispatchEvent(actorUserId, event) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  if (await isAdmin(actorUserId)) return;
+
+  const safeEvent = event && typeof event === "object" ? event : {};
+  const eventType = cleanString(safeEvent.eventType);
+
+  if (eventType === "weeklyPlan.submitted") return;
+
+  if (FLIGHT_NOTIFICATION_EVENTS.has(eventType)) {
+    const flightId = cleanString(safeEvent.flightId);
+    if (!flightId) throw Object.assign(new Error("flightId e obrigatorio para notificacoes de voo."), { status: 400 });
+    const flight = await getFlightContext(flightId);
+    const profile = await getProfileByUserId(actorUserId);
+    const role = normalizeRole(profile?.role);
+    const linked = [flight?.studentUserId, flight?.instructorUserId].filter(Boolean);
+    if (role === "instrutor" && linked.includes(actorUserId)) return;
+    throw Object.assign(new Error("Sem permissao para disparar notificacao deste voo."), { status: 403 });
+  }
+
+  if (eventType === "notice.published") {
+    throw Object.assign(new Error("Apenas admin pode disparar aviso."), { status: 403 });
+  }
+
+  throw Object.assign(new Error("Apenas admin pode disparar este evento."), { status: 403 });
+}
+
 async function dispatchNotificationEvent(actorUserId, event) {
   const safeEvent = event && typeof event === "object" ? event : {};
   const eventType = cleanString(safeEvent.eventType);
@@ -3035,16 +4287,26 @@ async function dispatchNotificationEvent(actorUserId, event) {
     if (recipients.length === 0) recipients = await listAllProfileUserIds();
   } else if (eventType === "weeklyPlan.submitted") {
     if (recipients.length === 0 && actorUserId) recipients = [actorUserId];
+  } else if (eventType === "schedule.published") {
+    if (!admin) throw Object.assign(new Error("Apenas admin pode publicar escala."), { status: 403 });
+    // recipients vêm do payload recipientUserIds
   } else if (safeEvent.flightId) {
     flight = await getFlightContext(safeEvent.flightId);
-    recipients = [flight?.studentUserId, flight?.instructorUserId].filter(Boolean);
-    if (!admin && !recipients.includes(actorUserId)) {
+    if (FLIGHT_NOTIFICATION_EVENTS.has(eventType)) {
+      recipients = resolveFlightNotificationRecipients(safeEvent, flight);
+    } else {
+      recipients = [flight?.studentUserId, flight?.instructorUserId].filter(Boolean);
+    }
+    if (!admin && ![flight?.studentUserId, flight?.instructorUserId].filter(Boolean).includes(actorUserId)) {
       throw Object.assign(new Error("Sem permissao para disparar notificacao deste voo."), { status: 403 });
     }
   } else if (!admin) {
     throw Object.assign(new Error("Apenas admin pode disparar este evento."), { status: 403 });
   }
   recipients = Array.from(new Set(recipients));
+  if (FLIGHT_NOTIFICATION_EVENTS.has(eventType) && recipients.length === 0) {
+    throw Object.assign(new Error("Nenhum aluno vinculado ao voo para notificar."), { status: 422 });
+  }
 
   const requestedChannels = Array.isArray(safeEvent.channels) && safeEvent.channels.length > 0
     ? safeEvent.channels.filter((channel) => NOTIFICATION_CHANNELS.includes(channel))
@@ -3052,6 +4314,7 @@ async function dispatchNotificationEvent(actorUserId, event) {
   const { publicSettings: rules } = await loadSchoolRules();
   const emailRule = rules.emailNotifications[eventType] || { enabled: true, customNotice: "" };
   const channels = requestedChannels.filter((channel) => channel !== "email" || emailRule.enabled);
+
   const { settings } = await loadEmailSettings();
   const { publicSettings: brand } = await loadEmailBrandSettings();
   const message = {
@@ -3061,7 +4324,14 @@ async function dispatchNotificationEvent(actorUserId, event) {
   const usersById = await getUserMapByIds(recipients);
   const deliveries = [];
   for (const recipientUserId of recipients) {
-    const user = usersById.get(recipientUserId);
+    let user = usersById.get(recipientUserId);
+    if (!user?.email) {
+      try {
+        user = await users.get({ userId: recipientUserId });
+      } catch {
+        // Ignore stale references.
+      }
+    }
     for (const channel of channels) {
       if (await alreadyDelivered(dedupeKey, channel, recipientUserId)) {
         deliveries.push({ channel, recipientUserId, status: "skipped" });
@@ -3339,6 +4609,7 @@ async function listBroadcastMessages({ limit, offset } = {}) {
 }
 
 async function createAndSendBroadcast(actorUserId, { segmentId, subject, bodyHtml, testEmail, confirmSend }) {
+  const safeBodyHtml = sanitizeHtml(bodyHtml);
   if (!BROADCAST_SEGMENTS_COLLECTION_ID || !BROADCAST_MESSAGES_COLLECTION_ID)
     throw Object.assign(new Error("Coleções de broadcast não configuradas."), { status: 500 });
   if (!segmentId) throw Object.assign(new Error("Segmento não informado."), { status: 400 });
@@ -3362,7 +4633,7 @@ async function createAndSendBroadcast(actorUserId, { segmentId, subject, bodyHtm
       from,
       to: [to],
       subject: `[TESTE] ${cleanString(subject)}`,
-      html: bodyHtml,
+      html: safeBodyHtml,
     }));
     if (result?.error) throw Object.assign(new Error(result.error.message || "Falha ao enviar email de teste."), { status: 502 });
     return null;
@@ -3376,7 +4647,7 @@ async function createAndSendBroadcast(actorUserId, { segmentId, subject, bodyHtm
     audienceId,
     from,
     subject: cleanString(subject),
-    html: bodyHtml,
+    html: safeBodyHtml,
     name: cleanString(subject),
   });
   if (broadcastResult.error) throw Object.assign(new Error(broadcastResult.error.message || "Falha ao criar broadcast no Resend."), { status: 502 });
@@ -3394,7 +4665,7 @@ async function createAndSendBroadcast(actorUserId, { segmentId, subject, bodyHtm
       segment_name: segDoc.name || "",
       resend_broadcast_id: broadcastId,
       subject: cleanString(subject),
-      body_html: bodyHtml,
+      body_html: safeBodyHtml,
       sent_at: nowIso(),
       sent_by: actorUserId || null,
       recipient_count: segDoc.member_count ?? 0,
@@ -3431,6 +4702,17 @@ function sampleEventForTemplate(templateType) {
       data: {
         title: "Novo comunicado da escola",
         contentMd: "Confira as orientações operacionais para os próximos voos da semana.",
+      },
+    },
+    "schedule.published": {
+      eventType: "schedule.published",
+      data: {
+        weekStart: "2026-05-18",
+        weekLabel: "18 a 23 de maio",
+        flights: [
+          { date: "2026-05-19", startTime: "09:00", durationHours: 1.5, aircraft: "PS-ABC", instructorName: "João Silva" },
+          { date: "2026-05-21", startTime: "14:30", durationHours: 2, aircraft: "PS-DEF", instructorName: "Maria Costa" },
+        ],
       },
     },
   };
@@ -3473,7 +4755,7 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 500, { message: "Missing APPWRITE_DATABASE_ID or APPWRITE_PROFILES_COLLECTION_ID." });
     }
 
-    const actorUserId = req.headers["x-appwrite-user-id"];
+    const actorUserId = await resolveActorUserId(req);
     const payload = req.bodyJson || {};
     const action = String(payload.action || "listSummaries");
     log(`[action=${action}] userId=${actorUserId || "(none)"}`);
@@ -3489,8 +4771,17 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "dispatchEvent") {
+      await authorizeDispatchEvent(actorUserId, payload.event);
       const deliveries = await dispatchNotificationEvent(actorUserId, payload.event);
+      log(
+        `[dispatchEvent] type=${cleanString(payload.event?.eventType)} recipients=${deliveries.length} results=${JSON.stringify(deliveries)}`,
+      );
       return jsonResponse(res, 200, { ok: true, deliveries });
+    }
+
+    if (action === "getVideoWorkerConfig") {
+      const videoWorker = await getVideoWorkerConfig(actorUserId, payload);
+      return jsonResponse(res, 200, videoWorker);
     }
 
     if (action === "getEmailBrandSettings") {
@@ -3567,6 +4858,29 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "deleteCredit") {
       await deleteCredit(String(payload.creditId || ""), String(payload.userId || ""));
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "getFinancialDre") {
+      const dre = await buildFinancialDre({
+        fromMonth: String(payload.fromMonth || ""),
+        toMonth: String(payload.toMonth || ""),
+      });
+      return jsonResponse(res, 200, { dre });
+    }
+
+    if (action === "closeFinancialMonth") {
+      const dre = await closeFinancialMonth(actorUserId, String(payload.month || ""), String(payload.notes || ""));
+      return jsonResponse(res, 200, { dre });
+    }
+
+    if (action === "reopenFinancialMonth") {
+      const dre = await reopenFinancialMonth(actorUserId, String(payload.month || ""));
+      return jsonResponse(res, 200, { dre });
+    }
+
+    if (action === "saveFinancialDreManualValue") {
+      const dre = await saveFinancialDreManualValue(actorUserId, String(payload.month || ""), String(payload.lineId || ""), payload.amount);
+      return jsonResponse(res, 200, { dre });
     }
 
     if (action === "createManeuverSection") {
@@ -3741,3 +5055,4 @@ module.exports = async ({ req, res, log, error }) => {
     return jsonResponse(res, status, { message: err?.message || "Unexpected function error." });
   }
 };
+

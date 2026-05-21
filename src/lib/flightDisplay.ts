@@ -1,4 +1,5 @@
 import { decodeFlightRecord } from "./flightRecordCodec";
+import { flightBlockMinutesFromMeta } from "./flightHours";
 import type { SavedFlightListItem } from "./flightsDb";
 
 export type FlightDisplayInfo = {
@@ -89,10 +90,17 @@ export function buildFlightDisplayInfo(
     instructorAnac?: string;
   },
 ): FlightDisplayInfo {
-  const materializedMinutes =
-    typeof item.total_flight_minutes === "number" && item.total_flight_minutes > 0
-      ? item.total_flight_minutes
+  // Prefer block time (departure → engine cutoff) stored as materialized field.
+  // Fall back to leg-sum minutes, then to GPS duration_sec.
+  const blockMinutesMat =
+    typeof item.block_time_minutes === "number" && item.block_time_minutes > 0
+      ? item.block_time_minutes
       : null;
+  const materializedMinutes =
+    blockMinutesMat ??
+    (typeof item.total_flight_minutes === "number" && item.total_flight_minutes > 0
+      ? item.total_flight_minutes
+      : null);
   const fallbackMinutes =
     materializedMinutes ??
     (typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0);
@@ -131,7 +139,11 @@ export function buildFlightDisplayInfo(
     if (arr && airports[airports.length - 1] !== arr) airports.push(arr);
   }
   const landings = meta.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0);
-  const totalFlightMinutes = meta.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const legsSumMinutes = meta.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  // Prefer block time (departure → engine cutoff from CSV header) over sum of leg times.
+  // Block time is the authoritative duration for billing and display.
+  const blockMinutes = flightBlockMinutesFromMeta(meta);
+  const totalFlightMinutes = blockMinutes ?? legsSumMinutes;
   const durationMin =
     typeof item.duration_sec === "number" && item.duration_sec > 0
       ? Math.round(item.duration_sec / 60)

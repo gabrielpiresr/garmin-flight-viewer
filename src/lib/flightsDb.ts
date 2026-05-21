@@ -1,8 +1,8 @@
 import { Query } from "appwrite";
-import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, storage } from "./appwrite";
+import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, DEFAULT_SCHOOL_ID, storage } from "./appwrite";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 import { decodeFlightRecord, decodeFlightRecordMeta, encodeFlightRecord, type FlightRecordMeta } from "./flightRecordCodec";
+import { flightBlockMinutesFromMeta } from "./flightHours";
 import type { FlightWeightBalanceMeta } from "./weightBalance";
 import { clearFlightTelemetryMetrics, replaceFlightTelemetryMetrics } from "./flightTelemetryMetricsDb";
 import { clearFlightTelemetryAlerts, replaceFlightTelemetryAlertsForFlight } from "./flightTelemetryAlertsDb";
@@ -38,6 +38,7 @@ export type SavedFlightListItem = {
   training_snapshot_json: string | null;
   from_to: string | null;
   landings: number | null;
+  block_time_minutes: number | null;
   total_flight_minutes: number | null;
   total_miles: number | null;
   telemetry_present: boolean | null;
@@ -86,6 +87,7 @@ const LEGACY_FLIGHT_LIST_SELECT = [
 const MATERIALIZED_FLIGHT_LIST_FIELDS = [
   "from_to",
   "landings",
+  "block_time_minutes",
   "total_flight_minutes",
   "total_miles",
   "telemetry_present",
@@ -140,6 +142,7 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
     training_snapshot_json: (d.training_snapshot_json as string | null | undefined) ?? null,
     from_to: (d.from_to as string | null | undefined) ?? null,
     landings: readNumber(d.landings),
+    block_time_minutes: readNumber(d.block_time_minutes),
     total_flight_minutes: readNumber(d.total_flight_minutes),
     total_miles: readNumber(d.total_miles),
     telemetry_present: readBoolean(d.telemetry_present),
@@ -161,16 +164,35 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
   };
 }
 
+function weekStartFromFlightDate(flightDate: string | null | undefined): string | null {
+  const iso = String(flightDate ?? "").trim().slice(0, 10);
+  if (!iso) return null;
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function weekEndFromWeekStart(weekStart: string): string {
+  const start = new Date(`${weekStart}T12:00:00`);
+  start.setDate(start.getDate() + 6);
+  return start.toISOString().slice(0, 10);
+}
+
 function getScheduleDocumentFields(csvText: string): {
   schedule_week_start: string | null;
   schedule_demand_id: string | null;
 } {
   const meta = decodeFlightRecord(csvText).meta;
+  const flightDate = meta?.header?.date ?? null;
+  const weekStart = meta?.schedule?.weekStart ?? weekStartFromFlightDate(flightDate);
   if (!meta?.schedule?.demandId) {
-    return { schedule_week_start: null, schedule_demand_id: null };
+    return { schedule_week_start: weekStart, schedule_demand_id: null };
   }
   return {
-    schedule_week_start: meta.schedule.weekStart ?? null,
+    schedule_week_start: weekStart,
     schedule_demand_id: meta.schedule.demandId,
   };
 }
@@ -222,6 +244,7 @@ function buildFlightListMaterializedFields(csvText: string, fallbackMissionId?: 
     return {
       from_to: null,
       landings: null,
+      block_time_minutes: null,
       total_flight_minutes: null,
       total_miles: null,
       telemetry_present: decoded.telemetryCsv.trim().length > 0,
@@ -242,7 +265,9 @@ function buildFlightListMaterializedFields(csvText: string, fallbackMissionId?: 
     if (dep && airports[airports.length - 1] !== dep) airports.push(dep);
     if (arr && airports[airports.length - 1] !== arr) airports.push(arr);
   }
-  const totalFlightMinutes = meta.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const legsSumMinutes = meta.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const blockTimeMinutes = flightBlockMinutesFromMeta(meta);
+  const totalFlightMinutes = legsSumMinutes; // kept for legacy; block_time_minutes is the authoritative value
   const landings = meta.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0);
   const totalMiles = meta.legs.reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
   const instructorSuggestion = meta.preFlight?.instructorSuggestionMd?.trim() ?? "";
@@ -251,6 +276,7 @@ function buildFlightListMaterializedFields(csvText: string, fallbackMissionId?: 
   return {
     from_to: airports.length > 0 ? airports.join(" -> ") : null,
     landings,
+    block_time_minutes: blockTimeMinutes ?? null,
     total_flight_minutes: totalFlightMinutes,
     total_miles: Number(totalMiles.toFixed(1)),
     telemetry_present: decoded.telemetryCsv.trim().length > 0,
@@ -297,19 +323,32 @@ async function assertFlightNotLocked(id: string): Promise<{ locked: boolean; err
 
 function buildActorOwnedPermissions(actorUserId: string) {
   return [
-    Permission.read(Role.users()),
     Permission.read(Role.user(actorUserId)),
     Permission.update(Role.user(actorUserId)),
     Permission.delete(Role.user(actorUserId)),
   ];
 }
 
+/**
+ * Permissões que a sessão do browser pode gravar em documentos/arquivos.
+ * Cada papel só pode definir user próprio + seu label (Appwrite limita no cliente).
+ */
 function canSetClientSidePermission(permission: string, actorUserId: string, actorRole: UserRole): boolean {
   if (permission.includes('("any")')) return true;
-  if (permission.includes(`("user:${actorUserId}")`)) return true;
   if (permission.includes('("users")') || permission.includes('("users/unverified")')) return true;
-  if (actorRole === "admin" && permission.includes('("label:admin")')) return true;
-  if (actorRole === "instrutor" && permission.includes('("label:instrutor")')) return true;
+  if (permission.includes(`("user:${actorUserId}")`)) return true;
+  if (permission.includes(`("user:${actorUserId}/unverified")`)) return true;
+
+  if (actorRole === "admin") {
+    return permission.includes('("label:admin")');
+  }
+  if (actorRole === "instrutor") {
+    return permission.includes('("label:instrutor")');
+  }
+  if (actorRole === "aluno") {
+    return permission.includes('("label:aluno")');
+  }
+
   return false;
 }
 
@@ -337,33 +376,40 @@ function resolveClientFlightPermissions(
   return filterClientSidePermissions(full, actorUserId, actorRole);
 }
 
+/** Bucket file create — mesma leitura compartilhada que o documento do voo. */
+function resolveStorageCsvPermissions(actorUserId: string, actorRole: UserRole): string[] {
+  const perms = buildActorOwnedPermissions(actorUserId);
+  perms.push(Permission.read(Role.users()));
+  if (actorRole === "instrutor") {
+    perms.push(Permission.read(Role.label("instrutor")));
+  }
+  if (actorRole === "admin") {
+    perms.push(Permission.read(Role.label("admin")));
+    perms.push(Permission.update(Role.label("admin")));
+    perms.push(Permission.delete(Role.label("admin")));
+  }
+  return perms;
+}
+
+/** ACL gravável pelo browser; leitura compartilhada via Role.users (document security exige doc + coleção). */
 function buildFlightDocumentPermissions(
   actorUserId: string,
   actorRole: UserRole,
-  studentUserId?: string | null,
-  instructorUserId?: string | null,
+  _studentUserId?: string | null,
+  _instructorUserId?: string | null,
 ) {
-  if (actorRole === "admin") {
-    return [
-      Permission.read(Role.users()),
-      Permission.read(Role.user(actorUserId)),
-      Permission.update(Role.user(actorUserId)),
-      Permission.delete(Role.user(actorUserId)),
-      Permission.read(Role.label("admin")),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-    ];
-  }
-
   const permissions = buildActorOwnedPermissions(actorUserId);
+  permissions.push(Permission.read(Role.users()));
 
-  if (studentUserId && studentUserId !== actorUserId) {
-    permissions.push(Permission.read(Role.user(studentUserId)));
-  }
-
-  if (actorRole === "instrutor" && (instructorUserId || studentUserId)) {
+  if (actorRole === "admin") {
+    permissions.push(Permission.read(Role.label("admin")));
+    permissions.push(Permission.update(Role.label("admin")));
+    permissions.push(Permission.delete(Role.label("admin")));
+  } else if (actorRole === "instrutor") {
     permissions.push(Permission.read(Role.label("instrutor")));
     permissions.push(Permission.update(Role.label("instrutor")));
+  } else if (actorRole === "aluno") {
+    permissions.push(Permission.read(Role.label("aluno")));
   }
 
   return Array.from(new Set(permissions));
@@ -463,7 +509,66 @@ async function listFlightsBySourceFilenamePrefix(prefix: string): Promise<SavedF
   return [];
 }
 
-/** Voos de escala (auto/manual-scale) de uma semana — sem baixar CSV por documento. */
+async function listFlightsInWeekByDate(weekStart: string): Promise<SavedFlightListItem[]> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !COL_ID) return [];
+
+  const weekEnd = weekEndFromWeekStart(weekStart);
+  const pageSize = 100;
+  const collected: SavedFlightListItem[] = [];
+  let cursor: string | undefined;
+  const selectAttempts = [FLIGHT_LIST_SELECT_WITH_SCHEDULE, FLIGHT_LIST_SELECT, LEGACY_FLIGHT_LIST_SELECT];
+
+  for (const select of selectAttempts) {
+    collected.length = 0;
+    cursor = undefined;
+    try {
+      while (true) {
+        const queries = [
+          Query.select(select),
+          Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+          Query.greaterThanEqual("flight_date", [weekStart]),
+          Query.lessThanEqual("flight_date", [weekEnd]),
+          Query.orderAsc("flight_date"),
+          Query.orderAsc("start_time"),
+          Query.limit(pageSize),
+        ];
+        if (cursor) queries.push(Query.cursorAfter(cursor));
+
+        const res = await databases.listDocuments(DB_ID, COL_ID, queries);
+        collected.push(...res.documents.map(toSavedFlightListItem));
+        if (res.documents.length < pageSize) break;
+        cursor = res.documents[res.documents.length - 1]?.$id;
+        if (!cursor) break;
+      }
+      return collected;
+    } catch (e) {
+      if (!isSchemaAttributeError(e)) throw e;
+    }
+  }
+
+  return [];
+}
+
+async function listFlightsByScheduleWeekStart(weekStart: string): Promise<SavedFlightListItem[]> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !COL_ID) return [];
+
+  try {
+    const res = await databases.listDocuments(DB_ID, COL_ID, [
+      Query.select(FLIGHT_LIST_SELECT_WITH_SCHEDULE),
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+      Query.equal("schedule_week_start", [weekStart]),
+      Query.orderAsc("flight_date"),
+      Query.orderAsc("start_time"),
+      Query.limit(500),
+    ]);
+    return res.documents.map(toSavedFlightListItem);
+  } catch (e) {
+    if (isSchemaAttributeError(e)) return [];
+    throw e;
+  }
+}
+
+/** Voos da semana: por data, schedule_week_start e prefixos legados da escala. */
 export async function listScheduledFlightsForWeek(weekStart: string): Promise<{
   data: SavedFlightListItem[];
   error: Error | null;
@@ -473,12 +578,16 @@ export async function listScheduledFlightsForWeek(weekStart: string): Promise<{
   }
 
   try {
-    const [autoRows, manualRows] = await Promise.all([
+    const [byDate, byScheduleWeek, autoRows, manualRows] = await Promise.all([
+      listFlightsInWeekByDate(weekStart),
+      listFlightsByScheduleWeekStart(weekStart),
       listFlightsBySourceFilenamePrefix(`auto-scale-${weekStart}`),
       listFlightsBySourceFilenamePrefix(`manual-scale-${weekStart}`),
     ]);
     const byId = new Map<string, SavedFlightListItem>();
-    for (const row of [...autoRows, ...manualRows]) byId.set(row.id, row);
+    for (const row of [...byDate, ...byScheduleWeek, ...autoRows, ...manualRows]) {
+      byId.set(row.id, row);
+    }
     return { data: [...byId.values()], error: null };
   } catch (e) {
     return { data: [], error: e as Error };
@@ -847,12 +956,13 @@ export async function insertFlight(payload: {
       payload.studentUserId,
       payload.instructorUserId,
     );
+    const storagePermissions = resolveStorageCsvPermissions(payload.actorUserId, payload.actorRole);
 
     let csvFileId: string | null = null;
     if (storage && BUCKET_ID) {
       const blob = new Blob([payload.csv_text], { type: "text/csv" });
       const file = new File([blob], toStorageCsvFileName(payload.source_filename), { type: "text/csv" });
-      const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, permissions);
+      const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, storagePermissions);
       csvFileId = uploaded.$id;
     }
 
@@ -884,7 +994,12 @@ export async function insertFlight(payload: {
       permissions,
     });
 
-    const metricsResult = await replaceFlightTelemetryMetrics(d.$id, payload.actorUserId, payload.telemetryMetrics ?? null);
+    const metricsResult = await replaceFlightTelemetryMetrics(
+      d.$id,
+      payload.actorUserId,
+      payload.telemetryMetrics ?? null,
+      payload.actorRole,
+    );
     if (metricsResult.error) return { id: d.$id, error: metricsResult.error };
     if (Object.prototype.hasOwnProperty.call(payload, "telemetryAlertParsed")) {
       const alertsResult = await replaceFlightTelemetryAlertsForFlight({
@@ -939,19 +1054,24 @@ export async function updateFlight(id: string, payload: {
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);
-    const permissions = resolveClientFlightPermissions(
-      payload.actorUserId,
-      payload.actorRole,
-      payload.studentUserId,
-      payload.instructorUserId,
-      (current.$permissions as string[] | undefined) ?? [],
-    );
+    // Browser não pode redefinir ACL completa; manter permissões existentes do documento.
+    const permissions =
+      payload.actorRole === "admin" || payload.actorRole === "instrutor"
+        ? undefined
+        : resolveClientFlightPermissions(
+            payload.actorUserId,
+            payload.actorRole,
+            payload.studentUserId,
+            payload.instructorUserId,
+            (current.$permissions as string[] | undefined) ?? [],
+          );
+    const storagePermissions = resolveStorageCsvPermissions(payload.actorUserId, payload.actorRole);
 
     let csvFileId: string | null = null;
     if (storage && BUCKET_ID) {
       const blob = new Blob([payload.csv_text], { type: "text/csv" });
       const file = new File([blob], toStorageCsvFileName(payload.source_filename), { type: "text/csv" });
-      const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, permissions);
+      const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, storagePermissions);
       csvFileId = uploaded.$id;
     }
 
@@ -981,7 +1101,12 @@ export async function updateFlight(id: string, payload: {
       trainingMissionId: payload.trainingMissionId,
       permissions,
     });
-    const metricsResult = await replaceFlightTelemetryMetrics(id, payload.actorUserId, payload.telemetryMetrics ?? null);
+    const metricsResult = await replaceFlightTelemetryMetrics(
+      id,
+      payload.actorUserId,
+      payload.telemetryMetrics ?? null,
+      payload.actorRole,
+    );
     if (metricsResult.error) return { error: metricsResult.error };
     if (Object.prototype.hasOwnProperty.call(payload, "telemetryAlertParsed")) {
       const alertsResult = await replaceFlightTelemetryAlertsForFlight({

@@ -8,6 +8,7 @@ import {
   useRoutedTab,
   type TabRoute,
 } from "../../lib/routedTabs";
+import { PortalShellHeader } from "../PortalShellHeader";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 import { Tabs } from "../ui/Tabs";
 import type { SettingsSubTab } from "./PlatformSettingsTab";
@@ -34,30 +35,37 @@ const TelemetryAlertsTab = lazy(() =>
   import("./TelemetryAlertsTab").then((module) => ({ default: module.TelemetryAlertsTab })),
 );
 const EmailMktTab = lazy(() => import("./EmailMktTab").then((module) => ({ default: module.EmailMktTab })));
+const NoticesTab = lazy(() => import("./NoticesTab").then((module) => ({ default: module.NoticesTab })));
+const HelpCenterAdminTab = lazy(() =>
+  import("./HelpCenterAdminTab").then((module) => ({ default: module.HelpCenterAdminTab })),
+);
 const AdminSignaturesTab = lazy(() =>
   import("./AdminSignaturesTab").then((module) => ({ default: module.AdminSignaturesTab })),
 );
 const DiarioDeBordoTab = lazy(() =>
   import("./DiarioDeBordoTab").then((module) => ({ default: module.DiarioDeBordoTab })),
 );
+const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
+const AdminDreTab = lazy(() => import("./AdminDreTab").then((module) => ({ default: module.AdminDreTab })));
 
 type AdminSection =
   | "home"
   | "fleet"
-  | "telemetry-alerts"
-  | "no-telemetry"
-  | "schedule"
-  | "maneuvers"
-  | "manuals"
   | "reports"
+  | "contents"
+  | "disparos"
+  | "schedule"
   | "students"
   | "users"
   | "settings"
-  | "email-mkt"
-  | "signatures"
-  | "logbook";
+  | "logbook"
+  | "fuelings"
+  | "dre";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
+type ReportsSubTab = "flight-reports" | "signatures" | "no-telemetry" | "alerts";
+type ContentsSubTab = "maneuvers" | "manuals" | "help";
+type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
   id: AdminSection;
@@ -102,54 +110,9 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "telemetry-alerts",
-    label: "Alertas",
-    sublabel: "Telemetria por modelo",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.198 0l7.355 12.74c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.753-2.5-2.599-4.5l7.355-12.74zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    id: "no-telemetry",
-    label: "Sem telemetria",
-    sublabel: "Importar logs Garmin",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M12 2.25a.75.75 0 01.75.75v2.25a7.5 7.5 0 017.5 7.5H21a.75.75 0 010 1.5h-.75a7.5 7.5 0 01-7.5 7.5v2.25a.75.75 0 01-1.5 0v-2.25a7.5 7.5 0 01-7.5-7.5H3a.75.75 0 010-1.5h.75a7.5 7.5 0 017.5-7.5V3a.75.75 0 01.75-.75z" />
-      </svg>
-    ),
-  },
-  {
-    id: "logbook",
-    label: "Diário de bordo",
-    sublabel: "Registros ANAC por aeronave",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path
-          fillRule="evenodd"
-          d="M5.25 3A2.25 2.25 0 003 5.25v13.5A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V8.25a.75.75 0 00-.22-.53l-4.5-4.5A.75.75 0 0015.75 3H5.25zm1.5 6.75a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm0 3a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm0 3a.75.75 0 01.75-.75h5.25a.75.75 0 010 1.5H7.5a.75.75 0 01-.75-.75z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-  {
-    id: "signatures",
-    label: "Assinaturas",
-    sublabel: "Fichas pendentes de assinatura",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M7.502 6h7.128A3.375 3.375 0 0118 9.375v9.375a3 3 0 003-3V6.108c0-1.505-1.125-2.811-2.664-2.94a48.972 48.972 0 00-.673-.05A3 3 0 0015 1.5h-1.5a3 3 0 00-2.663 1.618c-.225.015-.45.032-.673.05C8.662 3.295 7.554 4.542 7.502 6zM13.5 3A1.5 1.5 0 0012 4.5h4.5A1.5 1.5 0 0015 3h-1.5z" clipRule="evenodd" />
-        <path fillRule="evenodd" d="M3 9.375C3 8.339 3.84 7.5 4.875 7.5h9.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-9.75A1.875 1.875 0 013 20.625V9.375zm4.5 2.625a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
     id: "reports",
     label: "Relatórios",
-    sublabel: "Voos, filtros e exportações",
+    sublabel: "Voos, assinaturas, alertas e telemetria",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
@@ -168,19 +131,9 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "maneuvers",
-    label: "Manobras",
-    sublabel: "Curso, artigos e materiais",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm0 8.625a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25zM15.375 12a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0zM7.5 10.875a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    id: "manuals",
-    label: "Manuais",
-    sublabel: "Arquivos e categorias",
+    id: "contents",
+    label: "Conteúdos",
+    sublabel: "Manobras, manuais e central de ajuda",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
@@ -198,23 +151,59 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "settings",
-    label: "Configurações",
-    sublabel: "Email, regras, exercícios e avisos",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567l-.108.648a7.52 7.52 0 00-1.705.707l-.535-.38a1.875 1.875 0 00-2.413.205l-.47.47a1.875 1.875 0 00-.205 2.413l.38.535a7.52 7.52 0 00-.707 1.705l-.648.108A1.875 1.875 0 001.25 12.078v.844c0 .917.663 1.699 1.567 1.85l.648.108c.173.603.412 1.174.707 1.705l-.38.535a1.875 1.875 0 00.205 2.413l.47.47c.648.648 1.67.735 2.413.205l.535-.38a7.52 7.52 0 001.705.707l.108.648a1.875 1.875 0 001.85 1.567h.844c.917 0 1.699-.663 1.85-1.567l.108-.648a7.52 7.52 0 001.705-.707l.535.38a1.875 1.875 0 002.413-.205l.47-.47c.648-.648.735-1.67.205-2.413l-.38-.535a7.52 7.52 0 00.707-1.705l.648-.108a1.875 1.875 0 001.567-1.85v-.844c0-.917-.663-1.699-1.567-1.85l-.648-.108a7.52 7.52 0 00-.707-1.705l.38-.535a1.875 1.875 0 00-.205-2.413l-.47-.47a1.875 1.875 0 00-2.413-.205l-.535.38a7.52 7.52 0 00-1.705-.707l-.108-.648a1.875 1.875 0 00-1.85-1.567h-.844zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    id: "email-mkt",
-    label: "Email MKT",
-    sublabel: "Segmentos e disparos",
+    id: "disparos",
+    label: "Disparos",
+    sublabel: "Email marketing e avisos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" />
         <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 4.836a1.5 1.5 0 001.572 0L22.5 6.908z" />
+      </svg>
+    ),
+  },
+  {
+    id: "logbook",
+    label: "Diário de bordo",
+    sublabel: "Registros ANAC por aeronave",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path
+          fillRule="evenodd"
+          d="M5.25 3A2.25 2.25 0 003 5.25v13.5A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V8.25a.75.75 0 00-.22-.53l-4.5-4.5A.75.75 0 0015.75 3H5.25zm1.5 6.75a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm0 3a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm0 3a.75.75 0 01.75-.75h5.25a.75.75 0 010 1.5H7.5a.75.75 0 01-.75-.75z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+  {
+    id: "fuelings",
+    label: "Abastecimentos",
+    sublabel: "Combustível e pagamentos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M6.75 2.25A2.25 2.25 0 004.5 4.5v16.125c0 .621.504 1.125 1.125 1.125h7.5c.621 0 1.125-.504 1.125-1.125V4.5A2.25 2.25 0 0012 2.25H6.75zm.75 3a.75.75 0 01.75-.75h2.25a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-4.5z" />
+        <path d="M15.75 7.5a.75.75 0 011.28-.53l2.25 2.25a.75.75 0 01.22.53v7.875a1.125 1.125 0 102.25 0V12a2.25 2.25 0 00-.66-1.59l-2.03-2.03a2.25 2.25 0 01-.66-1.59V6a.75.75 0 00-1.5 0v.79c0 1 .397 1.961 1.105 2.669l1.995 1.995v6.171a2.625 2.625 0 11-5.25 0V7.5z" />
+      </svg>
+    ),
+  },
+  {
+    id: "dre",
+    label: "DRE",
+    sublabel: "Relatorios financeiros",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h15.75a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
+        <path d="M7.5 15.75a.75.75 0 01-.75-.75v-3a.75.75 0 011.5 0v3a.75.75 0 01-.75.75zM12 15.75a.75.75 0 01-.75-.75V8.25a.75.75 0 011.5 0V15a.75.75 0 01-.75.75zM16.5 15.75a.75.75 0 01-.75-.75v-4.5a.75.75 0 011.5 0V15a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "settings",
+    label: "Configurações",
+    sublabel: "Regras, e-mails, exercícios e trilhas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567l-.108.648a7.52 7.52 0 00-1.705.707l-.535-.38a1.875 1.875 0 00-2.413.205l-.47.47a1.875 1.875 0 00-.205 2.413l.38.535a7.52 7.52 0 00-.707 1.705l-.648.108A1.875 1.875 0 001.25 12.078v.844c0 .917.663 1.699 1.567 1.85l.648.108c.173.603.412 1.174.707 1.705l-.38.535a1.875 1.875 0 00.205 2.413l.47.47c.648.648 1.67.735 2.413.205l.535-.38a7.52 7.52 0 001.705.707l.108.648a1.875 1.875 0 001.85 1.567h.844c.917 0 1.699-.663 1.85-1.567l.108-.648a7.52 7.52 0 001.705-.707l.535.38a1.875 1.875 0 002.413-.205l.47-.47c.648-.648.735-1.67.205-2.413l-.38-.535a7.52 7.52 0 00.707-1.705l.648-.108a1.875 1.875 0 001.567-1.85v-.844c0-.917-.663-1.699-1.567-1.85l-.648-.108a7.52 7.52 0 00-.707-1.705l.38-.535a1.875 1.875 0 00-.205-2.413l-.47-.47a1.875 1.875 0 00-2.413-.205l-.535.38a7.52 7.52 0 00-1.705-.707l-.108-.648a1.875 1.875 0 00-1.85-1.567h-.844zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -261,6 +250,99 @@ const FLEET_TABS = [
   },
 ] satisfies Array<{ id: FleetSubTab; label: string; icon: ReactNode }>;
 
+const REPORTS_TABS = [
+  {
+    id: "flight-reports",
+    label: "Relatórios",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
+        <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "signatures",
+    label: "Assinaturas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M7.502 6h7.128A3.375 3.375 0 0118 9.375v9.375a3 3 0 003-3V6.108c0-1.505-1.125-2.811-2.664-2.94a48.972 48.972 0 00-.673-.05A3 3 0 0015 1.5h-1.5a3 3 0 00-2.663 1.618c-.225.015-.45.032-.673.05C8.662 3.295 7.554 4.542 7.502 6zM13.5 3A1.5 1.5 0 0012 4.5h4.5A1.5 1.5 0 0015 3h-1.5z" clipRule="evenodd" />
+        <path fillRule="evenodd" d="M3 9.375C3 8.339 3.84 7.5 4.875 7.5h9.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-9.75A1.875 1.875 0 013 20.625V9.375zm4.5 2.625a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "no-telemetry",
+    label: "Sem telemetria",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M12 2.25a.75.75 0 01.75.75v2.25a7.5 7.5 0 017.5 7.5H21a.75.75 0 010 1.5h-.75a7.5 7.5 0 01-7.5 7.5v2.25a.75.75 0 01-1.5 0v-2.25a7.5 7.5 0 01-7.5-7.5H3a.75.75 0 010-1.5h.75a7.5 7.5 0 017.5-7.5V3a.75.75 0 01.75-.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "alerts",
+    label: "Alertas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.198 0l7.355 12.74c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.753-2.5-2.599-4.5l7.355-12.74zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+] satisfies Array<{ id: ReportsSubTab; label: string; icon: ReactNode }>;
+
+const CONTENTS_TABS = [
+  {
+    id: "maneuvers",
+    label: "Manobras",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm0 8.625a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25zM15.375 12a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0zM7.5 10.875a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "manuals",
+    label: "Manuais",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
+      </svg>
+    ),
+  },
+  {
+    id: "help",
+    label: "Central de Ajuda",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm11.378-3.917c-.89-.777-2.366-.777-3.255 0a.75.75 0 01-.988-1.129c1.454-1.272 3.776-1.272 5.23 0 1.513 1.324 1.513 3.518 0 4.842a3.75 3.75 0 01-.837.552c-.676.328-1.028.774-1.028 1.152v.75a.75.75 0 01-1.5 0v-.75c0-1.279 1.06-2.107 1.875-2.502.182-.088.351-.199.503-.331.83-.727.83-1.857 0-2.584zM12 18a.75.75 0 100-1.5.75.75 0 000 1.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+] satisfies Array<{ id: ContentsSubTab; label: string; icon: ReactNode }>;
+
+const DISPAROS_TABS = [
+  {
+    id: "email-mkt",
+    label: "Email MKT",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" />
+        <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 4.836a1.5 1.5 0 001.572 0L22.5 6.908z" />
+      </svg>
+    ),
+  },
+  {
+    id: "notices",
+    label: "Avisos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M5.25 8.25h15m-16.5 7.5h15m-1.8-13.5l-3.9 19.5m-2.1-19.5l-3.9 19.5" strokeWidth="1.5" stroke="currentColor" fill="none" />
+      </svg>
+    ),
+  },
+] satisfies Array<{ id: DisparosSubTab; label: string; icon: ReactNode }>;
+
 const FLEET_ROUTES = [
   { id: "aircraft", path: "/admin/frota/avioes", aliases: ["/admin/frota", "/admin/fleet"] },
   { id: "models", path: "/admin/frota/modelos" },
@@ -274,37 +356,92 @@ const SCHEDULE_ROUTES = [
   { id: "generator", path: "/admin/escala/gerador" },
 ] satisfies readonly TabRoute<ScheduleSubTab>[];
 
+const REPORTS_ROUTES = [
+  { id: "flight-reports", path: "/admin/relatorios", aliases: [] as string[] },
+  { id: "signatures", path: "/admin/assinaturas", aliases: [] as string[] },
+  { id: "no-telemetry", path: "/admin/sem-telemetria", aliases: [] as string[] },
+  { id: "alerts", path: "/admin/alertas", aliases: [] as string[] },
+] satisfies readonly TabRoute<ReportsSubTab>[];
+
+const CONTENTS_ROUTES = [
+  { id: "maneuvers", path: "/admin/conteudos/manobras", aliases: ["/admin/manobras"] },
+  { id: "manuals", path: "/admin/conteudos/manuais", aliases: ["/admin/manuais"] },
+  { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
+] satisfies readonly TabRoute<ContentsSubTab>[];
+
+const DISPAROS_ROUTES = [
+  { id: "email-mkt", path: "/admin/disparos/email-mkt", aliases: ["/admin/email-mkt"] },
+  { id: "notices", path: "/admin/disparos/avisos", aliases: ["/admin/configuracoes/avisos", "/admin/avisos"] },
+] satisfies readonly TabRoute<DisparosSubTab>[];
+
 const SETTINGS_ROUTES = [
-  { id: "email", path: "/admin/configuracoes", aliases: ["/admin/configuracoes/email"] },
+  { id: "rules", path: "/admin/configuracoes", aliases: ["/admin/configuracoes/regras"] },
+  { id: "email", path: "/admin/configuracoes/email" },
   { id: "brand", path: "/admin/configuracoes/aparencia" },
-  { id: "rules", path: "/admin/configuracoes/regras" },
   { id: "badges", path: "/admin/configuracoes/badges" },
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
   { id: "exercises", path: "/admin/configuracoes/exercicios", aliases: ["/admin/exercicios"] },
-  { id: "notices", path: "/admin/configuracoes/avisos", aliases: ["/admin/avisos"] },
-  { id: "help", path: "/admin/configuracoes/central-ajuda" },
+  { id: "financeiro", path: "/admin/configuracoes/financeiro" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
 const ADMIN_ROUTES = [
   { id: "home", path: "/admin" },
-  { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
+  { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "students", path: "/admin/alunos" },
-  { id: "telemetry-alerts", path: "/admin/alertas" },
-  { id: "no-telemetry", path: "/admin/sem-telemetria" },
-  { id: "reports", path: "/admin/relatorios" },
-  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]) },
-  { id: "maneuvers", path: "/admin/manobras" },
-  { id: "manuals", path: "/admin/manuais" },
+  { id: "reports", path: "/admin/relatorios", aliases: REPORTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "contents", path: "/admin/conteudos/manobras", aliases: CONTENTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "users", path: "/admin/usuarios" },
-  {
-    id: "settings",
-    path: "/admin/configuracoes",
-    aliases: SETTINGS_ROUTES.flatMap((route) => [route.path, ...(route.aliases ?? [])]),
-  },
-  { id: "email-mkt", path: "/admin/email-mkt" },
-  { id: "signatures", path: "/admin/assinaturas" },
+  { id: "disparos", path: "/admin/disparos/email-mkt", aliases: DISPAROS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "logbook", path: "/admin/diario-de-bordo" },
+  { id: "fuelings", path: "/admin/abastecimentos" },
+  { id: "dre", path: "/admin/dre" },
+  { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
+
+const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
+  flights: "Escala",
+  weekly: "Disponibilidades",
+  generator: "Gerador",
+};
+
+const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
+  rules: "Regras",
+  email: "E-mail",
+  brand: "Aparencia",
+  badges: "Badges",
+  tracks: "Trilhas",
+  exercises: "Exercicios",
+  financeiro: "Financeiro",
+};
+
+function resolveAdminPageTitle(
+  section: AdminSection,
+  fleetTab: FleetSubTab,
+  scheduleTab: ScheduleSubTab,
+  reportsTab: ReportsSubTab,
+  contentsTab: ContentsSubTab,
+  disparosTab: DisparosSubTab,
+  settingsTab: SettingsSubTab,
+  fallback: string,
+): string {
+  switch (section) {
+    case "fleet":
+      return FLEET_TABS.find((tab) => tab.id === fleetTab)?.label ?? fallback;
+    case "schedule":
+      return SCHEDULE_TAB_LABELS[scheduleTab] ?? fallback;
+    case "reports":
+      return REPORTS_TABS.find((tab) => tab.id === reportsTab)?.label ?? fallback;
+    case "contents":
+      return CONTENTS_TABS.find((tab) => tab.id === contentsTab)?.label ?? fallback;
+    case "disparos":
+      return DISPAROS_TABS.find((tab) => tab.id === disparosTab)?.label ?? fallback;
+    case "settings":
+      return SETTINGS_TAB_LABELS[settingsTab] ?? fallback;
+    default:
+      return fallback;
+  }
+}
 
 function TabLoading() {
   return (
@@ -326,64 +463,66 @@ export function AdminLayout() {
   const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
   const openedFleetTabs = useOpenedTabs(fleetTab);
   const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
-  const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "email"));
+  const [reportsTab, setReportsTab] = useState<ReportsSubTab>(() => resolveRouteId(REPORTS_ROUTES, "flight-reports"));
+  const openedReportsTabs = useOpenedTabs(reportsTab);
+  const [contentsTab, setContentsTab] = useState<ContentsSubTab>(() => resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
+  const openedContentsTabs = useOpenedTabs(contentsTab);
+  const [disparosTab, setDisparosTab] = useState<DisparosSubTab>(() => resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
+  const openedDisparosTabs = useOpenedTabs(disparosTab);
+  const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "rules"));
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
+  const pageTitle = resolveAdminPageTitle(
+    section,
+    fleetTab,
+    scheduleTab,
+    reportsTab,
+    contentsTab,
+    disparosTab,
+    settingsTab,
+    activeNav.label,
+  );
 
   useEffect(() => {
     const syncSubRoutes = () => {
-      if (routeMatches(FLEET_ROUTES)) {
-        setFleetTab(resolveRouteId(FLEET_ROUTES, "aircraft"));
-      }
-      if (routeMatches(SCHEDULE_ROUTES)) {
-        setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
-      }
-      if (routeMatches(SETTINGS_ROUTES)) {
-        setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "email"));
-      }
+      if (routeMatches(FLEET_ROUTES)) setFleetTab(resolveRouteId(FLEET_ROUTES, "aircraft"));
+      if (routeMatches(SCHEDULE_ROUTES)) setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
+      if (routeMatches(REPORTS_ROUTES)) setReportsTab(resolveRouteId(REPORTS_ROUTES, "flight-reports"));
+      if (routeMatches(CONTENTS_ROUTES)) setContentsTab(resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
+      if (routeMatches(DISPAROS_ROUTES)) setDisparosTab(resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
+      if (routeMatches(SETTINGS_ROUTES)) setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "rules"));
     };
-
     syncSubRoutes();
     window.addEventListener("popstate", syncSubRoutes);
     return () => window.removeEventListener("popstate", syncSubRoutes);
   }, []);
 
   function openSection(target: AdminSection) {
-    if (target === "fleet") {
-      setSection(target, { path: pathForRoute(FLEET_ROUTES, fleetTab) });
-      return;
-    }
-    if (target === "schedule") {
-      setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) });
-      return;
-    }
-    if (target === "settings") {
-      setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) });
-      return;
-    }
+    if (target === "fleet") { setSection(target, { path: pathForRoute(FLEET_ROUTES, fleetTab) }); return; }
+    if (target === "schedule") { setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) }); return; }
+    if (target === "reports") { setSection(target, { path: pathForRoute(REPORTS_ROUTES, reportsTab) }); return; }
+    if (target === "contents") { setSection(target, { path: pathForRoute(CONTENTS_ROUTES, contentsTab) }); return; }
+    if (target === "disparos") { setSection(target, { path: pathForRoute(DISPAROS_ROUTES, disparosTab) }); return; }
+    if (target === "settings") { setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) }); return; }
     setSection(target);
   }
 
-  function changeFleetTab(next: FleetSubTab) {
-    setFleetTab(next);
-    setSection("fleet", { path: pathForRoute(FLEET_ROUTES, next) });
+  function openReportsSection(subTab: ReportsSubTab) {
+    setReportsTab(subTab);
+    setSection("reports", { path: pathForRoute(REPORTS_ROUTES, subTab) });
   }
 
-  function changeScheduleTab(next: ScheduleSubTab) {
-    setScheduleTab(next);
-    setSection("schedule", { path: pathForRoute(SCHEDULE_ROUTES, next) });
-  }
-
-  function changeSettingsTab(next: SettingsSubTab) {
-    setSettingsTab(next);
-    setSection("settings", { path: pathForRoute(SETTINGS_ROUTES, next) });
-  }
+  function changeFleetTab(next: FleetSubTab) { setFleetTab(next); setSection("fleet", { path: pathForRoute(FLEET_ROUTES, next) }); }
+  function changeScheduleTab(next: ScheduleSubTab) { setScheduleTab(next); setSection("schedule", { path: pathForRoute(SCHEDULE_ROUTES, next) }); }
+  function changeReportsTab(next: ReportsSubTab) { setReportsTab(next); setSection("reports", { path: pathForRoute(REPORTS_ROUTES, next) }); }
+  function changeContentsTab(next: ContentsSubTab) { setContentsTab(next); setSection("contents", { path: pathForRoute(CONTENTS_ROUTES, next) }); }
+  function changeDisparosTab(next: DisparosSubTab) { setDisparosTab(next); setSection("disparos", { path: pathForRoute(DISPAROS_ROUTES, next) }); }
+  function changeSettingsTab(next: SettingsSubTab) { setSettingsTab(next); setSection("settings", { path: pathForRoute(SETTINGS_ROUTES, next) }); }
 
   return (
     <div className="flex min-h-screen bg-slate-950">
       {/* Sidebar */}
       <aside className="sticky top-0 hidden h-screen w-64 flex-col border-r border-slate-800 bg-slate-950/80 lg:flex">
-        {/* Brand */}
         <div className="border-b border-slate-800 px-5 py-5">
           <div className="flex items-center gap-2">
             <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-400">
@@ -394,7 +533,6 @@ export function AdminLayout() {
           <p className="text-sm font-semibold text-slate-200">Gestão de Frota</p>
         </div>
 
-        {/* Nav */}
         <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
           {NAV_ITEMS.map((item) => {
             const isActive = section === item.id;
@@ -418,7 +556,6 @@ export function AdminLayout() {
           })}
         </nav>
 
-        {/* User */}
         <div className="border-t border-slate-800 px-4 py-4">
           <p className="truncate text-xs text-slate-500">{user?.email}</p>
           <button
@@ -433,23 +570,13 @@ export function AdminLayout() {
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top header */}
         <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4 px-4 py-3 md:px-6">
-            <div className="flex min-w-0 items-center gap-3">
-              {/* Mobile nav indicator */}
-              <div className="flex items-center gap-2 lg:hidden">
-                <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-400">
-                  Admin
-                </span>
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium uppercase tracking-widest text-slate-500">
-                  {activeNav.sublabel}
-                </p>
-                <h1 className="truncate text-base font-semibold text-slate-100">{activeNav.label}</h1>
-              </div>
-            </div>
+            <PortalShellHeader
+              roleLabel="Admin"
+              roleBadgeClassName="bg-amber-500/20 text-amber-400"
+              title={pageTitle}
+            />
             <div className="flex items-center gap-3">
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
@@ -462,18 +589,16 @@ export function AdminLayout() {
               </button>
             </div>
           </div>
-
         </header>
 
-        {/* Content */}
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 lg:pb-4">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
               <LazyTab>
                 <AdminHome
-                  onOpenReports={() => openSection("reports")}
-                  onOpenAlerts={() => openSection("telemetry-alerts")}
-                  onOpenNoTelemetry={() => openSection("no-telemetry")}
+                  onOpenReports={() => openReportsSection("flight-reports")}
+                  onOpenAlerts={() => openReportsSection("alerts")}
+                  onOpenNoTelemetry={() => openReportsSection("no-telemetry")}
                 />
               </LazyTab>
             </div>
@@ -482,40 +607,59 @@ export function AdminLayout() {
             <div hidden={section !== "fleet"} className="space-y-4">
               <Tabs items={FLEET_TABS} value={fleetTab} onChange={changeFleetTab} ariaLabel="Subabas de frota" accent="sky" />
               {openedFleetTabs.has("aircraft") ? (
-                <div hidden={fleetTab !== "aircraft"}>
-                  <LazyTab>
-                    <FleetTab />
-                  </LazyTab>
-                </div>
+                <div hidden={fleetTab !== "aircraft"}><LazyTab><FleetTab /></LazyTab></div>
               ) : null}
               {openedFleetTabs.has("models") ? (
-                <div hidden={fleetTab !== "models"}>
-                  <LazyTab>
-                    <ModelsTab />
-                  </LazyTab>
-                </div>
+                <div hidden={fleetTab !== "models"}><LazyTab><ModelsTab /></LazyTab></div>
               ) : null}
               {openedFleetTabs.has("program") ? (
-                <div hidden={fleetTab !== "program"}>
-                  <LazyTab>
-                    <MaintenanceProgramTab />
-                  </LazyTab>
-                </div>
+                <div hidden={fleetTab !== "program"}><LazyTab><MaintenanceProgramTab /></LazyTab></div>
               ) : null}
               {openedFleetTabs.has("work-orders") ? (
-                <div hidden={fleetTab !== "work-orders"}>
-                  <LazyTab>
-                    <MaintenanceTab />
-                  </LazyTab>
-                </div>
+                <div hidden={fleetTab !== "work-orders"}><LazyTab><MaintenanceTab /></LazyTab></div>
               ) : null}
             </div>
           )}
-          {openedSections.has("telemetry-alerts") && (
-            <div hidden={section !== "telemetry-alerts"}>
-              <LazyTab>
-                <TelemetryAlertsTab />
-              </LazyTab>
+          {openedSections.has("reports") && (
+            <div hidden={section !== "reports"} className="space-y-4">
+              <Tabs items={REPORTS_TABS} value={reportsTab} onChange={changeReportsTab} ariaLabel="Subabas de relatórios" accent="sky" />
+              {openedReportsTabs.has("flight-reports") ? (
+                <div hidden={reportsTab !== "flight-reports"}><LazyTab><FlightReportsTab /></LazyTab></div>
+              ) : null}
+              {openedReportsTabs.has("signatures") ? (
+                <div hidden={reportsTab !== "signatures"}><LazyTab><AdminSignaturesTab /></LazyTab></div>
+              ) : null}
+              {openedReportsTabs.has("no-telemetry") ? (
+                <div hidden={reportsTab !== "no-telemetry"}><LazyTab><NoTelemetryTab /></LazyTab></div>
+              ) : null}
+              {openedReportsTabs.has("alerts") ? (
+                <div hidden={reportsTab !== "alerts"}><LazyTab><TelemetryAlertsTab /></LazyTab></div>
+              ) : null}
+            </div>
+          )}
+          {openedSections.has("contents") && (
+            <div hidden={section !== "contents"} className="space-y-4">
+              <Tabs items={CONTENTS_TABS} value={contentsTab} onChange={changeContentsTab} ariaLabel="Subabas de conteúdos" accent="sky" />
+              {openedContentsTabs.has("maneuvers") ? (
+                <div hidden={contentsTab !== "maneuvers"}><LazyTab><ManobrasTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("manuals") ? (
+                <div hidden={contentsTab !== "manuals"}><LazyTab><ManuaisAdminTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("help") ? (
+                <div hidden={contentsTab !== "help"}><LazyTab><HelpCenterAdminTab /></LazyTab></div>
+              ) : null}
+            </div>
+          )}
+          {openedSections.has("disparos") && (
+            <div hidden={section !== "disparos"} className="space-y-4">
+              <Tabs items={DISPAROS_TABS} value={disparosTab} onChange={changeDisparosTab} ariaLabel="Subabas de disparos" accent="sky" />
+              {openedDisparosTabs.has("email-mkt") ? (
+                <div hidden={disparosTab !== "email-mkt"}><LazyTab><EmailMktTab /></LazyTab></div>
+              ) : null}
+              {openedDisparosTabs.has("notices") ? (
+                <div hidden={disparosTab !== "notices"}><LazyTab><NoticesTab /></LazyTab></div>
+              ) : null}
             </div>
           )}
           {openedSections.has("schedule") && (
@@ -525,47 +669,11 @@ export function AdminLayout() {
               </LazyTab>
             </div>
           )}
-          {openedSections.has("maneuvers") && (
-            <div hidden={section !== "maneuvers"}>
-              <LazyTab>
-                <ManobrasTab />
-              </LazyTab>
-            </div>
-          )}
-          {openedSections.has("manuals") && (
-            <div hidden={section !== "manuals"}>
-              <LazyTab>
-                <ManuaisAdminTab />
-              </LazyTab>
-            </div>
-          )}
-          {openedSections.has("no-telemetry") && (
-            <div hidden={section !== "no-telemetry"}>
-              <LazyTab>
-                <NoTelemetryTab />
-              </LazyTab>
-            </div>
-          )}
-          {openedSections.has("reports") && (
-            <div hidden={section !== "reports"}>
-              <LazyTab>
-                <FlightReportsTab />
-              </LazyTab>
-            </div>
-          )}
           {openedSections.has("students") && (
-            <div hidden={section !== "students"}>
-              <LazyTab>
-                <AdminStudentsTab />
-              </LazyTab>
-            </div>
+            <div hidden={section !== "students"}><LazyTab><AdminStudentsTab /></LazyTab></div>
           )}
           {openedSections.has("users") && (
-            <div hidden={section !== "users"}>
-              <LazyTab>
-                <AdminUsersTab />
-              </LazyTab>
-            </div>
+            <div hidden={section !== "users"}><LazyTab><AdminUsersTab /></LazyTab></div>
           )}
           {openedSections.has("settings") && (
             <div hidden={section !== "settings"}>
@@ -574,26 +682,14 @@ export function AdminLayout() {
               </LazyTab>
             </div>
           )}
-          {openedSections.has("email-mkt") && (
-            <div hidden={section !== "email-mkt"}>
-              <LazyTab>
-                <EmailMktTab />
-              </LazyTab>
-            </div>
-          )}
-          {openedSections.has("signatures") && (
-            <div hidden={section !== "signatures"}>
-              <LazyTab>
-                <AdminSignaturesTab />
-              </LazyTab>
-            </div>
-          )}
           {openedSections.has("logbook") && (
-            <div hidden={section !== "logbook"}>
-              <LazyTab>
-                <DiarioDeBordoTab />
-              </LazyTab>
-            </div>
+            <div hidden={section !== "logbook"}><LazyTab><DiarioDeBordoTab /></LazyTab></div>
+          )}
+          {openedSections.has("fuelings") && (
+            <div hidden={section !== "fuelings"}><LazyTab><FuelingsTab /></LazyTab></div>
+          )}
+          {openedSections.has("dre") && (
+            <div hidden={section !== "dre"}><LazyTab><AdminDreTab /></LazyTab></div>
           )}
         </main>
 

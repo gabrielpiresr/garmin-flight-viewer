@@ -10,12 +10,11 @@ import {
   Permission,
   Role,
   MANEUVERS_SECTIONS_COL_ID,
-  MANEUVERS_SUBSECTIONS_COL_ID,
-  SCHOOL_ID,
+  MANEUVERS_SUBSECTIONS_COL_ID, DEFAULT_SCHOOL_ID,
   storage,
 } from "./appwrite";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
 import type {
   ManeuverArticle,
   ManeuverArticlePayload,

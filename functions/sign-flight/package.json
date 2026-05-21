@@ -1,0 +1,10 @@
+{
+  "name": "sign-flight-function",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/main.js",
+  "type": "commonjs",
+  "dependencies": {
+    "node-appwrite": "^24.1.0"
+  }
+}

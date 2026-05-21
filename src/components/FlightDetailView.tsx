@@ -3,6 +3,8 @@ import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
 import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
+import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
 import { NovoVooFlow, type NovoVooStepId } from "./NovoVooFlow";
@@ -81,6 +83,9 @@ export function FlightDetailView({
   const [showSignModal, setShowSignModal] = useState(false);
   const [signingInProgress, setSigningInProgress] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
+  const [signingPassword, setSigningPassword] = useState("");
+  const [signModalValidationErrors, setSignModalValidationErrors] = useState<string[]>([]);
+  const [signModalMetaLoading, setSignModalMetaLoading] = useState(false);
 
   const canSeeStudentContext = showStudentTab && (user?.role === "instrutor" || user?.role === "admin");
 
@@ -127,8 +132,14 @@ export function FlightDetailView({
 
   const handleSignFromFicha = async () => {
     if (!user || !flightId) return;
+    if (!signingPassword) {
+      setSigningError("Informe sua senha para assinar.");
+      return;
+    }
     setSigningInProgress(true);
     setSigningError(null);
+    const passwordForSigning = signingPassword;
+    setSigningPassword("");
     const { data: flightData, error: fetchErr } = await getSavedFlight(flightId);
     if (fetchErr || !flightData) {
       setSigningError(fetchErr?.message ?? "Voo não encontrado.");
@@ -141,6 +152,7 @@ export function FlightDetailView({
       actorRole: user.role,
       signerRole: "instructor",
       csvText: flightData.csv_text,
+      password: passwordForSigning,
     });
     setSigningInProgress(false);
     if (error) {
@@ -193,7 +205,18 @@ export function FlightDetailView({
                 initialStepId={fichaInitialStepId}
                 hideStepMenu={hideFichaStepMenu}
                 instructorAlreadySigned={instructorSignedAlready}
-                onSaveAndSign={isInstructorUser && !instructorSignedAlready ? () => setShowSignModal(true) : undefined}
+                onSaveAndSign={isInstructorUser && !instructorSignedAlready ? async () => {
+                  setSignModalValidationErrors([]);
+                  setSigningPassword("");
+                  setSignModalMetaLoading(true);
+                  const { data } = await getSavedFlight(flightId!);
+                  setSignModalMetaLoading(false);
+                  if (data) {
+                    const meta = decodeFlightRecord(data.csv_text).meta;
+                    if (meta) setSignModalValidationErrors(validateFlightForInstructorSign(meta));
+                  }
+                  setShowSignModal(true);
+                } : undefined}
               />
             ) : (
               <p className="p-8 text-center text-sm text-slate-500">Salve o voo para editar a ficha.</p>
@@ -233,7 +256,7 @@ export function FlightDetailView({
               </div>
               <button
                 type="button"
-                onClick={() => { setShowSignModal(false); setSigningError(null); }}
+                onClick={() => { setShowSignModal(false); setSigningError(null); setSignModalValidationErrors([]); setSigningPassword(""); }}
                 disabled={signingInProgress}
                 className="rounded-lg border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
               >
@@ -241,9 +264,35 @@ export function FlightDetailView({
               </button>
             </div>
 
+            {signModalMetaLoading && (
+              <div className="mb-4 h-10 animate-pulse rounded-lg bg-slate-800/40" />
+            )}
+
+            {signModalValidationErrors.length > 0 && (
+              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-950/20 p-3">
+                <p className="mb-1.5 text-xs font-semibold text-red-300">Corrija os itens abaixo antes de assinar:</p>
+                <ul className="list-inside list-disc space-y-0.5 text-xs text-red-200">
+                  {signModalValidationErrors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            )}
+
             <p className="mb-4 rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
               As alterações foram salvas. Ao confirmar, a ficha ficará <strong>bloqueada para edição</strong>.
             </p>
+
+            <label className="mb-4 block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">Senha</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={signingPassword}
+                onChange={(event) => setSigningPassword(event.target.value)}
+                disabled={signingInProgress}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500 disabled:opacity-60"
+                placeholder="Confirme sua senha"
+              />
+            </label>
 
             {signingError && (
               <p className="mb-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-300">
@@ -254,7 +303,7 @@ export function FlightDetailView({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => { setShowSignModal(false); setSigningError(null); }}
+                onClick={() => { setShowSignModal(false); setSigningError(null); setSignModalValidationErrors([]); setSigningPassword(""); }}
                 disabled={signingInProgress}
                 className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
               >
@@ -263,7 +312,7 @@ export function FlightDetailView({
               <button
                 type="button"
                 onClick={() => void handleSignFromFicha()}
-                disabled={signingInProgress}
+                disabled={signingInProgress || signModalValidationErrors.length > 0 || !signingPassword}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60"
               >
                 {signingInProgress ? "Assinando..." : "Confirmar assinatura"}

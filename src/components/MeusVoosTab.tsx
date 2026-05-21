@@ -56,8 +56,10 @@ function groupFlights(
   return ordered.length ? [{ label: "", flights: ordered }] : [];
 }
 
-function yesNoTag(ok: boolean, yes: string, no: string): string {
-  return ok ? yes : no;
+
+function formatDecimalHours(minutes: number | null | undefined): string {
+  if (!minutes || minutes <= 0) return "—";
+  return (minutes / 60).toFixed(1) + "h";
 }
 
 function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
@@ -262,6 +264,7 @@ export function MeusVoosTab() {
   const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
   const [signingFlightId, setSigningFlightId] = useState<string | null>(null);
   const [signingRole, setSigningRole] = useState<SignerRole | null>(null);
+  const [signingPassword, setSigningPassword] = useState("");
   const [signingInProgress, setSigningInProgress] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
   const [studentSuggestionDraft, setStudentSuggestionDraft] = useState("");
@@ -408,8 +411,14 @@ export function MeusVoosTab() {
 
   const handleSign = async () => {
     if (!user || !signingFlightId || !signingRole) return;
+    if (!signingPassword) {
+      setSigningError("Informe sua senha para assinar.");
+      return;
+    }
     setSigningInProgress(true);
     setSigningError(null);
+    const passwordForSigning = signingPassword;
+    setSigningPassword("");
     const flightRes = await getSavedFlight(signingFlightId);
     if (flightRes.error || !flightRes.data) {
       setSigningError(flightRes.error?.message ?? "Voo não encontrado.");
@@ -422,6 +431,7 @@ export function MeusVoosTab() {
       actorRole: user.role,
       signerRole: signingRole,
       csvText: flightRes.data.csv_text,
+      password: passwordForSigning,
     });
     setSigningInProgress(false);
     if (res.error) {
@@ -440,6 +450,7 @@ export function MeusVoosTab() {
     setRefreshKey((k) => k + 1);
     setSigningFlightId(null);
     setSigningRole(null);
+    setSigningPassword("");
   };
 
   const filteredItems = useMemo(() => {
@@ -628,10 +639,14 @@ export function MeusVoosTab() {
 
   return (
     <div className="min-w-0 space-y-6">
-      <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
-        <h2 className="text-lg font-semibold text-slate-100">
-          {canManageFlights ? "Voos dos alunos" : "Meus voos"}
-        </h2>
+      <div
+        className={`flex flex-col items-stretch gap-4 sm:flex-row sm:items-center ${
+          canManageFlights ? "justify-between" : "sm:justify-end"
+        }`}
+      >
+        {canManageFlights ? (
+          <h2 className="text-lg font-semibold text-slate-100">Voos dos alunos</h2>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <div className="flex rounded-lg border border-slate-700 bg-slate-900/60 p-1">
             {([
@@ -666,21 +681,23 @@ export function MeusVoosTab() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {dataLoading ? (
-          <>
-            <SummaryCardSkeleton />
-            <SummaryCardSkeleton />
-            <SummaryCardSkeleton />
-          </>
-        ) : (
-          <>
-            <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
-            <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
-            <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
-          </>
-        )}
-      </div>
+      {canManageFlights ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {dataLoading ? (
+            <>
+              <SummaryCardSkeleton />
+              <SummaryCardSkeleton />
+              <SummaryCardSkeleton />
+            </>
+          ) : (
+            <>
+              <SummaryCard label="Voos" value={String(consolidatedSummary.flights)} />
+              <SummaryCard label="Horas" value={formatMinutes(consolidatedSummary.minutes)} />
+              <SummaryCard label="Pousos" value={String(consolidatedSummary.landings)} />
+            </>
+          )}
+        </div>
+      ) : null}
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Filtros avançados</p>
@@ -826,9 +843,6 @@ export function MeusVoosTab() {
                   const d = getDateBase(f, info);
                   const day = d.getDate();
                   const mon = d.toLocaleString("pt-BR", { month: "short" }).replace(".", "");
-                  const dateLabel = info?.flightDateIso
-                    ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
-                    : d.toLocaleDateString("pt-BR");
                   const isPastFlight = !isScheduledFlightStatus(f, info);
                   if (isStudentView) {
                     return (
@@ -836,41 +850,43 @@ export function MeusVoosTab() {
                         key={f.id}
                         className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                       >
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                          <div className="flex w-10 shrink-0 flex-col items-center text-center">
-                            <span className="text-xl font-bold leading-none text-sky-400">{day}</span>
-                            <span className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-500">{mon}</span>
+                        <div className="flex items-start gap-3">
+                          <div className="flex w-8 shrink-0 flex-col items-center text-center">
+                            <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                            <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                           </div>
-                          <div className="min-w-0 flex-1 space-y-3">
+                          <div className="min-w-0 flex-1">
                             {!info ? (
-                              <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                                {Array.from({ length: 5 }).map((_, j) => (
+                              <div className="grid grid-cols-2 gap-1.5">
+                                {Array.from({ length: 4 }).map((_, j) => (
                                   <Skeleton key={j} className="h-3 w-full" />
                                 ))}
                               </div>
                             ) : (
-                            <div className="grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-3 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
-                              <p>Data: <span className="text-slate-300">{dateLabel}</span></p>
-                              <p>Matrícula: <span className="text-slate-300">{info.aircraft ?? f.aircraft_ident ?? "—"}</span></p>
-                              <p>Início: <span className="text-slate-300">{info.startTime || "—"}</span></p>
-                              <p>Fim: <span className="text-slate-300">{info.endTime || "—"}</span></p>
-                              <p className="sm:col-span-2">Instrutor: <span className="text-slate-300">{info.instructorName || "—"}</span></p>
-                            </div>
-                            )}
-                            <div className="grid gap-3 text-xs md:grid-cols-2">
-                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3">
-                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Sugestão do INVA</p>
-                                <p className="whitespace-pre-wrap break-words text-slate-300 [overflow-wrap:anywhere]">{info?.instructorSuggestionMd || "Sem sugestão registrada."}</p>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${aircraftColor(info.aircraft ?? f.aircraft_ident ?? "")}`}>
+                                  {info.aircraft ?? f.aircraft_ident ?? "—"}
+                                </span>
+                                <span className="text-xs text-slate-400">
+                                  {info.startTime || "—"}{info.endTime ? ` – ${info.endTime}` : ""}
+                                </span>
+                                <span className="text-xs text-slate-500">· {info.instructorName || "—"}</span>
                               </div>
-                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3">
-                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Peso e Balanceamento</p>
+                            )}
+                            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-2.5">
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Sugestão do INVA</p>
+                                <p className="line-clamp-3 whitespace-pre-wrap break-words text-slate-300 [overflow-wrap:anywhere]">{info?.instructorSuggestionMd || "Sem sugestão registrada."}</p>
+                              </div>
+                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-2.5">
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Peso e Balanceamento</p>
                                 <FutureWeightBalanceCta
                                   ok={Boolean(info?.weightBalanceFilled)}
                                   onClick={() => openFutureWeightBalance(f.id)}
                                 />
                               </div>
-                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3">
-                                <p className="mb-1 font-semibold uppercase tracking-wider text-slate-500">Sugestão do aluno</p>
+                              <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-2.5">
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Sugestão do aluno</p>
                                 {info?.studentSuggestionMd ? (
                                   <FutureStudentSuggestionStatus suggestion={info.studentSuggestionMd} />
                                 ) : (
@@ -897,120 +913,111 @@ export function MeusVoosTab() {
                       key={f.id}
                       className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                     >
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                        <div className="flex w-10 shrink-0 flex-col items-center text-center">
-                          <span className="text-xl font-bold leading-none text-sky-400">{day}</span>
-                          <span className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-500">{mon}</span>
+                      <div className="flex items-start gap-3">
+                        <div className="flex w-8 shrink-0 flex-col items-center text-center">
+                          <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                          <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                         </div>
-
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${aircraftColor(info?.aircraft ?? f.aircraft_ident ?? "")}`}>
-                              {info?.aircraft ?? f.aircraft_ident ?? "—"}
-                            </span>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${aircraftColor(info?.aircraft ?? f.aircraft_ident ?? "")}`}>
+                                {info?.aircraft ?? f.aircraft_ident ?? "—"}
+                              </span>
+                              <span className="text-xs text-slate-500">{info?.startTime || "—"}</span>
+                              {info?.totalFlight ? <span className="text-xs text-slate-500">· {info.totalFlight}</span> : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <FlightStatusBadge status={f.flight_status} />
+                              {isPastFlight ? (
+                                <div className="flex items-center gap-1">
+                                  <span className={`h-2 w-2 rounded-full ${info?.telemetryOk ? "bg-emerald-400" : "bg-slate-600"}`} title={info?.telemetryOk ? "Telemetria ok" : "Sem telemetria"} />
+                                  <span className={`h-2 w-2 rounded-full ${info?.videoOk ? "bg-emerald-400" : "bg-slate-600"}`} title={info?.videoOk ? "Vídeo ok" : "Sem vídeo"} />
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
-
                           {!info ? (
-                            <div className="mt-2 grid gap-x-4 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-4">
-                              {Array.from({ length: 8 }).map((_, j) => (
+                            <div className="mt-2 grid grid-cols-2 gap-1.5">
+                              {Array.from({ length: 4 }).map((_, j) => (
                                 <Skeleton key={j} className="h-3 w-full" />
                               ))}
                             </div>
                           ) : (
-                          <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
-                            <p>Data: <span className="text-slate-300">{dateLabel}</span></p>
-                            <p>Início: <span className="text-slate-300">{info.startTime || "—"}</span></p>
-                            <p>Aluno: <span className="text-slate-300">{info.studentName ?? "—"}</span></p>
-                            <p>ANAC aluno: <span className="text-slate-300">{info.studentAnac ?? "—"}</span></p>
-                            <p>Matrícula: <span className="text-slate-300">{info.aircraft ?? "—"}</span></p>
-                            <p>From-To: <span className="text-slate-300">{info.fromTo ?? "—"}</span></p>
-                            <p>Pousos: <span className="text-slate-300">{info.landings ?? 0}</span></p>
-                            <p>Total voo: <span className="text-slate-300">{info.totalFlight ?? "00:00"}</span></p>
-                            <p>Total milhas: <span className="text-slate-300">{info.totalMiles ?? "0.0"}</span></p>
-                            <p>Instrutor: <span className="text-slate-300">{info.instructorName ?? ""}</span></p>
-                            <p>ANAC instrutor: <span className="text-slate-300">{info.instructorAnac ?? ""}</span></p>
-                            <p className="sm:col-span-2 lg:col-span-2">
-                              Status:{" "}
-                              <FlightStatusBadge status={f.flight_status} />
-                              {" "}
-                              {isPastFlight ? (
-                                <>
-                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.telemetryOk ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-400"}`}>
-                                    {yesNoTag(Boolean(info.telemetryOk), "telemetria ok", "telemetria ausente")}
-                                  </span>
-                                  {" "}
-                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${info.videoOk ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-400"}`}>
-                                    {yesNoTag(Boolean(info.videoOk), "video ok", "video ausente")}
-                                  </span>
-                                </>
-                              ) : null}
-                            </p>
-                          </div>
+                            <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-slate-500">
+                              <p className="truncate">Aluno: <span className="text-slate-300">{info.studentName ?? "—"}</span></p>
+                              <p className="truncate">Instrutor: <span className="text-slate-300">{info.instructorName ?? "—"}</span></p>
+                              {info.fromTo ? <p className="col-span-2 truncate">Rota: <span className="text-slate-300">{info.fromTo}</span></p> : null}
+                              {info.landings != null ? <p>Pousos: <span className="text-slate-300">{info.landings}</span></p> : null}
+                              {info.totalFlight ? <p>Duração: <span className="text-slate-300">{info.totalFlight}</span></p> : null}
+                              {info.instructorAnac ? <p className="truncate">ANAC INVA: <span className="text-slate-300">{info.instructorAnac}</span></p> : null}
+                            </div>
                           )}
                         </div>
-
-                        {(isPastFlight || canManageFlights) && (
-                          <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:items-end">
+                      </div>
+                      {(isPastFlight || canManageFlights) && (
+                        <div className="mt-3 border-t border-slate-800/50 pt-2.5">
+                          {isPastFlight ? (
+                            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                              <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
+                              {user?.role === "instrutor" && f.instructor_user_id === user.id && !signaturesByFlightId[f.id]?.instructor ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSigningFlightId(f.id);
+                                    setSigningRole("instructor");
+                                    setSigningPassword("");
+                                    setSigningError(null);
+                                  }}
+                                  className="rounded bg-violet-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-500"
+                                >
+                                  Assinar como INVA
+                                </button>
+                              ) : null}
+                              {f.instructor_signed ? (
+                                <span className="text-[10px] font-semibold text-amber-400">● Ficha bloqueada</span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <div className="flex flex-wrap items-center gap-2">
                             {isPastFlight ? (
                               <>
-                                <div className="min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-2 text-xs">
-                                  <p className="mb-1.5 font-semibold uppercase tracking-wider text-slate-500">Assinaturas</p>
-                                  <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
-                                  {user?.role === "instrutor" && f.instructor_user_id === user.id && !signaturesByFlightId[f.id]?.instructor ? (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSigningFlightId(f.id);
-                                        setSigningRole("instructor");
-                                        setSigningError(null);
-                                      }}
-                                      className="mt-1.5 rounded bg-violet-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-500"
-                                    >
-                                      Assinar como INVA
-                                    </button>
-                                  ) : null}
-                                  {f.instructor_signed ? (
-                                    <p className="mt-1.5 text-[10px] font-semibold text-amber-400">Ficha bloqueada</p>
-                                  ) : null}
-                                </div>
-                                <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
-                                  <ShareFlightButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setShareFlightId(f.id);
-                                    }}
-                                    iconOnly
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openFlight(f.id);
-                                    }}
-                                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
-                                  >
-                                    Detalhes
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void exportFicha(f.id);
-                                    }}
-                                    disabled={exportingFichaId === f.id}
-                                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
-                                  >
-                                    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
-                                      <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
-                                    </svg>
-                                    {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
-                                  </button>
-                                </div>
+                                <ShareFlightButton
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setShareFlightId(f.id);
+                                  }}
+                                  iconOnly
+                                />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openFlight(f.id);
+                                  }}
+                                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                >
+                                  Detalhes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void exportFicha(f.id);
+                                  }}
+                                  disabled={exportingFichaId === f.id}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-1.5 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
+                                >
+                                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
+                                    <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
+                                  </svg>
+                                  {exportingFichaId === f.id ? "Gerando..." : "Ficha"}
+                                </button>
                               </>
                             ) : null}
-                            {canManageFlights && (
+                            {canManageFlights ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -1018,14 +1025,14 @@ export function MeusVoosTab() {
                                   void handleDelete(f.id);
                                 }}
                                 disabled={Boolean(f.instructor_signed)}
-                                className="w-full text-left text-sm text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:text-right"
+                                className="ml-auto text-xs text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 Apagar
                               </button>
-                            )}
+                            ) : null}
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -1049,58 +1056,61 @@ export function MeusVoosTab() {
                         const d = getDateBase(f, info);
                         const day = d.getDate();
                         const mon = d.toLocaleString("pt-BR", { month: "short" }).replace(".", "");
-                        const dateLabel = info?.flightDateIso
-                          ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
-                          : d.toLocaleDateString("pt-BR");
+                        const pastAircraft = info?.aircraft ?? f.aircraft_ident ?? "";
+                        const pastStartTime = info?.startTime || null;
+                        const pastTotal = info?.totalFlight || null;
                         return (
                           <li
                             key={f.id}
                             className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3"
                           >
-                            <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                              <div className="flex w-10 shrink-0 flex-col items-center text-center">
-                                <span className="text-xl font-bold leading-none text-sky-400">{day}</span>
-                                <span className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-500">{mon}</span>
+                            <div className="flex items-start gap-3">
+                              <div className="flex w-8 shrink-0 flex-col items-center text-center">
+                                <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                                <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                               </div>
                               <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${aircraftColor(info?.aircraft ?? f.aircraft_ident ?? "")}`}>
-                                    {info?.aircraft ?? f.aircraft_ident ?? "—"}
-                                  </span>
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${aircraftColor(pastAircraft)}`}>
+                                      {pastAircraft || "—"}
+                                    </span>
+                                    {pastStartTime ? <span className="text-xs text-slate-500">{pastStartTime}</span> : null}
+                                    {pastTotal ? <span className="text-xs text-slate-500">· {pastTotal}</span> : null}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <span className={`h-2 w-2 rounded-full ${info?.telemetryOk ? "bg-emerald-400" : "bg-slate-600"}`} title="Telemetria" />
+                                    <span className={`h-2 w-2 rounded-full ${info?.videoOk ? "bg-emerald-400" : "bg-slate-600"}`} title="Vídeo" />
+                                  </div>
                                 </div>
-                                <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
-                                  <p>Data: <span className="text-slate-300">{dateLabel}</span></p>
-                                  <p>Início: <span className="text-slate-300">{info?.startTime || "—"}</span></p>
-                                  <p>Aluno: <span className="text-slate-300">{info?.studentName ?? "—"}</span></p>
-                                  <p>ANAC aluno: <span className="text-slate-300">{info?.studentAnac ?? "—"}</span></p>
-                                  <p>Matrícula: <span className="text-slate-300">{info?.aircraft ?? "—"}</span></p>
-                                  <p>From-To: <span className="text-slate-300">{info?.fromTo ?? "—"}</span></p>
-                                  <p>Pousos: <span className="text-slate-300">{info?.landings ?? 0}</span></p>
-                                  <p>Total voo: <span className="text-slate-300">{info?.totalFlight ?? "00:00"}</span></p>
-                                  <p>Total milhas: <span className="text-slate-300">{info?.totalMiles ?? "0.0"}</span></p>
-                                  <p>Instrutor: <span className="text-slate-300">{info?.instructorName ?? ""}</span></p>
-                                  <p>ANAC instrutor: <span className="text-slate-300">{info?.instructorAnac ?? ""}</span></p>
+                                <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-slate-500">
+                                  {info?.fromTo ? <p className="col-span-2 truncate">Rota: <span className="text-slate-300">{info.fromTo}</span></p> : null}
+                                  {info?.landings != null ? <p>Pousos: <span className="text-slate-300">{info.landings}</span></p> : null}
+                                  {pastTotal ? <p>Duração: <span className="text-slate-300">{pastTotal}</span></p> : null}
+                                  {info?.totalMiles ? <p>Milhas: <span className="text-slate-300">{info.totalMiles}</span></p> : null}
+                                  {info?.instructorName ? <p className="col-span-2 truncate">Instrutor: <span className="text-slate-300">{info.instructorName}</span></p> : null}
+                                  {info?.instructorAnac ? <p className="col-span-2 truncate">ANAC instrutor: <span className="text-slate-300">{info.instructorAnac}</span></p> : null}
                                 </div>
                               </div>
-                              <div className="mt-2 min-w-0 rounded-lg border border-slate-700/60 bg-slate-950/25 p-3 text-xs">
-                                <p className="mb-2 font-semibold uppercase tracking-wider text-slate-500">Assinaturas</p>
-                                <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
-                                {!signaturesByFlightId[f.id]?.student ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSigningFlightId(f.id);
-                                      setSigningRole("student");
-                                      setSigningError(null);
-                                    }}
-                                    className="mt-2 rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
-                                  >
-                                    Assinar como aluno
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto sm:justify-end">
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800/50 pt-2.5">
+                              <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} />
+                              {!signaturesByFlightId[f.id]?.student ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSigningFlightId(f.id);
+                                    setSigningRole("student");
+                                    setSigningPassword("");
+                                    setSigningError(null);
+                                  }}
+                                  className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                                >
+                                  Assinar como aluno
+                                </button>
+                              ) : null}
+                              <div className="ml-auto flex flex-wrap items-center gap-2">
                                 <ShareFlightButton
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1114,7 +1124,7 @@ export function MeusVoosTab() {
                                     e.stopPropagation();
                                     openFlight(f.id);
                                   }}
-                                  className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                                 >
                                   Detalhes
                                 </button>
@@ -1125,7 +1135,7 @@ export function MeusVoosTab() {
                                     void exportFicha(f.id);
                                   }}
                                   disabled={exportingFichaId === f.id}
-                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-1.5 text-xs font-semibold text-sky-400 hover:bg-sky-600/20"
                                 >
                                   <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                     <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
@@ -1163,6 +1173,18 @@ export function MeusVoosTab() {
                 ? "Ao assinar como instrutor, a ficha do voo ficará bloqueada para edição."
                 : "Ao assinar, você atesta que as informações deste voo estão corretas."}
             </p>
+            <label className="mt-4 block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">Senha</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={signingPassword}
+                onChange={(event) => setSigningPassword(event.target.value)}
+                disabled={signingInProgress}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500 disabled:opacity-60"
+                placeholder="Confirme sua senha"
+              />
+            </label>
             {signingError && (
               <p className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-400">
                 {signingError}
@@ -1174,9 +1196,10 @@ export function MeusVoosTab() {
                 onClick={() => {
                   setSigningFlightId(null);
                   setSigningRole(null);
+                  setSigningPassword("");
                   setSigningError(null);
                 }}
-                disabled={signingInProgress}
+                disabled={signingInProgress || !signingPassword}
                 className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
               >
                 Cancelar
@@ -1272,10 +1295,30 @@ export function MeusVoosTab() {
   );
 }
 
-function FlightSignBadge({ label, signed, signedAt }: { label: string; signed: boolean; signedAt?: string }) {
-  const dateStr = signedAt ? new Date(signedAt).toLocaleDateString("pt-BR") : null;
+type SignatureBadgeDoc = NonNullable<FlightSignaturesForFlight[keyof FlightSignaturesForFlight]>;
+
+function FlightSignBadge({
+  label,
+  signed,
+  signature,
+}: {
+  label: string;
+  signed: boolean;
+  signature?: SignatureBadgeDoc | null;
+}) {
+  const dateStr = signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString("pt-BR", { timeZone: "UTC" }) : null;
+  const details = signature
+    ? [
+        `Signatário: ${signature.signer_user_id}`,
+        `Papel: ${signature.signer_role}`,
+        `Horário UTC: ${signature.signed_at}`,
+        `Payload: ${signature.payload_version ?? "-"}`,
+        `Hash: ${signature.content_hash ?? "-"}`,
+      ].join("\n")
+    : undefined;
   return (
     <span
+      title={details}
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
         signed ? "bg-emerald-900/40 text-emerald-400" : "bg-slate-800 text-slate-500"
       }`}
@@ -1292,10 +1335,17 @@ function FlightSignatureBadges({ sigs }: { sigs: FlightSignaturesForFlight | und
     return <span className="text-[10px] text-slate-500">Carregando...</span>;
   }
   return (
-    <div className="flex flex-wrap gap-1">
-      <FlightSignBadge label="Aluno" signed={Boolean(sigs.student)} signedAt={sigs.student?.signed_at} />
-      <FlightSignBadge label="Instrutor" signed={Boolean(sigs.instructor)} signedAt={sigs.instructor?.signed_at} />
-      <FlightSignBadge label="Operador" signed={Boolean(sigs.admin_operator)} signedAt={sigs.admin_operator?.signed_at} />
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        <FlightSignBadge label="Aluno" signed={Boolean(sigs.student)} signature={sigs.student} />
+        <FlightSignBadge label="Instrutor" signed={Boolean(sigs.instructor)} signature={sigs.instructor} />
+        <FlightSignBadge label="Operador" signed={Boolean(sigs.admin_operator)} signature={sigs.admin_operator} />
+      </div>
+      {([sigs.student, sigs.instructor, sigs.admin_operator].filter(Boolean) as SignatureBadgeDoc[]).map((sig) => (
+        <p key={sig.id} className="max-w-[18rem] truncate text-[10px] text-slate-500">
+          {sig.signer_role}: {sig.payload_version ?? "-"} · {sig.signed_at} UTC · {sig.content_hash ?? "-"}
+        </p>
+      ))}
     </div>
   );
 }
@@ -1410,7 +1460,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Fim</th> : null}
                     {!showStudentPending ? <th className="px-3 py-2 font-semibold">Rota</th> : null}
-                    {!showStudentPending ? <th className="px-3 py-2 font-semibold">Horas</th> : null}
+                    {!showStudentPending ? <th className="px-3 py-2 font-semibold">Duração</th> : null}
                     {!showStudentPending ? <th className="px-3 py-2 font-semibold">Pousos</th> : null}
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Sugestão INVA</th> : null}
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Peso e Balanceamento</th> : null}
@@ -1443,7 +1493,7 @@ function FlightTableSection({
                         </td>
                         {showStudentPending ? <td className="px-3 py-2">{info?.endTime || "—"}</td> : null}
                         {!showStudentPending ? <td className="px-3 py-2">{info?.fromTo ?? "—"}</td> : null}
-                        {!showStudentPending ? <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td> : null}
+                        {!showStudentPending ? <td className="px-3 py-2">{formatDecimalHours(info?.totalFlightMinutes)}</td> : null}
                         {!showStudentPending ? <td className="px-3 py-2">{info?.landings ?? 0}</td> : null}
                         {showStudentPending ? (
                           <td className="max-w-64 px-3 py-2">

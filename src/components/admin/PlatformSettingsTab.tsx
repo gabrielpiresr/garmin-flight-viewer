@@ -6,9 +6,9 @@ import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { TrainingTracksTab } from "./TrainingTracksTab";
 import { TrainingExercisesTab } from "./TrainingExercisesTab";
-import { NoticesTab } from "./NoticesTab";
 import { RewardsEditor } from "./RewardsEditor";
-import { HelpCenterAdminTab } from "./HelpCenterAdminTab";
+import { SchoolCostsPanel } from "./SchoolCostsPanel";
+import { SchoolProductsPanel } from "./SchoolProductsPanel";
 import { useOpenedTabs } from "../../lib/routedTabs";
 import {
   AppearanceSettingsPanel,
@@ -17,7 +17,7 @@ import {
   ScheduleRulesPanel,
 } from "./PlatformSettingsExtraPanels";
 
-export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "notices" | "help";
+export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "financeiro";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -35,16 +35,6 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path fillRule="evenodd" d="M4 2a2 2 0 00-2 2v11.5A2.5 2.5 0 004.5 18h11A2.5 2.5 0 0018 15.5V4a2 2 0 00-2-2H4zm0 2h12v7.5l-2.4-2.4a1 1 0 00-1.414 0L9 12.286 7.314 10.6a1 1 0 00-1.414 0L4 12.5V4zm10 2.25a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    id: "notices",
-    label: "Avisos",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path d="M1.5 8.67c0-1.213.84-2.266 2.024-2.49l13.5-2.56a2.25 2.25 0 012.669 2.21v12.34a2.25 2.25 0 01-2.67 2.21l-13.5-2.56A2.532 2.532 0 011.5 15.33V8.67z" />
-        <path d="M20.25 8.99a.75.75 0 011.5 0v5.02a.75.75 0 01-1.5 0V8.99z" />
       </svg>
     ),
   },
@@ -76,21 +66,21 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
-    id: "help",
-    label: "Central de ajuda",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path fillRule="evenodd" d="M18 10A8 8 0 1 1 2 10a8 8 0 0 1 16 0Zm-8-4a3 3 0 0 0-2.83 2H8.7A1.5 1.5 0 1 1 10 10.25a.75.75 0 0 0-.75.75v1.25h1.5v-.62A3 3 0 0 0 10 6Zm0 9.25a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
     id: "email",
     label: "E-mails",
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M3 4a2 2 0 00-2 2v.217l9 4.5 9-4.5V6a2 2 0 00-2-2H3z" />
         <path d="M19 8.383l-8.553 4.276a1 1 0 01-.894 0L1 8.383V14a2 2 0 002 2h14a2 2 0 002-2V8.383z" />
+      </svg>
+    ),
+  },
+  {
+    id: "financeiro",
+    label: "Financeiro",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10.75 10.818v2.614A3.13 3.13 0 0 0 11.888 13c.983-.045 1.71-.818 1.71-1.76 0-.07-.005-.137-.015-.203-.001-.01-.003-.021-.004-.031a1.23 1.23 0 0 0-.093-.32 1.72 1.72 0 0 0-.351-.468c-.237-.216-.59-.397-1.012-.544a5.37 5.37 0 0 0-.373-.056ZM9.25 9.182V6.568c-.309.076-.604.18-.882.306-.424.19-.768.458-.98.787-.168.263-.238.557-.238.839 0 .434.22.83.618 1.13.266.198.606.362 1.01.5.155.052.31.1.472.052ZM10 2a8 8 0 1 0 0 16A8 8 0 0 0 10 2Zm-.75 4.5v-.25a.75.75 0 0 1 1.5 0v.328c.47.112.898.296 1.256.557.655.473 1.119 1.21 1.119 2.115 0 1.56-1.21 2.814-2.875 2.914V14.5h1.25a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1 0-1.5h.75V12.18c-.46-.102-.88-.277-1.228-.519-.69-.483-1.147-1.25-1.147-2.161 0-.68.215-1.287.627-1.79.384-.47.91-.812 1.498-1.028V6.5Z" />
       </svg>
     ),
   },
@@ -409,14 +399,10 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
           <TrainingExercisesTab />
         </div>
       ) : null}
-      {openedSubTabs.has("notices") ? (
-        <div hidden={subTab !== "notices"}>
-          <NoticesTab />
-        </div>
-      ) : null}
-      {openedSubTabs.has("help") ? (
-        <div hidden={subTab !== "help"}>
-          <HelpCenterAdminTab />
+      {openedSubTabs.has("financeiro") ? (
+        <div hidden={subTab !== "financeiro"} className="space-y-4">
+          <SchoolCostsPanel />
+          <SchoolProductsPanel />
         </div>
       ) : null}
     </div>

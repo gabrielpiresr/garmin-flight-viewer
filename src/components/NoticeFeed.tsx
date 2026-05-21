@@ -19,6 +19,7 @@ type NoticeFeedProps = {
   limit?: number;
   eyebrow?: string;
   title?: string;
+  showHeader?: boolean;
   emptyMessage?: string;
   showRefresh?: boolean;
   actionLabel?: string;
@@ -30,6 +31,7 @@ export function NoticeFeed({
   limit,
   eyebrow = "Comunicados",
   title = "Feed de avisos",
+  showHeader = true,
   emptyMessage = "Nenhum aviso publicado no momento.",
   showRefresh = true,
   actionLabel,
@@ -64,11 +66,17 @@ export function NoticeFeed({
   return (
     <section className={`${className} min-w-0`}>
       <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
-        <div className="mb-4 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">{eyebrow}</p>
-            <h2 className="break-words text-lg font-semibold text-white">{title}</h2>
-          </div>
+        <div
+          className={`flex flex-col items-stretch gap-3 sm:flex-row sm:items-center ${
+            showHeader ? "mb-4 sm:justify-between" : "mb-3 justify-end"
+          }`}
+        >
+          {showHeader ? (
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">{eyebrow}</p>
+              <h2 className="break-words text-lg font-semibold text-white">{title}</h2>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {actionLabel && onAction ? (
               <button

@@ -1,5 +1,5 @@
 import { updateFlightVideoReady, type FlightVideo } from "./flightVideosDb";
-import { getWorkerConfig } from "./videoStorage";
+import { getWorkerConfig, isVideoStorageConfigured } from "./videoStorage";
 
 const KEY_TS_RE = /-(\d{13})\.mp4$/;
 const MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -16,15 +16,15 @@ function keyTimestampMs(key: string): number | null {
 }
 
 export async function listR2VideosForFlight(flightId: string): Promise<R2VideoObject[]> {
-  const cfg = getWorkerConfig();
+  const prefix = `flights/flight-${flightId}-`;
+  const cfg = await getWorkerConfig({ mode: "list", flightId, prefix });
   if (!cfg) return [];
 
-  const prefix = `flights/flight-${flightId}-`;
   try {
     const res = await fetch(`${cfg.url}/storage/list`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prefix, secret: cfg.secret, limit: 200 }),
+      body: JSON.stringify({ prefix, token: cfg.token, limit: 200 }),
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { objects?: Array<{ key: string; size?: number; fileUrl: string }> };
@@ -71,7 +71,7 @@ export async function reconcileProcessingVideosFromR2(
   flightId: string,
   videos: FlightVideo[],
 ): Promise<number> {
-  if (!getWorkerConfig()) return 0;
+  if (!isVideoStorageConfigured()) return 0;
 
   const stuck = videos.filter(
     (v) => v.processing_status === "processing" && !(v.file_url ?? "").trim(),

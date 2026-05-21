@@ -2,14 +2,12 @@ import { Query } from "appwrite";
 import {
   databases,
   FLIGHT_DISCREPANCIES_COL_ID,
-  isAppwriteConfigured,
-  SCHOOL_ID,
+  isAppwriteConfigured, DEFAULT_SCHOOL_ID,
 } from "./appwrite";
 import type { FlightRecordMeta } from "./flightRecordCodec";
 import type { SavedFlightListItem } from "./flightsDb";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 export type FlightDiscrepancyStatus = "open" | "linked" | "resolved";
 

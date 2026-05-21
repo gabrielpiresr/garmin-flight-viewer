@@ -101,14 +101,10 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
   return (
     <section className={`${className} mx-auto min-w-0 space-y-4`}>
       <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Curso de manobras</p>
-            <h2 className="text-xl font-semibold text-slate-100">Material de estudo</h2>
-            <p className="mt-1 max-w-2xl text-sm text-slate-500">
-              Consulte procedimentos, sequências, erros comuns e referências publicadas pela escola.
-            </p>
-          </div>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <p className="max-w-2xl text-sm text-slate-500">
+            Consulte procedimentos, sequências, erros comuns e referências publicadas pela escola.
+          </p>
           <button
             type="button"
             onClick={() => void load()}

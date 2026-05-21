@@ -6,7 +6,6 @@ export type TrainingMission = {
   durationMinutes: number;
   type: TrainingMissionType;
   maneuvers: string[];
-  maneuverSectionId?: string | null;
   maneuverSectionIds?: string[];
   order: number;
 };

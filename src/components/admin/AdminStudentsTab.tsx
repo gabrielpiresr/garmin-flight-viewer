@@ -702,7 +702,39 @@ export function AdminStudentsTab() {
             </div>
           </section>
 
-          <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45">
+          {/* Mobile cards */}
+          <section className="space-y-2 md:hidden">
+            {sortedStudents.length === 0 ? (
+              <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">Nenhum aluno encontrado.</p>
+            ) : sortedStudents.map((student) => (
+              <div key={student.userId} className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 truncate text-sm font-semibold text-slate-100">{displayName(student)}</p>
+                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${STATUS_CLASS[student.status]}`}>{STATUS_LABEL[student.status]}</span>
+                </div>
+                <p className="mt-0.5 truncate text-xs text-slate-500">{student.email || "—"}</p>
+                <div className="mt-2">
+                  <TrackProgress student={student} />
+                </div>
+                <div className="mt-1.5 grid grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-slate-500">
+                  <p>Horas: <span className="text-slate-300">{formatHours(student.executed.hours)}</span></p>
+                  <p>Voos: <span className="text-slate-300">{student.executed.count}</span></p>
+                  {(student.alertCounts?.risco ?? 0) > 0
+                    ? <p>Risco: <span className="font-semibold text-rose-300">{student.alertCounts?.risco}</span></p>
+                    : (student.alertCounts?.atencao ?? 0) > 0
+                      ? <p>Atenção: <span className="font-semibold text-amber-300">{student.alertCounts?.atencao}</span></p>
+                      : null}
+                </div>
+                <div className="mt-3 flex items-center justify-between border-t border-slate-800/50 pt-2.5">
+                  <p className="text-xs text-slate-500">{lastFlightLabel(student)}</p>
+                  <button type="button" onClick={() => setSelectedStudent(student)} className="rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20">Detalhes</button>
+                </div>
+              </div>
+            ))}
+          </section>
+
+          {/* Desktop table */}
+          <section className="hidden overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45 md:block">
             <div className="overflow-auto">
               <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
                 <thead className="sticky top-0 z-20 bg-slate-900 text-slate-500">

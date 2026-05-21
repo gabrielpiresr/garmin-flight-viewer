@@ -182,15 +182,23 @@ function cleanNumber(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function basePermissions(actorUserId: string) {
+function basePermissions(actorUserId: string, actorRole: UserRole) {
   const permissions = [
     Permission.read(Role.users()),
     Permission.read(Role.user(actorUserId)),
     Permission.update(Role.user(actorUserId)),
     Permission.delete(Role.user(actorUserId)),
   ];
-  permissions.push(Permission.read(Role.label("instrutor")));
-  permissions.push(Permission.update(Role.label("instrutor")));
+  if (actorRole === "admin") {
+    permissions.push(Permission.read(Role.label("admin")));
+    permissions.push(Permission.update(Role.label("admin")));
+    permissions.push(Permission.delete(Role.label("admin")));
+  } else if (actorRole === "instrutor") {
+    permissions.push(Permission.read(Role.label("instrutor")));
+    permissions.push(Permission.update(Role.label("instrutor")));
+  } else if (actorRole === "aluno") {
+    permissions.push(Permission.read(Role.label("aluno")));
+  }
   return Array.from(new Set(permissions));
 }
 
@@ -323,13 +331,14 @@ export async function replaceFlightTelemetryMetrics(
   flightId: string,
   actorUserId: string,
   metrics: FlightTelemetryMetricsBundle | null,
+  actorRole: UserRole = "instrutor",
 ): Promise<{ error: Error | null }> {
   if (!configured() || !metricsCollectionsConfigured()) return { error: null };
   try {
     await clearFlightTelemetryMetrics(flightId);
     if (!metrics || !databases) return { error: null };
 
-    const permissions = basePermissions(actorUserId);
+    const permissions = basePermissions(actorUserId, actorRole);
     await databases.createDocument(
       DB_ID,
       FLIGHT_TELEMETRY_SUMMARIES_COL_ID!,

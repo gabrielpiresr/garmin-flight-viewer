@@ -123,9 +123,32 @@ async function main() {
     process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID;
   const studentCreditsCollectionId =
     process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID;
+  const productSalesCollectionId =
+    process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || env.VITE_APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
+  const schoolCostsCollectionId =
+    process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || env.VITE_APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
+  const instructorCostsCollectionId =
+    process.env.APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
+  const flightInstructorPaymentsCollectionId =
+    process.env.APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID ||
+    "flight_instructor_payments";
+  const fuelingsCollectionId = process.env.APPWRITE_FUELINGS_COLLECTION_ID || env.VITE_APPWRITE_FUELINGS_COL_ID || "aircraft_fuelings";
   const aircraftsCollectionId = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || env.VITE_APPWRITE_AIRCRAFTS_COL_ID;
   const aircraftModelsCollectionId =
     process.env.APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID || env.VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID;
+  const maintenanceWorkOrdersCollectionId =
+    process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID ||
+    env.VITE_APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID ||
+    "maintenance_work_orders";
+  const financialMonthlyClosingsCollectionId =
+    process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COL_ID ||
+    "financial_monthly_closings";
+  const financialMonthlyClosingLinesCollectionId =
+    process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID ||
+    env.VITE_APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID ||
+    "financial_monthly_closing_lines";
   const flightTelemetrySummariesCollectionId =
     process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID ||
     env.VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID;
@@ -161,6 +184,8 @@ async function main() {
   const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
   const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
   const appUrl = process.env.APP_URL || env.VITE_APP_URL || "";
+  const cfWorkerUrl = process.env.CF_WORKER_URL || env.VITE_CF_WORKER_URL || "";
+  const workerSecret = process.env.WORKER_SECRET || env.WORKER_SECRET || env.VITE_CF_WORKER_SECRET || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
 
@@ -187,6 +212,8 @@ async function main() {
   if (!platformSettingsCollectionId) missing.push("VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID");
   if (!pushSubscriptionsCollectionId) missing.push("VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID");
   if (!notificationDeliveriesCollectionId) missing.push("VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID");
+  if (!cfWorkerUrl) missing.push("CF_WORKER_URL or VITE_CF_WORKER_URL");
+  if (!workerSecret) missing.push("WORKER_SECRET");
   if (!fs.existsSync(archivePath)) missing.push(archivePath);
   if (missing.length) throw new Error(`Missing required values: ${missing.join(", ")}`);
 
@@ -201,8 +228,16 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_CREDITS_COLLECTION_ID", studentCreditsCollectionId);
+  await upsertVariable(functions, "APPWRITE_PRODUCT_SALES_COLLECTION_ID", productSalesCollectionId);
+  await upsertVariable(functions, "APPWRITE_SCHOOL_COSTS_COLLECTION_ID", schoolCostsCollectionId);
+  await upsertVariable(functions, "APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID", instructorCostsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID", flightInstructorPaymentsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FUELINGS_COLLECTION_ID", fuelingsCollectionId);
   await upsertVariable(functions, "APPWRITE_AIRCRAFTS_COLLECTION_ID", aircraftsCollectionId);
   await upsertVariable(functions, "APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID", aircraftModelsCollectionId);
+  await upsertVariable(functions, "APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID", maintenanceWorkOrdersCollectionId);
+  await upsertVariable(functions, "APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COLLECTION_ID", financialMonthlyClosingsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID", financialMonthlyClosingLinesCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID", flightTelemetrySummariesCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID", flightLandingsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID", flightTelemetryAlertsCollectionId);
@@ -221,6 +256,8 @@ async function main() {
   if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
   if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
+  await upsertVariable(functions, "CF_WORKER_URL", cfWorkerUrl);
+  await upsertVariable(functions, "WORKER_SECRET", workerSecret, true);
   await upsertVariable(functions, "SCHOOL_ID", schoolId);
 
   const buffer = fs.readFileSync(archivePath);

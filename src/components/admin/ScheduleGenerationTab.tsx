@@ -1345,15 +1345,20 @@ export function ScheduleGenerationTab() {
     setPersisting(true);
     setError(null);
     try {
+      type FlightSummaryItem = {
+        date: string;
+        startTime: string;
+        durationHours: number;
+        aircraft: string;
+        instructorName?: string;
+        studentName?: string;
+      };
+
       const byDemand = new Map(weekData.existingGeneratedFlights.map((row) => [row.demandId, row]));
       let successCount = 0;
-      const notificationEvents: Array<{
-        eventType: "flight.scheduled" | "flight.updated";
-        flightId: string;
-        aircraft: string;
-        flightDate: string;
-        startTime: string;
-      }> = [];
+      const changedStudentIds = new Set<string>();
+      const changedInstructorIds = new Set<string>();
+
       for (const suggestion of editableSuggestions) {
         const student = weekData.students.find((row) => row.userId === suggestion.studentId);
         const instructor = suggestion.instructorId ? instructorById.get(suggestion.instructorId) ?? null : null;
@@ -1383,56 +1388,80 @@ export function ScheduleGenerationTab() {
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
           if (previousSignature !== nextSignature) {
-            notificationEvents.push({
-              eventType: "flight.updated",
-              flightId: existing.id,
-              aircraft: suggestion.aircraftRegistration,
-              flightDate,
-              startTime,
-            });
+            changedStudentIds.add(suggestion.studentId);
+            if (suggestion.instructorId) changedInstructorIds.add(suggestion.instructorId);
           }
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
           if (result.id) {
-            notificationEvents.push({
-              eventType: "flight.scheduled",
-              flightId: result.id,
-              aircraft: suggestion.aircraftRegistration,
-              flightDate: weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek),
-              startTime: hoursToHHMM(suggestion.startHour),
-            });
+            changedStudentIds.add(suggestion.studentId);
+            if (suggestion.instructorId) changedInstructorIds.add(suggestion.instructorId);
           }
         }
         successCount += 1;
       }
 
+      const studentScheduleMap = new Map<string, FlightSummaryItem[]>();
+      const instructorScheduleMap = new Map<string, FlightSummaryItem[]>();
+      for (const suggestion of editableSuggestions) {
+        const studentName = weekData.students.find((s) => s.userId === suggestion.studentId)?.label ?? suggestion.studentId;
+        const instructor = suggestion.instructorId ? instructorById.get(suggestion.instructorId) ?? null : null;
+        const instructorName = instructor?.label ?? suggestion.instructorId ?? "A definir";
+        const date = weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek);
+        const baseItem: FlightSummaryItem = {
+          date,
+          startTime: hoursToHHMM(suggestion.startHour),
+          durationHours: suggestion.durationHours,
+          aircraft: suggestion.aircraftRegistration,
+        };
+        if (changedStudentIds.has(suggestion.studentId)) {
+          const arr = studentScheduleMap.get(suggestion.studentId) ?? [];
+          arr.push({ ...baseItem, instructorName });
+          studentScheduleMap.set(suggestion.studentId, arr);
+        }
+        if (suggestion.instructorId && changedInstructorIds.has(suggestion.instructorId)) {
+          const arr = instructorScheduleMap.get(suggestion.instructorId) ?? [];
+          arr.push({ ...baseItem, studentName });
+          instructorScheduleMap.set(suggestion.instructorId, arr);
+        }
+      }
+
       setPersistedCount(successCount);
       const closed = await closeScheduleWeek(weekData.week.weekStart);
-      for (let i = 0; i < notificationEvents.length; i += 1) {
-        const event = notificationEvents[i];
+
+      const allDispatches: Array<{ recipientId: string; flights: FlightSummaryItem[]; dedupeKey: string }> = [
+        ...[...studentScheduleMap.entries()].map(([studentId, flights]) => ({
+          recipientId: studentId,
+          flights,
+          dedupeKey: `schedule.published:student:${studentId}:${weekData.week.weekStart}:${closed.closedAt}`,
+        })),
+        ...[...instructorScheduleMap.entries()].map(([instructorId, flights]) => ({
+          recipientId: instructorId,
+          flights,
+          dedupeKey: `schedule.published:instructor:${instructorId}:${weekData.week.weekStart}:${closed.closedAt}`,
+        })),
+      ];
+      for (let i = 0; i < allDispatches.length; i += 1) {
+        const { recipientId, flights, dedupeKey } = allDispatches[i];
         const result = await dispatchNotificationEvent({
-          eventType: event.eventType,
-          flightId: event.flightId,
-          dedupeKey:
-            event.eventType === "flight.scheduled"
-              ? `flight.scheduled:${event.flightId}`
-              : `flight.updated:${event.flightId}:${closed.closedAt}`,
+          eventType: "schedule.published",
+          dedupeKey,
+          recipientUserIds: [recipientId],
           actorUserId: user.id,
           data: {
-            aircraft: event.aircraft,
-            flightDate: event.flightDate,
-            startTime: event.startTime,
+            weekStart: weekData.week.weekStart,
+            weekLabel: weekData.week.label,
+            flights,
           },
         });
         if (result.error) {
-          console.warn("Falha ao disparar notificacao da escala", {
-            flightId: event.flightId,
-            eventType: event.eventType,
+          console.warn("Falha ao disparar notificacao de escala", {
+            recipientId,
             message: result.error.message,
           });
         }
-        if (i < notificationEvents.length - 1) {
+        if (i < allDispatches.length - 1) {
           await wait(RESEND_RATE_LIMIT_INTERVAL_MS);
         }
       }

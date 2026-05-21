@@ -244,9 +244,10 @@ function formatSignatureBlock(
     timeZone: "UTC",
   });
 
-  const hash = sig.content_hash ? `${sig.content_hash.slice(0, 16)}…` : "—";
+  const hash = sig.content_hash ?? "—";
+  const version = sig.payload_version ?? "—";
 
-  return `${label}: ${profileName ?? sig.signer_user_id.slice(0, 8)} · ${when} UTC · hash ${hash}`;
+  return `${label}: ${profileName ?? sig.signer_user_id.slice(0, 8)} · papel ${sig.signer_role} · ${when} UTC · payload ${version} · hash ${hash}`;
 }
 
 function buildFlightLevelFields(

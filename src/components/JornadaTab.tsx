@@ -1061,9 +1061,7 @@ function FormationJourney({ state, metrics }: { state: FormationState; metrics: 
         {visibleTimeline.length > 0 ? (
           <div className="flex gap-3 overflow-x-auto pb-2">
           {visibleTimeline.map((item) => {
-            const maneuverSectionIds = item.mission.maneuverSectionIds?.length
-              ? item.mission.maneuverSectionIds
-              : [item.mission.maneuverSectionId ?? ""].filter(Boolean);
+            const maneuverSectionIds = item.mission.maneuverSectionIds ?? [];
             const maneuverArticles = Array.from(
               new Map(
                 maneuverSectionIds

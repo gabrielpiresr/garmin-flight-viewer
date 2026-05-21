@@ -146,7 +146,6 @@ export function NoTelemetryTab() {
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">Sem telemetria</h2>
           <p className="text-sm text-slate-500">
             Voos executados sem CSV Garmin importado. Use os filtros e importe individualmente ou em massa.
           </p>

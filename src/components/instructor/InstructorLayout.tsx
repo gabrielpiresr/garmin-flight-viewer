@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
+import { PortalShellHeader } from "../PortalShellHeader";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 
 const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
@@ -16,9 +17,11 @@ const InstructorStudentsTab = lazy(() =>
 );
 const JornadaTab = lazy(() => import("../JornadaTab").then((module) => ({ default: module.JornadaTab })));
 const ManobrasTab = lazy(() => import("../ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
+const ManuaisTab = lazy(() => import("../ManuaisTab").then((module) => ({ default: module.ManuaisTab })));
 const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
+const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 
-type InstructorSection = "home" | "journey" | "flights" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help";
+type InstructorSection = "home" | "journey" | "flights" | "fuelings" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help";
 
 type NavItem = {
   id: InstructorSection;
@@ -75,7 +78,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: "manuals",
     label: "Manuais",
-    sublabel: "Em breve",
+    sublabel: "Materiais e documentos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
@@ -113,6 +116,17 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "fuelings",
+    label: "Abastecimentos",
+    sublabel: "Lançamentos de combustível",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M6.75 2.25A2.25 2.25 0 004.5 4.5v16.125c0 .621.504 1.125 1.125 1.125h7.5c.621 0 1.125-.504 1.125-1.125V4.5A2.25 2.25 0 0012 2.25H6.75zm.75 3a.75.75 0 01.75-.75h2.25a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-4.5z" />
+        <path d="M15.75 7.5a.75.75 0 011.28-.53l2.25 2.25a.75.75 0 01.22.53v7.875a1.125 1.125 0 102.25 0V12a2.25 2.25 0 00-.66-1.59l-2.03-2.03a2.25 2.25 0 01-.66-1.59V6a.75.75 0 00-1.5 0v.79c0 1 .397 1.961 1.105 2.669l1.995 1.995v6.171a2.625 2.625 0 11-5.25 0V7.5z" />
+      </svg>
+    ),
+  },
+  {
     id: "help",
     label: "Ajuda",
     sublabel: "Central de ajuda",
@@ -128,6 +142,7 @@ const SECTION_ROUTES = [
   { id: "home", path: "/instrutor" },
   { id: "journey", path: "/instrutor/jornada" },
   { id: "flights", path: "/instrutor/meus-voos" },
+  { id: "fuelings", path: "/instrutor/abastecimentos" },
   { id: "notices", path: "/instrutor/avisos" },
   { id: "manuals", path: "/instrutor/manuais" },
   { id: "maneuvers", path: "/instrutor/manobras" },
@@ -135,15 +150,6 @@ const SECTION_ROUTES = [
   { id: "profile", path: "/instrutor/perfil" },
   { id: "help", path: "/instrutor/ajuda" },
 ] satisfies readonly TabRoute<InstructorSection>[];
-
-function EmptySection({ title }: { title: string }) {
-  return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-12 text-center">
-      <p className="text-base font-medium text-slate-400">{title}</p>
-      <p className="mt-1 text-sm text-slate-600">Esta funcionalidade ainda está sendo desenvolvida.</p>
-    </div>
-  );
-}
 
 function TabLoading() {
   return (
@@ -213,17 +219,11 @@ export function InstructorLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4 px-4 py-3 md:px-6">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex items-center gap-2 lg:hidden">
-                <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400">
-                  Instrutor
-                </span>
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium uppercase tracking-widest text-slate-500">{activeNav.sublabel}</p>
-                <h1 className="truncate text-base font-semibold text-slate-100">{activeNav.label}</h1>
-              </div>
-            </div>
+            <PortalShellHeader
+              roleLabel="Instrutor"
+              roleBadgeClassName="bg-sky-500/20 text-sky-400"
+              title={activeNav.label}
+            />
             <div className="flex items-center gap-3">
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
@@ -261,16 +261,25 @@ export function InstructorLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("fuelings") && (
+            <div hidden={section !== "fuelings"}>
+              <LazyTab>
+                <FuelingsTab />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("notices") && (
             <div hidden={section !== "notices"}>
               <LazyTab>
-                <NoticeFeed className="w-full max-w-4xl" />
+                <NoticeFeed className="w-full max-w-4xl" showHeader={false} />
               </LazyTab>
             </div>
           )}
           {openedSections.has("manuals") && (
             <div hidden={section !== "manuals"}>
-              <EmptySection title="Manuais em breve" />
+              <LazyTab>
+                <ManuaisTab />
+              </LazyTab>
             </div>
           )}
           {openedSections.has("maneuvers") && (

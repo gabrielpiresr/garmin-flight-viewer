@@ -1,9 +1,10 @@
 import { Permission, Query, Role } from "appwrite";
-import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured, SCHOOL_ID } from "./appwrite";
+import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "./appwrite";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
 import type { InstructorIdentity, InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
+import type { FuelingResponsibleOption, FuelingStudentOption } from "../types/fueling";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 const PROFILES_COL_ID = import.meta.env.VITE_APPWRITE_PROFILES_COLLECTION_ID as string | undefined;
@@ -345,10 +346,13 @@ export async function ensureProfile(
       ID.unique(),
       { user_id: userId, email, role, school_id: DEFAULT_SCHOOL_ID, ...updates },
       [
-        Permission.read(Role.users()),
         Permission.read(Role.user(userId)),
         Permission.update(Role.user(userId)),
         Permission.delete(Role.user(userId)),
+        Permission.read(Role.label("admin")),
+        Permission.update(Role.label("admin")),
+        Permission.delete(Role.label("admin")),
+        Permission.read(Role.label("instrutor")),
       ],
     );
     return { error: null };
@@ -424,6 +428,48 @@ export async function listStudentIdentitiesForSchedule(actorUserId: string): Pro
       };
     })
     .filter((row) => row.userId.length > 0)
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+}
+
+export async function listFuelingStudents(actorUserId: string, actorRole: UserRole): Promise<FuelingStudentOption[]> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
+  if (actorRole !== "admin" && actorRole !== "instrutor") return [];
+
+  const students = await listStudentIdentitiesForSchedule(actorUserId);
+  return students.map((student) => ({
+    userId: student.userId,
+    label: student.label,
+    email: student.email,
+  }));
+}
+
+export async function listFuelingResponsibleUsers(actorRole: UserRole): Promise<FuelingResponsibleOption[]> {
+  if (!isAppwriteConfigured || !databases || !hasRbacCollections() || !DB_ID || !PROFILES_COL_ID) {
+    return [];
+  }
+  if (actorRole !== "admin" && actorRole !== "instrutor") return [];
+
+  const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+    Query.limit(200),
+  ]);
+
+  return res.documents
+    .map((doc) => {
+      const role = normalizeUserRole((doc.role as string | undefined) ?? null);
+      if (role !== "admin" && role !== "instrutor") return null;
+      const userId = (doc.user_id as string | undefined) ?? "";
+      if (!userId) return null;
+      const email = (doc.email as string | undefined) ?? "";
+      const fullName = ((doc.full_name as string | undefined) ?? "").trim();
+      return {
+        userId,
+        email,
+        role,
+        label: fullName || email || userId,
+      } satisfies FuelingResponsibleOption;
+    })
+    .filter((item): item is FuelingResponsibleOption => Boolean(item))
     .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
 }
 

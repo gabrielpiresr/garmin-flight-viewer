@@ -70,7 +70,7 @@ export function CreditosTab() {
   return (
     <CreditStatementView
       statement={statement}
-      title="Meus créditos"
+      showHeading={false}
       description="Saldo por modelo de avião, compras realizadas e horas consumidas pelos voos executados."
     />
   );

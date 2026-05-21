@@ -21,10 +21,10 @@ const FLIGHT_TAKEOFFS_COL_NAME = "flight_takeoffs";
 const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
 const db = new Databases(client);
 const FLIGHT_DATA_PERMISSIONS = [
+  // Authenticated users — can create, read, update; only admin can delete
   Permission.create(Role.users()),
   Permission.read(Role.users()),
   Permission.update(Role.users()),
-  Permission.delete(Role.users()),
   Permission.create(Role.label("admin")),
   Permission.read(Role.label("admin")),
   Permission.update(Role.label("admin")),
@@ -32,7 +32,6 @@ const FLIGHT_DATA_PERMISSIONS = [
   Permission.create(Role.label("instrutor")),
   Permission.read(Role.label("instrutor")),
   Permission.update(Role.label("instrutor")),
-  Permission.delete(Role.label("instrutor")),
 ];
 
 async function sleep(ms) {
@@ -50,17 +49,15 @@ async function ensureCollection(databaseId, name) {
   const list = await db.listCollections(databaseId);
   const found = list.collections.find((collection) => collection.name === name);
   if (found) {
-    const nextPermissions = mergePermissions(found.$permissions, FLIGHT_DATA_PERMISSIONS);
-    if (nextPermissions.length !== found.$permissions.length) {
-      return db.updateCollection(databaseId, found.$id, found.name, nextPermissions, found.documentSecurity, found.enabled);
+    // Always enforce required permissions (replace, not union) so stale/extra perms are removed
+    const sortedCurrent = [...(found.$permissions ?? [])].sort().join(",");
+    const sortedRequired = [...FLIGHT_DATA_PERMISSIONS].sort().join(",");
+    if (sortedCurrent !== sortedRequired) {
+      return db.updateCollection(databaseId, found.$id, found.name, FLIGHT_DATA_PERMISSIONS, found.documentSecurity, found.enabled);
     }
     return found;
   }
   return db.createCollection(databaseId, ID.unique(), name, FLIGHT_DATA_PERMISSIONS, true, true);
-}
-
-function mergePermissions(current, required) {
-  return Array.from(new Set([...(current ?? []), ...required]));
 }
 
 async function safeCreateAttribute(createFn, label) {

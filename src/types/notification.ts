@@ -5,7 +5,8 @@ export type NotificationEventType =
   | "flight.updated"
   | "flight.cancelled"
   | "weeklyPlan.submitted"
-  | "notice.published";
+  | "notice.published"
+  | "schedule.published";
 
 export type EmailTemplateType = NotificationEventType | "test";
 

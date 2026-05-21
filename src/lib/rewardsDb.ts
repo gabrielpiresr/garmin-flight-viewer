@@ -6,15 +6,13 @@ import {
   isAppwriteConfigured,
   JOURNEY_REWARDS_COL_ID,
   Permission,
-  Role,
-  SCHOOL_ID,
+  Role, DEFAULT_SCHOOL_ID,
   storage,
 } from "./appwrite";
 import { DEFAULT_REWARD_ICON_ID, rewardIconExists } from "./rewardIcons";
 import type { JourneyReward, JourneyRewardInput, RewardMetric, RewardOperator, RewardRules, RewardVisual } from "../types/rewards";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 const DEFAULT_RULES: RewardRules = { mode: "all", conditions: [{ metric: "flight_count", operator: "gte", value: 1 }] };
 const DEFAULT_VISUAL: RewardVisual = { type: "libraryIcon", iconId: DEFAULT_REWARD_ICON_ID, colorMode: "school" };

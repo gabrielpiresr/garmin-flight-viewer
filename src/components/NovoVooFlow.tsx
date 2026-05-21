@@ -28,7 +28,7 @@ import { parseGarminCsv } from "../lib/parseGarminCsv";
 import { getProfile, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
 import { buildTrainingSnapshot, listStudentTrainingTracks } from "../lib/trainingTracksDb";
-import { computeFlightEventTimes } from "../lib/flightLogbookTimes";
+import { computeFlightEventTimes, computeScheduledBlockTimes } from "../lib/flightLogbookTimes";
 import {
   aircraftToWeightBalanceSnapshot,
   buildWeightBalanceMeta,
@@ -238,9 +238,9 @@ type Props = {
 const STEPS = [
   { id: "dados", label: "Dados do voo" },
   { id: "pre-voo", label: "Pré voo" },
+  { id: "peso-balanceamento", label: "Peso e balanceamento" },
   { id: "pernas", label: "Pernas" },
   { id: "exercicios", label: "Exercícios" },
-  { id: "peso-balanceamento", label: "Peso e balanceamento" },
   { id: "risco", label: "Risco e parecer" },
 ] as const;
 export type NovoVooStepId = (typeof STEPS)[number]["id"];
@@ -251,10 +251,10 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function emptyLeg(): LegDraft {
+function emptyLeg(date = todayIso()): LegDraft {
   return {
     id: crypto.randomUUID(),
-    date: todayIso(),
+    date,
     role: "Instrutor de voo",
     studentRole: "Piloto em Instrução",
     instructorRole: "Instrutor de voo",
@@ -312,7 +312,10 @@ function normalizeClockTimeInput(raw: string): string {
   if (!digits) return "";
   if (digits.length <= 2) return digits;
   const hh = Math.min(23, Math.max(0, Number(digits.slice(0, 2)) || 0));
-  const mm = Math.min(59, Math.max(0, Number(digits.slice(2).padEnd(2, "0").slice(0, 2)) || 0));
+  if (digits.length === 3) {
+    return `${String(hh).padStart(2, "0")}:${digits[2]}`;
+  }
+  const mm = Math.min(59, Math.max(0, Number(digits.slice(2, 4)) || 0));
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
@@ -322,7 +325,10 @@ function normalizeDurationInput(raw: string): string {
   if (!digits) return "";
   if (digits.length <= 2) return digits;
   const hh = Math.max(0, Number(digits.slice(0, 2)) || 0);
-  const mm = Math.min(59, Math.max(0, Number(digits.slice(2).padEnd(2, "0").slice(0, 2)) || 0));
+  if (digits.length === 3) {
+    return `${String(hh).padStart(2, "0")}:${digits[2]}`;
+  }
+  const mm = Math.min(59, Math.max(0, Number(digits.slice(2, 4)) || 0));
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
@@ -626,7 +632,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [trainingTrackId, setTrainingTrackId] = useState("");
   const [trainingMissionIds, setTrainingMissionIds] = useState<string[]>([]);
 
-  const [legs, setLegs] = useState<LegDraft[]>([emptyLeg()]);
+  const [legs, setLegs] = useState<LegDraft[]>([emptyLeg(flightDate)]);
   const [exerciseCatalog, setExerciseCatalog] = useState<TrainingExercise[]>([]);
   const [exerciseGrades, setExerciseGrades] = useState<FlightExerciseGrade[]>([]);
   const [exercisesLoading, setExercisesLoading] = useState(false);
@@ -1054,22 +1060,37 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     }
   }, [occurrenceCode, occurrences]);
 
+  const isPrevistoStatus = normalizeFlightStatus(flightStatus) === "Previsto";
+
   const computedEventTimes = useMemo(() => {
-    if (!startTime.trim() || !engineCutoffTime.trim() || totals.flightMin <= 0) return null;
+    if (!startTime.trim() || !engineCutoffTime.trim()) return null;
+    if (isPrevistoStatus && totals.flightMin <= 0) {
+      const result = computeScheduledBlockTimes({
+        departureTimeUtc: startTime.trim(),
+        engineCutoffTimeUtc: engineCutoffTime.trim(),
+      });
+      return "error" in result ? null : result;
+    }
+    if (totals.flightMin <= 0) return null;
     const result = computeFlightEventTimes({
       departureTimeUtc: startTime.trim(),
       engineCutoffTimeUtc: engineCutoffTime.trim(),
       totalFlightMinutes: totals.flightMin,
     });
     return "error" in result ? null : result;
-  }, [engineCutoffTime, startTime, totals.flightMin]);
+  }, [engineCutoffTime, isPrevistoStatus, startTime, totals.flightMin]);
 
   const buildFlightMeta = (): FlightRecordMeta => {
-    const timesResult = computeFlightEventTimes({
-      departureTimeUtc: startTime.trim(),
-      engineCutoffTimeUtc: engineCutoffTime.trim(),
-      totalFlightMinutes: totals.flightMin,
-    });
+    const timesResult = isPrevistoStatus && totals.flightMin <= 0
+      ? computeScheduledBlockTimes({
+          departureTimeUtc: startTime.trim(),
+          engineCutoffTimeUtc: engineCutoffTime.trim(),
+        })
+      : computeFlightEventTimes({
+          departureTimeUtc: startTime.trim(),
+          engineCutoffTimeUtc: engineCutoffTime.trim(),
+          totalFlightMinutes: totals.flightMin,
+        });
     const eventTimes = "error" in timesResult ? null : timesResult;
 
     return {
@@ -1162,7 +1183,24 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   };
 
   const updateLeg = (id: string, patch: Partial<LegDraft>) => {
-    setLegs((prev) => prev.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
+    setLegs((prev) =>
+      prev.map((leg) => {
+        if (leg.id !== id) return leg;
+        const updated = { ...leg, ...patch };
+        const flightMin = parseDurationToMinutes(updated.flightTime);
+        if (flightMin > 0) {
+          const clamp = (val: string) => {
+            const m = parseDurationToMinutes(val);
+            return m > flightMin ? updated.flightTime : val;
+          };
+          updated.navTime = clamp(updated.navTime);
+          updated.ifrTime = clamp(updated.ifrTime);
+          updated.nightTime = clamp(updated.nightTime);
+          updated.serviceTime = clamp(updated.serviceTime);
+        }
+        return updated;
+      }),
+    );
   };
 
   const renderAerodromeSelect = (leg: LegDraft, field: "dep" | "arr") => {
@@ -1177,7 +1215,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     );
   };
 
-  const addLeg = () => setLegs((prev) => [...prev, emptyLeg()]);
+  const addLeg = () => setLegs((prev) => [...prev, emptyLeg(flightDate)]);
 
   const removeLeg = (id: string) => {
     setLegs((prev) => (prev.length <= 1 ? prev : prev.filter((leg) => leg.id !== id)));
@@ -1237,16 +1275,30 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     setError(null);
     setSavedMessage(null);
 
-    const timesCheck = computeFlightEventTimes({
-      departureTimeUtc: startTime.trim(),
-      engineCutoffTimeUtc: engineCutoffTime.trim(),
-      totalFlightMinutes: totals.flightMin,
-    });
+    const timesCheck =
+      isPrevistoStatus && totals.flightMin <= 0
+        ? computeScheduledBlockTimes({
+            departureTimeUtc: startTime.trim(),
+            engineCutoffTimeUtc: engineCutoffTime.trim(),
+          })
+        : computeFlightEventTimes({
+            departureTimeUtc: startTime.trim(),
+            engineCutoffTimeUtc: engineCutoffTime.trim(),
+            totalFlightMinutes: totals.flightMin,
+          });
     if ("error" in timesCheck) {
       setSaving(false);
       setError(timesCheck.error);
       return false;
     }
+
+    const blockMinutes = timesCheck.blockMinutes ?? 0;
+    const durationSec =
+      totals.flightMin > 0
+        ? totals.flightMin * 60
+        : blockMinutes > 0
+          ? blockMinutes * 60
+          : null;
 
     const meta = buildFlightMeta();
     const csvPayload = encodeFlightRecord({ meta, telemetryCsv, telemetryFiles });
@@ -1271,7 +1323,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       source_filename: csvFileName ?? "manual-entry.csv",
       csv_text: csvPayload,
       aircraft_ident: aircraft.trim() || null,
-      duration_sec: totals.flightMin > 0 ? totals.flightMin * 60 : null,
+      duration_sec: durationSec,
       trainingTrackId: trainingTrackId || null,
       trainingStageId: selectedTrainingSnapshot?.stageId ?? null,
       trainingMissionId: selectedTrainingSnapshot?.missionId ?? null,
@@ -1290,19 +1342,19 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         return false;
       }
       invalidateFlightListDisplayCache([flightId]);
-      if (originalScheduleSignature !== nextScheduleSignature) {
-        void dispatchNotificationEvent({
-          eventType: "flight.updated",
-          flightId,
-          dedupeKey: `flight.updated:${flightId}:${Date.now()}`,
-          actorUserId: user.id,
-          data: {
-            aircraft,
-            flightDate,
-            startTime,
-          },
-        });
-      }
+      void dispatchNotificationEvent({
+        eventType: "flight.updated",
+        flightId,
+        dedupeKey: `flight.updated:${flightId}:${Date.now()}`,
+        recipientUserIds: [studentId],
+        actorUserId: user.id,
+        data: {
+          aircraft,
+          flightDate,
+          startTime,
+          studentUserId: studentId,
+        },
+      });
       setOriginalScheduleSignature(nextScheduleSignature);
       onPublished?.(flightId);
       setSavedMessage("Alterações salvas.");
@@ -1320,12 +1372,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     void dispatchNotificationEvent({
       eventType: "flight.scheduled",
       flightId: id,
-      dedupeKey: `flight.scheduled:${id}`,
+      dedupeKey: `flight.scheduled:${id}:${Date.now()}`,
+      recipientUserIds: [studentId],
       actorUserId: user.id,
       data: {
         aircraft,
         flightDate,
         startTime,
+        studentUserId: studentId,
       },
     });
     onPublished?.(id);
@@ -1492,18 +1546,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 ))}
               </select>
             </label>
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-500">Horário de partida (local)</span>
-              <input
-                type="text"
-                value={startTime}
-                placeholder="HH:MM"
-                onChange={(e) => setStartTime(normalizeClockTimeInput(e.target.value))}
-                disabled={!canEdit}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
-              />
-            </label>
-
             <label className="block">
               <span className="mb-1 block text-xs text-slate-500">Aeronave / Matrícula</span>
               {!canEdit ? (
@@ -1737,10 +1779,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 <div className={`${inputClass} text-slate-400`}>{computedEventTimes?.landingTimeUtc ?? "—"}</div>
               </Input>
             </div>
-            {startTime.trim() && engineCutoffTime.trim() && totals.flightMin > 0 && !computedEventTimes ? (
+            {startTime.trim() && engineCutoffTime.trim() && !computedEventTimes ? (
               <p className="mt-2 text-xs text-amber-400">
-                Ajuste partida/corte: o corte deve ser posterior à partida e cobrir pelo menos{" "}
-                {formatMinutes(totals.flightMin)} de voo.
+                {isPrevistoStatus && totals.flightMin <= 0
+                  ? "Ajuste partida/corte: o corte deve ser posterior à partida (ex.: 06:00 → 07:00)."
+                  : `Ajuste partida/corte: o corte deve ser posterior à partida e cobrir pelo menos ${formatMinutes(totals.flightMin)} de voo.`}
               </p>
             ) : null}
           </div>

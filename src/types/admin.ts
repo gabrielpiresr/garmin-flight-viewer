@@ -41,6 +41,7 @@ export type AircraftModel = {
   op_best_climb_after_takeoff_kt: number | null;
   fuel_consumption_lph: number | null;
   created_at: string;
+  deleted_at: string | null;
 };
 
 export type Aircraft = {
@@ -74,7 +75,14 @@ export type Aircraft = {
   wb_max_weight_kg: number | null;
   wb_arm_min_mm: number | null;
   wb_arm_max_mm: number | null;
+  cost_hangar_monthly: number | null;
+  cost_insurance_monthly: number | null;
+  cost_leasing_monthly: number | null;
+  cost_per_flight_hour: number | null;
+  cost_maintenance_reserve_monthly: number | null;
+  cost_other_fixed_monthly: number | null;
   created_at: string;
+  deleted_at: string | null;
   // joined client-side
   model?: AircraftModel;
 };

@@ -19,6 +19,7 @@ import {
   type FlightSignaturesForFlight,
 } from "../../lib/flightSignaturesDb";
 import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
+import { validateFlightForInstructorSign } from "../../lib/flightSignValidation";
 import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
 import {
   buildBasicFlightListDisplayInfo,
@@ -153,6 +154,11 @@ function formatDate(item: SavedFlightListItem, info?: FlightDisplayInfo): string
   const iso = info?.flightDateIso ?? item.created_at.slice(0, 10);
   const date = new Date(`${iso}T12:00:00`);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString("pt-BR");
+}
+
+function formatDecimalHours(minutes: number | null | undefined): string {
+  if (!minutes || minutes <= 0) return "—";
+  return (minutes / 60).toFixed(1) + "h";
 }
 
 function statusClass(ok: boolean): string {
@@ -362,8 +368,10 @@ export function InstructorFlightsTab() {
   const [signingFlightId, setSigningFlightId] = useState<string | null>(null);
   const [signingFlightMeta, setSigningFlightMeta] = useState<FlightRecordMeta | null>(null);
   const [signingFlightMetaLoading, setSigningFlightMetaLoading] = useState(false);
+  const [signingPassword, setSigningPassword] = useState("");
   const [signingInProgress, setSigningInProgress] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
+  const [signingValidationErrors, setSigningValidationErrors] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
     if (!user || !configured) {
@@ -570,17 +578,29 @@ export function InstructorFlightsTab() {
   const openSignModal = async (id: string) => {
     setSigningFlightId(id);
     setSigningFlightMeta(null);
+    setSigningPassword("");
     setSigningError(null);
+    setSigningValidationErrors([]);
     setSigningFlightMetaLoading(true);
     const { data } = await getSavedFlight(id);
     setSigningFlightMetaLoading(false);
-    if (data) setSigningFlightMeta(decodeFlightRecord(data.csv_text).meta);
+    if (data) {
+      const meta = decodeFlightRecord(data.csv_text).meta;
+      setSigningFlightMeta(meta);
+      if (meta) setSigningValidationErrors(validateFlightForInstructorSign(meta));
+    }
   };
 
   const handleSign = async () => {
     if (!user || !signingFlightId) return;
+    if (!signingPassword) {
+      setSigningError("Informe sua senha para assinar.");
+      return;
+    }
     setSigningInProgress(true);
     setSigningError(null);
+    const passwordForSigning = signingPassword;
+    setSigningPassword("");
     const { data: flightData, error: fetchErr } = await getSavedFlight(signingFlightId);
     if (fetchErr || !flightData) {
       setSigningError(fetchErr?.message ?? "Voo não encontrado.");
@@ -588,21 +608,12 @@ export function InstructorFlightsTab() {
       return;
     }
 
-    // Validate legs before signing
+    // Safety guard — validation already ran in openSignModal
     const { meta: decodedMeta } = decodeFlightRecord(flightData.csv_text);
     if (decodedMeta) {
-      const totalLandings = decodedMeta.legs.reduce((sum, leg) => sum + (leg.landings || 0), 0);
-      const totalMinutes = decodedMeta.legs.reduce((sum, leg) => {
-        const parts = (leg.flightTime || "").split(":").map(Number);
-        return sum + (parts[0] ?? 0) * 60 + (parts[1] ?? 0);
-      }, 0);
-      if (totalLandings === 0) {
-        setSigningError("Não é possível assinar: nenhum pouso registrado nas pernas do voo.");
-        setSigningInProgress(false);
-        return;
-      }
-      if (totalMinutes <= 0) {
-        setSigningError("Não é possível assinar: duração total do voo é zero.");
+      const guardErrors = validateFlightForInstructorSign(decodedMeta);
+      if (guardErrors.length > 0) {
+        setSigningValidationErrors(guardErrors);
         setSigningInProgress(false);
         return;
       }
@@ -614,6 +625,7 @@ export function InstructorFlightsTab() {
       actorRole: user.role,
       signerRole: "instructor",
       csvText: flightData.csv_text,
+      password: passwordForSigning,
     });
     setSigningInProgress(false);
     if (error) {
@@ -637,6 +649,9 @@ export function InstructorFlightsTab() {
       );
     }
     setSigningFlightId(null);
+    setSigningFlightMeta(null);
+    setSigningPassword("");
+    setSigningValidationErrors([]);
   };
 
   const openSuggestion = (id: string) => {
@@ -709,12 +724,8 @@ export function InstructorFlightsTab() {
 
   return (
     <div className="min-w-0 space-y-6">
-      <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-slate-100">Meus voos</h2>
-          <p className="text-xs text-slate-500">Voos atribuídos ao seu usuário de instrutor.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col items-stretch justify-end gap-3 sm:flex-row sm:items-center">
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <div className="flex rounded-lg border border-slate-700 bg-slate-900/60 p-1">
             {([
               ["cards", "Card"],
@@ -932,7 +943,7 @@ export function InstructorFlightsTab() {
               </div>
               <button
                 type="button"
-                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); }}
+                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); setSigningValidationErrors([]); setSigningPassword(""); }}
                 disabled={signingInProgress}
                 className="rounded-lg border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
               >
@@ -1005,9 +1016,30 @@ export function InstructorFlightsTab() {
                 </div>
               )}
 
+              {signingValidationErrors.length > 0 && (
+                <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-3">
+                  <p className="mb-1.5 text-xs font-semibold text-red-300">Corrija os itens abaixo antes de assinar:</p>
+                  <ul className="list-inside list-disc space-y-0.5 text-xs text-red-200">
+                    {signingValidationErrors.map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+
               <p className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
                 Ao assinar, a ficha deste voo ficará <strong>bloqueada para edição</strong>. Esta ação não pode ser desfeita.
               </p>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">Senha</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={signingPassword}
+                  onChange={(event) => setSigningPassword(event.target.value)}
+                  disabled={signingInProgress}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500 disabled:opacity-60"
+                  placeholder="Confirme sua senha"
+                />
+              </label>
             </div>
 
             <div className="shrink-0 border-t border-slate-700/60 px-5 py-3">
@@ -1021,7 +1053,7 @@ export function InstructorFlightsTab() {
             <div className="flex flex-col justify-end gap-2 sm:flex-row">
               <button
                 type="button"
-                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); }}
+                onClick={() => { setSigningFlightId(null); setSigningFlightMeta(null); setSigningError(null); setSigningValidationErrors([]); setSigningPassword(""); }}
                 disabled={signingInProgress}
                 className="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60 sm:w-auto"
               >
@@ -1030,7 +1062,7 @@ export function InstructorFlightsTab() {
               <button
                 type="button"
                 onClick={() => void handleSign()}
-                disabled={signingInProgress}
+                disabled={signingInProgress || signingValidationErrors.length > 0 || !signingPassword}
                 className="w-full rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60 sm:w-auto"
               >
                 {signingInProgress ? "Assinando..." : "Confirmar assinatura"}
@@ -1212,7 +1244,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">ANAC</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
-                    <th className="px-3 py-2 font-semibold">Horas</th>
+                    <th className="px-3 py-2 font-semibold">Duração</th>
                     {isFutureSection ? (
                       <>
                         <th className="px-3 py-2 font-semibold">Sugestão INVA</th>
@@ -1254,7 +1286,7 @@ function FlightTableSection({
                         <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
                         <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
                         <td className="px-3 py-2"><FlightStatusBadge status={item.flight_status} /></td>
-                        <td className="px-3 py-2">{info?.totalFlight ?? "00:00"}</td>
+                        <td className="px-3 py-2">{formatDecimalHours(info?.totalFlightMinutes)}</td>
                         {isFutureSection ? (
                           <>
                             <td className={`px-3 py-2 ${statusClass(Boolean(info?.instructorSuggestionMd))}`}>

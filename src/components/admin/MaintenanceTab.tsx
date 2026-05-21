@@ -18,7 +18,9 @@ import {
   listFlightDiscrepancies,
   type FlightDiscrepancy,
 } from "../../lib/flightDiscrepanciesDb";
-import { listAllFlightsByAircraft, type SavedFlightListItem } from "../../lib/flightsDb";
+import { getFlightRecordMetaBatch, listAllFlightsByAircraft, type SavedFlightListItem } from "../../lib/flightsDb";
+import { flightAircraftHours } from "../../lib/flightHours";
+import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import type {
   Aircraft,
@@ -274,14 +276,8 @@ function flightTimestamp(flight: SavedFlightListItem): number {
   return Number.isFinite(ms) ? ms : new Date(flight.created_at).getTime();
 }
 
-function flightDurationHours(flight: SavedFlightListItem): number {
-  if (typeof flight.total_flight_minutes === "number" && Number.isFinite(flight.total_flight_minutes)) {
-    return flight.total_flight_minutes / 60;
-  }
-  if (typeof flight.duration_sec === "number" && Number.isFinite(flight.duration_sec)) {
-    return flight.duration_sec / 3600;
-  }
-  return 0;
+function flightDurationHours(flight: SavedFlightListItem, metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): number {
+  return flightAircraftHours(flight, metaByFlightId.get(flight.id));
 }
 
 function orderTimestamp(order: MaintenanceWorkOrder): number {
@@ -306,6 +302,7 @@ function buildAircraftHoursAt(params: {
   aircraft: Aircraft;
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
   asOfMs: number;
 }): Partial<WorkOrderForm> {
   const baseline = latestAircraftBaseline(params.orders, params.aircraft.id, params.asOfMs);
@@ -322,7 +319,7 @@ function buildAircraftHoursAt(params: {
     const ms = flightTimestamp(flight);
     return ms >= afterBaseline && ms <= params.asOfMs;
   });
-  const flownHours = rows.reduce((sum, flight) => sum + flightDurationHours(flight), 0);
+  const flownHours = rows.reduce((sum, flight) => sum + flightDurationHours(flight, params.metaByFlightId), 0);
   const landings = rows.reduce((sum, flight) => sum + Math.max(0, Math.round(flight.landings ?? 0)), 0);
   const addHours = (base: number | null | undefined) => base == null ? "" : Number((base + flownHours).toFixed(1)).toString();
   const addCount = (base: number | null | undefined, increment: number) => base == null ? "" : String(base + increment);
@@ -569,13 +566,17 @@ export function MaintenanceTab() {
     const asOfMs = openingTimestamp(form);
     const toDate = new Date(asOfMs).toISOString().slice(0, 10);
     listAllFlightsByAircraft({ aircraftIdent: selectedAircraft.registration, toDate })
-      .then((result) => {
+      .then(async (result) => {
         if (canceled) return;
         if (result.error) throw result.error;
+        const flights = result.data ?? [];
+        const metaByFlightId = await getFlightRecordMetaBatch(flights.map((flight) => flight.id), { concurrency: 12 });
+        if (canceled) return;
         const patch = buildAircraftHoursAt({
           aircraft: selectedAircraft,
           orders,
-          flights: result.data ?? [],
+          flights,
+          metaByFlightId,
           asOfMs,
         });
         setForm((current) => ({ ...current, ...patch }));

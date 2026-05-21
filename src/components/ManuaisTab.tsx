@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getManualDownloadUrl, listManuals, type Manual } from "../lib/manuaisDb";
+import { getManualDownloadUrl, getManualViewUrl, listManuals, type Manual } from "../lib/manuaisDb";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -41,6 +41,104 @@ function groupByCategory(manuals: Manual[]): Map<string, Manual[]> {
   return map;
 }
 
+function canPreviewInline(mime: string | null): boolean {
+  const m = (mime ?? "").toLowerCase();
+  return m.includes("pdf") || m.includes("image");
+}
+
+function ManualPreviewModal({ manual, onClose }: { manual: Manual; onClose: () => void }) {
+  const viewUrl = getManualViewUrl(manual.fileId);
+  const downloadUrl = getManualDownloadUrl(manual.fileId);
+  const mime = (manual.mimeType ?? "").toLowerCase();
+  const isPdf = mime.includes("pdf");
+  const isImage = mime.includes("image");
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="manual-preview-title"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+          <div className="min-w-0">
+            <p id="manual-preview-title" className="truncate text-sm font-semibold text-slate-100">
+              {manual.name}
+            </p>
+            {manual.fileSize ? (
+              <p className="text-xs text-slate-500">{formatBytes(manual.fileSize)}</p>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {downloadUrl ? (
+              <a
+                href={downloadUrl}
+                download={manual.originalName}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+              >
+                Baixar
+              </a>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto bg-slate-950 p-2">
+          {!viewUrl ? (
+            <p className="p-6 text-center text-sm text-slate-500">Visualização indisponível.</p>
+          ) : isPdf ? (
+            <iframe
+              title={manual.name}
+              src={viewUrl}
+              className="h-[min(78vh,720px)] w-full rounded-lg border border-slate-800 bg-white"
+            />
+          ) : isImage ? (
+            <img
+              src={viewUrl}
+              alt={manual.name}
+              className="mx-auto max-h-[min(78vh,720px)] w-auto max-w-full rounded-lg object-contain"
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3 p-8 text-center">
+              <p className="text-sm text-slate-400">Este formato não pode ser exibido aqui.</p>
+              {viewUrl ? (
+                <a
+                  href={viewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+                >
+                  Abrir em nova aba
+                </a>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── main component ──────────────────────────────────────────────────────────
 
 export function ManuaisTab() {
@@ -49,6 +147,7 @@ export function ManuaisTab() {
   const [error, setError] = useState<string | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [previewManual, setPreviewManual] = useState<Manual | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +162,9 @@ export function ManuaisTab() {
       setManuals(data ?? []);
       setExpandedCategories(new Set([...new Set((data ?? []).map((m) => m.category))]));
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function toggleCategory(cat: string) {
@@ -106,7 +207,6 @@ export function ManuaisTab() {
 
   return (
     <div className="space-y-4">
-      {/* Search */}
       {manuals.length > 0 && (
         <div className="relative">
           <svg
@@ -115,7 +215,11 @@ export function ManuaisTab() {
             fill="currentColor"
             className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
           >
-            <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+            <path
+              fillRule="evenodd"
+              d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+              clipRule="evenodd"
+            />
           </svg>
           <input
             type="search"
@@ -127,7 +231,6 @@ export function ManuaisTab() {
         </div>
       )}
 
-      {/* Empty state */}
       {manuals.length === 0 ? (
         <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-12 text-center">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mx-auto mb-3 h-10 w-10 text-slate-700">
@@ -147,7 +250,6 @@ export function ManuaisTab() {
             const isOpen = expandedCategories.has(cat);
             return (
               <div key={cat} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60">
-                {/* Category header */}
                 <button
                   type="button"
                   onClick={() => toggleCategory(cat)}
@@ -168,46 +270,72 @@ export function ManuaisTab() {
                     fill="currentColor"
                     className={`h-4 w-4 text-slate-500 transition-transform ${isOpen ? "rotate-180" : ""}`}
                   >
-                    <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+                    <path
+                      fillRule="evenodd"
+                      d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z"
+                      clipRule="evenodd"
+                    />
                   </svg>
                 </button>
 
-                {/* Files */}
                 {isOpen && (
                   <div className="divide-y divide-slate-800/50 border-t border-slate-800/60">
                     {items.map((m) => {
                       const downloadUrl = getManualDownloadUrl(m.fileId);
+                      const viewUrl = getManualViewUrl(m.fileId);
+                      const previewable = Boolean(viewUrl && canPreviewInline(m.mimeType));
                       return (
                         <div
                           key={m.id}
-                          className="flex items-center gap-3 px-4 py-3 transition hover:bg-slate-800/30"
+                          className="flex flex-wrap items-center gap-3 px-4 py-3 transition hover:bg-slate-800/30 sm:flex-nowrap"
                         >
                           <FileIcon mime={m.mimeType} size="sm" />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-medium text-slate-200">{m.name}</p>
-                            {m.fileSize ? (
-                              <p className="text-xs text-slate-500">{formatBytes(m.fileSize)}</p>
-                            ) : null}
+                            {m.fileSize ? <p className="text-xs text-slate-500">{formatBytes(m.fileSize)}</p> : null}
                           </div>
-                          {downloadUrl ? (
-                            <a
-                              href={downloadUrl}
-                              download={m.originalName}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-300"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
-                                <path d="M8.75 2.75a.75.75 0 00-1.5 0v5.69L5.03 6.22a.75.75 0 00-1.06 1.06l3.5 3.5a.75.75 0 001.06 0l3.5-3.5a.75.75 0 00-1.06-1.06L8.75 8.44V2.75z" />
-                                <path d="M3.5 9.75a.75.75 0 00-1.5 0v1.5A2.75 2.75 0 004.75 14h6.5A2.75 2.75 0 0014 11.25v-1.5a.75.75 0 00-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5z" />
-                              </svg>
-                              Baixar
-                            </a>
-                          ) : (
-                            <span className="shrink-0 rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-600">
-                              Indisponível
-                            </span>
-                          )}
+                          <div className="flex w-full shrink-0 flex-wrap gap-2 sm:ml-auto sm:w-auto">
+                            {previewable ? (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewManual(m)}
+                                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-300 sm:flex-none"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                                  <path d="M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM7.25 6a.75.75 0 011.5 0v2.69l1.22 1.22a.75.75 0 11-1.06 1.06l-1.5-1.5a.75.75 0 01-.16-.78V6z" />
+                                </svg>
+                                Visualizar
+                              </button>
+                            ) : viewUrl ? (
+                              <a
+                                href={viewUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-300 sm:flex-none"
+                              >
+                                Abrir
+                              </a>
+                            ) : null}
+                            {downloadUrl ? (
+                              <a
+                                href={downloadUrl}
+                                download={m.originalName}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-300 sm:flex-none"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                                  <path d="M8.75 2.75a.75.75 0 00-1.5 0v5.69L5.03 6.22a.75.75 0 00-1.06 1.06l3.5 3.5a.75.75 0 001.06 0l3.5-3.5a.75.75 0 00-1.06-1.06L8.75 8.44V2.75z" />
+                                  <path d="M3.5 9.75a.75.75 0 00-1.5 0v1.5A2.75 2.75 0 004.75 14h6.5A2.75 2.75 0 0014 11.25v-1.5a.75.75 0 00-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5z" />
+                                </svg>
+                                Baixar
+                              </a>
+                            ) : (
+                              <span className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-600">
+                                Indisponível
+                              </span>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -218,6 +346,8 @@ export function ManuaisTab() {
           })}
         </div>
       )}
+
+      {previewManual ? <ManualPreviewModal manual={previewManual} onClose={() => setPreviewManual(null)} /> : null}
     </div>
   );
 }

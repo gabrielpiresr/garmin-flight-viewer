@@ -70,7 +70,6 @@ function emptyMission(order: number): MissionDraft {
     duration: "01:00",
     type: "DC",
     maneuversText: "",
-    maneuverSectionId: "",
     maneuverSectionIds: [],
     order,
   };
@@ -108,8 +107,7 @@ function toDraft(track?: TrainingTrack | null): TrackDraft {
         duration: durationToInput(mission.durationMinutes),
         type: mission.type,
         maneuversText: mission.maneuvers.join("\n"),
-        maneuverSectionId: mission.maneuverSectionId ?? "",
-        maneuverSectionIds: mission.maneuverSectionIds?.length ? mission.maneuverSectionIds : [mission.maneuverSectionId ?? ""].filter(Boolean),
+        maneuverSectionIds: mission.maneuverSectionIds ?? [],
         order: mission.order,
       })),
     })),

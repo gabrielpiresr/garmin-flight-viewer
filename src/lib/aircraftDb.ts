@@ -74,7 +74,14 @@ function toAircraft(doc: Record<string, unknown>): Aircraft {
     wb_max_weight_kg: (doc.wb_max_weight_kg as number | null | undefined) ?? null,
     wb_arm_min_mm: (doc.wb_arm_min_mm as number | null | undefined) ?? null,
     wb_arm_max_mm: (doc.wb_arm_max_mm as number | null | undefined) ?? null,
+    cost_hangar_monthly: (doc.cost_hangar_monthly as number | null | undefined) ?? null,
+    cost_insurance_monthly: (doc.cost_insurance_monthly as number | null | undefined) ?? null,
+    cost_leasing_monthly: (doc.cost_leasing_monthly as number | null | undefined) ?? null,
+    cost_per_flight_hour: (doc.cost_per_flight_hour as number | null | undefined) ?? null,
+    cost_maintenance_reserve_monthly: (doc.cost_maintenance_reserve_monthly as number | null | undefined) ?? null,
+    cost_other_fixed_monthly: (doc.cost_other_fixed_monthly as number | null | undefined) ?? null,
     created_at: (doc.$createdAt as string) ?? "",
+    deleted_at: (doc.deleted_at as string | null | undefined) ?? null,
   };
 }
 
@@ -98,12 +105,19 @@ type AircraftWeightBalanceData = Partial<{
   logbook_propeller_hours: number | null;
   logbook_tach_hours: number | null;
   logbook_cycles: number | null;
+  cost_hangar_monthly: number | null;
+  cost_insurance_monthly: number | null;
+  cost_leasing_monthly: number | null;
+  cost_per_flight_hour: number | null;
+  cost_maintenance_reserve_monthly: number | null;
+  cost_other_fixed_monthly: number | null;
 }>;
 
 export async function listAircrafts(schoolId: string): Promise<Aircraft[]> {
   if (!isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return [];
   const res = await databases.listDocuments(DB_ID, AIRCRAFTS_COL_ID, [
     Query.equal("school_id", [schoolId]),
+    Query.isNull("deleted_at"),
     Query.orderAsc("registration"),
     Query.limit(500),
   ]);
@@ -115,6 +129,7 @@ export async function getAircraftByRegistration(registration: string, schoolId: 
   if (!normalized || !isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return null;
   const queries = [
     Query.equal("registration", [normalized]),
+    Query.isNull("deleted_at"),
     Query.limit(1),
   ];
   if (schoolId) queries.unshift(Query.equal("school_id", [schoolId]));
@@ -170,6 +185,13 @@ export async function createAircraft(data: {
       logbook_propeller_hours: data.logbook_propeller_hours ?? null,
       logbook_tach_hours: data.logbook_tach_hours ?? null,
       logbook_cycles: data.logbook_cycles ?? null,
+      cost_hangar_monthly: data.cost_hangar_monthly ?? null,
+      cost_insurance_monthly: data.cost_insurance_monthly ?? null,
+      cost_leasing_monthly: data.cost_leasing_monthly ?? null,
+      cost_per_flight_hour: data.cost_per_flight_hour ?? null,
+      cost_maintenance_reserve_monthly: data.cost_maintenance_reserve_monthly ?? null,
+      cost_other_fixed_monthly: data.cost_other_fixed_monthly ?? null,
+      deleted_at: null,
     },
     adminScopedPermissions(),
   );
@@ -199,6 +221,11 @@ export async function updateAircraft(
 
 export async function toggleAircraftActive(id: string, active: boolean): Promise<Aircraft> {
   return updateAircraft(id, { active });
+}
+
+export async function deleteAircraft(id: string): Promise<void> {
+  if (!databases || !DB_ID || !AIRCRAFTS_COL_ID) throw new Error("Appwrite não configurado");
+  await databases.updateDocument(DB_ID, AIRCRAFTS_COL_ID, id, { deleted_at: new Date().toISOString() });
 }
 
 export async function uploadAircraftPhoto(file: File): Promise<string> {

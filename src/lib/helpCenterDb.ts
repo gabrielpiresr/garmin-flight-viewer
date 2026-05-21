@@ -10,8 +10,7 @@ import {
   ID,
   isAppwriteConfigured,
   Permission,
-  Role,
-  SCHOOL_ID,
+  Role, DEFAULT_SCHOOL_ID,
   storage,
 } from "./appwrite";
 import type {
@@ -26,7 +25,6 @@ import type {
   HelpSubsectionPayload,
 } from "../types/helpCenter";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
 type PrivilegedHelpResponse = {

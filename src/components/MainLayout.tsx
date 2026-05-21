@@ -3,6 +3,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
+import { PortalShellHeader } from "./PortalShellHeader";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
@@ -249,17 +250,11 @@ export function MainLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-sm">
           <div className="school-themed-surface flex items-center justify-between gap-4 px-4 py-3 md:px-6">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400 lg:hidden">
-                Aluno
-              </span>
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium uppercase tracking-widest text-slate-500">
-                  {activeNav.sublabel}
-                </p>
-                <h1 className="truncate text-base font-semibold text-slate-100">{activeNav.label}</h1>
-              </div>
-            </div>
+            <PortalShellHeader
+              roleLabel="Aluno"
+              roleBadgeClassName="bg-sky-500/20 text-sky-400"
+              title={activeNav.label}
+            />
             <div className="flex items-center gap-3">
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
@@ -317,7 +312,7 @@ export function MainLayout() {
           {openedSections.has("avisos") && (
             <div hidden={section !== "avisos"}>
               <LazyTab>
-                <NoticeFeed className="w-full max-w-4xl" eyebrow="Avisos" title="Comunicados da escola" />
+                <NoticeFeed className="w-full max-w-4xl" showHeader={false} />
               </LazyTab>
             </div>
           )}

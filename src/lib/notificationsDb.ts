@@ -159,11 +159,25 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
   await executeNotifications({ action: "deletePushSubscription", endpoint });
 }
 
-export async function dispatchNotificationEvent(payload: NotificationDispatchPayload): Promise<{ error: Error | null }> {
+export async function dispatchNotificationEvent(
+  payload: NotificationDispatchPayload,
+): Promise<{ error: Error | null; deliveries?: NotificationResponse["deliveries"] }> {
   try {
-    await executeNotifications({ action: "dispatchEvent", event: payload });
-    return { error: null };
+    const response = await executeNotifications({ action: "dispatchEvent", event: payload });
+    const deliveries = response.deliveries ?? [];
+    const emailDelivery = deliveries.find((item) => item.channel === "email");
+    if (emailDelivery?.status === "failed") {
+      console.warn("[notifications] Email falhou:", payload.eventType, deliveries);
+      return { error: new Error("Falha ao enviar email de notificação."), deliveries };
+    }
+    if (emailDelivery?.status === "skipped") {
+      console.warn("[notifications] Email ignorado:", payload.eventType, deliveries);
+    } else if (deliveries.length > 0) {
+      console.info("[notifications] Entregas:", payload.eventType, deliveries);
+    }
+    return { error: null, deliveries };
   } catch (error) {
+    console.warn("[notifications] Falha ao disparar evento:", payload.eventType, error);
     return { error: error as Error };
   }
 }

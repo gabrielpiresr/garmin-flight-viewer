@@ -20,6 +20,8 @@ import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlann
 import type { TrainingTrack } from "../../types/trainingTrack";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import { StudentObservationsSection } from "./StudentObservationsSection";
+import { InstructorCostsSection } from "./InstructorCostsSection";
+import { UserSalesSection } from "./UserSalesSection";
 import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -751,6 +753,8 @@ export function AdminUsersTab() {
                 ) : null}
 
                 {(roleDraft === "instrutor" || selectedDetail.role === "instrutor") ? (
+                  <>
+                    <InstructorCostsSection instructorUserId={selectedDetail.userId} />
                   <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                       <div>
@@ -829,7 +833,10 @@ export function AdminUsersTab() {
                       </button>
                     </div>
                   </section>
+                  </>
                 ) : null}
+
+                <UserSalesSection userId={selectedDetail.userId} />
 
                 <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">

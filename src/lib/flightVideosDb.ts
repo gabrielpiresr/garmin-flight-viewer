@@ -35,9 +35,13 @@ export async function createFlightVideoDoc(payload: {
   }
   try {
     const permissions = [
-      Permission.read(Role.users()),
+      Permission.read(Role.user(payload.uploadedBy)),
+      Permission.read(Role.label("admin")),
+      Permission.read(Role.label("instrutor")),
       Permission.update(Role.user(payload.uploadedBy)),
       Permission.delete(Role.user(payload.uploadedBy)),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
     ];
 
     const d = await databases.createDocument(DB_ID, VIDEOS_COL_ID, ID.unique(), {

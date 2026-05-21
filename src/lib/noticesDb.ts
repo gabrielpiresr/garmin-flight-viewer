@@ -5,12 +5,11 @@ import {
   ID,
   isAppwriteConfigured,
   NOTICES_BUCKET_ID,
-  NOTICES_COL_ID,
-  SCHOOL_ID,
+  NOTICES_COL_ID, DEFAULT_SCHOOL_ID,
   storage,
 } from "./appwrite";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
 import type { CreateNoticePayload, Notice, UpdateNoticePayload } from "../types/notice";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;

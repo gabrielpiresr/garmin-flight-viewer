@@ -1,4 +1,6 @@
 import type { SavedFlightListItem } from "./flightsDb";
+import { flightAircraftHours } from "./flightHours";
+import type { FlightRecordMeta } from "./flightRecordCodec";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../types/admin";
 
 export type MaintenanceAsOfFlight = {
@@ -37,14 +39,8 @@ function orderTimestamp(order: MaintenanceWorkOrder): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-function flightDurationHours(flight: SavedFlightListItem): number {
-  if (typeof flight.total_flight_minutes === "number" && Number.isFinite(flight.total_flight_minutes)) {
-    return flight.total_flight_minutes / 60;
-  }
-  if (typeof flight.duration_sec === "number" && Number.isFinite(flight.duration_sec)) {
-    return flight.duration_sec / 3600;
-  }
-  return 0;
+function flightDurationHours(flight: SavedFlightListItem, metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): number {
+  return flightAircraftHours(flight, metaByFlightId.get(flight.id));
 }
 
 function flightDateMs(flight: SavedFlightListItem): number {
@@ -74,6 +70,7 @@ function currentAircraftHoursAt(params: {
   aircraft: Aircraft;
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
   asOfMs: number;
 }): number | null {
   let baseTtaf: number | null = null;
@@ -93,7 +90,7 @@ function currentAircraftHoursAt(params: {
 
   const flownHours = aircraftFlights(params.aircraft, params.flights, params.asOfMs)
     .filter((flight) => !Number.isFinite(baselineMs) || baselineMs === 0 || flightDateMs(flight) >= baselineMs)
-    .reduce((sum, flight) => sum + flightDurationHours(flight), 0);
+    .reduce((sum, flight) => sum + flightDurationHours(flight, params.metaByFlightId), 0);
   return Number((baseTtaf + flownHours).toFixed(1));
 }
 
@@ -123,12 +120,14 @@ function nextDueItemAt(params: {
   modelItems: MaintenanceProgramItem[];
   aircraftOrders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
   asOfMs: number;
 }): { title: string; dueHours: number | null } | null {
   const currentHours = currentAircraftHoursAt({
     aircraft: params.aircraft,
     orders: params.aircraftOrders,
     flights: params.flights,
+    metaByFlightId: params.metaByFlightId,
     asOfMs: params.asOfMs,
   });
   if (currentHours == null) return null;
@@ -157,8 +156,10 @@ export function buildMaintenanceAsOfFlight(params: {
   programItems: MaintenanceProgramItem[];
   workOrders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
+  metaByFlightId?: ReadonlyMap<string, FlightRecordMeta | null>;
   asOfMs: number;
 }): MaintenanceAsOfFlight {
+  const metaByFlightId = params.metaByFlightId ?? new Map<string, FlightRecordMeta | null>();
   const aircraftOrders = params.workOrders.filter((order) => order.aircraft_id === params.aircraft.id);
   const modelItems = params.programItems.filter((item) => item.aircraft_model_id === params.aircraft.model_id);
   const last = lastCompletedOrderBefore({
@@ -174,6 +175,7 @@ export function buildMaintenanceAsOfFlight(params: {
     modelItems,
     aircraftOrders,
     flights: params.flights,
+    metaByFlightId,
     asOfMs: params.asOfMs,
   });
 

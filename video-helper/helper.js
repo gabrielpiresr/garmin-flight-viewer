@@ -127,9 +127,9 @@ const server = http.createServer(async (req, res) => {
     const paramsStr = req.headers["x-params"] || "{}";
     let params;
     try { params = JSON.parse(paramsStr); } catch { return json(res, { error: "X-Params inválido" }, 400); }
-    const { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+    const { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
             orientation, frameCount, fps, durationSec, jobId } = params;
-    if (!videoUrl || !cfWorkerUrl || !cfWorkerSecret || !jobId) {
+    if (!videoUrl || !cfWorkerUrl || !cfWorkerToken || !jobId) {
       return json(res, { error: "Parâmetros obrigatórios faltando" }, 400);
     }
 
@@ -145,7 +145,7 @@ const server = http.createServer(async (req, res) => {
     setImmediate(async () => {
       try {
         const fileUrl = await compositeOverlay(
-          { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+          { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
             orientation, fps: fps || 30, durationSec, overlayBuffer },
           job, jobId,
         );
@@ -215,7 +215,7 @@ const server = http.createServer(async (req, res) => {
 
 async function runPipeline(req, job) {
   const {
-    jobId, sessionId, fileOrder, cfWorkerUrl, cfWorkerSecret, videoKey,
+    jobId, sessionId, fileOrder, cfWorkerUrl, cfWorkerToken, videoKey,
     appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
     sessionJwt, flightVideoDocId,
   } = req;
@@ -289,7 +289,7 @@ async function runPipeline(req, job) {
     const fileBytes = fs.readFileSync(finalPath);
     const fileSize = fileBytes.length;
 
-    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, videoKey, fileBytes, (pct) => {
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, fileBytes, (pct) => {
       progress("upload", pct);
     });
 
@@ -813,12 +813,12 @@ async function detectResolution(ffprobe, files) {
 
 // ─── Upload multipart via CF Worker ───────────────────────────────────────────
 
-async function uploadMultipart(workerUrl, secret, key, data, onProgress) {
+async function uploadMultipart(workerUrl, token, key, data, onProgress) {
   // 1. Iniciar
   const initRes = await fetch(`${workerUrl}/upload/initiate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key, secret }),
+    body: JSON.stringify({ key, token }),
   });
   if (!initRes.ok) throw new Error(`Upload initiate falhou: ${initRes.status}`);
   const { uploadId, key: uploadKey } = await initRes.json();
@@ -835,7 +835,7 @@ async function uploadMultipart(workerUrl, secret, key, data, onProgress) {
         "x-upload-id": uploadId,
         "x-upload-key": uploadKey,
         "x-part-number": String(i + 1),
-        "x-secret": secret,
+        "x-token": token,
         "Content-Type": "application/octet-stream",
       },
       body: chunk,
@@ -849,7 +849,7 @@ async function uploadMultipart(workerUrl, secret, key, data, onProgress) {
   const completeRes = await fetch(`${workerUrl}/upload/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uploadId, key: uploadKey, parts, secret }),
+    body: JSON.stringify({ uploadId, key: uploadKey, parts, token }),
   });
   if (!completeRes.ok) throw new Error(`Upload complete falhou: ${completeRes.status}`);
   const { fileUrl } = await completeRes.json();
@@ -865,14 +865,14 @@ async function renderTelemetryOverlay(req) {
     telemetryJson,
     widgets = [],
     cfWorkerUrl,
-    cfWorkerSecret,
+    cfWorkerToken,
     outputKey = `telemetry-export-${Date.now()}.mp4`,
     trimStartSec,
     trimEndSec,
     orientation = "horizontal",
   } = req;
   if (!videoUrl) throw new Error("videoUrl obrigatorio.");
-  if (!cfWorkerUrl || !cfWorkerSecret) throw new Error("Storage nao configurado.");
+  if (!cfWorkerUrl || !cfWorkerToken) throw new Error("Storage nao configurado.");
 
   const enabled = Array.isArray(widgets) ? widgets.filter((w) => ["altitude", "speed", "heading"].includes(w)) : [];
   if (enabled.length === 0) throw new Error("Selecione pelo menos altitude, velocidade ou rumo para exportar.");
@@ -930,7 +930,7 @@ async function renderTelemetryOverlay(req) {
     ], 0, () => {}, { mustSucceed: true, cwd: tmpDir });
 
     const fileBytes = fs.readFileSync(outputPath);
-    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, outputKey, fileBytes, () => {});
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, outputKey, fileBytes, () => {});
     return { ok: true, fileUrl, fileSize: fileBytes.length };
   } finally {
     cleanup(tmpDir);
@@ -956,7 +956,7 @@ function extractJpegFrames(overlayBuffer, tmpDir) {
 }
 
 async function compositeOverlay(
-  { videoUrl, cfWorkerUrl, cfWorkerSecret, outputKey, trimStartSec, trimEndSec,
+  { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
     orientation, fps, durationSec, overlayBuffer },
   job, jobId,
 ) {
@@ -1036,7 +1036,7 @@ async function compositeOverlay(
 
     const fileBytes = fs.readFileSync(path.join(tmpDir, "output.mp4"));
     const key = outputKey || `telemetry-export-${Date.now()}.mp4`;
-    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerSecret, key, fileBytes, (pct) => {
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, key, fileBytes, (pct) => {
       sendProgress(jobId, { stage: "upload", percent: pct });
     });
 

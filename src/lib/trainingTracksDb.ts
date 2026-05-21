@@ -3,7 +3,7 @@ import {
   databases,
   ID,
   isAppwriteConfigured,
-  SCHOOL_ID,
+  DEFAULT_SCHOOL_ID,
   STUDENT_TRACKS_COL_ID,
   TRAINING_TRACKS_COL_ID,
 } from "./appwrite";
@@ -19,7 +19,6 @@ import type {
 } from "../types/trainingTrack";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
 
 function configured(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && TRAINING_TRACKS_COL_ID);
@@ -57,11 +56,11 @@ function parseStages(value: unknown): TrainingStage[] {
               maneuvers: Array.isArray(mission.maneuvers)
                 ? mission.maneuvers.map((item) => asString(item)).filter(Boolean)
                 : [],
-              maneuverSectionId: asString(mission.maneuverSectionId) || null,
               maneuverSectionIds: Array.from(
                 new Set([
                   ...asStringArray(mission.maneuverSectionIds),
-                  asString(mission.maneuverSectionId),
+                  // Support reading legacy docs that still have the singular field
+                  asString((mission as Record<string, unknown>).maneuverSectionId),
                 ].filter(Boolean)),
               ),
               order: typeof mission.order === "number" ? mission.order : missionIndex + 1,
@@ -253,6 +252,18 @@ export function buildTrainingSnapshot(
   };
 }
 
+const VALID_STATUS_TRANSITIONS: Record<StudentTrainingTrackStatus, StudentTrainingTrackStatus[]> = {
+  active: ["paused", "completed"],
+  paused: ["active", "completed"],
+  completed: ["active"], // completed → paused is semantically invalid
+};
+
+function validateStatusTransition(from: StudentTrainingTrackStatus, to: StudentTrainingTrackStatus): void {
+  if (!VALID_STATUS_TRANSITIONS[from].includes(to)) {
+    throw new Error(`Transição de status inválida: "${from}" → "${to}".`);
+  }
+}
+
 export async function assignStudentTrainingTrack(input: {
   schoolId?: string;
   studentUserId: string;
@@ -272,10 +283,19 @@ export async function assignStudentTrainingTrack(input: {
       Query.limit(1),
     ]);
     const now = new Date().toISOString();
+    const newStatus = input.status ?? "active";
+
+    if (existing.documents[0]) {
+      const currentStatus = toAssignment(existing.documents[0] as Record<string, unknown>, null).status;
+      validateStatusTransition(currentStatus, newStatus);
+    }
+
+    // Always call setPrimaryStudentTrainingTrack when touching is_primary to prevent duplicates
     if (input.isPrimary) await setPrimaryStudentTrainingTrack(input.studentUserId, input.trackId, schoolId);
+
     if (existing.documents[0]) {
       await databases.updateDocument(DB_ID, STUDENT_TRACKS_COL_ID, existing.documents[0].$id, {
-        status: input.status ?? "active",
+        status: newStatus,
         is_primary: Boolean(input.isPrimary),
         updated_at: now,
       });
@@ -284,7 +304,7 @@ export async function assignStudentTrainingTrack(input: {
         school_id: schoolId,
         student_user_id: input.studentUserId,
         track_id: input.trackId,
-        status: input.status ?? "active",
+        status: newStatus,
         is_primary: Boolean(input.isPrimary),
         assigned_at: now,
         updated_at: now,

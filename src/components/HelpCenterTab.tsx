@@ -110,10 +110,8 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]" }: HelpCenter
   return (
     <section className={`${className} mx-auto min-w-0 space-y-5`}>
       <div className="overflow-hidden rounded-2xl border border-slate-700/60 bg-slate-900/50">
-        <div className="border-b border-slate-800 bg-slate-900 px-4 py-8 text-center md:px-8 md:py-10">
-          <p className="text-xs font-semibold uppercase tracking-widest text-cyan-300">Suporte</p>
-          <h2 className="mt-2 text-2xl font-semibold text-slate-50 md:text-3xl">Central de ajuda</h2>
-          <div className="mx-auto mt-6 max-w-3xl">
+        <div className="border-b border-slate-800 bg-slate-900 px-4 py-6 text-center md:px-8 md:py-8">
+          <div className="mx-auto max-w-3xl">
             <label className="sr-only" htmlFor="help-search">Buscar artigos de ajuda</label>
             <input
               id="help-search"

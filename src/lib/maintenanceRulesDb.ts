@@ -31,6 +31,12 @@ export async function listRulesByModel(modelId: string): Promise<MaintenanceRule
   return res.documents.map((d) => toRule(d as Record<string, unknown>));
 }
 
+function validateRuleTriggers(max_flight_hours: number | null | undefined, max_days: number | null | undefined): void {
+  if ((max_flight_hours ?? null) === null && (max_days ?? null) === null) {
+    throw new Error("A regra de manutenção precisa de pelo menos um gatilho: horas de voo ou dias calendário.");
+  }
+}
+
 export async function createRule(data: {
   model_id: string;
   name: string;
@@ -40,6 +46,7 @@ export async function createRule(data: {
   estimated_cost?: number | null;
 }): Promise<MaintenanceRule> {
   if (!databases || !DB_ID || !MAINTENANCE_RULES_COL_ID) throw new Error("Appwrite não configurado");
+  validateRuleTriggers(data.max_flight_hours, data.max_days);
   const doc = await databases.createDocument(
     DB_ID,
     MAINTENANCE_RULES_COL_ID,
@@ -72,6 +79,13 @@ export async function updateRule(
   }>,
 ): Promise<MaintenanceRule> {
   if (!databases || !DB_ID || !MAINTENANCE_RULES_COL_ID) throw new Error("Appwrite não configurado");
+  // Only validate triggers if at least one is being set explicitly
+  if ("max_flight_hours" in data || "max_days" in data) {
+    const existing = await databases.getDocument(DB_ID, MAINTENANCE_RULES_COL_ID, id);
+    const resolvedHours = "max_flight_hours" in data ? data.max_flight_hours : (existing.max_flight_hours as number | null);
+    const resolvedDays = "max_days" in data ? data.max_days : (existing.max_days as number | null);
+    validateRuleTriggers(resolvedHours, resolvedDays);
+  }
   const doc = await databases.updateDocument(DB_ID, MAINTENANCE_RULES_COL_ID, id, data);
   return toRule(doc as unknown as Record<string, unknown>);
 }

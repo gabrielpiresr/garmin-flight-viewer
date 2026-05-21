@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { account, ID, isAppwriteConfigured, SCHOOL_ID } from "../lib/appwrite";
+import { account, ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
 import { deriveRoleFromLabels, ensureProfile, getUserRole, type UserRole } from "../lib/rbac";
 
-const DEFAULT_SCHOOL_ID = SCHOOL_ID ?? "escola_principal";
+
 
 type AppwriteUser = { id: string; email: string; name: string; role: UserRole; schoolId: string };
 export type SignUpProfileInput = {
@@ -106,7 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         height_cm: profile.heightCm,
         anac_code: profile.anacCode,
         anac_sync_status: "pending",
-        anac_sync_error: "ANAC sync not started",
+        anac_sync_error: "",
       } as const;
 
       const { error } = await ensureProfile(u.$id, u.email, "aluno", baseProfileData);

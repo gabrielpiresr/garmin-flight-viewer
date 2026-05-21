@@ -5,6 +5,7 @@ type Props = {
   statement: StudentCreditStatement;
   title?: string;
   description?: string;
+  showHeading?: boolean;
   compact?: boolean;
   renderPurchaseActions?: (purchase: StudentCreditPurchase) => ReactNode;
 };
@@ -38,6 +39,7 @@ export function CreditStatementView({
   statement,
   title = "Créditos",
   description = "Saldo consolidado, compras e saídas por voo.",
+  showHeading = true,
   compact = false,
   renderPurchaseActions,
 }: Props) {
@@ -46,10 +48,14 @@ export function CreditStatementView({
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">{title}</p>
-          <p className="mt-1 text-xs text-slate-500">{description}</p>
-        </div>
+        {showHeading ? (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">{title}</p>
+            <p className="mt-1 text-xs text-slate-500">{description}</p>
+          </div>
+        ) : (
+          <div />
+        )}
         <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-400">
           Atualizado em {formatDate(statement.generatedAt)}
         </span>

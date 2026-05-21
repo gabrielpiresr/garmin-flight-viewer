@@ -467,7 +467,7 @@ export function ManuaisAdminTab() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-100">Manuais e materiais</h2>
+            <p className="text-sm text-slate-500">Cadastre categorias e arquivos exibidos para alunos e instrutores.</p>
             <p className="text-xs text-slate-500">
               {manuals.length} {manuals.length === 1 ? "arquivo" : "arquivos"} em {categories.length}{" "}
               {categories.length === 1 ? "categoria" : "categorias"}
