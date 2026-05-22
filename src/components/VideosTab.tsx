@@ -677,6 +677,8 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 // --- Sub-componentes ---
 
 function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry: () => void }) {
+  const isProduction = window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
+
   if (status === "checking") {
     return (
       <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -691,6 +693,52 @@ function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry:
       <div className="flex items-center gap-2 text-xs text-green-400">
         <span className="h-2 w-2 rounded-full bg-green-400" />
         Helper local ativo
+      </div>
+    );
+  }
+
+  async function requestPermission() {
+    try {
+      // Chrome 131+ expõe local-network-access como permissão explícita
+      const result = await (navigator.permissions as unknown as { request: (d: object) => Promise<{ state: string }> }).request({ name: "local-network-access" });
+      if (result.state === "granted") onRetry();
+    } catch {
+      // API não suportada — usuário precisa configurar manualmente
+    }
+  }
+
+  if (isProduction) {
+    return (
+      <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 space-y-2">
+        <div className="flex items-center gap-2 text-xs font-medium text-amber-300">
+          <span className="h-2 w-2 rounded-full bg-amber-400" />
+          Helper bloqueado pelo Chrome
+        </div>
+        <p className="text-xs text-amber-400/80">
+          O Chrome bloqueia acesso ao helper local quando o sistema é aberto pelo link da nuvem. Você tem duas opções:
+        </p>
+        <div className="space-y-2 text-xs text-slate-300">
+          <div className="rounded border border-slate-700 bg-slate-800/60 p-2 space-y-1">
+            <p className="font-medium text-slate-200">Opção 1 — Liberar no Chrome (uma vez por máquina)</p>
+            <p className="text-slate-400">Abra uma nova aba e cole:</p>
+            <code className="block select-all rounded bg-slate-900 px-2 py-1 text-sky-400 text-[11px]">
+              chrome://settings/content/localNetworkAccess
+            </code>
+            <p className="text-slate-400">Clique em <strong className="text-slate-300">Adicionar</strong> e insira <strong className="text-slate-300">{window.location.origin}</strong></p>
+          </div>
+          <div className="rounded border border-slate-700 bg-slate-800/60 p-2 space-y-1">
+            <p className="font-medium text-slate-200">Opção 2 — Abrir o sistema localmente</p>
+            <p className="text-slate-400">Com o helper rodando, acesse o sistema pelo endereço local em vez do link da nuvem.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <button type="button" onClick={requestPermission} className="text-xs text-sky-400 underline-offset-4 hover:underline">
+            Solicitar permissão
+          </button>
+          <button type="button" onClick={onRetry} className="text-xs text-slate-400 underline-offset-4 hover:underline">
+            Verificar novamente
+          </button>
+        </div>
       </div>
     );
   }
