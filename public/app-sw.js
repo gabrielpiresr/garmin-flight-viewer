@@ -1,4 +1,4 @@
-const CACHE_NAME = "gfv-app-shell-v2";
+const CACHE_NAME = "gfv-app-shell-v3";
 const APP_SHELL_URLS = [
   "/",
   "/offline/diario-bordo",
@@ -6,7 +6,9 @@ const APP_SHELL_URLS = [
   "/icon.svg",
   "/icon-192.png",
   "/icon-512.png",
-  "/favicon.ico",
+  "/favicon-48.png",
+  "/screenshots/desktop-wide.png",
+  "/screenshots/mobile-narrow.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -61,10 +63,12 @@ self.addEventListener("fetch", (event) => {
 
   if (
     url.pathname === "/manifest.webmanifest" ||
-    url.pathname === "/favicon.ico" ||
+    url.pathname === "/favicon-48.png" ||
     url.pathname === "/icon.svg" ||
     url.pathname === "/icon-192.png" ||
-    url.pathname === "/icon-512.png"
+    url.pathname === "/icon-512.png" ||
+    url.pathname === "/screenshots/desktop-wide.png" ||
+    url.pathname === "/screenshots/mobile-narrow.png"
   ) {
     event.respondWith(cacheFirst(request));
   }
