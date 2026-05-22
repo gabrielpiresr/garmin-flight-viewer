@@ -61,6 +61,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Params");
   res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Access-Control-Allow-Local-Network", "true");
   res.setHeader("Vary", "Origin");
 
   if (req.method === "OPTIONS") {

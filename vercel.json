@@ -5,7 +5,7 @@
       "headers": [
         {
           "key": "Permissions-Policy",
-          "value": "private-network-access=*"
+          "value": "local-network-access=*, private-network-access=*"
         }
       ]
     }
