@@ -3753,7 +3753,7 @@ async function getVideoWorkerConfig(actorUserId, payload) {
     sub: actorUserId,
     flightId,
     iat: now,
-    exp: now + 15 * 60,
+    exp: now + 4 * 60 * 60,
     nonce: crypto.randomUUID(),
   };
 
