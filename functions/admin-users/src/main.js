@@ -2991,6 +2991,22 @@ function computeOpenFinancialMonth(month, data) {
   const finalNet = roundMoney(ebitda + totalTaxes + manualNetProfit);
 
   const lineRows = [
+    makeLine("section_asset_variation", null, 1, "Linha extra", "Linha extra", "money", "", assetVariationTotal),
+    makeLine("aircraft_calculated_depreciation", "section_asset_variation", 2, "Linha extra", "Depreciação calculada", "money", "Horas voadas x custo por hora configurado na aeronave", roundMoney(-1 * aircraftEstimated), {
+      aircrafts: flights.map((flight) => ({
+        label: flight.aircraftIdent || flight.aircraft?.registration || "Aeronave não informada",
+        amount: roundMoney(-1 * flight.hours * numValue(flight.aircraft?.cost_per_flight_hour)),
+        valueType: "money",
+        meta: { hours: flight.hours, costPerHour: numValue(flight.aircraft?.cost_per_flight_hour) },
+      })),
+      total: [{ label: "Total", amount: roundMoney(-1 * aircraftEstimated), valueType: "money" }],
+    }),
+    makeLine("aircraft_maintenance_reserve", "section_asset_variation", 2, "Linha extra", "Reserva mensal de manutenção", "money", "Reserva mensal configurada nas aeronaves voadas", roundMoney(-1 * aircraftMaintenanceReserveMonthly), {
+      aircrafts: data.aircrafts
+        .filter((aircraft) => flownAircraftIds.has(aircraft.$id))
+        .map((aircraft) => ({ label: aircraft.registration || aircraft.$id, amount: roundMoney(-1 * aircraftMaintenanceReserve(aircraft)), valueType: "money" })),
+      total: [{ label: "Total", amount: roundMoney(-1 * aircraftMaintenanceReserveMonthly), valueType: "money" }],
+    }),
     makeLine("section_revenue", null, 1, "Receitas", "Receitas", "money", "", grossRevenue),
     makeLine("revenue_flights", "section_revenue", 2, "Receitas", "Receita reconhecida de voos", "money", "flight_instructor_payments.student_amount_calculated", flightRevenue, by),
     makeLine("revenue_products", "section_revenue", 2, "Receitas", "Receita de produtos e serviços", "money", "product_sales.amount_paid", productRevenue, productBreakdown),

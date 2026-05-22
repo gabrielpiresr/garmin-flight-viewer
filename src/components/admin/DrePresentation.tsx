@@ -40,25 +40,63 @@ function fmtK(v: number): string {
 
 const PRINT_CSS = `
 @media print {
+  html, body {
+    width: 297mm !important;
+    min-height: 210mm !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    background: white !important;
+  }
   body.dre-pres-active * { visibility: hidden !important; }
   body.dre-pres-active .dre-presentation,
   body.dre-pres-active .dre-presentation * { visibility: visible !important; }
   body.dre-pres-active .dre-presentation {
-    position: fixed !important;
-    top: 0 !important; left: 0 !important;
-    width: 100% !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    display: block !important;
+    width: 297mm !important;
+    height: auto !important;
     background: white !important;
-    z-index: 99999 !important;
+    overflow: visible !important;
+  }
+  body.dre-pres-active .pres-scroll-area,
+  body.dre-pres-active .pres-deck {
+    display: block !important;
+    width: 297mm !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: white !important;
     overflow: visible !important;
   }
   body.dre-pres-active .pres-slide {
+    width: 297mm !important;
+    height: 210mm !important;
+    min-height: 210mm !important;
+    max-height: 210mm !important;
     page-break-after: always;
     break-after: page;
-    min-height: 100vh;
-    overflow: hidden;
+    overflow: hidden !important;
+  }
+  body.dre-pres-active .pres-slide:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+  body.dre-pres-active .pres-table-wrap { overflow: hidden !important; }
+  body.dre-pres-active .pres-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed !important;
+    font-size: 9px !important;
+  }
+  body.dre-pres-active .pres-table th,
+  body.dre-pres-active .pres-table td {
+    padding: 5px 6px !important;
+    overflow-wrap: anywhere !important;
   }
   body.dre-pres-active .pres-no-print { display: none !important; }
-  @page { margin: 0; size: A4; }
+  @page { margin: 0; size: A4 landscape; }
 }
 `;
 
@@ -99,7 +137,7 @@ function SlideFooter({ period }: { period: string }) {
 
 function Slide({ children, noPadTop }: { children: React.ReactNode; noPadTop?: boolean }) {
   return (
-    <div className={`pres-slide flex min-h-screen flex-col bg-white ${noPadTop ? "" : "p-10"}`}>
+    <div className={`pres-slide flex aspect-[297/210] w-full flex-col overflow-hidden bg-white ${noPadTop ? "" : "p-8"}`}>
       {children}
     </div>
   );
@@ -265,12 +303,12 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
         </div>
 
         {/* Slides scrollable area */}
-        <div className="flex-1 overflow-y-auto bg-slate-200 p-6">
-          <div className="mx-auto max-w-4xl space-y-6">
+        <div className="pres-scroll-area flex-1 overflow-y-auto bg-slate-200 p-6">
+          <div className="pres-deck mx-auto w-full max-w-[1120px] space-y-6">
 
             {/* ─── SLIDE 1: CAPA ─── */}
             <Slide noPadTop>
-              <div className="relative flex min-h-screen flex-col overflow-hidden">
+              <div className="relative flex h-full flex-col overflow-hidden">
                 {/* Header bar */}
                 <div className="bg-emerald-600 px-12 py-8">
                   <div className="flex items-center gap-4">
@@ -369,8 +407,8 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
             <Slide>
               <SlideHeader number="03" title="Demonstração do Resultado do Exercício" subtitle="Visão consolidada por seção e período" />
 
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="min-w-full border-collapse text-sm">
+              <div className="pres-table-wrap overflow-hidden rounded-xl border border-slate-200">
+                <table className="pres-table w-full table-fixed border-collapse text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50">
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 min-w-48">Seção</th>
@@ -429,8 +467,8 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
                     <div className="rounded-t-xl bg-emerald-600 px-4 py-2.5">
                       <p className="text-sm font-bold text-white">{parent.label}</p>
                     </div>
-                    <div className="overflow-x-auto rounded-b-xl border border-t-0 border-slate-200">
-                      <table className="min-w-full border-collapse text-sm">
+                    <div className="pres-table-wrap overflow-hidden rounded-b-xl border border-t-0 border-slate-200">
+                      <table className="pres-table w-full table-fixed border-collapse text-xs">
                         <thead>
                           <tr className="border-b border-slate-200 bg-slate-50">
                             <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 min-w-48">Linha</th>
