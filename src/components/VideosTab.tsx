@@ -46,7 +46,7 @@ import {
   type TelemetryOverlayStyle,
 } from "./VideoTelemetryOverlay";
 
-const HELPER_URL = "http://localhost:7842";
+const HELPER_URL = "http://127.0.0.1:7842";
 
 type HelperStatus = "checking" | "online" | "offline";
 type SelectedFile = { name: string; file: File };

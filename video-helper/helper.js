@@ -56,10 +56,12 @@ function sendProgress(jobId, data) {
 // ─── Servidor HTTP ─────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers["origin"] || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Params");
   res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Vary", "Origin");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -179,7 +181,6 @@ const server = http.createServer(async (req, res) => {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
     });
     res.write(": connected\n\n");
 
@@ -1161,7 +1162,7 @@ async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, file
 // ─── Utilitários ───────────────────────────────────────────────────────────────
 
 function json(res, data, status = 200) {
-  res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
 
