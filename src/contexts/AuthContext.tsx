@@ -1,11 +1,19 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { account, ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
-import { deriveRoleFromLabels, ensureProfile, getUserRole, type UserRole } from "../lib/rbac";
+import { deriveRoleFromLabels, ensureProfile, getUserRoleInfo, type UserRole } from "../lib/rbac";
+import { ensureSystemRoles } from "../lib/tenantRolesDb";
 
+type AppwriteUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  /** Slug do role customizado atribuído (ex: "chefe-de-oficina"). Null = role padrão do portal. */
+  customRoleSlug: string | null;
+  schoolId: string;
+};
 
-
-type AppwriteUser = { id: string; email: string; name: string; role: UserRole; schoolId: string };
 export type SignUpProfileInput = {
   fullName: string;
   cpf: string;
@@ -33,6 +41,32 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+async function resolveUser(u: {
+  $id: string;
+  email: string;
+  name: string;
+  labels?: unknown;
+}): Promise<AppwriteUser> {
+  const { role: profileRole, customRoleSlug } = await getUserRoleInfo(u.$id);
+  const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
+  const role = profileRole === "aluno" ? labelRole : profileRole;
+  await ensureProfile(u.$id, u.email, role);
+
+  // Para admins, garantir que roles sistema existam no tenant
+  if (role === "admin") {
+    void ensureSystemRoles(DEFAULT_SCHOOL_ID);
+  }
+
+  return {
+    id: u.$id,
+    email: u.email,
+    name: u.name,
+    role,
+    customRoleSlug,
+    schoolId: DEFAULT_SCHOOL_ID,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppwriteUser | null>(null);
   const [loading, setLoading] = useState(isAppwriteConfigured);
@@ -45,11 +79,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     account
       .get()
       .then(async (u) => {
-        const profileRole = await getUserRole(u.$id);
-        const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
-        const role = profileRole === "aluno" ? labelRole : profileRole;
-        await ensureProfile(u.$id, u.email, role);
-        setUser({ id: u.$id, email: u.email, name: u.name, role, schoolId: DEFAULT_SCHOOL_ID });
+        const resolved = await resolveUser(u);
+        setUser(resolved);
       })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
@@ -60,11 +91,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await account.createEmailPasswordSession(email, password);
       const u = await account.get();
-      const profileRole = await getUserRole(u.$id);
-      const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
-      const role = profileRole === "aluno" ? labelRole : profileRole;
-      await ensureProfile(u.$id, u.email, role);
-      setUser({ id: u.$id, email: u.email, name: u.name, role, schoolId: DEFAULT_SCHOOL_ID });
+      const resolved = await resolveUser(u);
+      setUser(resolved);
       return { error: null };
     } catch (e) {
       return { error: e as Error };
@@ -147,7 +175,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      setUser({ id: u.$id, email: u.email, name: u.name, role: "aluno", schoolId: DEFAULT_SCHOOL_ID });
+      setUser({
+        id: u.$id,
+        email: u.email,
+        name: u.name,
+        role: "aluno",
+        customRoleSlug: null,
+        schoolId: DEFAULT_SCHOOL_ID,
+      });
       return { error: null, anacSyncPending };
     } catch (e) {
       return { error: e as Error, anacSyncPending: true };

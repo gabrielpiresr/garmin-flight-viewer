@@ -1,18 +1,46 @@
 {
-  "name": "Diario de Bordo EDB",
-  "short_name": "EDB",
-  "description": "Diario de bordo offline para consulta a bordo.",
-  "start_url": "/offline/diario-bordo",
+  "id": "/",
+  "name": "Portal EDB",
+  "short_name": "Portal EDB",
+  "description": "Portal de gestao e Diario de Bordo EDB.",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "background_color": "#020617",
   "theme_color": "#020617",
   "orientation": "any",
   "icons": [
     {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
       "src": "/favicon.ico",
       "sizes": "48x48",
       "type": "image/x-icon"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Diario offline",
+      "short_name": "Offline",
+      "url": "/offline/diario-bordo",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]
 }

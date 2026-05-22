@@ -108,8 +108,17 @@ export async function getAdminStudentsProgress(params: AdminStudentsProgressPara
   return response.studentsProgress;
 }
 
-export async function updateAdminUserRole(userId: string, role: UserRole): Promise<AdminUserDetail> {
-  const response = await executeAdminUsers({ action: "updateRole", userId, role });
+export async function updateAdminUserRole(
+  userId: string,
+  role: UserRole,
+  customRoleSlug?: string | null,
+): Promise<AdminUserDetail> {
+  const response = await executeAdminUsers({
+    action: "updateRole",
+    userId,
+    role,
+    customRoleSlug: customRoleSlug ?? null,
+  });
   if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
   return response.user;
 }

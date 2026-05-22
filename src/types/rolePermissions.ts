@@ -1,0 +1,208 @@
+// ============================================================
+// Tipos para o sistema de roles dinâmicos por tenant
+// ============================================================
+
+/** Chaves de abas do portal admin (hierárquicas com ponto) */
+export type AdminTabKey =
+  | "home"
+  | "schedule"
+  | "schedule.voos"
+  | "schedule.disponibilidades"
+  | "schedule.gerador"
+  | "students"
+  | "reports"
+  | "reports.all-flights"
+  | "reports.relatorios"
+  | "reports.assinaturas"
+  | "reports.sem-telemetria"
+  | "reports.alertas"
+  | "fleet"
+  | "fleet.avioes"
+  | "fleet.modelos"
+  | "fleet.programa"
+  | "fleet.ordens-servico"
+  | "contents"
+  | "contents.manobras"
+  | "contents.manuais"
+  | "contents.ajuda"
+  | "users"
+  | "disparos"
+  | "disparos.email-mkt"
+  | "disparos.avisos"
+  | "logbook"
+  | "fuelings"
+  | "dre"
+  | "settings"
+  | "settings.regras"
+  | "settings.email"
+  | "settings.aparencia"
+  | "settings.badges"
+  | "settings.trilhas"
+  | "settings.exercicios"
+  | "settings.financeiro"
+  | "settings.roles";
+
+/** Chaves de abas do portal instrutor */
+export type InstructorTabKey =
+  | "home"
+  | "journey"
+  | "flights"
+  | "notices"
+  | "manuals"
+  | "maneuvers"
+  | "students"
+  | "fuelings"
+  | "profile"
+  | "help"
+  | "dre"      // EDB — opcional, desativado por padrão
+  | "schedule"; // Escala — opcional, desativado por padrão
+
+/** Chaves de abas do portal aluno */
+export type StudentTabKey =
+  | "home"
+  | "jornada"
+  | "meus-voos"
+  | "agendamento"
+  | "creditos"
+  | "avisos"
+  | "manuais"
+  | "manobras"
+  | "perfil"
+  | "ajuda"
+  | "dre"       // EDB — opcional, desativado por padrão
+  | "fuelings"; // Abastecimentos — opcional, desativado por padrão
+
+/** Todas as chaves de aba possíveis */
+export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
+
+/** Chaves de ações do sistema */
+export type ActionKey =
+  | "fueling.launch"    // Lançar abastecimento
+  | "os.create"         // Criar nova OS
+  | "flight.create"     // Criar novo voo
+  | "flight.edit"       // Editar voo
+  | "flight.delete"     // Excluir voo
+  | "content.edit"      // Editar conteúdo (manobras, manuais, ajuda)
+  | "credit.launch"     // Lançar crédito
+  | "credit.edit"       // Editar crédito
+  | "credit.delete"     // Excluir crédito
+  | "users.manage"      // Gerenciar usuários (criar, editar, alterar role)
+  | "schedule.generate"; // Gerar escala automática
+
+/** Labels em português para cada ação */
+export const ACTION_LABELS: Record<ActionKey, string> = {
+  "fueling.launch": "Lançar abastecimento",
+  "os.create": "Criar nova OS",
+  "flight.create": "Criar novo voo",
+  "flight.edit": "Editar voo",
+  "flight.delete": "Excluir voo",
+  "content.edit": "Editar conteúdo",
+  "credit.launch": "Lançar crédito",
+  "credit.edit": "Editar crédito",
+  "credit.delete": "Excluir crédito",
+  "users.manage": "Gerenciar usuários",
+  "schedule.generate": "Gerar escala automática",
+};
+
+/** Conjunto de permissões de um role */
+export type RolePermissions = {
+  tabs: Partial<Record<AnyTabKey, boolean>>;
+  actions: Partial<Record<ActionKey, boolean>>;
+};
+
+/** Tipo do portal que o role usa */
+export type PortalType = "admin" | "instrutor" | "aluno";
+
+/** Definição completa de um role de tenant */
+export type TenantRole = {
+  $id: string;
+  schoolId: string;
+  name: string;
+  slug: string;
+  portalType: PortalType;
+  isSystem: boolean;
+  permissions: RolePermissions;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Input para criar/editar um role */
+export type TenantRoleInput = {
+  name: string;
+  slug: string;
+  portalType: PortalType;
+  permissions: RolePermissions;
+};
+
+/** Labels descritivos para abas do portal admin */
+export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
+  "home": "Home",
+  "schedule": "Escala",
+  "schedule.voos": "Escala › Voos",
+  "schedule.disponibilidades": "Escala › Disponibilidades",
+  "schedule.gerador": "Escala › Gerador",
+  "students": "Alunos",
+  "reports": "Relatórios",
+  "reports.all-flights": "Relatórios › Todos os Voos",
+  "reports.relatorios": "Relatórios › Relatórios",
+  "reports.assinaturas": "Relatórios › Assinaturas",
+  "reports.sem-telemetria": "Relatórios › Sem Telemetria",
+  "reports.alertas": "Relatórios › Alertas",
+  "fleet": "Frota",
+  "fleet.avioes": "Frota › Aviões",
+  "fleet.modelos": "Frota › Modelos",
+  "fleet.programa": "Frota › Programa de Manutenção",
+  "fleet.ordens-servico": "Frota › Ordens de Serviço",
+  "contents": "Conteúdos",
+  "contents.manobras": "Conteúdos › Manobras",
+  "contents.manuais": "Conteúdos › Manuais",
+  "contents.ajuda": "Conteúdos › Central de Ajuda",
+  "users": "Usuários",
+  "disparos": "Disparos",
+  "disparos.email-mkt": "Disparos › Email MKT",
+  "disparos.avisos": "Disparos › Avisos",
+  "logbook": "Diário de Bordo",
+  "fuelings": "Abastecimentos",
+  "dre": "DRE",
+  "settings": "Configurações",
+  "settings.regras": "Configurações › Regras",
+  "settings.email": "Configurações › E-mail",
+  "settings.aparencia": "Configurações › Aparência",
+  "settings.badges": "Configurações › Badges",
+  "settings.trilhas": "Configurações › Trilhas",
+  "settings.exercicios": "Configurações › Exercícios",
+  "settings.financeiro": "Configurações › Financeiro",
+  "settings.roles": "Configurações › Roles",
+};
+
+/** Labels descritivos para abas do portal instrutor */
+export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
+  "home": "Home",
+  "journey": "Jornada",
+  "flights": "Meus Voos",
+  "notices": "Avisos",
+  "manuals": "Manuais",
+  "maneuvers": "Manobras",
+  "students": "Alunos",
+  "fuelings": "Abastecimentos",
+  "profile": "Perfil",
+  "help": "Ajuda",
+  "dre": "EDB",
+  "schedule": "Escala",
+};
+
+/** Labels descritivos para abas do portal aluno */
+export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
+  "home": "Home",
+  "jornada": "Jornada",
+  "meus-voos": "Meus Voos",
+  "agendamento": "Agendamento",
+  "creditos": "Créditos",
+  "avisos": "Avisos",
+  "manuais": "Manuais",
+  "manobras": "Manobras",
+  "perfil": "Perfil",
+  "ajuda": "Ajuda",
+  "dre": "EDB",
+  "fuelings": "Abastecimentos",
+};

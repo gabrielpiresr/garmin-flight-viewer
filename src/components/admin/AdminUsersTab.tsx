@@ -13,10 +13,12 @@ import {
   removeStudentTrainingTrack,
   setPrimaryStudentTrainingTrack,
 } from "../../lib/trainingTracksDb";
+import { listTenantRoles } from "../../lib/tenantRolesDb";
 import type { UserRole } from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../../types/schedule";
 import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlannedFlight } from "../../types/adminUsers";
+import type { TenantRole } from "../../types/rolePermissions";
 import type { TrainingTrack } from "../../types/trainingTrack";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import { StudentObservationsSection } from "./StudentObservationsSection";
@@ -26,6 +28,7 @@ import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 
 const PAGE_SIZE = 25;
 
@@ -191,6 +194,7 @@ function IntentionCard({ plan }: { plan: AdminUserPlannedFlight }) {
 export function AdminUsersTab() {
   const { showToast } = useToast();
   const { user: authUser } = useAuth();
+  const { canAction } = usePermissions();
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -203,6 +207,8 @@ export function AdminUsersTab() {
   const [savingInstructorPrefs, setSavingInstructorPrefs] = useState(false);
   const [savingTrack, setSavingTrack] = useState(false);
   const [roleDraft, setRoleDraft] = useState<UserRole>("aluno");
+  const [customRoleSlugDraft, setCustomRoleSlugDraft] = useState<string | null>(null);
+  const [tenantRoles, setTenantRoles] = useState<TenantRole[]>([]);
   const [trackDraft, setTrackDraft] = useState("");
   const [tracksCatalog, setTracksCatalog] = useState<TrainingTrack[]>([]);
   const [instructorPreferenceDraft, setInstructorPreferenceDraft] = useState<InstructorPreferenceLevel>("medium");
@@ -266,6 +272,15 @@ export function AdminUsersTab() {
   }, []);
 
   useEffect(() => {
+    if (!authUser?.schoolId) return;
+    void listTenantRoles(authUser.schoolId).then((roles) => {
+      setTenantRoles(roles);
+    }).catch(() => {
+      // Tenant roles are optional — don't break the page if the collection doesn't exist yet
+    });
+  }, [authUser?.schoolId]);
+
+  useEffect(() => {
     if (!selectedId) {
       setSelectedDetail(null);
       return;
@@ -282,6 +297,7 @@ export function AdminUsersTab() {
         if (tracks.error) setError(tracks.error.message);
         setSelectedDetail(detailWithTracks);
         setRoleDraft(detail.role);
+        setCustomRoleSlugDraft(detail.customRoleSlug ?? null);
         setInstructorPreferenceDraft(detail.profile.instructorPreferenceLevel ?? "medium");
         const next: Record<string, AvailabilityType> = {};
         for (const row of detail.profile.instructorAvailability ?? []) {
@@ -306,16 +322,24 @@ export function AdminUsersTab() {
     setUsers((prev) => prev.map((row) => (row.userId === summary.userId ? summary : row)));
   }
 
+  const roleDraftChanged =
+    !!selectedDetail &&
+    (roleDraft !== selectedDetail.role ||
+      (customRoleSlugDraft ?? null) !== (selectedDetail.customRoleSlug ?? null));
+
   async function handleUpdateRole() {
-    if (!selectedDetail || roleDraft === selectedDetail.role) return;
+    if (!selectedDetail || !roleDraftChanged) return;
     setSavingRole(true);
     setError(null);
     setSuccess(null);
     try {
-      const updated = await updateAdminUserRole(selectedDetail.userId, roleDraft);
+      const updated = await updateAdminUserRole(selectedDetail.userId, roleDraft, customRoleSlugDraft);
       setSelectedDetail(updated);
       replaceSummary(updated);
-      setSuccess(`Permissao de ${displayName(updated)} atualizada para ${ROLE_LABEL[updated.role]}.`);
+      const roleLabel = customRoleSlugDraft
+        ? (tenantRoles.find((r) => r.slug === customRoleSlugDraft)?.name ?? customRoleSlugDraft)
+        : ROLE_LABEL[updated.role];
+      setSuccess(`Permissao de ${displayName(updated)} atualizada para ${roleLabel}.`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -565,30 +589,55 @@ export function AdminUsersTab() {
                         <p className="mt-1 break-words text-xs text-slate-600 [overflow-wrap:anywhere]">ID: {selectedDetail.userId}</p>
                       </div>
                     </div>
+                    {canAction("users.manage") ? (
                     <div className="flex flex-wrap items-end gap-2">
                       <label className="text-xs font-medium text-slate-400">
                         Permissao
                         <select
-                          value={roleDraft}
-                          onChange={(e) => setRoleDraft(e.target.value as UserRole)}
+                          value={customRoleSlugDraft ? `${roleDraft}:${customRoleSlugDraft}` : roleDraft}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const colonIdx = val.indexOf(":");
+                            if (colonIdx > -1) {
+                              setRoleDraft(val.slice(0, colonIdx) as UserRole);
+                              setCustomRoleSlugDraft(val.slice(colonIdx + 1));
+                            } else {
+                              setRoleDraft(val as UserRole);
+                              setCustomRoleSlugDraft(null);
+                            }
+                          }}
                           className="mt-1 block rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
                         >
-                          {ROLE_OPTIONS.map((role) => (
-                            <option key={role} value={role}>
-                              {ROLE_LABEL[role]}
-                            </option>
-                          ))}
+                          <optgroup label="Roles do sistema">
+                            {ROLE_OPTIONS.map((role) => (
+                              <option key={role} value={role}>
+                                {ROLE_LABEL[role]}
+                              </option>
+                            ))}
+                          </optgroup>
+                          {tenantRoles.filter((r) => !r.isSystem).length > 0 ? (
+                            <optgroup label="Roles customizados">
+                              {tenantRoles
+                                .filter((r) => !r.isSystem)
+                                .map((r) => (
+                                  <option key={r.$id} value={`${r.portalType}:${r.slug}`}>
+                                    {r.name} ({ROLE_LABEL[r.portalType]})
+                                  </option>
+                                ))}
+                            </optgroup>
+                          ) : null}
                         </select>
                       </label>
                       <button
                         type="button"
                         onClick={() => void handleUpdateRole()}
-                        disabled={savingRole || roleDraft === selectedDetail.role}
+                        disabled={savingRole || !roleDraftChanged}
                         className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
                       >
                         {savingRole ? "Salvando..." : "Alterar permissao"}
                       </button>
                     </div>
+                    ) : null}
                   </div>
 
                   <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-5">

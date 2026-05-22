@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   createManeuverArticle,
   createManeuverSection,
@@ -86,6 +87,7 @@ function toNumber(value: string, fallback = 0): number {
 export function ManobrasTab() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { canAction } = usePermissions();
   const [catalog, setCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -341,6 +343,7 @@ export function ManobrasTab() {
               Selecione uma seção, revise seus artigos e abra os formulários apenas quando precisar editar.
             </p>
           </div>
+          {canAction("content.edit") ? (
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -358,6 +361,7 @@ export function ManobrasTab() {
               Novo artigo
             </button>
           </div>
+          ) : null}
         </div>
       </div>
 
@@ -399,7 +403,7 @@ export function ManobrasTab() {
                     </h3>
                     {selectedSection?.description ? <p className="mt-1 text-sm text-slate-500">{selectedSection.description}</p> : null}
                   </div>
-                  {selectedSection ? (
+                  {selectedSection && canAction("content.edit") ? (
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -583,9 +587,11 @@ export function ManobrasTab() {
                     <p className="text-xs font-semibold uppercase tracking-wider text-sky-400/80">Artigos</p>
                     <h3 className="text-lg font-semibold text-slate-100">{selectedSection?.title ?? "Selecione uma seção"}</h3>
                   </div>
+                  {canAction("content.edit") ? (
                   <button type="button" onClick={openArticleCreate} disabled={!selectedSectionId} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50">
                     Novo artigo
                   </button>
+                  ) : null}
                 </div>
                 <div className="grid gap-3">
                   {articlesForSelected.length ? articlesForSelected.map((article) => (
@@ -595,6 +601,7 @@ export function ManobrasTab() {
                           <h4 className="break-words text-base font-semibold text-slate-100">{article.order}. {article.title}</h4>
                           <p className="text-xs text-slate-500">{article.isPublished ? "Publicado" : "Rascunho"}</p>
                         </div>
+                        {canAction("content.edit") ? (
                         <div className="flex flex-wrap gap-2">
                           <button type="button" onClick={() => openArticleEdit(article)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
                             Editar
@@ -603,6 +610,7 @@ export function ManobrasTab() {
                             Apagar
                           </button>
                         </div>
+                        ) : null}
                       </div>
                       {article.summary ? <p className="mt-2 text-sm text-slate-400">{article.summary}</p> : null}
                       <div className="mt-3 line-clamp-3 space-y-2 text-sm text-slate-300">{renderRichContent(article.contentJson)}</div>

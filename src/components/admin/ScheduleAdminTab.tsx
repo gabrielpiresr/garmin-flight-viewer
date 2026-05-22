@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { ScheduleFlightsTab } from "./ScheduleFlightsTab";
 import { WeeklyConfigTab } from "./WeeklyConfigTab";
 import { ScheduleGenerationTab } from "./ScheduleGenerationTab";
 import { Tabs } from "../ui/Tabs";
 import { useOpenedTabs } from "../../lib/routedTabs";
+import { usePermissions } from "../../contexts/PermissionsContext";
+import type { AdminTabKey } from "../../types/rolePermissions";
 
 export type ScheduleSubTab = "flights" | "weekly" | "generator";
 
@@ -38,6 +40,12 @@ const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = 
   },
 ];
 
+const SCHEDULE_SUB_TAB_KEY: Record<ScheduleSubTab, AdminTabKey> = {
+  flights:   "schedule.voos",
+  weekly:    "schedule.disponibilidades",
+  generator: "schedule.gerador",
+};
+
 type ScheduleAdminTabProps = {
   subTab?: ScheduleSubTab;
   onSubTabChange?: (tab: ScheduleSubTab) => void;
@@ -46,8 +54,20 @@ type ScheduleAdminTabProps = {
 export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: ScheduleAdminTabProps = {}) {
   const [internalSubTab, setInternalSubTab] = useState<ScheduleSubTab>("flights");
   const [flightsFocusWeekStart, setFlightsFocusWeekStart] = useState<string | null>(null);
+  const { canTab } = usePermissions();
+
+  const visibleSubTabs = useMemo(
+    () => SUB_TABS.filter((t) => canTab(SCHEDULE_SUB_TAB_KEY[t.id] as AdminTabKey)),
+    [canTab],
+  );
+
   const subTab = controlledSubTab ?? internalSubTab;
-  const openedSubTabs = useOpenedTabs(subTab);
+  const activeSubTab: ScheduleSubTab =
+    visibleSubTabs.some((t) => t.id === subTab)
+      ? subTab
+      : (visibleSubTabs[0]?.id ?? "flights");
+
+  const openedSubTabs = useOpenedTabs(activeSubTab);
 
   function changeSubTab(next: ScheduleSubTab) {
     if (onSubTabChange) {
@@ -59,21 +79,21 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
 
   function handleScalePublished(weekStart: string) {
     setFlightsFocusWeekStart(weekStart);
-    changeSubTab("flights");
+    if (visibleSubTabs.some((t) => t.id === "flights")) changeSubTab("flights");
   }
 
   return (
     <div className="space-y-4">
       <Tabs
-        items={SUB_TABS}
-        value={subTab}
+        items={visibleSubTabs}
+        value={activeSubTab}
         onChange={changeSubTab}
         ariaLabel="Administração de escala"
         className="w-full"
       />
 
       {openedSubTabs.has("flights") ? (
-        <div hidden={subTab !== "flights"}>
+        <div hidden={activeSubTab !== "flights"}>
           <ScheduleFlightsTab
             focusWeekStart={flightsFocusWeekStart}
             onFocusWeekConsumed={() => setFlightsFocusWeekStart(null)}
@@ -81,12 +101,12 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
         </div>
       ) : null}
       {openedSubTabs.has("weekly") ? (
-        <div hidden={subTab !== "weekly"}>
+        <div hidden={activeSubTab !== "weekly"}>
           <WeeklyConfigTab />
         </div>
       ) : null}
       {openedSubTabs.has("generator") ? (
-        <div hidden={subTab !== "generator"}>
+        <div hidden={activeSubTab !== "generator"}>
           <ScheduleGenerationTab onScalePublished={handleScalePublished} />
         </div>
       ) : null}

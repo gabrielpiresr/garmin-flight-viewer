@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   createWorkOrder,
   listAttachments,
@@ -492,6 +493,7 @@ function workOrderToForm(order: MaintenanceWorkOrder): WorkOrderForm {
 export function MaintenanceTab() {
   const { showToast } = useToast();
   const { user } = useAuth();
+  const { canAction } = usePermissions();
   const [orders, setOrders] = useState<MaintenanceWorkOrder[]>([]);
   const [aircrafts, setAircrafts] = useState<Aircraft[]>([]);
   const [models, setModels] = useState<AircraftModel[]>([]);
@@ -838,9 +840,11 @@ export function MaintenanceTab() {
         </div>
         {!showForm ? (
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => openCreate()} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500">
-              Nova OS
-            </button>
+            {canAction("os.create") && (
+              <button type="button" onClick={() => openCreate()} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500">
+                Nova OS
+              </button>
+            )}
           </div>
         ) : null}
       </div>

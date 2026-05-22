@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   pathForRoute,
   resolveRouteId,
@@ -10,9 +11,11 @@ import {
 } from "../../lib/routedTabs";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
+import { InstallPwaButton } from "../InstallPwaButton";
 import { Tabs } from "../ui/Tabs";
 import type { SettingsSubTab } from "./PlatformSettingsTab";
 import type { ScheduleSubTab } from "./ScheduleAdminTab";
+import type { AdminTabKey } from "../../types/rolePermissions";
 
 const AdminHome = lazy(() => import("./AdminHome").then((module) => ({ default: module.AdminHome })));
 const AdminStudentsTab = lazy(() => import("./AdminStudentsTab").then((module) => ({ default: module.AdminStudentsTab })));
@@ -395,6 +398,7 @@ const SETTINGS_ROUTES = [
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
   { id: "exercises", path: "/admin/configuracoes/exercicios", aliases: ["/admin/exercicios"] },
   { id: "financeiro", path: "/admin/configuracoes/financeiro" },
+  { id: "roles", path: "/admin/configuracoes/roles" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
 const ADMIN_ROUTES = [
@@ -426,6 +430,31 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   tracks: "Trilhas",
   exercises: "Exercicios",
   financeiro: "Financeiro",
+  roles: "Roles",
+};
+
+// Mapeamento de sub-tabs locais para chaves de AdminTabKey (para permissionamento)
+const FLEET_TAB_KEYS: Record<string, AdminTabKey> = {
+  aircraft: "fleet.avioes",
+  models: "fleet.modelos",
+  program: "fleet.programa",
+  "work-orders": "fleet.ordens-servico",
+};
+const REPORTS_TAB_KEYS: Record<string, AdminTabKey> = {
+  "all-flights": "reports.all-flights",
+  "flight-reports": "reports.relatorios",
+  signatures: "reports.assinaturas",
+  "no-telemetry": "reports.sem-telemetria",
+  alerts: "reports.alertas",
+};
+const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
+  maneuvers: "contents.manobras",
+  manuals: "contents.manuais",
+  help: "contents.ajuda",
+};
+const DISPAROS_TAB_KEYS: Record<string, AdminTabKey> = {
+  "email-mkt": "disparos.email-mkt",
+  notices: "disparos.avisos",
 };
 
 function resolveAdminPageTitle(
@@ -471,8 +500,33 @@ function LazyTab({ children }: { children: ReactNode }) {
 
 export function AdminLayout() {
   const { user, signOut } = useAuth();
+  const { canTab, isLoading: permissionsLoading } = usePermissions();
   const [section, setSection] = useRoutedTab(ADMIN_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
+
+  // Filtra itens de navegação pelas permissões do role
+  const visibleNavItems = useMemo(
+    () => NAV_ITEMS.filter((item) => canTab(item.id as AdminTabKey)),
+    [canTab],
+  );
+
+  // Filtra sub-tabs de cada seção
+  const visibleFleetTabs = useMemo(
+    () => FLEET_TABS.filter((t) => canTab(FLEET_TAB_KEYS[t.id] ?? ("fleet.avioes" as AdminTabKey))),
+    [canTab],
+  );
+  const visibleReportsTabs = useMemo(
+    () => REPORTS_TABS.filter((t) => canTab(REPORTS_TAB_KEYS[t.id] ?? ("reports.relatorios" as AdminTabKey))),
+    [canTab],
+  );
+  const visibleContentsTabs = useMemo(
+    () => CONTENTS_TABS.filter((t) => canTab(CONTENTS_TAB_KEYS[t.id] ?? ("contents.manobras" as AdminTabKey))),
+    [canTab],
+  );
+  const visibleDisparosTabs = useMemo(
+    () => DISPAROS_TABS.filter((t) => canTab(DISPAROS_TAB_KEYS[t.id] ?? ("disparos.email-mkt" as AdminTabKey))),
+    [canTab],
+  );
   const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
   const openedFleetTabs = useOpenedTabs(fleetTab);
   const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
@@ -547,7 +601,15 @@ export function AdminLayout() {
         </div>
 
         <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
-          {NAV_ITEMS.map((item) => {
+          {permissionsLoading ? (
+            // Skeleton enquanto permissões do role customizado carregam
+            Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 rounded-lg px-3 py-2.5">
+                <div className="h-4 w-4 animate-pulse rounded bg-slate-800" />
+                <div className="h-3 w-24 animate-pulse rounded bg-slate-800" />
+              </div>
+            ))
+          ) : visibleNavItems.map((item) => {
             const isActive = section === item.id;
             return (
               <button
@@ -591,6 +653,7 @@ export function AdminLayout() {
               title={pageTitle}
             />
             <div className="flex items-center gap-3">
+              <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
               <button
@@ -618,7 +681,7 @@ export function AdminLayout() {
           )}
           {openedSections.has("fleet") && (
             <div hidden={section !== "fleet"} className="space-y-4">
-              <Tabs items={FLEET_TABS} value={fleetTab} onChange={changeFleetTab} ariaLabel="Subabas de frota" accent="sky" />
+              <Tabs items={visibleFleetTabs} value={fleetTab} onChange={changeFleetTab} ariaLabel="Subabas de frota" accent="sky" />
               {openedFleetTabs.has("aircraft") ? (
                 <div hidden={fleetTab !== "aircraft"}><LazyTab><FleetTab /></LazyTab></div>
               ) : null}
@@ -635,7 +698,7 @@ export function AdminLayout() {
           )}
           {openedSections.has("reports") && (
             <div hidden={section !== "reports"} className="space-y-4">
-              <Tabs items={REPORTS_TABS} value={reportsTab} onChange={changeReportsTab} ariaLabel="Subabas de relatórios" accent="sky" />
+              <Tabs items={visibleReportsTabs} value={reportsTab} onChange={changeReportsTab} ariaLabel="Subabas de relatórios" accent="sky" />
               {openedReportsTabs.has("all-flights") ? (
                 <div hidden={reportsTab !== "all-flights"}><LazyTab><AdminAllFlightsTab /></LazyTab></div>
               ) : null}
@@ -655,7 +718,7 @@ export function AdminLayout() {
           )}
           {openedSections.has("contents") && (
             <div hidden={section !== "contents"} className="space-y-4">
-              <Tabs items={CONTENTS_TABS} value={contentsTab} onChange={changeContentsTab} ariaLabel="Subabas de conteúdos" accent="sky" />
+              <Tabs items={visibleContentsTabs} value={contentsTab} onChange={changeContentsTab} ariaLabel="Subabas de conteúdos" accent="sky" />
               {openedContentsTabs.has("maneuvers") ? (
                 <div hidden={contentsTab !== "maneuvers"}><LazyTab><ManobrasTab /></LazyTab></div>
               ) : null}
@@ -669,7 +732,7 @@ export function AdminLayout() {
           )}
           {openedSections.has("disparos") && (
             <div hidden={section !== "disparos"} className="space-y-4">
-              <Tabs items={DISPAROS_TABS} value={disparosTab} onChange={changeDisparosTab} ariaLabel="Subabas de disparos" accent="sky" />
+              <Tabs items={visibleDisparosTabs} value={disparosTab} onChange={changeDisparosTab} ariaLabel="Subabas de disparos" accent="sky" />
               {openedDisparosTabs.has("email-mkt") ? (
                 <div hidden={disparosTab !== "email-mkt"}><LazyTab><EmailMktTab /></LazyTab></div>
               ) : null}
@@ -711,7 +774,14 @@ export function AdminLayout() {
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
-            {NAV_ITEMS.map((item) => {
+            {permissionsLoading ? (
+              Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex min-w-[4.75rem] flex-1 flex-col items-center gap-1.5 px-2 py-2">
+                  <div className="h-4 w-4 animate-pulse rounded bg-slate-800" />
+                  <div className="h-2 w-10 animate-pulse rounded bg-slate-800" />
+                </div>
+              ))
+            ) : visibleNavItems.map((item) => {
               const isActive = section === item.id;
               return (
                 <button

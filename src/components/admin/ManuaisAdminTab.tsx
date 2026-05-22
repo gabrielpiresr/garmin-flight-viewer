@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   createManual,
   deleteManual,
@@ -381,6 +382,7 @@ function EditModal({ manual, existingCategories, onClose, onSaved }: EditModalPr
 
 export function ManuaisAdminTab() {
   const { showToast } = useToast();
+  const { canAction } = usePermissions();
   const [manuals, setManuals] = useState<Manual[]>([]);
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
@@ -473,6 +475,7 @@ export function ManuaisAdminTab() {
               {categories.length === 1 ? "categoria" : "categorias"}
             </p>
           </div>
+          {canAction("content.edit") ? (
           <button
             type="button"
             onClick={() => setShowUpload(true)}
@@ -483,6 +486,7 @@ export function ManuaisAdminTab() {
             </svg>
             Enviar arquivo
           </button>
+          ) : null}
         </div>
 
         {/* Content */}
@@ -566,6 +570,7 @@ export function ManuaisAdminTab() {
                                   </svg>
                                 </a>
                               )}
+                              {canAction("content.edit") ? (
                               <button
                                 type="button"
                                 onClick={() => setEditTarget(m)}
@@ -577,6 +582,8 @@ export function ManuaisAdminTab() {
                                   <path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0010 3H4.75A2.75 2.75 0 002 5.75v9.5A2.75 2.75 0 004.75 18h9.5A2.75 2.75 0 0017 15.25V10a.75.75 0 00-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5z" />
                                 </svg>
                               </button>
+                              ) : null}
+                              {canAction("content.edit") ? (
                               <button
                                 type="button"
                                 onClick={() => void handleDelete(m)}
@@ -588,6 +595,7 @@ export function ManuaisAdminTab() {
                                   <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
                                 </svg>
                               </button>
+                              ) : null}
                             </div>
                           </div>
                         );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 
 function formatBRL(value: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
@@ -59,6 +60,7 @@ function formatNumber(value: number): string {
 
 export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }: { studentUserId: string; studentName: string; anacCode?: string }) {
   const { user } = useAuth();
+  const { canAction } = usePermissions();
   const { showToast } = useToast();
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [statement, setStatement] = useState<StudentCreditStatement | null>(null);
@@ -212,13 +214,15 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
           <p className="text-xs text-slate-500">Compras editáveis pelo admin e saídas calculadas pelos voos executados.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={openCreate}
-            className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-500"
-          >
-            Adicionar crédito
-          </button>
+          {canAction("credit.launch") && (
+            <button
+              type="button"
+              onClick={openCreate}
+              className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-500"
+            >
+              Adicionar crédito
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void load()}

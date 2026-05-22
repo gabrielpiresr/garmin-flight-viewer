@@ -106,6 +106,9 @@ export const MANUALS_COL_ID = import.meta.env.VITE_APPWRITE_MANUALS_COL_ID as st
 export const BROADCAST_SEGMENTS_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_SEGMENTS_COL_ID as string | undefined;
 export const BROADCAST_MESSAGES_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_MESSAGES_COL_ID as string | undefined;
 
+// Roles por tenant
+export const TENANT_ROLES_COL_ID = import.meta.env.VITE_APPWRITE_TENANT_ROLES_COL_ID as string | undefined;
+
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 
 export let client: Client | null = null;

@@ -1,5 +1,6 @@
 import { createAdminAuditEvent } from "./adminUsersDb";
 import { listAircrafts } from "./aircraftDb";
+import { getModelById } from "./aircraftModelsDb";
 import { SCHOOL_ID } from "./appwrite";
 import { listFlightDiscrepancies, syncFlightDiscrepanciesFromMetas, type FlightDiscrepancy } from "./flightDiscrepanciesDb";
 import { listSignaturesForFlights, type FlightSignaturesForFlight } from "./flightSignaturesDb";
@@ -13,10 +14,11 @@ import {
   enrichLogbookLandingTotals,
   type AnacLogbookEntry,
 } from "./logbookAnac";
+import { getActiveLogbookOpeningSignature, type LogbookOpeningSignature } from "./logbookOpeningSignaturesDb";
 import { buildMaintenanceAsOfFlight, type MaintenanceAsOfFlight } from "./maintenanceAtDate";
 import { listProgramItemsByModel, listWorkOrders } from "./maintenanceDb";
-import { listProfileSummariesByUserIds } from "./rbac";
-import type { Aircraft, MaintenanceWorkOrder } from "../types/admin";
+import { listProfileSummariesByUserIds, type PilotProfileSummary } from "./rbac";
+import type { Aircraft, AircraftModel, MaintenanceWorkOrder } from "../types/admin";
 
 const DB_NAME = "gfv_offline_logbook";
 const DB_VERSION = 1;
@@ -47,10 +49,14 @@ export type OfflineAircraftLogbookPackage = {
   valid_to: string;
   expires_at: string;
   aircraft_snapshot: Aircraft;
+  aircraft_model_snapshot: AircraftModel | null;
+  opening_signature: LogbookOpeningSignature | null;
+  opening_signer_profile: PilotProfileSummary | null;
   flights: OfflineFlightSummary[];
   entries: AnacLogbookEntry[];
   signatures: Record<string, FlightSignaturesForFlight>;
   maintenance_snapshot: Record<string, MaintenanceAsOfFlight>;
+  current_maintenance_snapshot: MaintenanceAsOfFlight | null;
   discrepancies: FlightDiscrepancy[];
   work_orders: MaintenanceWorkOrder[];
   package_hash: string;
@@ -218,12 +224,14 @@ export async function buildOfflineAircraftLogbookPackage(aircraftIdent: string):
   const flightIds = rows.map((row) => row.id);
   const allFlightIds = allRows.map((row) => row.id);
   const modelId = aircraft.model_id;
-  const [workOrders, programItems, metaByFlightId, allMetaByFlightId, signaturesByFlightId] = await Promise.all([
+  const [workOrders, programItems, metaByFlightId, allMetaByFlightId, signaturesByFlightId, aircraftModel, openingSignature] = await Promise.all([
     listWorkOrders(),
     modelId ? listProgramItemsByModel(modelId) : Promise.resolve([]),
     getFlightRecordMetaBatch(flightIds, { concurrency: 12 }),
     getFlightRecordMetaBatch(allFlightIds, { concurrency: 12 }),
     listSignaturesForFlights(flightIds),
+    modelId ? getModelById(modelId) : Promise.resolve(null),
+    getActiveLogbookOpeningSignature(aircraft.id),
   ]);
 
   await syncFlightDiscrepanciesFromMetas(rows, metaByFlightId);
@@ -238,9 +246,21 @@ export async function buildOfflineAircraftLogbookPackage(aircraftIdent: string):
     if (signatures.admin_operator?.signer_user_id) profileIds.add(signatures.admin_operator.signer_user_id);
   }
   const profiles = await listProfileSummariesByUserIds([...profileIds]);
+  const openingSignerProfiles = openingSignature?.signer_user_id
+    ? await listProfileSummariesByUserIds([openingSignature.signer_user_id])
+    : {};
+  const openingSignerProfile = openingSignature?.signer_user_id ? openingSignerProfiles[openingSignature.signer_user_id] ?? null : null;
 
   const entries: AnacLogbookEntry[] = [];
   const maintenanceSnapshot: Record<string, MaintenanceAsOfFlight> = {};
+  const currentMaintenanceSnapshot = buildMaintenanceAsOfFlight({
+    aircraft,
+    programItems,
+    workOrders,
+    flights: allRows,
+    metaByFlightId: allMetaByFlightId,
+    asOfMs: Date.now(),
+  });
   for (const flight of rows) {
     const meta = metaByFlightId.get(flight.id);
     if (!meta) continue;
@@ -286,10 +306,14 @@ export async function buildOfflineAircraftLogbookPackage(aircraftIdent: string):
     valid_to: validTo,
     expires_at: expiresAt,
     aircraft_snapshot: aircraft,
+    aircraft_model_snapshot: aircraftModel,
+    opening_signature: openingSignature,
+    opening_signer_profile: openingSignerProfile,
     flights: rows.map(toOfflineSummary),
     entries: enrichedEntries,
     signatures,
     maintenance_snapshot: maintenanceSnapshot,
+    current_maintenance_snapshot: currentMaintenanceSnapshot,
     discrepancies,
     work_orders: workOrders.filter((order) => order.aircraft_id === aircraft.id),
     unsigned_instructor_flight_ids: unsignedInstructorFlightIds,

@@ -115,6 +115,7 @@ export type AdminUserSummary = {
   email: string;
   name: string;
   role: UserRole;
+  customRoleSlug?: string | null;
   labels: string[];
   emailVerification: boolean;
   createdAt: string;

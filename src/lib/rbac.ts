@@ -235,6 +235,27 @@ export async function getUserRole(userId: string): Promise<UserRole> {
   }
 }
 
+/** Retorna role + custom_role_slug do perfil em uma única query */
+export async function getUserRoleInfo(userId: string): Promise<{ role: UserRole; customRoleSlug: string | null }> {
+  if (!isAppwriteConfigured || !databases || !hasRbacCollections() || !DB_ID || !PROFILES_COL_ID) {
+    return { role: "aluno", customRoleSlug: null };
+  }
+
+  try {
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", [userId]),
+      Query.limit(1),
+    ]);
+    const doc = (res.documents[0] ?? {}) as ProfileDoc & { custom_role_slug?: string };
+    return {
+      role: normalizeUserRole(doc.role),
+      customRoleSlug: doc.custom_role_slug ?? null,
+    };
+  } catch {
+    return { role: "aluno", customRoleSlug: null };
+  }
+}
+
 export async function getProfile(userId: string): Promise<{ data: PilotProfile | null; error: Error | null }> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) {
     return { data: null, error: null };

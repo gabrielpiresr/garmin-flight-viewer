@@ -10,7 +10,9 @@ export type StudentPortalTab =
   | "manuais"
   | "manobras"
   | "ajuda"
-  | "perfil";
+  | "perfil"
+  | "dre"       // EDB — opcional, desativado por padrão
+  | "fuelings"; // Abastecimentos — opcional, desativado por padrão
 
 export const SCHOOL_FONT_OPTIONS = [
   { id: "", label: "Padrão do sistema" },
@@ -57,17 +59,20 @@ export type SchoolRules = {
 
 export type SchoolRulesInput = Omit<SchoolRules, "updatedAt">;
 
-export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: string }> = [
+export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: string; defaultEnabled?: boolean }> = [
   { id: "home", label: "Home" },
   { id: "jornada", label: "Jornada" },
   { id: "meus-voos", label: "Meus voos" },
   { id: "agendamento", label: "Agendamento" },
-  { id: "creditos", label: "Creditos" },
+  { id: "creditos", label: "Créditos" },
   { id: "avisos", label: "Avisos" },
   { id: "manuais", label: "Manuais" },
   { id: "manobras", label: "Manobras" },
   { id: "ajuda", label: "Ajuda" },
   { id: "perfil", label: "Perfil" },
+  // Abas opcionais — desativadas por padrão, admin pode ativar por escola e/ou por role
+  { id: "dre", label: "EDB", defaultEnabled: false },
+  { id: "fuelings", label: "Abastecimentos", defaultEnabled: false },
 ];
 
 export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType; label: string }> = [
@@ -98,7 +103,7 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
-  (acc, item) => ({ ...acc, [item.id]: true }),
+  (acc, item) => ({ ...acc, [item.id]: item.defaultEnabled ?? true }),
   {} as Record<StudentPortalTab, boolean>,
 );
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getEmailSettings, saveEmailSettings, sendTestEmail } from "../../lib/notificationsDb";
 import type { EmailSettings, EmailSettingsInput, EmailTemplateType } from "../../types/notification";
 import { Skeleton } from "../ui/Skeleton";
@@ -10,6 +10,8 @@ import { RewardsEditor } from "./RewardsEditor";
 import { SchoolCostsPanel } from "./SchoolCostsPanel";
 import { SchoolProductsPanel } from "./SchoolProductsPanel";
 import { useOpenedTabs } from "../../lib/routedTabs";
+import { usePermissions } from "../../contexts/PermissionsContext";
+import type { AdminTabKey } from "../../types/rolePermissions";
 import {
   AppearanceSettingsPanel,
   EmailBrandSettingsPanel,
@@ -17,7 +19,11 @@ import {
   ScheduleRulesPanel,
 } from "./PlatformSettingsExtraPanels";
 
-export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "financeiro";
+const RolesSettingsTab = lazy(() =>
+  import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
+);
+
+export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "financeiro" | "roles";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -84,7 +90,28 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
       </svg>
     ),
   },
+  {
+    id: "roles" as SettingsSubTab,
+    label: "Roles",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 9a3 3 0 100-6 3 3 0 000 6zM6 8a2 2 0 11-4 0 2 2 0 014 0zM1.49 15.326a.78.78 0 01-.358-.442 3 3 0 014.308-3.516 6.484 6.484 0 00-1.905 3.959c-.023.222-.014.442.025.654a4.97 4.97 0 01-2.07-.655zM16.44 15.98a4.97 4.97 0 002.07-.654.78.78 0 00.357-.442 3 3 0 00-4.308-3.517 6.484 6.484 0 011.907 3.96 2.32 2.32 0 01-.026.654zM18 8a2 2 0 11-4 0 2 2 0 014 0zM5.304 16.19a.844.844 0 01-.277-.71 5 5 0 019.947 0 .843.843 0 01-.277.71A6.975 6.975 0 0110 18a6.974 6.974 0 01-4.696-1.81z" />
+      </svg>
+    ),
+  },
 ];
+
+/** Mapeamento de sub-aba de configurações → AdminTabKey para controle de permissões */
+const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
+  rules:       "settings.regras",
+  email:       "settings.email",
+  brand:       "settings.aparencia",
+  badges:      "settings.badges",
+  tracks:      "settings.trilhas",
+  exercises:   "settings.exercicios",
+  financeiro:  "settings.financeiro",
+  roles:       "settings.roles",
+};
 
 const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
   { id: "test", label: "Teste geral" },
@@ -348,8 +375,22 @@ type PlatformSettingsTabProps = {
 
 export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }: PlatformSettingsTabProps = {}) {
   const [internalSubTab, setInternalSubTab] = useState<SettingsSubTab>("rules");
+  const { canTab } = usePermissions();
+
+  // Filtra sub-abas pelas permissões do role ativo
+  const visibleSubTabs = useMemo(
+    () => SUB_TABS.filter((t) => canTab(SETTINGS_SUB_TAB_KEY[t.id] as AdminTabKey)),
+    [canTab],
+  );
+
   const subTab = controlledSubTab ?? internalSubTab;
-  const openedSubTabs = useOpenedTabs(subTab);
+  // Se a sub-aba ativa não está mais visível, redireciona para a primeira visível
+  const activeSubTab: SettingsSubTab =
+    visibleSubTabs.some((t) => t.id === subTab)
+      ? subTab
+      : (visibleSubTabs[0]?.id ?? "rules");
+
+  const openedSubTabs = useOpenedTabs(activeSubTab);
 
   function changeSubTab(next: SettingsSubTab) {
     if (onSubTabChange) {
@@ -361,27 +402,27 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
 
   return (
     <div className="w-full space-y-4">
-      <Tabs items={SUB_TABS} value={subTab} onChange={changeSubTab} ariaLabel="Configurações da plataforma" accent="cyan" />
+      <Tabs items={visibleSubTabs} value={activeSubTab} onChange={changeSubTab} ariaLabel="Configurações da plataforma" accent="cyan" />
 
       {openedSubTabs.has("email") ? (
-        <div hidden={subTab !== "email"} className="space-y-4">
+        <div hidden={activeSubTab !== "email"} className="space-y-4">
           <EmailSettingsPanel />
           <EmailBrandSettingsPanel />
           <EmailNotificationRulesPanel />
         </div>
       ) : null}
       {openedSubTabs.has("brand") ? (
-        <div hidden={subTab !== "brand"}>
+        <div hidden={activeSubTab !== "brand"}>
           <AppearanceSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("rules") ? (
-        <div hidden={subTab !== "rules"}>
+        <div hidden={activeSubTab !== "rules"}>
           <ScheduleRulesPanel />
         </div>
       ) : null}
       {openedSubTabs.has("badges") ? (
-        <div hidden={subTab !== "badges"}>
+        <div hidden={activeSubTab !== "badges"}>
           <RewardsEditor
             kind="badge"
             title="Badges da evolução"
@@ -390,19 +431,26 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
         </div>
       ) : null}
       {openedSubTabs.has("tracks") ? (
-        <div hidden={subTab !== "tracks"}>
+        <div hidden={activeSubTab !== "tracks"}>
           <TrainingTracksTab />
         </div>
       ) : null}
       {openedSubTabs.has("exercises") ? (
-        <div hidden={subTab !== "exercises"}>
+        <div hidden={activeSubTab !== "exercises"}>
           <TrainingExercisesTab />
         </div>
       ) : null}
       {openedSubTabs.has("financeiro") ? (
-        <div hidden={subTab !== "financeiro"} className="space-y-4">
+        <div hidden={activeSubTab !== "financeiro"} className="space-y-4">
           <SchoolCostsPanel />
           <SchoolProductsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("roles") ? (
+        <div hidden={activeSubTab !== "roles"}>
+          <Suspense fallback={<div className="h-40 animate-pulse rounded-xl bg-slate-800/50" />}>
+            <RolesSettingsTab />
+          </Suspense>
         </div>
       ) : null}
     </div>

@@ -4,6 +4,7 @@ import { SCHOOL_ID } from "../lib/appwrite";
 import { createFueling, listFuelings } from "../lib/fuelingsDb";
 import { listFuelingResponsibleUsers, listFuelingStudents } from "../lib/rbac";
 import { useAuth } from "../contexts/AuthContext";
+import { usePermissions } from "../contexts/PermissionsContext";
 import type { Aircraft } from "../types/admin";
 import type { AircraftFueling, FuelingPaymentMethod, FuelingResponsibleOption, FuelingStudentOption, FuelType } from "../types/fueling";
 import { Skeleton } from "./ui/Skeleton";
@@ -180,6 +181,7 @@ function recalculateFields(form: FormState, changed: NumericField): FormState {
 
 export function FuelingsTab() {
   const { user } = useAuth();
+  const { canAction } = usePermissions();
   const { showToast } = useToast();
   const [fuelings, setFuelings] = useState<AircraftFueling[]>([]);
   const [aircraft, setAircraft] = useState<Aircraft[]>([]);
@@ -325,9 +327,11 @@ export function FuelingsTab() {
           >
             PDF
           </button>
-          <button type="button" onClick={openNewFueling} className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">
-            Novo abastecimento
-          </button>
+          {canAction("fueling.launch") && (
+            <button type="button" onClick={openNewFueling} className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">
+              Novo abastecimento
+            </button>
+          )}
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect } from "react";
 import { useAuth } from "./contexts/AuthContext";
+import { PermissionsProvider } from "./contexts/PermissionsContext";
 import { LoginPage } from "./pages/LoginPage";
 import { refreshBrandCache } from "./lib/schoolRulesDb";
 
@@ -47,23 +48,29 @@ export default function App() {
 
   if (user.role === "admin") {
     return (
-      <Suspense fallback={<AppLoading />}>
-        <AdminLayout />
-      </Suspense>
+      <PermissionsProvider>
+        <Suspense fallback={<AppLoading />}>
+          <AdminLayout />
+        </Suspense>
+      </PermissionsProvider>
     );
   }
 
   if (user.role === "instrutor") {
     return (
-      <Suspense fallback={<AppLoading />}>
-        <InstructorLayout />
-      </Suspense>
+      <PermissionsProvider>
+        <Suspense fallback={<AppLoading />}>
+          <InstructorLayout />
+        </Suspense>
+      </PermissionsProvider>
     );
   }
 
   return (
-    <Suspense fallback={<AppLoading />}>
-      <MainLayout />
-    </Suspense>
+    <PermissionsProvider>
+      <Suspense fallback={<AppLoading />}>
+        <MainLayout />
+      </Suspense>
+    </PermissionsProvider>
   );
 }

@@ -1,16 +1,25 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
+import { InstallPwaButton } from "../InstallPwaButton";
+import type { InstructorTabKey } from "../../types/rolePermissions";
 
 const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
+const InstructorDreTab = lazy(() =>
+  import("./InstructorDreTab").then((module) => ({ default: module.InstructorDreTab })),
+);
 const InstructorFlightsTab = lazy(() =>
   import("./InstructorFlightsTab").then((module) => ({ default: module.InstructorFlightsTab })),
 );
 const InstructorHome = lazy(() => import("./InstructorHome").then((module) => ({ default: module.InstructorHome })));
 const InstructorProfileTab = lazy(() =>
   import("./InstructorProfileTab").then((module) => ({ default: module.InstructorProfileTab })),
+);
+const InstructorScheduleTab = lazy(() =>
+  import("./InstructorScheduleTab").then((module) => ({ default: module.InstructorScheduleTab })),
 );
 const InstructorStudentsTab = lazy(() =>
   import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
@@ -21,7 +30,7 @@ const ManuaisTab = lazy(() => import("../ManuaisTab").then((module) => ({ defaul
 const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 
-type InstructorSection = "home" | "journey" | "flights" | "fuelings" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help";
+type InstructorSection = "home" | "journey" | "flights" | "fuelings" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help" | "dre" | "schedule";
 
 type NavItem = {
   id: InstructorSection;
@@ -136,6 +145,28 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "dre",
+    label: "EDB",
+    sublabel: "Extrato financeiro",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M12 7.5a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
+        <path fillRule="evenodd" d="M1.5 4.875C1.5 3.839 2.34 3 3.375 3h17.25c1.035 0 1.875.84 1.875 1.875v9.75c0 1.036-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 011.5 14.625v-9.75zM8.25 9.75a3.75 3.75 0 117.5 0 3.75 3.75 0 01-7.5 0zM18.75 9a.75.75 0 00-.75.75v.008c0 .414.336.75.75.75h.008a.75.75 0 00.75-.75V9.75a.75.75 0 00-.75-.75h-.008zM4.5 9.75A.75.75 0 015.25 9h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H5.25a.75.75 0 01-.75-.75V9.75z" clipRule="evenodd" />
+        <path d="M2.25 18a.75.75 0 000 1.5c5.4 0 10.63.722 15.6 2.075 1.19.324 2.4-.558 2.4-1.82V18.75a.75.75 0 00-.75-.75H2.25z" />
+      </svg>
+    ),
+  },
+  {
+    id: "schedule",
+    label: "Escala",
+    sublabel: "Escala de voos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm13.5 9a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -149,6 +180,8 @@ const SECTION_ROUTES = [
   { id: "students", path: "/instrutor/alunos" },
   { id: "profile", path: "/instrutor/perfil" },
   { id: "help", path: "/instrutor/ajuda" },
+  { id: "dre", path: "/instrutor/edb" },
+  { id: "schedule", path: "/instrutor/escala" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
 function TabLoading() {
@@ -166,9 +199,15 @@ function LazyTab({ children }: { children: ReactNode }) {
 
 export function InstructorLayout() {
   const { user, signOut } = useAuth();
+  const { canTab } = usePermissions();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
+
+  const visibleNavItems = useMemo(
+    () => NAV_ITEMS.filter((item) => canTab(item.id as InstructorTabKey)),
+    [canTab],
+  );
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -182,7 +221,7 @@ export function InstructorLayout() {
         </div>
 
         <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = section === item.id;
             return (
               <button
@@ -225,6 +264,7 @@ export function InstructorLayout() {
               title={activeNav.label}
             />
             <div className="flex items-center gap-3">
+              <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
               <button
@@ -310,11 +350,25 @@ export function InstructorLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("dre") && (
+            <div hidden={section !== "dre"}>
+              <LazyTab>
+                <InstructorDreTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("schedule") && (
+            <div hidden={section !== "schedule"}>
+              <LazyTab>
+                <InstructorScheduleTab />
+              </LazyTab>
+            </div>
+          )}
         </main>
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
-            {NAV_ITEMS.map((item) => {
+            {visibleNavItems.map((item) => {
               const isActive = section === item.id;
               return (
                 <button

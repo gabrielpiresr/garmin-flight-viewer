@@ -4,7 +4,8 @@ import {
   validateOfflinePackageCoverage,
   type OfflineAircraftLogbookPackage,
 } from "../lib/offlineLogbookDb";
-import { LOGBOOK_CSV_COLUMNS, logbookCellValue, type AnacLogbookEntry } from "../lib/logbookAnac";
+import { exportLogbookPdf, LOGBOOK_CSV_COLUMNS, logbookCellValue, type AnacLogbookEntry } from "../lib/logbookAnac";
+import { InstallPwaButton } from "../components/InstallPwaButton";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "-";
@@ -54,6 +55,7 @@ export function OfflineLogbookPage() {
   const [selectedId, setSelectedId] = useState("");
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +85,34 @@ export function OfflineLogbookPage() {
     return selectedPackage.entries.find((entry) => `${entry.flightId}:${entry.legIndex}` === selectedEntryId) ?? selectedPackage.entries[0] ?? null;
   }, [selectedEntryId, selectedPackage]);
 
+  function handleExportPdf() {
+    setExportError(null);
+    if (!selectedPackage) return;
+    if (!selectedPackage.opening_signature) {
+      setExportError("Este pacote offline nao possui termo de abertura assinado. Sincronize novamente apos assinar o termo.");
+      return;
+    }
+    const exported = exportLogbookPdf({
+      entries: selectedPackage.entries,
+      aircraft: selectedPackage.aircraft_snapshot,
+      model: selectedPackage.aircraft_model_snapshot,
+      openingSignature: selectedPackage.opening_signature,
+      signerProfile: selectedPackage.opening_signer_profile,
+      discrepancies: selectedPackage.discrepancies,
+      currentMaintenance: selectedPackage.current_maintenance_snapshot ?? selectedEntry?.maintenance ?? {
+        lastInterventionType: null,
+        lastInterventionDate: null,
+        nextInterventionType: null,
+        nextInterventionDueHours: null,
+        returnToServiceResponsible: null,
+      },
+      workOrders: selectedPackage.work_orders,
+    });
+    if (!exported) {
+      setExportError("Permita pop-ups neste navegador para exportar o PDF.");
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="border-b border-slate-800 bg-slate-950/95 px-4 py-4">
@@ -91,9 +121,12 @@ export function OfflineLogbookPage() {
             <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400">Modo a bordo</p>
             <h1 className="text-xl font-semibold">Diario de bordo offline</h1>
           </div>
-          <a href="/" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800">
-            Portal
-          </a>
+          <div className="flex flex-wrap items-start gap-2">
+            <InstallPwaButton />
+            <a href="/" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800">
+              Portal
+            </a>
+          </div>
         </div>
       </header>
 
@@ -157,6 +190,24 @@ export function OfflineLogbookPage() {
                     <p className="mt-1 font-semibold">{selectedPackage.entries.length}</p>
                   </div>
                 </section>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
+                  <p className="text-sm text-slate-300">
+                    PDF offline gerado a partir do mesmo modelo usado no Diario de Bordo online.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleExportPdf}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+                  >
+                    Exportar PDF
+                  </button>
+                  {exportError ? (
+                    <p className="basis-full rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-200">
+                      {exportError}
+                    </p>
+                  ) : null}
+                </div>
 
                 <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/30">
                   <div className="max-h-[62vh] overflow-auto">

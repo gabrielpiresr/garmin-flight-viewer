@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import { encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { insertFlight, updateFlight } from "../../lib/flightsDb";
 import { dispatchNotificationEvent } from "../../lib/notificationsDb";
@@ -1188,6 +1189,7 @@ type ScheduleGenerationTabProps = {
 export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTabProps = {}) {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { canAction } = usePermissions();
 
   const [weekOptions, setWeekOptions] = useState<ScheduleWeekOption[]>([]);
   const [selectedWeekStart, setSelectedWeekStart] = useState("");
@@ -1890,6 +1892,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
             className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
           />
         </div>
+        {canAction("schedule.generate") ? (
         <div className="flex items-end">
           <button
             type="button"
@@ -1903,6 +1906,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
             {generatingPreview ? "Gerando preview..." : "Gerar preview da escala"}
           </button>
         </div>
+        ) : null}
       </section>
 
       {bootLoading ? (

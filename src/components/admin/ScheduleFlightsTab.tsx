@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
 import { dispatchNotificationEvent } from "../../lib/notificationsDb";
@@ -652,6 +653,7 @@ type ScheduleFlightsTabProps = {
 export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed }: ScheduleFlightsTabProps = {}) {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { canAction } = usePermissions();
   const [weekOptions, setWeekOptions] = useState<ScheduleWeekOption[]>([]);
   const [selectedWeekStart, setSelectedWeekStart] = useState("");
   const [weekData, setWeekData] = useState<ScheduleWeekData | null>(null);
@@ -1174,6 +1176,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             })}
           </select>
         </div>
+        {canAction("flight.create") ? (
         <div className="flex items-end md:col-span-2">
           <button
             type="button"
@@ -1184,6 +1187,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             Novo voo
           </button>
         </div>
+        ) : null}
       </section>
 
       {error ? (
@@ -1470,6 +1474,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         </td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-2">
+                            {canAction("flight.edit") ? (
                             <button
                               type="button"
                               onClick={() => void openEditModal(row)}
@@ -1477,6 +1482,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                             >
                               Editar
                             </button>
+                            ) : null}
+                            {canAction("flight.delete") ? (
                             <button
                               type="button"
                               onClick={() => void handleDeleteFlight(row)}
@@ -1484,6 +1491,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                             >
                               Excluir
                             </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>

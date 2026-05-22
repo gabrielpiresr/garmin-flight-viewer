@@ -140,6 +140,7 @@ const PROFILE_SELECT = [
   "anac_sync_status",
   "anac_sync_error",
   "anac_last_sync_at",
+  "custom_role_slug",
 ];
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
 const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active"];
@@ -908,6 +909,7 @@ function toUserRecord(user, profile, preference, flights, plans, trainingTracks 
     email: user.email || profile?.email || "",
     name: user.name || "",
     role,
+    customRoleSlug: profile?.custom_role_slug || null,
     labels: user.labels || [],
     emailVerification: Boolean(user.emailVerification),
     createdAt: user.$createdAt || "",
@@ -2203,9 +2205,15 @@ async function getUserDetail(targetUserId) {
   );
 }
 
-async function upsertProfile(userId, email, role) {
+async function upsertProfile(userId, email, role, customRoleSlug = null) {
   const existing = await getProfileByUserId(userId);
-  const data = { user_id: userId, email, role, school_id: SCHOOL_ID };
+  const data = {
+    user_id: userId,
+    email,
+    role,
+    school_id: SCHOOL_ID,
+    custom_role_slug: customRoleSlug || null,
+  };
 
   if (existing) {
     await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, existing.$id, data);
@@ -2230,7 +2238,7 @@ async function upsertProfile(userId, email, role) {
   return created.$id;
 }
 
-async function updateRole(actorUserId, targetUserId, role) {
+async function updateRole(actorUserId, targetUserId, role, customRoleSlug = null) {
   if (!VALID_ROLES.has(role)) {
     throw Object.assign(new Error("Permissao invalida."), { status: 400 });
   }
@@ -2246,7 +2254,9 @@ async function updateRole(actorUserId, targetUserId, role) {
     new Set([...(user.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), role]),
   );
   await users.updateLabels({ userId: targetUserId, labels });
-  await upsertProfile(targetUserId, user.email || "", role);
+  // custom_role_slug: store only if role is admin/instrutor (aluno system roles don't use custom slugs here)
+  const slugToStore = customRoleSlug && typeof customRoleSlug === "string" ? customRoleSlug.trim() || null : null;
+  await upsertProfile(targetUserId, user.email || "", role, slugToStore);
 
   return getUserDetail(targetUserId);
 }
@@ -5166,7 +5176,8 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "updateRole") {
-      const user = await updateRole(actorUserId, String(payload.userId || ""), String(payload.role || ""));
+      const customRoleSlug = payload.customRoleSlug ? String(payload.customRoleSlug) : null;
+      const user = await updateRole(actorUserId, String(payload.userId || ""), String(payload.role || ""), customRoleSlug);
       return jsonResponse(res, 200, { user });
     }
 

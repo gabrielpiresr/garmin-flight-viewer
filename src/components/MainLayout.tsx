@@ -1,22 +1,27 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { usePermissions } from "../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
+import { InstallPwaButton } from "./InstallPwaButton";
+import type { StudentTabKey } from "../types/rolePermissions";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
 const AlunoProfileDashboard = lazy(() =>
   import("./AlunoProfileDashboard").then((module) => ({ default: module.AlunoProfileDashboard })),
 );
 const CreditosTab = lazy(() => import("./CreditosTab").then((module) => ({ default: module.CreditosTab })));
+const FuelingsTab = lazy(() => import("./FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const HelpCenterTab = lazy(() => import("./HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
 const JornadaTab = lazy(() => import("./JornadaTab").then((module) => ({ default: module.JornadaTab })));
 const ManobrasTab = lazy(() => import("./ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
 const ManuaisTab = lazy(() => import("./ManuaisTab").then((module) => ({ default: module.ManuaisTab })));
 const MeusVoosTab = lazy(() => import("./MeusVoosTab").then((module) => ({ default: module.MeusVoosTab })));
 const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
+const StudentDreTab = lazy(() => import("./StudentDreTab").then((module) => ({ default: module.StudentDreTab })));
 const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ default: module.StudentHome })));
 
 type Section = StudentPortalTab;
@@ -134,6 +139,29 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "dre",
+    label: "EDB",
+    sublabel: "Extrato financeiro",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M12 7.5a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
+        <path fillRule="evenodd" d="M1.5 4.875C1.5 3.839 2.34 3 3.375 3h17.25c1.035 0 1.875.84 1.875 1.875v9.75c0 1.036-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 011.5 14.625v-9.75zM8.25 9.75a3.75 3.75 0 117.5 0 3.75 3.75 0 01-7.5 0zM18.75 9a.75.75 0 00-.75.75v.008c0 .414.336.75.75.75h.008a.75.75 0 00.75-.75V9.75a.75.75 0 00-.75-.75h-.008zM4.5 9.75A.75.75 0 015.25 9h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H5.25a.75.75 0 01-.75-.75V9.75z" clipRule="evenodd" />
+        <path d="M2.25 18a.75.75 0 000 1.5c5.4 0 10.63.722 15.6 2.075 1.19.324 2.4-.558 2.4-1.82V18.75a.75.75 0 00-.75-.75H2.25z" />
+      </svg>
+    ),
+  },
+  {
+    id: "fuelings",
+    label: "Abastecimentos",
+    sublabel: "Registros de combustível",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M6.75 2.25A2.25 2.25 0 004.5 4.5v16.125c0 .621.504 1.125 1.125 1.125h7.5c.621 0 1.125-.504 1.125-1.125V4.5A2.25 2.25 0 0012 2.25H6.75zm.75 3a.75.75 0 01.75-.75h2.25a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-4.5z" />
+        <path d="M15.75 7.5a.75.75 0 011.28-.53l2.25 2.25a.75.75 0 01.22.53v7.875a1.125 1.125 0 102.25 0V12a2.25 2.25 0 00-.66-1.59l-2.03-2.03a2.25 2.25 0 01-.66-1.59V6a.75.75 0 00-1.5 0v.79c0 1 .397 1.961 1.105 2.669l1.995 1.995v6.171a2.625 2.625 0 11-5.25 0V7.5z" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -147,6 +175,8 @@ const SECTION_ROUTES = [
   { id: "manobras", path: "/aluno/manobras" },
   { id: "perfil", path: "/aluno/perfil" },
   { id: "ajuda", path: "/aluno/ajuda" },
+  { id: "dre", path: "/aluno/edb" },
+  { id: "fuelings", path: "/aluno/abastecimentos" },
 ] satisfies readonly TabRoute<Section>[];
 
 function TabLoading() {
@@ -164,11 +194,16 @@ function LazyTab({ children }: { children: ReactNode }) {
 
 export function MainLayout() {
   const { user, signOut } = useAuth();
+  const { canTab } = usePermissions();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
 
-  const visibleNavItems = NAV_ITEMS.filter((item) => rules.studentTabs[item.id]);
+  // Interseção: SchoolRules (escola) E permissão de role (usuário)
+  const visibleNavItems = useMemo(
+    () => NAV_ITEMS.filter((item) => rules.studentTabs[item.id as StudentPortalTab] && canTab(item.id as StudentTabKey)),
+    [rules.studentTabs, canTab],
+  );
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
 
@@ -256,6 +291,7 @@ export function MainLayout() {
               title={activeNav.label}
             />
             <div className="flex items-center gap-3">
+              <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
               <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
               <button
@@ -341,6 +377,20 @@ export function MainLayout() {
             <div hidden={section !== "ajuda"}>
               <LazyTab>
                 <HelpCenterTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("dre") && (
+            <div hidden={section !== "dre"}>
+              <LazyTab>
+                <StudentDreTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("fuelings") && (
+            <div hidden={section !== "fuelings"}>
+              <LazyTab>
+                <FuelingsTab />
               </LazyTab>
             </div>
           )}

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { InstallPwaButton } from "../InstallPwaButton";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import {
@@ -40,7 +41,9 @@ export function OfflineLogbookAdminPanel() {
   const [selectedIdent, setSelectedIdent] = useState("");
   const [packages, setPackages] = useState<OfflineAircraftLogbookPackage[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [autoSyncing, setAutoSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const autoSyncedOnceRef = useRef(false);
 
   const selectedPackage = useMemo(
     () => packages.find((pkg) => pkg.aircraft_ident === selectedIdent) ?? null,
@@ -48,10 +51,11 @@ export function OfflineLogbookAdminPanel() {
   );
   const selectedStatus = validateOfflinePackageCoverage(selectedPackage);
 
-  async function refreshLocalPackages() {
+  const refreshLocalPackages = useCallback(async () => {
     const localPackages = await listOfflineAircraftPackages();
     setPackages(localPackages);
-  }
+    return localPackages;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +77,37 @@ export function OfflineLogbookAdminPanel() {
       cancelled = true;
     };
   }, [showToast]);
+
+  const autoSyncStalePackages = useCallback(async () => {
+    if (autoSyncing || syncing || !navigator.onLine) return;
+    const stalePackages = packages.filter((pkg) => validateOfflinePackageCoverage(pkg).state !== "ok");
+    if (stalePackages.length === 0) return;
+    setAutoSyncing(true);
+    try {
+      for (const pkg of stalePackages) {
+        await syncOfflineAircraftLogbookPackage(pkg.aircraft_ident);
+      }
+      await warmOfflineViewerCache();
+      await refreshLocalPackages();
+      showToast({ variant: "success", message: "Pacotes offline vencidos foram atualizados automaticamente." });
+    } catch (err) {
+      showToast({ variant: "warning", message: err instanceof Error ? err.message : "Nao foi possivel atualizar o offline automaticamente." });
+    } finally {
+      setAutoSyncing(false);
+    }
+  }, [autoSyncing, packages, refreshLocalPackages, showToast, syncing]);
+
+  useEffect(() => {
+    if (loading || autoSyncedOnceRef.current || packages.length === 0) return;
+    autoSyncedOnceRef.current = true;
+    void autoSyncStalePackages();
+  }, [autoSyncStalePackages, loading, packages.length]);
+
+  useEffect(() => {
+    const onOnline = () => void autoSyncStalePackages();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [autoSyncStalePackages]);
 
   async function handleSync() {
     if (!selectedIdent) {
@@ -123,13 +158,22 @@ export function OfflineLogbookAdminPanel() {
             Sincroniza neste dispositivo os voos assinados pelo instrutor nos ultimos 30 dias da aeronave.
           </p>
         </div>
-        <a
-          href="/offline/diario-bordo"
-          className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
-        >
-          Abrir modo offline
-        </a>
+        <div className="flex flex-wrap items-start gap-2">
+          <InstallPwaButton />
+          <a
+            href="/offline/diario-bordo"
+            className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+          >
+            Abrir modo offline
+          </a>
+        </div>
       </div>
+
+      {autoSyncing ? (
+        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
+          Atualizando automaticamente pacotes offline vencidos neste dispositivo...
+        </div>
+      ) : null}
 
       <div className="grid gap-3 lg:grid-cols-[minmax(220px,0.7fr)_minmax(0,1fr)]">
         <label>

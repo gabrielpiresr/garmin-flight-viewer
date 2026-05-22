@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   createHelpArticle,
   createHelpSection,
@@ -87,6 +88,7 @@ function toNumber(value: string, fallback = 0): number {
 export function HelpCenterAdminTab() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { canAction } = usePermissions();
   const [catalog, setCatalog] = useState<HelpCatalog>({ sections: [], subsections: [], articles: [] });
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -323,6 +325,7 @@ export function HelpCenterAdminTab() {
             <h2 className="text-xl font-semibold text-slate-100">Artigos de suporte da plataforma</h2>
             <p className="mt-1 text-sm text-slate-500">Organize perguntas frequentes, guias e respostas por seção e subseção.</p>
           </div>
+          {canAction("content.edit") ? (
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={resetSectionForm} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
               Nova seção
@@ -331,6 +334,7 @@ export function HelpCenterAdminTab() {
               Novo artigo
             </button>
           </div>
+          ) : null}
         </div>
       </div>
 
@@ -371,7 +375,7 @@ export function HelpCenterAdminTab() {
                     </h3>
                     {selectedSection?.description ? <p className="mt-1 text-sm text-slate-500">{selectedSection.description}</p> : null}
                   </div>
-                  {selectedSection ? (
+                  {selectedSection && canAction("content.edit") ? (
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -547,10 +551,12 @@ export function HelpCenterAdminTab() {
                             <h4 className="break-words text-base font-semibold text-slate-100">{article.order}. {article.title}</h4>
                             <p className="text-xs text-slate-500">{article.isPublished ? "Publicado" : "Rascunho"}</p>
                           </div>
+                          {canAction("content.edit") ? (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => openArticleEdit(article)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Editar</button>
                             <button type="button" onClick={() => void handleDeleteArticle(article)} className="rounded-lg border border-red-700/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10">Apagar</button>
                           </div>
+                          ) : null}
                         </div>
                         {article.summary ? <p className="mt-2 text-sm text-slate-400">{article.summary}</p> : null}
                         <div className="mt-3 line-clamp-3 space-y-2 text-sm text-slate-300">{renderRichContent(article.contentJson)}</div>
