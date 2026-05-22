@@ -2,6 +2,8 @@ const { app, Tray, Menu, shell, nativeImage } = require("electron");
 const { fork } = require("child_process");
 const path = require("path");
 const http = require("http");
+const https = require("https");
+const fs = require("fs");
 
 const PORT = 7842;
 const RESOURCES = app.isPackaged
@@ -9,6 +11,7 @@ const RESOURCES = app.isPackaged
   : path.join(__dirname, "..", "video-helper");
 
 const HELPER_JS = path.join(RESOURCES, "helper.js");
+const HELPER_URL_REMOTE = "https://raw.githubusercontent.com/gabrielpiresr/garmin-flight-viewer/main/video-helper/helper.js";
 
 let tray = null;
 let helperProc = null;
@@ -24,8 +27,8 @@ app.setLoginItemSettings({ openAtLogin: true });
 app.dock?.hide();
 
 app.whenReady().then(() => {
-  startHelper();
   createTray();
+  updateHelperThenStart();
 });
 
 app.on("window-all-closed", (e) => e.preventDefault());
@@ -34,6 +37,36 @@ app.on("before-quit", () => {
   isQuitting = true;
   helperProc?.kill();
 });
+
+function fetchRemoteHelper() {
+  return new Promise((resolve, reject) => {
+    https.get(HELPER_URL_REMOTE, { timeout: 10000 }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    }).on("error", reject).on("timeout", () => reject(new Error("timeout")));
+  });
+}
+
+function updateHelperThenStart() {
+  fetchRemoteHelper()
+    .then((remote) => {
+      const local = fs.existsSync(HELPER_JS) ? fs.readFileSync(HELPER_JS, "utf8") : "";
+      if (remote !== local) {
+        fs.writeFileSync(HELPER_JS, remote, "utf8");
+      }
+    })
+    .catch(() => {
+      // sem internet ou GitHub fora — usa versão local sem problema
+    })
+    .finally(() => {
+      startHelper();
+    });
+}
 
 function startHelper() {
   if (isQuitting) return;
