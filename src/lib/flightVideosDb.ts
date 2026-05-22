@@ -1,5 +1,7 @@
 import { Query } from "appwrite";
+import { filterClientSidePermissions } from "./appwriteClientPermissions";
 import { databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+import type { UserRole } from "./rbac";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const VIDEOS_COL_ID = import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string;
@@ -22,10 +24,35 @@ export type FlightVideo = {
   created_at: string;
 };
 
+function buildFlightVideoDocumentPermissions(
+  uploadedBy: string,
+  actorUserId: string,
+  actorRole: UserRole,
+): string[] {
+  const permissions = [
+    Permission.read(Role.user(uploadedBy)),
+    Permission.read(Role.label("instrutor")),
+    Permission.update(Role.user(uploadedBy)),
+    Permission.delete(Role.user(uploadedBy)),
+  ];
+
+  if (actorRole === "admin") {
+    permissions.push(
+      Permission.read(Role.label("admin")),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
+    );
+  }
+
+  return filterClientSidePermissions(permissions, actorUserId, actorRole);
+}
+
 export async function createFlightVideoDoc(payload: {
   flightId: string;
   uploadedBy: string;
   originalFilesCount: number;
+  actorUserId: string;
+  actorRole: UserRole;
 }): Promise<{ id: string | null; error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { id: null, error: new Error("Appwrite não configurado") };
@@ -34,15 +61,11 @@ export async function createFlightVideoDoc(payload: {
     return { id: null, error: new Error("VITE_APPWRITE_VIDEOS_COLLECTION_ID não configurado") };
   }
   try {
-    const permissions = [
-      Permission.read(Role.user(payload.uploadedBy)),
-      Permission.read(Role.label("admin")),
-      Permission.read(Role.label("instrutor")),
-      Permission.update(Role.user(payload.uploadedBy)),
-      Permission.delete(Role.user(payload.uploadedBy)),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-    ];
+    const permissions = buildFlightVideoDocumentPermissions(
+      payload.uploadedBy,
+      payload.actorUserId,
+      payload.actorRole,
+    );
 
     const d = await databases.createDocument(DB_ID, VIDEOS_COL_ID, ID.unique(), {
       flight_id: payload.flightId,

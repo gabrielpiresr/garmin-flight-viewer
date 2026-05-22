@@ -311,6 +311,8 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
       flightId,
       uploadedBy: user.id,
       originalFilesCount: selectedFiles.filter((item) => isVideoUploadFile(item.name)).length,
+      actorUserId: user.id,
+      actorRole: user.role,
     });
     if (docError || !docId) {
       setProcessingError(docError?.message ?? "Erro ao criar registro do vídeo");
