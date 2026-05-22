@@ -23,6 +23,12 @@ import {
   hourSelectValue,
   parseHourSelectValue,
 } from "../../lib/scheduleTimeOptions";
+import {
+  calendarTopPx,
+  minutesToScheduleHHMM,
+  parseScheduleTimeToMinutes,
+  snapPointerToStartMinute,
+} from "../../lib/scheduleTimeGrid";
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
 import type {
@@ -81,6 +87,7 @@ type FlightFormDraft = {
   instructorAnac: string | null;
   aircraftRegistration: string;
   dayOfWeek: number;
+  startTime: string;
   startHour: number;
   durationHours: number;
   isNight?: boolean;
@@ -99,7 +106,12 @@ type CalendarFlightItem = {
   startTime: string;
   endTime: string;
   isNight?: boolean;
+  isOutsideGenerator?: boolean;
 };
+
+function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undefined): string {
+  return isOutsideGenerator ? `*${label}` : label;
+}
 
 function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
   const date = new Date(`${weekStart}T12:00:00`);
@@ -120,10 +132,6 @@ function hoursToHHMM(hours: number): string {
   const hh = Math.floor(hours);
   const mm = Math.round((hours - hh) * 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-}
-
-function scheduleSignature(date: string, startTime: string, durationHours: number): string {
-  return `${date}|${startTime}|${hoursToHHMM(parseStartHour(startTime) + durationHours)}`;
 }
 
 function parseStartHour(startTime: string): number {
@@ -147,7 +155,7 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
       instructorName: instructor?.label ?? draft.instructorLabel ?? "",
       instructorAnac: instructor?.anacCode ?? draft.instructorAnac ?? "",
       date: weekDate,
-      startTime: hoursToHHMM(draft.startHour),
+      startTime: draft.startTime,
       aircraft: draft.aircraftRegistration,
       isNight: draft.isNight ?? false,
     },
@@ -195,7 +203,7 @@ function resolveInstructorDraft(
   };
 }
 
-type CalendarDropTarget = { dayOfWeek: number; startHour: number; isNight: boolean };
+type CalendarDropTarget = { dayOfWeek: number; startHour: number; startTime: string; isNight: boolean };
 
 function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
   const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
@@ -223,11 +231,6 @@ function CalendarGrid({
 }) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
-  const hourIndexMap = useMemo(() => {
-    const map = new Map<number, number>();
-    SLOT_HOURS.forEach((hour, idx) => map.set(hour, idx));
-    return map;
-  }, []);
   const byDay = useMemo(() => {
     const map = new Map<number, CalendarFlightItem[]>();
     for (const day of DAY_ORDER) map.set(day, []);
@@ -239,7 +242,7 @@ function CalendarGrid({
     for (const day of DAY_ORDER) {
       map.set(
         day,
-        (map.get(day) ?? []).sort((a, b) => a.startHour - b.startHour),
+        (map.get(day) ?? []).sort((a, b) => parseScheduleTimeToMinutes(a.startTime) - parseScheduleTimeToMinutes(b.startTime)),
       );
     }
     return map;
@@ -257,7 +260,9 @@ function CalendarGrid({
 
     for (const day of DAY_ORDER) {
       const sorted = [...(byDay.get(day) ?? [])].sort((a, b) => {
-        if (a.startHour !== b.startHour) return a.startHour - b.startHour;
+        const aStart = parseScheduleTimeToMinutes(a.startTime);
+        const bStart = parseScheduleTimeToMinutes(b.startTime);
+        if (aStart !== bStart) return aStart - bStart;
         return a.durationHours - b.durationHours;
       });
       const groups: CalendarFlightItem[][] = [];
@@ -265,8 +270,8 @@ function CalendarGrid({
       let currentGroupEnd = -1;
 
       for (const item of sorted) {
-        const start = item.startHour * 60;
-        const end = start + item.durationHours * 60;
+        const start = parseScheduleTimeToMinutes(item.startTime);
+        const end = start + Math.round(item.durationHours * 60);
         if (currentGroup.length === 0 || start < currentGroupEnd) {
           currentGroup.push(item);
           currentGroupEnd = Math.max(currentGroupEnd, end);
@@ -284,8 +289,8 @@ function CalendarGrid({
         const assigned = new Map<string, number>();
         let maxColumn = 0;
         for (const item of group) {
-          const start = item.startHour * 60;
-          const end = start + item.durationHours * 60;
+          const start = parseScheduleTimeToMinutes(item.startTime);
+          const end = start + Math.round(item.durationHours * 60);
           for (let i = active.length - 1; i >= 0; i -= 1) {
             if (active[i]!.end <= start) active.splice(i, 1);
           }
@@ -343,7 +348,13 @@ function CalendarGrid({
         if (nightEl) {
           const r = nightEl.getBoundingClientRect();
           if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-            return { dayOfWeek: day, startHour: SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17, isNight: true };
+            const nightMinute = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) * 60;
+            return {
+              dayOfWeek: day,
+              startHour: nightMinute / 60,
+              startTime: minutesToScheduleHHMM(nightMinute),
+              isNight: true,
+            };
           }
         }
       }
@@ -352,8 +363,13 @@ function CalendarGrid({
         if (!board) continue;
         const r = board.getBoundingClientRect();
         if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
-        const idx = Math.max(0, Math.min(SLOT_HOURS.length - 1, Math.round((clientY - r.top) / rowHeight)));
-        return { dayOfWeek: day, startHour: SLOT_HOURS[idx] ?? 6, isNight: false };
+        const startMinute = snapPointerToStartMinute(clientY, r.top, rowHeight);
+        return {
+          dayOfWeek: day,
+          startHour: startMinute / 60,
+          startTime: minutesToScheduleHHMM(startMinute),
+          isNight: false,
+        };
       }
       return null;
     },
@@ -389,6 +405,9 @@ function CalendarGrid({
       {draggable ? (
         <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
       ) : null}
+      <p className="mb-2 text-[11px] text-slate-600">
+        <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
+      </p>
       <div className="w-full overflow-x-auto">
         <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
           <thead>
@@ -441,9 +460,8 @@ function CalendarGrid({
                     {(layoutByDay.get(day) ?? []).filter((e) => !e.item.isNight).map((entry) => {
                       const item = entry.item;
                       if (dragState?.item.id === item.id) return null;
-                      const hourIdx = hourIndexMap.get(item.startHour) ?? 0;
-                      const top = hourIdx * rowHeight;
-                      const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                      const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
+                      const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
                       const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
@@ -461,6 +479,7 @@ function CalendarGrid({
                             const target = resolveDropTarget(e.clientX, e.clientY) ?? {
                               dayOfWeek: item.dayOfWeek,
                               startHour: item.startHour,
+                              startTime: item.startTime,
                               isNight: false,
                             };
                             setDragState({ item, preview: target });
@@ -481,7 +500,9 @@ function CalendarGrid({
                             width: `calc(${widthPercent}% - 8px)`,
                           }}
                         >
-                          <p className="truncate font-semibold">{item.studentLabel}</p>
+                          <p className="truncate font-semibold text-white">
+                            {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                          </p>
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                           <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                           <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
@@ -495,9 +516,8 @@ function CalendarGrid({
                         columnIndex: 0,
                         columnCount: 1,
                       };
-                      const hourIdx = hourIndexMap.get(dragState.preview.startHour) ?? 0;
-                      const top = hourIdx * rowHeight;
-                      const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                      const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
+                      const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
                       const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
@@ -555,7 +575,12 @@ function CalendarGrid({
                                   dragEndedRef.current = false;
                                   setDragState({
                                     item,
-                                    preview: { dayOfWeek: day, startHour: item.startHour, isNight: true },
+                                    preview: {
+                                      dayOfWeek: day,
+                                      startHour: item.startHour,
+                                      startTime: item.startTime,
+                                      isNight: true,
+                                    },
                                   });
                                 }}
                                 onClick={(e) => {
@@ -568,7 +593,9 @@ function CalendarGrid({
                                 }}
                                 className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
                               >
-                                <p className="truncate font-semibold">{item.studentLabel}</p>
+                                <p className="truncate font-semibold text-white">
+                                  {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                                </p>
                                 <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                               </div>
                             );
@@ -616,7 +643,13 @@ function CalendarGrid({
   );
 }
 
-export function ScheduleFlightsTab() {
+type ScheduleFlightsTabProps = {
+  /** Semana a exibir após publicar escala no gerador. */
+  focusWeekStart?: string | null;
+  onFocusWeekConsumed?: () => void;
+};
+
+export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed }: ScheduleFlightsTabProps = {}) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [weekOptions, setWeekOptions] = useState<ScheduleWeekOption[]>([]);
@@ -745,6 +778,29 @@ export function ScheduleFlightsTab() {
     };
   }, [actorUserId]);
 
+  useEffect(() => {
+    if (!focusWeekStart || !actorUserId) return;
+
+    let cancelled = false;
+    void (async () => {
+      const weeks = await getScheduleWeekPickerOptions().catch(() => weekOptionsRef.current);
+      if (cancelled) return;
+
+      const mergedWeeks = weeks.length > 0 ? weeks : generateScheduleWeekPickerOptions();
+      setWeekOptions(mergedWeeks);
+
+      const weekOption = mergedWeeks.find((row) => row.weekStart === focusWeekStart);
+
+      setSelectedWeekStart(focusWeekStart);
+      await loadWeekRef.current(focusWeekStart, weekOption ?? undefined, { showSkeleton: true });
+      onFocusWeekConsumed?.();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actorUserId, focusWeekStart, onFocusWeekConsumed]);
+
   const studentLabelMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const student of weekData?.students ?? []) map.set(student.userId, student.label);
@@ -819,6 +875,7 @@ export function ScheduleFlightsTab() {
             startTime: row.startTime,
             endTime: hoursToHHMM(startHour + row.durationHours),
             isNight: row.isNight ?? false,
+            isOutsideGenerator: row.isOutsideGenerator ?? false,
           };
         }),
     [flights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors],
@@ -929,6 +986,7 @@ export function ScheduleFlightsTab() {
       ...resolveInstructorDraft(weekData.instructors, firstInstructor?.userId ?? null),
       aircraftRegistration: firstSupply.aircraftRegistration,
       dayOfWeek: 1,
+      startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
       isNight: false,
@@ -958,6 +1016,7 @@ export function ScheduleFlightsTab() {
         (row.instructorId ? instructorById.get(row.instructorId)?.anacCode ?? null : null),
       aircraftRegistration: row.aircraftRegistration ?? "",
       dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
+      startTime: row.startTime,
       startHour:
         (decoded?.header.isNight ?? row.isNight)
           ? scheduleRules.nightFlightStartHour
@@ -1006,13 +1065,8 @@ export function ScheduleFlightsTab() {
       } as const;
 
       if (formMode === "edit" && formDraft.id) {
-        const previous = flights.find((row) => row.id === formDraft.id);
-        const previousSignature = previous
-          ? scheduleSignature(previous.date, previous.startTime, previous.durationHours)
-          : null;
         const nextDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
-        const nextStartTime = hoursToHHMM(formDraft.startHour);
-        const nextSignature = scheduleSignature(nextDate, nextStartTime, formDraft.durationHours);
+        const nextStartTime = formDraft.startTime;
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
         void dispatchNotificationEvent({
@@ -1042,7 +1096,7 @@ export function ScheduleFlightsTab() {
             data: {
               aircraft: formDraft.aircraftRegistration,
               flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
-              startTime: hoursToHHMM(formDraft.startHour),
+              startTime: formDraft.startTime,
               studentUserId: formDraft.studentId,
             },
           });
@@ -1319,7 +1373,7 @@ export function ScheduleFlightsTab() {
                               </div>
                             </div>
                             <p className="mt-1 truncate text-xs text-slate-400">
-                              {item.studentLabel} · {item.instructorLabel ?? "Sem INVA"}
+                              {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)} · {item.instructorLabel ?? "Sem INVA"}
                             </p>
                           </button>
                         </li>
@@ -1356,7 +1410,8 @@ export function ScheduleFlightsTab() {
                       ? {
                           ...prev,
                           dayOfWeek: target.dayOfWeek,
-                          startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
+                          startHour: target.startHour,
+                          startTime: target.startTime,
                           isNight: target.isNight,
                         }
                       : prev,
@@ -1642,10 +1697,19 @@ export function ScheduleFlightsTab() {
               <label className="text-xs text-slate-400">
                 Hora
                 <select
-                  value={hourSelectValue(formDraft.isNight, formDraft.startHour)}
+                  value={hourSelectValue(formDraft.isNight, formDraft.startTime, formDraft.startHour)}
                   onChange={(e) => {
                     const parsed = parseHourSelectValue(e.target.value, scheduleRules);
-                    setFormDraft((prev) => (prev ? { ...prev, startHour: parsed.startHour, isNight: parsed.isNight } : prev));
+                    setFormDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            startHour: parsed.startHour,
+                            startTime: parsed.startTime,
+                            isNight: parsed.isNight,
+                          }
+                        : prev,
+                    );
                   }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 >

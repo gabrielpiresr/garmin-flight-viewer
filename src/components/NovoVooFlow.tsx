@@ -270,6 +270,11 @@ function emptyLeg(date = todayIso()): LegDraft {
   };
 }
 
+function sanitizeAerodromeCode(value: string | null | undefined): string {
+  const code = String(value ?? "").trim().toUpperCase();
+  return code === "---" ? "" : code;
+}
+
 function parseDurationToMinutes(value: string): number {
   const raw = value.trim();
   if (!raw) return 0;
@@ -300,10 +305,6 @@ function addMinutesToTime(startTime: string, minutes: number): string {
   if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
   const total = (h * 60 + m + Math.round(minutes)) % (24 * 60);
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
-}
-
-function scheduleSignature(date: string, startTime: string, durationMinutes: number): string {
-  return `${date}|${startTime}|${addMinutesToTime(startTime, durationMinutes)}`;
 }
 
 /** Horário do dia (partida/corte) — HH:MM local, 00:00–23:59. */
@@ -607,7 +608,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [saving, setSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [flightId, setFlightId] = useState<string | null>(null);
-  const [originalScheduleSignature, setOriginalScheduleSignature] = useState<string | null>(null);
   const [stepIdx, setStepIdx] = useState(() => {
     const initialIndex = STEPS.findIndex((step) => step.id === initialStepId);
     return initialIndex >= 0 ? initialIndex : 0;
@@ -807,7 +807,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           setFlightDate(loadedDate);
           setFlightStatus(data.flight_status);
           setStartTime("");
-          setOriginalScheduleSignature(scheduleSignature(loadedDate, "", data.duration_sec ? Math.round(data.duration_sec / 60) : 0));
           setAircraft(data.aircraft_ident ?? "");
           setTrainingTrackId(data.training_track_id ?? "");
           setTrainingMissionIds(
@@ -843,7 +842,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
               ? addMinutesToTime(loadedStartTime, loadedDurationMinutes + 30)
               : ""),
         );
-        setOriginalScheduleSignature(scheduleSignature(loadedDate, loadedStartTime, loadedDurationMinutes));
         setAircraft(meta.header.aircraft ?? data.aircraft_ident ?? "");
         setTrainingTrackId(meta.training?.trackId ?? data.training_track_id ?? "");
         setTrainingMissionIds(
@@ -867,8 +865,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 role: legacyRole,
                 studentRole: leg.studentRole || "Piloto em Instrução",
                 instructorRole: leg.instructorRole || legacyRole,
-                dep: (leg.dep || "").toUpperCase(),
-                arr: (leg.arr || "").toUpperCase(),
+                dep: sanitizeAerodromeCode(leg.dep),
+                arr: sanitizeAerodromeCode(leg.arr),
                 landings: Number.isFinite(leg.landings) ? leg.landings : 0,
                 flightTime: leg.flightTime || "",
                 navTime: leg.navTime || "",
@@ -1141,8 +1139,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       role: leg.instructorRole || leg.role,
       studentRole: leg.studentRole,
       instructorRole: leg.instructorRole || leg.role,
-      dep: leg.dep.trim().toUpperCase(),
-      arr: leg.arr.trim().toUpperCase(),
+      dep: sanitizeAerodromeCode(leg.dep),
+      arr: sanitizeAerodromeCode(leg.arr),
       landings: Math.max(0, Math.round(leg.landings || 0)),
       flightTime: leg.flightTime.trim(),
       navTime: leg.navTime.trim(),
@@ -1332,8 +1330,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       telemetryAlertParsed: parsedTelemetry,
       flightStatus: normalizeFlightStatus(flightStatus),
     };
-    const nextScheduleSignature = scheduleSignature(flightDate, startTime, totals.flightMin);
-
     if (flightId) {
       const { error: updateErr } = await updateFlight(flightId, payload);
       setSaving(false);
@@ -1355,7 +1351,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           studentUserId: studentId,
         },
       });
-      setOriginalScheduleSignature(nextScheduleSignature);
       onPublished?.(flightId);
       setSavedMessage("Alterações salvas.");
       return true;
@@ -1383,7 +1378,6 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       },
     });
     onPublished?.(id);
-    setOriginalScheduleSignature(nextScheduleSignature);
     setSavedMessage("Voo salvo.");
     return true;
   };
@@ -2317,7 +2311,7 @@ function AerodromeCombobox({
   loading: boolean;
   onChange: (icao: string) => void;
 }) {
-  const normalizedValue = value.trim().toUpperCase();
+  const normalizedValue = value.trim().toUpperCase() === "---" ? "" : value.trim().toUpperCase();
   const selectedOption = useMemo(
     () => options.find((option) => option.icao === normalizedValue) ?? null,
     [normalizedValue, options],

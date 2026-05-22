@@ -21,6 +21,27 @@ type AdminUsersResponse = {
   limit?: number;
   offset?: number;
   message?: string;
+  auditEvent?: { id: string };
+  auditEvents?: AdminAuditEvent[];
+};
+
+export type AdminAuditEvent = {
+  id: string;
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  actorUserId: string;
+  actorRole: string | null;
+  schoolId: string | null;
+  occurredAt: string;
+  ip: string | null;
+  userAgent: string | null;
+  reason: string | null;
+  beforeSnapshotJson: string | null;
+  afterSnapshotJson: string | null;
+  beforeHash: string | null;
+  afterHash: string | null;
+  eventHash: string | null;
 };
 
 function parseResponse(body: string | undefined): AdminUsersResponse {
@@ -156,4 +177,42 @@ export async function deleteAdminUserCredit(creditId: string, userId: string): P
 export async function listAdminUsers(search: string): Promise<AdminUserSummary[]> {
   const page = await listAdminUserSummaries({ search, limit: 25, offset: 0 });
   return page.users;
+}
+
+export async function reopenAdminFlightForEdit(input: {
+  flightId: string;
+  reason: string;
+}): Promise<void> {
+  await executeAdminUsers({
+    action: "reopenFlightForEdit",
+    flightId: input.flightId,
+    reason: input.reason,
+  });
+}
+
+export async function createAdminAuditEvent(input: {
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  reason?: string | null;
+  beforeSnapshot?: unknown;
+  afterSnapshot?: unknown;
+}): Promise<void> {
+  await executeAdminUsers({
+    action: "createAuditEvent",
+    eventType: input.eventType,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    reason: input.reason ?? null,
+    beforeSnapshot: input.beforeSnapshot ?? null,
+    afterSnapshot: input.afterSnapshot ?? null,
+  });
+}
+
+export async function listFlightAuditEvents(flightId: string): Promise<AdminAuditEvent[]> {
+  const response = await executeAdminUsers({
+    action: "listFlightAuditEvents",
+    flightId,
+  });
+  return response.auditEvents ?? [];
 }

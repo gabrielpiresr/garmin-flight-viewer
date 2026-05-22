@@ -279,6 +279,11 @@ function savedFlightToScheduledFlight(row: SavedFlightListItem): ExistingSchedul
   const durationHours =
     typeof row.duration_sec === "number" && row.duration_sec > 0 ? row.duration_sec / 3600 : 1;
 
+  const sourceFilename = row.source_filename ?? "";
+  const isOutsideGenerator =
+    !sourceFilename.startsWith(`${AUTO_SOURCE_PREFIX}`) &&
+    !sourceFilename.startsWith(`${MANUAL_SOURCE_PREFIX}`);
+
   return {
     id: row.id,
     demandId: resolveScheduleDemandId(row),
@@ -291,7 +296,8 @@ function savedFlightToScheduledFlight(row: SavedFlightListItem): ExistingSchedul
     startTime: row.start_time?.trim() || "06:00",
     durationHours,
     isNight: row.is_night ?? false,
-    sourceFilename: row.source_filename,
+    sourceFilename,
+    isOutsideGenerator,
   };
 }
 

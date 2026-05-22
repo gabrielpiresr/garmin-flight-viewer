@@ -1,6 +1,13 @@
 import { SLOT_HOURS } from "../types/admin";
 import type { FlightScheduleRules } from "../types/schoolRules";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES } from "../types/schoolRules";
+import {
+  SCHEDULE_DAY_END_MINUTE,
+  SCHEDULE_GRID_ORIGIN_MINUTE,
+  SCHEDULE_SLOT_STEP_MINUTES,
+  minutesToScheduleHHMM,
+  parseScheduleTimeToMinutes,
+} from "./scheduleTimeGrid";
 
 export const NIGHT_SLOT_VALUE = "__night__";
 
@@ -9,39 +16,66 @@ export type ScheduleHourOption = {
   label: string;
   isNight: boolean;
   startHour: number;
+  startMinute: number;
 };
 
 export function buildScheduleHourOptions(
   rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
 ): ScheduleHourOption[] {
-  const options: ScheduleHourOption[] = SLOT_HOURS.map((hour) => ({
-    value: String(hour),
-    label: `${hour}h`,
-    isNight: false,
-    startHour: hour,
-  }));
+  const options: ScheduleHourOption[] = [];
+  const lastStart = SCHEDULE_DAY_END_MINUTE - SCHEDULE_SLOT_STEP_MINUTES;
+
+  for (let minute = SCHEDULE_GRID_ORIGIN_MINUTE; minute <= lastStart; minute += SCHEDULE_SLOT_STEP_MINUTES) {
+    const hour = Math.floor(minute / 60);
+    if (!(SLOT_HOURS as readonly number[]).includes(hour)) continue;
+    options.push({
+      value: minutesToScheduleHHMM(minute),
+      label: minutesToScheduleHHMM(minute),
+      isNight: false,
+      startHour: minute / 60,
+      startMinute: minute,
+    });
+  }
+
   if (rules.allowNightFlights) {
     const nightHour = rules.nightFlightStartHour;
+    const nightMinute = nightHour * 60;
     options.push({
       value: NIGHT_SLOT_VALUE,
-      label: `Noturna (${String(nightHour).padStart(2, "0")}:00)`,
+      label: `Noturna (${minutesToScheduleHHMM(nightMinute)})`,
       isNight: true,
       startHour: nightHour,
+      startMinute: nightMinute,
     });
   }
   return options;
 }
 
-export function hourSelectValue(isNight: boolean | undefined, startHour: number): string {
-  return isNight ? NIGHT_SLOT_VALUE : String(startHour);
+export function hourSelectValue(isNight: boolean | undefined, startTime: string, startHour?: number): string {
+  if (isNight) return NIGHT_SLOT_VALUE;
+  if (startTime.includes(":")) return startTime;
+  const minute = Math.round((startHour ?? 6) * 60);
+  return minutesToScheduleHHMM(minute);
 }
 
 export function parseHourSelectValue(
   value: string,
   rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
-): { startHour: number; isNight: boolean } {
+): { startHour: number; startMinute: number; startTime: string; isNight: boolean } {
   if (value === NIGHT_SLOT_VALUE) {
-    return { startHour: rules.nightFlightStartHour, isNight: true };
+    const startMinute = rules.nightFlightStartHour * 60;
+    return {
+      startHour: rules.nightFlightStartHour,
+      startMinute,
+      startTime: minutesToScheduleHHMM(startMinute),
+      isNight: true,
+    };
   }
-  return { startHour: Number(value), isNight: false };
+  const startMinute = parseScheduleTimeToMinutes(value);
+  return {
+    startHour: startMinute / 60,
+    startMinute,
+    startTime: minutesToScheduleHHMM(startMinute),
+    isNight: false,
+  };
 }

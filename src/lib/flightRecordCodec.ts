@@ -29,7 +29,7 @@ export type FlightRecordMeta = {
     landingTimeUtc?: string;
     aircraft: string;
     isNight?: boolean;
-    flightSeqNumber?: number;
+    flightSeqNumber?: number | string;
     flightNature?: string;
     cargo?: string;
   };

@@ -1,12 +1,17 @@
 import { Query } from "appwrite";
 import {
   databases,
+  functions,
   ID,
   isAppwriteConfigured,
   DEFAULT_SCHOOL_ID,
+  ADMIN_USERS_FUNCTION_ID,
+  Permission,
+  Role,
   STUDENT_TRACKS_COL_ID,
   TRAINING_TRACKS_COL_ID,
 } from "./appwrite";
+import { filterClientSidePermissions } from "./appwriteClientPermissions";
 import type {
   StudentTrainingTrack,
   StudentTrainingTrackStatus,
@@ -264,6 +269,159 @@ function validateStatusTransition(from: StudentTrainingTrackStatus, to: StudentT
   }
 }
 
+const DEFAULT_TRACK_NAME = "Programa PP - Cronograma PDF";
+
+export async function getDefaultTrainingTrackId(schoolId = DEFAULT_SCHOOL_ID): Promise<string | null> {
+  if (!configured() || !databases || !DB_ID || !TRAINING_TRACKS_COL_ID) return null;
+
+  const querySets = [
+    [Query.equal("school_id", [schoolId]), Query.equal("is_default", [true]), Query.equal("is_active", [true])],
+    [Query.equal("is_default", [true]), Query.equal("is_active", [true])],
+    [Query.equal("school_id", [schoolId]), Query.equal("name", [DEFAULT_TRACK_NAME])],
+    [Query.equal("name", [DEFAULT_TRACK_NAME])],
+    [Query.equal("school_id", [schoolId]), Query.equal("is_active", [true]), Query.orderAsc("name")],
+    [Query.equal("is_active", [true]), Query.orderAsc("name")],
+  ];
+
+  for (const queries of querySets) {
+    try {
+      const res = await databases.listDocuments(DB_ID, TRAINING_TRACKS_COL_ID, [...queries, Query.limit(1)]);
+      if (res.documents[0]) return res.documents[0].$id as string;
+    } catch {
+      // tenta próxima combinação
+    }
+  }
+
+  return null;
+}
+
+function studentTrackDocumentPermissions(studentUserId: string): string[] {
+  return filterClientSidePermissions(
+    [Permission.read(Role.user(studentUserId)), Permission.read(Role.users())],
+    studentUserId,
+    "aluno",
+  );
+}
+
+type EnsureDefaultTrackResult = {
+  error: Error | null;
+  assigned: boolean;
+  trackId: string | null;
+};
+
+function parseFunctionTrackBody(responseBody: string | undefined): {
+  assigned?: boolean;
+  alreadyAssigned?: boolean;
+  trackId?: string | null;
+  message?: string;
+} {
+  if (!responseBody) return {};
+  try {
+    return JSON.parse(responseBody) as ReturnType<typeof parseFunctionTrackBody>;
+  } catch {
+    return {};
+  }
+}
+
+async function assignDefaultTrackViaFunction(studentUserId: string): Promise<EnsureDefaultTrackResult> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    return {
+      error: new Error("Função admin-users não configurada (VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID)."),
+      assigned: false,
+      trackId: null,
+    };
+  }
+
+  const execution = await functions.createExecution(
+    ADMIN_USERS_FUNCTION_ID,
+    JSON.stringify({ action: "ensureDefaultStudentTrack", userId: studentUserId }),
+    false,
+  );
+  const body = parseFunctionTrackBody(execution.responseBody);
+  const message = body.message ?? "";
+
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    return {
+      error: new Error(message || "Falha ao atribuir trilha padrão via função."),
+      assigned: false,
+      trackId: null,
+    };
+  }
+
+  if (body.alreadyAssigned || body.assigned) {
+    return {
+      error: null,
+      assigned: Boolean(body.assigned),
+      trackId: body.trackId ?? null,
+    };
+  }
+
+  if (message) {
+    return { error: new Error(message), assigned: false, trackId: body.trackId ?? null };
+  }
+
+  return { error: null, assigned: false, trackId: null };
+}
+
+async function assignDefaultTrackViaClient(
+  studentUserId: string,
+  schoolId: string,
+): Promise<EnsureDefaultTrackResult> {
+  const trackId = await getDefaultTrainingTrackId(schoolId);
+  if (!trackId) {
+    return {
+      error: new Error("Nenhuma trilha padrão ativa encontrada na escola."),
+      assigned: false,
+      trackId: null,
+    };
+  }
+
+  const result = await assignStudentTrainingTrack({
+    studentUserId,
+    trackId,
+    isPrimary: true,
+    schoolId,
+  });
+  if (result.error) return { error: result.error, assigned: false, trackId: null };
+  return { error: null, assigned: true, trackId };
+}
+
+/**
+ * Atribui a trilha padrão ao aluno se ainda não tiver nenhuma.
+ * 1) Função admin-users (API key — não depende de leitura de training_tracks no browser).
+ * 2) Fallback: create direto em student_training_tracks (requer create para users na coleção).
+ */
+export async function ensureDefaultStudentTrainingTrack(
+  studentUserId: string,
+  schoolId = DEFAULT_SCHOOL_ID,
+): Promise<EnsureDefaultTrackResult> {
+  if (!studentUserId) return { error: null, assigned: false, trackId: null };
+  if (!assignmentsConfigured()) return { error: null, assigned: false, trackId: null };
+
+  const existing = await listStudentTrainingTracks(studentUserId, schoolId);
+  if (existing.error) return { error: existing.error, assigned: false, trackId: null };
+  if ((existing.data ?? []).length > 0) {
+    const primary = existing.data?.find((row) => row.isPrimary) ?? existing.data?.[0];
+    return { error: null, assigned: false, trackId: primary?.trackId ?? null };
+  }
+
+  const viaFunction = await assignDefaultTrackViaFunction(studentUserId);
+  if (!viaFunction.error && (viaFunction.assigned || viaFunction.trackId)) {
+    return viaFunction;
+  }
+
+  const viaClient = await assignDefaultTrackViaClient(studentUserId, schoolId);
+  if (!viaClient.error && viaClient.assigned) {
+    return viaClient;
+  }
+
+  return {
+    error: viaClient.error ?? viaFunction.error ?? new Error("Não foi possível atribuir a trilha padrão."),
+    assigned: false,
+    trackId: null,
+  };
+}
+
 export async function assignStudentTrainingTrack(input: {
   schoolId?: string;
   studentUserId: string;
@@ -300,15 +458,21 @@ export async function assignStudentTrainingTrack(input: {
         updated_at: now,
       });
     } else {
-      await databases.createDocument(DB_ID, STUDENT_TRACKS_COL_ID, ID.unique(), {
-        school_id: schoolId,
-        student_user_id: input.studentUserId,
-        track_id: input.trackId,
-        status: newStatus,
-        is_primary: Boolean(input.isPrimary),
-        assigned_at: now,
-        updated_at: now,
-      });
+      await databases.createDocument(
+        DB_ID,
+        STUDENT_TRACKS_COL_ID,
+        ID.unique(),
+        {
+          school_id: schoolId,
+          student_user_id: input.studentUserId,
+          track_id: input.trackId,
+          status: newStatus,
+          is_primary: Boolean(input.isPrimary),
+          assigned_at: now,
+          updated_at: now,
+        },
+        studentTrackDocumentPermissions(input.studentUserId),
+      );
     }
     return { error: null };
   } catch (error) {

@@ -1,4 +1,6 @@
-import { Permission, Query, Role } from "appwrite";
+import { Query } from "appwrite";
+import { resolveProfileDocumentPermissions } from "./appwriteClientPermissions";
+import { ensureDefaultStudentTrainingTrack } from "./trainingTracksDb";
 import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "./appwrite";
 
 
@@ -318,10 +320,12 @@ export async function ensureProfile(
   email: string,
   role: UserRole = "aluno",
   updates: EnsureProfileUpdates = {},
-): Promise<{ error: Error | null }> {
+): Promise<{ error: Error | null; trackError: Error | null }> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) {
-    return { error: null };
+    return { error: null, trackError: null };
   }
+
+  let trackError: Error | null = null;
 
   try {
     const existing = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
@@ -329,35 +333,42 @@ export async function ensureProfile(
       Query.limit(1),
     ]);
 
+    const effectiveRole = (() => {
+      if (existing.total > 0 && existing.documents[0]) {
+        return normalizeUserRole((existing.documents[0].role as string | undefined) ?? null) || role;
+      }
+      return role;
+    })();
+
     if (existing.total > 0 && existing.documents[0]) {
-      const currentRole = normalizeUserRole((existing.documents[0].role as string | undefined) ?? null);
       await databases.updateDocument(DB_ID, PROFILES_COL_ID, existing.documents[0].$id, {
         email,
-        role: currentRole || role,
+        role: effectiveRole,
         school_id: DEFAULT_SCHOOL_ID,
         ...updates,
       });
-      return { error: null };
+    } else {
+      await databases.createDocument(
+        DB_ID,
+        PROFILES_COL_ID,
+        ID.unique(),
+        { user_id: userId, email, role, school_id: DEFAULT_SCHOOL_ID, ...updates },
+        resolveProfileDocumentPermissions(userId, userId),
+      );
     }
 
-    await databases.createDocument(
-      DB_ID,
-      PROFILES_COL_ID,
-      ID.unique(),
-      { user_id: userId, email, role, school_id: DEFAULT_SCHOOL_ID, ...updates },
-      [
-        Permission.read(Role.user(userId)),
-        Permission.update(Role.user(userId)),
-        Permission.delete(Role.user(userId)),
-        Permission.read(Role.label("admin")),
-        Permission.update(Role.label("admin")),
-        Permission.delete(Role.label("admin")),
-        Permission.read(Role.label("instrutor")),
-      ],
-    );
-    return { error: null };
+    if (effectiveRole === "aluno") {
+      const trackResult = await ensureDefaultStudentTrainingTrack(userId);
+      if (trackResult.error) {
+        trackError = trackResult.error;
+      } else if (!trackResult.trackId && !trackResult.assigned) {
+        trackError = new Error("Nenhuma trilha padrão foi vinculada ao aluno.");
+      }
+    }
+
+    return { error: null, trackError };
   } catch (error) {
-    return { error: error as Error };
+    return { error: error as Error, trackError };
   }
 }
 

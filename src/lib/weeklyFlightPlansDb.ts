@@ -140,8 +140,8 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
     ) {
       throw new Error(`Duração inválida no voo ${index + 1}.`);
     }
-    if (!["low", "medium", "high"].includes(item.flexibilityLevel)) {
-      throw new Error(`Flexibilidade inválida no voo ${index + 1}.`);
+    if (!item.preferredAircraft) {
+      throw new Error(`Selecione o modelo de aeronave no voo ${index + 1}.`);
     }
     if (![1, 2, 3].includes(item.priorityLevel)) {
       throw new Error(`Prioridade inválida no voo ${index + 1}.`);
@@ -151,7 +151,7 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
       throw new Error(`Voos noturnos não estão habilitados pela escola (voo ${index + 1}).`);
     }
     const availability = item.availability.filter((entry) => {
-      if (![ 1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek)) return false;
+      if (![0, 1, 2, 3, 4, 5, 6].includes(entry.dayOfWeek)) return false;
       if (!(entry.availabilityType === "available" || entry.availabilityType === "preferred")) return false;
       if (isNight) return entry.period === "night";
       return entry.period === "morning" || entry.period === "afternoon";
@@ -160,7 +160,7 @@ function sanitizePlanItems(items: SavePlanPayload["items"], rules: SchoolRules):
     return {
       position: index,
       durationHours,
-      flexibilityLevel: item.flexibilityLevel,
+      flexibilityLevel: item.flexibilityLevel ?? "medium",
       preferredAircraft: item.preferredAircraft ? String(item.preferredAircraft).slice(0, 64) : null,
       priorityLevel: item.priorityLevel,
       notes: item.notes ? String(item.notes).slice(0, 512) : null,

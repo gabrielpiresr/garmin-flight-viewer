@@ -12,6 +12,15 @@ import {
   hourSelectValue,
   parseHourSelectValue,
 } from "../../lib/scheduleTimeOptions";
+import {
+  calendarTopPx,
+  hoursOverlappingInterval,
+  minutesToScheduleHHMM,
+  parseScheduleTimeToMinutes,
+  snapPointerToStartMinute,
+  suggestionEndMinute,
+  suggestionStartMinute,
+} from "../../lib/scheduleTimeGrid";
 import { SLOT_HOURS } from "../../types/admin";
 import type { SlotState } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES } from "../../types/schoolRules";
@@ -41,7 +50,7 @@ const DAY_LABEL: Record<number, string> = {
   5: "Sex",
   6: "Sáb",
 };
-const INSTRUCTOR_DAY_ORDER = [1, 2, 3, 4, 5, 6] as const;
+const INSTRUCTOR_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 
 const PERIOD_LABEL: Record<SchedulePeriod, string> = {
   morning: "Manhã",
@@ -103,17 +112,8 @@ function hoursToHHMM(hours: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-function composeEndTime(startHour: number, durationHours: number): string {
-  return hoursToHHMM(startHour + durationHours);
-}
-
-function parseStartHour(startTime: string): number {
-  const [hh, mm] = startTime.split(":").map(Number);
-  return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
-}
-
-function scheduleSignature(date: string, startTime: string, endTime: string): string {
-  return `${date}|${startTime}|${endTime}`;
+function composeEndTime(startTime: string, durationHours: number): string {
+  return minutesToScheduleHHMM(suggestionStartMinute({ startTime, startHour: 0 }) + Math.round(durationHours * 60));
 }
 
 function wait(ms: number): Promise<void> {
@@ -134,11 +134,74 @@ function flightDurationToHHMM(durationHours: number): string {
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
+type SchedulePublishedFlightSummary = {
+  date: string;
+  startTime: string;
+  durationHours: number;
+  aircraft: string;
+  instructorName?: string;
+  studentName?: string;
+};
+
+function sortPublishedFlightSummaries(items: SchedulePublishedFlightSummary[]): SchedulePublishedFlightSummary[] {
+  return [...items].sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    return a.startTime.localeCompare(b.startTime);
+  });
+}
+
+function buildSchedulePublishedNotificationMaps(
+  suggestions: ScheduledFlightSuggestion[],
+  weekStart: string,
+  students: ScheduleWeekData["students"],
+  instructorById: Map<string, InstructorIdentity>,
+): {
+  studentScheduleMap: Map<string, SchedulePublishedFlightSummary[]>;
+  instructorScheduleMap: Map<string, SchedulePublishedFlightSummary[]>;
+} {
+  const studentScheduleMap = new Map<string, SchedulePublishedFlightSummary[]>();
+  const instructorScheduleMap = new Map<string, SchedulePublishedFlightSummary[]>();
+
+  for (const suggestion of suggestions) {
+    const studentName = students.find((row) => row.userId === suggestion.studentId)?.label ?? suggestion.studentLabel;
+    const instructor = suggestion.instructorId ? instructorById.get(suggestion.instructorId) ?? null : null;
+    const instructorName = instructor?.label ?? suggestion.instructorLabel ?? "A definir";
+    const date = weekDateFromStart(weekStart, suggestion.dayOfWeek);
+    const baseItem: SchedulePublishedFlightSummary = {
+      date,
+      startTime: suggestion.startTime,
+      durationHours: suggestion.durationHours,
+      aircraft: suggestion.aircraftRegistration,
+    };
+
+    const studentFlights = studentScheduleMap.get(suggestion.studentId) ?? [];
+    studentFlights.push({ ...baseItem, instructorName });
+    studentScheduleMap.set(suggestion.studentId, studentFlights);
+
+    if (suggestion.instructorId) {
+      const instructorFlights = instructorScheduleMap.get(suggestion.instructorId) ?? [];
+      instructorFlights.push({ ...baseItem, studentName });
+      instructorScheduleMap.set(suggestion.instructorId, instructorFlights);
+    }
+  }
+
+  for (const [studentId, flights] of studentScheduleMap) {
+    studentScheduleMap.set(studentId, sortPublishedFlightSummaries(flights));
+  }
+  for (const [instructorId, flights] of instructorScheduleMap) {
+    instructorScheduleMap.set(instructorId, sortPublishedFlightSummaries(flights));
+  }
+
+  return { studentScheduleMap, instructorScheduleMap };
+}
+
 function compareByDayAndHour(a: ScheduledFlightSuggestion, b: ScheduledFlightSuggestion): number {
   const aDayRank = DAY_ORDER.indexOf(a.dayOfWeek as (typeof DAY_ORDER)[number]);
   const bDayRank = DAY_ORDER.indexOf(b.dayOfWeek as (typeof DAY_ORDER)[number]);
   if (aDayRank !== bDayRank) return aDayRank - bDayRank;
-  if (a.startHour !== b.startHour) return a.startHour - b.startHour;
+  const aStart = suggestionStartMinute(a);
+  const bStart = suggestionStartMinute(b);
+  if (aStart !== bStart) return aStart - bStart;
   return a.studentLabel.localeCompare(b.studentLabel, "pt-BR");
 }
 
@@ -269,6 +332,31 @@ function toGeneratedSuggestion(
   };
 }
 
+function toExternalCalendarSuggestion(
+  existing: ExistingScheduledFlight,
+  weekStart: string,
+  studentLabel: string,
+  instructors: InstructorIdentity[],
+): ScheduledFlightSuggestion {
+  const base = toGeneratedSuggestion(existing, weekStart, studentLabel);
+  const instructor = existing.instructorId
+    ? instructors.find((row) => row.userId === existing.instructorId)
+    : null;
+  return {
+    ...base,
+    source: "external",
+    isOutsideGenerator: existing.isOutsideGenerator ?? true,
+    instructorId: existing.instructorId,
+    instructorLabel: instructor?.label ?? existing.instructorLabel ?? null,
+    instructorAnac: instructor?.anacCode ?? existing.instructorAnac ?? null,
+    instructorAssignmentMode: existing.instructorId ? "manual" : "auto",
+  };
+}
+
+function normalizeAircraftIdent(value: string | null | undefined): string {
+  return (value ?? "").trim().toUpperCase();
+}
+
 function buildAutoMeta(
   suggestion: ScheduledFlightSuggestion,
   weekStart: string,
@@ -325,6 +413,35 @@ function buildAutoMeta(
   };
 }
 
+function suggestionStartEndMinutes(row: ScheduledFlightSuggestion): { startMinute: number; endMinute: number } {
+  const [hh, mm] = row.startTime.split(":").map(Number);
+  const startMinute = (Number.isFinite(hh) ? hh : row.startHour) * 60 + (Number.isFinite(mm) ? mm : 0);
+  return { startMinute, endMinute: startMinute + Math.round(row.durationHours * 60) };
+}
+
+function scheduleAircraftConflict(
+  a: { startMinute: number; endMinute: number },
+  b: { startMinute: number; endMinute: number },
+  minGapMinutes: number,
+): boolean {
+  const overlap = b.startMinute < a.endMinute && b.endMinute > a.startMinute;
+  if (overlap) return true;
+  const minGap = Math.max(0, minGapMinutes);
+  return b.startMinute < a.endMinute + minGap && a.startMinute < b.endMinute + minGap;
+}
+
+/** Instrutor pode ter dois voos no mesmo horário (aviões diferentes); só intervalo entre sequenciais. */
+function scheduleInstructorGapConflict(
+  a: { startMinute: number; endMinute: number },
+  b: { startMinute: number; endMinute: number },
+  minGapMinutes: number,
+): boolean {
+  const overlap = b.startMinute < a.endMinute && b.endMinute > a.startMinute;
+  if (overlap) return false;
+  const minGap = Math.max(0, minGapMinutes);
+  return b.startMinute < a.endMinute + minGap && a.startMinute < b.endMinute + minGap;
+}
+
 function validateSuggestions(
   suggestions: ScheduledFlightSuggestion[],
   weekData: ScheduleWeekData,
@@ -348,22 +465,30 @@ function validateSuggestions(
   for (const bucket of byAircraftDay.values()) {
     const supply = supplyByRegistration.get(bucket.registration);
     const day = bucket.day;
-    const sorted = [...bucket.rows].sort((a, b) => a.startHour - b.startHour);
+    const sorted = [...bucket.rows].sort(
+      (a, b) => suggestionStartMinute(a) - suggestionStartMinute(b),
+    );
     let used = 0;
 
     for (let i = 0; i < sorted.length; i += 1) {
       const row = sorted[i]!;
       used += row.durationHours;
-      const slotKey = `${day}-${row.startHour}`;
-      if (!supply || !supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked") {
+      const interval = suggestionStartEndMinutes(row);
+      const overlappingHours = hoursOverlappingInterval(interval.startMinute, interval.endMinute);
+      const blockedHour = overlappingHours.find((hour) => {
+        const slotKey = `${day}-${hour}`;
+        const state = supply?.slotStates[slotKey];
+        return !state || state === "blocked";
+      });
+      if (blockedHour !== undefined) {
         errorByDemand.set(row.demandId, "Slot indisponível na matriz operacional.");
       }
       if (i > 0) {
         const prev = sorted[i - 1]!;
-        const prevEnd = prev.startHour + prev.durationHours;
-        const gap = row.startHour * 60 - prevEnd * 60;
-        if (gap < minGapMinutes) {
-          errorByDemand.set(row.demandId, "Conflito com intervalo mínimo entre voos.");
+        const prevInterval = suggestionStartEndMinutes(prev);
+        const currInterval = suggestionStartEndMinutes(row);
+        if (scheduleAircraftConflict(prevInterval, currInterval, minGapMinutes)) {
+          errorByDemand.set(row.demandId, "Conflito com intervalo mínimo entre voos (mesma aeronave).");
         }
       }
     }
@@ -402,15 +527,17 @@ function validateSuggestions(
         errorByDemand.set(row.demandId, "Regra: máximo de 1 voo por aluno por dia.");
       }
     }
-    const sorted = [...list].sort((a, b) => a.startHour - b.startHour);
+    const sorted = [...list].sort(
+      (a, b) => suggestionStartMinute(a) - suggestionStartMinute(b),
+    );
     for (let i = 1; i < sorted.length; i += 1) {
       const prev = sorted[i - 1]!;
       const curr = sorted[i]!;
-      const prevStart = prev.startHour * 60;
-      const prevEnd = prevStart + prev.durationHours * 60;
-      const currStart = curr.startHour * 60;
-      const currEnd = currStart + curr.durationHours * 60;
-      const overlap = currStart < prevEnd && currEnd > prevStart;
+      const prevInterval = suggestionStartEndMinutes(prev);
+      const currInterval = suggestionStartEndMinutes(curr);
+      const overlap =
+        currInterval.startMinute < prevInterval.endMinute &&
+        currInterval.endMinute > prevInterval.startMinute;
       if (overlap) {
         errorByDemand.set(curr.demandId, "Aluno com sobreposição de horário no mesmo dia.");
       }
@@ -431,12 +558,10 @@ function validateSuggestions(
     for (let i = 1; i < sorted.length; i += 1) {
       const prev = sorted[i - 1]!;
       const curr = sorted[i]!;
-      const prevStart = prev.startHour * 60;
-      const prevEnd = prevStart + prev.durationHours * 60;
-      const currStart = curr.startHour * 60;
-      const currEnd = currStart + curr.durationHours * 60;
-      if (currStart < prevEnd && currEnd > prevStart) {
-        errorByDemand.set(curr.demandId, "Instrutor com sobreposição de horário.");
+      const prevInterval = suggestionStartEndMinutes(prev);
+      const currInterval = suggestionStartEndMinutes(curr);
+      if (scheduleInstructorGapConflict(prevInterval, currInterval, minGapMinutes)) {
+        errorByDemand.set(curr.demandId, "Conflito com intervalo mínimo entre voos (mesmo instrutor).");
       }
     }
   }
@@ -464,6 +589,7 @@ type FlightEditDraft = {
   instructorAnac: string | null;
   aircraftRegistration: string;
   dayOfWeek: number;
+  startTime: string;
   startHour: number;
   durationHours: number;
   isNight?: boolean;
@@ -489,7 +615,8 @@ function buildSuggestionFromDraft(
   rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
 ): ScheduledFlightSuggestion {
   const isNight = draft.isNight ?? false;
-  const startHour = isNight ? rules.nightFlightStartHour : draft.startHour;
+  const startMinute = isNight ? rules.nightFlightStartHour * 60 : parseScheduleTimeToMinutes(draft.startTime);
+  const startHour = startMinute / 60;
   return {
     demandId: draft.demandId,
     studentId: draft.studentId,
@@ -499,8 +626,8 @@ function buildSuggestionFromDraft(
     dayOfWeek: draft.dayOfWeek,
     weekDate: weekDateFromStart(weekStart, draft.dayOfWeek),
     startHour,
-    startTime: hoursToHHMM(startHour),
-    endTime: composeEndTime(startHour, draft.durationHours),
+    startTime: minutesToScheduleHHMM(startMinute),
+    endTime: composeEndTime(minutesToScheduleHHMM(startMinute), draft.durationHours),
     isNight,
     durationHours: draft.durationHours,
     priorityLevel: 2,
@@ -520,7 +647,9 @@ function buildSuggestionFromDraft(
 function summarizeStudents(
   demands: StudentRequestDemand[],
   suggestions: ScheduledFlightSuggestion[],
+  existingFlights: ExistingScheduledFlight[] = [],
 ): StudentPreviewSummary[] {
+  const previewDemandIds = new Set(suggestions.map((row) => row.demandId));
   const map = new Map<string, StudentPreviewSummary>();
   for (const demand of demands) {
     const current = map.get(demand.studentId) ?? {
@@ -554,6 +683,23 @@ function summarizeStudents(
     map.set(suggestion.studentId, current);
   }
 
+  for (const flight of existingFlights) {
+    if (previewDemandIds.has(flight.demandId)) continue;
+    const current = map.get(flight.studentId) ?? {
+      studentId: flight.studentId,
+      studentLabel: flight.studentId,
+      requestedFlights: 0,
+      allocatedFlights: 0,
+      requestedHours: 0,
+      allocatedHours: 0,
+      unmetReasons: [],
+      fullyServed: false,
+    };
+    current.allocatedFlights += 1;
+    current.allocatedHours += flight.durationHours;
+    map.set(flight.studentId, current);
+  }
+
   return [...map.values()]
     .map((row) => {
       const requestedHours = Number(row.requestedHours.toFixed(2));
@@ -564,13 +710,19 @@ function summarizeStudents(
     .sort((a, b) => a.studentLabel.localeCompare(b.studentLabel, "pt-BR"));
 }
 
-type CalendarDropTarget = { dayOfWeek: number; startHour: number; isNight: boolean };
+type CalendarDropTarget = { dayOfWeek: number; startHour: number; startTime: string; isNight: boolean };
 
 function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
   const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
   const strike = unassigned ? "line-through decoration-white/40 decoration-1 opacity-75" : "";
   const pointer = draggable ? "cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-white/60" : "hover:ring-1 hover:ring-white/60";
   return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
+}
+
+/** Título no calendário: *Aluno 01 para voos fora do gerador / overlay. */
+function calendarStudentTitle(item: ScheduledFlightSuggestion, isOverlay: boolean): string {
+  const markOutside = isOverlay || item.isOutsideGenerator === true || item.source === "external";
+  return markOutside ? `*${item.studentLabel}` : item.studentLabel;
 }
 
 type CalendarProps = {
@@ -580,6 +732,7 @@ type CalendarProps = {
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   totalWeightByDemand: Map<string, string>;
+  editableDemandIds: Set<string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   onSuggestionClick?: (suggestion: ScheduledFlightSuggestion) => void;
   onItemDrop?: (suggestion: ScheduledFlightSuggestion, target: CalendarDropTarget) => void;
@@ -592,17 +745,13 @@ function CalendarGrid({
   colorByAircraft,
   borderByInstructor,
   totalWeightByDemand,
+  editableDemandIds,
   backgroundSupply,
   onSuggestionClick,
   onItemDrop,
 }: CalendarProps) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
-  const hourIndexMap = useMemo(() => {
-    const map = new Map<number, number>();
-    SLOT_HOURS.forEach((hour, idx) => map.set(hour, idx));
-    return map;
-  }, []);
 
   const byDay = useMemo(() => {
     const map = new Map<number, ScheduledFlightSuggestion[]>();
@@ -633,7 +782,9 @@ function CalendarGrid({
     for (const day of DAY_ORDER) {
       const items = byDay.get(day) ?? [];
       const sorted = [...items].sort((a, b) => {
-        if (a.startHour !== b.startHour) return a.startHour - b.startHour;
+        const aStart = suggestionStartMinute(a);
+        const bStart = suggestionStartMinute(b);
+        if (aStart !== bStart) return aStart - bStart;
         return a.durationHours - b.durationHours;
       });
       const groups: ScheduledFlightSuggestion[][] = [];
@@ -641,8 +792,8 @@ function CalendarGrid({
       let currentGroupEnd = -1;
 
       for (const item of sorted) {
-        const start = item.startHour * 60;
-        const end = start + item.durationHours * 60;
+        const start = suggestionStartMinute(item);
+        const end = suggestionEndMinute(item);
         if (currentGroup.length === 0 || start < currentGroupEnd) {
           currentGroup.push(item);
           currentGroupEnd = Math.max(currentGroupEnd, end);
@@ -660,8 +811,8 @@ function CalendarGrid({
         const assigned = new Map<string, number>();
         let maxColumn = 0;
         for (const item of group) {
-          const start = item.startHour * 60;
-          const end = start + item.durationHours * 60;
+          const start = suggestionStartMinute(item);
+          const end = suggestionEndMinute(item);
           for (let i = active.length - 1; i >= 0; i -= 1) {
             if (active[i]!.end <= start) active.splice(i, 1);
           }
@@ -709,7 +860,7 @@ function CalendarGrid({
   const nightRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [dragState, setDragState] = useState<{ item: ScheduledFlightSuggestion; preview: CalendarDropTarget } | null>(null);
   const dragEndedRef = useRef(false);
-  const draggable = Boolean(onItemDrop);
+  const isOverlayItem = (item: ScheduledFlightSuggestion) => !editableDemandIds.has(item.demandId);
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -718,7 +869,13 @@ function CalendarGrid({
         if (nightEl) {
           const r = nightEl.getBoundingClientRect();
           if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-            return { dayOfWeek: day, startHour: SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17, isNight: true };
+            const nightMinute = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) * 60;
+            return {
+              dayOfWeek: day,
+              startHour: nightMinute / 60,
+              startTime: minutesToScheduleHHMM(nightMinute),
+              isNight: true,
+            };
           }
         }
       }
@@ -727,8 +884,13 @@ function CalendarGrid({
         if (!board) continue;
         const r = board.getBoundingClientRect();
         if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
-        const idx = Math.max(0, Math.min(SLOT_HOURS.length - 1, Math.round((clientY - r.top) / rowHeight)));
-        return { dayOfWeek: day, startHour: SLOT_HOURS[idx] ?? 6, isNight: false };
+        const startMinute = snapPointerToStartMinute(clientY, r.top, rowHeight);
+        return {
+          dayOfWeek: day,
+          startHour: startMinute / 60,
+          startTime: minutesToScheduleHHMM(startMinute),
+          isNight: false,
+        };
       }
       return null;
     },
@@ -761,9 +923,12 @@ function CalendarGrid({
   return (
     <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
       <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
-      {draggable ? (
+      {onItemDrop ? (
         <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
       ) : null}
+      <p className="mb-2 text-[11px] text-slate-600">
+        <span className="text-amber-200">*</span> Voo agendado fora do gerador (somente leitura no calendário).
+      </p>
       <div className="w-full overflow-x-auto">
         <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
           <thead>
@@ -823,11 +988,13 @@ function CalendarGrid({
                       ))}
                       {(layoutByDay.get(day) ?? []).filter((e) => !e.item.isNight).map((entry) => {
                         const item = entry.item;
-                        const hourIdx = hourIndexMap.get(item.startHour) ?? 0;
-                        const top = hourIdx * rowHeight;
-                        const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                        const startMinute = suggestionStartMinute(item);
+                        const top = calendarTopPx(startMinute, rowHeight);
+                        const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                         const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
                         const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                        const overlay = isOverlayItem(item);
+                        const draggable = Boolean(onItemDrop) && !overlay;
                         if (dragState?.item.demandId === item.demandId) return null;
                         const widthPercent = 100 / Math.max(1, entry.columnCount);
                         const leftPercent = entry.columnIndex * widthPercent;
@@ -844,11 +1011,13 @@ function CalendarGrid({
                               const target = resolveDropTarget(e.clientX, e.clientY) ?? {
                                 dayOfWeek: item.dayOfWeek,
                                 startHour: item.startHour,
+                                startTime: item.startTime,
                                 isNight: false,
                               };
                               setDragState({ item, preview: target });
                             }}
                             onClick={(e) => {
+                              if (overlay) return;
                               if (dragEndedRef.current) {
                                 dragEndedRef.current = false;
                                 e.preventDefault();
@@ -856,7 +1025,7 @@ function CalendarGrid({
                               }
                               onSuggestionClick?.(item);
                             }}
-                            className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
+                            className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)} ${overlay ? "opacity-90 ring-1 ring-dashed ring-white/30" : ""}`}
                             style={{
                               top: `${top}px`,
                               height: `${height - 4}px`,
@@ -864,7 +1033,9 @@ function CalendarGrid({
                               width: `calc(${widthPercent}% - 8px)`,
                             }}
                           >
-                            <p className="truncate font-semibold">{item.studentLabel}</p>
+                            <p className="truncate font-semibold text-white" title={overlay ? "Voo agendado fora do gerador" : undefined}>
+                              {calendarStudentTitle(item, overlay)}
+                            </p>
                             <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                             <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                             <p className="truncate opacity-80">Peso: {totalWeightByDemand.get(item.demandId) ?? "—"}</p>
@@ -878,9 +1049,9 @@ function CalendarGrid({
                           columnIndex: 0,
                           columnCount: 1,
                         };
-                        const hourIdx = hourIndexMap.get(dragState.preview.startHour) ?? 0;
-                        const top = hourIdx * rowHeight;
-                        const height = Math.max(rowHeight, item.durationHours * rowHeight);
+                        const previewStart = parseScheduleTimeToMinutes(dragState.preview.startTime);
+                        const top = calendarTopPx(previewStart, rowHeight);
+                        const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                         const widthPercent = 100 / Math.max(1, entry.columnCount);
                         const leftPercent = entry.columnIndex * widthPercent;
                         const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
@@ -925,6 +1096,8 @@ function CalendarGrid({
                           {nightItems.map(({ item }) => {
                             const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
                             const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                            const overlay = isOverlayItem(item);
+                            const itemDraggable = Boolean(onItemDrop) && !overlay;
                             if (dragState?.item.demandId === item.demandId) return null;
                             return (
                               <div
@@ -932,16 +1105,22 @@ function CalendarGrid({
                                 role="button"
                                 tabIndex={0}
                                 onPointerDown={(e) => {
-                                  if (!draggable) return;
+                                  if (!itemDraggable) return;
                                   e.preventDefault();
                                   e.stopPropagation();
                                   dragEndedRef.current = false;
                                   setDragState({
                                     item,
-                                    preview: { dayOfWeek: day, startHour: item.startHour, isNight: true },
+                                    preview: {
+                                      dayOfWeek: day,
+                                      startHour: item.startHour,
+                                      startTime: item.startTime,
+                                      isNight: true,
+                                    },
                                   });
                                 }}
                                 onClick={(e) => {
+                                  if (overlay) return;
                                   if (dragEndedRef.current) {
                                     dragEndedRef.current = false;
                                     e.preventDefault();
@@ -949,9 +1128,11 @@ function CalendarGrid({
                                   }
                                   onSuggestionClick?.(item);
                                 }}
-                                className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
+                                className={`${eventStyleClasses(color, instructorBorder, !item.instructorId, itemDraggable)} ${overlay ? "opacity-90 ring-1 ring-dashed ring-white/30" : ""}`}
                               >
-                                <p className="truncate font-semibold">{item.studentLabel}</p>
+                                <p className="truncate font-semibold text-white" title={overlay ? "Voo agendado fora do gerador" : undefined}>
+                                  {calendarStudentTitle(item, overlay)}
+                                </p>
                                 <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
                               </div>
                             );
@@ -999,7 +1180,12 @@ function CalendarGrid({
   );
 }
 
-export function ScheduleGenerationTab() {
+type ScheduleGenerationTabProps = {
+  /** Após gerar escala final, abre a aba Escala na semana publicada. */
+  onScalePublished?: (weekStart: string) => void;
+};
+
+export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTabProps = {}) {
   const { user } = useAuth();
   const { showToast } = useToast();
 
@@ -1108,8 +1294,15 @@ export function ScheduleGenerationTab() {
         setEditableSuggestions([]);
         setSavedPreviewAt(null);
       }
-      setVisibleAircraft(data.supplies.map((s) => s.aircraftRegistration));
-      setVisibleInstructors(["__none__", ...data.instructors.map((s) => s.userId)]);
+      const supplyRegs = data.supplies.map((s) => s.aircraftRegistration);
+      const overlayRegs = data.existingGeneratedFlights
+        .map((f) => f.aircraftRegistration)
+        .filter((reg): reg is string => Boolean(reg?.trim()));
+      setVisibleAircraft([...new Set([...supplyRegs, ...overlayRegs])]);
+      const overlayInstructorIds = data.existingGeneratedFlights
+        .map((f) => f.instructorId)
+        .filter((id): id is string => Boolean(id));
+      setVisibleInstructors(["__none__", ...new Set([...data.instructors.map((s) => s.userId), ...overlayInstructorIds])]);
       setPersistedCount(0);
       setHasUnsavedPreviewChanges(false);
     } catch (e) {
@@ -1209,7 +1402,10 @@ export function ScheduleGenerationTab() {
   }, [weekData]);
 
   const dynamicStudentSummary = useMemo(
-    () => (weekData ? summarizeStudents(weekData.demands, editableSuggestions) : []),
+    () =>
+      weekData
+        ? summarizeStudents(weekData.demands, editableSuggestions, weekData.existingGeneratedFlights)
+        : [],
     [editableSuggestions, weekData],
   );
 
@@ -1238,6 +1434,7 @@ export function ScheduleGenerationTab() {
       instructors: weekData.instructors,
       instructorConfigs: configs,
       existingFlights: weekData.existingGeneratedFlights,
+      minGapMinutes,
     });
   }
 
@@ -1344,20 +1541,11 @@ export function ScheduleGenerationTab() {
 
     setPersisting(true);
     setError(null);
+    const publishedWeekStart = weekData.week.weekStart;
+    const publishedWeekLabel = weekData.week.label;
     try {
-      type FlightSummaryItem = {
-        date: string;
-        startTime: string;
-        durationHours: number;
-        aircraft: string;
-        instructorName?: string;
-        studentName?: string;
-      };
-
       const byDemand = new Map(weekData.existingGeneratedFlights.map((row) => [row.demandId, row]));
       let successCount = 0;
-      const changedStudentIds = new Set<string>();
-      const changedInstructorIds = new Set<string>();
 
       for (const suggestion of editableSuggestions) {
         const student = weekData.students.find((row) => row.userId === suggestion.studentId);
@@ -1377,71 +1565,37 @@ export function ScheduleGenerationTab() {
 
         const existing = byDemand.get(suggestion.demandId);
         if (existing) {
-          const flightDate = weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek);
-          const startTime = hoursToHHMM(suggestion.startHour);
-          const previousSignature = scheduleSignature(
-            existing.date,
-            existing.startTime,
-            composeEndTime(parseStartHour(existing.startTime), existing.durationHours),
-          );
-          const nextSignature = scheduleSignature(flightDate, startTime, composeEndTime(suggestion.startHour, suggestion.durationHours));
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
-          if (previousSignature !== nextSignature) {
-            changedStudentIds.add(suggestion.studentId);
-            if (suggestion.instructorId) changedInstructorIds.add(suggestion.instructorId);
-          }
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
-          if (result.id) {
-            changedStudentIds.add(suggestion.studentId);
-            if (suggestion.instructorId) changedInstructorIds.add(suggestion.instructorId);
-          }
         }
         successCount += 1;
       }
 
-      const studentScheduleMap = new Map<string, FlightSummaryItem[]>();
-      const instructorScheduleMap = new Map<string, FlightSummaryItem[]>();
-      for (const suggestion of editableSuggestions) {
-        const studentName = weekData.students.find((s) => s.userId === suggestion.studentId)?.label ?? suggestion.studentId;
-        const instructor = suggestion.instructorId ? instructorById.get(suggestion.instructorId) ?? null : null;
-        const instructorName = instructor?.label ?? suggestion.instructorId ?? "A definir";
-        const date = weekDateFromStart(weekData.week.weekStart, suggestion.dayOfWeek);
-        const baseItem: FlightSummaryItem = {
-          date,
-          startTime: hoursToHHMM(suggestion.startHour),
-          durationHours: suggestion.durationHours,
-          aircraft: suggestion.aircraftRegistration,
-        };
-        if (changedStudentIds.has(suggestion.studentId)) {
-          const arr = studentScheduleMap.get(suggestion.studentId) ?? [];
-          arr.push({ ...baseItem, instructorName });
-          studentScheduleMap.set(suggestion.studentId, arr);
-        }
-        if (suggestion.instructorId && changedInstructorIds.has(suggestion.instructorId)) {
-          const arr = instructorScheduleMap.get(suggestion.instructorId) ?? [];
-          arr.push({ ...baseItem, studentName });
-          instructorScheduleMap.set(suggestion.instructorId, arr);
-        }
-      }
+      const { studentScheduleMap, instructorScheduleMap } = buildSchedulePublishedNotificationMaps(
+        editableSuggestions,
+        publishedWeekStart,
+        weekData.students,
+        instructorById,
+      );
 
       setPersistedCount(successCount);
-      const closed = await closeScheduleWeek(weekData.week.weekStart);
+      const closed = await closeScheduleWeek(publishedWeekStart);
 
-      const allDispatches: Array<{ recipientId: string; flights: FlightSummaryItem[]; dedupeKey: string }> = [
+      const allDispatches = [
         ...[...studentScheduleMap.entries()].map(([studentId, flights]) => ({
           recipientId: studentId,
           flights,
-          dedupeKey: `schedule.published:student:${studentId}:${weekData.week.weekStart}:${closed.closedAt}`,
+          dedupeKey: `schedule.published:student:${studentId}:${publishedWeekStart}:${closed.closedAt}`,
         })),
         ...[...instructorScheduleMap.entries()].map(([instructorId, flights]) => ({
           recipientId: instructorId,
           flights,
-          dedupeKey: `schedule.published:instructor:${instructorId}:${weekData.week.weekStart}:${closed.closedAt}`,
+          dedupeKey: `schedule.published:instructor:${instructorId}:${publishedWeekStart}:${closed.closedAt}`,
         })),
-      ];
+      ].filter((row) => row.flights.length > 0);
       for (let i = 0; i < allDispatches.length; i += 1) {
         const { recipientId, flights, dedupeKey } = allDispatches[i];
         const result = await dispatchNotificationEvent({
@@ -1450,8 +1604,8 @@ export function ScheduleGenerationTab() {
           recipientUserIds: [recipientId],
           actorUserId: user.id,
           data: {
-            weekStart: weekData.week.weekStart,
-            weekLabel: weekData.week.label,
+            weekStart: publishedWeekStart,
+            weekLabel: publishedWeekLabel,
             flights,
           },
         });
@@ -1466,21 +1620,16 @@ export function ScheduleGenerationTab() {
         }
       }
       setLastClosedWeekMessage(
-        `Semana ${weekData.week.label} fechada em ${new Date(closed.closedAt).toLocaleString("pt-BR")}.`,
+        `Semana ${publishedWeekLabel} fechada em ${new Date(closed.closedAt).toLocaleString("pt-BR")}. Abrindo a escala publicada.`,
       );
-      clearSavedPreview(weekData.week.weekStart);
+      clearSavedPreview(publishedWeekStart);
       setHasUnsavedPreviewChanges(false);
+      setPreview(null);
+      setEditableSuggestions([]);
+      setFinalConfirmOpen(false);
       const refreshedOptions = await getScheduleWeekOptions({ onlyFuture: true, excludeClosed: true });
       setWeekOptions(refreshedOptions);
-      const nextWeek = refreshedOptions[0]?.weekStart ?? "";
-      setSelectedWeekStart(nextWeek);
-      if (nextWeek) {
-        await loadWeek(nextWeek);
-      } else {
-        setWeekData(null);
-        setPreview(null);
-        setEditableSuggestions([]);
-      }
+      onScalePublished?.(publishedWeekStart);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1513,7 +1662,8 @@ export function ScheduleGenerationTab() {
       instructorAnac: suggestion.instructorAnac,
       aircraftRegistration: suggestion.aircraftRegistration,
       dayOfWeek: suggestion.dayOfWeek,
-      startHour: (suggestion.isNight ?? false) ? scheduleRules.nightFlightStartHour : suggestion.startHour,
+      startTime: suggestion.startTime,
+      startHour: suggestion.startHour,
       durationHours: suggestion.durationHours,
       isNight: suggestion.isNight ?? false,
     });
@@ -1529,13 +1679,15 @@ export function ScheduleGenerationTab() {
       return;
     }
     setFlightModalMode("create");
+    const defaultStartMinute = (SLOT_HOURS[0] ?? 6) * 60;
     setFlightModalDraft({
       demandId: `manual-${crypto.randomUUID()}`,
       studentId: firstStudent.userId,
       ...resolveInstructorDraft(firstInstructor?.userId ?? null),
       aircraftRegistration: firstSupply.aircraftRegistration,
       dayOfWeek: 1,
-      startHour: SLOT_HOURS[0] ?? 6,
+      startTime: minutesToScheduleHHMM(defaultStartMinute),
+      startHour: defaultStartMinute / 60,
       durationHours: 1,
       isNight: false,
     });
@@ -1605,7 +1757,43 @@ export function ScheduleGenerationTab() {
     [editableSuggestions],
   );
 
-  const filteredSuggestions = useMemo(
+  const previewDemandIds = useMemo(
+    () => new Set(editableSuggestions.map((row) => row.demandId)),
+    [editableSuggestions],
+  );
+
+  const externalCalendarSuggestions = useMemo(() => {
+    if (!weekData) return [];
+    const studentMap = new Map(weekData.students.map((s) => [s.userId, s.label]));
+    const supplyByReg = new Map(
+      weekData.supplies.map((s) => [normalizeAircraftIdent(s.aircraftRegistration), s.aircraftRegistration]),
+    );
+    return weekData.existingGeneratedFlights
+      .filter((row) => !previewDemandIds.has(row.demandId))
+      .map((row) => {
+        const mapped = toExternalCalendarSuggestion(
+          row,
+          weekData.week.weekStart,
+          studentMap.get(row.studentId) ?? row.studentId,
+          weekData.instructors,
+        );
+        const regKey = normalizeAircraftIdent(row.aircraftRegistration);
+        const resolvedReg = supplyByReg.get(regKey) ?? mapped.aircraftRegistration;
+        return {
+          ...mapped,
+          aircraftRegistration: resolvedReg,
+          isOutsideGenerator: row.isOutsideGenerator ?? true,
+          source: (row.isOutsideGenerator ? "external" : "manual") as ScheduledFlightSuggestion["source"],
+        };
+      });
+  }, [previewDemandIds, weekData]);
+
+  const editableDemandIds = useMemo(
+    () => new Set(editableSuggestions.map((row) => row.demandId)),
+    [editableSuggestions],
+  );
+
+  const filteredPreviewSuggestions = useMemo(
     () =>
       sortedEditableSuggestions.filter(
         (s) =>
@@ -1613,6 +1801,11 @@ export function ScheduleGenerationTab() {
           (s.instructorId ? visibleInstructors.includes(s.instructorId) : visibleInstructors.includes("__none__")),
       ),
     [sortedEditableSuggestions, visibleAircraft, visibleInstructors],
+  );
+
+  const filteredSuggestions = useMemo(
+    () => [...filteredPreviewSuggestions, ...externalCalendarSuggestions],
+    [externalCalendarSuggestions, filteredPreviewSuggestions],
   );
 
   const selectedSupplyForBackground = useMemo(() => {
@@ -1634,15 +1827,23 @@ export function ScheduleGenerationTab() {
   }, [weekData]);
 
   const selectedStudentRequests = useMemo(() => {
-    if (!selectedStudentId) return null;
-    const student = weekData?.students.find((row) => row.userId === selectedStudentId);
+    if (!selectedStudentId || !weekData) return null;
+    const student = weekData.students.find((row) => row.userId === selectedStudentId);
     const demands = demandsByStudent.get(selectedStudentId) ?? [];
-    const suggestions = editableSuggestions
-      .filter((row) => row.studentId === selectedStudentId)
-      .sort(compareByDayAndHour);
+    const previewIds = new Set(
+      editableSuggestions.filter((row) => row.studentId === selectedStudentId).map((row) => row.demandId),
+    );
+    const overlayForStudent = externalCalendarSuggestions.filter((row) => row.studentId === selectedStudentId);
+    const suggestions = [
+      ...editableSuggestions.filter((row) => row.studentId === selectedStudentId),
+      ...overlayForStudent,
+    ].sort(compareByDayAndHour);
+    const externalOnlyCount = weekData.existingGeneratedFlights.filter(
+      (row) => row.studentId === selectedStudentId && !previewIds.has(row.demandId),
+    ).length;
     if (!student) return null;
-    return { student, demands, suggestions };
-  }, [demandsByStudent, editableSuggestions, selectedStudentId, weekData]);
+    return { student, demands, suggestions, externalOnlyCount };
+  }, [demandsByStudent, editableSuggestions, externalCalendarSuggestions, selectedStudentId, weekData]);
 
   return (
     <div className="w-full space-y-5">
@@ -1804,8 +2005,9 @@ export function ScheduleGenerationTab() {
         </section>
       ) : null}
 
-      {preview ? (
+      {(preview || externalCalendarSuggestions.length > 0) ? (
         <>
+          {preview ? (
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -1969,7 +2171,10 @@ export function ScheduleGenerationTab() {
               </p>
             )}
           </section>
+          ) : null}
 
+          {preview ? (
+          <>
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Preview + edição manual</p>
@@ -2073,15 +2278,15 @@ export function ScheduleGenerationTab() {
                         </td>
                         <td className="px-2 py-2">
                           <select
-                            value={hourSelectValue(row.isNight, row.startHour)}
+                            value={hourSelectValue(row.isNight, row.startTime, row.startHour)}
                             onChange={(e) => {
                               const parsed = parseHourSelectValue(e.target.value, scheduleRules);
                               updateSuggestion(row.demandId, (current) => ({
                                 ...current,
                                 startHour: parsed.startHour,
                                 isNight: parsed.isNight,
-                                startTime: hoursToHHMM(parsed.startHour),
-                                endTime: composeEndTime(parsed.startHour, current.durationHours),
+                                startTime: parsed.startTime,
+                                endTime: composeEndTime(parsed.startTime, current.durationHours),
                               }));
                             }}
                             className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"
@@ -2106,7 +2311,7 @@ export function ScheduleGenerationTab() {
                                 return {
                                   ...current,
                                   durationHours: duration,
-                                  endTime: composeEndTime(current.startHour, duration),
+                                  endTime: composeEndTime(current.startTime, duration),
                                 };
                               })
                             }
@@ -2189,6 +2394,8 @@ export function ScheduleGenerationTab() {
               </article>
             </div>
           </section>
+          </>
+          ) : null}
 
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Filtros</p>
@@ -2274,6 +2481,7 @@ export function ScheduleGenerationTab() {
             colorByAircraft={colorByAircraft}
             borderByInstructor={borderByInstructor}
             totalWeightByDemand={totalWeightByDemand}
+            editableDemandIds={editableDemandIds}
             backgroundSupply={selectedSupplyForBackground}
             onSuggestionClick={(suggestion) => openEditFlightModal(suggestion)}
             onItemDrop={(suggestion, target) => {
@@ -2283,7 +2491,8 @@ export function ScheduleGenerationTab() {
                   ? {
                       ...prev,
                       dayOfWeek: target.dayOfWeek,
-                      startHour: target.isNight ? scheduleRules.nightFlightStartHour : target.startHour,
+                      startHour: target.startHour,
+                      startTime: target.startTime,
                       isNight: target.isNight,
                     }
                   : prev,
@@ -2291,6 +2500,7 @@ export function ScheduleGenerationTab() {
             }}
           />
 
+          {preview ? (
           <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Alunos atendidos</p>
@@ -2337,61 +2547,9 @@ export function ScheduleGenerationTab() {
               )}
             </div>
           </section>
+          ) : null}
 
         </>
-      ) : null}
-
-      {weekData?.existingGeneratedFlights && weekData.existingGeneratedFlights.length > 0 ? (
-        <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Escalas já geradas</p>
-            <button
-              type="button"
-              onClick={() => {
-                const studentMap = new Map(weekData.students.map((s) => [s.userId, s.label]));
-                const loaded = weekData.existingGeneratedFlights.map((row) =>
-                  normalizeSuggestion(toGeneratedSuggestion(row, weekData.week.weekStart, studentMap.get(row.studentId) ?? row.studentId)),
-                );
-                setPreview(makePreviewShell(loaded));
-                setEditableSuggestions(loaded);
-                setVisibleAircraft(weekData.supplies.map((s) => s.aircraftRegistration));
-                setVisibleInstructors(["__none__", ...weekData.instructors.map((s) => s.userId)]);
-                setHasUnsavedPreviewChanges(true);
-              }}
-              className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-            >
-              Carregar na edição
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-slate-500">
-                  <th className="border-b border-slate-700 px-2 py-2">Demanda</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Aluno</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Instrutor</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Aeronave</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Data</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Início</th>
-                  <th className="border-b border-slate-700 px-2 py-2">Duração</th>
-                </tr>
-              </thead>
-              <tbody>
-                {weekData.existingGeneratedFlights.map((row) => (
-                  <tr key={row.id} className="border-b border-slate-800/60">
-                    <td className="px-2 py-2 font-mono text-xs text-slate-400">{row.demandId.slice(0, 8)}</td>
-                    <td className="px-2 py-2 text-slate-200">{row.studentId}</td>
-                    <td className="px-2 py-2 text-slate-300">{row.instructorLabel ?? row.instructorId ?? "—"}</td>
-                    <td className="px-2 py-2 text-slate-300">{row.aircraftRegistration ?? "—"}</td>
-                    <td className="px-2 py-2 text-slate-400">{row.date}</td>
-                    <td className="px-2 py-2 text-slate-400">{row.startTime}</td>
-                    <td className="px-2 py-2 text-slate-400">{row.durationHours.toFixed(1)}h</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
       ) : null}
 
       {preview ? (
@@ -2450,9 +2608,9 @@ export function ScheduleGenerationTab() {
                         <tr className="text-left uppercase tracking-wider text-slate-500">
                           <th className="border-b border-slate-700 px-2 py-1.5">Prioridade</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Duração</th>
-                          <th className="border-b border-slate-700 px-2 py-1.5">Flexibilidade</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Modelo</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Disponibilidade</th>
+                          <th className="border-b border-slate-700 px-2 py-1.5">Observação</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2460,13 +2618,13 @@ export function ScheduleGenerationTab() {
                           <tr key={demand.demandId} className="border-b border-slate-800/60">
                             <td className="px-2 py-1.5 text-slate-200">{demand.priorityLevel}</td>
                             <td className="px-2 py-1.5 text-slate-300">{demand.durationHours.toFixed(1)}h</td>
-                            <td className="px-2 py-1.5 text-slate-300">{demand.flexibilityLevel}</td>
-                            <td className="px-2 py-1.5 text-slate-300">{demand.preferredModelId || "Sem preferência"}</td>
+                            <td className="px-2 py-1.5 text-slate-300">{demand.preferredModelId || "—"}</td>
                             <td className="px-2 py-1.5 text-slate-400">
                               {demand.availability
-                                .map((a) => `${DAY_LABEL[a.dayOfWeek]}-${a.period === "morning" ? "manhã" : "tarde"}(${a.availabilityType})`)
+                                .map((a) => `${DAY_LABEL[a.dayOfWeek]}-${a.period === "morning" ? "manhã" : a.period === "afternoon" ? "tarde" : "noite"}(${a.availabilityType})`)
                                 .join(", ")}
                             </td>
+                            <td className="px-2 py-1.5 text-slate-400">{demand.notes?.trim() || "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2505,7 +2663,12 @@ export function ScheduleGenerationTab() {
                 </div>
                 <div className="rounded-lg border border-slate-700/60 bg-slate-800/30 px-2 py-2">
                   <p className="text-lg font-semibold text-slate-100">{selectedStudentRequests.suggestions.length}</p>
-                  <p className="text-[11px] text-slate-500">Voos no preview</p>
+                  <p className="text-[11px] text-slate-500">
+                    Voos na escala
+                    {selectedStudentRequests.externalOnlyCount > 0
+                      ? ` · ${selectedStudentRequests.externalOnlyCount} já agendado(s)`
+                      : ""}
+                  </p>
                 </div>
                 <div className="rounded-lg border border-slate-700/60 bg-slate-800/30 px-2 py-2">
                   <p className="text-lg font-semibold text-slate-100">{selectedStudentRequests.student.weightKg ?? "—"}</p>
@@ -2530,9 +2693,9 @@ export function ScheduleGenerationTab() {
                         <tr className="text-left uppercase tracking-wider text-slate-500">
                           <th className="border-b border-slate-700 px-2 py-1.5">Prioridade</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Duração</th>
-                          <th className="border-b border-slate-700 px-2 py-1.5">Flexibilidade</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Modelo</th>
                           <th className="border-b border-slate-700 px-2 py-1.5">Disponibilidade</th>
+                          <th className="border-b border-slate-700 px-2 py-1.5">Observação</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2540,13 +2703,13 @@ export function ScheduleGenerationTab() {
                           <tr key={demand.demandId} className="border-b border-slate-800/60">
                             <td className="px-2 py-1.5 text-slate-200">{demand.priorityLevel}</td>
                             <td className="px-2 py-1.5 text-slate-300">{demand.durationHours.toFixed(1)}h</td>
-                            <td className="px-2 py-1.5 text-slate-300">{demand.flexibilityLevel}</td>
-                            <td className="px-2 py-1.5 text-slate-300">{demand.preferredModelId || "Sem preferência"}</td>
+                            <td className="px-2 py-1.5 text-slate-300">{demand.preferredModelId || "—"}</td>
                             <td className="px-2 py-1.5 text-slate-400">
                               {demand.availability
-                                .map((a) => `${DAY_LABEL[a.dayOfWeek]}-${a.period === "morning" ? "manhã" : "tarde"}(${a.availabilityType})`)
+                                .map((a) => `${DAY_LABEL[a.dayOfWeek]}-${a.period === "morning" ? "manhã" : a.period === "afternoon" ? "tarde" : "noite"}(${a.availabilityType})`)
                                 .join(", ")}
                             </td>
+                            <td className="px-2 py-1.5 text-slate-400">{demand.notes?.trim() || "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2709,11 +2872,18 @@ export function ScheduleGenerationTab() {
               <label className="text-xs text-slate-400">
                 Hora
                 <select
-                  value={hourSelectValue(flightModalDraft.isNight, flightModalDraft.startHour)}
+                  value={hourSelectValue(flightModalDraft.isNight, flightModalDraft.startTime, flightModalDraft.startHour)}
                   onChange={(e) => {
                     const parsed = parseHourSelectValue(e.target.value, scheduleRules);
                     setFlightModalDraft((prev) =>
-                      prev ? { ...prev, startHour: parsed.startHour, isNight: parsed.isNight } : prev,
+                      prev
+                        ? {
+                            ...prev,
+                            startHour: parsed.startHour,
+                            startTime: parsed.startTime,
+                            isNight: parsed.isNight,
+                          }
+                        : prev,
                     );
                   }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"

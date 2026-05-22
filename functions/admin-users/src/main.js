@@ -14,6 +14,14 @@ const users = new sdk.Users(client);
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID;
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
+const FLIGHT_SIGNATURES_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID ||
+  "flight_signatures";
+const AUDIT_EVENTS_COLLECTION_ID =
+  process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
+  process.env.APPWRITE_AUDIT_EVENTS_COL_ID ||
+  "audit_events";
 const WEEKLY_PLANS_COLLECTION_ID =
   process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || process.env.APPWRITE_WEEKLY_PLANS_COL_ID;
 const INSTRUCTOR_PREFS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID;
@@ -2019,6 +2027,93 @@ async function getTrainingAssignmentsByUserIds(userIds = []) {
   return result;
 }
 
+function studentTrackDocumentPermissions(studentUserId) {
+  return [
+    sdk.Permission.read(sdk.Role.user(studentUserId)),
+    sdk.Permission.read(sdk.Role.users()),
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+  ];
+}
+
+const DEFAULT_TRACK_NAME = "Programa PP - Cronograma PDF";
+
+async function resolveDefaultTrainingTrackId() {
+  if (!TRAINING_TRACKS_COLLECTION_ID) return null;
+
+  const attempts = [
+    [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.equal("is_default", [true]),
+      sdk.Query.equal("is_active", [true]),
+    ],
+    [sdk.Query.equal("is_default", [true]), sdk.Query.equal("is_active", [true])],
+    [sdk.Query.equal("school_id", [SCHOOL_ID]), sdk.Query.equal("name", [DEFAULT_TRACK_NAME])],
+    [sdk.Query.equal("name", [DEFAULT_TRACK_NAME])],
+    [sdk.Query.equal("school_id", [SCHOOL_ID]), sdk.Query.equal("is_active", [true]), sdk.Query.orderAsc("name")],
+    [sdk.Query.equal("is_active", [true]), sdk.Query.orderAsc("name")],
+  ];
+
+  for (const baseQueries of attempts) {
+    const res = await databases
+      .listDocuments(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, [...baseQueries, sdk.Query.limit(1)])
+      .catch(() => ({ documents: [] }));
+    if (res.documents[0]?.$id) return res.documents[0].$id;
+  }
+
+  return null;
+}
+
+async function ensureDefaultStudentTrainingTrack(actorUserId, targetUserId) {
+  const studentUserId = cleanString(targetUserId) || actorUserId;
+  if (!studentUserId) {
+    throw Object.assign(new Error("Usuário não autenticado."), { status: 401 });
+  }
+  if (studentUserId !== actorUserId) {
+    await requireAdmin(actorUserId);
+  }
+  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID) {
+    return { assigned: false, trackId: null, message: "Coleções de trilha não configuradas." };
+  }
+
+  const existing = await listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.limit(1),
+  ]).catch(() => []);
+  if (existing.length > 0) {
+    return {
+      assigned: false,
+      trackId: existing[0].track_id || null,
+      alreadyAssigned: true,
+    };
+  }
+
+  const trackId = await resolveDefaultTrainingTrackId();
+  if (!trackId) {
+    return { assigned: false, trackId: null, message: "Nenhuma trilha padrão ativa encontrada." };
+  }
+
+  const now = new Date().toISOString();
+  await databases.createDocument(
+    DATABASE_ID,
+    STUDENT_TRACKS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      student_user_id: studentUserId,
+      track_id: trackId,
+      status: "active",
+      is_primary: true,
+      assigned_at: now,
+      updated_at: now,
+    },
+    studentTrackDocumentPermissions(studentUserId),
+  );
+
+  return { assigned: true, trackId, alreadyAssigned: false };
+}
+
 async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } = {}) {
   const safeLimit = clampLimit(limit);
   const safeOffset = clampOffset(offset);
@@ -2876,7 +2971,8 @@ function computeOpenFinancialMonth(month, data) {
   const ebitda = roundMoney(operationalMargin + fixedCosts + manualEbitda);
   const assetVariationTotal = roundMoney(-1 * (aircraftEstimated + aircraftMaintenanceReserveMonthly));
   const totalOperationalCosts = roundMoney(commercialDeductions + variableCosts + fixedCosts);
-  const totalHours = roundHours(flights.reduce((acc, flight) => acc + flight.hours, 0));
+  // Use flight_instructor_payments.flight_minutes_considered as the authoritative hours source
+  const totalHours = roundHours(monthPayments.reduce((acc, p) => acc + (numValue(p.flight_minutes_considered) / 60), 0));
 
   const grossProfitTax = roundMoney(-1 * (Math.max(0, operationalMargin) * data.schoolCosts.taxConfig.grossProfitRatePercent) / 100);
   const netBeforeTax = roundMoney(ebitda + revenueTax + grossProfitTax + manualTaxes);
@@ -3014,6 +3110,9 @@ function computeOpenFinancialMonth(month, data) {
         { label: "Margem líquida final", amount: grossRevenue ? roundMoney((finalNet / grossRevenue) * 100) : 0, valueType: "percent" },
       ],
     }),
+    // Meta lines: stored in DRE snapshot so they survive month closing. Not displayed in DRE table.
+    makeLine("meta_flown_hours", null, 1, "Meta", "Horas Voadas", "hours", "flight_instructor_payments.flight_minutes_considered / 60", totalHours),
+    makeLine("meta_fuel_liters", null, 1, "Meta", "Litros Abastecidos", "number", "aircraft_fuelings.quantity_liters", fuelLiters),
   ];
 
   const signedLineRows = injectManualDreLines(lineRows, manualLines);
@@ -3340,9 +3439,216 @@ const ADMIN_DOC_PERMS = [
   sdk.Permission.update(sdk.Role.label("admin")),
   sdk.Permission.delete(sdk.Role.label("admin")),
 ];
+const AUDIT_DOC_PERMS = [
+  sdk.Permission.read(sdk.Role.label("admin")),
+];
 
 function cleanString(value) {
   return String(value || "").trim();
+}
+
+function stableClone(value) {
+  if (Array.isArray(value)) return value.map(stableClone);
+  if (value && typeof value === "object") {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        const next = stableClone(value[key]);
+        acc[key] = next === undefined ? null : next;
+        return acc;
+      }, {});
+  }
+  return value === undefined ? null : value;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableClone(value));
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function snapshotJson(value) {
+  const text = stableStringify(value ?? null);
+  return text.length > 65535 ? text.slice(0, 65535) : text;
+}
+
+async function createAuditEvent(actorUserId, input = {}) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return null;
+  const occurredAt = nowIso();
+  const beforeSnapshotJson = snapshotJson(input.beforeSnapshot ?? null);
+  const afterSnapshotJson = snapshotJson(input.afterSnapshot ?? null);
+  const eventPayload = {
+    event_type: cleanString(input.eventType).slice(0, 64),
+    entity_type: cleanString(input.entityType).slice(0, 64),
+    entity_id: cleanString(input.entityId).slice(0, 128),
+    actor_user_id: cleanString(actorUserId).slice(0, 64),
+    actor_role: cleanString(input.actorRole || "admin").slice(0, 32),
+    school_id: SCHOOL_ID,
+    occurred_at: occurredAt,
+    ip: cleanString(input.ip).slice(0, 128) || null,
+    user_agent: cleanString(input.userAgent).slice(0, 512) || null,
+    reason: cleanString(input.reason).slice(0, 2048) || null,
+    before_snapshot_json: beforeSnapshotJson,
+    after_snapshot_json: afterSnapshotJson,
+    before_hash: sha256(beforeSnapshotJson),
+    after_hash: sha256(afterSnapshotJson),
+  };
+  const eventHashSource = stableStringify(eventPayload);
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    AUDIT_EVENTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      ...eventPayload,
+      event_hash: sha256(eventHashSource),
+    },
+    AUDIT_DOC_PERMS,
+  );
+  return doc;
+}
+
+async function listActiveFlightSignatures(flightId) {
+  if (!FLIGHT_SIGNATURES_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, FLIGHT_SIGNATURES_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    sdk.Query.limit(100),
+  ]);
+  return res.documents.filter((doc) => String(doc.status || "active") === "active");
+}
+
+async function listInstructorPaymentSnapshotsForFlight(flightId) {
+  if (!FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    sdk.Query.limit(100),
+  ]);
+  return res.documents;
+}
+
+function toAuditEventDto(doc) {
+  return {
+    id: doc.$id,
+    eventType: doc.event_type || "",
+    entityType: doc.entity_type || "",
+    entityId: doc.entity_id || "",
+    actorUserId: doc.actor_user_id || "",
+    actorRole: doc.actor_role || null,
+    schoolId: doc.school_id || null,
+    occurredAt: doc.occurred_at || doc.$createdAt || "",
+    ip: doc.ip || null,
+    userAgent: doc.user_agent || null,
+    reason: doc.reason || null,
+    beforeSnapshotJson: doc.before_snapshot_json || null,
+    afterSnapshotJson: doc.after_snapshot_json || null,
+    beforeHash: doc.before_hash || null,
+    afterHash: doc.after_hash || null,
+    eventHash: doc.event_hash || null,
+  };
+}
+
+async function listFlightAuditEvents(payload = {}) {
+  const flightId = cleanString(payload.flightId);
+  if (!flightId) throw Object.assign(new Error("Voo nÃ£o informado."), { status: 400 });
+  if (!AUDIT_EVENTS_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, AUDIT_EVENTS_COLLECTION_ID, [
+    sdk.Query.equal("entity_type", ["flight"]),
+    sdk.Query.equal("entity_id", [flightId]),
+    sdk.Query.orderDesc("occurred_at"),
+    sdk.Query.limit(100),
+  ]);
+  return res.documents.map(toAuditEventDto);
+}
+
+async function reopenFlightForEdit(actorUserId, payload = {}, req) {
+  const flightId = cleanString(payload.flightId);
+  const reason = cleanString(payload.reason);
+  if (!flightId) throw Object.assign(new Error("Voo não informado."), { status: 400 });
+  if (!reason) throw Object.assign(new Error("Informe o motivo da reabertura."), { status: 400 });
+  if (!FLIGHTS_COLLECTION_ID || !FLIGHT_SIGNATURES_COLLECTION_ID) {
+    throw Object.assign(new Error("Coleções de voos/assinaturas não configuradas."), { status: 500 });
+  }
+
+  const [flightDoc, activeSignatures] = await Promise.all([
+    databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId),
+    listActiveFlightSignatures(flightId),
+  ]);
+  const instructorPaymentSnapshots = await listInstructorPaymentSnapshotsForFlight(flightId);
+
+  const beforeSnapshot = {
+    flight: flightDoc,
+    activeSignatures: activeSignatures.map((sig) => ({
+      id: sig.$id,
+      signer_user_id: sig.signer_user_id,
+      signer_role: sig.signer_role,
+      signed_at: sig.signed_at,
+      content_hash: sig.content_hash || null,
+      payload_version: sig.payload_version || null,
+    })),
+    instructorPaymentSnapshots: instructorPaymentSnapshots.map((payment) => ({
+      id: payment.$id,
+      instructor_user_id: payment.instructor_user_id || null,
+      calculated_at: payment.calculated_at || null,
+      flight_minutes_considered: payment.flight_minutes_considered ?? null,
+      total_calculated: payment.total_calculated ?? null,
+      student_amount_calculated: payment.student_amount_calculated ?? null,
+    })),
+  };
+  const nextStatus = String(flightDoc.flight_status || "") === "Realizado" ? "Previsto" : (flightDoc.flight_status || "Previsto");
+  const afterSnapshot = {
+    flight: {
+      id: flightId,
+      instructor_signed: false,
+      student_signed: false,
+      admin_operator_signed: false,
+      instructor_signed_at: null,
+      flight_status: nextStatus,
+    },
+    invalidatedSignatureIds: activeSignatures.map((sig) => sig.$id),
+    deletedInstructorPaymentSnapshotIds: instructorPaymentSnapshots.map((payment) => payment.$id),
+  };
+  const event = await createAuditEvent(actorUserId, {
+    eventType: "flight_reopened_for_edit",
+    entityType: "flight",
+    entityId: flightId,
+    reason,
+    beforeSnapshot,
+    afterSnapshot,
+    ip: req?.headers?.["x-forwarded-for"] || req?.headers?.["x-real-ip"] || "",
+    userAgent: req?.headers?.["user-agent"] || "",
+  });
+  const eventId = event?.$id || null;
+  const now = nowIso();
+
+  await Promise.all(activeSignatures.map((sig) =>
+    databases.updateDocument(DATABASE_ID, FLIGHT_SIGNATURES_COLLECTION_ID, sig.$id, {
+      status: "invalidated",
+      invalidated_at: now,
+      invalidated_by: actorUserId,
+      invalidation_reason: reason,
+      invalidated_by_event_id: eventId,
+    }),
+  ));
+
+  await Promise.all(instructorPaymentSnapshots.map((payment) =>
+    databases.deleteDocument(DATABASE_ID, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, payment.$id),
+  ));
+
+  const reopened = await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, {
+    instructor_signed: false,
+    student_signed: false,
+    admin_operator_signed: false,
+    instructor_signed_at: null,
+    flight_status: nextStatus,
+  });
+
+  return {
+    flight: reopened,
+    invalidatedCount: activeSignatures.length,
+    deletedInstructorPaymentSnapshotCount: instructorPaymentSnapshots.length,
+    auditEventId: eventId,
+  };
 }
 
 async function resolveActorUserId(req) {
@@ -3990,11 +4296,15 @@ function buildNotificationMessage(event, flight) {
   if (type === "schedule.published") {
     const weekLabel = cleanString(data.weekLabel) || cleanString(data.weekStart) || "esta semana";
     const flights = Array.isArray(data.flights) ? data.flights : [];
+    const flightCount = flights.length;
     return {
       eyebrow: "Escala de voos",
       title: "Sua escala está confirmada",
       intro: `A escala de voos para ${weekLabel} foi publicada.`,
-      body: "Confira abaixo os voos programados para você nesta semana.",
+      body:
+        flightCount > 0
+          ? `Você tem ${flightCount} voo(s) nesta semana. Confira data, horário, aeronave e demais detalhes abaixo.`
+          : "Confira os voos programados para você nesta semana.",
       details: [],
       flights,
       ctaLabel: "Ver agenda",
@@ -4801,6 +5111,30 @@ module.exports = async ({ req, res, log, error }) => {
 
     await requireAdmin(actorUserId);
 
+    if (action === "reopenFlightForEdit") {
+      const result = await reopenFlightForEdit(actorUserId, payload, req);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "createAuditEvent") {
+      const auditEvent = await createAuditEvent(actorUserId, {
+        eventType: payload.eventType,
+        entityType: payload.entityType,
+        entityId: payload.entityId,
+        reason: payload.reason,
+        beforeSnapshot: payload.beforeSnapshot,
+        afterSnapshot: payload.afterSnapshot,
+        ip: req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "",
+        userAgent: req.headers["user-agent"] || "",
+      });
+      return jsonResponse(res, 200, { auditEvent: auditEvent ? { id: auditEvent.$id } : null });
+    }
+
+    if (action === "listFlightAuditEvents") {
+      const auditEvents = await listFlightAuditEvents(payload);
+      return jsonResponse(res, 200, { auditEvents });
+    }
+
     if (action === "getEmailSettings") {
       const { publicSettings } = await loadEmailSettings();
       return jsonResponse(res, 200, { emailSettings: publicSettings });
@@ -5045,6 +5379,11 @@ module.exports = async ({ req, res, log, error }) => {
         confirmSend: payload.confirmSend === true,
       });
       return jsonResponse(res, 200, { broadcastMessage });
+    }
+
+    if (action === "ensureDefaultStudentTrack") {
+      const result = await ensureDefaultStudentTrainingTrack(actorUserId, payload.userId);
+      return jsonResponse(res, 200, result);
     }
 
     return jsonResponse(res, 400, { message: "Acao invalida." });

@@ -3,6 +3,9 @@ import { closeFinancialMonth, getFinancialDre, reopenFinancialMonth, saveFinanci
 import type { FinancialDreLine, FinancialDreResponse, FinancialDreValueType } from "../../types/financialDre";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
+import { DreAnalytics } from "./DreAnalytics";
+import { DrePresentation } from "./DrePresentation";
+import { DreSectionCards } from "./DreSectionCards";
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -68,6 +71,8 @@ function LoadingState() {
 }
 
 const EXTRA_SECTION_KEYS = new Set(["section_cash_revenue", "section_asset_variation"]);
+// Meta lines are DRE lines used internally (e.g. saved in closed snapshots) but not displayed in the table.
+const META_SECTION_KEYS = new Set(["meta_flown_hours", "meta_fuel_liters"]);
 
 function detailGroupLabel(group: string): string {
   const labels: Record<string, string> = {
@@ -146,13 +151,14 @@ export function AdminDreTab() {
   const [openSections, setOpenSections] = useState<ReadonlySet<string>>(() => new Set());
   const [openDetails, setOpenDetails] = useState<ReadonlySet<string>>(() => new Set());
   const [savingManualCell, setSavingManualCell] = useState<string | null>(null);
+  const [showPresentation, setShowPresentation] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await getFinancialDre({ fromMonth, toMonth });
       setDre(data);
-      setOpenSections(new Set(data.lines.filter((line) => line.level === 1).map((line) => line.key)));
+      setOpenSections(new Set());
       setOpenDetails(new Set());
     } catch (error) {
       showToast({ message: error instanceof Error ? error.message : "Erro ao carregar DRE.", variant: "error" });
@@ -166,7 +172,7 @@ export function AdminDreTab() {
   }, [load]);
 
   const dreRows = useMemo(
-    () => buildVisibleRows(dre, openSections, openDetails, (line) => !EXTRA_SECTION_KEYS.has(line.key)),
+    () => buildVisibleRows(dre, openSections, openDetails, (line) => !EXTRA_SECTION_KEYS.has(line.key) && !META_SECTION_KEYS.has(line.key)),
     [dre, openDetails, openSections],
   );
   const extraRows = useMemo(
@@ -263,18 +269,21 @@ export function AdminDreTab() {
   }
 
   function printPdf() {
-    window.print();
+    setShowPresentation(true);
   }
 
   return (
     <section className="space-y-4">
       <style>{`
         @media print {
-          body { background: white !important; }
-          aside, header, nav, .dre-no-print { display: none !important; }
-          main { padding: 0 !important; overflow: visible !important; }
-          .dre-print-area { color: #0f172a !important; background: white !important; }
-          .dre-print-area * { color: #0f172a !important; border-color: #cbd5e1 !important; }
+          body:not(.dre-pres-active) { background: white !important; }
+          body:not(.dre-pres-active) aside,
+          body:not(.dre-pres-active) header,
+          body:not(.dre-pres-active) nav,
+          body:not(.dre-pres-active) .dre-no-print { display: none !important; }
+          body:not(.dre-pres-active) main { padding: 0 !important; overflow: visible !important; }
+          body:not(.dre-pres-active) .dre-print-area { color: #0f172a !important; background: white !important; }
+          body:not(.dre-pres-active) .dre-print-area * { color: #0f172a !important; border-color: #cbd5e1 !important; }
         }
       `}</style>
 
@@ -316,22 +325,7 @@ export function AdminDreTab() {
         <LoadingState />
       ) : dre ? (
         <div className="dre-print-area space-y-4">
-          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
-            {dre.cards.map((card) => (
-              <article key={card.key} className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
-                <p className="text-xs font-medium uppercase tracking-widest text-slate-500">{card.label}</p>
-                <p className="mt-2 text-xl font-semibold text-slate-100">{formatValue(card.total, card.valueType)}</p>
-                <div className="mt-3 space-y-1">
-                  {Object.entries(card.values).map(([month, value]) => (
-                    <div key={month} className="flex justify-between gap-3 text-xs text-slate-500">
-                      <span>{dre.months.find((item) => item.key === month)?.label ?? month}</span>
-                      <span>{formatValue(value, card.valueType)}</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
+          <DreSectionCards dre={dre} />
 
           <div className="dre-no-print grid gap-3 md:hidden">
             {dre.months.map((month) => (
@@ -548,10 +542,16 @@ export function AdminDreTab() {
               </div>
             </section>
           ) : null}
+
+          <DreAnalytics dre={dre} />
         </div>
       ) : (
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-400">Nenhum dado financeiro encontrado.</div>
       )}
+
+      {showPresentation && dre ? (
+        <DrePresentation dre={dre} onClose={() => setShowPresentation(false)} />
+      ) : null}
     </section>
   );
 }

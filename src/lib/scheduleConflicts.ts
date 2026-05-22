@@ -1,4 +1,5 @@
 import type { AircraftWeekSupply, ExistingScheduledFlight } from "../types/schedule";
+import { hoursOverlappingInterval } from "./scheduleTimeGrid";
 
 export type FlightConflictType = "aircraft_blocked" | "min_gap" | "overlap" | "other";
 
@@ -61,12 +62,28 @@ export function detectFlightConflicts(params: {
   }
 
   const supply = params.supplies.find((row) => row.aircraftRegistration === draft.aircraftRegistration);
-  const slotKey = draft.isNight ? `${draft.dayOfWeek}-night` : `${draft.dayOfWeek}-${draft.startHour}`;
-  if (!supply || !supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked") {
-    conflicts.push({
-      type: "aircraft_blocked",
-      message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} ${draft.isNight ? "(noturno)" : formatHHMM(draft.startHour)}.`,
+  const draftWindow = toMinutes(draft.startHour, draft.durationHours);
+  if (draft.isNight) {
+    const slotKey = `${draft.dayOfWeek}-night`;
+    if (!supply || !supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked") {
+      conflicts.push({
+        type: "aircraft_blocked",
+        message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} (noturno).`,
+      });
+    }
+  } else {
+    const hours = hoursOverlappingInterval(draftWindow.start, draftWindow.end);
+    const blockedHour = hours.find((hour) => {
+      const slotKey = `${draft.dayOfWeek}-${hour}`;
+      const state = supply?.slotStates[slotKey];
+      return !state || state === "blocked";
     });
+    if (blockedHour !== undefined) {
+      conflicts.push({
+        type: "aircraft_blocked",
+        message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} ${formatHHMM(blockedHour)}.`,
+      });
+    }
   }
 
   if (draft.isNight) {
@@ -103,7 +120,6 @@ export function detectFlightConflicts(params: {
     }
   }
 
-  const draftWindow = toMinutes(draft.startHour, draft.durationHours);
   const minGap = Math.max(0, params.minGapMinutes);
   for (const row of params.flights) {
     if (draft.id && row.id === draft.id) continue;

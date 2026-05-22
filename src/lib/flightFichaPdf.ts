@@ -1,6 +1,7 @@
 import { chartDurationSec, formatAltFt, formatDistM, formatDuration, formatSpeedKt, summarizeFlight } from "./flightStats";
 import { parseGarminCsv } from "./parseGarminCsv";
 import type { FlightRecordMeta } from "./flightRecordCodec";
+import { buildAnacFlightSequence } from "./flightSequence";
 import type { ChartRow } from "./telemetryCharts";
 import { colorForKey, labelForKey } from "./telemetryCharts";
 import { formatNumber } from "./weightBalance";
@@ -292,6 +293,14 @@ function formatFlightNature(value?: string | null): string {
   if (label) return `${code}, ${label}`;
   if (raw.toLowerCase().includes("instru") || raw.toLowerCase().includes("trein")) return "TN, treinamento";
   return raw || "TN, treinamento";
+}
+
+function anacSequenceForMeta(meta: FlightRecordMeta): string {
+  return buildAnacFlightSequence({
+    aircraft: meta.header.aircraft,
+    date: meta.header.date,
+    time: meta.header.departureTimeUtc ?? meta.header.startTime,
+  }) || (meta.header.flightSeqNumber != null ? String(meta.header.flightSeqNumber) : "-");
 }
 
 function hasTechnicalChoice(value: string | undefined, emptyValue: string): boolean {
@@ -586,7 +595,7 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
           ["Pouso (local)", meta.header.landingTimeUtc ?? "-"],
           ["Corte motor (local)", meta.header.engineCutoffTimeUtc ?? "-"],
           ["Aeronave / matrícula", meta.header.aircraft],
-          ["Nº do voo (aeronave)", meta.header.flightSeqNumber != null ? String(meta.header.flightSeqNumber) : "-"],
+          ["Nº do voo (aeronave)", anacSequenceForMeta(meta)],
           ["Natureza do voo", formatFlightNature(meta.header.flightNature)],
           ["Carga transportada", meta.header.cargo || "Sem transporte de carga"],
         ], 2))}

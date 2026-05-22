@@ -109,9 +109,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         anac_sync_error: "",
       } as const;
 
-      const { error } = await ensureProfile(u.$id, u.email, "aluno", baseProfileData);
+      const { error, trackError } = await ensureProfile(u.$id, u.email, "aluno", baseProfileData);
       if (error) {
-        return { error, anacSyncPending: true };
+        return {
+          error: new Error(
+            "Conta criada, mas o perfil não foi salvo. Entre com o mesmo e-mail e senha para concluir o cadastro.",
+          ),
+          anacSyncPending: true,
+        };
+      }
+      if (trackError) {
+        return {
+          error: new Error(
+            "Conta criada, mas a trilha de treinamento padrão não foi vinculada. Entre novamente com o mesmo e-mail e senha para tentar de novo.",
+          ),
+          anacSyncPending: true,
+        };
       }
 
       const syncResult = await executeAnacSync({

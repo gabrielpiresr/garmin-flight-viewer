@@ -132,6 +132,10 @@ async function main() {
     process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID ||
     env.VITE_APPWRITE_FLIGHT_SIGNATURES_COL_ID ||
     "flight_signatures";
+  const auditEventsCollectionId =
+    process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
+    env.VITE_APPWRITE_AUDIT_EVENTS_COL_ID ||
+    "audit_events";
   const profilesCollectionId = process.env.APPWRITE_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_PROFILES_COLLECTION_ID;
   const bucketId = process.env.APPWRITE_BUCKET_ID || env.VITE_APPWRITE_BUCKET_ID || env.VITE_APPWRITE_FLIGHTS_BUCKET_ID || "";
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
@@ -198,6 +202,7 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_DATABASE_ID", databaseId);
   await upsertVariable(functions, "APPWRITE_FLIGHTS_COLLECTION_ID", flightsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID", signaturesCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUDIT_EVENTS_COLLECTION_ID", auditEventsCollectionId);
   await upsertVariable(functions, "APPWRITE_PROFILES_COLLECTION_ID", profilesCollectionId);
   if (bucketId) await upsertVariable(functions, "APPWRITE_BUCKET_ID", bucketId);
   await upsertVariable(functions, "SCHOOL_ID", schoolId);

@@ -2,16 +2,45 @@
  * Setup script for flight_signatures collection and new fields on flights collection.
  * Run: node scripts/setup-signatures.mjs
  */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client, Databases, ID } from "node-appwrite";
 
-const ENDPOINT = "https://sfo.cloud.appwrite.io/v1";
-const PROJECT_ID = "6a01ac8a0009fbf94f05";
-const API_KEY =
-  "standard_c331b1343cf97b580560d1ea341a2609e4100195659849c17a5dcaab8b73c4d82bb840b4edc0209884a51c958fe3bc275a98230f570a51a9e2debe9a929af6ae069a2fa3268917905550c2bdb4a17fa79de223af4a17d7b0a8ec7a9daf0e4a3dd4d7657d269497813807cd6ae835d3e9ee905d45522c42f38188c41311393f6a";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, "..");
+const envPath = path.join(root, ".env.local");
 
-const DB_ID = "6a01afae001bc352d1b1";
-const FLIGHTS_COL_ID = "6a01afb1002232d33950";
-const SIGNATURES_COL_ID = "flight_signatures";
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const entries = {};
+  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const index = trimmed.indexOf("=");
+    entries[trimmed.slice(0, index)] = trimmed.slice(index + 1);
+  }
+  return entries;
+}
+
+const env = parseEnvFile(envPath);
+const ENDPOINT = process.env.APPWRITE_ENDPOINT || env.VITE_APPWRITE_ENDPOINT;
+const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || env.VITE_APPWRITE_PROJECT_ID;
+const API_KEY = process.env.APPWRITE_API_KEY || env.APPWRITE_API_KEY;
+const DB_ID = process.env.APPWRITE_DATABASE_ID || env.VITE_APPWRITE_DATABASE_ID;
+const FLIGHTS_COL_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || env.VITE_APPWRITE_COLLECTION_ID;
+const SIGNATURES_COL_ID = process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID || env.VITE_APPWRITE_FLIGHT_SIGNATURES_COL_ID || "flight_signatures";
+
+const missing = [];
+if (!ENDPOINT) missing.push("VITE_APPWRITE_ENDPOINT");
+if (!PROJECT_ID) missing.push("VITE_APPWRITE_PROJECT_ID");
+if (!API_KEY) missing.push("APPWRITE_API_KEY");
+if (!DB_ID) missing.push("VITE_APPWRITE_DATABASE_ID");
+if (!FLIGHTS_COL_ID) missing.push("VITE_APPWRITE_COLLECTION_ID");
+if (missing.length) {
+  console.error(`Missing env vars. Required: ${missing.join(", ")}`);
+  process.exit(1);
+}
 
 const client = new Client()
   .setEndpoint(ENDPOINT)

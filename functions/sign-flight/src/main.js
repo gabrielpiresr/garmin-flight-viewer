@@ -13,6 +13,10 @@ const storage = new sdk.Storage(adminClient);
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
 const SIGNATURES_COLLECTION_ID = process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID || process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID || "flight_signatures";
+const AUDIT_EVENTS_COLLECTION_ID =
+  process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
+  process.env.APPWRITE_AUDIT_EVENTS_COL_ID ||
+  "audit_events";
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID || process.env.APPWRITE_PROFILES_COL_ID;
 const BUCKET_ID = process.env.APPWRITE_BUCKET_ID || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || process.env.APPWRITE_SCHOOL_ID || "escola_principal";
@@ -139,9 +143,11 @@ async function assertNoDuplicate(flightId, signerRole) {
   const existing = await databases.listDocuments(DATABASE_ID, SIGNATURES_COLLECTION_ID, [
     sdk.Query.equal("flight_id", [flightId]),
     sdk.Query.equal("signer_role", [signerRole]),
-    sdk.Query.limit(1),
+    sdk.Query.limit(100),
   ]);
-  if (existing.total > 0) throw new Error("Você já assinou este voo.");
+  if (existing.documents.some((doc) => String(doc.status || "active") === "active")) {
+    throw new Error("Você já assinou este voo.");
+  }
 }
 
 function signaturePermissions(flightDoc, actorUserId) {
@@ -173,9 +179,56 @@ function toSignatureDoc(doc) {
     reauthenticated_at: doc.reauthenticated_at || null,
     auth_method: doc.auth_method || null,
     school_id: doc.school_id || SCHOOL_ID,
-    status: "active",
+    status: doc.status || "active",
+    invalidated_at: doc.invalidated_at || null,
+    invalidated_by: doc.invalidated_by || null,
+    invalidation_reason: doc.invalidation_reason || null,
+    invalidated_by_event_id: doc.invalidated_by_event_id || null,
     created_at: doc.$createdAt,
   };
+}
+
+function auditPermissions() {
+  return [
+    sdk.Permission.read(sdk.Role.label("admin")),
+  ];
+}
+
+function snapshotJson(value) {
+  const text = stableStringify(value ?? null);
+  return text.length > 65535 ? text.slice(0, 65535) : text;
+}
+
+async function createAuditEvent(actorUserId, input = {}) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return null;
+  const beforeSnapshotJson = snapshotJson(input.beforeSnapshot ?? null);
+  const afterSnapshotJson = snapshotJson(input.afterSnapshot ?? null);
+  const eventPayload = {
+    event_type: String(input.eventType || "").slice(0, 64),
+    entity_type: String(input.entityType || "").slice(0, 64),
+    entity_id: String(input.entityId || "").slice(0, 128),
+    actor_user_id: String(actorUserId || "").slice(0, 64),
+    actor_role: String(input.actorRole || "").slice(0, 32),
+    school_id: SCHOOL_ID,
+    occurred_at: new Date().toISOString(),
+    ip: String(input.ip || "").slice(0, 128) || null,
+    user_agent: String(input.userAgent || "").slice(0, 512) || null,
+    reason: String(input.reason || "").slice(0, 2048) || null,
+    before_snapshot_json: beforeSnapshotJson,
+    after_snapshot_json: afterSnapshotJson,
+    before_hash: sha256(beforeSnapshotJson),
+    after_hash: sha256(afterSnapshotJson),
+  };
+  return databases.createDocument(
+    DATABASE_ID,
+    AUDIT_EVENTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      ...eventPayload,
+      event_hash: sha256(stableStringify(eventPayload)),
+    },
+    auditPermissions(),
+  );
 }
 
 module.exports = async ({ req, res, log, error }) => {
@@ -240,6 +293,23 @@ module.exports = async ({ req, res, log, error }) => {
     }
     if (signerRole === "admin_operator") patch.admin_operator_signed = true;
     await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, patch);
+    await createAuditEvent(actorUserId, {
+      eventType: "flight_signed",
+      entityType: "flight",
+      entityId: flightId,
+      actorRole: signerRole,
+      reason: `Assinatura ${signerRole}`,
+      beforeSnapshot: { flightId, signerRole, flightStatus: flightDoc.flight_status || null },
+      afterSnapshot: {
+        signatureId: signatureDoc.$id,
+        signerRole,
+        signedAt,
+        contentHash: signatureDoc.content_hash,
+        patch,
+      },
+      userAgent,
+      ip: req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "",
+    });
 
     return jsonResponse(res, 200, { signature: toSignatureDoc(signatureDoc) });
   } catch (err) {

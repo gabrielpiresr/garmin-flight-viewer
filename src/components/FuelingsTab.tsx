@@ -267,24 +267,27 @@ export function FuelingsTab() {
     }
     setSaving(true);
     try {
-      await createFueling({
-        school_id: schoolId,
-        occurred_at: form.occurred_at,
-        aerodrome: form.aerodrome.trim().toUpperCase(),
-        responsible_user_id: responsible.userId,
-        responsible_name: responsible.label,
-        aircraft_id: selectedAircraft.id,
-        aircraft_registration: selectedAircraft.registration,
-        quantity_liters: quantity,
-        price_per_liter: Number(price.toFixed(2)),
-        total_value: Number(total.toFixed(2)),
-        payment_method: form.payment_method,
-        fuel_type: form.fuel_type,
-        student_user_id: selectedStudent?.userId ?? null,
-        student_name: selectedStudent?.label ?? null,
-        flight_id: null,
-        created_by: user.id,
-      });
+      await createFueling(
+        {
+          school_id: schoolId,
+          occurred_at: form.occurred_at,
+          aerodrome: form.aerodrome.trim().toUpperCase(),
+          responsible_user_id: responsible.userId,
+          responsible_name: responsible.label,
+          aircraft_id: selectedAircraft.id,
+          aircraft_registration: selectedAircraft.registration,
+          quantity_liters: quantity,
+          price_per_liter: Number(price.toFixed(2)),
+          total_value: Number(total.toFixed(2)),
+          payment_method: form.payment_method,
+          fuel_type: form.fuel_type,
+          student_user_id: selectedStudent?.userId ?? null,
+          student_name: selectedStudent?.label ?? null,
+          flight_id: null,
+          created_by: user.id,
+        },
+        { userId: user.id, role: user.role },
+      );
       setModalOpen(false);
       showToast({ variant: "success", message: "Abastecimento lançado." });
       await loadData();

@@ -45,6 +45,7 @@ type ScheduleAdminTabProps = {
 
 export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: ScheduleAdminTabProps = {}) {
   const [internalSubTab, setInternalSubTab] = useState<ScheduleSubTab>("flights");
+  const [flightsFocusWeekStart, setFlightsFocusWeekStart] = useState<string | null>(null);
   const subTab = controlledSubTab ?? internalSubTab;
   const openedSubTabs = useOpenedTabs(subTab);
 
@@ -54,6 +55,11 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
       return;
     }
     setInternalSubTab(next);
+  }
+
+  function handleScalePublished(weekStart: string) {
+    setFlightsFocusWeekStart(weekStart);
+    changeSubTab("flights");
   }
 
   return (
@@ -68,7 +74,10 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
 
       {openedSubTabs.has("flights") ? (
         <div hidden={subTab !== "flights"}>
-          <ScheduleFlightsTab />
+          <ScheduleFlightsTab
+            focusWeekStart={flightsFocusWeekStart}
+            onFocusWeekConsumed={() => setFlightsFocusWeekStart(null)}
+          />
         </div>
       ) : null}
       {openedSubTabs.has("weekly") ? (
@@ -78,7 +87,7 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: S
       ) : null}
       {openedSubTabs.has("generator") ? (
         <div hidden={subTab !== "generator"}>
-          <ScheduleGenerationTab />
+          <ScheduleGenerationTab onScalePublished={handleScalePublished} />
         </div>
       ) : null}
     </div>

@@ -89,6 +89,8 @@ export type ExistingScheduledFlight = {
   durationHours: number;
   isNight?: boolean;
   sourceFilename: string;
+  /** Voo agendado fora do gerador de escala (não usa prefixo auto/manual-scale). */
+  isOutsideGenerator?: boolean;
 };
 
 export type ScheduleWeekData = {
@@ -145,7 +147,9 @@ export type ScheduledFlightSuggestion = {
   allocationLayer: AllocationLayer;
   relaxationLevel: RelaxationLevel;
   notes: string | null;
-  source: "generated" | "manual";
+  source: "generated" | "manual" | "external";
+  /** Voo já existente fora do preview/gerador automático da escala. */
+  isOutsideGenerator?: boolean;
 };
 
 export type UnallocatedDemand = {

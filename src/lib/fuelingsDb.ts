@@ -1,20 +1,13 @@
 import { Query } from "appwrite";
-import { databases, FUELINGS_COL_ID, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+import { resolveSharedDocumentPermissions } from "./appwriteClientPermissions";
+import { databases, FUELINGS_COL_ID, ID, isAppwriteConfigured } from "./appwrite";
+import type { UserRole } from "./rbac";
 import type { AircraftFueling, CreateFuelingInput, FuelingFilters, FuelingPaymentMethod, FuelType } from "../types/fueling";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
 function isReady(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && FUELINGS_COL_ID);
-}
-
-function fuelingsPermissions(): string[] {
-  return [
-    Permission.read(Role.label("admin")),
-    Permission.read(Role.label("instrutor")),
-    Permission.update(Role.label("admin")),
-    Permission.delete(Role.label("admin")),
-  ];
 }
 
 function text(doc: Record<string, unknown>, key: string): string | null {
@@ -75,7 +68,10 @@ export async function listFuelings(schoolId: string, filters: FuelingFilters = {
   return res.documents.map((doc) => toFueling(doc as Record<string, unknown>));
 }
 
-export async function createFueling(data: CreateFuelingInput): Promise<AircraftFueling> {
+export async function createFueling(
+  data: CreateFuelingInput,
+  actor: { userId: string; role: UserRole },
+): Promise<AircraftFueling> {
   if (!databases || !DB_ID || !FUELINGS_COL_ID) throw new Error("Coleção de abastecimentos não configurada.");
   const doc = await databases.createDocument(
     DB_ID,
@@ -99,7 +95,7 @@ export async function createFueling(data: CreateFuelingInput): Promise<AircraftF
       flight_id: data.flight_id,
       created_by: data.created_by,
     },
-    fuelingsPermissions(),
+    resolveSharedDocumentPermissions(actor.userId, actor.role),
   );
   return toFueling(doc as Record<string, unknown>);
 }

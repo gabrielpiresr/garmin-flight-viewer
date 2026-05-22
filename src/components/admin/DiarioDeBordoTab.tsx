@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
+import { createAdminAuditEvent } from "../../lib/adminUsersDb";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
@@ -30,6 +32,7 @@ import type { Aircraft } from "../../types/admin";
 import type { MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
+import { OfflineLogbookAdminPanel } from "./OfflineLogbookAdminPanel";
 
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
@@ -159,6 +162,7 @@ function LogbookTableRow({
 }
 
 export function DiarioDeBordoTab() {
+  const { user } = useAuth();
   const { showToast } = useToast();
   const [aircrafts, setAircrafts] = useState<Aircraft[]>([]);
   const [aircraftIdent, setAircraftIdent] = useState("");
@@ -341,7 +345,7 @@ export function DiarioDeBordoTab() {
       metaByFlightId: currentMetaByFlightId,
       asOfMs: Date.now(),
     });
-    if (!exportLogbookPdf({
+    const exported = exportLogbookPdf({
       entries,
       aircraft: selectedAircraft,
       model: selectedAircraft.model,
@@ -350,8 +354,44 @@ export function DiarioDeBordoTab() {
       discrepancies: currentDiscrepancies,
       currentMaintenance,
       workOrders: currentWorkOrders,
-    })) {
+    });
+    if (!exported) {
       showToast({ variant: "error", message: "Permita pop-ups para exportar PDF." });
+      return;
+    }
+    if (user?.role === "admin") {
+      await createAdminAuditEvent({
+        eventType: "logbook_exported",
+        entityType: "aircraft",
+        entityId: selectedAircraft.id,
+        reason: "Exportação PDF do Diário de Bordo ANAC.",
+        afterSnapshot: {
+          format: "pdf",
+          aircraftIdent,
+          entries: entries.length,
+          fromDate,
+          toDate,
+        },
+      });
+    }
+  };
+
+  const handleExportLogbookCsv = async () => {
+    exportLogbookCsv(entries, `diario-${aircraftIdent}`);
+    if (user?.role === "admin" && selectedAircraft) {
+      await createAdminAuditEvent({
+        eventType: "logbook_exported",
+        entityType: "aircraft",
+        entityId: selectedAircraft.id,
+        reason: "Exportação CSV do Diário de Bordo ANAC.",
+        afterSnapshot: {
+          format: "csv",
+          aircraftIdent,
+          entries: entries.length,
+          fromDate,
+          toDate,
+        },
+      });
     }
   };
 
@@ -363,6 +403,8 @@ export function DiarioDeBordoTab() {
           Registros por aeronave conforme exigências ANAC (Art. 4º e 5º). Dados gravados na ficha de voo.
         </p>
       </div>
+
+      <OfflineLogbookAdminPanel />
 
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
         <label className="min-w-[200px] flex-1">
@@ -411,7 +453,7 @@ export function DiarioDeBordoTab() {
           <>
             <button
               type="button"
-              onClick={() => exportLogbookCsv(entries, `diario-${aircraftIdent}`)}
+              onClick={() => void handleExportLogbookCsv()}
               className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
             >
               CSV

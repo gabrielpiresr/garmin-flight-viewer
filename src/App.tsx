@@ -8,6 +8,9 @@ const AdminLayout = lazy(() => import("./components/admin/AdminLayout").then((mo
 const InstructorLayout = lazy(() =>
   import("./components/instructor/InstructorLayout").then((module) => ({ default: module.InstructorLayout })),
 );
+const OfflineLogbookPage = lazy(() =>
+  import("./pages/OfflineLogbookPage").then((module) => ({ default: module.OfflineLogbookPage })),
+);
 
 function AppLoading() {
   return (
@@ -19,11 +22,20 @@ function AppLoading() {
 
 export default function App() {
   const { user, loading } = useAuth();
+  const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
     if (user) void refreshBrandCache();
   }, [user?.id]);
+
+  if (isOfflineLogbookRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <OfflineLogbookPage />
+      </Suspense>
+    );
+  }
 
   if (loading) {
     return <AppLoading />;

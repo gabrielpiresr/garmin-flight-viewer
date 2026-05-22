@@ -158,6 +158,14 @@ async function main() {
     process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID ||
     env.VITE_APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID ||
     "flight_telemetry_alerts";
+  const flightSignaturesCollectionId =
+    process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_SIGNATURES_COL_ID ||
+    "flight_signatures";
+  const auditEventsCollectionId =
+    process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
+    env.VITE_APPWRITE_AUDIT_EVENTS_COL_ID ||
+    "audit_events";
   const maneuversSectionsCollectionId =
     process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID || env.VITE_APPWRITE_MANEUVERS_SECTIONS_COL_ID;
   const maneuversSubsectionsCollectionId =
@@ -241,6 +249,8 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID", flightTelemetrySummariesCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID", flightLandingsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID", flightTelemetryAlertsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID", flightSignaturesCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUDIT_EVENTS_COLLECTION_ID", auditEventsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID", maneuversSectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID", maneuversSubsectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID", maneuversArticlesCollectionId);

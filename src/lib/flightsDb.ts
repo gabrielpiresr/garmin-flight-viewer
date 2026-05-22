@@ -10,6 +10,7 @@ import type { FlightTelemetryMetricsBundle } from "./flightTelemetryMetrics";
 import type { ParseResult } from "./parseGarminCsv";
 import type { UserRole } from "./rbac";
 import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
+import { createAdminAuditEvent } from "./adminUsersDb";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
@@ -376,19 +377,23 @@ function resolveClientFlightPermissions(
   return filterClientSidePermissions(full, actorUserId, actorRole);
 }
 
-/** Bucket file create — mesma leitura compartilhada que o documento do voo. */
+/**
+ * Permissões graváveis no bucket flights-csv pelo browser (file security do bucket).
+ * O bucket aceita apenas: any, users, user da sessão e label:admin — não label:instrutor/aluno.
+ */
 function resolveStorageCsvPermissions(actorUserId: string, actorRole: UserRole): string[] {
-  const perms = buildActorOwnedPermissions(actorUserId);
-  perms.push(Permission.read(Role.users()));
-  if (actorRole === "instrutor") {
-    perms.push(Permission.read(Role.label("instrutor")));
-  }
+  const perms = [
+    ...buildActorOwnedPermissions(actorUserId),
+    Permission.read(Role.users()),
+  ];
   if (actorRole === "admin") {
-    perms.push(Permission.read(Role.label("admin")));
-    perms.push(Permission.update(Role.label("admin")));
-    perms.push(Permission.delete(Role.label("admin")));
+    perms.push(
+      Permission.read(Role.label("admin")),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
+    );
   }
-  return perms;
+  return filterClientSidePermissions(perms, actorUserId, actorRole);
 }
 
 /** ACL gravável pelo browser; leitura compartilhada via Role.users (document security exige doc + coleção). */
@@ -405,6 +410,9 @@ function buildFlightDocumentPermissions(
     permissions.push(Permission.read(Role.label("admin")));
     permissions.push(Permission.update(Role.label("admin")));
     permissions.push(Permission.delete(Role.label("admin")));
+    permissions.push(Permission.read(Role.label("instrutor")));
+    permissions.push(Permission.update(Role.label("instrutor")));
+    permissions.push(Permission.read(Role.label("aluno")));
   } else if (actorRole === "instrutor") {
     permissions.push(Permission.read(Role.label("instrutor")));
     permissions.push(Permission.update(Role.label("instrutor")));
@@ -466,10 +474,18 @@ async function updateFlightDocumentWithMaterializedFallback(params: {
     ...getScheduleDocumentFields(params.csvText),
   };
   try {
-    await databases!.updateDocument(DB_ID, COL_ID, params.id, payload, params.permissions);
+    if (params.permissions !== undefined) {
+      await databases!.updateDocument(DB_ID, COL_ID, params.id, payload, params.permissions);
+    } else {
+      await databases!.updateDocument(DB_ID, COL_ID, params.id, payload);
+    }
   } catch (e) {
     if (!isSchemaAttributeError(e)) throw e;
-    await databases!.updateDocument(DB_ID, COL_ID, params.id, params.basePayload, params.permissions);
+    if (params.permissions !== undefined) {
+      await databases!.updateDocument(DB_ID, COL_ID, params.id, params.basePayload, params.permissions);
+    } else {
+      await databases!.updateDocument(DB_ID, COL_ID, params.id, params.basePayload);
+    }
   }
 }
 
@@ -1054,9 +1070,9 @@ export async function updateFlight(id: string, payload: {
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);
-    // Browser não pode redefinir ACL completa; manter permissões existentes do documento.
+    // INVA/admin no browser não podem reenviar ACL com permissões de outro papel (ex.: label:admin) — Appwrite 401.
     const permissions =
-      payload.actorRole === "admin" || payload.actorRole === "instrutor"
+      payload.actorRole === "instrutor" || payload.actorRole === "admin"
         ? undefined
         : resolveClientFlightPermissions(
             payload.actorUserId,
@@ -1122,6 +1138,33 @@ export async function updateFlight(id: string, payload: {
         parsed: payload.telemetryAlertParsed ?? null,
       });
       if (alertsResult.error) console.warn("Falha ao materializar alertas de telemetria.", alertsResult.error);
+    }
+    if (payload.actorRole === "admin") {
+      await createAdminAuditEvent({
+        eventType: "flight_admin_edited",
+        entityType: "flight",
+        entityId: id,
+        reason: "Edição administrativa de voo aberto.",
+        beforeSnapshot: {
+          id,
+          flight_status: current.flight_status ?? null,
+          instructor_signed: current.instructor_signed ?? null,
+          student_signed: current.student_signed ?? null,
+          admin_operator_signed: current.admin_operator_signed ?? null,
+          csv_text: current.csv_text ?? null,
+          csv_file_id: current.csv_file_id ?? null,
+        },
+        afterSnapshot: {
+          id,
+          flight_status: normalizeFlightStatus(payload.flightStatus ?? current.flight_status),
+          student_user_id: payload.studentUserId,
+          instructor_user_id: payload.instructorUserId ?? null,
+          aircraft_ident: payload.aircraft_ident ?? null,
+          flight_date: scheduleFields.flight_date,
+          start_time: scheduleFields.start_time,
+          csv_text: payload.csv_text,
+        },
+      });
     }
     return { error: null };
   } catch (e) {

@@ -7,6 +7,7 @@ import {
   localTimeToUtcHhMm,
   minutesToDecimalHours,
 } from "./flightLogbookTimes";
+import { buildAnacFlightSequence } from "./flightSequence";
 
 import type { MaintenanceAsOfFlight } from "./maintenanceAtDate";
 
@@ -250,6 +251,20 @@ function formatSignatureBlock(
   return `${label}: ${profileName ?? sig.signer_user_id.slice(0, 8)} · papel ${sig.signer_role} · ${when} UTC · payload ${version} · hash ${hash}`;
 }
 
+function anacSequenceForFlight(flight: SavedFlightListItem | SavedFlightFull, meta: FlightRecordMeta): string {
+  return buildAnacFlightSequence({
+    aircraft: meta.header.aircraft || flight.aircraft_ident,
+    date: flight.flight_date ?? meta.header.date,
+    time: meta.header.departureTimeUtc ?? meta.header.startTime ?? flight.start_time,
+  }) || (
+    flight.flight_seq_number != null
+      ? String(flight.flight_seq_number)
+      : meta.header.flightSeqNumber != null
+        ? String(meta.header.flightSeqNumber)
+        : "—"
+  );
+}
+
 function buildFlightLevelFields(
   params: BuildLogbookParams,
   flightDateIso: string,
@@ -262,12 +277,7 @@ function buildFlightLevelFields(
   return {
     flightId: flight.id,
 
-    seqNumber:
-      flight.flight_seq_number != null
-        ? String(flight.flight_seq_number)
-        : meta.header.flightSeqNumber != null
-          ? String(meta.header.flightSeqNumber)
-          : "—",
+    seqNumber: anacSequenceForFlight(flight, meta),
 
     flightDate: formatAnacDate(flight.flight_date ?? meta.header.date ?? null),
 
@@ -474,6 +484,66 @@ export function buildAnacLogbookEntry(
   params: BuildLogbookParams,
 ): AnacLogbookEntry {
   return buildAnacLogbookEntries(params)[0];
+}
+
+function flightAsOfMsForLandingTotals(flight: SavedFlightListItem | SavedFlightFull): number {
+  const date = flight.flight_date ?? flight.created_at;
+  const time = flight.start_time ? `T${flight.start_time}` : "";
+  const ms = new Date(`${date}${time}`).getTime();
+  return Number.isFinite(ms) ? ms : new Date(flight.created_at).getTime();
+}
+
+function latestBaselineForLandingTotals(orders: MaintenanceWorkOrder[], aircraftId: string): MaintenanceWorkOrder | null {
+  return orders
+    .filter((order) => order.aircraft_id === aircraftId && order.work_order_type === "migration_baseline")
+    .sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())[0] ?? null;
+}
+
+export function enrichLogbookLandingTotals(params: {
+  entries: AnacLogbookEntry[];
+  rows: Array<SavedFlightListItem | SavedFlightFull>;
+  aircraft: Aircraft | null;
+  workOrders: MaintenanceWorkOrder[];
+}): AnacLogbookEntry[] {
+  if (!params.aircraft) return params.entries;
+  let baselineMs: number;
+  let runningLandings: number;
+  if (params.aircraft.logbook_landings != null) {
+    baselineMs = params.aircraft.logbook_opening_date ? new Date(params.aircraft.logbook_opening_date).getTime() : Number.NEGATIVE_INFINITY;
+    runningLandings = params.aircraft.logbook_landings;
+  } else {
+    const baseline = latestBaselineForLandingTotals(params.workOrders, params.aircraft.id);
+    baselineMs = baseline ? new Date(baseline.opened_at).getTime() : Number.NEGATIVE_INFINITY;
+    runningLandings = baseline?.aircraft_total_landings ?? 0;
+  }
+
+  const flightDateMsByFlight = new Map<string, number>();
+  for (const row of params.rows) {
+    flightDateMsByFlight.set(row.id, flightAsOfMsForLandingTotals(row));
+  }
+  const sorted = [...params.entries].sort((a, b) => {
+    const aMs = flightDateMsByFlight.get(a.flightId) ?? 0;
+    const bMs = flightDateMsByFlight.get(b.flightId) ?? 0;
+    if (aMs !== bMs) return aMs - bMs;
+    return a.legIndex - b.legIndex;
+  });
+  const totalsByKey = new Map<string, { partial: number; total: number }>();
+  for (const entry of sorted) {
+    const entryMs = flightDateMsByFlight.get(entry.flightId) ?? 0;
+    const partial = Number(entry.landingsPartial) || 0;
+    if (entryMs >= baselineMs) runningLandings += partial;
+    totalsByKey.set(`${entry.flightId}:${entry.legIndex}`, { partial, total: runningLandings });
+  }
+  return params.entries.map((entry) => {
+    const t = totalsByKey.get(`${entry.flightId}:${entry.legIndex}`);
+    if (!t) return entry;
+    return {
+      ...entry,
+      landingsPartial: String(t.partial),
+      landingsTotal: String(t.total),
+      cyclesPartialTotal: `${t.partial}/${t.total}`,
+    };
+  });
 }
 
 export const LOGBOOK_CSV_COLUMNS: Array<{
@@ -854,8 +924,7 @@ export function exportLogbookPdf(params: {
   }).join("");
 
   const workOrderById = new Map(workOrders.map((order) => [order.id, order]));
-  const emptyDiscrepancyRows = '<tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(3);
-  const discrepancyRows = discrepancies.length === 0 ? emptyDiscrepancyRows : discrepancies.map((item) => {
+  const discrepancyRows = discrepancies.length === 0 ? "" : discrepancies.map((item) => {
     const order = item.linked_work_order_id ? workOrderById.get(item.linked_work_order_id) : null;
     return `<tr><td>${pdfEscape(pdfDate(item.flight_date))}</td><td>${pdfEscape(item.system ?? "")}</td><td>${pdfEscape(item.discrepancy_text)}</td><td>${pdfEscape(item.canac_reported ?? "")}</td><td>${pdfEscape(pdfDate(order?.released_at ?? order?.completed_at ?? null))}</td><td>${pdfEscape(item.corrective_action ?? order?.corrective_action ?? "")}</td><td>${pdfEscape(item.responsible_canac ?? order?.released_by_canac ?? order?.mechanic_canac ?? "")}</td><td>${pdfEscape(item.pic_canac ?? order?.released_by_canac ?? "")}</td></tr>`;
   }).join("");
@@ -888,7 +957,7 @@ export function exportLogbookPdf(params: {
   .grid{width:100%;border-collapse:collapse;margin:0 0 18px;table-layout:fixed}
   .grid th,.grid td{border:1px solid #aaa;padding:1px 3px;vertical-align:top;font-weight:400}
   .grid th{font-weight:700;text-align:center}.grid .left{text-align:left}
-  .signed{text-align:center;margin-top:-12px;margin-bottom:48px}.spacer{height:6mm}.occurrences td{height:22mm}
+  .signed{text-align:center;margin-top:-12px;margin-bottom:48px;overflow-wrap:anywhere;word-break:break-word}.spacer{height:6mm}.occurrences td{height:22mm}
   .tech-page{padding-top:34mm}.tech-page h2{text-align:center;font-size:16px;margin:20px 0 18px}.tech-page .grid tr:nth-child(2) td{height:28mm}
   .discrepancy-table{font-size:15px}.discrepancy-table th,.discrepancy-table td{text-align:left}.discrepancy-table tbody td{height:16px}
 </style></head><body>

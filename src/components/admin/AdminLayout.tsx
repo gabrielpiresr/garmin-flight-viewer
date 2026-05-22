@@ -19,6 +19,9 @@ const AdminStudentsTab = lazy(() => import("./AdminStudentsTab").then((module) =
 const AdminUsersTab = lazy(() => import("./AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
 const FleetTab = lazy(() => import("./FleetTab").then((module) => ({ default: module.FleetTab })));
 const FlightReportsTab = lazy(() => import("./FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })));
+const AdminAllFlightsTab = lazy(() =>
+  import("./AdminAllFlightsTab").then((module) => ({ default: module.AdminAllFlightsTab })),
+);
 const MaintenanceTab = lazy(() => import("./MaintenanceTab").then((module) => ({ default: module.MaintenanceTab })));
 const MaintenanceProgramTab = lazy(() =>
   import("./MaintenanceProgramTab").then((module) => ({ default: module.MaintenanceProgramTab })),
@@ -63,7 +66,7 @@ type AdminSection =
   | "dre";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
-type ReportsSubTab = "flight-reports" | "signatures" | "no-telemetry" | "alerts";
+type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
 type ContentsSubTab = "maneuvers" | "manuals" | "help";
 type DisparosSubTab = "email-mkt" | "notices";
 
@@ -252,6 +255,15 @@ const FLEET_TABS = [
 
 const REPORTS_TABS = [
   {
+    id: "all-flights",
+    label: "Todos os voos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+      </svg>
+    ),
+  },
+  {
     id: "flight-reports",
     label: "Relatórios",
     icon: (
@@ -357,6 +369,7 @@ const SCHEDULE_ROUTES = [
 ] satisfies readonly TabRoute<ScheduleSubTab>[];
 
 const REPORTS_ROUTES = [
+  { id: "all-flights", path: "/admin/todos-os-voos", aliases: [] as string[] },
   { id: "flight-reports", path: "/admin/relatorios", aliases: [] as string[] },
   { id: "signatures", path: "/admin/assinaturas", aliases: [] as string[] },
   { id: "no-telemetry", path: "/admin/sem-telemetria", aliases: [] as string[] },
@@ -463,7 +476,7 @@ export function AdminLayout() {
   const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
   const openedFleetTabs = useOpenedTabs(fleetTab);
   const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
-  const [reportsTab, setReportsTab] = useState<ReportsSubTab>(() => resolveRouteId(REPORTS_ROUTES, "flight-reports"));
+  const [reportsTab, setReportsTab] = useState<ReportsSubTab>(() => resolveRouteId(REPORTS_ROUTES, "all-flights"));
   const openedReportsTabs = useOpenedTabs(reportsTab);
   const [contentsTab, setContentsTab] = useState<ContentsSubTab>(() => resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
   const openedContentsTabs = useOpenedTabs(contentsTab);
@@ -487,7 +500,7 @@ export function AdminLayout() {
     const syncSubRoutes = () => {
       if (routeMatches(FLEET_ROUTES)) setFleetTab(resolveRouteId(FLEET_ROUTES, "aircraft"));
       if (routeMatches(SCHEDULE_ROUTES)) setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
-      if (routeMatches(REPORTS_ROUTES)) setReportsTab(resolveRouteId(REPORTS_ROUTES, "flight-reports"));
+      if (routeMatches(REPORTS_ROUTES)) setReportsTab(resolveRouteId(REPORTS_ROUTES, "all-flights"));
       if (routeMatches(CONTENTS_ROUTES)) setContentsTab(resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
       if (routeMatches(DISPAROS_ROUTES)) setDisparosTab(resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
       if (routeMatches(SETTINGS_ROUTES)) setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "rules"));
@@ -623,6 +636,9 @@ export function AdminLayout() {
           {openedSections.has("reports") && (
             <div hidden={section !== "reports"} className="space-y-4">
               <Tabs items={REPORTS_TABS} value={reportsTab} onChange={changeReportsTab} ariaLabel="Subabas de relatórios" accent="sky" />
+              {openedReportsTabs.has("all-flights") ? (
+                <div hidden={reportsTab !== "all-flights"}><LazyTab><AdminAllFlightsTab /></LazyTab></div>
+              ) : null}
               {openedReportsTabs.has("flight-reports") ? (
                 <div hidden={reportsTab !== "flight-reports"}><LazyTab><FlightReportsTab /></LazyTab></div>
               ) : null}

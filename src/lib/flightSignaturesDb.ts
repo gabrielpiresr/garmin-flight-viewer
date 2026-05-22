@@ -1,10 +1,12 @@
 import { Query } from "appwrite";
+import { Permission, Role } from "appwrite";
 import {
   databases,
   FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID,
   FLIGHT_SIGNATURES_COL_ID,
   ID,
-  isAppwriteConfigured, DEFAULT_SCHOOL_ID,
+  isAppwriteConfigured,
+  DEFAULT_SCHOOL_ID,
   functions,
   SIGN_FLIGHT_FUNCTION_ID,
   STUDENT_CREDITS_COL_ID,
@@ -34,7 +36,11 @@ export type FlightSignatureDoc = {
   reauthenticated_at: string | null;
   auth_method: string | null;
   school_id: string;
-  status: "active";
+  status: "active" | "invalidated";
+  invalidated_at: string | null;
+  invalidated_by: string | null;
+  invalidation_reason: string | null;
+  invalidated_by_event_id: string | null;
   created_at: string;
 };
 
@@ -72,7 +78,11 @@ function toSignatureDoc(d: Record<string, unknown> & { $id: string; $createdAt: 
     reauthenticated_at: (d.reauthenticated_at as string | null | undefined) ?? null,
     auth_method: (d.auth_method as string | null | undefined) ?? null,
     school_id: d.school_id as string,
-    status: "active",
+    status: d.status === "invalidated" ? "invalidated" : "active",
+    invalidated_at: (d.invalidated_at as string | null | undefined) ?? null,
+    invalidated_by: (d.invalidated_by as string | null | undefined) ?? null,
+    invalidation_reason: (d.invalidation_reason as string | null | undefined) ?? null,
+    invalidated_by_event_id: (d.invalidated_by_event_id as string | null | undefined) ?? null,
     created_at: d.$createdAt,
   };
 }
@@ -113,6 +123,7 @@ export async function listSignaturesForFlights(
       ]);
       for (const doc of res.documents) {
         const sig = toSignatureDoc(doc as Record<string, unknown> & { $id: string; $createdAt: string });
+        if (sig.status !== "active") continue;
         const current = map.get(sig.flight_id) ?? emptySignaturesForFlight();
         if (sig.signer_role === "student") current.student = sig;
         else if (sig.signer_role === "instructor") current.instructor = sig;
@@ -140,6 +151,7 @@ export async function listSignaturesForFlight(
     const result: FlightSignaturesForFlight = { student: null, instructor: null, admin_operator: null };
     for (const doc of res.documents) {
       const sig = toSignatureDoc(doc as Record<string, unknown> & { $id: string; $createdAt: string });
+      if (sig.status !== "active") continue;
       if (sig.signer_role === "student") result.student = sig;
       else if (sig.signer_role === "instructor") result.instructor = sig;
       else if (sig.signer_role === "admin_operator") result.admin_operator = sig;
@@ -180,14 +192,28 @@ export async function signFlight(params: {
       return { data: null, error: new Error(parsed.message || "Falha ao assinar o voo.") };
     }
     const sig = parsed.signature;
-    return {
-      data: toSignatureDoc({
-        ...sig,
-        $id: String(sig.id ?? ""),
-        $createdAt: String(sig.created_at ?? new Date().toISOString()),
-      } as Record<string, unknown> & { $id: string; $createdAt: string }),
-      error: null,
-    };
+    const signedAt = String(sig.signed_at ?? new Date().toISOString());
+    const signatureDoc = toSignatureDoc({
+      ...sig,
+      $id: String(sig.id ?? ""),
+      $createdAt: String(sig.created_at ?? signedAt),
+    } as Record<string, unknown> & { $id: string; $createdAt: string });
+
+    if (params.signerRole === "instructor") {
+      try {
+        await saveInstructorPaymentSnapshot(params.flightId, params.actorUserId, signedAt);
+      } catch (paymentErr) {
+        return {
+          data: null,
+          error:
+            paymentErr instanceof Error
+              ? paymentErr
+              : new Error("Voo assinado, mas falhou o lançamento financeiro. Contate o administrador."),
+        };
+      }
+    }
+
+    return { data: signatureDoc, error: null };
   } catch (e) {
     return { data: null, error: e as Error };
   }
@@ -563,7 +589,15 @@ export async function saveInstructorPaymentSnapshot(
   instructorUserId: string,
   calculatedAt: string,
 ): Promise<void> {
-  if (!isAppwriteConfigured || !databases || !FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID) return;
+  if (!isAppwriteConfigured || !databases || !FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID) {
+    throw new Error("Coleção de pagamentos de voo não configurada.");
+  }
+
+  const existingPayment = await databases.listDocuments(DB_ID, FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID, [
+    Query.equal("flight_id", [flightId]),
+    Query.limit(1),
+  ]);
+  if (existingPayment.total > 0) return;
 
   // Fetch flight fields — block_time_minutes is the materialized departure → engine cutoff value.
   const flightDoc = await databases.getDocument(DB_ID, FLIGHTS_COL_ID, flightId, [
@@ -625,6 +659,13 @@ export async function saveInstructorPaymentSnapshot(
   }
 
   // ── Persist snapshot ─────────────────────────────────────────────────────
+  // INVA no browser só pode conceder label:instrutor e o próprio user — não label:admin.
+  const paymentPermissions = [
+    Permission.read(Role.label("instrutor")),
+    Permission.read(Role.user(instructorUserId)),
+    Permission.update(Role.user(instructorUserId)),
+  ];
+
   await databases.createDocument(
     DB_ID,
     FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID,
@@ -641,13 +682,12 @@ export async function saveInstructorPaymentSnapshot(
       flight_minutes_considered: totalMinutes,
       total_calculated: totalCalculated,
       calculated_at: calculatedAt,
-      // Student payment fields
       student_user_id: studentUserId,
       student_hourly_rate_applied: studentHourlyRate,
       student_amount_calculated: studentAmountCalculated,
       student_rate_source: studentRateSource,
       student_credit_id: studentCreditId,
     },
-    [],
+    paymentPermissions,
   );
 }

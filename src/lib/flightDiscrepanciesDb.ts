@@ -59,12 +59,26 @@ function realDiscrepancy(value: string | null | undefined): string {
   const text = String(value ?? "").trim();
   if (!text) return "";
   const normalized = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  if (normalized.includes("sem discrep")) return "";
   if (normalized.includes("nao foi constatado") && normalized.includes("discrepancia")) return "";
   return text;
 }
 
 function stableDiscrepancyId(flightId: string, legIndex: number): string {
   return `disc_${flightId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 28)}_${legIndex}`;
+}
+
+async function deleteOpenUnlinkedDiscrepanciesForFlight(flightId: string, preserveId?: string): Promise<void> {
+  const existing = await databases!.listDocuments(DB_ID!, FLIGHT_DISCREPANCIES_COL_ID!, [
+    Query.equal("flight_id", [flightId]),
+    Query.limit(100),
+  ]);
+  await Promise.all(existing.documents.map(async (doc) => {
+    if (preserveId && doc.$id === preserveId) return;
+    if (doc.status && doc.status !== "open") return;
+    if (doc.linked_work_order_id) return;
+    await databases!.deleteDocument(DB_ID!, FLIGHT_DISCREPANCIES_COL_ID!, doc.$id);
+  }));
 }
 
 export async function listFlightDiscrepancies(aircraftIdent: string): Promise<FlightDiscrepancy[]> {
@@ -84,29 +98,38 @@ export async function syncFlightDiscrepanciesFromMetas(
   if (!hasCollection() || !databases || !DB_ID || !FLIGHT_DISCREPANCIES_COL_ID) return;
   await Promise.all(rows.map(async (flight) => {
     const meta = metaByFlightId.get(flight.id);
+    if (!meta) return;
     const discrepancyText = realDiscrepancy(meta?.technicalLog?.discrepancies);
-    if (!meta || !discrepancyText) return;
+    if (!discrepancyText) {
+      await deleteOpenUnlinkedDiscrepanciesForFlight(flight.id);
+      return;
+    }
     const legCount = Math.max(1, meta.legs.length);
-    await Promise.all(Array.from({ length: legCount }, async (_, legIndex) => {
-      const id = stableDiscrepancyId(flight.id, legIndex);
-      const payload = {
-        aircraft_ident: (flight.aircraft_ident ?? meta.header.aircraft ?? "").trim().toUpperCase(),
-        flight_id: flight.id,
-        leg_index: legIndex,
-        flight_date: flight.flight_date ?? meta.header.date ?? null,
-        system: null,
-        discrepancy_text: discrepancyText,
-        canac_reported: meta.header.instructorAnac ?? meta.header.studentAnac ?? null,
-        status: "open",
-        school_id: DEFAULT_SCHOOL_ID,
-      };
-      try {
-        await databases!.createDocument(DB_ID!, FLIGHT_DISCREPANCIES_COL_ID!, id, payload, []);
-      } catch (e) {
-        const msg = ((e as { message?: string })?.message ?? String(e)).toLowerCase();
-        if (!msg.includes("already exists") && !msg.includes("document_already_exists")) throw e;
+    const legIndex = legCount - 1;
+    const id = stableDiscrepancyId(flight.id, legIndex);
+    const payload = {
+      aircraft_ident: (flight.aircraft_ident ?? meta.header.aircraft ?? "").trim().toUpperCase(),
+      flight_id: flight.id,
+      leg_index: legIndex,
+      flight_date: flight.flight_date ?? meta.header.date ?? null,
+      system: null,
+      discrepancy_text: discrepancyText,
+      canac_reported: meta.header.instructorAnac ?? meta.header.studentAnac ?? null,
+      status: "open",
+      school_id: DEFAULT_SCHOOL_ID,
+    };
+    try {
+      await databases!.createDocument(DB_ID!, FLIGHT_DISCREPANCIES_COL_ID!, id, payload, []);
+    } catch (e) {
+      const msg = ((e as { message?: string })?.message ?? String(e)).toLowerCase();
+      if (msg.includes("already exists") || msg.includes("document_already_exists")) {
+        await databases!.updateDocument(DB_ID!, FLIGHT_DISCREPANCIES_COL_ID!, id, payload);
+      } else {
+        throw e;
       }
-    }));
+    }
+
+    await deleteOpenUnlinkedDiscrepanciesForFlight(flight.id, id);
   }));
 }
 

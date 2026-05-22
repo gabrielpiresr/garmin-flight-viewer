@@ -1,4 +1,10 @@
-import { SLOT_HOURS } from "../types/admin";
+import {
+  buildDiurnalStartMinutes,
+  hoursOverlappingInterval,
+  integerHoursAreContiguous,
+  minutesToScheduleHHMM,
+  startMinuteToSortHour,
+} from "./scheduleTimeGrid";
 import type {
   AircraftWeekSupply,
   AircraftUtilizationSummary,
@@ -88,16 +94,6 @@ type CandidateEvaluation = {
   rejectionCodes: Set<CandidateRejectionCode>;
 };
 
-function minutesToHHMM(totalMinutes: number): string {
-  const hh = Math.floor(totalMinutes / 60)
-    .toString()
-    .padStart(2, "0");
-  const mm = Math.round(totalMinutes % 60)
-    .toString()
-    .padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
 function addDays(weekStart: string, dayOfWeek: number): string {
   const date = new Date(`${weekStart}T12:00:00`);
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -135,17 +131,6 @@ function toRelaxationLevel(layer: AllocationLayer): ScheduledFlightSuggestion["r
   if (layer === "B") return "aircraft_only";
   if (layer === "C") return "time_only";
   return "aircraft_and_time";
-}
-
-function isContiguousHours(startIndex: number, units: number): boolean {
-  if (units <= 1) return true;
-  for (let i = 1; i < units; i += 1) {
-    const prev = SLOT_HOURS[startIndex + i - 1];
-    const next = SLOT_HOURS[startIndex + i];
-    if (prev === undefined || next === undefined) return false;
-    if (next - prev !== 1) return false;
-  }
-  return true;
 }
 
 function buildAvailabilitySets(demand: StudentRequestDemand): {
@@ -228,11 +213,130 @@ function getInstructorAvailability(
   return row.availabilityType === "preferred" ? "preferred" : "available";
 }
 
-function hasIntervalConflict(intervals: InstructorOccupied[], date: string, startMinute: number, endMinute: number): boolean {
-  return intervals.some((interval) => {
-    if (interval.date !== date) return false;
-    return startMinute < interval.endMinute && endMinute > interval.startMinute;
+/** Aeronave: não permite sobreposição nem violar intervalo mínimo. */
+function hasAircraftScheduleConflict(
+  intervals: Array<{ startMinute: number; endMinute: number }>,
+  startMinute: number,
+  endMinute: number,
+  minGapMinutes: number,
+): boolean {
+  const minGap = Math.max(0, minGapMinutes);
+  for (const interval of intervals) {
+    const overlap = startMinute < interval.endMinute && endMinute > interval.startMinute;
+    if (overlap) return true;
+    const gapConflict =
+      startMinute < interval.endMinute + minGap && interval.startMinute < endMinute + minGap;
+    if (gapConflict) return true;
+  }
+  return false;
+}
+
+/**
+ * Instrutor: permite dois voos no mesmo horário (aviões diferentes).
+ * Só exige intervalo mínimo entre voos sequenciais do mesmo instrutor.
+ */
+function hasInstructorGapConflict(
+  intervals: Array<{ startMinute: number; endMinute: number }>,
+  startMinute: number,
+  endMinute: number,
+  minGapMinutes: number,
+): boolean {
+  const minGap = Math.max(0, minGapMinutes);
+  for (const interval of intervals) {
+    const overlap = startMinute < interval.endMinute && endMinute > interval.startMinute;
+    if (overlap) continue;
+    const gapConflict =
+      startMinute < interval.endMinute + minGap && interval.startMinute < endMinute + minGap;
+    if (gapConflict) return true;
+  }
+  return false;
+}
+
+function hasInstructorForSlot(params: {
+  dayOfWeek: number;
+  weekDate: string;
+  startMinute: number;
+  endMinute: number;
+  minGapMinutes: number;
+  instructors: InstructorIdentity[];
+  instructorConfigs: InstructorWeeklyConfig[];
+  occupiedByInstructor: Map<string, InstructorOccupied[]>;
+}): boolean {
+  return (
+    pickInstructorForSlot({
+      ...params,
+      preferredInstructorId: null,
+    }) !== null
+  );
+}
+
+function pickInstructorForSlot(params: {
+  dayOfWeek: number;
+  weekDate: string;
+  startMinute: number;
+  endMinute: number;
+  minGapMinutes: number;
+  instructors: InstructorIdentity[];
+  instructorConfigs: InstructorWeeklyConfig[];
+  occupiedByInstructor: Map<string, InstructorOccupied[]>;
+  preferredInstructorId?: string | null;
+}): InstructorIdentity | null {
+  const requiredPeriods = flightPeriods(params.startMinute, params.endMinute);
+  const configsByInstructor = new Map(params.instructorConfigs.map((config) => [config.instructorId, config]));
+
+  const candidates = params.instructors.filter((instructor) => {
+    const config = configsByInstructor.get(instructor.userId) ?? defaultInstructorConfig(instructor.userId);
+    if (!config.availableThisWeek) return false;
+    if (!requiredPeriods.every((period) => getInstructorAvailability(config, params.dayOfWeek, period) !== "none")) {
+      return false;
+    }
+    const intervals = params.occupiedByInstructor.get(instructor.userId) ?? [];
+    const dayIntervals = intervals.filter((interval) => interval.date === params.weekDate);
+    return !hasInstructorGapConflict(dayIntervals, params.startMinute, params.endMinute, params.minGapMinutes);
   });
+
+  const loadByInstructor = new Map<string, number>();
+  for (const [instructorId, intervals] of params.occupiedByInstructor) {
+    let hours = 0;
+    for (const interval of intervals) {
+      hours += (interval.endMinute - interval.startMinute) / 60;
+    }
+    loadByInstructor.set(instructorId, hours);
+  }
+
+  candidates.sort((a, b) => {
+    const aConfig = configsByInstructor.get(a.userId) ?? defaultInstructorConfig(a.userId);
+    const bConfig = configsByInstructor.get(b.userId) ?? defaultInstructorConfig(b.userId);
+    const aPeriodPreference = requiredPeriods.filter(
+      (period) => getInstructorAvailability(aConfig, params.dayOfWeek, period) === "preferred",
+    ).length;
+    const bPeriodPreference = requiredPeriods.filter(
+      (period) => getInstructorAvailability(bConfig, params.dayOfWeek, period) === "preferred",
+    ).length;
+    const periodCmp = bPeriodPreference - aPeriodPreference;
+    if (periodCmp !== 0) return periodCmp;
+    const preferenceCmp = instructorPreferenceRank(bConfig.preferenceLevel) - instructorPreferenceRank(aConfig.preferenceLevel);
+    if (preferenceCmp !== 0) return preferenceCmp;
+    const currentCmp = Number(b.userId === params.preferredInstructorId) - Number(a.userId === params.preferredInstructorId);
+    if (currentCmp !== 0) return currentCmp;
+    const loadCmp = (loadByInstructor.get(a.userId) ?? 0) - (loadByInstructor.get(b.userId) ?? 0);
+    if (loadCmp !== 0) return loadCmp;
+    return a.label.localeCompare(b.label, "pt-BR");
+  });
+
+  return candidates[0] ?? null;
+}
+
+function reserveInstructorInterval(
+  occupiedByInstructor: Map<string, InstructorOccupied[]>,
+  instructorId: string,
+  date: string,
+  startMinute: number,
+  endMinute: number,
+) {
+  const intervals = occupiedByInstructor.get(instructorId) ?? [];
+  intervals.push({ date, startMinute, endMinute });
+  occupiedByInstructor.set(instructorId, intervals);
 }
 
 function suggestionInterval(row: ScheduledFlightSuggestion): { startMinute: number; endMinute: number } {
@@ -249,7 +353,9 @@ export function assignInstructorsToSuggestions(input: {
   instructors: InstructorIdentity[];
   instructorConfigs: InstructorWeeklyConfig[];
   existingFlights?: ScheduleGeneratorInput["existingFlights"];
+  minGapMinutes?: number;
 }): ScheduledFlightSuggestion[] {
+  const minGapMinutes = Math.max(0, input.minGapMinutes ?? 0);
   const configsByInstructor = new Map(input.instructorConfigs.map((config) => [config.instructorId, config]));
   const occupiedByInstructor = new Map<string, InstructorOccupied[]>();
   const loadByInstructor = new Map<string, number>();
@@ -286,7 +392,8 @@ export function assignInstructorsToSuggestions(input: {
       if (!config.availableThisWeek) return false;
       if (!requiredPeriods.every((period) => getInstructorAvailability(config, row.dayOfWeek, period) !== "none")) return false;
       const intervals = occupiedByInstructor.get(instructor.userId) ?? [];
-      return !hasIntervalConflict(intervals, row.weekDate, startMinute, endMinute);
+      const dayIntervals = intervals.filter((interval) => interval.date === row.weekDate);
+      return !hasInstructorGapConflict(dayIntervals, startMinute, endMinute, minGapMinutes);
     });
 
     candidates.sort((a, b) => {
@@ -372,17 +479,33 @@ function slotStateRank(state: "preferred" | "normal" | "avoid" | "blocked" | und
   return -1;
 }
 
+function findSupplyByRegistration(
+  supplies: AircraftWeekSupply[],
+  aircraftRegistration: string | null | undefined,
+): AircraftWeekSupply | undefined {
+  const key = (aircraftRegistration ?? "").trim().toUpperCase();
+  if (!key) return undefined;
+  return supplies.find((row) => row.aircraftRegistration.trim().toUpperCase() === key);
+}
+
 export function generateSchedulePreview(input: ScheduleGeneratorInput): SchedulePreview {
   const occupiedByAircraftDay = new Map<string, OccupiedInterval[]>();
+  const occupiedByInstructor = new Map<string, InstructorOccupied[]>();
   const usedHoursByAircraftDay = new Map<string, number>();
   const studentOccupiedByStudent = new Map<string, StudentOccupied[]>();
   const studentUsedDays = new Set<string>();
   const nightFlightsPerAircraftDay = new Map<string, number>();
   const allowNightFlights = input.allowNightFlights ?? false;
   const nightFlightStartHour = input.nightFlightStartHour ?? 18;
+  const instructors = input.instructors ?? [];
+  const instructorConfigs = input.instructorConfigs ?? [];
 
   const allSupplies = input.supplies.filter((supply) => supply.aircraftId.length > 0);
+  const aircraftWeekHours = new Map<string, number>();
+  const aircraftWeekFlights = new Map<string, number>();
   for (const supply of allSupplies) {
+    aircraftWeekHours.set(supply.aircraftId, 0);
+    aircraftWeekFlights.set(supply.aircraftId, 0);
     for (const day of [1, 2, 3, 4, 5, 6, 0]) {
       const key = `${supply.aircraftId}-${day}`;
       usedHoursByAircraftDay.set(key, 0);
@@ -390,9 +513,20 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     }
   }
 
+  const aircraftLoadScore = (aircraftId: string): number => {
+    const hours = aircraftWeekHours.get(aircraftId) ?? 0;
+    const flights = aircraftWeekFlights.get(aircraftId) ?? 0;
+    return hours * 10 + flights;
+  };
+
   for (const existing of input.existingFlights) {
-    const supply = allSupplies.find((row) => row.aircraftRegistration === existing.aircraftRegistration);
+    const supply = findSupplyByRegistration(allSupplies, existing.aircraftRegistration);
     if (!supply) continue;
+    aircraftWeekHours.set(
+      supply.aircraftId,
+      (aircraftWeekHours.get(supply.aircraftId) ?? 0) + existing.durationHours,
+    );
+    aircraftWeekFlights.set(supply.aircraftId, (aircraftWeekFlights.get(supply.aircraftId) ?? 0) + 1);
     const date = new Date(`${existing.date}T12:00:00`);
     const day = date.getDay();
     const [hh, mm] = existing.startTime.split(":").map(Number);
@@ -407,6 +541,15 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     studentRows.push({ date: existing.date, startMinute, endMinute });
     studentOccupiedByStudent.set(existing.studentId, studentRows);
     studentUsedDays.add(`${existing.studentId}-${existing.date}`);
+    if (existing.instructorId) {
+      reserveInstructorInterval(
+        occupiedByInstructor,
+        existing.instructorId,
+        existing.date,
+        startMinute,
+        endMinute,
+      );
+    }
   }
 
   const demandStats = new Map<string, DemandSortState>();
@@ -416,6 +559,12 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     demandStats.set(demand.studentId, current);
   }
 
+  for (const existing of input.existingFlights) {
+    const stats = demandStats.get(existing.studentId);
+    if (!stats) continue;
+    stats.served = Math.min(stats.requested, stats.served + 1);
+  }
+
   const suggestions: ScheduledFlightSuggestion[] = [];
   const unallocatedDemands: UnallocatedDemand[] = [];
   const remainingDemands: DemandWorkItem[] = input.demands.map((demand, originalIndex) => ({ demand, originalIndex }));
@@ -423,7 +572,8 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
   const buildCandidates = (demand: StudentRequestDemand): CandidateBuildResult => {
     const isNightDemand = (demand.isNight ?? false) && allowNightFlights;
     const demandAvailability = buildAvailabilitySets(demand);
-    const units = Math.max(1, Math.ceil(demand.durationHours));
+    const durationMinutes = Math.round(demand.durationHours * 60);
+    const diurnalStartMinutes = buildDiurnalStartMinutes(durationMinutes);
     const candidates: Candidate[] = [];
     let hadNonContiguousAttempt = false;
 
@@ -463,13 +613,15 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
             operationalPreferenceRank,
           });
         } else {
-          for (let i = 0; i < SLOT_HOURS.length; i += 1) {
-            if (!isContiguousHours(i, units)) {
+          for (const startMinute of diurnalStartMinutes) {
+            const endMinute = startMinute + durationMinutes;
+            const hours = hoursOverlappingInterval(startMinute, endMinute);
+            if (hours.length === 0) continue;
+            if (!integerHoursAreContiguous(hours)) {
               hadNonContiguousAttempt = true;
               continue;
             }
-            const hours = SLOT_HOURS.slice(i, i + units);
-            if (hours.length < units) continue;
+
             const slotKeys = hours.map((hour) => `${day}-${hour}`);
             const hasBlocked = slotKeys.some((slotKey) => {
               const state = supply.slotStates[slotKey];
@@ -480,9 +632,6 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
             const availabilityCheck = passesAvailability(demandAvailability, day, hours);
             if (!availabilityCheck.allowed) continue;
 
-            const startHour = hours[0]!;
-            const startMinute = startHour * 60;
-            const endMinute = startMinute + Math.round(demand.durationHours * 60);
             const modelPreferred = Boolean(demand.preferredModelId && supply.aircraftModelId === demand.preferredModelId);
             const operationalPreferenceRank = Math.min(
               ...slotKeys.map((slotKey) => slotStateRank(supply.slotStates[slotKey])),
@@ -497,7 +646,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
               aircraftRegistration: supply.aircraftRegistration,
               dayOfWeek: day,
               weekDate: addDays(input.weekStart, day),
-              startHour,
+              startHour: startMinuteToSortHour(startMinute),
               startMinute,
               endMinute,
               durationHours: demand.durationHours,
@@ -546,15 +695,28 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     const aircraftIntervals = occupiedByAircraftDay.get(dayKey) ?? [];
     for (const interval of aircraftIntervals) {
       const overlap = candidate.startMinute < interval.endMinute && candidate.endMinute > interval.startMinute;
-      if (overlap && interval.existing) return "existingFlightConflict";
-      if (overlap) return "gapConflict";
-
+      if (overlap) return interval.existing ? "existingFlightConflict" : "gapConflict";
       const minGap = Math.max(0, input.minGapMinutes);
-      const noGapBefore = candidate.startMinute < interval.endMinute + minGap;
-      const noGapAfter = interval.startMinute < candidate.endMinute + minGap;
-      const gapConflict = noGapBefore && noGapAfter;
-      if (gapConflict && interval.existing) return "existingFlightConflict";
-      if (gapConflict) return "gapConflict";
+      const gapConflict =
+        candidate.startMinute < interval.endMinute + minGap &&
+        interval.startMinute < candidate.endMinute + minGap;
+      if (gapConflict) return interval.existing ? "existingFlightConflict" : "gapConflict";
+    }
+
+    if (
+      instructors.length > 0 &&
+      !hasInstructorForSlot({
+        dayOfWeek: candidate.dayOfWeek,
+        weekDate: candidate.weekDate,
+        startMinute: candidate.startMinute,
+        endMinute: candidate.endMinute,
+        minGapMinutes: input.minGapMinutes,
+        instructors,
+        instructorConfigs,
+        occupiedByInstructor,
+      })
+    ) {
+      return "gapConflict";
     }
 
     const studentIntervals = studentOccupiedByStudent.get(demand.studentId) ?? [];
@@ -588,19 +750,17 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       if (layerCandidates.length === 0) continue;
 
       layerCandidates.sort((a, b) => {
+        const opCmp = b.operationalPreferenceRank - a.operationalPreferenceRank;
+        if (opCmp !== 0) return opCmp;
+        const loadCmp = aircraftLoadScore(a.aircraftId) - aircraftLoadScore(b.aircraftId);
+        if (loadCmp !== 0) return loadCmp;
         const impactCmp = (candidateImpactScore?.(a) ?? 0) - (candidateImpactScore?.(b) ?? 0);
         if (impactCmp !== 0) return impactCmp;
         const dayCmp = (DAY_RANK.get(a.dayOfWeek) ?? 99) - (DAY_RANK.get(b.dayOfWeek) ?? 99);
         if (dayCmp !== 0) return dayCmp;
-        const opCmp = b.operationalPreferenceRank - a.operationalPreferenceRank;
-        if (opCmp !== 0) return opCmp;
         const hourCmp = a.startHour - b.startHour;
         if (hourCmp !== 0) return hourCmp;
-        const aDayKey = `${a.aircraftId}-${a.dayOfWeek}`;
-        const bDayKey = `${b.aircraftId}-${b.dayOfWeek}`;
-        const aUsage = usedHoursByAircraftDay.get(aDayKey) ?? 0;
-        const bUsage = usedHoursByAircraftDay.get(bDayKey) ?? 0;
-        return aUsage - bUsage;
+        return a.aircraftId.localeCompare(b.aircraftId);
       });
 
       for (const candidate of layerCandidates) {
@@ -633,17 +793,17 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     }
 
     const wouldAllocationRejectCandidate = (allocation: Candidate, candidate: Candidate): boolean => {
-      if (allocation.aircraftId !== candidate.aircraftId) return false;
-
-      if (allocation.dayOfWeek === candidate.dayOfWeek) {
-        const overlap = candidate.startMinute < allocation.endMinute && candidate.endMinute > allocation.startMinute;
-        if (overlap) return true;
-
-        const minGap = Math.max(0, input.minGapMinutes);
-        const gapConflict =
-          candidate.startMinute < allocation.endMinute + minGap &&
-          allocation.startMinute < candidate.endMinute + minGap;
-        if (gapConflict) return true;
+      if (allocation.aircraftId === candidate.aircraftId && allocation.dayOfWeek === candidate.dayOfWeek) {
+        if (
+          hasAircraftScheduleConflict(
+            [{ startMinute: allocation.startMinute, endMinute: allocation.endMinute }],
+            candidate.startMinute,
+            candidate.endMinute,
+            input.minGapMinutes,
+          )
+        ) {
+          return true;
+        }
 
         const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
         const cap = supply?.dailyCaps[candidate.dayOfWeek];
@@ -652,12 +812,16 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       }
 
       const supply = allSupplies.find((row) => row.aircraftId === candidate.aircraftId);
-      if (!supply) return false;
-      return supply.groupCaps.some((groupCap) => {
-        if (!groupCap.days.includes(allocation.dayOfWeek) || !groupCap.days.includes(candidate.dayOfWeek)) return false;
-        const used = groupCapUsedHours(supply, groupCap.days, usedHoursByAircraftDay);
-        return used + allocation.durationHours + candidate.durationHours > groupCap.maxHours;
-      });
+      if (supply) {
+        const groupRejected = supply.groupCaps.some((groupCap) => {
+          if (!groupCap.days.includes(allocation.dayOfWeek) || !groupCap.days.includes(candidate.dayOfWeek)) return false;
+          const used = groupCapUsedHours(supply, groupCap.days, usedHoursByAircraftDay);
+          return used + allocation.durationHours + candidate.durationHours > groupCap.maxHours;
+        });
+        if (groupRejected) return true;
+      }
+
+      return false;
     };
 
     const impactCache = new Map<string, number>();
@@ -782,6 +946,12 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       nightFlightsPerAircraftDay.set(nightAircraftKey, (nightFlightsPerAircraftDay.get(nightAircraftKey) ?? 0) + 1);
     }
 
+    aircraftWeekHours.set(
+      allocated.aircraftId,
+      (aircraftWeekHours.get(allocated.aircraftId) ?? 0) + demand.durationHours,
+    );
+    aircraftWeekFlights.set(allocated.aircraftId, (aircraftWeekFlights.get(allocated.aircraftId) ?? 0) + 1);
+
     suggestions.push({
       demandId: demand.demandId,
       studentId: demand.studentId,
@@ -790,9 +960,9 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
       aircraftRegistration: allocated.aircraftRegistration,
       dayOfWeek: allocated.dayOfWeek,
       weekDate: allocated.weekDate,
-      startHour: allocated.startHour,
-      startTime: minutesToHHMM(allocated.startMinute),
-      endTime: minutesToHHMM(allocated.endMinute),
+      startHour: startMinuteToSortHour(allocated.startMinute),
+      startTime: minutesToScheduleHHMM(allocated.startMinute),
+      endTime: minutesToScheduleHHMM(allocated.endMinute),
       durationHours: demand.durationHours,
       priorityLevel: demand.priorityLevel,
       flexibilityLevel: demand.flexibilityLevel,
@@ -811,9 +981,10 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
 
   const assignedSuggestions = assignInstructorsToSuggestions({
     suggestions,
-    instructors: input.instructors ?? [],
-    instructorConfigs: input.instructorConfigs ?? [],
+    instructors,
+    instructorConfigs,
     existingFlights: input.existingFlights,
+    minGapMinutes: input.minGapMinutes,
   });
 
   const aircraftSummary: AircraftUtilizationSummary[] = allSupplies.map((supply) => {
@@ -856,11 +1027,21 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     row.requestedHours += demand.durationHours;
   }
 
+  const assignedDemandIds = new Set(assignedSuggestions.map((row) => row.demandId));
+
   for (const suggestion of assignedSuggestions) {
     const row = studentSummaryMap.get(suggestion.studentId);
     if (!row) continue;
     row.allocatedFlights += 1;
     row.allocatedHours += suggestion.durationHours;
+  }
+
+  for (const existing of input.existingFlights) {
+    if (assignedDemandIds.has(existing.demandId)) continue;
+    const row = studentSummaryMap.get(existing.studentId);
+    if (!row) continue;
+    row.allocatedFlights += 1;
+    row.allocatedHours += existing.durationHours;
   }
 
   for (const unallocated of unallocatedDemands) {

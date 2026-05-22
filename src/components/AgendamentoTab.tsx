@@ -22,15 +22,14 @@ import type {
   AvailabilityPeriod,
   AvailabilityType,
   FlightItemLocal,
-  FlexibilityLevel,
   WeeklyFlightPlanFull,
   WeeklyFlightPlanItemFull,
   SavePlanPayload,
 } from "../types/planning";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 
-const PLAN_DAYS = [1, 2, 3, 4, 5, 6] as const;
-const PLAN_DAY_LABELS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const PLAN_DAYS = [1, 2, 3, 4, 5, 6, 0] as const;
+const PLAN_DAY_LABELS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 
 const PLAN_PERIODS: { id: AvailabilityPeriod; label: string }[] = [
   { id: "morning", label: "Manhã" },
@@ -141,8 +140,6 @@ const PRIORITY_COLORS: Record<1 | 2 | 3, string> = {
   2: "bg-amber-600/20 text-amber-400 border-amber-600/30",
   3: "bg-slate-700/50 text-slate-400 border-slate-600/40",
 };
-const FLEX_LABELS: Record<FlexibilityLevel, string> = { low: "Baixa", medium: "Média", high: "Alta" };
-
 // ─── FlightItemCard ────────────────────────────────────────────────────────────
 
 type FlightItemCardProps = {
@@ -277,37 +274,22 @@ function FlightItemCard({ index, item, modelOptions, durationOptions, onChange, 
               </div>
             </div>
 
-            {/* Flexibility */}
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-slate-500">Flexibilidade</p>
-              <div className="flex gap-1.5">
-                {(["low", "medium", "high"] as const).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => onChange({ ...item, flexibilityLevel: f })}
-                    className={`flex-1 rounded-lg border px-2 py-2 text-xs font-medium transition ${
-                      item.flexibilityLevel === f
-                        ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
-                        : "border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300"
-                    }`}
-                  >
-                    {FLEX_LABELS[f]}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
 
           {/* Model preference */}
           <div>
-            <p className="mb-1.5 text-xs font-medium text-slate-500">Modelo de aeronave</p>
+            <p className="mb-1.5 text-xs font-medium text-slate-500">
+              Modelo de aeronave <span className="text-red-400">*</span>
+            </p>
             <select
+              required
               value={item.preferredAircraft ?? ""}
               onChange={(e) => onChange({ ...item, preferredAircraft: e.target.value || null })}
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500 sm:max-w-xs"
             >
-              <option value="">Sem preferência de modelo</option>
+              <option value="" disabled>
+                Selecione o modelo
+              </option>
               {modelOptions.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.name}
@@ -643,6 +625,10 @@ export function AgendamentoTab() {
     if (missingAvailabilityIdx >= 0) {
       return `Preencha ao menos 1 slot de disponibilidade no voo ${missingAvailabilityIdx + 1}.`;
     }
+    const missingModelIdx = items.findIndex((item) => !item.preferredAircraft);
+    if (missingModelIdx >= 0) {
+      return `Selecione o modelo de aeronave no voo ${missingModelIdx + 1}.`;
+    }
     if (rules.schedule.requireCreditsForIntentions) {
       if (!creditStatement) return "Não foi possível consultar seus créditos para enviar a solicitação.";
       const requestedHours = items.reduce((acc, item) => acc + item.durationHours, 0);
@@ -879,7 +865,9 @@ export function AgendamentoTab() {
               <span className={`ml-auto rounded border px-2 py-0.5 text-xs ${PRIORITY_COLORS[item.priority_level]}`}>
                 {PRIORITY_LABELS[item.priority_level]}
               </span>
-              <span className="text-xs text-slate-500">{FLEX_LABELS[item.flexibility_level]}</span>
+              <span className="text-xs text-slate-500">
+                {modelOptions.find((m) => m.id === item.preferred_aircraft)?.name ?? "Modelo"}
+              </span>
             </div>
           ))}
         </div>

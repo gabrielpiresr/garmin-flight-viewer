@@ -46,6 +46,14 @@ const COLLECTION_PERMS = [
   Permission.delete(Role.label("admin")),
 ];
 
+/** Aluno pode criar o próprio vínculo no cadastro; admin mantém gestão completa. */
+const STUDENT_TRACKS_PERMS = [
+  Permission.read(Role.users()),
+  Permission.create(Role.users()),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
+];
+
 const DEFAULT_TRACK_NAME = "Programa PP - Cronograma PDF";
 const DEFAULT_STAGES = [
   { id: "pre-solo", name: "FASE PRE SOLO", order: 1, missions: [
@@ -183,8 +191,23 @@ async function configureTracks() {
   await idx(TRACKS_COLLECTION_ID, "training_tracks_default_idx", ["school_id", "is_default"], ["ASC", "ASC"]);
 }
 
+async function ensureStudentTracksCollection(collectionId, name) {
+  try {
+    const collection = await db.getCollection(DATABASE_ID, collectionId);
+    await db.updateCollection(DATABASE_ID, collectionId, name, STUDENT_TRACKS_PERMS, false, true);
+    console.log(`  - ${name} exists (${collection.$id})`);
+    return collection;
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (!message.includes("not found") && !message.includes("could not be found")) throw error;
+  }
+  const collection = await db.createCollection(DATABASE_ID, collectionId, name, STUDENT_TRACKS_PERMS, false, true);
+  console.log(`  + Created ${name} (${collection.$id})`);
+  return collection;
+}
+
 async function configureStudentTracks() {
-  await ensureCollection(STUDENT_TRACKS_COLLECTION_ID, "student_training_tracks");
+  await ensureStudentTracksCollection(STUDENT_TRACKS_COLLECTION_ID, "student_training_tracks");
   await attr(STUDENT_TRACKS_COLLECTION_ID, "school_id", () => db.createStringAttribute(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, "school_id", 64, true), "school_id");
   await attr(STUDENT_TRACKS_COLLECTION_ID, "student_user_id", () => db.createStringAttribute(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, "student_user_id", 64, true), "student_user_id");
   await attr(STUDENT_TRACKS_COLLECTION_ID, "track_id", () => db.createStringAttribute(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, "track_id", 64, true), "track_id");

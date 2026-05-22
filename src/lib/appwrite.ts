@@ -67,6 +67,8 @@ export const LOGBOOK_OPENING_SIGNATURES_COL_ID =
   (import.meta.env.VITE_APPWRITE_LOGBOOK_OPENING_SIGNATURES_COL_ID as string | undefined) ?? "logbook_opening_signatures";
 export const FLIGHT_DISCREPANCIES_COL_ID =
   (import.meta.env.VITE_APPWRITE_FLIGHT_DISCREPANCIES_COL_ID as string | undefined) ?? "flight_discrepancies";
+export const AUDIT_EVENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUDIT_EVENTS_COL_ID as string | undefined) ?? "audit_events";
 export const TRAINING_EXERCISES_COL_ID = import.meta.env.VITE_APPWRITE_TRAINING_EXERCISES_COL_ID as string | undefined;
 export const TRAINING_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID as string | undefined) ?? "training_tracks";
