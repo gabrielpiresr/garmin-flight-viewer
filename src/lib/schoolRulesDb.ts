@@ -1,4 +1,5 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
+import { getEmailBrandSettings } from "./notificationsDb";
 import { DEFAULT_SCHOOL_RULES, normalizeSchoolRules, type SchoolRules, type SchoolRulesInput } from "../types/schoolRules";
 
 const RULES_CACHE_KEY = "gfv:schoolRules";
@@ -155,9 +156,12 @@ export function preloadBranding(): void {
  *  Should be called after login (fire-and-forget is fine). */
 export async function refreshBrandCache(): Promise<void> {
   try {
-    const rules = await getSchoolRules();
+    const [rules, brand] = await Promise.all([
+      getSchoolRules(),
+      getEmailBrandSettings().catch(() => null),
+    ]);
     cacheSchoolRules(rules);
-    applySchoolTheme(rules);
+    applySchoolTheme(rules, brand ? { schoolName: brand.schoolName, faviconUrl: brand.faviconUrl } : undefined);
   } catch {
     // Non-critical — theme already applied from cache
   }

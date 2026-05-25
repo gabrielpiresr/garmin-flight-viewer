@@ -30,6 +30,7 @@ function buildFlightVideoDocumentPermissions(
   actorRole: UserRole,
 ): string[] {
   const permissions = [
+    Permission.read(Role.users()),
     Permission.read(Role.user(uploadedBy)),
     Permission.read(Role.label("instrutor")),
     Permission.update(Role.user(uploadedBy)),

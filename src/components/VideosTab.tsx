@@ -12,6 +12,7 @@ import { ExportModal, type ExportProgress } from "./ExportModal";
 import { renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
 import { useAuth } from "../contexts/AuthContext";
 import { account } from "../lib/appwrite";
+import { getCachedBrandSettings, getEmailBrandSettings } from "../lib/notificationsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
   createFlightVideoDoc,
@@ -189,17 +190,11 @@ function isVideoUploadFile(name: string): boolean {
 }
 
 function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
-  try {
-    const raw = window.localStorage.getItem("gfv:emailBrandSettings");
-    if (!raw) return { schoolName: "Escola", logoUrl: "" };
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      schoolName: typeof parsed.schoolName === "string" && parsed.schoolName.trim() ? parsed.schoolName : "Escola",
-      logoUrl: typeof parsed.logoUrl === "string" ? parsed.logoUrl : "",
-    };
-  } catch {
-    return { schoolName: "Escola", logoUrl: "" };
-  }
+  const settings = getCachedBrandSettings();
+  return {
+    schoolName: settings?.schoolName?.trim() || "Escola",
+    logoUrl: settings?.logoDataUrl || settings?.logoUrl || "",
+  };
 }
 
 function uploadFileToHelper(
@@ -1149,7 +1144,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     return { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" };
   }, [orientation, videoStageSize]);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
-  const brand = useMemo(() => getCachedVideoBrand(), []);
+  const [brand, setBrand] = useState(() => getCachedVideoBrand());
   const verticalDragRef = useRef<{ startX: number; startCrop: number; moved: boolean } | null>(null);
   const currentTimeRef = useRef(0);
 
@@ -1161,6 +1156,24 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   useEffect(() => {
     setEnabledWidgets(defaultWidgets);
   }, [defaultWidgets, video.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getEmailBrandSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setBrand({
+          schoolName: settings.schoolName?.trim() || "Escola",
+          logoUrl: settings.logoDataUrl || settings.logoUrl || "",
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBrand(getCachedVideoBrand());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
