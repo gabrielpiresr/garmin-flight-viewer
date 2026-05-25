@@ -4,7 +4,6 @@ import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import { aggregateJourneyMetrics, type JourneyMetrics } from "../lib/journeyMetrics";
 import { listJourneyTelemetrySummaries } from "../lib/flightTelemetryMetricsDb";
-import { renderRichContent } from "../lib/maneuverContent";
 import { listManeuverCatalog } from "../lib/maneuversDb";
 import { completedStagesForTrack, evaluateRewards } from "../lib/rewardEvaluation";
 import { listJourneyRewards } from "../lib/rewardsDb";
@@ -13,6 +12,8 @@ import type { EvaluatedJourneyReward, JourneyReward } from "../types/rewards";
 import type { ManeuverArticle, ManeuverCatalog } from "../types/maneuver";
 import type { StudentTrainingTrack, TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
 import { RewardIcon } from "./rewards/RewardIcon";
+import { JourneyFlightReviewPage } from "./JourneyFlightReviewPage";
+import { ManobrasTab } from "./ManobrasTab";
 import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
 import { DEFAULT_SCHOOL_RULES } from "../types/schoolRules";
@@ -37,6 +38,11 @@ type MissionTimelineItem = {
 };
 
 type JourneySection = "formacao" | "evolucao";
+
+type FormationDrillView =
+  | { kind: "timeline" }
+  | { kind: "maneuver-study"; missionName: string; articleIds: string[] }
+  | { kind: "flight-review"; missionName: string; flightId: string };
 
 const EMPTY_METRICS = aggregateJourneyMetrics({ summaries: [], landings: [], takeoffs: [] });
 const SCHOOL_REWARD_COLOR = DEFAULT_SCHOOL_RULES.theme.primaryColor;
@@ -294,32 +300,6 @@ function AchievementsSkeleton() {
   );
 }
 
-function ManeuverArticleModal({ article, onClose }: { article: ManeuverArticle; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/50">
-        <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-4 py-3">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Material de estudo</p>
-            <h3 className="mt-1 break-words text-xl font-semibold text-slate-100 [overflow-wrap:anywhere]">{article.title}</h3>
-            {article.summary ? <p className="mt-1 text-sm text-slate-400">{article.summary}</p> : null}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
-          >
-            Fechar
-          </button>
-        </header>
-        <div className="max-h-[calc(88vh-6rem)] overflow-y-auto p-4 text-sm md:p-6 md:text-base">
-          <div className="space-y-4">{renderRichContent(article.contentJson)}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function FormationJourney({ state }: { state: FormationState }) {
   const { user, configured } = useAuth();
   const [journeyMetrics, setJourneyMetrics] = useState<JourneyMetrics>(EMPTY_METRICS);
@@ -329,7 +309,7 @@ function FormationJourney({ state }: { state: FormationState }) {
   const [trackRewards, setTrackRewards] = useState<JourneyReward[]>([]);
   const [trackRewardsLoading, setTrackRewardsLoading] = useState(false);
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
-  const [selectedManeuverArticle, setSelectedManeuverArticle] = useState<ManeuverArticle | null>(null);
+  const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
   const activeTracks = useMemo(
     () => state.tracks.filter((row) => row.status === "active" && row.track).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
     [state.tracks],
@@ -481,6 +461,27 @@ function FormationJourney({ state }: { state: FormationState }) {
     return <EmptyJourneyCard title="Nenhuma trilha ativa vinculada" />;
   }
 
+  if (drillView.kind === "maneuver-study") {
+    return (
+      <ManobrasTab
+        articleIds={drillView.articleIds}
+        introText={`Material de estudo vinculado a missao ${drillView.missionName}.`}
+        onBack={() => setDrillView({ kind: "timeline" })}
+        backLabel="Jornada"
+      />
+    );
+  }
+
+  if (drillView.kind === "flight-review") {
+    return (
+      <JourneyFlightReviewPage
+        flightId={drillView.flightId}
+        missionName={drillView.missionName}
+        onBack={() => setDrillView({ kind: "timeline" })}
+      />
+    );
+  }
+
   const flownHours = trackFlights.reduce((acc, flight) => acc + ((flight.duration_sec ?? 0) / 3600), 0);
   const trackHours = track.totalMinutes / 60;
   const hoursPct = trackHours > 0 ? clampPercent((flownHours / trackHours) * 100) : 0;
@@ -583,6 +584,7 @@ function FormationJourney({ state }: { state: FormationState }) {
                   .map((article) => [article.id, article]),
               ).values(),
             );
+            const missionFlight = trackFlights.find((flight) => flight.trainingMissionIds.includes(item.mission.id)) ?? null;
             return (
             <article
               key={item.mission.id}
@@ -613,21 +615,34 @@ function FormationJourney({ state }: { state: FormationState }) {
                   ))}
                 </ul>
               ) : null}
-              {maneuverArticles.length > 0 ? (
-                <div className="mt-3 space-y-1.5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Detalhes das manobras:</p>
-                  {maneuverArticles.map((article) => (
-                    <button
-                      key={article.id}
-                      type="button"
-                      onClick={() => setSelectedManeuverArticle(article)}
-                      className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"
-                    >
-                      {article.title}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              <div className="mt-3 space-y-2">
+                {maneuverArticles.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setDrillView({
+                      kind: "maneuver-study",
+                      missionName: item.mission.name,
+                      articleIds: maneuverArticles.map((article) => article.id),
+                    })}
+                    className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"
+                  >
+                    Detalhes das manobras
+                  </button>
+                ) : null}
+                {missionFlight ? (
+                  <button
+                    type="button"
+                    onClick={() => setDrillView({
+                      kind: "flight-review",
+                      missionName: item.mission.name,
+                      flightId: missionFlight.id,
+                    })}
+                    className="block w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-left text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20"
+                  >
+                    Flight Review
+                  </button>
+                ) : null}
+              </div>
             </article>
             );
           })}
@@ -648,9 +663,6 @@ function FormationJourney({ state }: { state: FormationState }) {
             ))}
           </div>
         </SectionCard>
-      ) : null}
-      {selectedManeuverArticle ? (
-        <ManeuverArticleModal article={selectedManeuverArticle} onClose={() => setSelectedManeuverArticle(null)} />
       ) : null}
     </div>
   );

@@ -6,6 +6,10 @@ import { Skeleton } from "./ui/Skeleton";
 
 type ManobrasTabProps = {
   className?: string;
+  articleIds?: string[];
+  introText?: string;
+  onBack?: () => void;
+  backLabel?: string;
 };
 
 function normalize(value: string): string {
@@ -15,7 +19,13 @@ function normalize(value: string): string {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabProps) {
+export function ManobrasTab({
+  className = "w-full max-w-[96rem]",
+  articleIds,
+  introText,
+  onBack,
+  backLabel = "Voltar",
+}: ManobrasTabProps) {
   const [catalog, setCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [selectedArticleId, setSelectedArticleId] = useState("");
@@ -42,10 +52,17 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
     void load();
   }, [load]);
 
+  const allowedArticleIds = useMemo(() => (articleIds?.length ? new Set(articleIds) : null), [articleIds]);
+
+  const scopedArticles = useMemo(() => {
+    if (!allowedArticleIds) return catalog.articles;
+    return catalog.articles.filter((article) => allowedArticleIds.has(article.id));
+  }, [allowedArticleIds, catalog.articles]);
+
   const filteredArticles = useMemo(() => {
     const term = normalize(query.trim());
-    if (!term) return catalog.articles;
-    return catalog.articles.filter((article) => {
+    if (!term) return scopedArticles;
+    return scopedArticles.filter((article) => {
       const haystack = normalize([
         article.title,
         article.summary ?? "",
@@ -54,15 +71,22 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
       ].join(" "));
       return haystack.includes(term);
     });
-  }, [catalog.articles, query]);
+  }, [query, scopedArticles]);
 
   const filteredIds = useMemo(() => new Set(filteredArticles.map((article) => article.id)), [filteredArticles]);
 
+  useEffect(() => {
+    if (loading || scopedArticles.length === 0) return;
+    if (selectedArticleId && scopedArticles.some((article) => article.id === selectedArticleId)) return;
+    const firstArticle = scopedArticles[0]!;
+    setSelectedArticleId(firstArticle.id);
+    setSelectedSectionId(firstArticle.sectionId);
+  }, [loading, scopedArticles, selectedArticleId]);
+
   const visibleSections = useMemo(() => {
-    if (!query.trim()) return catalog.sections;
     const sectionIds = new Set(filteredArticles.map((article) => article.sectionId));
     return catalog.sections.filter((section) => sectionIds.has(section.id));
-  }, [catalog.sections, filteredArticles, query]);
+  }, [catalog.sections, filteredArticles]);
 
   const selectedSection = useMemo(() => {
     return catalog.sections.find((section) => section.id === selectedSectionId) ?? visibleSections[0] ?? null;
@@ -74,10 +98,10 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
   }, [filteredArticles, selectedSection]);
 
   const selectedArticle = useMemo(() => {
-    const current = catalog.articles.find((article) => article.id === selectedArticleId);
+    const current = scopedArticles.find((article) => article.id === selectedArticleId);
     if (current && filteredIds.has(current.id) && current.sectionId === selectedSection?.id) return current;
     return selectedSectionArticles[0] ?? null;
-  }, [catalog.articles, filteredIds, selectedArticleId, selectedSection?.id, selectedSectionArticles]);
+  }, [filteredIds, scopedArticles, selectedArticleId, selectedSection?.id, selectedSectionArticles]);
 
   const selectedSectionContent = useMemo(() => {
     if (!selectedSection) return { subsections: [], looseArticles: [] };
@@ -100,9 +124,19 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
 
   return (
     <section className={`${className} mx-auto min-w-0 space-y-4`}>
+      {onBack ? (
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm font-medium text-sky-400 underline-offset-4 hover:text-sky-300 hover:underline"
+        >
+          &larr; {backLabel}
+        </button>
+      ) : null}
       <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <p className="max-w-2xl text-sm text-slate-500">
+          {introText ? <p className="max-w-2xl text-sm text-slate-500">{introText}</p> : null}
+          <p className={introText ? "hidden" : "max-w-2xl text-sm text-slate-500"}>
             Consulte procedimentos, sequências, erros comuns e referências publicadas pela escola.
           </p>
           <button
@@ -130,7 +164,7 @@ export function ManobrasTab({ className = "w-full max-w-[96rem]" }: ManobrasTabP
         <div className="rounded-xl border border-amber-500/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
           {error}
         </div>
-      ) : catalog.articles.length === 0 ? (
+      ) : scopedArticles.length === 0 ? (
         <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-10 text-center">
           <p className="text-base font-medium text-slate-300">Nenhuma manobra publicada ainda.</p>
           <p className="mt-1 text-sm text-slate-500">Assim que o admin publicar o conteúdo, ele aparecerá aqui.</p>
