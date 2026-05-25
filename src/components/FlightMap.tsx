@@ -224,16 +224,19 @@ export const FlightMap = memo(
           zoom={11}
           className="h-full w-full"
           scrollWheelZoom
-          zoomAnimation={false}
-          markerZoomAnimation={false}
+          zoomAnimation
+          markerZoomAnimation
+          fadeAnimation
           preferCanvas
         >
           <TileLayer
             attribution="Tiles &copy; Esri"
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
             maxZoom={18}
-            updateWhenIdle
-            updateWhenZooming={false}
+            keepBuffer={4}
+            updateWhenIdle={false}
+            updateWhenZooming
+            opacity={1}
           />
           <ImperativeRouteLayers
             positions={positions}
