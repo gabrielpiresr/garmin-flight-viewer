@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { MapContainer, Polyline, TileLayer } from "react-leaflet";
+import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useAuth } from "../contexts/AuthContext";
 import { getAircraftByRegistration } from "../lib/aircraftDb";
 import {
@@ -53,6 +53,21 @@ const STEP_COLORS = [
   "#a78bfa", "#fb923c", "#22d3ee", "#c084fc",
   "#86efac", "#fda4af",
 ];
+
+function InvalidateMapSize() {
+  const map = useMap();
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      map.invalidateSize(false);
+    });
+    const timer = window.setTimeout(() => map.invalidateSize(false), 250);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [map]);
+  return null;
+}
 
 // ---------- Helpers ----------
 
@@ -337,6 +352,7 @@ function ManeuverOverview({
             zoomControl={true}
             attributionControl={false}
           >
+            <InvalidateMapSize />
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             {/* Faded full-maneuver background path */}
             <Polyline positions={allMapPos} color="#475569" weight={2} opacity={0.35} />

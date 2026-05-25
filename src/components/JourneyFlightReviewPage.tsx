@@ -137,18 +137,10 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
         <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-200">{error}</div>
       ) : flight ? (
         <>
-          <div hidden={activeTab !== "resumo"}>
-            <FlightSummaryPanel flight={flight} missionName={missionName} />
-          </div>
-          <div hidden={activeTab !== "telemetria"}>
-            <TelemetriaTab flightId={flightId} />
-          </div>
-          <div hidden={activeTab !== "flight-review"}>
-            <FlightReviewTab flightId={flightId} />
-          </div>
-          <div hidden={activeTab !== "videos"}>
-            <VideosTab flightId={flightId} />
-          </div>
+          {activeTab === "resumo" ? <FlightSummaryPanel flight={flight} missionName={missionName} /> : null}
+          {activeTab === "telemetria" ? <TelemetriaTab flightId={flightId} /> : null}
+          {activeTab === "flight-review" ? <FlightReviewTab flightId={flightId} /> : null}
+          {activeTab === "videos" ? <VideosTab flightId={flightId} /> : null}
         </>
       ) : null}
     </div>

@@ -91,6 +91,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
 
   const [chartDomain, setChartDomain] = useState<[number, number] | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   // Imperative hover bridge — no React state involved during hover
   const hoverCallbackRef = useRef<((pos: [number, number] | null) => void) | null>(null);
@@ -104,6 +105,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   useEffect(() => { selectedSegmentIdRef.current = selectedSegmentId; }, [selectedSegmentId]);
 
   const canEditTelemetry = user?.role === "instrutor" || user?.role === "admin";
+  const showTelemetryManagement = user?.role !== "aluno";
 
   const loadFlightAlerts = useCallback(async () => {
     if (!flightId) {
@@ -401,7 +403,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const processedTelemetryFileCount = telemetryFileMetas.length || (fileName ? 1 : 0);
   const canAddTelemetryFiles = canEditTelemetry && telemetrySources.length < MAX_TELEMETRY_CSV_FILES;
 
-  const uploadPanel = (
+  const uploadPanel = showTelemetryManagement ? (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">
       <div className="flex flex-col gap-4">
         <div>
@@ -479,7 +481,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         )}
       </div>
     </div>
-  );
+  ) : null;
 
   if (loading) {
     return <TelemetryProcessingProgress className="min-h-[min(420px,60vh)]" />;
@@ -516,11 +518,13 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       {uploadPanel}
       <TelemetryAlertsPanel alerts={flightAlerts} loading={alertsLoading} />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">
-          Arquivos processados: {fileName}
-        </h3>
-      </div>
+      {showTelemetryManagement ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">
+            Arquivos processados: {fileName}
+          </h3>
+        </div>
+      ) : null}
 
       {warnings.length > 0 && (
         <ul className="list-inside list-disc rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-100/90">
@@ -537,9 +541,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       )}
 
       {(points.length > 0 || chartData.length > 0) && (
-        <div className="min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]">
-          <div className={`grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
-            {chartData.length > 0 && (
+        <div className={mapExpanded ? "min-w-0" : "min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]"}>
+          <div className={mapExpanded ? "grid min-h-0 gap-3" : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+            {chartData.length > 0 && !mapExpanded && (
               <div className="min-h-0 xl:overflow-y-auto xl:pr-1">
                 {selectedSegment ? (
                   <SegmentSummary segment={selectedSegment} />
@@ -558,22 +562,35 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
               </div>
             )}
 
-            <div className="grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2">
+            <div className={mapExpanded ? "grid min-h-0 min-w-0 gap-2" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}>
               {points.length >= 2 ? (
-                <FlightMap
-                  points={points}
-                  selectedRangeT={selectedRangeT}
-                  className="h-[420px] max-h-[70vh] min-h-[360px] w-full overflow-hidden rounded-xl border border-slate-700 sm:h-[520px] xl:h-full xl:max-h-none xl:min-h-0"
-                  hoverCallbackRef={hoverCallbackRef}
-                  boundsCallbackRef={boundsCallbackRef}
-                />
+                <div className="relative min-h-0">
+                  <button
+                    type="button"
+                    onClick={() => setMapExpanded((value) => !value)}
+                    className="absolute right-3 top-3 z-[500] rounded-md border border-slate-700 bg-slate-950/85 px-3 py-1.5 text-xs font-medium text-slate-100 shadow-lg hover:bg-slate-900"
+                  >
+                    {mapExpanded ? "Sair da tela cheia" : "Tela cheia"}
+                  </button>
+                  <FlightMap
+                    points={points}
+                    selectedRangeT={selectedRangeT}
+                    className={
+                      mapExpanded
+                        ? "h-[80vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-slate-700"
+                        : "h-[420px] max-h-[70vh] min-h-[360px] w-full overflow-hidden rounded-xl border border-slate-700 sm:h-[520px] xl:h-full xl:max-h-none xl:min-h-0"
+                    }
+                    hoverCallbackRef={hoverCallbackRef}
+                    boundsCallbackRef={boundsCallbackRef}
+                  />
+                </div>
               ) : (
                 <p className="rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">
                   Trajeto no mapa indisponível — não há pelo menos dois pontos GPS válidos.
                 </p>
               )}
 
-              <div className="h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0">
+              <div className={mapExpanded ? "h-[20vh] min-h-[180px] min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
                 <FlightCharts
                   chartData={chartData}
                   hasTime={hasChartTime}
@@ -585,6 +602,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                   fullXDomain={fullXDomain}
                   focusDomain={focusDomain}
                   events={selectedSegment?.events}
+                  compact={mapExpanded}
                 />
               </div>
             </div>
