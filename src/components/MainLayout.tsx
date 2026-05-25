@@ -198,6 +198,7 @@ export function MainLayout() {
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Interseção: SchoolRules (escola) E permissão de role (usuário)
   const visibleNavItems = useMemo(
@@ -238,16 +239,33 @@ export function MainLayout() {
 
   return (
     <div className="school-themed-shell flex min-h-screen">
-      <aside className="school-themed-surface sticky top-0 hidden h-screen w-64 flex-col border-r border-slate-800 lg:flex">
-        <div className="border-b border-slate-800 px-5 py-5">
-          <span className="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400">
+      <aside className={`school-themed-surface sticky top-0 hidden h-screen flex-col border-r border-slate-800 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
+        <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
+          <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
+          <span className={`${sidebarCollapsed ? "hidden" : ""} rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400`}>
             Aluno
           </span>
-          <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Portal do aluno</p>
-          <p className="text-sm font-semibold text-slate-200">Operação de voo</p>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((value) => !value)}
+              title={sidebarCollapsed ? "Expandir menu" : "Ocultar menu"}
+              aria-label={sidebarCollapsed ? "Expandir menu lateral" : "Ocultar menu lateral"}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                {sidebarCollapsed ? (
+                  <path fillRule="evenodd" d="M7.22 4.22a.75.75 0 011.06 0l5.25 5.25a.75.75 0 010 1.06l-5.25 5.25a.75.75 0 11-1.06-1.06L11.94 10 7.22 5.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+                ) : (
+                  <path fillRule="evenodd" d="M12.78 4.22a.75.75 0 010 1.06L8.06 10l4.72 4.72a.75.75 0 11-1.06 1.06l-5.25-5.25a.75.75 0 010-1.06l5.25-5.25a.75.75 0 011.06 0z" clipRule="evenodd" />
+                )}
+              </svg>
+            </button>
+          </div>
+          <p className={`${sidebarCollapsed ? "hidden" : ""} mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500`}>Portal do aluno</p>
+          <p className={`${sidebarCollapsed ? "hidden" : ""} text-sm font-semibold text-slate-200`}>Operação de voo</p>
         </div>
 
-        <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
+        <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
           {availableNavItems.map((item) => {
             const isActive = section === item.id;
             return (
@@ -255,14 +273,16 @@ export function MainLayout() {
                 key={item.id}
                 type="button"
                 onClick={() => openSection(item.id)}
-                className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-all ${
+                title={sidebarCollapsed ? item.label : undefined}
+                aria-label={sidebarCollapsed ? item.label : undefined}
+                className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
                   isActive
                     ? SELECTED_NAV_CLASS
                     : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
                 }`}
               >
                 <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
-                <div className="min-w-0">
+                <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
                   <p className="text-sm font-medium leading-none">{item.label}</p>
                 </div>
               </button>
@@ -270,14 +290,20 @@ export function MainLayout() {
           })}
         </nav>
 
-        <div className="border-t border-slate-800 px-4 py-4">
-          <p className="truncate text-xs text-slate-500">{user?.email}</p>
+        <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
+          {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
           <button
             type="button"
             onClick={() => void signOut()}
-            className="mt-2 w-full rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+            title={sidebarCollapsed ? "Sair" : undefined}
+            aria-label={sidebarCollapsed ? "Sair" : undefined}
+            className={`w-full rounded-lg border border-slate-700 text-xs text-slate-400 transition hover:bg-slate-800 hover:text-slate-200 ${sidebarCollapsed ? "flex h-9 items-center justify-center px-2" : "mt-2 px-3 py-1.5"}`}
           >
-            Sair
+            {sidebarCollapsed ? (
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 015.25 2h4.5A2.25 2.25 0 0112 4.25v1a.75.75 0 01-1.5 0v-1a.75.75 0 00-.75-.75h-4.5a.75.75 0 00-.75.75v11.5c0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75v-1a.75.75 0 011.5 0v1A2.25 2.25 0 019.75 18h-4.5A2.25 2.25 0 013 15.75V4.25zm10.22 3.22a.75.75 0 011.06 0l2 2a.75.75 0 010 1.06l-2 2a.75.75 0 11-1.06-1.06l.72-.72H8.75a.75.75 0 010-1.5h5.19l-.72-.72a.75.75 0 010-1.06z" clipRule="evenodd" />
+              </svg>
+            ) : "Sair"}
           </button>
         </div>
       </aside>
