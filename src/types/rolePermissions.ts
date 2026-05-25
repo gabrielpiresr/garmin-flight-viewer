@@ -40,7 +40,8 @@ export type AdminTabKey =
   | "settings.trilhas"
   | "settings.exercicios"
   | "settings.financeiro"
-  | "settings.roles";
+  | "settings.roles"
+  | "flight-review";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -78,6 +79,7 @@ export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
 /** Chaves de ações do sistema */
 export type ActionKey =
   | "fueling.launch"    // Lançar abastecimento
+  | "fueling.edit"      // Editar abastecimento
   | "os.create"         // Criar nova OS
   | "flight.create"     // Criar novo voo
   | "flight.edit"       // Editar voo
@@ -92,6 +94,7 @@ export type ActionKey =
 /** Labels em português para cada ação */
 export const ACTION_LABELS: Record<ActionKey, string> = {
   "fueling.launch": "Lançar abastecimento",
+  "fueling.edit": "Editar abastecimento",
   "os.create": "Criar nova OS",
   "flight.create": "Criar novo voo",
   "flight.edit": "Editar voo",
@@ -173,6 +176,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.exercicios": "Configurações › Exercícios",
   "settings.financeiro": "Configurações › Financeiro",
   "settings.roles": "Configurações › Roles",
+  "flight-review": "Flight Review",
 };
 
 /** Labels descritivos para abas do portal instrutor */

@@ -78,7 +78,9 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
 export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType; label: string }> = [
   { id: "flight.scheduled", label: "Voo agendado" },
   { id: "flight.updated", label: "Voo alterado" },
+  { id: "flight.reopened", label: "Voo reaberto" },
   { id: "flight.cancelled", label: "Voo cancelado" },
+  { id: "flight.reminder_24h", label: "Lembrete 24h antes" },
   { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },

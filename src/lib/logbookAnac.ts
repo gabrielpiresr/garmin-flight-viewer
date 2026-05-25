@@ -1,6 +1,7 @@
 ﻿import type { FlightRecordMeta } from "./flightRecordCodec";
 
 import type { SavedFlightFull, SavedFlightListItem } from "./flightsDb";
+import { downloadCsv } from "./csvExport";
 
 import {
   crewPresentationTimeUtc,
@@ -769,12 +770,6 @@ export function isLogbookWideColumn(key: LogbookColumnKey): boolean {
   return WIDE_COLUMN_KEYS.has(key);
 }
 
-function csvEscape(value: string): string {
-  const normalized = value.replace(/"/g, '""');
-
-  return /[;"\n]/.test(normalized) ? `"${normalized}"` : normalized;
-}
-
 function rowToCsvCells(entry: AnacLogbookEntry): string[] {
   return LOGBOOK_CSV_COLUMNS.map((col) => logbookCellValue(entry, col.key));
 }
@@ -783,29 +778,10 @@ export function exportLogbookCsv(
   entries: AnacLogbookEntry[],
   filenamePrefix = "diario-bordo",
 ): void {
-  const header = LOGBOOK_CSV_COLUMNS.map((col) => csvEscape(col.label)).join(
-    ";",
+  downloadCsv(
+    [LOGBOOK_CSV_COLUMNS.map((col) => col.label), ...entries.map(rowToCsvCells)],
+    `${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.csv`,
   );
-
-  const body = entries
-    .map((entry) => rowToCsvCells(entry).map(csvEscape).join(";"))
-    .join("\n");
-
-  const blob = new Blob([`\uFEFF${header}\n${body}`], {
-    type: "text/csv;charset=utf-8",
-  });
-
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-
-  link.href = url;
-
-  link.download = `${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.csv`;
-
-  link.click();
-
-  URL.revokeObjectURL(url);
 }
 
 function pdfEscape(value: string): string {

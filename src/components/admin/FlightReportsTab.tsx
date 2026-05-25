@@ -17,6 +17,7 @@ import {
   YAxis,
 } from "recharts";
 import { listAdminFlightReports } from "../../lib/adminUsersDb";
+import { downloadCsv } from "../../lib/csvExport";
 import type {
   AdminFlightReportRow,
   AdminFlightReportStatus,
@@ -333,11 +334,6 @@ function formatDuration(value: number | null | undefined): string {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${hours}h${String(minutes).padStart(2, "0")}`;
-}
-
-function csvEscape(value: string): string {
-  if (/[",\n;]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
 }
 
 function isoDate(date: Date): string {
@@ -734,18 +730,14 @@ function summaryValues(rows: ReportRow[], columns: ColumnDef[]): Record<ReportCo
 }
 
 function exportCsv(rows: ReportRow[], columns: ColumnDef[], summary: Record<ReportColumnKey, string> | null) {
-  const csv = [
-    columns.map((column) => csvEscape(column.label)).join(";"),
-    ...rows.map((row) => columns.map((column) => csvEscape(column.format(row))).join(";")),
-    ...(summary ? [columns.map((column) => csvEscape(summary[column.key] ?? "")).join(";")] : []),
-  ].join("\n");
-  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `relatorio-voos-${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(
+    [
+      columns.map((column) => column.label),
+      ...rows.map((row) => columns.map((column) => column.format(row))),
+      ...(summary ? [columns.map((column) => summary[column.key] ?? "")] : []),
+    ],
+    `relatorio-voos-${new Date().toISOString().slice(0, 10)}.csv`,
+  );
 }
 
 function exportPdf(rows: ReportRow[], columns: ColumnDef[], title: string, summary: Record<ReportColumnKey, string> | null) {

@@ -1,6 +1,21 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { getEmailSettings, saveEmailSettings, sendTestEmail } from "../../lib/notificationsDb";
-import type { EmailSettings, EmailSettingsInput, EmailTemplateType } from "../../types/notification";
+import {
+  getEmailSettings,
+  getGoogleCalendarSettings,
+  saveEmailSettings,
+  saveGoogleCalendarSettings,
+  sendTestEmail,
+  testGoogleCalendarConnection,
+} from "../../lib/notificationsDb";
+import type {
+  EmailSettings,
+  EmailSettingsInput,
+  EmailTemplateType,
+  GoogleCalendarSettings,
+  GoogleCalendarSettingsInput,
+} from "../../types/notification";
+import { listAircrafts } from "../../lib/aircraftDb";
+import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
@@ -118,8 +133,10 @@ const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
   { id: "flight.scheduled", label: "Voo agendado" },
   { id: "flight.updated", label: "Voo alterado" },
   { id: "flight.cancelled", label: "Voo cancelado" },
+  { id: "flight.reminder_24h", label: "Lembrete 24h antes" },
   { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
+  { id: "schedule.published", label: "Escala gerada" },
 ];
 
 const emptyForm: EmailSettingsInput = {
@@ -131,6 +148,21 @@ const emptyForm: EmailSettingsInput = {
   resendApiKey: "",
 };
 
+const emptyGoogleCalendarForm: GoogleCalendarSettingsInput = {
+  enabled: false,
+  aircraftCalendars: [],
+};
+
+function toGoogleCalendarForm(settings: GoogleCalendarSettings): GoogleCalendarSettingsInput {
+  return {
+    enabled: settings.enabled,
+    aircraftCalendars: settings.aircraftCalendars.map((row) => ({ ...row })),
+  };
+}
+
+function normalizeAircraftIdent(value: string): string {
+  return value.trim().toUpperCase();
+}
 
 function toForm(settings: EmailSettings): EmailSettingsInput {
   return {
@@ -367,6 +399,238 @@ function EmailSettingsPanel() {
   );
 }
 
+function GoogleCalendarSettingsPanel() {
+  const { showToast } = useToast();
+  const [settings, setSettings] = useState<GoogleCalendarSettings | null>(null);
+  const [form, setForm] = useState<GoogleCalendarSettingsInput>(emptyGoogleCalendarForm);
+  const [aircrafts, setAircrafts] = useState<Array<{ registration: string; active?: boolean }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [next, aircraftRows] = await Promise.all([
+        getGoogleCalendarSettings(),
+        listAircrafts(SCHOOL_ID ?? "escola_principal").catch(() => []),
+      ]);
+      setSettings(next);
+      const existing = toGoogleCalendarForm(next);
+      const activeAircrafts = aircraftRows.filter((aircraft) => aircraft.active !== false);
+      setAircrafts(activeAircrafts.map((aircraft) => ({ registration: aircraft.registration, active: aircraft.active })));
+      setForm({
+        ...existing,
+        aircraftCalendars: activeAircrafts.map((aircraft) => {
+          const current = existing.aircraftCalendars.find(
+            (row) => normalizeAircraftIdent(row.aircraftIdent) === normalizeAircraftIdent(aircraft.registration),
+          );
+          return { aircraftIdent: aircraft.registration, calendarId: current?.calendarId ?? "" };
+        }),
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (error) showToast({ variant: "error", message: error });
+  }, [error, showToast]);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await saveGoogleCalendarSettings({
+        enabled: form.enabled,
+        aircraftCalendars: form.aircraftCalendars
+          .map((row) => ({
+            aircraftIdent: normalizeAircraftIdent(row.aircraftIdent),
+            calendarId: row.calendarId.trim(),
+          }))
+          .filter((row) => row.aircraftIdent && row.calendarId),
+      });
+      setSettings(saved);
+      const savedForm = toGoogleCalendarForm(saved);
+      setForm({
+        enabled: savedForm.enabled,
+        aircraftCalendars: aircrafts.map((aircraft) => {
+          const current = savedForm.aircraftCalendars.find(
+            (row) => normalizeAircraftIdent(row.aircraftIdent) === normalizeAircraftIdent(aircraft.registration),
+          );
+          return { aircraftIdent: aircraft.registration, calendarId: current?.calendarId ?? "" };
+        }),
+      });
+      showToast({ variant: "success", message: "Google Calendar salvo." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setError(null);
+    try {
+      const tested = await testGoogleCalendarConnection();
+      setSettings(tested);
+      const testedForm = toGoogleCalendarForm(tested);
+      setForm({
+        enabled: testedForm.enabled,
+        aircraftCalendars: aircrafts.map((aircraft) => {
+          const current = testedForm.aircraftCalendars.find(
+            (row) => normalizeAircraftIdent(row.aircraftIdent) === normalizeAircraftIdent(aircraft.registration),
+          );
+          return { aircraftIdent: aircraft.registration, calendarId: current?.calendarId ?? "" };
+        }),
+      });
+      showToast({ variant: "success", message: "Conexao com Google Calendar validada." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <Skeleton className="h-5 w-56" />
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {Array.from({ length: 7 }).map((_, index) => (
+            <Skeleton key={index} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  const mappedCount = form.aircraftCalendars.filter((row) => row.calendarId.trim()).length;
+  const configured = Boolean(settings?.serviceAccountConfigured && mappedCount > 0);
+
+  function updateAircraftCalendar(aircraftIdent: string, calendarId: string) {
+    setForm((prev) => ({
+      ...prev,
+      aircraftCalendars: prev.aircraftCalendars.map((row) =>
+        row.aircraftIdent === aircraftIdent ? { ...row, calendarId } : row,
+      ),
+    }));
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Google Calendar</h3>
+          <p className="mt-1 max-w-3xl text-xs text-slate-500">
+            Cada aeronave usa uma agenda Google propria. A escola compartilha essas agendas com o email tecnico da
+            plataforma e informa o Calendar ID de cada uma.
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
+          <p>
+            Status:{" "}
+            <span className={settings?.enabled && configured ? "text-emerald-300" : "text-amber-300"}>
+              {settings?.enabled && configured ? "Conectado" : "Pendente"}
+            </span>
+          </p>
+          <p>Agendas mapeadas: {mappedCount}</p>
+          <p>Atualizado: {formatUpdatedAt(settings?.updatedAt ?? null)}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/10 p-4 text-xs text-sky-100">
+        <p className="font-semibold text-sky-50">Como configurar no Google Calendar</p>
+        <ol className="mt-2 list-decimal space-y-1 pl-4 text-sky-100/85">
+          <li>Crie uma agenda para cada aeronave no Google Calendar, por exemplo "PS-ABC".</li>
+          <li>
+            Em Configuracoes da agenda &gt; Compartilhar com pessoas especificas, adicione o email tecnico abaixo com
+            permissao "Fazer alteracoes nos eventos".
+          </li>
+          <li>Na mesma tela, copie o campo "ID da agenda". Ele costuma terminar com @group.calendar.google.com.</li>
+          <li>Cole o ID da agenda na linha da aeronave correspondente e salve.</li>
+        </ol>
+        <div className="mt-3 rounded-lg border border-sky-300/30 bg-slate-950/30 px-3 py-2">
+          <span className="block text-[11px] uppercase tracking-wider text-sky-200/70">Email tecnico para compartilhar</span>
+          <span className="font-mono text-sky-50">{settings?.serviceAccountEmail || "Service account ainda nao configurado na funcao Appwrite"}</span>
+        </div>
+      </div>
+
+      {settings?.lastError ? (
+        <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+          Ultimo erro: {settings.lastError}
+        </p>
+      ) : null}
+      {settings?.lastTestAt ? (
+        <p className="mt-3 text-xs text-slate-500">Ultimo teste: {formatUpdatedAt(settings.lastTestAt)}</p>
+      ) : null}
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200 md:col-span-2">
+          <input
+            type="checkbox"
+            checked={form.enabled}
+            onChange={(e) => setForm((prev) => ({ ...prev, enabled: e.target.checked }))}
+            className="h-4 w-4 accent-emerald-500"
+          />
+          Habilitar criacao e sincronizacao de eventos de voo
+        </label>
+
+        <div className="md:col-span-2">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Agendas por aeronave</p>
+          <div className="space-y-2">
+            {form.aircraftCalendars.map((row) => (
+              <label key={row.aircraftIdent} className="grid gap-2 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-xs text-slate-400 md:grid-cols-[140px_minmax(0,1fr)] md:items-center">
+                <span className="font-semibold text-slate-200">{row.aircraftIdent}</span>
+                <input
+                  type="text"
+                  value={row.calendarId}
+                  onChange={(e) => updateAircraftCalendar(row.aircraftIdent, e.target.value)}
+                  placeholder={`${row.aircraftIdent.toLowerCase()}@group.calendar.google.com`}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-cyan-500"
+                />
+              </label>
+            ))}
+            {form.aircraftCalendars.length === 0 ? (
+              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                Nenhuma aeronave ativa encontrada. Cadastre aeronaves na frota antes de mapear agendas.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap justify-end gap-3 border-t border-slate-800 pt-4">
+        <button
+          type="button"
+          onClick={() => void handleTest()}
+          disabled={testing || !configured}
+          className="rounded-lg border border-cyan-500/50 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/10 disabled:opacity-50"
+        >
+          {testing ? "Testando..." : "Testar conexao"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+        >
+          {saving ? "Salvando..." : "Salvar Google Calendar"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 
 type PlatformSettingsTabProps = {
   subTab?: SettingsSubTab;
@@ -407,6 +671,7 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("email") ? (
         <div hidden={activeSubTab !== "email"} className="space-y-4">
           <EmailSettingsPanel />
+          <GoogleCalendarSettingsPanel />
           <EmailBrandSettingsPanel />
           <EmailNotificationRulesPanel />
         </div>

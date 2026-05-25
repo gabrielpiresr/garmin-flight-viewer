@@ -65,7 +65,7 @@ export function detectFlightConflicts(params: {
   const draftWindow = toMinutes(draft.startHour, draft.durationHours);
   if (draft.isNight) {
     const slotKey = `${draft.dayOfWeek}-night`;
-    if (!supply || !supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked") {
+    if (supply && (!supply.slotStates[slotKey] || supply.slotStates[slotKey] === "blocked")) {
       conflicts.push({
         type: "aircraft_blocked",
         message: `Aeronave ${draft.aircraftRegistration} bloqueada em ${DAY_LABEL[draft.dayOfWeek]} (noturno).`,
@@ -76,7 +76,7 @@ export function detectFlightConflicts(params: {
     const blockedHour = hours.find((hour) => {
       const slotKey = `${draft.dayOfWeek}-${hour}`;
       const state = supply?.slotStates[slotKey];
-      return !state || state === "blocked";
+      return supply ? !state || state === "blocked" : false;
     });
     if (blockedHour !== undefined) {
       conflicts.push({

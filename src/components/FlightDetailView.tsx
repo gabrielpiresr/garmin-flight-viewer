@@ -8,12 +8,13 @@ import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightAuditLogPanel } from "./admin/FlightAuditLogPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
+import { FlightReviewTab } from "./FlightReviewTab";
 import { NovoVooFlow, type NovoVooStepId } from "./NovoVooFlow";
 import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
 import { Tabs } from "./ui/Tabs";
 
-type SubTab = "telemetria" | "videos" | "ficha" | "aluno" | "auditoria";
+type SubTab = "telemetria" | "videos" | "ficha" | "aluno" | "auditoria" | "flight-review";
 
 type SubTabConfig = { id: SubTab; label: string; icon: ReactNode };
 
@@ -57,6 +58,14 @@ const SUB_TAB_CONFIG: Record<SubTab, Omit<SubTabConfig, "id">> = {
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M10 2.25l6 2.25v4.74c0 3.67-2.3 6.95-5.75 8.18a.75.75 0 01-.5 0C6.3 16.19 4 12.91 4 9.24V4.5l6-2.25zm0 1.6L5.5 5.54v3.7c0 2.9 1.74 5.52 4.5 6.67 2.76-1.15 4.5-3.77 4.5-6.67v-3.7L10 3.85z" />
         <path d="M7.75 8.25h4.5v1.5h-4.5v-1.5zm0 3h4.5v1.5h-4.5v-1.5z" />
+      </svg>
+    ),
+  },
+  "flight-review": {
+    label: "Flight Review",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M2.25 2.25a.75.75 0 000 1.5H3v10.5a3 3 0 003 3h1.21l-1.172 3.513a.75.75 0 001.424.474l.329-.987h8.418l.33.987a.75.75 0 001.422-.474l-1.17-3.513H18a3 3 0 003-3V3.75h.75a.75.75 0 000-1.5H2.25zm6.04 16.5l.5-1.5h6.42l.5 1.5H8.29zm7.46-12a.75.75 0 00-1.5 0v6a.75.75 0 001.5 0v-6zm-3 2.25a.75.75 0 00-1.5 0v3.75a.75.75 0 001.5 0V9zm-3 3a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0V12z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -135,8 +144,9 @@ export function FlightDetailView({
     const tabs: SubTabConfig[] = [
       buildTab("ficha"),
       buildTab("telemetria"),
-      buildTab("videos"),
     ];
+    if (flightId) tabs.push(buildTab("flight-review"));
+    tabs.push(buildTab("videos"));
     if (canSeeStudentContext && studentUserId) tabs.push(buildTab("aluno"));
     if (canSeeAuditLog) tabs.push(buildTab("auditoria"));
     return tabs;
@@ -257,6 +267,12 @@ export function FlightDetailView({
         {visitedSubTabs.has("auditoria") && flightId && canSeeAuditLog ? (
           <div hidden={activeSubTab !== "auditoria"} className="min-h-0 min-w-0">
             <FlightAuditLogPanel flightId={flightId} />
+          </div>
+        ) : null}
+
+        {visitedSubTabs.has("flight-review") && flightId ? (
+          <div hidden={activeSubTab !== "flight-review"} className="min-h-0 min-w-0">
+            <FlightReviewTab flightId={flightId} />
           </div>
         ) : null}
       </div>

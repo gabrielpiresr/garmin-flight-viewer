@@ -1128,6 +1128,7 @@ export async function updateFlight(id: string, payload: {
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
   telemetryAlertParsed?: ParseResult | null;
   flightStatus?: FlightStatus | null;
+  allowSignedTelemetryUpdate?: boolean;
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
@@ -1138,8 +1139,10 @@ export async function updateFlight(id: string, payload: {
       return { error: new Error("Apenas instrutor ou admin pode atualizar voos.") };
     }
 
-    const lockCheck = await assertFlightNotLocked(id);
-    if (lockCheck.error && lockCheck.locked) return { error: lockCheck.error };
+    if (!payload.allowSignedTelemetryUpdate) {
+      const lockCheck = await assertFlightNotLocked(id);
+      if (lockCheck.error && lockCheck.locked) return { error: lockCheck.error };
+    }
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);

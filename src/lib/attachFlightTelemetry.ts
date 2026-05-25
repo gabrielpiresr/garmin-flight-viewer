@@ -63,6 +63,7 @@ export async function attachFlightTelemetry(
     duration_sec: durationSec,
     telemetryMetrics,
     telemetryAlertParsed: parsed,
+    allowSignedTelemetryUpdate: true,
   });
 
   return { error: result.error };

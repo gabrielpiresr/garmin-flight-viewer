@@ -208,18 +208,27 @@ function canvasDisplaySize(canvas: HTMLCanvasElement, fallbackWidth: number, fal
   return { width: Math.max(1, width), height: Math.max(1, height) };
 }
 
-function applyRouteMapViewport(
+export function applyRouteMapViewport(
   ctx: CanvasRenderingContext2D,
   targetWidth: number,
   targetHeight: number,
   sourceWidth: number,
   sourceHeight: number,
+  fit: "contain" | "cover" = "cover",
 ): void {
-  const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const scale =
+    fit === "contain"
+      ? Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight)
+      : Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
   const offsetX = (targetWidth - sourceWidth * scale) / 2;
   const offsetY = (targetHeight - sourceHeight * scale) / 2;
   ctx.translate(offsetX, offsetY);
   ctx.scale(scale, scale);
+}
+
+function routeMapPanelColor(style: "hud" | "compact", opacity: number): string {
+  const rgb = style === "hud" ? "30, 58, 79" : "15, 23, 42";
+  return `rgba(${rgb}, ${opacity})`;
 }
 
 /** Pinta fundo + rota (chamar quando map/points mudam). */
@@ -228,6 +237,8 @@ export function drawVideoRouteMapBase(
   map: VideoRouteMapData | null,
   points: VideoTelemetryPoint[],
   fallbackStyle: "hud" | "compact",
+  mapFit: "contain" | "cover" = "cover",
+  panelOpacity = 1,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -236,17 +247,22 @@ export function drawVideoRouteMapBase(
   const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
-  ctx.clearRect(0, 0, width, height);
+  if (panelOpacity < 1) {
+    ctx.fillStyle = routeMapPanelColor(fallbackStyle, panelOpacity);
+    ctx.fillRect(0, 0, width, height);
+  } else {
+    ctx.clearRect(0, 0, width, height);
+  }
 
   const routePts = map?.routePoints.length ? map.routePoints : projectFallbackRoute(points, sourceWidth, sourceHeight);
 
   ctx.save();
-  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
+  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight, mapFit);
 
   if (map && map.tiles.length > 0) {
     paintTiles(ctx, map);
   } else {
-    ctx.fillStyle = fallbackStyle === "hud" ? "#1e3a4f" : "rgba(15,23,42,.85)";
+    ctx.fillStyle = routeMapPanelColor(fallbackStyle, panelOpacity < 1 ? panelOpacity : 0.85);
     ctx.fillRect(0, 0, sourceWidth, sourceHeight);
   }
 
@@ -261,8 +277,10 @@ export function drawVideoRouteMapMarker(
   points: VideoTelemetryPoint[],
   current: VideoTelemetryPoint | null,
   fallbackStyle: "hud" | "compact",
+  mapFit: "contain" | "cover" = "cover",
+  panelOpacity = 1,
 ): void {
-  drawVideoRouteMapBase(canvas, map, points, fallbackStyle);
+  drawVideoRouteMapBase(canvas, map, points, fallbackStyle, mapFit, panelOpacity);
   if (!current) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -270,9 +288,82 @@ export function drawVideoRouteMapMarker(
   const sourceHeight = map?.height ?? 224;
   const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
   ctx.save();
-  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
+  applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight, mapFit);
   paintMarker(ctx, map, current, sourceWidth, sourceHeight);
   ctx.restore();
+}
+
+/** Mapa em retângulo fixo (export / overlayCanvas). Fundo opaco + rota + marcador. */
+export function drawRouteMapInRect(
+  ctx: CanvasRenderingContext2D,
+  map: VideoRouteMapData | null,
+  allPoints: VideoTelemetryPoint[],
+  current: VideoTelemetryPoint | null,
+  destX: number,
+  destY: number,
+  destW: number,
+  destH: number,
+  fallbackStyle: "hud" | "compact",
+  mapFit: "contain" | "cover" = "cover",
+  cornerRadius = 0,
+  panelOpacity = 1,
+): void {
+  if (destW <= 0 || destH <= 0) return;
+  const sourceWidth = map?.width ?? 320;
+  const sourceHeight = map?.height ?? 224;
+  const routePts =
+    map?.routePoints.length ? map.routePoints : projectFallbackRoute(allPoints, sourceWidth, sourceHeight);
+
+  ctx.save();
+  if (cornerRadius > 0) {
+    roundRectPath(ctx, destX, destY, destW, destH, cornerRadius);
+    ctx.clip();
+  }
+
+  ctx.fillStyle = routeMapPanelColor(fallbackStyle, panelOpacity);
+  ctx.fillRect(destX, destY, destW, destH);
+
+  ctx.save();
+  ctx.translate(destX, destY);
+  applyRouteMapViewport(ctx, destW, destH, sourceWidth, sourceHeight, mapFit);
+
+  if (map && map.tiles.length > 0) {
+    paintTiles(ctx, map);
+  } else {
+    ctx.fillStyle = routeMapPanelColor(fallbackStyle, panelOpacity);
+    ctx.fillRect(0, 0, sourceWidth, sourceHeight);
+  }
+
+  paintRouteLine(ctx, routePts);
+
+  if (current) {
+    paintMarker(ctx, map, current, sourceWidth, sourceHeight);
+  }
+
+  ctx.restore();
+  ctx.restore();
+}
+
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.lineTo(x + w - rad, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+  ctx.lineTo(x + w, y + h - rad);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+  ctx.lineTo(x + rad, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+  ctx.lineTo(x, y + rad);
+  ctx.quadraticCurveTo(x, y, x + rad, y);
+  ctx.closePath();
 }
 
 /** Desenho completo (export / fallback). */
@@ -282,18 +373,7 @@ export function drawVideoRouteMap(
   points: VideoTelemetryPoint[],
   current: VideoTelemetryPoint | null,
   fallbackStyle: "hud" | "compact",
+  mapFit: "contain" | "cover" = "cover",
 ): void {
-  drawVideoRouteMapBase(canvas, map, points, fallbackStyle);
-  if (current) {
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      const sourceWidth = map?.width ?? 320;
-      const sourceHeight = map?.height ?? 224;
-      const { width, height } = canvasDisplaySize(canvas, sourceWidth, sourceHeight);
-      ctx.save();
-      applyRouteMapViewport(ctx, width, height, sourceWidth, sourceHeight);
-      paintMarker(ctx, map, current, sourceWidth, sourceHeight);
-      ctx.restore();
-    }
-  }
+  drawVideoRouteMapMarker(canvas, map, points, current, fallbackStyle, mapFit);
 }

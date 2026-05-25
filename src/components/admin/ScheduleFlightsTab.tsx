@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
+import { listAircrafts } from "../../lib/aircraftDb";
+import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
-import { dispatchNotificationEvent } from "../../lib/notificationsDb";
+import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import {
   buildConflictsByFlightId,
   detectFlightConflicts,
@@ -38,6 +40,7 @@ import type {
   ScheduleWeekData,
   ScheduleWeekOption,
 } from "../../types/schedule";
+import type { Aircraft } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
@@ -62,6 +65,7 @@ const INSTRUCTOR_BORDER_CLASSES = [
   "border-red-300",
   "border-yellow-300",
 ];
+const schoolId = SCHOOL_ID ?? "escola_principal";
 
 function aircraftCardColor(className: string): string {
   return className
@@ -657,6 +661,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [weekOptions, setWeekOptions] = useState<ScheduleWeekOption[]>([]);
   const [selectedWeekStart, setSelectedWeekStart] = useState("");
   const [weekData, setWeekData] = useState<ScheduleWeekData | null>(null);
+  const [activeAircrafts, setActiveAircrafts] = useState<Aircraft[]>([]);
   const [loadingWeeks, setLoadingWeeks] = useState(true);
   const [loadingWeekData, setLoadingWeekData] = useState(false);
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
@@ -703,7 +708,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
       try {
         const weekOption = weekOverride ?? weekOptionsRef.current.find((row) => row.weekStart === weekStart);
-        const [data, rules] = await Promise.all([
+        const [data, rules, aircraftRows] = await Promise.all([
           getScheduleWeekData({
             weekStart,
             actorUserId,
@@ -712,6 +717,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             week: weekOption,
           }),
           getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
+          listAircrafts(schoolId).catch(() => []),
         ]);
         if (loadWeekRequestRef.current !== requestId) return;
 
@@ -722,12 +728,18 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           return a.startTime.localeCompare(b.startTime);
         });
         setFlights(rows);
-        setVisibleAircraft(data.supplies.map((s) => s.aircraftRegistration));
+        setActiveAircrafts(aircraftRows.filter((aircraft) => aircraft.active !== false));
+        setVisibleAircraft(Array.from(new Set([
+          ...data.supplies.map((s) => s.aircraftRegistration),
+          ...aircraftRows.filter((aircraft) => aircraft.active !== false).map((aircraft) => aircraft.registration),
+          ...rows.map((row) => row.aircraftRegistration ?? "").filter(Boolean),
+        ])));
         setVisibleInstructors(["__none__", ...data.instructors.map((s) => s.userId)]);
       } catch (e) {
         if (loadWeekRequestRef.current !== requestId) return;
         setError((e as Error).message);
         setWeekData(null);
+        setActiveAircrafts([]);
         setFlights([]);
       } finally {
         if (loadWeekRequestRef.current === requestId) setLoadingWeekData(false);
@@ -815,6 +827,37 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [weekData]);
 
+  const aircraftOptions = useMemo(() => {
+    const byRegistration = new Map<string, { registration: string; imageUrl: string | null; hasSupply: boolean }>();
+    for (const supply of weekData?.supplies ?? []) {
+      byRegistration.set(supply.aircraftRegistration, {
+        registration: supply.aircraftRegistration,
+        imageUrl: supply.aircraftImageUrl ?? null,
+        hasSupply: true,
+      });
+    }
+    for (const aircraft of activeAircrafts) {
+      const current = byRegistration.get(aircraft.registration);
+      byRegistration.set(aircraft.registration, {
+        registration: aircraft.registration,
+        imageUrl: current?.imageUrl ?? aircraft.image_url ?? null,
+        hasSupply: Boolean(current?.hasSupply),
+      });
+    }
+    for (const row of flights) {
+      const registration = row.aircraftRegistration ?? "";
+      if (registration && !byRegistration.has(registration)) {
+        byRegistration.set(registration, { registration, imageUrl: null, hasSupply: false });
+      }
+    }
+    return Array.from(byRegistration.values()).sort((a, b) => a.registration.localeCompare(b.registration, "pt-BR"));
+  }, [activeAircrafts, flights, weekData]);
+
+  const selectedAircraftHasSupply = useMemo(
+    () => !formDraft?.aircraftRegistration || Boolean(weekData?.supplies.some((supply) => supply.aircraftRegistration === formDraft.aircraftRegistration)),
+    [formDraft?.aircraftRegistration, weekData],
+  );
+
   const conflictsByFlightId = useMemo(() => {
     if (!weekData) return new Map<string, DetectedFlightConflict[]>();
     return buildConflictsByFlightId({
@@ -826,11 +869,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   }, [flights, minGapMinutes, studentLabelMap, weekData]);
 
   const colorByAircraft = useMemo(() => {
-    const regs = [...new Set((weekData?.supplies ?? []).map((s) => s.aircraftRegistration))];
+    const regs = aircraftOptions.map((aircraft) => aircraft.registration);
     const map = new Map<string, string>();
     regs.forEach((reg, index) => map.set(reg, AIRCRAFT_COLOR_CLASSES[index % AIRCRAFT_COLOR_CLASSES.length]!));
     return map;
-  }, [weekData]);
+  }, [aircraftOptions]);
 
   const borderByInstructor = useMemo(() => {
     const map = new Map<string, string>();
@@ -891,19 +934,19 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const aircraftSummary = useMemo(() => {
     if (!weekData) return [];
-    return weekData.supplies.map((supply) => {
-      const rows = flights.filter((row) => row.aircraftRegistration === supply.aircraftRegistration);
+    return aircraftOptions.map((aircraft) => {
+      const rows = flights.filter((row) => row.aircraftRegistration === aircraft.registration);
       const hours = rows.reduce((acc, row) => acc + row.durationHours, 0);
       const students = new Set(rows.map((row) => row.studentId)).size;
       return {
-        registration: supply.aircraftRegistration,
-        imageUrl: supply.aircraftImageUrl ?? null,
+        registration: aircraft.registration,
+        imageUrl: aircraft.imageUrl,
         flights: rows.length,
         hours: Number(hours.toFixed(1)),
         students,
       };
     });
-  }, [flights, weekData]);
+  }, [aircraftOptions, flights, weekData]);
 
   const totalSummary = useMemo(() => {
     const hours = flights.reduce((acc, row) => acc + row.durationHours, 0);
@@ -973,9 +1016,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   function openCreateModal() {
     if (!weekData) return;
-    const firstSupply = weekData.supplies[0];
-    if (!firstSupply) {
-      setError("Cadastre disponibilidade operacional da semana para criar voos.");
+    const firstAircraft = aircraftOptions[0];
+    if (!firstAircraft) {
+      setError("Cadastre uma aeronave ativa para criar voos.");
       return;
     }
     const firstStudent = weekData.students[0];
@@ -986,7 +1029,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       studentId: firstStudent?.userId ?? "",
       studentLabel: firstStudent?.label ?? "",
       ...resolveInstructorDraft(weekData.instructors, firstInstructor?.userId ?? null),
-      aircraftRegistration: firstSupply.aircraftRegistration,
+      aircraftRegistration: firstAircraft.registration,
       dayOfWeek: 1,
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
@@ -1071,6 +1114,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         const nextStartTime = formDraft.startTime;
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
+        void syncFlightCalendarEvent(formDraft.id, "upsert");
         void dispatchNotificationEvent({
           eventType: "flight.updated",
           flightId: formDraft.id,
@@ -1089,6 +1133,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         const result = await insertFlight(payload);
         if (result.error) throw result.error;
         if (result.id) {
+          void syncFlightCalendarEvent(result.id, "upsert");
           void dispatchNotificationEvent({
             eventType: "flight.scheduled",
             flightId: result.id,
@@ -1120,6 +1165,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!window.confirm("Excluir este voo?")) return;
     setError(null);
     try {
+      await syncFlightCalendarEvent(row.id, "cancel");
       const result = await deleteSavedFlight(row.id);
       if (result.error) throw result.error;
       void dispatchNotificationEvent({
@@ -1274,24 +1320,25 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               <div>
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Aeronaves</p>
                 <div className="flex flex-wrap gap-2">
-                  {weekData.supplies.map((supply) => {
-                    const checked = visibleAircraft.includes(supply.aircraftRegistration);
-                    const color = colorByAircraft.get(supply.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!;
+                  {aircraftOptions.map((aircraft) => {
+                    const checked = visibleAircraft.includes(aircraft.registration);
+                    const color = colorByAircraft.get(aircraft.registration) ?? AIRCRAFT_COLOR_CLASSES[0]!;
                     return (
-                      <label key={supply.aircraftId} className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200">
+                      <label key={aircraft.registration} className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200">
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={(e) => {
                             setVisibleAircraft((prev) =>
                               e.target.checked
-                                ? [...new Set([...prev, supply.aircraftRegistration])]
-                                : prev.filter((reg) => reg !== supply.aircraftRegistration),
+                                ? [...new Set([...prev, aircraft.registration])]
+                                : prev.filter((reg) => reg !== aircraft.registration),
                             );
                           }}
                         />
                         <span className={`h-3 w-3 rounded border ${color}`} />
-                        {supply.aircraftRegistration}
+                        {aircraft.registration}
+                        {!aircraft.hasSupply ? <span className="text-[10px] text-amber-300">sem disponibilidade</span> : null}
                       </label>
                     );
                   })}
@@ -1681,9 +1728,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, aircraftRegistration: e.target.value } : prev))}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 >
-                  {weekData.supplies.map((supply) => (
-                    <option key={supply.aircraftId} value={supply.aircraftRegistration}>
-                      {supply.aircraftRegistration}
+                  {aircraftOptions.map((aircraft) => (
+                    <option key={aircraft.registration} value={aircraft.registration}>
+                      {aircraft.registration}{aircraft.hasSupply ? "" : " (sem disponibilidade)"}
                     </option>
                   ))}
                 </select>
@@ -1741,6 +1788,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 />
               </label>
             </div>
+
+            {!selectedAircraftHasSupply ? (
+              <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                Esta aeronave não possui disponibilidade operacional cadastrada para esta semana. O voo será salvo mesmo assim.
+              </div>
+            ) : null}
 
             {formConflicts.length > 0 ? (
               <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">

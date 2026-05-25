@@ -7,6 +7,7 @@ import type { StudentPaymentMethod } from "../types/costs";
 import { listAircrafts } from "./aircraftDb";
 import { listModels } from "./aircraftModelsDb";
 import { decodeFlightRecord } from "./flightRecordCodec";
+import { flightBlockMinutesFromMeta } from "./flightHours";
 import {
   getSavedFlight,
   listAllSavedFlights,
@@ -204,10 +205,15 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
   const meta = decoded.meta;
   const flightDate = asIsoDate(meta?.header.date || item.flight_date || item.created_at);
 
-  const totalMinutes =
+  // Priority: block_time_minutes (departure → engine cutoff) > meta block time > leg sum > GPS
+  const blockMinutes =
+    (typeof item.block_time_minutes === "number" && item.block_time_minutes > 0 ? item.block_time_minutes : null) ??
+    flightBlockMinutesFromMeta(meta);
+  const legSumMinutes =
     meta?.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0) ||
     item.total_flight_minutes ||
     (typeof item.duration_sec === "number" ? Math.round(item.duration_sec / 60) : 0);
+  const totalMinutes = blockMinutes ?? legSumMinutes;
   const landings =
     meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ??
     item.landings ??
@@ -234,9 +240,9 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
   const items = flightsResult.data ?? [];
   const fullFlights = await mapWithConcurrency(items, 4, async (item) => {
     const hasMaterializedSource =
-      typeof item.total_flight_minutes === "number" &&
+      ((typeof item.block_time_minutes === "number" && item.block_time_minutes > 0) ||
+        (typeof item.total_flight_minutes === "number" && item.total_flight_minutes > 0)) &&
       typeof item.landings === "number" &&
-      item.total_flight_minutes > 0 &&
       item.landings > 0;
     if (hasMaterializedSource) return [item, null] as const;
     const result = await getSavedFlight(item.id);

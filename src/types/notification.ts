@@ -3,7 +3,9 @@ export type NotificationChannel = "email" | "push";
 export type NotificationEventType =
   | "flight.scheduled"
   | "flight.updated"
+  | "flight.reopened"
   | "flight.cancelled"
+  | "flight.reminder_24h"
   | "weeklyPlan.submitted"
   | "notice.published"
   | "schedule.published";
@@ -76,11 +78,33 @@ export type NotificationDispatchPayload = {
   data?: Record<string, unknown>;
 };
 
+export type GoogleCalendarSettings = {
+  enabled: boolean;
+  serviceAccountEmail: string;
+  serviceAccountConfigured: boolean;
+  aircraftCalendars: Array<{
+    aircraftIdent: string;
+    calendarId: string;
+  }>;
+  lastTestAt: string | null;
+  lastError: string | null;
+  updatedAt: string | null;
+};
+
+export type GoogleCalendarSettingsInput = {
+  enabled: boolean;
+  aircraftCalendars: Array<{
+    aircraftIdent: string;
+    calendarId: string;
+  }>;
+};
+
 export type NotificationResponse = {
   ok?: boolean;
   message?: string;
   emailSettings?: EmailSettings;
   brandSettings?: EmailBrandSettings;
+  googleCalendarSettings?: GoogleCalendarSettings;
   deliveries?: Array<{
     channel: NotificationChannel;
     recipientUserId: string;

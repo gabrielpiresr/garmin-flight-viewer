@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { getAdminStudentsProgress, getAdminUserDetail } from "../../lib/adminUsersDb";
+import { downloadCsv } from "../../lib/csvExport";
 import type { AdminStudentAgendaBucketKey, AdminStudentProgressRow, AdminStudentProgressStatus, AdminStudentsProgressData } from "../../types/adminStudents";
 import type { AdminUserDetail, AdminUserFlight, AdminUserPlannedFlight } from "../../types/adminUsers";
 import { FlightDetailView } from "../FlightDetailView";
@@ -190,20 +191,11 @@ function rangeMatches(value: number | null | undefined, range: NumericRange): bo
   return true;
 }
 
-function csvEscape(value: string): string {
-  return /[",\n;]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
 function exportCsv(rows: AdminStudentProgressRow[], columns: ColumnDef[]) {
-  const header = columns.map((column) => csvEscape(column.label)).join(";");
-  const body = rows.map((row) => columns.map((column) => csvEscape(column.format(row))).join(";")).join("\n");
-  const blob = new Blob([`\uFEFF${header}\n${body}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `alunos-${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(
+    [columns.map((column) => column.label), ...rows.map((row) => columns.map((column) => column.format(row)))],
+    `alunos-${new Date().toISOString().slice(0, 10)}.csv`,
+  );
 }
 
 function sanitizeColumns(value: unknown): StudentColumnKey[] {

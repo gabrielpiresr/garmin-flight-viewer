@@ -834,7 +834,8 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
       )}
 
       {/* Cards grid */}
-      {loadingAircrafts ? (
+      {!showForm ? (
+      loadingAircrafts ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/50">
@@ -993,7 +994,8 @@ const upcoming = buildUpcomingMaintenance({
             );
           })}
         </div>
-      )}
+      )
+      ) : null}
     </div>
   );
 }

@@ -99,3 +99,36 @@ export async function createFueling(
   );
   return toFueling(doc as Record<string, unknown>);
 }
+
+export async function updateFueling(
+  id: string,
+  data: CreateFuelingInput,
+  actor: { userId: string; role: UserRole },
+): Promise<AircraftFueling> {
+  if (!databases || !DB_ID || !FUELINGS_COL_ID) throw new Error("Coleção de abastecimentos não configurada.");
+  const doc = await databases.updateDocument(
+    DB_ID,
+    FUELINGS_COL_ID,
+    id,
+    {
+      school_id: data.school_id,
+      occurred_at: data.occurred_at,
+      aerodrome: data.aerodrome.trim().toUpperCase(),
+      responsible_user_id: data.responsible_user_id,
+      responsible_name: data.responsible_name,
+      aircraft_id: data.aircraft_id,
+      aircraft_registration: data.aircraft_registration,
+      quantity_liters: data.quantity_liters,
+      price_per_liter: data.price_per_liter,
+      total_value: data.total_value,
+      payment_method: data.payment_method,
+      fuel_type: data.fuel_type,
+      student_user_id: data.student_user_id,
+      student_name: data.student_name,
+      flight_id: data.flight_id,
+      created_by: data.created_by,
+    },
+    resolveSharedDocumentPermissions(actor.userId, actor.role),
+  );
+  return toFueling(doc as Record<string, unknown>);
+}

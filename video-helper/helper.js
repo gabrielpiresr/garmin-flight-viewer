@@ -150,7 +150,10 @@ const server = http.createServer(async (req, res) => {
         const fileUrl = await compositeOverlay(
           { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
             orientation, fps: fps || 30, durationSec, overlayBuffer,
-            videoRotationDeg: params.videoRotationDeg },
+            videoRotationDeg: params.videoRotationDeg,
+            verticalCropPct: params.verticalCropPct,
+            sourceVideoWidth: params.sourceVideoWidth,
+            sourceVideoHeight: params.sourceVideoHeight },
           job, jobId,
         );
         sendProgress(jobId, { stage: "done", percent: 100, fileUrl });
@@ -958,17 +961,75 @@ function extractJpegFrames(overlayBuffer, tmpDir) {
   return frameCount;
 }
 
-function rotationFilterSuffix(deg) {
+function rotationFilterPrefix(deg) {
   const d = ((Math.round(Number(deg) || 0) % 360) + 360) % 360;
-  if (d === 90) return ",transpose=1";
-  if (d === 270) return ",transpose=2";
-  if (d === 180) return ",transpose=1,transpose=1";
+  if (d === 90) return "transpose=1,";
+  if (d === 270) return "transpose=2,";
+  if (d === 180) return "transpose=1,transpose=1,";
   return "";
+}
+
+/** Mesma lógica do preview (contain no 16:9, cover no 9:16). */
+function computeVideoStageSize(
+  parentWidth,
+  parentHeight,
+  videoWidth,
+  videoHeight,
+  rotationDeg,
+  fit,
+) {
+  if (parentWidth <= 0 || parentHeight <= 0) return { width: 0, height: 0 };
+  if (fit === "cover") {
+    return { width: Math.floor(parentWidth), height: Math.floor(parentHeight) };
+  }
+  if (!videoWidth || !videoHeight) {
+    return { width: Math.floor(parentWidth), height: Math.floor(parentHeight) };
+  }
+  const rot = ((Math.round(Number(rotationDeg) || 0) % 360) + 360) % 360;
+  const swapped = rot === 90 || rot === 270;
+  const srcW = swapped ? videoHeight : videoWidth;
+  const srcH = swapped ? videoWidth : videoHeight;
+  const scale = Math.min(parentWidth / srcW, parentHeight / srcH);
+  return {
+    width: Math.max(1, Math.floor(srcW * scale)),
+    height: Math.max(1, Math.floor(srcH * scale)),
+  };
+}
+
+function buildVideoBaseFilter({
+  isVertical,
+  verticalCropPct,
+  videoRotationDeg,
+  sourceVideoWidth,
+  sourceVideoHeight,
+}) {
+  const rotPrefix = rotationFilterPrefix(videoRotationDeg);
+  const outW = isVertical ? 608 : 1920;
+  const outH = 1080;
+
+  if (isVertical) {
+    const pct = Math.max(0, Math.min(100, Number(verticalCropPct) || 50)) / 100;
+    const cropW = "trunc(ih*9/16/2)*2";
+    const cropX = `(iw-${cropW})*${pct}`;
+    return `[1:v]${rotPrefix}crop=${cropW}:ih:${cropX}:0,scale=${outW}:${outH}[base]`;
+  }
+
+  const vw = Number(sourceVideoWidth) || 0;
+  const vh = Number(sourceVideoHeight) || 0;
+  if (vw > 0 && vh > 0) {
+    const stage = computeVideoStageSize(outW, outH, vw, vh, videoRotationDeg, "contain");
+    const padX = Math.max(0, Math.floor((outW - stage.width) / 2));
+    const padY = Math.max(0, Math.floor((outH - stage.height) / 2));
+    return `[1:v]${rotPrefix}scale=${stage.width}:${stage.height},pad=${outW}:${outH}:${padX}:${padY}[base]`;
+  }
+
+  return `[1:v]${rotPrefix}scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2[base]`;
 }
 
 async function compositeOverlay(
   { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
-    orientation, fps, durationSec, overlayBuffer, videoRotationDeg },
+    orientation, fps, durationSec, overlayBuffer, videoRotationDeg,
+    verticalCropPct, sourceVideoWidth, sourceVideoHeight },
   job, jobId,
 ) {
   const ffmpeg = findBin("ffmpeg");
@@ -1015,14 +1076,14 @@ async function compositeOverlay(
       if (dur > 0) durationArgs.push("-t", String(dur));
     }
 
-    // filter_complex: chromakey overlay on top of scaled/cropped source.
-    // Higher similarity/blend tolerances to handle JPEG compression artifacts on the green background.
-    const baseFilter = isVertical
-      ? `[1:v]crop=trunc(ih*9/16/2)*2:ih:(iw-trunc(ih*9/16/2)*2)/2:0,scale=608:1080[base]`
-      : `[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[base]`;
-    const rotSuffix = rotationFilterSuffix(videoRotationDeg);
-    const filterComplex =
-      `${baseFilter};[base][0:v]overlay=0:0,format=yuv420p${rotSuffix}[outv]`;
+    const baseFilter = buildVideoBaseFilter({
+      isVertical,
+      verticalCropPct,
+      videoRotationDeg,
+      sourceVideoWidth,
+      sourceVideoHeight,
+    });
+    const filterComplex = `${baseFilter};[base][0:v]overlay=0:0,format=yuv420p[outv]`;
 
     const effectiveDuration = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
 

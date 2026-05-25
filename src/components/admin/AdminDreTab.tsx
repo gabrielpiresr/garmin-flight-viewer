@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { closeFinancialMonth, getFinancialDre, reopenFinancialMonth, saveFinancialDreManualValue } from "../../lib/financialDreDb";
+import { downloadCsv } from "../../lib/csvExport";
 import type { FinancialDreLine, FinancialDreResponse, FinancialDreValueType } from "../../types/financialDre";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -27,10 +28,6 @@ function formatValue(value: number, type: FinancialDreValueType): string {
 function parseSignedValue(value: string): number {
   const n = Number(value.trim().replace(",", "."));
   return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
-}
-
-function csvEscape(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function statusLabel(status: string): string {
@@ -258,14 +255,7 @@ export function AdminDreTab() {
       }
       return [row.label, ...dre.months.map((month) => formatValue(row.values[month.key] ?? 0, row.valueType))];
     });
-    const csv = [header, ...rows].map((row) => row.map(csvEscape).join(";")).join("\n");
-    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `dre-${dre.fromMonth}-${dre.toMonth}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsv([header, ...rows], `dre-${dre.fromMonth}-${dre.toMonth}.csv`);
   }
 
   function printPdf() {

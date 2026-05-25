@@ -1,9 +1,13 @@
 import type { AirspeedArcLimits, VideoTelemetryPoint, VideoTelemetryWidget } from "./videoTelemetry";
-import { drawOverlayFrame, getPointAtMs } from "./overlayCanvas";
+import { drawOverlayFrame, getPointAtMs, type VideoRouteMapData } from "./overlayCanvas";
 import type { TelemetryOverlayStyle } from "./overlayCanvas";
+import { buildVideoRouteMap } from "./videoRouteMap";
+import { routeMapSourceSize } from "./overlayRouteLayout";
 
 export interface RenderOverlayParams {
   points: VideoTelemetryPoint[];
+  /** Pontos dos gráficos (preview: toggle “ajustar gráficos ao corte”). */
+  chartPoints?: VideoTelemetryPoint[];
   widgets: VideoTelemetryWidget[];
   startSec: number;
   endSec: number;
@@ -13,6 +17,8 @@ export interface RenderOverlayParams {
   playerHeight: number;
   overlayStyle: TelemetryOverlayStyle;
   airspeedArcs: AirspeedArcLimits | null;
+  /** Mapa pré-carregado (preview); se omitido, gera antes dos frames. */
+  routeMap?: VideoRouteMapData | null;
   onProgress: (stage: "render" | "encode", pct: number) => void;
 }
 
@@ -33,13 +39,34 @@ const MAGIC = 0x4a465253;
 export async function renderOverlayVideo(
   params: RenderOverlayParams,
 ): Promise<RenderedOverlay> {
-  const { points, widgets, startSec, endSec, orientation, brand, playerWidth, playerHeight, overlayStyle, airspeedArcs, onProgress } = params;
+  const {
+    points,
+    chartPoints = points,
+    widgets,
+    startSec,
+    endSec,
+    orientation,
+    brand,
+    playerWidth,
+    playerHeight,
+    overlayStyle,
+    airspeedArcs,
+    routeMap: routeMapInput,
+    onProgress,
+  } = params;
 
   const isVertical = orientation === "vertical";
   const width = isVertical ? 608 : 1920;
   const height = 1080;
   const durationSec = endSec - startSec;
   const totalFrames = Math.ceil(durationSec * RENDER_FPS);
+
+  const { w: mapW, h: mapH } = routeMapSourceSize(width, height, isVertical);
+  let routeMap = routeMapInput ?? null;
+  if (!routeMap && widgets.includes("route") && points.length >= 2) {
+    onProgress("render", 0);
+    routeMap = await buildVideoRouteMap(points, mapW, mapH);
+  }
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -53,7 +80,22 @@ export async function renderOverlayVideo(
   for (let frame = 0; frame < totalFrames; frame++) {
     const timeSec = startSec + frame / RENDER_FPS;
     const point = getPointAtMs(points, timeSec * 1000);
-    drawOverlayFrame(ctx, point, points, widgets, width, height, brand, isVertical, playerWidth, playerHeight, overlayStyle, airspeedArcs);
+    drawOverlayFrame(
+      ctx,
+      point,
+      points,
+      chartPoints,
+      widgets,
+      width,
+      height,
+      brand,
+      isVertical,
+      playerWidth,
+      playerHeight,
+      overlayStyle,
+      airspeedArcs,
+      routeMap,
+    );
 
     const jpeg = await new Promise<Blob>((resolve, reject) =>
       canvas.toBlob(
@@ -100,8 +142,11 @@ export interface CompositeParams {
   orientation: "horizontal" | "vertical";
   /** 0–100: horizontal crop anchor for vertical export (50 = center). */
   verticalCropPct?: number;
-  /** 0, 90, 180 ou 270 — aplicado no ffmpeg após o composite. */
+  /** 0, 90, 180 ou 270 — aplicado no ffmpeg antes do crop (como no preview). */
   videoRotationDeg?: number;
+  /** Dimensões intrínsecas do arquivo de vídeo (para pad/crop no helper). */
+  sourceVideoWidth?: number;
+  sourceVideoHeight?: number;
   jobId: string;
 }
 

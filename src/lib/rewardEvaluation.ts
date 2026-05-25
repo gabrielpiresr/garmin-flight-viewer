@@ -63,6 +63,18 @@ function sheetTotals(fullFlights: SavedFlightFull[]) {
   };
 }
 
+type SheetTotals = ReturnType<typeof sheetTotals>;
+
+type RewardEvaluationCache = {
+  sheetTotals?: SheetTotals;
+};
+
+function getSheetTotals(fullFlights: SavedFlightFull[], cache?: RewardEvaluationCache): SheetTotals {
+  if (!cache) return sheetTotals(fullFlights);
+  cache.sheetTotals ??= sheetTotals(fullFlights);
+  return cache.sheetTotals;
+}
+
 function missionTypeForFlight(flight: SavedFlightListItem, track: TrainingTrack | null | undefined): string | null {
   if (!track || !flight.training_mission_id) return null;
   for (const stage of track.stages) {
@@ -72,10 +84,9 @@ function missionTypeForFlight(flight: SavedFlightListItem, track: TrainingTrack 
   return null;
 }
 
-export function metricValue(metric: RewardMetric, context: RewardMetricContext): number {
+function metricValueWithCache(metric: RewardMetric, context: RewardMetricContext, cache?: RewardEvaluationCache): number {
   const { journey, flights, formation } = context;
   const fullFlights = context.fullFlights ?? [];
-  const sheet = sheetTotals(fullFlights);
 
   switch (metric) {
     case "flight_count":
@@ -97,23 +108,29 @@ export function metricValue(metric: RewardMetric, context: RewardMetricContext):
     case "longest_flight_distance_nm":
       return flights.reduce((max, flight) => Math.max(max, flight.total_miles ?? 0), 0);
     case "longest_flight_duration_min":
-      return flights.reduce((max, flight) => Math.max(max, Math.round((flight.duration_sec ?? 0) / 60)), 0);
+      return flights.reduce((max, flight) => {
+        const minutes = flight.block_time_minutes ?? Math.round((flight.duration_sec ?? 0) / 60);
+        return Math.max(max, minutes);
+      }, 0);
     case "solo_flight_count":
       return flights.filter((flight) => missionTypeForFlight(flight, formation?.selectedTrack) === "SL").length;
     case "solo_hours":
       return flights
         .filter((flight) => missionTypeForFlight(flight, formation?.selectedTrack) === "SL")
-        .reduce((acc, flight) => acc + (flight.duration_sec ?? 0) / 3600, 0);
+        .reduce((acc, flight) => {
+          const minutes = flight.block_time_minutes ?? Math.round((flight.duration_sec ?? 0) / 60);
+          return acc + minutes / 60;
+        }, 0);
     case "night_hours":
-      return sheet.nightHours;
+      return getSheetTotals(fullFlights, cache).nightHours;
     case "ifr_hours":
-      return sheet.ifrHours;
+      return getSheetTotals(fullFlights, cache).ifrHours;
     case "navigation_hours":
-      return sheet.navigationHours;
+      return getSheetTotals(fullFlights, cache).navigationHours;
     case "navigation_distance_nm":
-      return sheet.navigationDistanceNm;
+      return getSheetTotals(fullFlights, cache).navigationDistanceNm;
     case "navigation_flight_count":
-      return sheet.navigationFlightCount;
+      return getSheetTotals(fullFlights, cache).navigationFlightCount;
     case "mission_completed_count":
       return formation?.completedMissionIds.size ?? 0;
     case "stage_completed_count":
@@ -123,17 +140,21 @@ export function metricValue(metric: RewardMetric, context: RewardMetricContext):
   }
 }
 
+export function metricValue(metric: RewardMetric, context: RewardMetricContext): number {
+  return metricValueWithCache(metric, context);
+}
+
 function conditionProgress(current: number, target: number): number {
   if (target <= 0) return current > 0 ? 100 : 0;
   return Math.max(0, Math.min(100, Math.round((current / target) * 100)));
 }
 
-function evaluateRules(rules: RewardRules, context: RewardMetricContext) {
+function evaluateRules(rules: RewardRules, context: RewardMetricContext, cache: RewardEvaluationCache) {
   const conditions = rules.conditions.length > 0 ? rules.conditions : [];
   if (conditions.length === 0) return { achieved: false, progressPct: 0, currentValue: 0, targetValue: 0 };
 
   const evaluated = conditions.map((condition) => {
-    const current = metricValue(condition.metric, context);
+    const current = metricValueWithCache(condition.metric, context, cache);
     const target = condition.value;
     const achieved =
       condition.operator === "lte" ? current <= target : condition.operator === "eq" ? current === target : current >= target;
@@ -149,9 +170,10 @@ function evaluateRules(rules: RewardRules, context: RewardMetricContext) {
 }
 
 export function evaluateRewards(rewards: JourneyReward[], context: RewardMetricContext): EvaluatedJourneyReward[] {
+  const cache: RewardEvaluationCache = {};
   return rewards
     .filter((reward) => reward.isActive)
-    .map((reward) => ({ ...reward, ...evaluateRules(reward.rules, context) }))
+    .map((reward) => ({ ...reward, ...evaluateRules(reward.rules, context, cache) }))
     .sort((a, b) => Number(b.achieved) - Number(a.achieved) || a.order - b.order || a.title.localeCompare(b.title, "pt-BR"));
 }
 

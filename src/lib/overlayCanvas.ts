@@ -1,6 +1,7 @@
 import {
   altitudeMToFt,
   formatVerticalSpeedFpm,
+  roundVerticalSpeedFpm,
   formatVideoAltitude,
   formatVideoHeading,
   formatVideoSpeed,
@@ -11,6 +12,17 @@ import {
 } from "./videoTelemetry";
 import { drawTelemetryChart } from "../components/VideoTelemetryOverlay";
 import type { TelemetryOverlayStyle } from "../components/VideoTelemetryOverlay";
+import {
+  cornerChartsLayout,
+  overlayDrawScale,
+  overlayEmPx,
+  verticalChartsLayout,
+  type ChartPanelMetrics,
+} from "./overlayChartLayout";
+import { routeMapRect } from "./overlayRouteLayout";
+import { drawRouteMapInRect, type VideoRouteMapData } from "./videoRouteMap";
+
+export type { VideoRouteMapData };
 
 export { type TelemetryOverlayStyle };
 export const CHROMAKEY_CSS = "#00ff00";
@@ -76,41 +88,6 @@ function roundRect(ctx: Ctx2D, x: number, y: number, w: number, h: number, r: nu
   ctx.closePath();
 }
 
-// Draw a chart panel (bg-black/55 border-white/15). Returns panel height.
-function drawChartPanel(
-  ctx: Ctx2D,
-  points: VideoTelemetryPoint[],
-  currentPoint: VideoTelemetryPoint | null,
-  key: "altitude" | "speed",
-  title: string,
-  x: number, y: number, w: number, chartH: number,
-  r: number, titleSize: number, titleGap: number, pad: number,
-): number {
-  const panelH = pad + titleSize + titleGap + chartH + pad;
-
-  roundRect(ctx, x, y, w, panelH, r);
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fill();
-  roundRect(ctx, x, y, w, panelH, r);
-  ctx.strokeStyle = "rgba(255,255,255,0.15)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  ctx.font = `700 ${titleSize}px system-ui,sans-serif`;
-  ctx.fillStyle = "#e0f2fe";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.fillText(title, x + pad, y + pad);
-
-  const tmpCanvas = document.createElement("canvas");
-  tmpCanvas.width = Math.round(w - pad * 2);
-  tmpCanvas.height = Math.round(chartH);
-  drawTelemetryChart(tmpCanvas, points, currentPoint, key);
-  ctx.drawImage(tmpCanvas, x + pad, y + pad + titleSize + titleGap, w - pad * 2, chartH);
-
-  return panelH;
-}
-
 // HUD-corner chart panel (hudCorner style: flex-1 p-1.5 pb-0.5). Draws in-place.
 function drawHudChartPanel(
   ctx: Ctx2D,
@@ -119,27 +96,26 @@ function drawHudChartPanel(
   key: "altitude" | "speed",
   title: string,
   x: number, y: number, w: number, h: number,
-  r: number, sy: number,
+  panel: ChartPanelMetrics,
 ): void {
-  const padTop  = Math.round(6 * sy);   // p-1.5
-  const padBot  = Math.round(2 * sy);   // pb-0.5
-  const padX    = Math.round(6 * sy);
-  const titleSz = Math.round(9 * sy);   // text-[9px]
-  const titleGap = Math.round(2 * sy);  // mb-0.5
+  const { padTop, padBot, padX, titleSz, titleGap, radius: r } = panel;
+  const sy = panel.emPx / overlayEmPx(1080); // sombra proporcional ao em
 
   roundRect(ctx, x, y, w, h, r);
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.fill();
-  roundRect(ctx, x, y, w, h, r);
-  ctx.strokeStyle = "rgba(255,255,255,0.15)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = Math.round(14 * sy);
+  ctx.shadowOffsetY = Math.round(3 * sy);
 
   ctx.font = `700 ${titleSz}px system-ui,sans-serif`;
-  ctx.fillStyle = "#e0f2fe";
+  ctx.fillStyle = "rgba(224,242,254,0.95)";
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
   ctx.fillText(title, x + padX, y + padTop);
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
 
   const chartX = x + padX;
   const chartY = y + padTop + titleSz + titleGap;
@@ -149,8 +125,62 @@ function drawHudChartPanel(
     const tmp = document.createElement("canvas");
     tmp.width = Math.round(chartW);
     tmp.height = Math.round(chartH);
-    drawTelemetryChart(tmp, points, currentPoint, key);
+    drawTelemetryChart(tmp, points, currentPoint, key, "hud");
     ctx.drawImage(tmp, chartX, chartY, chartW, chartH);
+  }
+}
+
+type CornerChartLayout = "hud" | "compact" | "vertical";
+
+/** Gráficos canto inferior esquerdo (HUD lado a lado; compacto empilhado). */
+function drawHudLeftCornerCharts(
+  ctx: Ctx2D,
+  chartPoints: VideoTelemetryPoint[],
+  point: VideoTelemetryPoint,
+  widgets: VideoTelemetryWidget[],
+  width: number,
+  height: number,
+  layout: CornerChartLayout = "hud",
+  /** Borda inferior da pilha de gráficos (compacto: acima das pills). */
+  stackBottom = height,
+): void {
+  const show = (w: VideoTelemetryWidget) => widgets.includes(w);
+  const hasAltChart = show("altitudeChart");
+  const hasSpeedChart = show("speedChart");
+  if (!hasAltChart && !hasSpeedChart) return;
+
+  const chartCount = (hasAltChart ? 1 : 0) + (hasSpeedChart ? 1 : 0);
+  const mode = layout === "vertical" ? "vertical" : layout;
+  const stackedBoth = mode === "compact" && hasAltChart && hasSpeedChart;
+  const { insetL, gap, chartGap, totalW, eachW, panel } = cornerChartsLayout(
+    mode,
+    width,
+    height,
+    chartCount,
+    stackedBoth,
+  );
+  const { panelH } = panel;
+
+  if (mode === "compact") {
+    const speedY = stackBottom - panelH;
+    const altY = stackedBoth ? speedY - panelH - chartGap : stackBottom - panelH;
+    if (hasAltChart) {
+      drawHudChartPanel(ctx, chartPoints, point, "altitude", "ALT FT", insetL, altY, totalW, panelH, panel);
+    }
+    if (hasSpeedChart) {
+      drawHudChartPanel(ctx, chartPoints, point, "speed", "SPD KT", insetL, speedY, totalW, panelH, panel);
+    }
+    return;
+  }
+
+  const panelY = height - panelH;
+  let curX = insetL;
+  if (hasAltChart) {
+    drawHudChartPanel(ctx, chartPoints, point, "altitude", "ALT FT", curX, panelY, eachW, panelH, panel);
+    curX += eachW + gap;
+  }
+  if (hasSpeedChart) {
+    drawHudChartPanel(ctx, chartPoints, point, "speed", "SPD KT", curX, panelY, eachW, panelH, panel);
   }
 }
 
@@ -188,6 +218,21 @@ function drawPill(
   ctx.fillText(value, x + padX + labelW, y - pillH / 2);
 
   return pillW;
+}
+
+function measurePillWidth(
+  ctx: Ctx2D,
+  label: string,
+  value: string,
+  padX: number,
+  labelSize: number,
+  valueSize: number,
+): number {
+  ctx.font = `700 ${labelSize}px system-ui,sans-serif`;
+  const labelW = ctx.measureText(`${label} `).width;
+  ctx.font = `600 ${valueSize}px system-ui,sans-serif`;
+  const valueW = ctx.measureText(value).width;
+  return padX * 2 + labelW + valueW;
 }
 
 // Brand mark: bg-black/45 with school name
@@ -440,7 +485,7 @@ function drawVsiTape(
   const trackH = tapeH - labelH - unitH;
   const span   = VSI_SCALE_MAX - VSI_SCALE_MIN; // 20
 
-  const displayFpm  = Math.round(vsFpm / 50) * 50;
+  const displayFpm  = roundVerticalSpeedFpm(vsFpm) ?? 0;
   const scaleValue  = Math.max(VSI_SCALE_MIN, Math.min(VSI_SCALE_MAX, displayFpm / 100));
 
   // Fixed ticks every 2 units
@@ -573,14 +618,37 @@ function drawHudOverlay(
   ctx: Ctx2D,
   point: VideoTelemetryPoint,
   allPoints: VideoTelemetryPoint[],
+  chartPoints: VideoTelemetryPoint[],
   widgets: VideoTelemetryWidget[],
   width: number, height: number,
   brand: string,
   airspeedArcs: AirspeedArcLimits | null,
+  routeMap: VideoRouteMapData | null,
   sx: number, sy: number,
 ) {
   const show = (w: VideoTelemetryWidget) => widgets.includes(w);
   const r4 = Math.round(4 * Math.min(sx, sy));
+  const hasCharts = show("altitudeChart") || show("speedChart");
+
+  if (show("route")) {
+    const rect = routeMapRect(width, height, false, "hud", hasCharts, sx, sy);
+    if (rect) {
+      drawRouteMapInRect(
+        ctx,
+        routeMap,
+        allPoints,
+        point,
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        rect.style,
+        rect.fit,
+        rect.radius,
+        rect.panelOpacity,
+      );
+    }
+  }
 
   // ── Brand mark: absolute left-1/2 top-6 -translate-x-1/2 ─────────────────
   if (brand) {
@@ -675,52 +743,7 @@ function drawHudOverlay(
     ctx.fillText(hdgVal, pillX + padX + lblW, pillY - pillH / 2);
   }
 
-  // ── HUD charts (HudLeftCorner): absolute bottom-8 left-3 flex gap-1.5
-  //    Chart height: clamp(3.5rem,12vh,4.5rem) = clamp(56px,12vh,72px)
-  const hasAltChart   = show("altitudeChart");
-  const hasSpeedChart = show("speedChart");
-  if (hasAltChart || hasSpeedChart) {
-    const chartCount = (hasAltChart ? 1 : 0) + (hasSpeedChart ? 1 : 0);
-    const left3  = Math.round(12 * sx);
-    const bottom8 = Math.round(32 * sy); // bottom-8
-    const gap1_5 = Math.round(6 * sx);  // gap-1.5
-
-    // HUD_LEFT_CORNER_MAX = calc(22%-1rem) = 0.22*playerWidth - 16px (in CSS)
-    // We work in canvas pixels so: 0.22*width - 16*sx
-    const maxW = 0.22 * width - Math.round(16 * sx);
-
-    let totalW: number;
-    if (chartCount === 2) {
-      totalW = Math.min(maxW, Math.round(352 * sx)); // min(calc(22%-1rem), 22rem=352px)
-    } else {
-      totalW = Math.min(Math.round(184 * sx), maxW); // min(11.5rem=184px, calc(22%-1rem))
-    }
-
-    // Chart panel height: clamp(56px, 12vh=0.12*height, 72px) in canvas pixels
-    const chartInnerH = Math.round(Math.max(56 * sy, Math.min(0.12 * height, 72 * sy)));
-
-    // Title + padding to compute full panel height
-    const padTop   = Math.round(6 * sy);  // p-1.5
-    const padBot   = Math.round(2 * sy);  // pb-0.5
-    const titleSz  = Math.round(9 * sy);
-    const titleGap = Math.round(2 * sy);
-    const panelH   = padTop + titleSz + titleGap + chartInnerH + padBot;
-
-    const panelY = height - bottom8 - panelH;
-
-    const eachW = chartCount === 1
-      ? totalW
-      : Math.floor((totalW - gap1_5) / 2);
-
-    let curX = left3;
-    if (hasAltChart) {
-      drawHudChartPanel(ctx, allPoints, point, "altitude", "ALT FT", curX, panelY, eachW, panelH, r4, sy);
-      curX += eachW + gap1_5;
-    }
-    if (hasSpeedChart) {
-      drawHudChartPanel(ctx, allPoints, point, "speed", "SPD KT", curX, panelY, eachW, panelH, r4, sy);
-    }
-  }
+  drawHudLeftCornerCharts(ctx, chartPoints, point, widgets, width, height, "hud");
 }
 
 // ─── Compact overlay layout ───────────────────────────────────────────────────
@@ -729,68 +752,100 @@ function drawCompactOverlay(
   ctx: Ctx2D,
   point: VideoTelemetryPoint,
   allPoints: VideoTelemetryPoint[],
+  chartPoints: VideoTelemetryPoint[],
   widgets: VideoTelemetryWidget[],
   width: number, height: number,
   brand: string,
+  routeMap: VideoRouteMapData | null,
   sx: number, sy: number,
 ) {
   const show = (w: VideoTelemetryWidget) => widgets.includes(w);
+  const left3 = Math.round(12 * sx);
+  const top3 = Math.round(12 * sy);
+  const insetL = Math.round(width * 0.015);
+  const r6 = Math.round(6 * Math.min(sx, sy));
+  const r4 = Math.round(4 * Math.min(sx, sy));
+  const textSm = Math.round(14 * sy);
+  const text10 = Math.round(10 * sy);
+  const text11 = Math.round(11 * sy);
+  const padX = Math.round(10 * sx);
+  const padY = Math.round(4 * sy);
+  const gap2 = Math.round(8 * sx);
+  const gapChartsPills = Math.round(6 * sx);
 
-  const left3    = Math.round(12 * sx);
-  const top3     = Math.round(12 * sy);
-  const top12    = Math.round(48 * sy);
-  const bottom14 = Math.round(56 * sy);
-  const gap2     = Math.round(8 * sx);
-  const padX     = Math.round(10 * sx);
-  const padY     = Math.round(4  * sy);
-  const chartPad = Math.round(6 * Math.min(sx, sy));
-  const r6       = Math.round(6 * Math.min(sx, sy));
-  const r4       = Math.round(4 * Math.min(sx, sy));
-  const textSm   = Math.round(14 * sy);
-  const text10   = Math.round(10 * sy);
-  const text9    = Math.round(9  * sy);
-  const text11   = Math.round(11 * sy);
-  const titleGap = Math.round(4 * sy);
-  const chartH   = Math.round(Math.max(64 * sy, Math.min(height * 0.14, 96 * sy)));
-
-  // Brand mark: left-3 top-3 (compact style)
   if (brand) {
     drawBrandMark(ctx, brand, left3, top3, text11, Math.round(10 * sx), Math.round(6 * sy), r4);
   }
 
-  // LeftTelemetryStack: left-3 top-12, w-[min(15rem,42vw)]
-  const stackW = Math.min(Math.round(240 * sx), Math.round(width * 0.42));
-  let stackY = top12;
+  const hasAltChart = show("altitudeChart");
+  const hasSpeedChart = show("speedChart");
+  const hasCharts = hasAltChart || hasSpeedChart;
 
-  if (show("altitudeChart")) {
-    const h = drawChartPanel(ctx, allPoints, point, "altitude", "ALTITUDE", left3, stackY, stackW, chartH, r4, text9, titleGap, chartPad);
-    stackY += h + gap2;
+  if (show("route")) {
+    const rect = routeMapRect(width, height, false, "compact", hasCharts, sx, sy);
+    if (rect) {
+      drawRouteMapInRect(
+        ctx,
+        routeMap,
+        allPoints,
+        point,
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        rect.style,
+        rect.fit,
+        rect.radius,
+        rect.panelOpacity,
+      );
+    }
   }
 
-  if (show("speedChart")) {
-    drawChartPanel(ctx, allPoints, point, "speed", "VELOCIDADE", left3, stackY, stackW, chartH, r4, text9, titleGap, chartPad);
+  const pillsY = height;
+  const pillRowH = padY * 2 + textSm;
+  const chartsStackBottom = height - pillRowH - gapChartsPills;
+
+  if (hasCharts) {
+    drawHudLeftCornerCharts(
+      ctx,
+      chartPoints,
+      point,
+      widgets,
+      width,
+      height,
+      "compact",
+      chartsStackBottom,
+    );
   }
 
-  // Pills: absolute bottom-14 left-3
-  const pillsY = height - bottom14;
-  let pillX = left3;
-
+  let pillX = insetL;
   if (show("speed")) {
     const w = drawPill(ctx, "SPD", formatVideoSpeed(point.speed ?? null), pillX, pillsY, padX, padY, text10, textSm, r6);
     pillX += w + gap2;
   }
-
   if (show("altitude")) {
     const w = drawPill(ctx, "ALT", formatVideoAltitude(point.altitude ?? null), pillX, pillsY, padX, padY, text10, textSm, r6);
     pillX += w + gap2;
     const vsFpm = computeVsFpm(allPoints, point.timeMs);
-    const vsVal = vsFpm != null ? `${formatVerticalSpeedFpm(vsFpm)} fpm` : "-";
-    const w2 = drawPill(ctx, "VS", vsVal, pillX, pillsY, padX, padY, text10, textSm, r6);
-    pillX += w2 + gap2;
+    const vsStr = vsFpm != null ? `${formatVerticalSpeedFpm(vsFpm)} fpm` : "-";
+    const wVs = drawPill(ctx, "VS", vsStr, pillX, pillsY, padX, padY, text10, textSm, r6);
+    pillX += wVs + gap2;
   }
 
   if (show("heading")) {
-    drawPill(ctx, "HDG", formatVideoHeading(point.heading ?? null), pillX, pillsY, padX, padY, text10, textSm, r6);
+    const hdgW = measurePillWidth(ctx, "HDG", formatVideoHeading(point.heading ?? null), padX, text10, textSm);
+    drawPill(
+      ctx,
+      "HDG",
+      formatVideoHeading(point.heading ?? null),
+      width - Math.round(width * 0.015) - hdgW,
+      pillsY,
+      padX,
+      padY,
+      text10,
+      textSm,
+      r6,
+    );
   }
 }
 
@@ -801,36 +856,50 @@ function drawVerticalOverlay(
   ctx: Ctx2D,
   point: VideoTelemetryPoint,
   allPoints: VideoTelemetryPoint[],
+  chartPoints: VideoTelemetryPoint[],
   widgets: VideoTelemetryWidget[],
   width: number, height: number,
   brand: string,
+  routeMap: VideoRouteMapData | null,
   sx: number, sy: number,
 ) {
   const show = (w: VideoTelemetryWidget) => widgets.includes(w);
   const r4 = Math.round(4 * Math.min(sx, sy));
+  const hasCharts = show("altitudeChart") || show("speedChart");
 
-  // Usable height (bottom-[9%] in React)
-  const usableH = Math.round(height * 0.91);
-  const left2   = Math.round(8 * sx);
-  const right2  = Math.round(8 * sx);
-  const usableW = width - left2 - right2;
-  const gap1    = Math.round(4 * sx);  // gap-1
-
-  // Brand mark: compact style → left-3 top-3
-  if (brand) {
-    const top3 = Math.round(12 * sy); // top-3 ≈ 12px
-    drawBrandMark(ctx, brand, left2, top3, Math.round(11 * sy), Math.round(10 * sx), Math.round(6 * sy), r4);
+  if (show("route")) {
+    const rect = routeMapRect(width, height, true, "compact", hasCharts, sx, sy);
+    if (rect) {
+      drawRouteMapInRect(
+        ctx,
+        routeMap,
+        allPoints,
+        point,
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        rect.style,
+        rect.fit,
+        rect.radius,
+        rect.panelOpacity,
+      );
+    }
   }
 
-  // Chart panel dimensions
-  const hasAltChart   = show("altitudeChart");
+  const usableH = Math.round(height * 0.91);
+  const insetSide = Math.round(width * 0.015);
+
+  if (brand) {
+    const top3 = Math.round(12 * sy);
+    drawBrandMark(ctx, brand, insetSide, top3, Math.round(11 * sy), Math.round(10 * sx), Math.round(6 * sy), r4);
+  }
+
+  const hasAltChart = show("altitudeChart");
   const hasSpeedChart = show("speedChart");
-  const hasCharts     = hasAltChart || hasSpeedChart;
-  const chartPad    = Math.round(4 * sx);   // p-1
-  const chartTitleSz = Math.round(9 * sy);  // text-[9px]
-  const chartTitleGap = Math.round(2 * sy); // mb-0.5
-  const chartInnerH = Math.round(64 * sy);  // h-16
-  const panelH = chartPad + chartTitleSz + chartTitleGap + chartInnerH + chartPad;
+  const chartCount = (hasAltChart ? 1 : 0) + (hasSpeedChart ? 1 : 0);
+  const { panel, insetL: chartInsetL, gap: chartGap, eachW } = verticalChartsLayout(width, height, chartCount);
+  const { panelH } = panel;
 
   // Pills geometry
   const pillPadX  = Math.round(10 * sx);
@@ -841,38 +910,33 @@ function drawVerticalOverlay(
   const pillGap   = Math.round(6 * sx); // gap-1.5
   const pillPb    = Math.round(2 * sy); // pb-0.5
 
-  // Compute stacking from bottom: pills → charts → gap
-  const pillsBottomY = usableH - pillPb;               // bottom of pills
-  const chartsBottomY = pillsBottomY - pillH - gap1;   // bottom of charts row
-  const chartsTopY   = chartsBottomY - panelH;
+  const pillsBottomY = usableH - pillPb;
+  const chartsBottomY = pillsBottomY - pillH - chartGap;
+  const chartsTopY = chartsBottomY - panelH;
 
-  // Draw charts (side by side)
   if (hasCharts) {
-    const chartCount = (hasAltChart ? 1 : 0) + (hasSpeedChart ? 1 : 0);
-    const eachW = chartCount === 2 ? Math.floor((usableW - gap1) / 2) : usableW;
-    let curX = left2;
+    let curX = chartInsetL;
     if (hasAltChart) {
-      drawHudChartPanel(ctx, allPoints, point, "altitude", "ALT FT", curX, chartsTopY, eachW, panelH, r4, sy);
-      curX += eachW + gap1;
+      drawHudChartPanel(ctx, chartPoints, point, "altitude", "ALT FT", curX, chartsTopY, eachW, panelH, panel);
+      curX += eachW + chartGap;
     }
     if (hasSpeedChart) {
-      drawHudChartPanel(ctx, allPoints, point, "speed", "SPD KT", curX, chartsTopY, eachW, panelH, r4, sy);
+      drawHudChartPanel(ctx, chartPoints, point, "speed", "SPD KT", curX, chartsTopY, eachW, panelH, panel);
     }
   }
 
-  // Draw pills (inline, left-aligned)
-  let pillX = left2;
+  let pillX = chartInsetL;
   const drawP = (label: string, value: string) => {
     const w = drawPill(ctx, label, value, pillX, pillsBottomY, pillPadX, pillPadY, pillLblSz, pillValSz, r4);
     pillX += w + pillGap;
   };
-  if (show("speed"))    drawP("SPD", formatVideoSpeed(point.speed ?? null));
+  if (show("speed")) drawP("SPD", formatVideoSpeed(point.speed ?? null));
   if (show("altitude")) {
     drawP("ALT", formatVideoAltitude(point.altitude ?? null));
     const vsFpm = computeVsFpm(allPoints, point.timeMs);
     drawP("VS", vsFpm != null ? `${formatVerticalSpeedFpm(vsFpm)} fpm` : "-");
   }
-  if (show("heading"))  drawP("HDG", formatVideoHeading(point.heading ?? null));
+  if (show("heading")) drawP("HDG", formatVideoHeading(point.heading ?? null));
 }
 
 // ─── Main draw ────────────────────────────────────────────────────────────────
@@ -881,6 +945,7 @@ export function drawOverlayFrame(
   ctx: Ctx2D,
   point: VideoTelemetryPoint | null,
   allPoints: VideoTelemetryPoint[],
+  chartPoints: VideoTelemetryPoint[],
   widgets: VideoTelemetryWidget[],
   width: number,
   height: number,
@@ -890,20 +955,23 @@ export function drawOverlayFrame(
   playerHeight: number,
   overlayStyle: TelemetryOverlayStyle = "compact",
   airspeedArcs: AirspeedArcLimits | null = null,
+  routeMap: VideoRouteMapData | null = null,
 ) {
   // Transparent background (alpha channel used for compositing)
   ctx.clearRect(0, 0, width, height);
 
   if (!point) return;
 
-  const sx = width / playerWidth;
-  const sy = height / playerHeight;
+  // Gráficos: cqh no frame de export; demais widgets escalam pelo frame canônico (não pelo player DOM).
+  const { sx, sy } = overlayDrawScale(width, height, isVertical);
+  void playerWidth;
+  void playerHeight;
 
   if (isVertical) {
-    drawVerticalOverlay(ctx, point, allPoints, widgets, width, height, brand, sx, sy);
+    drawVerticalOverlay(ctx, point, allPoints, chartPoints, widgets, width, height, brand, routeMap, sx, sy);
   } else if (overlayStyle === "hud") {
-    drawHudOverlay(ctx, point, allPoints, widgets, width, height, brand, airspeedArcs, sx, sy);
+    drawHudOverlay(ctx, point, allPoints, chartPoints, widgets, width, height, brand, airspeedArcs, routeMap, sx, sy);
   } else {
-    drawCompactOverlay(ctx, point, allPoints, widgets, width, height, brand, sx, sy);
+    drawCompactOverlay(ctx, point, allPoints, chartPoints, widgets, width, height, brand, routeMap, sx, sy);
   }
 }

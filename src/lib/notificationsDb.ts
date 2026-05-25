@@ -5,6 +5,8 @@ import type {
   EmailSettings,
   EmailSettingsInput,
   EmailTemplateType,
+  GoogleCalendarSettings,
+  GoogleCalendarSettingsInput,
   NotificationDispatchPayload,
   NotificationResponse,
   PushSubscriptionInput,
@@ -149,6 +151,45 @@ export async function saveEmailBrandSettings(settings: EmailBrandSettingsInput):
 
 export async function sendTestEmail(to: string, templateType: EmailTemplateType = "test"): Promise<void> {
   await executeNotifications({ action: "sendTestEmail", to, templateType });
+}
+
+export async function getGoogleCalendarSettings(): Promise<GoogleCalendarSettings> {
+  const response = await executeNotifications({ action: "getGoogleCalendarSettings" });
+  if (!response.googleCalendarSettings) {
+    throw new Error(response.message || "ConfiguraÃ§Ã£o do Google Calendar nÃ£o retornada.");
+  }
+  return response.googleCalendarSettings;
+}
+
+export async function saveGoogleCalendarSettings(
+  settings: GoogleCalendarSettingsInput,
+): Promise<GoogleCalendarSettings> {
+  const response = await executeNotifications({ action: "saveGoogleCalendarSettings", settings });
+  if (!response.googleCalendarSettings) {
+    throw new Error(response.message || "ConfiguraÃ§Ã£o do Google Calendar nÃ£o retornada.");
+  }
+  return response.googleCalendarSettings;
+}
+
+export async function testGoogleCalendarConnection(): Promise<GoogleCalendarSettings> {
+  const response = await executeNotifications({ action: "testGoogleCalendarConnection" });
+  if (!response.googleCalendarSettings) {
+    throw new Error(response.message || "ConfiguraÃ§Ã£o do Google Calendar nÃ£o retornada.");
+  }
+  return response.googleCalendarSettings;
+}
+
+export async function syncFlightCalendarEvent(
+  flightId: string,
+  mode: "upsert" | "cancel",
+): Promise<{ error: Error | null; settings?: GoogleCalendarSettings }> {
+  try {
+    const response = await executeNotifications({ action: "syncFlightCalendarEvent", flightId, mode });
+    return { error: null, settings: response.googleCalendarSettings };
+  } catch (error) {
+    console.warn("[calendar] Falha ao sincronizar evento:", flightId, mode, error);
+    return { error: error as Error };
+  }
 }
 
 export async function registerPushSubscription(subscription: PushSubscriptionInput): Promise<void> {

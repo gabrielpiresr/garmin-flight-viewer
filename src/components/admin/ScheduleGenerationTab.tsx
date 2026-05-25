@@ -3,7 +3,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import { encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { insertFlight, updateFlight } from "../../lib/flightsDb";
-import { dispatchNotificationEvent } from "../../lib/notificationsDb";
+import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import { getScheduleWeekData, getScheduleWeekOptions, AUTO_SOURCE_PREFIX } from "../../lib/scheduleGenerationDb";
 import { assignInstructorsToSuggestions, generateSchedulePreview } from "../../lib/scheduleGenerator";
 import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
@@ -1569,9 +1569,11 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
         if (existing) {
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
+          void syncFlightCalendarEvent(existing.id, "upsert");
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
+          if (result.id) void syncFlightCalendarEvent(result.id, "upsert");
         }
         successCount += 1;
       }

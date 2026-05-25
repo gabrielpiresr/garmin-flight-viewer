@@ -273,6 +273,27 @@ function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
   );
 }
 
+function AchievementsSkeleton() {
+  return (
+    <SectionCard title="Conquistas" subtitle="Objetivos liberados conforme seu avanco na trilha.">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-2.5">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="rounded-2xl border border-slate-700/70 bg-slate-950/30 p-3">
+            <div className="flex items-start gap-3">
+              <Skeleton className="h-11 w-11 shrink-0 rounded-full" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-2.5 w-full rounded-full" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
 function ManeuverArticleModal({ article, onClose }: { article: ManeuverArticle; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm" role="dialog" aria-modal="true">
@@ -306,6 +327,7 @@ function FormationJourney({ state }: { state: FormationState }) {
   const [selectedStageId, setSelectedStageId] = useState("");
   const [autoSelectedStageKey, setAutoSelectedStageKey] = useState("");
   const [trackRewards, setTrackRewards] = useState<JourneyReward[]>([]);
+  const [trackRewardsLoading, setTrackRewardsLoading] = useState(false);
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [selectedManeuverArticle, setSelectedManeuverArticle] = useState<ManeuverArticle | null>(null);
   const activeTracks = useMemo(
@@ -415,10 +437,15 @@ function FormationJourney({ state }: { state: FormationState }) {
     async function loadRewards() {
       if (!track) {
         setTrackRewards([]);
+        setTrackRewardsLoading(false);
         return;
       }
+      setTrackRewardsLoading(true);
       const result = await listJourneyRewards({ kind: "achievement", trackId: track.id });
-      if (!cancelled) setTrackRewards(result.data);
+      if (!cancelled) {
+        setTrackRewards(result.data);
+        setTrackRewardsLoading(false);
+      }
     }
     void loadRewards();
     return () => {
@@ -518,7 +545,7 @@ function FormationJourney({ state }: { state: FormationState }) {
         </div>
       </section>
 
-      {evaluatedAchievements.length > 0 ? (
+      {false && evaluatedAchievements.length > 0 ? (
         <SectionCard title="Conquistas" subtitle="Objetivos liberados conforme seu avanço na trilha.">
           <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-2.5">
             {evaluatedAchievements.map((reward) => (
@@ -611,6 +638,17 @@ function FormationJourney({ state }: { state: FormationState }) {
           </div>
         )}
       </SectionCard>
+      {trackRewardsLoading ? (
+        <AchievementsSkeleton />
+      ) : evaluatedAchievements.length > 0 ? (
+        <SectionCard title="Conquistas" subtitle="Objetivos liberados conforme seu avanco na trilha.">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-2.5">
+            {evaluatedAchievements.map((reward) => (
+              <AchievementCard key={reward.id} reward={reward} />
+            ))}
+          </div>
+        </SectionCard>
+      ) : null}
       {selectedManeuverArticle ? (
         <ManeuverArticleModal article={selectedManeuverArticle} onClose={() => setSelectedManeuverArticle(null)} />
       ) : null}

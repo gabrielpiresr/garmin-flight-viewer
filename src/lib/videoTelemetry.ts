@@ -103,9 +103,15 @@ export type AirspeedArcLimits = {
   vne: number | null;
 };
 
+/** Arredonda VS para degraus de 50 fpm (igual fita HUD). */
+export function roundVerticalSpeedFpm(value: number | null): number | null {
+  if (!Number.isFinite(value)) return null;
+  return Math.round((value as number) / 50) * 50;
+}
+
 export function formatVerticalSpeedFpm(value: number | null): string {
-  if (!Number.isFinite(value)) return "-";
-  const rounded = Math.round(value as number);
+  const rounded = roundVerticalSpeedFpm(value);
+  if (rounded == null) return "-";
   if (Math.abs(rounded) >= 1000) return `${(rounded / 1000).toFixed(1)}k`;
   return `${rounded}`;
 }

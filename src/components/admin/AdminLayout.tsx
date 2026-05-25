@@ -53,6 +53,9 @@ const DiarioDeBordoTab = lazy(() =>
 );
 const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const AdminDreTab = lazy(() => import("./AdminDreTab").then((module) => ({ default: module.AdminDreTab })));
+const FlightReviewAdminTab = lazy(() =>
+  import("./FlightReviewAdminTab").then((module) => ({ default: module.FlightReviewAdminTab })),
+);
 
 type AdminSection =
   | "home"
@@ -66,7 +69,8 @@ type AdminSection =
   | "settings"
   | "logbook"
   | "fuelings"
-  | "dre";
+  | "dre"
+  | "flight-review";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -200,6 +204,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h15.75a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
         <path d="M7.5 15.75a.75.75 0 01-.75-.75v-3a.75.75 0 011.5 0v3a.75.75 0 01-.75.75zM12 15.75a.75.75 0 01-.75-.75V8.25a.75.75 0 011.5 0V15a.75.75 0 01-.75.75zM16.5 15.75a.75.75 0 01-.75-.75v-4.5a.75.75 0 011.5 0V15a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "flight-review",
+    label: "Flight Review",
+    sublabel: "Templates de manobras e análise",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M2.25 2.25a.75.75 0 000 1.5H3v10.5a3 3 0 003 3h1.21l-1.172 3.513a.75.75 0 001.424.474l.329-.987h8.418l.33.987a.75.75 0 001.422-.474l-1.17-3.513H18a3 3 0 003-3V3.75h.75a.75.75 0 000-1.5H2.25zm6.04 16.5l.5-1.5h6.42l.5 1.5H8.29zm7.46-12a.75.75 0 00-1.5 0v6a.75.75 0 001.5 0v-6zm-3 2.25a.75.75 0 00-1.5 0v3.75a.75.75 0 001.5 0V9zm-3 3a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0V12z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -413,6 +427,7 @@ const ADMIN_ROUTES = [
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
   { id: "dre", path: "/admin/dre" },
+  { id: "flight-review", path: "/admin/flight-review" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
 
@@ -769,6 +784,9 @@ export function AdminLayout() {
           )}
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}><LazyTab><AdminDreTab /></LazyTab></div>
+          )}
+          {openedSections.has("flight-review") && (
+            <div hidden={section !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>
           )}
         </main>
 

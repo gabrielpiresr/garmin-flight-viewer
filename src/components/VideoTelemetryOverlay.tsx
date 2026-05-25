@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   altitudeMToFt,
   formatVerticalSpeedFpm,
+  roundVerticalSpeedFpm,
   formatVideoAltitude,
   formatVideoHeading,
   formatVideoSpeed,
@@ -11,7 +12,6 @@ import {
   type VideoTelemetryWidget,
 } from "../lib/videoTelemetry";
 import {
-  ovBottomCharts,
   ovBottomHdg,
   ovBrandLogo,
   ovChartCompact,
@@ -24,24 +24,24 @@ import {
   ovHorizonArc,
   ovChartPanelHud,
   ovHudChartsBottom,
+  ovCompactChartsCol,
+  ovGapCompactStack,
   ovHudChartsRow1,
   ovHudChartsRow2,
   ovHudMapOpacity,
+  ovMapVertPanel,
+  ovMapVertTop,
   ovHudMapTop,
   ovHudMapW,
   ovInsetL,
-  ovInsetTop,
   ovTextHudLegend,
   ovMapHud,
   ovMapHudWithCharts,
-  ovMapStack,
-  ovMapVert,
   ovPadMd,
   ovPadSm,
   ovPadXs,
   ovPointerBorderL,
   ovPointerBorderR,
-  ovStackW,
   ovTapeAltCluster,
   ovTapeAltEmbed,
   ovTapeSpeed,
@@ -74,7 +74,6 @@ const HUD_TAPE_BG = "bg-slate-900/42";
 /** HUD tapes: each column centered in its lateral third (not screen center). */
 const HUD_TAPE_HEIGHT = "h-[56%]";
 const HUD_TAPE_ANCHOR = "absolute top-1/2 -translate-x-1/2 -translate-y-1/2";
-const HUD_CHARTS_BOTTOM = ovBottomCharts;
 
 function tapeSpan(kind: TapeKind): number {
   if (kind === "speed") return 60;
@@ -253,7 +252,7 @@ function HudScrollingTape({
 
 /** VSI: fixed scale -10…+10 (×100 fpm); pointer moves, scale stays put. */
 function HudVsiTape({ value, side }: { value: number; side: "left" | "right" }) {
-  const displayFpm = Math.round(value / 50) * 50;
+  const displayFpm = roundVerticalSpeedFpm(value) ?? 0;
   const scaleValue = Math.max(VSI_SCALE_MIN, Math.min(VSI_SCALE_MAX, displayFpm / 100));
   const span = VSI_SCALE_MAX - VSI_SCALE_MIN;
   const toPercent = (v: number) => ((v - VSI_SCALE_MIN) / span) * 100;
@@ -413,34 +412,73 @@ function HudLeftCorner({
   );
 }
 
-export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
-  const { altitudeChartRef, canvasRef, currentPoint, enabledWidgets, speedChartRef, verticalSpeedFpm } = props;
+/** Compacto 16:9: mapa + gráficos empilhados; ALT/SPD abaixo; VS em fita HUD. */
+function CompactLeftCorner({
+  altitudeChartRef,
+  canvasRef,
+  currentPoint,
+  enabledWidgets,
+  speedChartRef,
+  verticalSpeedFpm,
+}: TelemetryOverlayProps) {
+  const hasRoute = enabledWidgets.includes("route");
+  const hasAltChart = enabledWidgets.includes("altitudeChart");
+  const hasSpeedChart = enabledWidgets.includes("speedChart");
+  const hasCharts = hasAltChart || hasSpeedChart;
+  const showAlt = enabledWidgets.includes("altitude");
+  const showSpeed = enabledWidgets.includes("speed");
 
   return (
-    <div className="absolute inset-0">
-      <HudLeftCorner
-        altitudeChartRef={altitudeChartRef}
-        canvasRef={canvasRef}
-        enabledWidgets={enabledWidgets}
-        speedChartRef={speedChartRef}
-      />
-      <div className={`absolute ${ovHudChartsBottom} right-[1.5%] flex max-w-[48%] flex-wrap items-end justify-end ${ovGapMd}`}>
-        {enabledWidgets.includes("speed") && (
-          <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
+    <>
+      {hasRoute && (
+        <canvas
+          ref={canvasRef}
+          className={`absolute ${ovInsetL} ${ovHudMapTop} ${ovHudMapW} ${ovHudMapOpacity} rounded-md ${
+            hasCharts ? ovMapHudWithCharts : ovMapHud
+          }`}
+        />
+      )}
+      <div className={`absolute ${ovInsetL} ${ovHudChartsBottom} flex min-h-0 flex-col items-start ${ovGapSm} ${ovCompactChartsCol}`}>
+        {hasCharts && (
+          <div
+            className={`flex w-full min-h-0 flex-col ${
+              hasAltChart && hasSpeedChart ? ovGapCompactStack : ovGapSm
+            }`}
+          >
+            {hasAltChart && <ChartPanel compact title="ALT FT" canvasRef={altitudeChartRef} />}
+            {hasSpeedChart && <ChartPanel compact title="SPD KT" canvasRef={speedChartRef} />}
+          </div>
         )}
-        {enabledWidgets.includes("altitude") && (
-          <>
-            <TelemetryPill label="ALT" value={formatVideoAltitude(currentPoint?.altitude ?? null)} />
-            <TelemetryPill
-              label="VS"
-              value={verticalSpeedFpm != null ? `${formatVerticalSpeedFpm(verticalSpeedFpm)} fpm` : "-"}
-            />
-          </>
-        )}
-        {enabledWidgets.includes("heading") && (
-          <TelemetryPill label="HDG" value={formatVideoHeading(currentPoint?.heading ?? null)} />
+        {(showSpeed || showAlt) && (
+          <div className={`flex w-full flex-wrap items-end ${ovGapSm}`}>
+            {showSpeed && (
+              <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
+            )}
+            {showAlt && (
+              <>
+                <TelemetryPill label="ALT" value={formatVideoAltitude(currentPoint?.altitude ?? null)} />
+                <TelemetryPill
+                  label="VS"
+                  value={`${formatVerticalSpeedFpm(verticalSpeedFpm)} fpm`}
+                />
+              </>
+            )}
+          </div>
         )}
       </div>
+    </>
+  );
+}
+
+export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
+  return (
+    <div className="absolute inset-0">
+      <CompactLeftCorner {...props} />
+      {props.enabledWidgets.includes("heading") && (
+        <div className={`absolute ${ovHudChartsBottom} right-[1.5%] flex max-w-[40%] flex-wrap items-end justify-end ${ovGapMd}`}>
+          <TelemetryPill label="HDG" value={formatVideoHeading(props.currentPoint?.heading ?? null)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -461,25 +499,18 @@ export function VerticalCompactOverlay({
   const hasSpeedChart = enabledWidgets.includes("speedChart");
   const hasCharts = hasAltChart || hasSpeedChart;
 
+  const vsLabel =
+    verticalSpeedFpm != null
+      ? `${formatVerticalSpeedFpm(verticalSpeedFpm)} fpm`
+      : "-";
+
   return (
     <div className="absolute inset-0">
-      {/* Mapa de rota — topo, largura total, acima dos gráficos (apenas se há gráficos) */}
-      {hasRoute && hasCharts && (
-        <canvas
-          ref={canvasRef}
-          className={`absolute top-[13cqh] ${ovInsetL} right-[1.5%] ${ovMapVert} w-[calc(100%-3%)] rounded-xl border border-white/15`}
-        />
+      {hasRoute && (
+        <canvas ref={canvasRef} className={`absolute ${ovInsetL} ${ovMapVertTop} ${ovMapVertPanel}`} />
       )}
 
-      {/* Coluna inferior: gráficos lado a lado + pills */}
       <div className={`absolute bottom-0 ${ovInsetL} right-[1.5%] flex flex-col ${ovGapSm}`}>
-        {/* Mapa sem gráficos — ocupa o lugar dos gráficos */}
-        {hasRoute && !hasCharts && (
-          <canvas
-            ref={canvasRef}
-            className={`${ovMapVert} w-full rounded-xl border border-white/15`}
-          />
-        )}
         {hasCharts && (
           <div className={`flex flex-row ${ovGapSm}`}>
             {hasAltChart && (
@@ -497,17 +528,14 @@ export function VerticalCompactOverlay({
           </div>
         )}
         {/* Pills inline */}
-        <div className={`flex flex-row flex-wrap items-center ${ovGapSm} pb-[0.2em]`}>
+        <div className={`flex flex-row flex-wrap items-end ${ovGapSm} pb-[0.2em]`}>
           {enabledWidgets.includes("speed") && (
             <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
           )}
           {enabledWidgets.includes("altitude") && (
             <>
               <TelemetryPill label="ALT" value={formatVideoAltitude(currentPoint?.altitude ?? null)} />
-              <TelemetryPill
-                label="VS"
-                value={verticalSpeedFpm != null ? `${formatVerticalSpeedFpm(verticalSpeedFpm)} fpm` : "-"}
-              />
+              <TelemetryPill label="VS" value={vsLabel} />
             </>
           )}
           {enabledWidgets.includes("heading") && (

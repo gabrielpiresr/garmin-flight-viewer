@@ -20,12 +20,13 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "logbook",
   "fuelings",
   "dre",
+  "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.roles",
 ];
 
 const ALL_ACTIONS: ActionKey[] = [
-  "fueling.launch", "os.create", "flight.create", "flight.edit", "flight.delete",
+  "fueling.launch", "fueling.edit", "os.create", "flight.create", "flight.edit", "flight.delete",
   "content.edit", "credit.launch", "credit.edit", "credit.delete",
   "users.manage", "schedule.generate",
 ];
@@ -53,7 +54,7 @@ const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
 
 /** Ações habilitadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ACTIONS: Set<ActionKey> = new Set([
-  "fueling.launch", "flight.create", "flight.edit", "os.create",
+  "fueling.launch", "fueling.edit", "flight.create", "flight.edit", "os.create",
 ]);
 
 export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {

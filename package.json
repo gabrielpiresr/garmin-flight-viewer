@@ -44,7 +44,10 @@
     "appwrite:migrate:maintenance-checklists": "node scripts/migrate-maintenance-checklists.mjs",
     "appwrite:setup-logbook-anac": "node scripts/setup-logbook-anac.mjs",
     "appwrite:setup-edb-audit": "node scripts/setup-edb-audit.mjs",
+    "appwrite:setup-flight-review": "node scripts/setup-flight-review-collections.mjs",
+    "appwrite:fix-flight-review-permissions": "node scripts/fix-flight-review-permissions.mjs",
     "appwrite:setup-flight-status": "node scripts/setup-flight-status.mjs",
+    "appwrite:setup-flight-calendar-reminders": "node scripts/setup-flight-calendar-reminders.mjs",
     "appwrite:migrate:anac-fields": "node scripts/migrate-anac-fields.mjs",
     "videos:reconcile": "node scripts/reconcile-processing-videos.mjs",
     "videos:reconcile:watch": "node scripts/reconcile-processing-videos.mjs --watch"

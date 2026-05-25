@@ -77,6 +77,9 @@ const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.c
 const APP_URL = process.env.APP_URL || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
+const GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON || "";
+const GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || "";
+const GOOGLE_CALENDAR_PRIVATE_KEY = process.env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
 // Identificador único da escola — usado para isolar dados em ambiente multi-tenant.
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 
@@ -114,6 +117,7 @@ const FLIGHT_DETAIL_SELECT = [
   "csv_text",
   "from_to",
   "landings",
+  "block_time_minutes",
   "total_flight_minutes",
   "total_miles",
   "telemetry_present",
@@ -745,14 +749,25 @@ function toFlight(doc) {
   const nightMinutes = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.nightTime), 0);
   const distanceNm =
     typeof doc.total_miles === "number" ? doc.total_miles : legs.reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
+  // Priority: block_time_minutes (departure → engine cutoff) > meta block time > GPS > leg sum
+  const blockTimeMinutes =
+    typeof doc.block_time_minutes === "number" && doc.block_time_minutes > 0
+      ? doc.block_time_minutes
+      : (() => {
+          const depMin = parseClockMinutes(meta?.header?.departureTimeUtc);
+          const cutMin = parseClockMinutes(meta?.header?.engineCutoffTimeUtc);
+          return depMin !== null && cutMin !== null && cutMin > depMin ? cutMin - depMin : null;
+        })();
   const durationSec =
-    typeof doc.duration_sec === "number" && doc.duration_sec > 0
-      ? doc.duration_sec
-      : typeof doc.total_flight_minutes === "number" && doc.total_flight_minutes > 0
-        ? doc.total_flight_minutes * 60
-      : totalMinutes > 0
-        ? totalMinutes * 60
-        : null;
+    blockTimeMinutes !== null
+      ? blockTimeMinutes * 60
+      : typeof doc.duration_sec === "number" && doc.duration_sec > 0
+        ? doc.duration_sec
+        : typeof doc.total_flight_minutes === "number" && doc.total_flight_minutes > 0
+          ? doc.total_flight_minutes * 60
+          : totalMinutes > 0
+            ? totalMinutes * 60
+            : null;
   const snapshot = parseTrainingSnapshot(doc.training_snapshot_json) || meta?.training?.snapshot || null;
   return {
     id: doc.$id,
@@ -3457,9 +3472,10 @@ async function deleteHelpDocument(kind, documentId) {
 const EMAIL_SETTINGS_KEY = "email";
 const EMAIL_BRAND_SETTINGS_KEY = "emailBrand";
 const SCHOOL_RULES_KEY = "schoolRules";
+const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
-const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.cancelled", "weeklyPlan.submitted", "notice.published", "schedule.published"];
+const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
   sdk.Permission.update(sdk.Role.label("admin")),
@@ -3621,7 +3637,11 @@ async function reopenFlightForEdit(actorUserId, payload = {}, req) {
       student_amount_calculated: payment.student_amount_calculated ?? null,
     })),
   };
-  const nextStatus = String(flightDoc.flight_status || "") === "Realizado" ? "Previsto" : (flightDoc.flight_status || "Previsto");
+  const nextStatus = flightDoc.flight_status || "Previsto";
+  const signedRecipientIds = Array.from(new Set(activeSignatures
+    .filter((sig) => sig.signer_role === "student" || sig.signer_role === "instructor")
+    .map((sig) => cleanString(sig.signer_user_id))
+    .filter(Boolean)));
   const afterSnapshot = {
     flight: {
       id: flightId,
@@ -3668,6 +3688,23 @@ async function reopenFlightForEdit(actorUserId, payload = {}, req) {
     instructor_signed_at: null,
     flight_status: nextStatus,
   });
+
+  if (signedRecipientIds.length > 0) {
+    await dispatchNotificationEvent(actorUserId, {
+      eventType: "flight.reopened",
+      dedupeKey: `flight.reopened:${flightId}:${eventId || now}`,
+      flightId,
+      recipientUserIds: signedRecipientIds,
+      channels: ["email"],
+      actorUserId,
+      data: {
+        aircraft: reopened.aircraft_ident || flightDoc.aircraft_ident || "",
+        flightDate: reopened.flight_date || flightDoc.flight_date || "",
+        startTime: reopened.start_time || flightDoc.start_time || "",
+        reason,
+      },
+    }).catch((err) => console.warn("Falha ao notificar reabertura de voo:", err?.message || err));
+  }
 
   return {
     flight: reopened,
@@ -4078,6 +4115,72 @@ function sanitizeSchoolRulesInput(input) {
   return publicSchoolRules(input && typeof input === "object" ? input : {}, null);
 }
 
+function defaultGoogleCalendarSettings() {
+  return {
+    enabled: false,
+    aircraftCalendars: [],
+    lastTestAt: null,
+    lastError: null,
+  };
+}
+
+function googleServiceAccountCredentials() {
+  if (GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON) {
+    try {
+      const parsed = JSON.parse(GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON);
+      return {
+        clientEmail: cleanString(parsed.client_email),
+        privateKey: cleanString(parsed.private_key).replace(/\\n/g, "\n"),
+      };
+    } catch {
+      return { clientEmail: "", privateKey: "" };
+    }
+  }
+  return {
+    clientEmail: cleanString(GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL),
+    privateKey: cleanString(GOOGLE_CALENDAR_PRIVATE_KEY).replace(/\\n/g, "\n"),
+  };
+}
+
+function normalizeAircraftIdent(value) {
+  return cleanString(value).toUpperCase();
+}
+
+function sanitizeAircraftCalendars(value) {
+  const rows = Array.isArray(value) ? value : [];
+  const byAircraft = new Map();
+  for (const row of rows) {
+    const aircraftIdent = normalizeAircraftIdent(row?.aircraftIdent);
+    const calendarId = cleanString(row?.calendarId);
+    if (!aircraftIdent || !calendarId) continue;
+    byAircraft.set(aircraftIdent, { aircraftIdent, calendarId });
+  }
+  return [...byAircraft.values()].sort((a, b) => a.aircraftIdent.localeCompare(b.aircraftIdent));
+}
+
+function publicGoogleCalendarSettings(settings, updatedAt) {
+  const safe = settings && typeof settings === "object" ? settings : {};
+  const serviceAccount = googleServiceAccountCredentials();
+  return {
+    enabled: Boolean(safe.enabled),
+    serviceAccountEmail: serviceAccount.clientEmail,
+    serviceAccountConfigured: Boolean(serviceAccount.clientEmail && serviceAccount.privateKey),
+    aircraftCalendars: sanitizeAircraftCalendars(safe.aircraftCalendars),
+    lastTestAt: cleanString(safe.lastTestAt) || null,
+    lastError: cleanString(safe.lastError).slice(0, 1024) || null,
+    updatedAt: updatedAt || null,
+  };
+}
+
+function sanitizeGoogleCalendarInput(input, current) {
+  const raw = input && typeof input === "object" ? input : {};
+  return {
+    ...current,
+    enabled: Boolean(raw.enabled),
+    aircraftCalendars: sanitizeAircraftCalendars(raw.aircraftCalendars),
+  };
+}
+
 async function getSettingDoc(key) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
   const res = await databases.listDocuments(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, [
@@ -4126,6 +4229,20 @@ async function loadSchoolRules() {
   };
 }
 
+async function loadGoogleCalendarSettings() {
+  const doc = await getSettingDoc(GOOGLE_CALENDAR_SETTINGS_KEY);
+  if (!doc) {
+    const defaults = defaultGoogleCalendarSettings();
+    return { settings: defaults, publicSettings: publicGoogleCalendarSettings(defaults, null), doc: null };
+  }
+  const settings = parseJsonObject(doc.settings_json, defaultGoogleCalendarSettings());
+  return {
+    settings: { ...defaultGoogleCalendarSettings(), ...settings },
+    publicSettings: publicGoogleCalendarSettings(settings, doc.$updatedAt || null),
+    doc,
+  };
+}
+
 async function saveEmailSettings(input) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
@@ -4151,6 +4268,25 @@ async function saveEmailSettings(input) {
         ADMIN_DOC_PERMS,
       );
   return publicEmailSettings(settings, doc.$updatedAt || null);
+}
+
+async function saveGoogleCalendarSettings(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const current = await loadGoogleCalendarSettings();
+  const settings = sanitizeGoogleCalendarInput(input, current.settings);
+  const data = { key: GOOGLE_CALENDAR_SETTINGS_KEY, settings_json: JSON.stringify(settings) };
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicGoogleCalendarSettings(settings, doc.$updatedAt || null);
 }
 
 async function saveEmailBrandSettings(input) {
@@ -4278,6 +4414,22 @@ function buildNotificationMessage(event, flight) {
       url,
     };
   }
+  if (type === "flight.reopened") {
+    const reason = cleanString(data.reason);
+    return {
+      eyebrow: "Atualização operacional",
+      title: "Voo reaberto para ajustes",
+      intro: "Um voo que você havia assinado foi reaberto pelo admin.",
+      body: `O voo em ${aircraft} previsto para ${when} foi reaberto para ajustes${reason ? `: ${reason}` : "."}`,
+      details: [
+        ["Aeronave", aircraft],
+        ["Data e horário", when],
+        ...(reason ? [["Motivo", reason]] : []),
+      ],
+      ctaLabel: "Revisar voo",
+      url,
+    };
+  }
   if (type === "flight.cancelled") {
     return {
       eyebrow: "Atualização operacional",
@@ -4289,6 +4441,20 @@ function buildNotificationMessage(event, flight) {
         ["Data e horário", when],
       ],
       ctaLabel: "Abrir plataforma",
+      url,
+    };
+  }
+  if (type === "flight.reminder_24h") {
+    return {
+      eyebrow: "Lembrete de voo",
+      title: "Seu voo e amanha",
+      intro: "Este e um lembrete automatico da sua agenda.",
+      body: `Seu voo em ${aircraft} esta previsto para ${when}.`,
+      details: [
+        ["Aeronave", aircraft],
+        ["Data e horario", when],
+      ],
+      ctaLabel: "Ver voo",
       url,
     };
   }
@@ -4578,7 +4744,7 @@ async function isAdmin(actorUserId) {
   }
 }
 
-const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.cancelled"]);
+const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h"]);
 
 async function authorizeDispatchEvent(actorUserId, event) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
@@ -4613,7 +4779,7 @@ async function dispatchNotificationEvent(actorUserId, event) {
   const dedupeKey = cleanString(safeEvent.dedupeKey);
   if (!eventType || !dedupeKey) throw Object.assign(new Error("Evento ou chave de deduplicacao nao informados."), { status: 400 });
 
-  const admin = await isAdmin(actorUserId);
+  const admin = actorUserId === "system" || await isAdmin(actorUserId);
   let flight = null;
   let recipients = Array.isArray(safeEvent.recipientUserIds)
     ? safeEvent.recipientUserIds.map(cleanString).filter(Boolean)
@@ -4687,6 +4853,289 @@ async function dispatchNotificationEvent(actorUserId, event) {
     }
   }
   return deliveries;
+}
+
+function googleCalendarConfigured(settings) {
+  const serviceAccount = googleServiceAccountCredentials();
+  return Boolean(
+    settings?.enabled &&
+      serviceAccount.clientEmail &&
+      serviceAccount.privateKey &&
+      sanitizeAircraftCalendars(settings.aircraftCalendars).length > 0,
+  );
+}
+
+async function saveGoogleCalendarRuntimeStatus(patch) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return publicGoogleCalendarSettings(defaultGoogleCalendarSettings(), null);
+  const current = await loadGoogleCalendarSettings();
+  const settings = { ...current.settings, ...patch };
+  const data = { key: GOOGLE_CALENDAR_SETTINGS_KEY, settings_json: JSON.stringify(settings) };
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicGoogleCalendarSettings(settings, doc.$updatedAt || null);
+}
+
+async function googleAccessToken() {
+  const serviceAccount = googleServiceAccountCredentials();
+  if (!serviceAccount.clientEmail || !serviceAccount.privateKey) {
+    throw Object.assign(new Error("Service account do Google Calendar nao configurado na funcao Appwrite."), { status: 500 });
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = base64UrlEncode(JSON.stringify({
+    iss: serviceAccount.clientEmail,
+    scope: "https://www.googleapis.com/auth/calendar",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  }));
+  const unsigned = `${header}.${claims}`;
+  const signature = crypto.createSign("RSA-SHA256").update(unsigned).sign(serviceAccount.privateKey, "base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  const assertion = `${unsigned}.${signature}`;
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      assertion,
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || "Falha ao obter token do Google.");
+  }
+  return data.access_token;
+}
+
+async function googleCalendarRequest(settings, path, options = {}) {
+  const accessToken = await googleAccessToken(settings);
+  const response = await fetch(`https://www.googleapis.com/calendar/v3${path}`, {
+    ...options,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  if (response.status === 204) return null;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || data.error_description || "Falha na API do Google Calendar.");
+  }
+  return data;
+}
+
+async function testGoogleCalendarConnection() {
+  const { settings } = await loadGoogleCalendarSettings();
+  const calendars = sanitizeAircraftCalendars(settings.aircraftCalendars);
+  const serviceAccount = googleServiceAccountCredentials();
+  if (!serviceAccount.clientEmail || !serviceAccount.privateKey) {
+    throw Object.assign(new Error("Service account do Google Calendar nao configurado na funcao Appwrite."), { status: 500 });
+  }
+  if (calendars.length === 0) {
+    throw Object.assign(new Error("Informe ao menos um Calendar ID de aeronave."), { status: 400 });
+  }
+  try {
+    const calendarId = encodeURIComponent(calendars[0].calendarId);
+    await googleCalendarRequest(settings, `/calendars/${calendarId}`);
+    return await saveGoogleCalendarRuntimeStatus({
+      lastTestAt: nowIso(),
+      lastError: null,
+    });
+  } catch (err) {
+    await saveGoogleCalendarRuntimeStatus({ lastTestAt: nowIso(), lastError: err?.message || String(err) });
+    throw err;
+  }
+}
+
+function flightCalendarDateTime(flight) {
+  const date = cleanString(flight.flight_date);
+  const start = cleanString(flight.start_time).slice(0, 5) || "06:00";
+  const durationSec = Number(flight.duration_sec || 0);
+  const [hh, mm] = start.split(":").map(Number);
+  const startDate = new Date(`${date}T${start}:00-03:00`);
+  if (!date || !Number.isFinite(hh) || !Number.isFinite(mm) || Number.isNaN(startDate.getTime())) {
+    throw Object.assign(new Error("Voo sem data ou horario valido para o Google Calendar."), { status: 422 });
+  }
+  const safeDurationMinutes = Math.max(30, Math.round((Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 3600) / 60));
+  const endBase = new Date(`${date}T12:00:00`);
+  const totalEndMinutes = hh * 60 + mm + safeDurationMinutes;
+  endBase.setDate(endBase.getDate() + Math.floor(totalEndMinutes / 1440));
+  const endMinutesInDay = ((totalEndMinutes % 1440) + 1440) % 1440;
+  const endDate = endBase.toISOString().slice(0, 10);
+  const endTime = `${String(Math.floor(endMinutesInDay / 60)).padStart(2, "0")}:${String(endMinutesInDay % 60).padStart(2, "0")}`;
+  return {
+    startDateTime: `${date}T${start}:00-03:00`,
+    endDateTime: `${endDate}T${endTime}:00-03:00`,
+  };
+}
+
+async function safeUpdateFlightCalendarFields(flightId, fields) {
+  if (!FLIGHTS_COLLECTION_ID || !flightId) return;
+  try {
+    await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, fields);
+  } catch (err) {
+    const message = String(err?.message || err).toLowerCase();
+    if (!message.includes("attribute") && !message.includes("invalid document structure")) throw err;
+  }
+}
+
+async function getFlightCalendarContext(flightId) {
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  const studentUserId = cleanString(flight.student_user_id || flight.user_id);
+  const instructorUserId = cleanString(flight.instructor_user_id);
+  const [studentUser, instructorUser, studentProfile, instructorProfile] = await Promise.all([
+    studentUserId ? users.get({ userId: studentUserId }).catch(() => null) : Promise.resolve(null),
+    instructorUserId ? users.get({ userId: instructorUserId }).catch(() => null) : Promise.resolve(null),
+    studentUserId ? getProfileByUserId(studentUserId).catch(() => null) : Promise.resolve(null),
+    instructorUserId ? getProfileByUserId(instructorUserId).catch(() => null) : Promise.resolve(null),
+  ]);
+  return { flight, studentUserId, instructorUserId, studentUser, instructorUser, studentProfile, instructorProfile };
+}
+
+function googleFlightEventBody(ctx, rules) {
+  const { flight, studentUser, instructorUser, studentProfile, instructorProfile } = ctx;
+  const { startDateTime, endDateTime } = flightCalendarDateTime(flight);
+  const aircraft = cleanString(flight.aircraft_ident) || "Aeronave a definir";
+  const studentName = cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || "Aluno";
+  const instructorName = cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name) || "Instrutor a definir";
+  const customNotice = cleanString(rules.emailNotifications?.["flight.scheduled"]?.customNotice);
+  const description = [
+    `Aluno: ${studentName}`,
+    `Instrutor: ${instructorName}`,
+    `Aeronave: ${aircraft}`,
+    `Data: ${cleanString(flight.flight_date)}`,
+    `Horario: ${cleanString(flight.start_time) || "A confirmar"}`,
+    APP_URL ? `Plataforma: ${APP_URL}` : "",
+    customNotice ? `\nMensagem da escola:\n${customNotice}` : "",
+  ].filter(Boolean).join("\n");
+  return {
+    summary: `Voo - ${aircraft} - ${studentName}`,
+    description,
+    start: { dateTime: startDateTime, timeZone: "America/Sao_Paulo" },
+    end: { dateTime: endDateTime, timeZone: "America/Sao_Paulo" },
+    reminders: { useDefault: true },
+  };
+}
+
+async function syncFlightCalendarEvent(actorUserId, payload = {}) {
+  const flightId = cleanString(payload.flightId);
+  const mode = cleanString(payload.mode) || "upsert";
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+
+  const { settings, publicSettings } = await loadGoogleCalendarSettings();
+  if (!googleCalendarConfigured(settings)) return publicSettings;
+
+  try {
+    const ctx = await getFlightCalendarContext(flightId);
+    const aircraftIdent = normalizeAircraftIdent(ctx.flight.aircraft_ident);
+    const aircraftCalendar = sanitizeAircraftCalendars(settings.aircraftCalendars)
+      .find((row) => row.aircraftIdent === aircraftIdent);
+    if (!aircraftCalendar) {
+      throw Object.assign(new Error(`Calendar ID nao configurado para a aeronave ${aircraftIdent || "do voo"}.`), { status: 422 });
+    }
+    const calendarId = encodeURIComponent(aircraftCalendar.calendarId);
+    const eventId = cleanString(ctx.flight.google_calendar_event_id);
+    if (mode === "cancel") {
+      if (eventId) {
+        await googleCalendarRequest(settings, `/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+          method: "DELETE",
+        }).catch((err) => {
+          if (!String(err?.message || "").includes("Not Found")) throw err;
+        });
+      }
+      await safeUpdateFlightCalendarFields(flightId, {
+        google_calendar_sync_status: "cancelled",
+        google_calendar_synced_at: nowIso(),
+        google_calendar_error: null,
+      });
+      return await saveGoogleCalendarRuntimeStatus({ lastError: null });
+    }
+
+    const { publicSettings: rules } = await loadSchoolRules();
+    const body = googleFlightEventBody(ctx, rules);
+    const event = eventId
+      ? await googleCalendarRequest(settings, `/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        })
+      : await googleCalendarRequest(settings, `/calendars/${calendarId}/events?sendUpdates=none`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+    await safeUpdateFlightCalendarFields(flightId, {
+      google_calendar_event_id: event?.id || eventId || null,
+      google_calendar_synced_at: nowIso(),
+      google_calendar_sync_status: "synced",
+      google_calendar_error: null,
+    });
+    return await saveGoogleCalendarRuntimeStatus({ lastError: null });
+  } catch (err) {
+    await safeUpdateFlightCalendarFields(flightId, {
+      google_calendar_sync_status: "failed",
+      google_calendar_synced_at: nowIso(),
+      google_calendar_error: String(err?.message || err).slice(0, 1024),
+    });
+    await saveGoogleCalendarRuntimeStatus({ lastError: String(err?.message || err).slice(0, 1024) });
+    throw err;
+  }
+}
+
+function flightStartDate(flight) {
+  const date = cleanString(flight.flight_date);
+  const start = cleanString(flight.start_time).slice(0, 5) || "23:59";
+  const dt = new Date(`${date}T${start}:00-03:00`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+async function runFlightReminderScan(actorUserId) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const now = Date.now();
+  const startWindow = now + (24 * 60 - 15) * 60 * 1000;
+  const endWindow = now + (24 * 60 + 15) * 60 * 1000;
+  const today = new Date(now).toISOString().slice(0, 10);
+  const afterTomorrow = addDaysIso(today, 2);
+  const flights = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("flight_status", ["Previsto"]),
+    sdk.Query.greaterThanEqual("flight_date", today),
+    sdk.Query.lessThanEqual("flight_date", afterTomorrow),
+  ]).catch(() => []);
+  const processed = [];
+  for (const flight of flights) {
+    if (flight.reminder_24h_sent_at) continue;
+    const start = flightStartDate(flight);
+    if (!start || start.getTime() < startWindow || start.getTime() > endWindow) continue;
+    const studentUserId = cleanString(flight.student_user_id || flight.user_id);
+    if (!studentUserId) continue;
+    const deliveries = await dispatchNotificationEvent(actorUserId, {
+      eventType: "flight.reminder_24h",
+      dedupeKey: `flight.reminder_24h:${flight.$id}`,
+      flightId: flight.$id,
+      recipientUserIds: [studentUserId],
+      channels: ["email", "push"],
+      actorUserId,
+      data: {
+        aircraft: flight.aircraft_ident || "",
+        flightDate: flight.flight_date || "",
+        startTime: flight.start_time || "",
+        studentUserId,
+      },
+    });
+    await safeUpdateFlightCalendarFields(flight.$id, { reminder_24h_sent_at: nowIso() });
+    processed.push({ flightId: flight.$id, deliveries });
+  }
+  return { processed };
 }
 
 async function registerPushSubscription(actorUserId, subscription) {
@@ -4917,10 +5366,19 @@ async function deleteBroadcastSegment(segmentId) {
     const { settings } = await loadEmailSettings();
     const apiKey = cleanString(settings.resendApiKey);
     if (apiKey) {
-      const resend = new Resend(apiKey);
-      const removeResult = await resend.audiences.remove(audienceId).catch((err) => ({ error: err }));
-      if (removeResult?.error) {
-        console.warn("Falha ao remover audience no Resend:", removeResult.error?.message || removeResult.error);
+      // SDK v6 aliased resend.audiences → resend.segments, so .remove() calls DELETE /segments/{id}
+      // which requires a verified domain (403). Use the legacy DELETE /audiences/{id} endpoint directly.
+      try {
+        const res = await fetch(`https://api.resend.com/audiences/${audienceId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          console.warn(`Resend audience removal failed (${res.status}):`, body.slice(0, 200));
+        }
+      } catch (err) {
+        console.warn("Resend audience removal error:", err?.message || err);
       }
     }
   }
@@ -5029,6 +5487,10 @@ function sampleEventForTemplate(templateType) {
       eventType: "flight.cancelled",
       data: { aircraft: "PS-ABC", flightDate: "2026-05-14", startTime: "09:00" },
     },
+    "flight.reminder_24h": {
+      eventType: "flight.reminder_24h",
+      data: { aircraft: "PS-ABC", flightDate: "2026-05-14", startTime: "09:00" },
+    },
     "weeklyPlan.submitted": {
       eventType: "weeklyPlan.submitted",
       data: { weekStart: "2026-05-18", requestedFlightsCount: 3 },
@@ -5096,6 +5558,11 @@ module.exports = async ({ req, res, log, error }) => {
     const action = String(payload.action || "listSummaries");
     log(`[action=${action}] userId=${actorUserId || "(none)"}`);
 
+    if (!actorUserId && action === "listSummaries") {
+      const result = await runFlightReminderScan("system");
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
     if (action === "registerPushSubscription") {
       await registerPushSubscription(actorUserId, payload.subscription);
       return jsonResponse(res, 200, { ok: true });
@@ -5113,6 +5580,12 @@ module.exports = async ({ req, res, log, error }) => {
         `[dispatchEvent] type=${cleanString(payload.event?.eventType)} recipients=${deliveries.length} results=${JSON.stringify(deliveries)}`,
       );
       return jsonResponse(res, 200, { ok: true, deliveries });
+    }
+
+    if (action === "runFlightReminderScan") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const result = await runFlightReminderScan(actorUserId || "system");
+      return jsonResponse(res, 200, { ok: true, ...result });
     }
 
     if (action === "getVideoWorkerConfig") {
@@ -5184,6 +5657,26 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "saveSchoolRules") {
       const schoolRules = await saveSchoolRules(payload.rules);
       return jsonResponse(res, 200, { schoolRules });
+    }
+
+    if (action === "getGoogleCalendarSettings") {
+      const { publicSettings } = await loadGoogleCalendarSettings();
+      return jsonResponse(res, 200, { googleCalendarSettings: publicSettings });
+    }
+
+    if (action === "saveGoogleCalendarSettings") {
+      const googleCalendarSettings = await saveGoogleCalendarSettings(payload.settings);
+      return jsonResponse(res, 200, { googleCalendarSettings });
+    }
+
+    if (action === "testGoogleCalendarConnection") {
+      const googleCalendarSettings = await testGoogleCalendarConnection();
+      return jsonResponse(res, 200, { googleCalendarSettings });
+    }
+
+    if (action === "syncFlightCalendarEvent") {
+      const googleCalendarSettings = await syncFlightCalendarEvent(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, googleCalendarSettings });
     }
 
     if (action === "sendTestEmail") {

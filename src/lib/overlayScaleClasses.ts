@@ -40,14 +40,25 @@ export const ovMapHudWithCharts = "h-[20cqh] min-h-0 max-h-[9.5rem]";
 export const ovMapStack = "h-[19cqh] min-h-0 max-h-[9rem]";
 export const ovMapVert = "h-[20cqh] min-h-0 max-h-[7rem]";
 
-export const ovChartHud = "h-[17cqh] min-h-0 max-h-[6.5rem]";
-export const ovChartCompact = "h-[16cqh] min-h-0 max-h-[6rem]";
-export const ovChartVert = "h-[12cqh] min-h-0 max-h-[6.5rem]";
+/** HUD 16:9 — +25% altura/largura dos painéis de gráfico */
+export const ovChartHud = "h-[21.25cqh] min-h-0 max-h-[8.125rem]";
+/** Compacto 16:9 — +50% (empilhados quando há dois) */
+export const ovChartCompact = "h-[24cqh] min-h-0 max-h-[9rem]";
+/** 9:16 — +30% altura dos gráficos */
+export const ovChartVert = "h-[15.6cqh] min-h-0 max-h-[8.45rem]";
 
 export const ovStackW = "w-[min(42%,18.5cqw)] max-w-[46%]";
 export const ovHudMapW = "w-[min(28%,15cqw)]";
-export const ovHudChartsRow2 = "w-[min(24%,24cqw)]";
-export const ovHudChartsRow1 = "w-[min(12%,12cqw)]";
+export const ovHudChartsRow2 = "w-[min(30%,30cqw)]";
+export const ovHudChartsRow1 = "w-[min(15%,15cqw)]";
+/** Coluna compacta: gráficos empilhados (−30% largura vs anterior) */
+export const ovCompactChartsCol = "w-[min(23.1%,19.425cqw)]";
+/** Espaço triplicado entre dois gráficos compactos empilhados */
+export const ovGapCompactStack = "gap-[1.05em]";
+/** 9:16 — esquerda; altura −60% vs 50cqh, próximo ao topo */
+export const ovMapVertTop = "top-[5cqh]";
+export const ovMapVertPanel =
+  "w-[48%] h-[20cqh] max-h-[20%] rounded-xl overflow-hidden bg-slate-900/90";
 
 export const ovHorizonArc = "h-[38cqh] w-[58%] max-w-[58%] rounded-full border-t-[0.14em] border-white/85";
 export const ovCrosshairLg = "w-[5cqw] max-w-[6rem]";

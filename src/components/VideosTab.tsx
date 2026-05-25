@@ -45,6 +45,12 @@ import {
   drawVideoRouteMapMarker,
   type VideoRouteMapData,
 } from "../lib/videoRouteMap";
+import {
+  computeVideoStageSize,
+  telemetryChartPoints,
+  type VideoStageFit,
+} from "../lib/videoStageLayout";
+import { routeMapSourceSize } from "../lib/overlayRouteLayout";
 import type { AircraftModel } from "../types/admin";
 import {
   CompactTelemetryOverlay,
@@ -1063,34 +1069,12 @@ function videoRotationStyle(rotationDeg: number): CSSProperties | undefined {
   return { transform: `rotate(${rot}deg)`, transformOrigin: "center center" };
 }
 
-/** Tamanho do retângulo visível do vídeo (contain), considerando rotação. */
-function computeVideoStageSize(
-  parentWidth: number,
-  parentHeight: number,
-  videoWidth: number,
-  videoHeight: number,
-  rotationDeg: number,
-): { width: number; height: number } {
-  if (parentWidth <= 0 || parentHeight <= 0) return { width: 0, height: 0 };
-  if (!videoWidth || !videoHeight) {
-    return { width: Math.floor(parentWidth), height: Math.floor(parentHeight) };
-  }
-  const rot = ((rotationDeg % 360) + 360) % 360;
-  const swapped = rot === 90 || rot === 270;
-  const srcW = swapped ? videoHeight : videoWidth;
-  const srcH = swapped ? videoWidth : videoHeight;
-  const scale = Math.min(parentWidth / srcW, parentHeight / srcH);
-  return {
-    width: Math.max(1, Math.floor(srcW * scale)),
-    height: Math.max(1, Math.floor(srcH * scale)),
-  };
-}
-
 function useVideoStageSize(
   parentRef: RefObject<HTMLElement | null>,
   videoRef: RefObject<HTMLVideoElement | null>,
   rotationDeg: number,
   bindKey: string,
+  fit: VideoStageFit,
 ) {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
 
@@ -1103,7 +1087,7 @@ function useVideoStageSize(
       const pr = parent.getBoundingClientRect();
       const vw = video?.videoWidth ?? 0;
       const vh = video?.videoHeight ?? 0;
-      setSize(computeVideoStageSize(pr.width, pr.height, vw, vh, rotationDeg));
+      setSize(computeVideoStageSize(pr.width, pr.height, vw, vh, rotationDeg, fit));
     };
 
     update();
@@ -1116,7 +1100,7 @@ function useVideoStageSize(
       video?.removeEventListener("loadedmetadata", update);
       video?.removeEventListener("loadeddata", update);
     };
-  }, [parentRef, videoRef, rotationDeg, bindKey]);
+  }, [parentRef, videoRef, rotationDeg, bindKey, fit]);
 
   return size;
 }
@@ -1147,18 +1131,23 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   const [orientation, setOrientation] = useState<"horizontal" | "vertical">("horizontal");
   const [videoRotationDeg, setVideoRotationDeg] = useState(0);
   const [verticalCropPct, setVerticalCropPct] = useState(50);
+  const videoStageFit: VideoStageFit = orientation === "vertical" ? "cover" : "contain";
   const videoStageSize = useVideoStageSize(
     videoStageParentRef,
     videoRef,
     videoRotationDeg,
     `${orientation}-${video.id}`,
+    videoStageFit,
   );
   const videoStageStyle = useMemo((): CSSProperties => {
+    if (orientation === "vertical") {
+      return { width: "100%", height: "100%" };
+    }
     if (videoStageSize) {
       return { width: videoStageSize.width, height: videoStageSize.height };
     }
     return { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" };
-  }, [videoStageSize]);
+  }, [orientation, videoStageSize]);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const brand = useMemo(() => getCachedVideoBrand(), []);
   const verticalDragRef = useRef<{ startX: number; startCrop: number; moved: boolean } | null>(null);
@@ -1201,13 +1190,16 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       setRouteMap(null);
       return;
     }
-    void buildVideoRouteMap(points).then((map) => {
+    const frameW = orientation === "vertical" ? 608 : 1920;
+    const frameH = 1080;
+    const { w: mapW, h: mapH } = routeMapSourceSize(frameW, frameH, orientation === "vertical");
+    void buildVideoRouteMap(points, mapW, mapH).then((map) => {
       if (!cancelled) setRouteMap(map);
     });
     return () => {
       cancelled = true;
     };
-  }, [points]);
+  }, [points, orientation]);
 
   const syncPlaybackState = useCallback((el: HTMLVideoElement) => {
     const time = el.currentTime;
@@ -1270,7 +1262,10 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       raf2 = requestAnimationFrame(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        drawVideoRouteMapBase(canvas, routeMap, points, overlayStyle);
+        const mapFit = "cover";
+        const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
+        const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
+        drawVideoRouteMapBase(canvas, routeMap, points, mapStyle, mapFit, mapPanelOpacity);
       });
     });
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
@@ -1279,15 +1274,16 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, overlayStyle);
+    const mapFit = "cover";
+    const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
+    const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
+    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, mapStyle, mapFit, mapPanelOpacity);
   }, [points, currentPoint, routeMap, overlayStyle, orientation]);
 
-  const chartPoints = useMemo(() => {
-    if (!chartsFollowTrim || (trimStartSec === null && trimEndSec === null)) return points;
-    const startMs = (trimStartSec ?? 0) * 1000;
-    const endMs = (trimEndSec ?? (points.at(-1)?.timeMs ?? Infinity) + 1) * 1000;
-    return points.filter((p) => p.timeMs >= startMs && p.timeMs <= endMs);
-  }, [points, trimStartSec, trimEndSec, chartsFollowTrim]);
+  const chartPoints = useMemo(
+    () => telemetryChartPoints(points, trimStartSec, trimEndSec, chartsFollowTrim),
+    [points, trimStartSec, trimEndSec, chartsFollowTrim],
+  );
 
   const chartDrawStyle = "hud" as const;
 
@@ -1303,9 +1299,12 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   const redrawRouteMap = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    drawVideoRouteMapBase(canvas, routeMap, points, overlayStyle === "hud" ? "hud" : "compact");
-    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, overlayStyle === "hud" ? "hud" : "compact");
-  }, [points, currentPoint, routeMap, overlayStyle]);
+    const mapFit = "cover";
+    const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
+    const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
+    drawVideoRouteMapBase(canvas, routeMap, points, mapStyle, mapFit, mapPanelOpacity);
+    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, mapStyle, mapFit, mapPanelOpacity);
+  }, [points, currentPoint, routeMap, overlayStyle, orientation]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
@@ -1404,9 +1403,11 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       const overlayEl = overlayRef.current;
       const playerWidth = overlayEl?.clientWidth ?? containerRef.current?.clientWidth ?? 1280;
       const playerHeight = overlayEl?.clientHeight ?? containerRef.current?.clientHeight ?? 720;
+      const videoEl = videoRef.current;
       const overlay = await renderOverlayVideo({
         points,
-        widgets: exportWidgets,
+        chartPoints,
+        widgets: enabledWidgets,
         startSec,
         endSec,
         orientation,
@@ -1415,6 +1416,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         playerHeight,
         overlayStyle,
         airspeedArcs,
+        routeMap: enabledWidgets.includes("route") ? routeMap : null,
         onProgress: (stage, pct) => {
           if (stage === "render") upd({ stage: "render", renderPct: pct });
         },
@@ -1435,6 +1437,8 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           orientation,
           verticalCropPct: orientation === "vertical" ? verticalCropPct : undefined,
           videoRotationDeg: videoRotationDeg || undefined,
+          sourceVideoWidth: videoEl?.videoWidth || undefined,
+          sourceVideoHeight: videoEl?.videoHeight || undefined,
           jobId,
         },
         (pct) => upd({ uploadPct: pct }),
@@ -1493,11 +1497,11 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           <div className="flex h-full aspect-[9/16] flex-col overflow-hidden select-none">
             <div
               ref={videoStageParentRef}
-              className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black"
+              className="relative min-h-0 flex-1 overflow-hidden bg-black"
             >
               <div
                 ref={overlayRef}
-                className="video-overlay-root relative max-h-full max-w-full shrink-0 overflow-hidden"
+                className="video-overlay-root relative h-full w-full overflow-hidden"
                 style={videoStageStyle}
               >
                 <video
@@ -1525,7 +1529,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
                   </div>
                 )}
               <div
-                className="absolute inset-0 z-10 cursor-ew-resize"
+                className="video-stage-interactive absolute inset-0 z-10 cursor-ew-resize touch-none"
                 onPointerDown={(e) => {
                   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
                   verticalDragRef.current = { startX: e.clientX, startCrop: verticalCropPct, moved: false };
@@ -1578,7 +1582,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
                 />
                 <button
                   type="button"
-                  className="absolute inset-0 z-[4] cursor-pointer border-0 bg-transparent p-0"
+                  className="video-stage-interactive absolute inset-0 z-[4] cursor-pointer border-0 bg-transparent p-0"
                   aria-label="Reproduzir ou pausar"
                   onClick={togglePlayPause}
                 />

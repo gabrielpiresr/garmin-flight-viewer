@@ -13,10 +13,16 @@
   pointer-events: none;
 }
 
+/* Arraste de enquadramento (9:16) e clique play/pause — sobrescreve pointer-events: none dos filhos */
+.video-overlay-root .video-stage-interactive {
+  pointer-events: auto;
+}
+
 /* Garante geração das utilities cqw/cqh usadas no overlay */
 @source inline("1.35cqh");
 @source inline("1cqh");
 @source inline("2cqh");
+@source inline("5cqh");
 @source inline("2.2cqh");
 @source inline("4.6cqh");
 @source inline("11cqh");
@@ -26,11 +32,25 @@
 @source inline("16cqh");
 @source inline("17cqh");
 @source inline("21cqh");
+@source inline("15cqw");
+@source inline("19.425cqw");
+@source inline("23.1%");
+@source inline("48%");
+@source inline("bg-slate-900/90");
+@source inline("2cqh");
+@source inline("20cqh");
+@source inline("50cqh");
+@source inline("1.05em");
 @source inline("24cqw");
 @source inline("26cqh");
+@source inline("27.75cqw");
 @source inline("28cqw");
+@source inline("30cqw");
+@source inline("15.6cqh");
 @source inline("17cqh");
 @source inline("20cqh");
+@source inline("21.25cqh");
+@source inline("24cqh");
 @source inline("0.5%");
 @source inline("19cqh");
 @source inline("20cqh");

@@ -74,7 +74,7 @@ async function ensureFunction(functions) {
     runtime: sdk.Runtime.Node22,
     execute: [sdk.Role.users()],
     events: [],
-    schedule: "",
+    schedule: "*/15 * * * *",
     timeout: 60,
     enabled: true,
     logging: true,
@@ -194,6 +194,12 @@ async function main() {
   const appUrl = process.env.APP_URL || env.VITE_APP_URL || "";
   const cfWorkerUrl = process.env.CF_WORKER_URL || env.VITE_CF_WORKER_URL || "";
   const workerSecret = process.env.WORKER_SECRET || env.WORKER_SECRET || env.VITE_CF_WORKER_SECRET || "";
+  const googleCalendarServiceAccountJson =
+    process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON || env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON || "";
+  const googleCalendarServiceAccountEmail =
+    process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || "";
+  const googleCalendarPrivateKey =
+    process.env.GOOGLE_CALENDAR_PRIVATE_KEY || env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
 
@@ -268,6 +274,15 @@ async function main() {
   if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
   await upsertVariable(functions, "CF_WORKER_URL", cfWorkerUrl);
   await upsertVariable(functions, "WORKER_SECRET", workerSecret, true);
+  if (googleCalendarServiceAccountJson) {
+    await upsertVariable(functions, "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", googleCalendarServiceAccountJson, true);
+  }
+  if (googleCalendarServiceAccountEmail) {
+    await upsertVariable(functions, "GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL", googleCalendarServiceAccountEmail);
+  }
+  if (googleCalendarPrivateKey) {
+    await upsertVariable(functions, "GOOGLE_CALENDAR_PRIVATE_KEY", googleCalendarPrivateKey, true);
+  }
   await upsertVariable(functions, "SCHOOL_ID", schoolId);
 
   const buffer = fs.readFileSync(archivePath);

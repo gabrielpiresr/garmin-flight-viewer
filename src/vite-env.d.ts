@@ -17,6 +17,10 @@ interface ImportMetaEnv {
   readonly VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID?: string;
   readonly VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID?: string;
   readonly VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID?: string;
+  readonly VITE_APPWRITE_MANEUVER_TEMPLATES_COL_ID?: string;
+  readonly VITE_APPWRITE_MANEUVER_TEMPLATE_STEPS_COL_ID?: string;
+  readonly VITE_APPWRITE_FLIGHT_MANEUVERS_COL_ID?: string;
+  readonly VITE_APPWRITE_FLIGHT_MANEUVER_REVIEWS_COL_ID?: string;
 }
 
 interface ImportMeta {
