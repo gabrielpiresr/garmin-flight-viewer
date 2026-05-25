@@ -1,5 +1,49 @@
 @import "tailwindcss";
 
+/* Não definir position aqui — o Tailwind usa absolute + inset no overlay. */
+.video-overlay-root {
+  container-type: size;
+  /* ~14px em 1080p; escala com a altura útil do vídeo */
+  font-size: clamp(0.5rem, 1.35cqh, 1.0625rem);
+  pointer-events: none;
+}
+
+/* Filhos (canvas etc.) não podem capturar clique — senão play/pause no vídeo para de funcionar */
+.video-overlay-root * {
+  pointer-events: none;
+}
+
+/* Garante geração das utilities cqw/cqh usadas no overlay */
+@source inline("1.35cqh");
+@source inline("1cqh");
+@source inline("2cqh");
+@source inline("2.2cqh");
+@source inline("4.6cqh");
+@source inline("11cqh");
+@source inline("12cqh");
+@source inline("13cqh");
+@source inline("14cqh");
+@source inline("16cqh");
+@source inline("17cqh");
+@source inline("21cqh");
+@source inline("24cqw");
+@source inline("26cqh");
+@source inline("28cqw");
+@source inline("17cqh");
+@source inline("20cqh");
+@source inline("0.5%");
+@source inline("19cqh");
+@source inline("20cqh");
+@source inline("38cqh");
+@source inline("2.7cqw");
+@source inline("3.3cqw");
+@source inline("4.2cqw");
+@source inline("5cqw");
+@source inline("10.4cqw");
+@source inline("11.5cqw");
+@source inline("18.5cqw");
+@source inline("22cqw");
+
 @theme {
   --radius-xs: 0.08125rem;
   --radius-sm: 0.1625rem;

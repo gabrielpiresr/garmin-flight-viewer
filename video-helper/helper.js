@@ -149,7 +149,8 @@ const server = http.createServer(async (req, res) => {
       try {
         const fileUrl = await compositeOverlay(
           { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
-            orientation, fps: fps || 30, durationSec, overlayBuffer },
+            orientation, fps: fps || 30, durationSec, overlayBuffer,
+            videoRotationDeg: params.videoRotationDeg },
           job, jobId,
         );
         sendProgress(jobId, { stage: "done", percent: 100, fileUrl });
@@ -957,9 +958,17 @@ function extractJpegFrames(overlayBuffer, tmpDir) {
   return frameCount;
 }
 
+function rotationFilterSuffix(deg) {
+  const d = ((Math.round(Number(deg) || 0) % 360) + 360) % 360;
+  if (d === 90) return ",transpose=1";
+  if (d === 270) return ",transpose=2";
+  if (d === 180) return ",transpose=1,transpose=1";
+  return "";
+}
+
 async function compositeOverlay(
   { videoUrl, cfWorkerUrl, cfWorkerToken, outputKey, trimStartSec, trimEndSec,
-    orientation, fps, durationSec, overlayBuffer },
+    orientation, fps, durationSec, overlayBuffer, videoRotationDeg },
   job, jobId,
 ) {
   const ffmpeg = findBin("ffmpeg");
@@ -1011,8 +1020,9 @@ async function compositeOverlay(
     const baseFilter = isVertical
       ? `[1:v]crop=trunc(ih*9/16/2)*2:ih:(iw-trunc(ih*9/16/2)*2)/2:0,scale=608:1080[base]`
       : `[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[base]`;
+    const rotSuffix = rotationFilterSuffix(videoRotationDeg);
     const filterComplex =
-      `${baseFilter};[base][0:v]overlay=0:0,format=yuv420p[outv]`;
+      `${baseFilter};[base][0:v]overlay=0:0,format=yuv420p${rotSuffix}[outv]`;
 
     const effectiveDuration = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
 

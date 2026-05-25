@@ -10,6 +10,48 @@ import {
   type VideoTelemetryPoint,
   type VideoTelemetryWidget,
 } from "../lib/videoTelemetry";
+import {
+  ovBottomCharts,
+  ovBottomHdg,
+  ovBrandLogo,
+  ovChartCompact,
+  ovChartHud,
+  ovChartVert,
+  ovCrosshairLg,
+  ovCrosshairSm,
+  ovGapMd,
+  ovGapSm,
+  ovHorizonArc,
+  ovChartPanelHud,
+  ovHudChartsBottom,
+  ovHudChartsRow1,
+  ovHudChartsRow2,
+  ovHudMapOpacity,
+  ovHudMapTop,
+  ovHudMapW,
+  ovInsetL,
+  ovInsetTop,
+  ovTextHudLegend,
+  ovMapHud,
+  ovMapHudWithCharts,
+  ovMapStack,
+  ovMapVert,
+  ovPadMd,
+  ovPadSm,
+  ovPadXs,
+  ovPointerBorderL,
+  ovPointerBorderR,
+  ovStackW,
+  ovTapeAltCluster,
+  ovTapeAltEmbed,
+  ovTapeSpeed,
+  ovTapeVsi,
+  ovTextLg,
+  ovTextMd,
+  ovTextSm,
+  ovTextXl,
+  ovTextXs,
+} from "../lib/overlayScaleClasses";
 
 export type TelemetryOverlayStyle = "compact" | "hud";
 
@@ -32,9 +74,7 @@ const HUD_TAPE_BG = "bg-slate-900/42";
 /** HUD tapes: each column centered in its lateral third (not screen center). */
 const HUD_TAPE_HEIGHT = "h-[56%]";
 const HUD_TAPE_ANCHOR = "absolute top-1/2 -translate-x-1/2 -translate-y-1/2";
-/** Left corner (map/charts) stays clear of speed column. */
-const HUD_LEFT_CORNER_MAX = "calc(22%-1rem)";
-const HUD_CHARTS_BOTTOM = "bottom-2";
+const HUD_CHARTS_BOTTOM = ovBottomCharts;
 
 function tapeSpan(kind: TapeKind): number {
   if (kind === "speed") return 60;
@@ -155,14 +195,14 @@ function HudScrollingTape({
     <div
       className={
         embedded
-          ? `relative flex h-full w-20 flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`
+          ? `relative flex h-full ${ovTapeAltEmbed} flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`
           : inCluster
-            ? `relative flex h-full w-24 shrink-0 flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`
-            : `absolute flex ${HUD_TAPE_HEIGHT} top-1/2 -translate-y-1/2 flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG} right-[16%] w-24`
+            ? `relative flex h-full w-full shrink-0 flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`
+            : `absolute flex ${HUD_TAPE_HEIGHT} top-1/2 -translate-y-1/2 flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG} right-[16%] ${ovTapeSpeed}`
       }
     >
-      <div className="shrink-0 pt-0.5 text-center text-[9px] font-bold text-sky-200">{label}</div>
-      <div ref={trackRef} className="relative mx-1.5 min-h-0 flex-1 overflow-hidden">
+      <div className={`shrink-0 pt-[0.15em] text-center ${ovTextXs} font-bold text-sky-200`}>{label}</div>
+      <div ref={trackRef} className="relative mx-[0.35em] min-h-0 flex-1 overflow-hidden">
         <div
           className="absolute inset-x-0 top-1/2 will-change-transform"
           style={{ height: trackHeight > 0 ? trackHeight : undefined, transform: `translateY(-${offsetPx}px)` }}
@@ -176,7 +216,7 @@ function HudScrollingTape({
               return (
                 <span
                   key={`${segment.min}-${segment.max}-${segment.color}`}
-                  className="absolute right-0.5 w-2 rounded-sm"
+                  className="absolute right-[0.1em] w-[0.35em] rounded-sm"
                   style={{
                     top: `${topPx}px`,
                     height: `${heightPx}px`,
@@ -190,27 +230,23 @@ function HudScrollingTape({
             const y = valueToTapePx(tick, min, max, pxPerUnit, invert);
             return (
               <div key={tick} className="absolute left-0 right-0 flex items-center" style={{ top: `${y}px` }}>
-                <span className={`${kind === "altitude" ? "w-7" : "w-5"} text-right text-[9px] tabular-nums text-white/85`}>{formatTickLabel(kind, tick)}</span>
-                <span className="ml-auto mr-2 h-px w-3 bg-white/75" />
+                <span className={`${kind === "altitude" ? "w-[38%]" : "w-[28%]"} text-right ${ovTextXs} tabular-nums text-white/85`}>{formatTickLabel(kind, tick)}</span>
+                <span className="ml-auto mr-[0.35em] h-px w-[0.75em] bg-white/75" />
               </div>
             );
           })}
         </div>
         <div className="pointer-events-none absolute inset-x-0 top-1/2 z-10 -translate-y-1/2">
           <div className={`flex items-center ${side === "left" ? "justify-start" : "justify-end"}`}>
-            <div className="rounded bg-black/85 px-2 py-1 text-lg font-bold text-white">
+            <div className={`rounded bg-black/85 ${ovPadSm} ${ovTextLg} font-bold text-white`}>
               {formatTapeValue(kind, value)}
             </div>
-            <span
-              className={`border-y-[6px] border-y-transparent ${
-                side === "left" ? "border-r-[7px] border-r-black/85" : "border-l-[7px] border-l-black/85"
-              }`}
-            />
+            <span className={side === "left" ? ovPointerBorderL : ovPointerBorderR} />
           </div>
         </div>
         <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-white/35" />
       </div>
-      <div className="shrink-0 pb-0.5 text-center text-[8px] text-slate-400">{unit}</div>
+      <div className={`shrink-0 pb-[0.15em] text-center ${ovTextXs} text-slate-400`}>{unit}</div>
     </div>
   );
 }
@@ -229,15 +265,15 @@ function HudVsiTape({ value, side }: { value: number; side: "left" | "right" }) 
   const { ref: trackRef } = useTapeTrackHeight();
 
   return (
-    <div className={`flex h-full w-[3.25rem] flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`}>
-      <div className="shrink-0 pt-0.5 text-center text-[9px] font-bold text-sky-200">VS</div>
-      <div ref={trackRef} className="relative mx-0.5 min-h-0 flex-1 overflow-hidden">
+    <div className={`flex h-full ${ovTapeVsi} flex-col overflow-hidden rounded text-white ${HUD_TAPE_BG}`}>
+      <div className={`shrink-0 pt-[0.15em] text-center ${ovTextXs} font-bold text-sky-200`}>VS</div>
+      <div ref={trackRef} className="relative mx-[0.2em] min-h-0 flex-1 overflow-hidden">
         {ticks.map((tick) => {
           const label = tick === 0 ? "0" : tick > 0 ? `+${tick}` : String(tick);
           return (
             <div key={tick} className="absolute left-0 right-0 flex items-center" style={{ top: `${toPercent(tick)}%` }}>
-              <span className="w-6 text-right text-[9px] tabular-nums text-white/85">{label}</span>
-              <span className="ml-auto mr-1 h-px w-2 bg-white/75" />
+              <span className={`w-[32%] text-right ${ovTextXs} tabular-nums text-white/85`}>{label}</span>
+              <span className="ml-auto mr-[0.2em] h-px w-[0.5em] bg-white/75" />
             </div>
           );
         })}
@@ -247,27 +283,23 @@ function HudVsiTape({ value, side }: { value: number; side: "left" | "right" }) 
           style={{ top: `${pointerTop}%` }}
         >
           <div className={`flex w-full items-center ${side === "left" ? "justify-start" : "justify-end"}`}>
-            <div className="min-w-[2.25rem] rounded bg-black/85 px-1 py-0.5 text-center text-sm font-bold text-white">
+            <div className={`min-w-[28%] rounded bg-black/85 ${ovPadXs} text-center ${ovTextSm} font-bold text-white`}>
               {formatVerticalSpeedFpm(displayFpm)}
             </div>
-            <span
-              className={`border-y-[6px] border-y-transparent ${
-                side === "left" ? "border-r-[7px] border-r-black/85" : "border-l-[7px] border-l-black/85"
-              }`}
-            />
+            <span className={side === "left" ? ovPointerBorderL : ovPointerBorderR} />
           </div>
         </div>
       </div>
-      <div className="shrink-0 pb-0.5 text-center text-[8px] text-slate-400">fpm</div>
+      <div className={`shrink-0 pb-[0.15em] text-center ${ovTextXs} text-slate-400`}>fpm</div>
     </div>
   );
 }
 
 function TelemetryPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/15 bg-black/65 px-2.5 py-1 text-white shadow">
-      <span className="mr-1.5 text-[10px] font-bold text-sky-200">{label}</span>
-      <span className="text-sm font-semibold">{value}</span>
+    <div className={`rounded-md border border-white/15 bg-black/65 ${ovPadMd} text-white shadow`}>
+      <span className={`mr-[0.4em] ${ovTextSm} font-bold text-sky-200`}>{label}</span>
+      <span className={`${ovTextMd} font-semibold`}>{value}</span>
     </div>
   );
 }
@@ -275,46 +307,16 @@ function TelemetryPill({ label, value }: { label: string; value: string }) {
 export function TelemetryBrandMark({ brand, compact }: { brand: { schoolName: string; logoUrl: string }; compact: boolean }) {
   return (
     <div
-      className={`flex items-center gap-2 rounded bg-black/45 px-2.5 py-1.5 text-white ${
-        compact ? "absolute left-3 top-3" : "absolute left-1/2 top-6 z-10 -translate-x-1/2"
+      className={`flex items-center ${ovGapMd} rounded bg-black/45 ${ovPadMd} text-white ${
+        compact ? `absolute ${ovInsetL} top-[2cqh]` : "absolute left-1/2 top-[2.2cqh] z-10 -translate-x-1/2"
       }`}
     >
       {brand.logoUrl ? (
-        <img src={brand.logoUrl} alt="" className="h-5 w-5 rounded-sm object-contain" />
+        <img src={brand.logoUrl} alt="" className={`${ovBrandLogo} rounded-sm object-contain`} />
       ) : (
-        <span className="flex h-5 w-5 items-center justify-center rounded-sm bg-sky-400/30 text-[10px] font-black">FV</span>
+        <span className={`flex ${ovBrandLogo} items-center justify-center rounded-sm bg-sky-400/30 ${ovTextSm} font-black`}>FV</span>
       )}
-      <span className={`${compact ? "text-[11px]" : "text-sm"} font-bold uppercase tracking-wide`}>{brand.schoolName}</span>
-    </div>
-  );
-}
-
-function LeftTelemetryStack({
-  altitudeChartRef,
-  canvasRef,
-  enabledWidgets,
-  speedChartRef,
-}: {
-  altitudeChartRef: RefObject<HTMLCanvasElement | null>;
-  canvasRef: RefObject<HTMLCanvasElement | null>;
-  enabledWidgets: VideoTelemetryWidget[];
-  speedChartRef: RefObject<HTMLCanvasElement | null>;
-}) {
-  const hasRoute = enabledWidgets.includes("route");
-  const hasAltChart = enabledWidgets.includes("altitudeChart");
-  const hasSpeedChart = enabledWidgets.includes("speedChart");
-  if (!hasRoute && !hasAltChart && !hasSpeedChart) return null;
-
-  return (
-    <div className="absolute left-3 top-12 flex max-h-[calc(100%-5.5rem)] min-h-0 w-[min(15rem,42vw)] max-w-[46%] flex-col gap-2 overflow-hidden">
-      {hasRoute && (
-        <canvas
-          ref={canvasRef}
-          className="h-[clamp(6rem,18vh,9rem)] w-full shrink-0 rounded border border-white/15 bg-black/45"
-        />
-      )}
-      {hasAltChart && <ChartPanel compact title="ALTITUDE" canvasRef={altitudeChartRef} />}
-      {hasSpeedChart && <ChartPanel compact title="VELOCIDADE" canvasRef={speedChartRef} />}
+      <span className={`${compact ? ovTextSm : ovTextMd} font-bold uppercase tracking-wide`}>{brand.schoolName}</span>
     </div>
   );
 }
@@ -339,13 +341,13 @@ function HudSideTapeColumns({
   const showAlt = enabledWidgets.includes("altitude") && altFt != null;
   if (!showSpeed && !showAlt) return null;
 
-  const speedX = hasLeftWidgets ? "left-[27%]" : "left-[22%]";
-  const altX = hasLeftWidgets ? "left-[73%]" : "left-[78%]";
-
   return (
     <>
       {showSpeed && (
-        <div className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${speedX} ${HUD_TAPE_HEIGHT}`}>
+        <div
+          className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${HUD_TAPE_HEIGHT} ${ovTapeSpeed}`}
+          style={{ left: hasLeftWidgets ? "27%" : "22%" }}
+        >
           <HudScrollingTape
             inCluster
             kind="speed"
@@ -359,7 +361,8 @@ function HudSideTapeColumns({
       )}
       {showAlt && (
         <div
-          className={`pointer-events-none ${HUD_TAPE_ANCHOR} ${altX} flex ${HUD_TAPE_HEIGHT} w-[12.5rem] items-stretch gap-0.5`}
+          className={`pointer-events-none ${HUD_TAPE_ANCHOR} flex ${HUD_TAPE_HEIGHT} ${ovTapeAltCluster} items-stretch gap-[0.15em]`}
+          style={{ left: hasLeftWidgets ? "73%" : "78%" }}
         >
           <HudScrollingTape embedded kind="altitude" label="ALT" unit="ft" value={altFt} side="right" />
           <HudVsiTape value={verticalSpeedFpm ?? 0} side="right" />
@@ -388,21 +391,20 @@ function HudLeftCorner({
 
   const chartCount = (hasAltChart ? 1 : 0) + (hasSpeedChart ? 1 : 0);
   const hasCharts = chartCount > 0;
-  const chartsWidthClass =
-    chartCount === 2 ? `w-[min(${HUD_LEFT_CORNER_MAX},22rem)]` : `w-[min(11.5rem,${HUD_LEFT_CORNER_MAX})]`;
+  const chartsWidthClass = chartCount === 2 ? ovHudChartsRow2 : ovHudChartsRow1;
 
   return (
     <>
       {hasRoute && (
         <canvas
           ref={canvasRef}
-          className={`absolute left-3 top-12 w-[min(11.5rem,${HUD_LEFT_CORNER_MAX})] rounded border border-white/15 bg-slate-900/65 ${
-            hasCharts ? "h-[clamp(5rem,14vh,7rem)]" : "h-[clamp(6rem,17vh,8.5rem)]"
+          className={`absolute ${ovInsetL} ${ovHudMapTop} ${ovHudMapW} ${ovHudMapOpacity} rounded-md ${
+            hasCharts ? ovMapHudWithCharts : ovMapHud
           }`}
         />
       )}
       {(hasAltChart || hasSpeedChart) && (
-        <div className={`absolute ${HUD_CHARTS_BOTTOM} left-3 flex gap-1.5 ${chartsWidthClass}`}>
+        <div className={`absolute ${ovHudChartsBottom} ${ovInsetL} flex min-h-0 items-end ${ovGapSm} ${chartsWidthClass}`}>
           {hasAltChart && <ChartPanel hudCorner title="ALT FT" canvasRef={altitudeChartRef} />}
           {hasSpeedChart && <ChartPanel hudCorner title="SPD KT" canvasRef={speedChartRef} />}
         </div>
@@ -415,14 +417,14 @@ export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
   const { altitudeChartRef, canvasRef, currentPoint, enabledWidgets, speedChartRef, verticalSpeedFpm } = props;
 
   return (
-    <>
-      <LeftTelemetryStack
+    <div className="absolute inset-0">
+      <HudLeftCorner
         altitudeChartRef={altitudeChartRef}
         canvasRef={canvasRef}
         enabledWidgets={enabledWidgets}
         speedChartRef={speedChartRef}
       />
-      <div className="absolute bottom-2 left-3 flex max-w-[46%] flex-wrap items-end gap-2">
+      <div className={`absolute ${ovHudChartsBottom} right-[1.5%] flex max-w-[48%] flex-wrap items-end justify-end ${ovGapMd}`}>
         {enabledWidgets.includes("speed") && (
           <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
         )}
@@ -439,7 +441,7 @@ export function CompactTelemetryOverlay(props: TelemetryOverlayProps) {
           <TelemetryPill label="HDG" value={formatVideoHeading(currentPoint?.heading ?? null)} />
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -460,42 +462,42 @@ export function VerticalCompactOverlay({
   const hasCharts = hasAltChart || hasSpeedChart;
 
   return (
-    <>
+    <div className="absolute inset-0">
       {/* Mapa de rota — topo, largura total, acima dos gráficos (apenas se há gráficos) */}
       {hasRoute && hasCharts && (
         <canvas
           ref={canvasRef}
-          className="absolute top-14 left-2 right-2 h-28 w-[calc(100%-1rem)] rounded-xl border border-white/15"
+          className={`absolute top-[13cqh] ${ovInsetL} right-[1.5%] ${ovMapVert} w-[calc(100%-3%)] rounded-xl border border-white/15`}
         />
       )}
 
       {/* Coluna inferior: gráficos lado a lado + pills */}
-      <div className="absolute bottom-0 left-2 right-2 flex flex-col gap-1.5">
+      <div className={`absolute bottom-0 ${ovInsetL} right-[1.5%] flex flex-col ${ovGapSm}`}>
         {/* Mapa sem gráficos — ocupa o lugar dos gráficos */}
         {hasRoute && !hasCharts && (
           <canvas
             ref={canvasRef}
-            className="w-full h-28 rounded-xl border border-white/15"
+            className={`${ovMapVert} w-full rounded-xl border border-white/15`}
           />
         )}
         {hasCharts && (
-          <div className="flex flex-row gap-1.5">
+          <div className={`flex flex-row ${ovGapSm}`}>
             {hasAltChart && (
-              <div className="flex-1 min-w-0 rounded-xl border border-white/15 bg-black/55 p-1">
-                <p className="mb-0.5 text-[9px] font-bold tracking-wide text-sky-100">ALT FT</p>
-                <canvas ref={altitudeChartRef} className="h-[102px] w-full" />
+              <div className={`flex-1 min-w-0 ${ovChartPanelHud}`}>
+                <p className={`shrink-0 ${ovTextHudLegend} font-bold tracking-wide text-sky-100/95 mb-[0.2em]`}>ALT FT</p>
+                <canvas ref={altitudeChartRef} className={`${ovChartVert} w-full shrink-0`} />
               </div>
             )}
             {hasSpeedChart && (
-              <div className="flex-1 min-w-0 rounded-xl border border-white/15 bg-black/55 p-1">
-                <p className="mb-0.5 text-[9px] font-bold tracking-wide text-sky-100">SPD KT</p>
-                <canvas ref={speedChartRef} className="h-[102px] w-full" />
+              <div className={`flex-1 min-w-0 ${ovChartPanelHud}`}>
+                <p className={`shrink-0 ${ovTextHudLegend} font-bold tracking-wide text-sky-100/95 mb-[0.2em]`}>SPD KT</p>
+                <canvas ref={speedChartRef} className={`${ovChartVert} w-full shrink-0`} />
               </div>
             )}
           </div>
         )}
         {/* Pills inline */}
-        <div className="flex flex-row flex-wrap items-center gap-1.5 pb-0.5">
+        <div className={`flex flex-row flex-wrap items-center ${ovGapSm} pb-[0.2em]`}>
           {enabledWidgets.includes("speed") && (
             <TelemetryPill label="SPD" value={formatVideoSpeed(currentPoint?.speed ?? null)} />
           )}
@@ -513,7 +515,7 @@ export function VerticalCompactOverlay({
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -527,12 +529,12 @@ export function HudTelemetryOverlay(props: TelemetryOverlayProps) {
     enabledWidgets.includes("speedChart");
 
   return (
-    <>
-      <div className="absolute inset-x-0 top-5 flex justify-center">
-        <div className="h-44 w-[34rem] max-w-[58%] rounded-full border-t-2 border-white/85" />
+    <div className="absolute inset-0">
+      <div className="absolute inset-x-0 top-[4.6cqh] flex justify-center">
+        <div className={ovHorizonArc} />
       </div>
-      <div className="absolute left-1/2 top-[44%] h-px w-24 -translate-x-1/2 bg-white/80" />
-      <div className="absolute left-1/2 top-[52%] h-px w-16 -translate-x-1/2 bg-white/70" />
+      <div className={`absolute left-1/2 top-[44%] h-px ${ovCrosshairLg} -translate-x-1/2 bg-white/80`} />
+      <div className={`absolute left-1/2 top-[52%] h-px ${ovCrosshairSm} -translate-x-1/2 bg-white/70`} />
       <HudSideTapeColumns
         airspeedArcs={airspeedArcs}
         altFt={altFt}
@@ -542,7 +544,7 @@ export function HudTelemetryOverlay(props: TelemetryOverlayProps) {
         verticalSpeedFpm={verticalSpeedFpm}
       />
       {enabledWidgets.includes("heading") && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded bg-black/55 px-3 py-1.5 text-lg font-black text-white">
+        <div className={`absolute ${ovBottomHdg} left-1/2 -translate-x-1/2 rounded bg-black/55 ${ovPadMd} ${ovTextXl} font-black text-white`}>
           HDG <span className="text-sky-200">{formatVideoHeading(currentPoint?.heading ?? null)}</span>
         </div>
       )}
@@ -552,7 +554,7 @@ export function HudTelemetryOverlay(props: TelemetryOverlayProps) {
         enabledWidgets={enabledWidgets}
         speedChartRef={speedChartRef}
       />
-    </>
+    </div>
   );
 }
 
@@ -567,16 +569,13 @@ function ChartPanel({
   compact?: boolean;
   hudCorner?: boolean;
 }) {
-  const canvasClass = hudCorner
-    ? "h-[clamp(3.5rem,12vh,4.5rem)] min-w-0 flex-1 w-full"
-    : compact
-      ? "h-[clamp(4rem,14vh,6rem)] w-full"
-      : "h-[clamp(3.25rem,12vh,4.75rem)] w-full";
+  const canvasClass = hudCorner ? `${ovChartHud} min-w-0 flex-1 w-full` : compact ? `${ovChartCompact} w-full` : `${ovChartHud} w-full`;
+  const panelClass = hudCorner ? `${ovChartPanelHud} min-w-0 flex-1` : `${ovChartPanelHud} w-full`;
 
   return (
-    <div className={`rounded border border-white/15 bg-black/55 ${hudCorner ? "min-w-0 flex-1 p-1.5 pb-0.5" : "p-1.5"}`}>
-      <p className={`text-[9px] font-bold tracking-wide text-sky-100 ${hudCorner ? "mb-0.5" : "mb-1"}`}>{title}</p>
-      <canvas ref={canvasRef} className={canvasClass} />
+    <div className={panelClass}>
+      <p className={`shrink-0 ${ovTextHudLegend} font-bold tracking-wide text-sky-100/95 mb-[0.2em]`}>{title}</p>
+      <canvas ref={canvasRef} className={`${canvasClass} shrink-0`} />
     </div>
   );
 }
@@ -642,11 +641,14 @@ function altitudeChartYAxis(rawMin: number, rawMax: number): ChartYAxis {
   return { min, max, step, gridLines };
 }
 
+export type TelemetryChartDrawStyle = "default" | "hud";
+
 export function drawTelemetryChart(
   canvas: HTMLCanvasElement,
   points: VideoTelemetryPoint[],
   current: VideoTelemetryPoint | null,
   key: "altitude" | "speed",
+  style: TelemetryChartDrawStyle = "default",
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -669,15 +671,23 @@ export function drawTelemetryChart(
   const rawMax = Math.max(...valid);
   const yAxis = key === "speed" ? speedChartYAxis(rawMin, rawMax) : altitudeChartYAxis(rawMin, rawMax);
   const { min, max, step, gridLines } = yAxis;
-  const leftPad = Math.max(40, Math.min(52, width * 0.16));
-  const rightPad = 10;
-  const topPad = 8;
-  const bottomPad = 22;
-  const chartW = width - leftPad - rightPad;
-  const chartH = height - topPad - bottomPad;
+  const scale = Math.min(width, height);
+  const fontMul = style === "hud" ? 1.2 : 1;
+  const yFont = Math.max(7, Math.round(scale * 0.075 * fontMul));
+  const xFont = Math.max(6, Math.round(yFont * 0.9));
+
+  // Padding proporcional (evita margem esquerda fixa ~40px em gráficos pequenos)
+  const sampleLabels = Array.from({ length: gridLines + 1 }, (_, i) => String(min + i * step));
+  ctx.font = `${yFont}px system-ui, sans-serif`;
+  const maxLabelW = Math.max(...sampleLabels.map((l) => ctx.measureText(l).width), yFont * 2);
+  const leftPad = Math.min(Math.round(width * 0.28), Math.max(14, Math.round(maxLabelW + yFont * 0.5)));
+  const rightPad = Math.max(4, Math.round(yFont * 0.4));
+  const topPad = Math.max(2, Math.round(yFont * 0.45));
+  const bottomPad = Math.max(8, Math.round(xFont * 1.6));
+  const chartW = Math.max(1, width - leftPad - rightPad);
+  const chartH = Math.max(1, height - topPad - bottomPad);
 
   const xLabels = 4;
-  const yFont = Math.max(11, Math.min(15, width / 32));
   ctx.strokeStyle = "rgba(148,163,184,.22)";
   ctx.lineWidth = 1;
   ctx.fillStyle = "rgba(203,213,225,.75)";
@@ -692,12 +702,12 @@ export function drawTelemetryChart(
     ctx.moveTo(leftPad, y);
     ctx.lineTo(width - rightPad, y);
     ctx.stroke();
-    ctx.fillText(String(value), leftPad - 6, y);
+    ctx.fillText(String(value), leftPad - Math.round(yFont * 0.35), y);
   }
 
   const durationMs = Math.max(1, (points[points.length - 1]?.timeMs ?? 0) - (points[0]?.timeMs ?? 0));
   ctx.fillStyle = "rgba(203,213,225,.9)";
-  ctx.font = `${Math.max(10, yFont - 2)}px system-ui, sans-serif`;
+  ctx.font = `${xFont}px system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   for (let i = 0; i <= xLabels; i++) {
@@ -710,8 +720,21 @@ export function drawTelemetryChart(
     ctx.fillText(label, x, height - bottomPad + 4);
   }
 
-  ctx.strokeStyle = "rgba(125,211,252,.92)";
-  ctx.lineWidth = 2.5;
+  const lineW = Math.max(1.5, scale * 0.004 * (style === "hud" ? 1.1 : 1));
+  ctx.lineWidth = lineW;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  if (style === "hud") {
+    const grad = ctx.createLinearGradient(leftPad, topPad, leftPad + chartW, topPad);
+    grad.addColorStop(0, "rgba(186, 230, 253, 0.98)");
+    grad.addColorStop(0.45, "rgba(56, 189, 248, 0.96)");
+    grad.addColorStop(1, "rgba(37, 99, 235, 0.94)");
+    ctx.strokeStyle = grad;
+  } else {
+    ctx.strokeStyle = "rgba(125,211,252,.92)";
+  }
+
   ctx.beginPath();
   values.forEach((value, index) => {
     if (value == null) return;
@@ -731,7 +754,7 @@ export function drawTelemetryChart(
       const y = topPad + chartH - ((normalized - min) / (max - min || 1)) * chartH;
       ctx.fillStyle = "#f8fafc";
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.arc(x, y, Math.max(2.5, scale * 0.006), 0, Math.PI * 2);
       ctx.fill();
     }
   }

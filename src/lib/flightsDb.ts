@@ -699,6 +699,79 @@ export async function listAllSavedFlights(
   return { data: rows, error: null };
 }
 
+/** Voos vinculados a trilhas de formação — usado pela Jornada em vez de carregar todo o histórico. */
+export async function listStudentTrainingFlights(
+  viewer: { userId: string; role: UserRole },
+  trackIds: string[],
+  options: { pageSize?: number; maxItems?: number } = {},
+): Promise<{ data: SavedFlightListItem[] | null; error: Error | null }> {
+  const ids = Array.from(new Set(trackIds.map((id) => id.trim()).filter(Boolean)));
+  if (ids.length === 0) return { data: [], error: null };
+
+  const pageSize = Math.min(100, Math.max(1, Math.round(options.pageSize ?? 100)));
+  const maxItems = Math.max(pageSize, Math.round(options.maxItems ?? 500));
+  const rows: SavedFlightListItem[] = [];
+  let cursor: string | null = null;
+
+  const roleQueries: string[] = [];
+  if (viewer.role === "aluno") {
+    roleQueries.push(Query.equal("student_user_id", [viewer.userId]));
+  } else if (viewer.role === "instrutor") {
+    roleQueries.push(Query.equal("instructor_user_id", [viewer.userId]));
+  }
+
+  const toPage = (res: { documents: Array<{ [key: string]: unknown; $id: string; $createdAt: string }> }) =>
+    res.documents.map(toSavedFlightListItem);
+
+  if (!isAppwriteConfigured || !databases) {
+    return { data: null, error: new Error("Appwrite nao configurado") };
+  }
+
+  while (rows.length < maxItems) {
+    const queries = [
+      Query.select(FLIGHT_LIST_SELECT_WITH_SCHEDULE),
+      Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+      ...roleQueries,
+      Query.equal("training_track_id", ids),
+      Query.orderDesc("flight_date"),
+      Query.orderDesc("start_time"),
+      Query.limit(pageSize),
+    ];
+    if (cursor) queries.push(Query.cursorAfter(cursor));
+
+    try {
+      const res = await databases.listDocuments(DB_ID, COL_ID, queries);
+      rows.push(...toPage(res));
+      if (res.documents.length < pageSize) break;
+      cursor = res.documents[res.documents.length - 1]?.$id ?? null;
+      if (!cursor) break;
+    } catch (e) {
+      if (!isSchemaAttributeError(e)) return { data: null, error: e as Error };
+      try {
+        const legacyQueries = [
+          Query.select(FLIGHT_LIST_SELECT),
+          Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+          ...roleQueries,
+          Query.equal("training_track_id", ids),
+          Query.orderDesc("flight_date"),
+          Query.orderDesc("start_time"),
+          Query.limit(pageSize),
+        ];
+        if (cursor) legacyQueries.push(Query.cursorAfter(cursor));
+        const res = await databases.listDocuments(DB_ID, COL_ID, legacyQueries);
+        rows.push(...toPage(res));
+        if (res.documents.length < pageSize) break;
+        cursor = res.documents[res.documents.length - 1]?.$id ?? null;
+        if (!cursor) break;
+      } catch (fallbackError) {
+        return { data: null, error: fallbackError as Error };
+      }
+    }
+  }
+
+  return { data: rows, error: null };
+}
+
 export async function listStudentFlightHistory(params: {
   actorUserId: string;
   actorRole: UserRole;

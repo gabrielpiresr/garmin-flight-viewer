@@ -100,6 +100,8 @@ export interface CompositeParams {
   orientation: "horizontal" | "vertical";
   /** 0–100: horizontal crop anchor for vertical export (50 = center). */
   verticalCropPct?: number;
+  /** 0, 90, 180 ou 270 — aplicado no ffmpeg após o composite. */
+  videoRotationDeg?: number;
   jobId: string;
 }
 
