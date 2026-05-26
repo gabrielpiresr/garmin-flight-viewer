@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 
-const HELPER_RELEASE_URL = "https://github.com/gabrielpiresr/garmin-flight-viewer/releases/latest";
+const HELPER_RELEASE_URL = "https://github.com/gabrielpiresr/garmin-flight-viewer/releases/tag/helper";
 const HELPER_DOWNLOAD_URL =
-  "/downloads/Flight%20Video%20Helper%20Setup%201.0.0.exe";
+  "https://github.com/gabrielpiresr/garmin-flight-viewer/releases/download/helper/Flight.Video.Helper.Setup.1.0.0.exe";
 const HELPER_HEALTH_URL = "http://127.0.0.1:7842/health";
 
 type HelperTestStatus = "idle" | "checking" | "online" | "offline";
