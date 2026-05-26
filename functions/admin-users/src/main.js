@@ -3944,19 +3944,57 @@ async function createFlightPublicShare(actorUserId, payload = {}) {
   return { publicUrl, token };
 }
 
-async function getPublicFlightReviewShare(payload = {}) {
-  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
-  const token = cleanString(payload.token);
-  if (!token) throw Object.assign(new Error("Link publico invalido."), { status: 400 });
+async function findPublicShareFlight(token, select = null) {
   const hash = sha256Hex(token);
-  const res = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+  const queries = [
     sdk.Query.equal("public_share_token_hash", [hash]),
     sdk.Query.limit(1),
-  ]);
+  ];
+  if (select) queries.push(...selectQuery(select));
+  const res = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, queries);
   const flightDoc = res.documents[0];
   if (!flightDoc || flightDoc.public_share_enabled !== true) {
     throw Object.assign(new Error("Link publico nao encontrado ou desativado."), { status: 404 });
   }
+  return flightDoc;
+}
+
+async function getPublicFlightReviewIntro(payload = {}) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const token = cleanString(payload.token);
+  if (!token) throw Object.assign(new Error("Link publico invalido."), { status: 400 });
+
+  const flightDoc = await findPublicShareFlight(token, FLIGHT_SELECT);
+  const studentUserId = cleanString(flightDoc.student_user_id || flightDoc.user_id);
+  const [studentProfile, studentUser, brandLoaded] = await Promise.all([
+    studentUserId ? getProfileByUserId(studentUserId).catch(() => null) : Promise.resolve(null),
+    studentUserId ? users.get({ userId: studentUserId }).catch(() => null) : Promise.resolve(null),
+    loadEmailBrandSettings().catch(() => ({ settings: defaultEmailSettings(), doc: null })),
+  ]);
+
+  const missionName = flightDoc.name || flightDoc.source_filename || "Flight Review";
+  const studentName =
+    cleanString(studentProfile?.full_name) ||
+    cleanString(studentUser?.name) ||
+    cleanString(studentProfile?.email) ||
+    "O aluno";
+
+  return {
+    flightId: flightDoc.$id,
+    missionName,
+    studentName,
+    flightDate: flightDoc.flight_date || "",
+    startTime: flightDoc.start_time || "",
+    aircraftIdent: flightDoc.aircraft_ident || "",
+    brandSettings: publicEmailBrandSettings(brandLoaded.settings, brandLoaded.doc?.$updatedAt || null),
+  };
+}
+
+async function getPublicFlightReviewShare(payload = {}) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const token = cleanString(payload.token);
+  if (!token) throw Object.assign(new Error("Link publico invalido."), { status: 400 });
+  const flightDoc = await findPublicShareFlight(token, FLIGHT_DETAIL_SELECT);
 
   const flightId = flightDoc.$id;
   const [videoDocs, maneuverDocs, reviewDocs, brandLoaded] = await Promise.all([
@@ -5873,6 +5911,10 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "getPublicFlightReviewShare") {
+      if (payload.summaryOnly === true) {
+        const intro = await getPublicFlightReviewIntro(payload);
+        return jsonResponse(res, 200, { intro });
+      }
       const share = await getPublicFlightReviewShare(payload);
       return jsonResponse(res, 200, { share });
     }

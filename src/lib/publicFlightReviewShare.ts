@@ -14,8 +14,19 @@ export type PublicFlightReviewShare = {
   brandSettings: EmailBrandSettings | null;
 };
 
+export type PublicFlightReviewIntro = {
+  flightId: string;
+  missionName: string;
+  studentName: string;
+  flightDate: string;
+  startTime: string;
+  aircraftIdent: string;
+  brandSettings: EmailBrandSettings | null;
+};
+
 type FunctionResponse = {
   share?: PublicFlightReviewShare & { publicUrl?: string; token?: string };
+  intro?: PublicFlightReviewIntro;
   message?: string;
 };
 
@@ -52,4 +63,10 @@ export async function getPublicFlightReviewShare(token: string): Promise<PublicF
   const response = await executeShareAction({ action: "getPublicFlightReviewShare", token });
   if (!response.share?.flight) throw new Error(response.message || "Flight Review público não encontrado.");
   return response.share;
+}
+
+export async function getPublicFlightReviewIntro(token: string): Promise<PublicFlightReviewIntro> {
+  const response = await executeShareAction({ action: "getPublicFlightReviewShare", token, summaryOnly: true });
+  if (!response.intro?.flightId) throw new Error(response.message || "Flight Review público não encontrado.");
+  return response.intro;
 }

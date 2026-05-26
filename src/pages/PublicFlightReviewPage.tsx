@@ -5,7 +5,12 @@ import { TelemetriaTab } from "../components/TelemetriaTab";
 import { Tabs } from "../components/ui/Tabs";
 import { VideosTab } from "../components/VideosTab";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
-import { getPublicFlightReviewShare, type PublicFlightReviewShare } from "../lib/publicFlightReviewShare";
+import {
+  getPublicFlightReviewIntro,
+  getPublicFlightReviewShare,
+  type PublicFlightReviewIntro,
+  type PublicFlightReviewShare,
+} from "../lib/publicFlightReviewShare";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
 
 type PublicTab = "resumo" | "telemetria" | "flight-review" | "videos";
@@ -65,27 +70,84 @@ function LoadingState() {
   );
 }
 
+function formatFlightDate(value: string | null | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "este voo";
+  const date = new Date(`${raw.slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+function ContentLoadingState({ intro }: { intro: PublicFlightReviewIntro }) {
+  const brand = intro.brandSettings;
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <header className="border-b border-slate-800 bg-slate-950/95">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-300/80">
+              {brand?.schoolName?.trim() || "Flight Review"}
+            </p>
+            <h1 className="mt-1 break-words text-2xl font-black tracking-tight text-white sm:text-3xl">
+              {intro.missionName || "Flight Review"}
+            </h1>
+          </div>
+          {brand?.logoDataUrl || brand?.logoUrl ? (
+            <img
+              src={brand.logoDataUrl || brand.logoUrl}
+              alt={brand.schoolName || "Escola"}
+              className="h-12 w-auto max-w-40 object-contain"
+            />
+          ) : null}
+        </div>
+      </header>
+      <main className="mx-auto flex min-h-[55vh] max-w-7xl items-center justify-center px-4 py-10">
+        <div className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-5 py-4 text-sm text-slate-300">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          Carregando o Flight Review...
+        </div>
+      </main>
+    </div>
+  );
+}
+
 export function PublicFlightReviewPage() {
+  const [intro, setIntro] = useState<PublicFlightReviewIntro | null>(null);
   const [share, setShare] = useState<PublicFlightReviewShare | null>(null);
   const [activeTab, setActiveTab] = useState<PublicTab>("resumo");
   const [entered, setEntered] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loadingIntro, setLoadingIntro] = useState(true);
+  const [loadingShare, setLoadingShare] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const token = tokenFromPath();
-    setLoading(true);
+    setLoadingIntro(true);
+    setLoadingShare(false);
     setError(null);
-    void getPublicFlightReviewShare(token)
+    void getPublicFlightReviewIntro(token)
       .then((data) => {
-        if (!cancelled) setShare(data);
+        if (cancelled) return;
+        setIntro(data);
+        setLoadingIntro(false);
+        setLoadingShare(true);
+        void getPublicFlightReviewShare(token)
+          .then((shareData) => {
+            if (!cancelled) setShare(shareData);
+          })
+          .catch((err) => {
+            if (!cancelled) setError((err as Error).message || "Link público não encontrado.");
+          })
+          .finally(() => {
+            if (!cancelled) setLoadingShare(false);
+          });
       })
       .catch((err) => {
         if (!cancelled) setError((err as Error).message || "Link público não encontrado.");
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadingIntro(false);
       });
     return () => {
       cancelled = true;
@@ -93,7 +155,7 @@ export function PublicFlightReviewPage() {
   }, []);
 
   const parsedTelemetry = useMemo<ParseResult | null>(() => {
-    if (!share?.flight.csv_text) return null;
+    if (activeTab !== "telemetria" || !share?.flight.csv_text) return null;
     const decoded = decodeFlightRecord(share.flight.csv_text);
     const telemetryText = decoded.meta ? decoded.telemetryCsv : share.flight.csv_text;
     if (!telemetryText.trim()) return null;
@@ -102,11 +164,11 @@ export function PublicFlightReviewPage() {
     } catch {
       return null;
     }
-  }, [share]);
+  }, [activeTab, share]);
 
-  if (loading) return <LoadingState />;
+  if (loadingIntro) return <LoadingState />;
 
-  if (error || !share) {
+  if (error && !intro && !share) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
         <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center">
@@ -118,21 +180,10 @@ export function PublicFlightReviewPage() {
     );
   }
 
-  const brand = share.brandSettings;
-  const title = share.missionName || "Flight Review";
-  const decoded = decodeFlightRecord(share.flight.csv_text);
-  const studentName =
-    decoded.meta?.header.studentName?.trim() ||
-    decoded.meta?.header.studentLabel?.trim() ||
-    share.flight.student_user_id ||
-    "O aluno";
-  const flightDateLabel = (() => {
-    const value = share.flight.flight_date || decoded.meta?.header.date || "";
-    if (!value) return "este voo";
-    const date = new Date(`${value.slice(0, 10)}T12:00:00`);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
-  })();
+  const brand = share?.brandSettings || intro?.brandSettings || null;
+  const title = share?.missionName || intro?.missionName || "Flight Review";
+  const studentName = intro?.studentName || "O aluno";
+  const flightDateLabel = formatFlightDate(intro?.flightDate || share?.flight.flight_date);
 
   if (!entered) {
     return (
@@ -171,6 +222,21 @@ export function PublicFlightReviewPage() {
         </div>
       </div>
     );
+  }
+
+  if (!share) {
+    if (error && !loadingShare) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center">
+            <p className="text-sm font-semibold uppercase tracking-widest text-amber-300">Flight Review</p>
+            <h1 className="mt-2 text-2xl font-black">Link indisponível</h1>
+            <p className="mt-2 text-sm text-slate-400">{error || "Este link público não está mais ativo."}</p>
+          </div>
+        </div>
+      );
+    }
+    return <ContentLoadingState intro={intro ?? { flightId: "", missionName: title, studentName, flightDate: "", startTime: "", aircraftIdent: "", brandSettings: brand }} />;
   }
 
   return (
