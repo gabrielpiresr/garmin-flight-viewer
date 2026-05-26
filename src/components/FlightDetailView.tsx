@@ -195,9 +195,9 @@ export function FlightDetailView({
     try {
       const url = await createFlightPublicShare(flightId);
       await navigator.clipboard?.writeText(url);
-      setPublicShareStatus("Link publico copiado.");
+      setPublicShareStatus("Link público copiado.");
     } catch (err) {
-      setPublicShareStatus((err as Error).message || "Nao foi possivel gerar o link publico.");
+      setPublicShareStatus((err as Error).message || "Não foi possível gerar o link público.");
     } finally {
       setPublicShareBusy(false);
     }
@@ -241,7 +241,7 @@ export function FlightDetailView({
                 <path d="M7.05 9.293a.75.75 0 011.06 1.061l-.76.76a2.25 2.25 0 003.182 3.182l2.121-2.121a2.25 2.25 0 00-3.182-3.182.75.75 0 11-1.06-1.061 3.75 3.75 0 015.303 5.303l-2.121 2.121a3.75 3.75 0 01-5.303-5.303l.76-.76z" />
                 <path d="M12.95 10.707a.75.75 0 01-1.06-1.061l.76-.76a2.25 2.25 0 10-3.182-3.182L7.347 7.825a2.25 2.25 0 003.182 3.182.75.75 0 111.06 1.061 3.75 3.75 0 01-5.303-5.303l2.121-2.121a3.75 3.75 0 015.303 5.303l-.76.76z" />
               </svg>
-              {publicShareBusy ? "Gerando..." : "Link publico"}
+              {publicShareBusy ? "Gerando..." : "Link público"}
             </button>
             {publicShareStatus ? <span className="text-xs text-slate-400">{publicShareStatus}</span> : null}
           </>

@@ -19,7 +19,7 @@ const REVIEW_TABS: Array<{ id: JourneyFlightReviewTab; label: string; icon?: Rea
   { id: "resumo", label: "Inicial" },
   { id: "telemetria", label: "Telemetria" },
   { id: "flight-review", label: "Flight Review" },
-  { id: "videos", label: "Videos" },
+  { id: "videos", label: "Vídeos" },
 ];
 
 function formatDate(value: string | null | undefined): string {
@@ -61,7 +61,7 @@ export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFligh
         <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Resumo do voo</p>
         <h2 className="mt-1 text-2xl font-black text-slate-100">{missionName}</h2>
         <p className="mt-2 text-sm text-slate-500">
-          Informacoes principais da ficha vinculada a esta missao da trilha.
+          Informações principais da ficha vinculada a esta missão da trilha.
         </p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <InfoTile label="Data" value={formatDate(flight.flight_date ?? meta?.header.date)} />
@@ -77,7 +77,7 @@ export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFligh
 
       <section className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4">
         <div className="grid gap-3 md:grid-cols-3">
-          <InfoTile label="Telemetria" value={flight.telemetry_present ? "Disponivel" : "Nao disponivel"} />
+          <InfoTile label="Telemetria" value={flight.telemetry_present ? "Disponível" : "Não disponível"} />
           <InfoTile label="Status do voo" value={flight.flight_status} />
           <InfoTile label="Assinatura INVA" value={flight.instructor_signed ? "Assinada" : "Pendente"} />
         </div>
@@ -107,7 +107,7 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
     void getSavedFlight(flightId).then((result) => {
       if (cancelled) return;
       if (result.error || !result.data) {
-        setError(result.error?.message ?? "Voo nao encontrado.");
+        setError(result.error?.message ?? "Voo não encontrado.");
         setFlight(null);
       } else {
         setFlight(result.data);
@@ -125,9 +125,9 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
     try {
       const url = await createFlightPublicShare(flightId);
       await navigator.clipboard?.writeText(url);
-      setShareStatus("Link publico copiado.");
+      setShareStatus("Link público copiado.");
     } catch (err) {
-      setShareStatus((err as Error).message || "Nao foi possivel gerar o link publico.");
+      setShareStatus((err as Error).message || "Não foi possível gerar o link público.");
     } finally {
       setShareBusy(false);
     }
@@ -151,7 +151,7 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
             disabled={shareBusy}
             className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:cursor-wait disabled:opacity-60"
           >
-            {shareBusy ? "Gerando..." : "Copiar link publico"}
+            {shareBusy ? "Gerando..." : "Copiar link público"}
           </button>
         </div>
       </div>
