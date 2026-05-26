@@ -15,6 +15,9 @@ const OfflineLogbookPage = lazy(() =>
 const VideoHelperSetupPage = lazy(() =>
   import("./pages/VideoHelperSetupPage").then((module) => ({ default: module.VideoHelperSetupPage })),
 );
+const PublicFlightReviewPage = lazy(() =>
+  import("./pages/PublicFlightReviewPage").then((module) => ({ default: module.PublicFlightReviewPage })),
+);
 
 function AppLoading() {
   return (
@@ -28,6 +31,7 @@ export default function App() {
   const { user, loading } = useAuth();
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
   const isVideoHelperRoute = window.location.pathname === "/video-helper";
+  const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -46,6 +50,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <VideoHelperSetupPage />
+      </Suspense>
+    );
+  }
+
+  if (isPublicFlightReviewRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <PublicFlightReviewPage />
       </Suspense>
     );
   }

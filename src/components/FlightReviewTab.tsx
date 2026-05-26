@@ -35,7 +35,7 @@ import { parseGarminCsv } from "../lib/parseGarminCsv";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { listManeuverTemplates, listManeuverTemplateSteps, getManeuverTemplate } from "../lib/maneuverTemplatesDb";
 import { DEFAULT_SCHOOL_ID } from "../lib/appwrite";
-import type { SavedFlightListItem } from "../lib/flightsDb";
+import type { SavedFlightFull, SavedFlightListItem } from "../lib/flightsDb";
 import type {
   AnalyzedParameter,
   AnalyzedStep,
@@ -801,8 +801,11 @@ function ManeuverOverview({
     const baseMs = parsedResult.chartTimeBaseMs;
 
     // Use leg segments when traffic pattern available
-    const segs = (legRanges && baseMs)
-      ? legRanges.map((l) => {
+    let segs: { pts: [number, number][]; color: string; name: string }[];
+    if (legRanges && baseMs) {
+      const lastLegEnd = legRanges.length > 0 ? legRanges[legRanges.length - 1]!.endSec : -Infinity;
+      segs = [
+        ...legRanges.map((l) => {
           const sMs = maneuverStartMs + l.startSec * 1000;
           const eMs = maneuverStartMs + l.endSec * 1000;
           return {
@@ -810,16 +813,35 @@ function ManeuverOverview({
             color: l.color,
             name: l.label,
           };
-        })
-      : review.analysis.steps.map((step, i) => {
-          const sMs = new Date(step.start_time).getTime();
-          const eMs = new Date(step.end_time).getTime();
-          return {
-            pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
-            color: STEP_COLORS[i % STEP_COLORS.length]!,
-            name: step.name,
-          };
-        });
+        }),
+        // Etapas após a última perna (ex: rolagem após pouso)
+        ...review.analysis.steps
+          .map((step, i) => ({ step, i }))
+          .filter(({ step }) => {
+            const endSec = Math.round((new Date(step.end_time).getTime() - maneuverStartMs) / 1000);
+            return endSec > lastLegEnd;
+          })
+          .map(({ step, i }) => {
+            const sMs = new Date(step.start_time).getTime();
+            const eMs = new Date(step.end_time).getTime();
+            return {
+              pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
+              color: STEP_COLORS[i % STEP_COLORS.length]!,
+              name: step.name,
+            };
+          }),
+      ];
+    } else {
+      segs = review.analysis.steps.map((step, i) => {
+        const sMs = new Date(step.start_time).getTime();
+        const eMs = new Date(step.end_time).getTime();
+        return {
+          pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
+          color: STEP_COLORS[i % STEP_COLORS.length]!,
+          name: step.name,
+        };
+      });
+    }
 
     return { allMapPos: allPos, stepSegments: segs };
   }, [parsedResult.points, parsedResult.chartTimeBaseMs, review.analysis.steps, legRanges, maneuverStartMs, maneuverEndMs]);
@@ -828,15 +850,18 @@ function ManeuverOverview({
   const [hoverT, setHoverT] = useState<number | null>(null);
   const altDomain = useMemo(() => computeYDomain(altPoints, null, null), [altPoints]);
   const iasDomain = useMemo(() => computeYDomain(iasPoints, null, null), [iasPoints]);
-  const chartRanges = useMemo(
-    () => [
-      // Se há pernas detectadas, usa as cores das pernas; senão usa as cores das etapas
-      ...(legRanges
-        ? legRanges.map((l) => ({ x1: l.startSec, x2: l.endSec, color: l.color }))
-        : stepRanges.map((s) => ({ x1: s.startSec, x2: s.endSec, color: s.color }))),
-    ],
-    [stepRanges, legRanges],
-  );
+  const chartRanges = useMemo(() => {
+    if (legRanges && legRanges.length > 0) {
+      // Pernas do circuito + etapas após a última perna (ex: rolagem após pouso)
+      const legPart = legRanges.map((l) => ({ x1: l.startSec, x2: l.endSec, color: l.color }));
+      const lastLegEnd = legRanges[legRanges.length - 1]!.endSec;
+      const postLeg = stepRanges
+        .filter((s) => s.endSec > lastLegEnd)
+        .map((s) => ({ x1: s.startSec, x2: s.endSec, color: s.color }));
+      return [...legPart, ...postLeg];
+    }
+    return stepRanges.map((s) => ({ x1: s.startSec, x2: s.endSec, color: s.color }));
+  }, [stepRanges, legRanges]);
   void syncId;
 
   const hasMap = allMapPos.length >= 2;
@@ -861,6 +886,16 @@ function ManeuverOverview({
                 <span className="text-xs" style={{ color: l.color }}>{l.label}</span>
               </div>
             ))}
+            {/* Etapas após a última perna (ex: rolagem pós-pouso) */}
+            {stepRanges
+              .filter((s) => s.endSec > legRanges[legRanges.length - 1]!.endSec)
+              .map((s, i) => (
+                <div key={`post-${i}`} className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
+                  <span className="text-xs text-slate-400">{s.name}</span>
+                </div>
+              ))
+            }
           </div>
         ) : stepRanges.length > 0 ? (
           <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -1111,6 +1146,7 @@ function ManeuverCard({
   parsedResult,
   onDeleted,
   onAnalyzed,
+  onEdit,
 }: {
   maneuver: FlightManeuver;
   template: ManeuverTemplate | undefined;
@@ -1120,6 +1156,7 @@ function ManeuverCard({
   parsedResult: ParseResult | null;
   onDeleted: (id: string) => void;
   onAnalyzed: (review: FlightManeuverReview, updatedManeuver: FlightManeuver) => void;
+  onEdit?: () => void;
 }) {
   const { showToast } = useToast();
   const [analyzing, setAnalyzing] = useState(false);
@@ -1244,6 +1281,15 @@ function ManeuverCard({
               >
                 {analyzing ? "Analisando..." : review ? "Reanalisar" : "Analisar"}
               </button>
+              {onEdit && (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+                >
+                  Editar
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void handleDelete()}
@@ -1343,6 +1389,8 @@ function AddManeuverModal({
   templates,
   onClose,
   onAdded,
+  initialManeuver,
+  onEdited,
 }: {
   flightId: string;
   flight: SavedFlightListItem;
@@ -1350,10 +1398,12 @@ function AddManeuverModal({
   templates: ManeuverTemplate[];
   onClose: () => void;
   onAdded: (maneuver: FlightManeuver) => void;
+  initialManeuver?: FlightManeuver;
+  onEdited?: (maneuver: FlightManeuver) => void;
 }) {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const [templateId, setTemplateId] = useState("");
+  const [templateId, setTemplateId] = useState(initialManeuver?.template_id ?? "");
   const [saving, setSaving] = useState(false);
 
   // Imperative ref for the FlightMap cursor — no React state needed
@@ -1399,6 +1449,18 @@ function AddManeuverModal({
 
   // Reset zoom when CSV changes
   useEffect(() => { setChartDomain(null); }, [csvText]);
+
+  // Pre-fill start/end from existing maneuver when editing
+  useEffect(() => {
+    if (!initialManeuver || !telemetry) return;
+    const s = new Date(initialManeuver.start_time).getTime() - telemetry.baseMs;
+    const e = new Date(initialManeuver.end_time).getTime() - telemetry.baseMs;
+    setStartX(Math.max(0, Math.min(s, telemetry.totalMs)));
+    setEndX(Math.max(0, Math.min(e, telemetry.totalMs)));
+    setPhase("start");
+  // Only run once when telemetry first becomes available in edit mode
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [telemetry, initialManeuver?.id]);
 
   // Wheel zoom for modal charts (mirrors FlightCharts.tsx anchor-based zoom)
   useEffect(() => {
@@ -1519,19 +1581,33 @@ function AddManeuverModal({
     }
     setSaving(true);
     try {
-      const created = await createFlightManeuver({
-        flight_id: flightId,
-        template_id: templateId,
-        instructor_id: user?.id ?? "",
-        student_id: flight.student_user_id,
-        aircraft_ident: flight.aircraft_ident,
-        start_time: new Date(telemetry.baseMs + startX).toISOString(),
-        end_time: new Date(telemetry.baseMs + endX).toISOString(),
-        status: "draft",
-        created_by: user?.id ?? "",
-      });
-      onAdded(created);
-      showToast({ variant: "success", message: "Manobra adicionada." });
+      const startIso = new Date(telemetry.baseMs + startX).toISOString();
+      const endIso = new Date(telemetry.baseMs + endX).toISOString();
+      if (initialManeuver && onEdited) {
+        // Edit mode: update existing maneuver
+        const updated = await updateFlightManeuver(initialManeuver.id, {
+          template_id: templateId,
+          start_time: startIso,
+          end_time: endIso,
+        });
+        onEdited(updated);
+        showToast({ variant: "success", message: "Manobra atualizada." });
+      } else {
+        // Create mode
+        const created = await createFlightManeuver({
+          flight_id: flightId,
+          template_id: templateId,
+          instructor_id: user?.id ?? "",
+          student_id: flight.student_user_id,
+          aircraft_ident: flight.aircraft_ident,
+          start_time: startIso,
+          end_time: endIso,
+          status: "draft",
+          created_by: user?.id ?? "",
+        });
+        onAdded(created);
+        showToast({ variant: "success", message: "Manobra adicionada." });
+      }
       onClose();
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
@@ -1548,7 +1624,9 @@ function AddManeuverModal({
       <div className="my-4 w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         {/* Header */}
         <div className="mb-5 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-100">Adicionar manobra</h3>
+          <h3 className="text-base font-semibold text-slate-100">
+            {initialManeuver ? "Editar janela de horário" : "Adicionar manobra"}
+          </h3>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-200">
             ✕
           </button>
@@ -1770,7 +1848,7 @@ function AddManeuverModal({
             disabled={saving || activeTemplates.length === 0 || startX === null || endX === null}
             className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
           >
-            {saving ? "Salvando..." : "Adicionar"}
+            {saving ? "Salvando..." : initialManeuver ? "Salvar alterações" : "Adicionar"}
           </button>
         </div>
       </div>
@@ -1780,10 +1858,21 @@ function AddManeuverModal({
 
 // ---------- Main component ----------
 
-export function FlightReviewTab({ flightId }: { flightId: string }) {
+type PublicFlightReviewData = {
+  flight: SavedFlightFull;
+  maneuvers: FlightManeuver[];
+  maneuverReviews: FlightManeuverReview[];
+  maneuverTemplates: ManeuverTemplate[];
+};
+
+export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
+  flightId: string;
+  publicData?: PublicFlightReviewData;
+  publicMode?: boolean;
+}) {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const isInstructor = user?.role === "instrutor" || user?.role === "admin";
+  const isInstructor = !publicMode && (user?.role === "instrutor" || user?.role === "admin");
 
   const [loading, setLoading] = useState(true);
   const [flight, setFlight] = useState<SavedFlightListItem | null>(null);
@@ -1793,6 +1882,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
   const [reviewMap, setReviewMap] = useState<Record<string, FlightManeuverReview>>({});
   const [templateMap, setTemplateMap] = useState<Record<string, ManeuverTemplate>>({});
   const [addOpen, setAddOpen] = useState(false);
+  const [editManeuver, setEditManeuver] = useState<FlightManeuver | null>(null);
   const [autoAdding, setAutoAdding] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fsManId, setFsManId] = useState<string | null>(null);
@@ -1804,6 +1894,20 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      if (publicData) {
+        setFlight(publicData.flight);
+        const { telemetryCsv } = decodeFlightRecord(publicData.flight.csv_text);
+        setFlightCsvText(telemetryCsv || null);
+        const tmplMap: Record<string, ManeuverTemplate> = {};
+        for (const t of publicData.maneuverTemplates) tmplMap[t.id] = t;
+        const rvMap: Record<string, FlightManeuverReview> = {};
+        for (const r of publicData.maneuverReviews) rvMap[r.flight_maneuver_id] = r;
+        setTemplates(publicData.maneuverTemplates);
+        setManeuvers(publicData.maneuvers);
+        setTemplateMap(tmplMap);
+        setReviewMap(rvMap);
+        return;
+      }
       const { data: flightData } = await getSavedFlight(flightId);
       if (!flightData) return;
       setFlight(flightData);
@@ -1842,7 +1946,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [flightId, showToast]);
+  }, [flightId, publicData, showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -1868,6 +1972,13 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
   const handleAnalyzed = (review: FlightManeuverReview, updatedManeuver: FlightManeuver) => {
     setReviewMap((prev) => ({ ...prev, [updatedManeuver.id]: review }));
     setManeuvers((prev) => prev.map((m) => (m.id === updatedManeuver.id ? updatedManeuver : m)));
+  };
+
+  const handleEdited = (updated: FlightManeuver) => {
+    setManeuvers((prev) =>
+      prev.map((m) => (m.id === updated.id ? updated : m)).sort((a, b) => a.start_time.localeCompare(b.start_time)),
+    );
+    setEditManeuver(null);
   };
 
   // ---- Fullscreen derived state ----
@@ -1935,6 +2046,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
     if (consecutive.length === 0) return null;
     return consecutive.map((l) => ({
       color: LEG_COLORS[l.type] ?? "#94a3b8",
+      label: LEG_LABELS[l.type] ?? l.type,
       x1: Math.round((baseMs + l.startX - manStartMs) / 1000),
       x2: Math.round((baseMs + l.endX - manStartMs) / 1000),
     }));
@@ -1944,15 +2056,37 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
     if (!fsLiveReview || !fsManeuver) return [];
     const manStartMs = new Date(fsManeuver.start_time).getTime();
     return fsLiveReview.analysis.steps.map((step, i) => ({
+      name: step.name,
       color: STEP_COLORS[i % STEP_COLORS.length]!,
       x1: Math.round((new Date(step.start_time).getTime() - manStartMs) / 1000),
       x2: Math.round((new Date(step.end_time).getTime() - manStartMs) / 1000),
     }));
   }, [fsLiveReview, fsManeuver]);
 
-  const fsManChartRanges = useMemo<ReviewChartRange[]>(() =>
-    (fsManLegRanges ?? fsManStepRanges).map((r) => ({ x1: r.x1, x2: r.x2, color: r.color })),
-  [fsManLegRanges, fsManStepRanges]);
+  const fsManChartRanges = useMemo<ReviewChartRange[]>(() => {
+    if (fsManLegRanges && fsManLegRanges.length > 0) {
+      const legPart = fsManLegRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+      const lastLegX2 = fsManLegRanges[fsManLegRanges.length - 1]!.x2;
+      const postLeg = fsManStepRanges
+        .filter((r) => r.x2 > lastLegX2)
+        .map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+      return [...legPart, ...postLeg];
+    }
+    return fsManStepRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+  }, [fsManLegRanges, fsManStepRanges]);
+
+  // Segmentos coloridos para o FlightMap fullscreen (etapas quando não há circuito de tráfego)
+  const fsMapColoredSegments = useMemo(() => {
+    if (!fsManeuver || !fsLiveReview || fsManStepRanges.length === 0) return null;
+    // Quando há circuito de tráfego, o FlightMap já usa legSegments via trafficPattern
+    if (fsManLegRanges && fsManLegRanges.length > 0) return null;
+    const manStartMs = new Date(fsManeuver.start_time).getTime();
+    return fsManStepRanges.map((r) => ({
+      color: r.color,
+      startMs: manStartMs + r.x1 * 1000,
+      endMs: manStartMs + r.x2 * 1000,
+    }));
+  }, [fsManeuver, fsLiveReview, fsManLegRanges, fsManStepRanges]);
 
   // Linha vertical de touchdown para os gráficos da manobra completa
   const fsManTdLines = useMemo<ReviewChartVerticalLine[]>(() => {
@@ -1997,9 +2131,9 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
   // Altura ideal de cada chart para maximizar espaço vertical
   const fsChartH = useMemo(() => {
     const rows = Math.max(1, Math.ceil(fsTotalCharts / 2));
-    const availH = fsWindowH / 2 - 60 - 20; // metade da tela - barra de tags (~48px) - padding vertical
-    const labelH = 20; // altura da label acima de cada chart
-    const gapH = 8;   // gap-2
+    const availH = fsWindowH / 2 - 60 - 16; // metade da tela - barra de tags (~48px) - padding vertical
+    const labelH = 18; // altura da label acima de cada chart
+    const gapH = 4;   // gap-1
     const h = Math.floor((availH - rows * labelH - (rows - 1) * gapH) / rows);
     return Math.max(100, h);
   }, [fsWindowH, fsTotalCharts]);
@@ -2019,12 +2153,21 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
 
   const handleFsHoverT = useCallback((t: number | null) => {
     setFsHoverT(t);
-    if (t === null || !fsStep || !parsedCsvResult?.points.length) {
+    if (t === null || !parsedCsvResult?.points.length) {
       fsMapHoverRef.current?.(null);
       return;
     }
-    const stepStartMs = new Date(fsStep.start_time).getTime();
-    const targetMs = stepStartMs + t * 1000;
+    // Use step start when a step is selected; fall back to maneuver start for "Completa" view
+    const refStartMs = fsStep
+      ? new Date(fsStep.start_time).getTime()
+      : fsManeuver
+        ? new Date(fsManeuver.start_time).getTime()
+        : null;
+    if (refStartMs === null) {
+      fsMapHoverRef.current?.(null);
+      return;
+    }
+    const targetMs = refStartMs + t * 1000;
     const pts = parsedCsvResult.points;
     let nearest = pts[0];
     let minDiff = Infinity;
@@ -2035,7 +2178,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
       else if (diff > minDiff + 5000) break;
     }
     if (nearest) fsMapHoverRef.current?.([nearest.lat, nearest.lon]);
-  }, [fsStep, parsedCsvResult?.points]);
+  }, [fsStep, fsManeuver, parsedCsvResult?.points]);
 
   const SEG_CATEGORY_MAP: Record<string, string> = { takeoff: "takeoff", landing: "landing", tgl: "touch_and_go" };
 
@@ -2208,6 +2351,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
               parsedResult={parsedCsvResult}
               onDeleted={handleDeleted}
               onAnalyzed={handleAnalyzed}
+              onEdit={isInstructor ? () => setEditManeuver(m) : undefined}
             />
           ))}
         </div>
@@ -2264,6 +2408,10 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
                       </span>
                     )}
                   </div>
+                  <div className="mt-0.5 text-xs text-slate-600">
+                    {formatDateTime(m.start_time)} → {formatDateTime(m.end_time)}
+                    {" · "}{formatDuration(Math.round((new Date(m.end_time).getTime() - new Date(m.start_time).getTime()) / 1000))}
+                  </div>
                 </button>
               ))
             )}
@@ -2279,6 +2427,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
               hoverCallbackRef={fsMapHoverRef}
               chartTimeBaseMs={parsedCsvResult.chartTimeBaseMs}
               trafficPattern={fsManId ? (fsLiveReview?.analysis.trafficPattern ?? null) : null}
+              coloredSegments={fsMapColoredSegments}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-500">Trajeto não disponível</div>
@@ -2327,14 +2476,23 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
             {/* Vista "Completa": legenda de pernas / etapas */}
             {fsStepIdx === -1 && fsLiveReview && (
               <>
-                {(fsManLegRanges ?? fsManStepRanges).map((r, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                {/* Pernas do circuito (quando há traffic pattern) */}
+                {fsManLegRanges && fsManLegRanges.map((r, i) => (
+                  <div key={`leg-${i}`} className="flex items-center gap-2">
                     <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
-                    <span className="text-xs text-slate-300">
-                      {"label" in r ? (r as { label: string }).label : fsLiveReview.analysis.steps[i]?.name ?? `Etapa ${i + 1}`}
-                    </span>
+                    <span className="text-xs" style={{ color: r.color }}>{r.label}</span>
                   </div>
                 ))}
+                {/* Etapas: todas (sem circuito) ou apenas as pós-perna-final (com circuito) */}
+                {fsManStepRanges
+                  .filter((r) => !fsManLegRanges?.length || r.x2 > (fsManLegRanges[fsManLegRanges.length - 1]?.x2 ?? -Infinity))
+                  .map((r, i) => (
+                    <div key={`step-${i}`} className="flex items-center gap-2">
+                      <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
+                      <span className="text-xs text-slate-300">{r.name}</span>
+                    </div>
+                  ))
+                }
                 {fsLiveReview.analysis.alerts.length > 0 && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Alertas gerais</p>
@@ -2353,9 +2511,17 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
               </>
             )}
 
-            {/* Vista de etapa: alertas + tabela de parâmetros */}
+            {/* Vista de etapa: execução esperada + alertas + tabela de parâmetros */}
             {fsStep && (
               <>
+                {fsStep.expected_execution_text && (
+                  <div className="rounded-lg border border-sky-500/20 bg-sky-950/20 p-2">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-sky-500">
+                      Execução esperada
+                    </p>
+                    <p className="text-xs text-sky-200 leading-relaxed">{fsStep.expected_execution_text}</p>
+                  </div>
+                )}
                 {fsStep.alerts.length > 0 && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Alertas</p>
@@ -2412,7 +2578,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {fsStepIdx === -1 && fsManeuver ? (
             /* Vista "Completa": alt + IAS com ranges de etapa/perna + touchdown */
-            <div className={`overflow-y-auto flex-1 p-2 grid gap-2 ${fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+            <div className={`overflow-y-auto flex-1 p-1 grid gap-1 ${fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
               {fsManAltPoints.length > 0 && (
                 <div>
                   <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
@@ -2461,7 +2627,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
               const showIas = !paramKeys.has("ias") && fsStepIasPoints.length > 0;
               const cols = fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1";
               return (
-                <div className={`overflow-y-auto flex-1 p-2 grid gap-2 ${cols}`}>
+                <div className={`overflow-y-auto flex-1 p-1 grid gap-1 ${cols}`}>
                   {showAlt && (
                     <div>
                       <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
@@ -2538,6 +2704,18 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
           templates={templates}
           onClose={() => setAddOpen(false)}
           onAdded={handleAdded}
+        />
+      )}
+      {editManeuver && flight && (
+        <AddManeuverModal
+          flightId={flightId}
+          flight={flight}
+          csvText={flightCsvText}
+          templates={templates}
+          onClose={() => setEditManeuver(null)}
+          onAdded={handleAdded}
+          initialManeuver={editManeuver}
+          onEdited={handleEdited}
         />
       )}
     </div>

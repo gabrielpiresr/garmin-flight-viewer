@@ -237,10 +237,12 @@ type Props = {
   boundsCallbackRef?: React.MutableRefObject<((b: L.LatLngBounds) => void) | null>;
   trafficPattern?: TrafficPatternAnalysis | null;
   chartTimeBaseMs?: number | null;
+  /** Segmentos coloridos por etapa (substitui legSegments quando não há padrão de circuito). */
+  coloredSegments?: { color: string; startMs: number; endMs: number }[] | null;
 };
 
 export const FlightMap = memo(
-  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs }: Props) {
+  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs, coloredSegments }: Props) {
     const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
       const [t0, t1] = selectedRangeT;
@@ -303,6 +305,21 @@ export const FlightMap = memo(
       }).filter((seg) => seg.positions.length >= 2);
     }, [trafficPattern, chartTimeBaseMs, selectedPoints, selectedRangeT]);
 
+    /** Segmentos externos baseados em etapas (para manobras sem padrão de circuito). */
+    const externalSegments = useMemo(() => {
+      if (!coloredSegments || coloredSegments.length === 0 || selectedPoints.length < 2) return null;
+      const segs = coloredSegments.map((seg) => ({
+        color: seg.color,
+        positions: selectedPoints
+          .filter((p) => p.t != null && p.t >= seg.startMs && p.t <= seg.endMs)
+          .map((p) => [p.lat, p.lon] as [number, number]),
+      })).filter((s) => s.positions.length >= 2);
+      return segs.length > 0 ? segs : null;
+    }, [coloredSegments, selectedPoints]);
+
+    // Prioridade: legSegments (circuito) > externalSegments (etapas) > sem coloração
+    const effectiveSegments = legSegments ?? externalSegments;
+
     if (positions.length < 2) {
       return (
         <div className="flex h-64 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/50 text-sm text-slate-500">
@@ -338,7 +355,7 @@ export const FlightMap = memo(
             selectedPositions={selectedPositions}
             arrowMarkers={arrowMarkers}
             planeMarker={planeMarker}
-            legSegments={legSegments}
+            legSegments={effectiveSegments}
           />
           {hoverCallbackRef && <ImperativeCursor hoverCallbackRef={hoverCallbackRef} />}
           {boundsCallbackRef && <MapBoundsTracker boundsCallbackRef={boundsCallbackRef} />}
@@ -354,5 +371,6 @@ export const FlightMap = memo(
     prev.hoverCallbackRef === next.hoverCallbackRef &&
     prev.boundsCallbackRef === next.boundsCallbackRef &&
     prev.trafficPattern === next.trafficPattern &&
-    prev.chartTimeBaseMs === next.chartTimeBaseMs,
+    prev.chartTimeBaseMs === next.chartTimeBaseMs &&
+    prev.coloredSegments === next.coloredSegments,
 );

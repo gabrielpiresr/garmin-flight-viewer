@@ -5,6 +5,7 @@ import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
+import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightAuditLogPanel } from "./admin/FlightAuditLogPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
@@ -94,6 +95,8 @@ export function FlightDetailView({
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("ficha");
   const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set(["ficha"]));
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [publicShareBusy, setPublicShareBusy] = useState(false);
+  const [publicShareStatus, setPublicShareStatus] = useState<string | null>(null);
   const [studentUserId, setStudentUserId] = useState<string | null>(null);
 
   // Instructor signature state
@@ -185,6 +188,21 @@ export function FlightDetailView({
     setShowSignModal(false);
   };
 
+  async function handleCopyPublicFlightReviewLink() {
+    if (!flightId) return;
+    setPublicShareBusy(true);
+    setPublicShareStatus(null);
+    try {
+      const url = await createFlightPublicShare(flightId);
+      await navigator.clipboard?.writeText(url);
+      setPublicShareStatus("Link publico copiado.");
+    } catch (err) {
+      setPublicShareStatus((err as Error).message || "Nao foi possivel gerar o link publico.");
+    } finally {
+      setPublicShareBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-[calc(100vh-8.5rem)] min-w-0 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -200,18 +218,33 @@ export function FlightDetailView({
           {flightId ? "Detalhes do voo" : "Novo voo"}
         </p>
         {flightId && (
-          <button
-            type="button"
-            onClick={() => setShareModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full border border-pink-500/30 bg-gradient-to-r from-fuchsia-500/15 via-pink-500/15 to-orange-400/15 px-3 py-1.5 text-sm font-semibold text-pink-100 transition hover:border-pink-400/60 hover:from-fuchsia-500/25 hover:via-pink-500/25 hover:to-orange-400/25"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
-              <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
-              <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
-            </svg>
-            Compartilhar
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => setShareModalOpen(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-pink-500/30 bg-gradient-to-r from-fuchsia-500/15 via-pink-500/15 to-orange-400/15 px-3 py-1.5 text-sm font-semibold text-pink-100 transition hover:border-pink-400/60 hover:from-fuchsia-500/25 hover:via-pink-500/25 hover:to-orange-400/25"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
+              </svg>
+              Compartilhar
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCopyPublicFlightReviewLink()}
+              disabled={publicShareBusy}
+              className="inline-flex items-center gap-2 rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-sm font-semibold text-sky-100 transition hover:border-sky-400/60 hover:bg-sky-500/20 disabled:cursor-wait disabled:opacity-60"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M7.05 9.293a.75.75 0 011.06 1.061l-.76.76a2.25 2.25 0 003.182 3.182l2.121-2.121a2.25 2.25 0 00-3.182-3.182.75.75 0 11-1.06-1.061 3.75 3.75 0 015.303 5.303l-2.121 2.121a3.75 3.75 0 01-5.303-5.303l.76-.76z" />
+                <path d="M12.95 10.707a.75.75 0 01-1.06-1.061l.76-.76a2.25 2.25 0 10-3.182-3.182L7.347 7.825a2.25 2.25 0 003.182 3.182.75.75 0 111.06 1.061 3.75 3.75 0 01-5.303-5.303l2.121-2.121a3.75 3.75 0 015.303 5.303l-.76.76z" />
+              </svg>
+              {publicShareBusy ? "Gerando..." : "Link publico"}
+            </button>
+            {publicShareStatus ? <span className="text-xs text-slate-400">{publicShareStatus}</span> : null}
+          </>
         )}
       </div>
 

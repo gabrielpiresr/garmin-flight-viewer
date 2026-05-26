@@ -41,6 +41,7 @@ import { useToast } from "./ui/ToastProvider";
 type Props = {
   flightId?: string;
   parsedResult?: ParseResult;
+  publicMode?: boolean;
 };
 
 /** Binary search: finds GPS point closest to targetT (ms epoch). O(log n). */
@@ -69,7 +70,7 @@ function findHoverPos(
   return best ? [best.lat, best.lon] : null;
 }
 
-export function TelemetriaTab({ flightId, parsedResult }: Props) {
+export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Props) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -148,11 +149,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     }
   }, [mapExpanded]);
 
-  const canEditTelemetry = user?.role === "instrutor" || user?.role === "admin";
-  const showTelemetryManagement = user?.role !== "aluno";
+  const canEditTelemetry = !publicMode && (user?.role === "instrutor" || user?.role === "admin");
+  const showTelemetryManagement = !publicMode && user?.role !== "aluno";
 
   const loadFlightAlerts = useCallback(async () => {
-    if (!flightId) {
+    if (!flightId || publicMode) {
       setFlightAlerts([]);
       return;
     }
@@ -164,7 +165,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       return;
     }
     setFlightAlerts(result.data);
-  }, [flightId, showToast]);
+  }, [flightId, publicMode, showToast]);
 
   useEffect(() => {
     void loadFlightAlerts();

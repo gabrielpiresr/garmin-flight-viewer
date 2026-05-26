@@ -279,9 +279,13 @@ function uploadFileToHelper(
   });
 }
 
-export function VideosTab({ flightId }: { flightId: string | undefined }) {
+export function VideosTab({ flightId, publicMode = false, publicVideos }: {
+  flightId: string | undefined;
+  publicMode?: boolean;
+  publicVideos?: FlightVideo[];
+}) {
   const { user } = useAuth();
-  const isInstructor = user?.role === "instrutor" || user?.role === "admin";
+  const isInstructor = !publicMode && (user?.role === "instrutor" || user?.role === "admin");
 
   const [helperStatus, setHelperStatus] = useState<HelperStatus>("checking");
   const [videos, setVideos] = useState<FlightVideo[]>([]);
@@ -307,6 +311,11 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
   }, []);
 
   const loadVideos = useCallback(async () => {
+    if (publicMode) {
+      setVideos((publicVideos ?? []).filter((video) => video.processing_status === "ready" && Boolean(video.file_url)));
+      setLoadingVideos(false);
+      return;
+    }
     if (!flightId) return;
     setLoadingVideos(true);
     const { data } = await listFlightVideos(flightId);
@@ -320,41 +329,41 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
     }
     setLoadingVideos(false);
     setVideos(list);
-  }, [flightId]);
+  }, [flightId, publicMode, publicVideos]);
 
   useEffect(() => {
-    void checkHelper();
+    if (!publicMode) void checkHelper();
     void loadVideos();
-  }, [checkHelper, loadVideos]);
+  }, [checkHelper, loadVideos, publicMode]);
 
   // Enquanto houver vídeo em processing sem URL, reconsultar R2 periodicamente
   useEffect(() => {
-    if (!flightId || !hasStuckProcessingVideos(videos)) return;
+    if (publicMode || !flightId || !hasStuckProcessingVideos(videos)) return;
     const interval = window.setInterval(() => {
       void loadVideos();
     }, 30_000);
     return () => window.clearInterval(interval);
-  }, [flightId, videos, loadVideos]);
+  }, [flightId, publicMode, videos, loadVideos]);
 
   // Ao voltar para a aba, tentar reconciliar de novo
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") void loadVideos();
+      if (!publicMode && document.visibilityState === "visible") void loadVideos();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [loadVideos]);
+  }, [loadVideos, publicMode]);
 
   // Impedir fechamento acidental durante envio ou processamento
   useEffect(() => {
-    if ((!processingJobId && !isSending) || isDone) return;
+    if (publicMode || ((!processingJobId && !isSending) || isDone)) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [processingJobId, isSending, isDone]);
+  }, [processingJobId, isSending, isDone, publicMode]);
 
   const handleOpenFilePicker = () => {
     fileInputRef.current?.click();
@@ -765,6 +774,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
                 key={v.id}
                 video={v}
                 isInstructor={isInstructor}
+                publicMode={publicMode}
                 onDelete={() => void handleDeleteVideo(v.id)}
                 onRetry={() => void handleRetry(v.id)}
               />
@@ -1124,7 +1134,7 @@ function useVideoStageSize(
   return size;
 }
 
-function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
+function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVideo; publicMode?: boolean }) {
   const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const videoStageParentRef = useRef<HTMLDivElement>(null);
@@ -1202,6 +1212,10 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   }, []);
 
   useEffect(() => {
+    if (publicMode) {
+      setAirspeedArcs(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const flight = await getSavedFlight(video.flight_id);
@@ -1221,7 +1235,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     return () => {
       cancelled = true;
     };
-  }, [video.flight_id]);
+  }, [video.flight_id, publicMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1710,6 +1724,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
       )}
 
       {/* Seleção de trecho + orientação */}
+      {!publicMode && (
       <div className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 p-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Botões de orientação — à esquerda, junto dos botões de corte */}
@@ -1839,6 +1854,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           ↓ Baixar
         </button>
       </div>
+      )}
 
       {exportError && !exportProgress && (
         <HelperOfflinePanel error={exportError} />
@@ -1849,7 +1865,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         </p>
       )}
 
-      {showDownloadModal && (
+      {!publicMode && showDownloadModal && (
         <DownloadChoiceModal
           videoUrl={video.file_url!}
           hasTelemetry={hasTelemetry}
@@ -1903,11 +1919,13 @@ function expandAvailableTelemetryWidgets(available: VideoTelemetryWidget[], poin
 function VideoCard({
   video,
   isInstructor,
+  publicMode = false,
   onDelete,
   onRetry,
 }: {
   video: FlightVideo;
   isInstructor: boolean;
+  publicMode?: boolean;
   onDelete: () => void;
   onRetry: () => void;
 }) {
@@ -1919,7 +1937,7 @@ function VideoCard({
     <li className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
       <div className="flex flex-col gap-4">
         {isReady && video.file_url && (
-          <TelemetryVideoPlayer video={video} />
+          <TelemetryVideoPlayer video={video} publicMode={publicMode} />
         )}
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

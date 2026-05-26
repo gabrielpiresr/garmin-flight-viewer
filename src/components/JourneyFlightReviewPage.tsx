@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, type SavedFlightFull } from "../lib/flightsDb";
+import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
 import { FlightReviewTab } from "./FlightReviewTab";
 import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
@@ -46,7 +47,7 @@ function InfoTile({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function FlightSummaryPanel({ flight, missionName }: { flight: SavedFlightFull; missionName: string }) {
+export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFlightFull; missionName: string }) {
   const decoded = useMemo(() => decodeFlightRecord(flight.csv_text), [flight.csv_text]);
   const meta = decoded.meta;
   const route = flight.from_to || meta?.legs.map((leg) => `${leg.dep}-${leg.arr}`).join(" / ") || "-";
@@ -96,6 +97,8 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
   const [flight, setFlight] = useState<SavedFlightFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareStatus, setShareStatus] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,15 +119,42 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
     };
   }, [flightId]);
 
+  async function handleCreatePublicShare() {
+    setShareBusy(true);
+    setShareStatus(null);
+    try {
+      const url = await createFlightPublicShare(flightId);
+      await navigator.clipboard?.writeText(url);
+      setShareStatus("Link publico copiado.");
+    } catch (err) {
+      setShareStatus((err as Error).message || "Nao foi possivel gerar o link publico.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   return (
     <div className="min-w-0 space-y-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="text-sm font-medium text-sky-400 underline-offset-4 hover:text-sky-300 hover:underline"
-      >
-        &larr; Jornada
-      </button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm font-medium text-sky-400 underline-offset-4 hover:text-sky-300 hover:underline"
+        >
+          &larr; Jornada
+        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {shareStatus ? <span className="text-xs text-slate-400">{shareStatus}</span> : null}
+          <button
+            type="button"
+            onClick={() => void handleCreatePublicShare()}
+            disabled={shareBusy}
+            className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:cursor-wait disabled:opacity-60"
+          >
+            {shareBusy ? "Gerando..." : "Copiar link publico"}
+          </button>
+        </div>
+      </div>
 
       <Tabs items={REVIEW_TABS} value={activeTab} onChange={setActiveTab} ariaLabel="Flight Review da jornada" accent="sky" />
 

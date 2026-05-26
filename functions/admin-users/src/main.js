@@ -10,10 +10,22 @@ const client = new sdk.Client()
 
 const databases = new sdk.Databases(client);
 const users = new sdk.Users(client);
+const storage = new sdk.Storage(client);
 
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID;
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
+const FLIGHT_VIDEOS_COLLECTION_ID =
+  process.env.APPWRITE_VIDEOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_VIDEOS_COLLECTION_ID || "6a0200bf00297bfc2231";
+const MANEUVER_TEMPLATES_COLLECTION_ID =
+  process.env.APPWRITE_MANEUVER_TEMPLATES_COLLECTION_ID || process.env.APPWRITE_MANEUVER_TEMPLATES_COL_ID || "6a1464c9000cf7c9d709";
+const FLIGHT_MANEUVERS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_MANEUVERS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_MANEUVERS_COL_ID || "6a1464e300079d599e22";
+const FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_MANEUVER_REVIEWS_COL_ID ||
+  "6a1464f40014e9bd5f5b";
+const FLIGHTS_CSV_BUCKET_ID = process.env.APPWRITE_BUCKET_ID || process.env.APPWRITE_FLIGHTS_BUCKET_ID || "flights-csv";
 const FLIGHT_SIGNATURES_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID ||
   process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID ||
@@ -111,10 +123,14 @@ const FLIGHT_SELECT = [
   "training_mission_id",
   "training_snapshot_json",
   "flight_status",
+  "public_share_enabled",
+  "public_share_created_at",
+  "public_share_last_generated_at",
 ];
 const FLIGHT_DETAIL_SELECT = [
   ...FLIGHT_SELECT,
   "csv_text",
+  "csv_file_id",
   "from_to",
   "landings",
   "block_time_minutes",
@@ -3757,6 +3773,254 @@ function signWorkerToken(payload) {
   return `${encoded}.${signature}`;
 }
 
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function randomShareToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+async function getActorRole(actorUserId) {
+  if (!actorUserId) return "";
+  const [profile, actor] = await Promise.all([
+    getProfileByUserId(actorUserId).catch(() => null),
+    users.get({ userId: actorUserId }).catch(() => null),
+  ]);
+  const profileRole = normalizeRole(profile?.role);
+  const labelRole = deriveRoleFromLabels(actor?.labels || []);
+  return profileRole === "aluno" && labelRole ? labelRole : profileRole || labelRole;
+}
+
+function publicFlightFields(doc, csvText) {
+  return {
+    id: doc.$id,
+    source_filename: doc.source_filename || "",
+    created_at: doc.$createdAt || "",
+    aircraft_ident: doc.aircraft_ident || null,
+    duration_sec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
+    flight_date: doc.flight_date || null,
+    start_time: doc.start_time || null,
+    student_user_id: doc.student_user_id || doc.user_id || null,
+    instructor_user_id: doc.instructor_user_id || null,
+    training_track_id: doc.training_track_id || null,
+    training_stage_id: doc.training_stage_id || null,
+    training_mission_id: doc.training_mission_id || null,
+    training_snapshot_json: doc.training_snapshot_json || null,
+    from_to: doc.from_to || null,
+    landings: typeof doc.landings === "number" ? doc.landings : null,
+    block_time_minutes: typeof doc.block_time_minutes === "number" ? doc.block_time_minutes : null,
+    total_flight_minutes: typeof doc.total_flight_minutes === "number" ? doc.total_flight_minutes : null,
+    total_miles: typeof doc.total_miles === "number" ? doc.total_miles : null,
+    telemetry_present: typeof doc.telemetry_present === "boolean" ? doc.telemetry_present : null,
+    instructor_suggestion_md: null,
+    student_suggestion_md: null,
+    instructor_suggestion_present: null,
+    student_suggestion_present: null,
+    weight_balance_complete: null,
+    is_night: null,
+    training_mission_ids_json: doc.training_mission_ids_json || null,
+    schedule_week_start: doc.schedule_week_start || null,
+    schedule_demand_id: doc.schedule_demand_id || null,
+    flight_seq_number: typeof doc.flight_seq_number === "number" ? doc.flight_seq_number : null,
+    instructor_signed: typeof doc.instructor_signed === "boolean" ? doc.instructor_signed : null,
+    student_signed: typeof doc.student_signed === "boolean" ? doc.student_signed : null,
+    admin_operator_signed: typeof doc.admin_operator_signed === "boolean" ? doc.admin_operator_signed : null,
+    instructor_signed_at: doc.instructor_signed_at || null,
+    flight_status: doc.flight_status || "Previsto",
+    csv_text: csvText || "",
+  };
+}
+
+function toPublicVideo(doc) {
+  return {
+    id: doc.$id,
+    flight_id: doc.flight_id || "",
+    uploaded_by: doc.uploaded_by || "",
+    file_url: doc.file_url || "",
+    file_size: typeof doc.file_size === "number" ? doc.file_size : null,
+    duration_sec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
+    original_files_count: typeof doc.original_files_count === "number" ? doc.original_files_count : null,
+    processing_status: doc.processing_status || "processing",
+    telemetry_present: Boolean(doc.telemetry_present),
+    telemetry_source: doc.telemetry_source || "none",
+    telemetry_json: doc.telemetry_json || "",
+    available_widgets: doc.available_widgets || "[]",
+    created_at: doc.$createdAt || doc.created_at || "",
+  };
+}
+
+function toPublicTemplate(doc) {
+  return {
+    id: doc.$id,
+    name: doc.name || "",
+    category: doc.category || "other",
+    aircraft_model_id: doc.aircraft_model_id || "",
+    description: doc.description || null,
+    is_active: doc.is_active !== false,
+    created_at: doc.created_at || doc.$createdAt || "",
+    updated_at: doc.updated_at || doc.$updatedAt || "",
+  };
+}
+
+function toPublicManeuver(doc) {
+  return {
+    id: doc.$id,
+    flight_id: doc.flight_id || "",
+    template_id: doc.template_id || "",
+    instructor_id: doc.instructor_id || "",
+    student_id: doc.student_id || null,
+    aircraft_ident: doc.aircraft_ident || null,
+    start_time: doc.start_time || "",
+    end_time: doc.end_time || "",
+    status: doc.status || "draft",
+    created_by: doc.created_by || "",
+    created_at: doc.created_at || doc.$createdAt || "",
+    updated_at: doc.updated_at || doc.$updatedAt || "",
+  };
+}
+
+function toPublicReview(doc) {
+  let analysis = { steps: [], alerts: [] };
+  try {
+    if (typeof doc.analysis_json === "string") analysis = JSON.parse(doc.analysis_json);
+  } catch {
+    analysis = { steps: [], alerts: [] };
+  }
+  return {
+    id: doc.$id,
+    flight_maneuver_id: doc.flight_maneuver_id || "",
+    flight_id: doc.flight_id || "",
+    status: doc.status || "unavailable",
+    summary: doc.summary || null,
+    analysis,
+    created_at: doc.created_at || doc.$createdAt || "",
+    updated_at: doc.updated_at || doc.$updatedAt || "",
+  };
+}
+
+async function loadFlightCsvText(doc) {
+  if (doc.csv_file_id && FLIGHTS_CSV_BUCKET_ID) {
+    try {
+      const buffer = await storage.getFileDownload(FLIGHTS_CSV_BUCKET_ID, doc.csv_file_id);
+      if (Buffer.isBuffer(buffer)) return buffer.toString("utf8");
+      if (buffer instanceof ArrayBuffer) return Buffer.from(buffer).toString("utf8");
+      if (buffer) return Buffer.from(buffer).toString("utf8");
+    } catch {
+      // Fallback to document field below.
+    }
+  }
+  return doc.csv_text || "";
+}
+
+async function authorizeFlightShare(actorUserId, flight) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role === "admin") return;
+  if (role === "instrutor" && flight.instructor_user_id === actorUserId) return;
+  const studentUserId = flight.student_user_id || flight.user_id || "";
+  if (role === "aluno" && studentUserId === actorUserId) return;
+  throw Object.assign(new Error("Usuario sem permissao para compartilhar este voo."), { status: 403 });
+}
+
+async function createFlightPublicShare(actorUserId, payload = {}) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const flightId = cleanString(payload.flightId);
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  await authorizeFlightShare(actorUserId, flight);
+
+  const token = randomShareToken();
+  const now = nowIso();
+  await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, {
+    public_share_token_hash: sha256Hex(token),
+    public_share_enabled: true,
+    public_share_created_at: flight.public_share_created_at || now,
+    public_share_last_generated_at: now,
+  });
+
+  const origin = cleanString(payload.origin) || APP_URL || "";
+  const publicUrl = origin ? `${origin.replace(/\/+$/, "")}/share/flight-review/${token}` : `/share/flight-review/${token}`;
+  return { publicUrl, token };
+}
+
+async function getPublicFlightReviewShare(payload = {}) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const token = cleanString(payload.token);
+  if (!token) throw Object.assign(new Error("Link publico invalido."), { status: 400 });
+  const hash = sha256Hex(token);
+  const res = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("public_share_token_hash", [hash]),
+    sdk.Query.limit(1),
+  ]);
+  const flightDoc = res.documents[0];
+  if (!flightDoc || flightDoc.public_share_enabled !== true) {
+    throw Object.assign(new Error("Link publico nao encontrado ou desativado."), { status: 404 });
+  }
+
+  const flightId = flightDoc.$id;
+  const [videoDocs, maneuverDocs, reviewDocs, brandLoaded] = await Promise.all([
+    FLIGHT_VIDEOS_COLLECTION_ID
+      ? databases
+          .listDocuments(DATABASE_ID, FLIGHT_VIDEOS_COLLECTION_ID, [
+            sdk.Query.equal("flight_id", [flightId]),
+            sdk.Query.orderDesc("$createdAt"),
+            sdk.Query.limit(100),
+          ])
+          .then((r) => r.documents)
+          .catch(() => [])
+      : Promise.resolve([]),
+    FLIGHT_MANEUVERS_COLLECTION_ID
+      ? databases
+          .listDocuments(DATABASE_ID, FLIGHT_MANEUVERS_COLLECTION_ID, [
+            sdk.Query.equal("flight_id", [flightId]),
+            sdk.Query.orderAsc("start_time"),
+            sdk.Query.limit(100),
+          ])
+          .then((r) => r.documents)
+          .catch(() => [])
+      : Promise.resolve([]),
+    FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID
+      ? databases
+          .listDocuments(DATABASE_ID, FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, [
+            sdk.Query.equal("flight_id", [flightId]),
+            sdk.Query.limit(100),
+          ])
+          .then((r) => r.documents)
+          .catch(() => [])
+      : Promise.resolve([]),
+    loadEmailBrandSettings().catch(() => ({ settings: defaultEmailSettings(), doc: null })),
+  ]);
+
+  const templateIds = Array.from(new Set(maneuverDocs.map((doc) => doc.template_id).filter(Boolean)));
+  const templateDocs = [];
+  if (MANEUVER_TEMPLATES_COLLECTION_ID && templateIds.length > 0) {
+    const docs = await Promise.all(
+      templateIds.map((id) => databases.getDocument(DATABASE_ID, MANEUVER_TEMPLATES_COLLECTION_ID, id).catch(() => null)),
+    );
+    templateDocs.push(...docs.filter(Boolean));
+  }
+
+  const csvText = await loadFlightCsvText(flightDoc);
+  const meta = decodeFlightMeta(csvText);
+  const missionName =
+    meta?.training?.missionName ||
+    meta?.training?.snapshot?.missionName ||
+    flightDoc.name ||
+    flightDoc.source_filename ||
+    "Flight Review";
+
+  return {
+    flight: publicFlightFields(flightDoc, csvText),
+    missionName,
+    videos: videoDocs.map(toPublicVideo).filter((video) => video.processing_status === "ready" && video.file_url),
+    maneuvers: maneuverDocs.map(toPublicManeuver),
+    maneuverReviews: reviewDocs.map(toPublicReview),
+    maneuverTemplates: templateDocs.map(toPublicTemplate),
+    brandSettings: publicEmailBrandSettings(brandLoaded.settings, brandLoaded.doc?.$updatedAt || null),
+  };
+}
+
 async function requireVideoUploader(actorUserId, flightId) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
   if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
@@ -5606,6 +5870,16 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getSchoolRules") {
       const { publicSettings } = await loadSchoolRules();
       return jsonResponse(res, 200, { schoolRules: publicSettings });
+    }
+
+    if (action === "getPublicFlightReviewShare") {
+      const share = await getPublicFlightReviewShare(payload);
+      return jsonResponse(res, 200, { share });
+    }
+
+    if (action === "createFlightPublicShare") {
+      const share = await createFlightPublicShare(actorUserId, payload);
+      return jsonResponse(res, 200, { share });
     }
 
     await requireAdmin(actorUserId);
