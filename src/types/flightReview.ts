@@ -38,6 +38,14 @@ export type StepParameter = {
   ideal?: number;
   min?: number;
   max?: number;
+  /** Mínimo esperado no início da etapa (substitui `min` quando presente). */
+  min_start?: number;
+  /** Máximo esperado no início da etapa (substitui `max` quando presente). */
+  max_start?: number;
+  /** Mínimo esperado no fim da etapa. Se definido junto com min_start, interpola linearmente. */
+  min_end?: number;
+  /** Máximo esperado no fim da etapa. Se definido junto com max_start, interpola linearmente. */
+  max_end?: number;
   severity: ParameterSeverity;
   /** Mensagem de alerta quando o valor fica abaixo do mínimo configurado. */
   alert_message_min?: string;
@@ -92,6 +100,10 @@ export type AnalyzedParameter = {
   avg_observed: number | null;
   expected_min: number | null;
   expected_max: number | null;
+  /** Valor do limite mínimo no fim da etapa (presente apenas quando há interpolação). */
+  expected_min_end?: number | null;
+  /** Valor do limite máximo no fim da etapa (presente apenas quando há interpolação). */
+  expected_max_end?: number | null;
   status: "ok" | "warning" | "out_of_range";
   time_out_of_range_seconds: number;
   severity: ParameterSeverity;

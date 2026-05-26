@@ -79,6 +79,8 @@ type ParameterForm = {
   label: string;
   min: string;
   max: string;
+  min_end: string;
+  max_end: string;
   severity: ParameterSeverity;
   alert_message_min: string;
   alert_message_max: string;
@@ -105,6 +107,8 @@ function emptyParameterForm(param = ""): ParameterForm {
     label: param ? (TELEMETRY_PARAMETER_LABELS[param] ?? param) : "",
     min: "",
     max: "",
+    min_end: "",
+    max_end: "",
     severity: "high",
     alert_message_min: "",
     alert_message_max: "",
@@ -147,8 +151,14 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
     parameters: step.parameters.map((p) => ({
       parameter: p.parameter,
       label: p.label,
-      min: p.min !== undefined ? String(p.min) : "",
-      max: p.max !== undefined ? String(p.max) : "",
+      min: (p.min_start !== undefined ? p.min_start : p.min) !== undefined
+        ? String(p.min_start !== undefined ? p.min_start : p.min)
+        : "",
+      max: (p.max_start !== undefined ? p.max_start : p.max) !== undefined
+        ? String(p.max_start !== undefined ? p.max_start : p.max)
+        : "",
+      min_end: p.min_end !== undefined ? String(p.min_end) : "",
+      max_end: p.max_end !== undefined ? String(p.max_end) : "",
       severity: p.severity,
       alert_message_min: p.alert_message_min ?? "",
       alert_message_max: p.alert_message_max ?? "",
@@ -159,15 +169,23 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
 function formToParameters(pfs: ParameterForm[]): StepParameter[] {
   return pfs
     .filter((p) => p.parameter)
-    .map((p) => ({
-      parameter: p.parameter,
-      label: p.label || TELEMETRY_PARAMETER_LABELS[p.parameter] || p.parameter,
-      ...(p.min !== "" && !isNaN(Number(p.min)) ? { min: Number(p.min) } : {}),
-      ...(p.max !== "" && !isNaN(Number(p.max)) ? { max: Number(p.max) } : {}),
-      severity: p.severity,
-      ...(p.alert_message_min.trim() ? { alert_message_min: p.alert_message_min.trim() } : {}),
-      ...(p.alert_message_max.trim() ? { alert_message_max: p.alert_message_max.trim() } : {}),
-    }));
+    .map((p) => {
+      const hasMin = p.min !== "" && !isNaN(Number(p.min));
+      const hasMax = p.max !== "" && !isNaN(Number(p.max));
+      const hasMinEnd = p.min_end !== "" && !isNaN(Number(p.min_end));
+      const hasMaxEnd = p.max_end !== "" && !isNaN(Number(p.max_end));
+      return {
+        parameter: p.parameter,
+        label: p.label || TELEMETRY_PARAMETER_LABELS[p.parameter] || p.parameter,
+        ...(hasMin ? { min_start: Number(p.min), min: Number(p.min) } : {}),
+        ...(hasMax ? { max_start: Number(p.max), max: Number(p.max) } : {}),
+        ...(hasMinEnd ? { min_end: Number(p.min_end) } : {}),
+        ...(hasMaxEnd ? { max_end: Number(p.max_end) } : {}),
+        severity: p.severity,
+        ...(p.alert_message_min.trim() ? { alert_message_min: p.alert_message_min.trim() } : {}),
+        ...(p.alert_message_max.trim() ? { alert_message_max: p.alert_message_max.trim() } : {}),
+      };
+    });
 }
 
 // ---------- Small display components ----------
@@ -384,7 +402,7 @@ function ParameterCard({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <span className={labelCls}>Mínimo esperado</span>
+          <span className={labelCls}>Mín. esperado (início)</span>
           <input
             type="number"
             value={param.min}
@@ -394,7 +412,7 @@ function ParameterCard({
           />
         </div>
         <div>
-          <span className={labelCls}>Máximo esperado</span>
+          <span className={labelCls}>Máx. esperado (início)</span>
           <input
             type="number"
             value={param.max}
@@ -404,6 +422,31 @@ function ParameterCard({
           />
         </div>
       </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <span className={labelCls}>Mín. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
+          <input
+            type="number"
+            value={param.min_end}
+            onChange={(e) => set({ min_end: e.target.value })}
+            className={inputCls}
+            placeholder="Mesmo que início"
+          />
+        </div>
+        <div>
+          <span className={labelCls}>Máx. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
+          <input
+            type="number"
+            value={param.max_end}
+            onChange={(e) => set({ max_end: e.target.value })}
+            className={inputCls}
+            placeholder="Mesmo que início"
+          />
+        </div>
+      </div>
+      {(param.min_end !== "" || param.max_end !== "") && (
+        <p className="text-xs text-slate-500">Se início e fim configurados, o limite é interpolado linearmente ao longo da etapa.</p>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <div>
           <span className={labelCls}>Alerta se abaixo do mín. <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
@@ -584,7 +627,7 @@ function StepModal({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
       <div
-        className="w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+        className="w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
         style={{ maxHeight: "92vh" }}
       >
         <div className="mb-4 flex items-center justify-between">

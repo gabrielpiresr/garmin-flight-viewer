@@ -113,7 +113,34 @@ function analyzeParameter(
   paramCfg: StepParameter,
   rows: Array<{ absoluteMs: number; value: number | null }>,
   stepStartMs: number,
+  stepEndMs: number,
 ): AnalyzedParameter {
+  // Resolve effective min/max start values (min_start takes precedence over legacy min)
+  const minStart = paramCfg.min_start !== undefined ? paramCfg.min_start
+    : paramCfg.min !== undefined ? paramCfg.min : undefined;
+  const maxStart = paramCfg.max_start !== undefined ? paramCfg.max_start
+    : paramCfg.max !== undefined ? paramCfg.max : undefined;
+  const minEnd = paramCfg.min_end;
+  const maxEnd = paramCfg.max_end;
+
+  const stepDurationMs = Math.max(1, stepEndMs - stepStartMs);
+  const hasInterpolatedMin = minStart !== undefined && minEnd !== undefined;
+  const hasInterpolatedMax = maxStart !== undefined && maxEnd !== undefined;
+
+  const effectiveMin = (absoluteMs: number): number | undefined => {
+    if (minStart === undefined) return undefined;
+    if (!hasInterpolatedMin) return minStart;
+    const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
+    return minStart + (minEnd! - minStart) * ratio;
+  };
+
+  const effectiveMax = (absoluteMs: number): number | undefined => {
+    if (maxStart === undefined) return undefined;
+    if (!hasInterpolatedMax) return maxStart;
+    const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
+    return maxStart + (maxEnd! - maxStart) * ratio;
+  };
+
   const valid = rows.filter((r): r is { absoluteMs: number; value: number } => r.value !== null);
 
   if (valid.length === 0) {
@@ -123,8 +150,10 @@ function analyzeParameter(
       min_observed: null,
       max_observed: null,
       avg_observed: null,
-      expected_min: paramCfg.min ?? null,
-      expected_max: paramCfg.max ?? null,
+      expected_min: minStart ?? null,
+      expected_max: maxStart ?? null,
+      ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
+      ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
       status: "ok",
       time_out_of_range_seconds: 0,
       severity: paramCfg.severity,
@@ -144,19 +173,21 @@ function analyzeParameter(
   }
 
   let timeOutMs = 0;
+  let hasHardLimit = false;
   for (const r of valid) {
-    const belowMin = paramCfg.min !== undefined && r.value < paramCfg.min;
-    const aboveMax = paramCfg.max !== undefined && r.value > paramCfg.max;
-    if (belowMin || aboveMax) timeOutMs += sampleIntervalMs;
+    const eMin = effectiveMin(r.absoluteMs);
+    const eMax = effectiveMax(r.absoluteMs);
+    const belowMin = eMin !== undefined && r.value < eMin;
+    const aboveMax = eMax !== undefined && r.value > eMax;
+    if (belowMin || aboveMax) {
+      timeOutMs += sampleIntervalMs;
+      hasHardLimit = true;
+    }
   }
 
   const timeOutSec = Math.round(timeOutMs / 1000);
-
   let paramStatus: AnalyzedParameter["status"] = "ok";
   if (timeOutSec > 0) {
-    const hasHardLimit =
-      (paramCfg.min !== undefined && minObs < paramCfg.min) ||
-      (paramCfg.max !== undefined && maxObs > paramCfg.max);
     paramStatus = hasHardLimit ? "out_of_range" : "warning";
   }
 
@@ -169,8 +200,10 @@ function analyzeParameter(
     min_observed: Math.round(minObs * 10) / 10,
     max_observed: Math.round(maxObs * 10) / 10,
     avg_observed: Math.round(avgObs * 10) / 10,
-    expected_min: paramCfg.min ?? null,
-    expected_max: paramCfg.max ?? null,
+    expected_min: minStart ?? null,
+    expected_max: maxStart ?? null,
+    ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
+    ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
     status: paramStatus,
     time_out_of_range_seconds: timeOutSec,
     severity: paramCfg.severity,
@@ -305,7 +338,7 @@ export function analyzeFlightManeuver(
         absoluteMs,
         value: (row[fieldKey] as number | null | undefined) ?? null,
       }));
-      return analyzeParameter(paramCfg, rowValues, stepStartMs);
+      return analyzeParameter(paramCfg, rowValues, stepStartMs, stepEndMs);
     });
 
     // Step alerts

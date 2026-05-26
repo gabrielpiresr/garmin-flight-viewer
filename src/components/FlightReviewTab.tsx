@@ -30,6 +30,7 @@ import {
 } from "../lib/flightManeuversDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight } from "../lib/flightsDb";
+import { detectFlightSegments } from "../lib/flightSegments";
 import { parseGarminCsv } from "../lib/parseGarminCsv";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { listManeuverTemplates, listManeuverTemplateSteps, getManeuverTemplate } from "../lib/maneuverTemplatesDb";
@@ -132,20 +133,26 @@ function extractFieldPoints(
     }));
 }
 
-/** Y-axis domain with 20% padding, also stretching to cover reference lines. */
+/** Y-axis domain with 20% padding, also stretching to cover reference lines.
+ *  If `symmetric` is true the result is forced to be symmetric around 0 (e.g. bank angle). */
 function computeYDomain(
   data: Array<{ v: number }>,
   refMin: number | null,
   refMax: number | null,
+  symmetric = false,
 ): [number, number] {
   const vals = data.map((d) => d.v);
   if (refMin !== null) vals.push(refMin);
   if (refMax !== null) vals.push(refMax);
-  if (vals.length === 0) return [0, 1];
+  if (vals.length === 0) return symmetric ? [-1, 1] : [0, 1];
   const lo = Math.min(...vals);
   const hi = Math.max(...vals);
   const range = hi - lo || Math.abs(lo) * 0.1 || 1;
   const pad = range * 0.2;
+  if (symmetric) {
+    const edge = Math.ceil(Math.max(Math.abs(lo - pad), Math.abs(hi + pad)));
+    return [-edge, edge];
+  }
   return [Math.floor(lo - pad), Math.ceil(hi + pad)];
 }
 
@@ -215,6 +222,8 @@ type ReviewChartRange = {
 
 type ReviewChartReference = {
   y: number;
+  /** Se definido, a linha é diagonal — sobe/desce de y (início) até y_end (fim do chart). */
+  y_end?: number;
   color: string;
   label?: string;
 };
@@ -234,6 +243,7 @@ function CanvasReviewChart({
   ranges = [],
   references = [],
   verticalLines = [],
+  zeroCrossLine = false,
   formatY,
   activeT,
   onHoverT,
@@ -246,6 +256,8 @@ function CanvasReviewChart({
   ranges?: ReviewChartRange[];
   references?: ReviewChartReference[];
   verticalLines?: ReviewChartVerticalLine[];
+  /** Se true, traça uma linha horizontal pontilhada em y=0 (útil para ângulos como rolagem). */
+  zeroCrossLine?: boolean;
   formatY: (value: number) => string;
   activeT?: number | null;
   onHoverT?: (t: number | null) => void;
@@ -322,20 +334,38 @@ function CanvasReviewChart({
       }
 
       for (const reference of references) {
-        if (reference.y < yMin || reference.y > yMax) continue;
-        const y = toY(reference.y);
+        const yStart = reference.y;
+        const yEndVal = reference.y_end ?? reference.y;
+        if (yStart < yMin && yEndVal < yMin) continue;
+        if (yStart > yMax && yEndVal > yMax) continue;
+        const yPixStart = toY(yStart);
+        const yPixEnd = toY(yEndVal);
         ctx.save();
         ctx.strokeStyle = reference.color;
         ctx.setLineDash([5, 3]);
         ctx.beginPath();
-        ctx.moveTo(left, y);
-        ctx.lineTo(width - right, y);
+        ctx.moveTo(left, yPixStart);
+        ctx.lineTo(width - right, yPixEnd);
         ctx.stroke();
         ctx.restore();
         if (reference.label) {
           ctx.fillStyle = reference.color;
-          ctx.fillText(reference.label, left + 4, Math.max(top, y - 12));
+          ctx.fillText(reference.label, left + 4, Math.max(top, yPixStart - 12));
         }
+      }
+
+      // Linha horizontal em y=0 (ex: rolagem neutra)
+      if (zeroCrossLine && yMin <= 0 && yMax >= 0) {
+        const y0 = toY(0);
+        ctx.save();
+        ctx.strokeStyle = "#475569";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(left, y0);
+        ctx.lineTo(width - right, y0);
+        ctx.stroke();
+        ctx.restore();
       }
 
       // Linhas verticais de evento (ex: touchdown)
@@ -413,7 +443,7 @@ function CanvasReviewChart({
     window.addEventListener("pageshow", delayedDraw);
     document.addEventListener("visibilitychange", delayedDraw);
     window.visualViewport?.addEventListener("resize", delayedDraw);
-    scheduleDraw();
+    delayedDraw();
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", delayedDraw);
@@ -571,13 +601,40 @@ function ParameterChart({
   onHoverT: (t: number | null) => void;
 }) {
   if (param.data_points.length === 0) return null;
+  const isBank = param.parameter === "bank";
   const data = param.data_points;
-  const domain = computeYDomain(data, param.expected_min, param.expected_max);
+  const minForDomain = param.expected_min_end !== undefined && param.expected_min_end !== null
+    ? Math.min(param.expected_min ?? Infinity, param.expected_min_end)
+    : param.expected_min;
+  const maxForDomain = param.expected_max_end !== undefined && param.expected_max_end !== null
+    ? Math.max(param.expected_max ?? -Infinity, param.expected_max_end)
+    : param.expected_max;
+  const domain = computeYDomain(data, minForDomain, maxForDomain, isBank);
   const lineColor =
     param.status === "out_of_range" ? "#ef4444" : param.status === "warning" ? "#f59e0b" : "#38bdf8";
   const references: ReviewChartReference[] = [];
-  if (param.expected_min !== null) references.push({ y: param.expected_min, color: "#f59e0b", label: `min ${param.expected_min}` });
-  if (param.expected_max !== null) references.push({ y: param.expected_max, color: "#f59e0b", label: `max ${param.expected_max}` });
+  if (param.expected_min !== null) {
+    references.push({
+      y: param.expected_min,
+      ...(param.expected_min_end !== null && param.expected_min_end !== undefined ? { y_end: param.expected_min_end } : {}),
+      color: "#f59e0b",
+      label: `min ${param.expected_min}`,
+    });
+    if (isBank && param.expected_min < 0) {
+      references.push({ y: -param.expected_min, color: "#f59e0b", label: `max ${-param.expected_min}` });
+    }
+  }
+  if (param.expected_max !== null) {
+    references.push({
+      y: param.expected_max,
+      ...(param.expected_max_end !== null && param.expected_max_end !== undefined ? { y_end: param.expected_max_end } : {}),
+      color: "#f59e0b",
+      label: `max ${param.expected_max}`,
+    });
+    if (isBank && param.expected_max > 0) {
+      references.push({ y: -param.expected_max, color: "#f59e0b", label: `max ${param.expected_max}` });
+    }
+  }
   void syncId;
   return (
     <div className="mt-2">
@@ -589,6 +646,7 @@ function ParameterChart({
         domain={domain}
         height={200}
         references={references}
+        zeroCrossLine={isBank}
         formatY={(value) => value.toFixed(1)}
         activeT={activeT}
         onHoverT={onHoverT}
@@ -1487,7 +1545,7 @@ function AddManeuverModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
-      <div className="my-4 w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+      <div className="my-4 w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         {/* Header */}
         <div className="mb-5 flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-100">Adicionar manobra</h3>
@@ -1735,6 +1793,13 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
   const [reviewMap, setReviewMap] = useState<Record<string, FlightManeuverReview>>({});
   const [templateMap, setTemplateMap] = useState<Record<string, ManeuverTemplate>>({});
   const [addOpen, setAddOpen] = useState(false);
+  const [autoAdding, setAutoAdding] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fsManId, setFsManId] = useState<string | null>(null);
+  const [fsStepIdx, setFsStepIdx] = useState(-1); // -1 = "Completa" (visão geral)
+  const [fsHoverT, setFsHoverT] = useState<number | null>(null);
+  const fsContainerRef = useRef<HTMLDivElement>(null);
+  const fsMapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1805,6 +1870,223 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
     setManeuvers((prev) => prev.map((m) => (m.id === updatedManeuver.id ? updatedManeuver : m)));
   };
 
+  // ---- Fullscreen derived state ----
+  const fsManeuver = useMemo(() => (fsManId ? maneuvers.find((m) => m.id === fsManId) ?? null : null), [fsManId, maneuvers]);
+
+  const fsLiveReview = useMemo(() => {
+    if (!fsManId || !parsedCsvResult?.chartTimeBaseMs) return reviewMap[fsManId ?? ""];
+    const review = reviewMap[fsManId];
+    if (!review) return undefined;
+    const alreadyHasData = review.analysis.steps.some((s) => s.parameters.some((p) => p.data_points.length > 0));
+    if (alreadyHasData) return review;
+    const augSteps = review.analysis.steps.map((step) => {
+      const sMs = new Date(step.start_time).getTime();
+      const eMs = new Date(step.end_time).getTime();
+      const augParams = step.parameters.map((param) => {
+        const fieldKey = TELEMETRY_FIELD_MAP[param.parameter] ?? param.parameter;
+        return { ...param, data_points: extractFieldPoints(parsedCsvResult, sMs, eMs, fieldKey) };
+      });
+      return { ...step, parameters: augParams };
+    });
+    return { ...review, analysis: { ...review.analysis, steps: augSteps } };
+  }, [fsManId, reviewMap, parsedCsvResult]);
+
+  // fsStepIdx === -1 → "Completa" view (não há etapa selecionada)
+  const fsStep = fsStepIdx >= 0 ? (fsLiveReview?.analysis.steps[fsStepIdx] ?? null) : null;
+
+  const fsRangeT = useMemo((): [number, number] | null => {
+    if (!fsManeuver) return null;
+    if (fsStep) return [new Date(fsStep.start_time).getTime(), new Date(fsStep.end_time).getTime()];
+    return [new Date(fsManeuver.start_time).getTime(), new Date(fsManeuver.end_time).getTime()];
+  }, [fsManeuver, fsStep]);
+
+  // Alt/IAS para o passo selecionado (para exibição nos gráficos da etapa)
+  const fsStepAltPoints = useMemo(() => {
+    if (!fsStep || !parsedCsvResult) return [];
+    return extractFieldPoints(parsedCsvResult, new Date(fsStep.start_time).getTime(), new Date(fsStep.end_time).getTime(), "gpsAltFt");
+  }, [fsStep, parsedCsvResult]);
+
+  const fsStepIasPoints = useMemo(() => {
+    if (!fsStep || !parsedCsvResult) return [];
+    return extractFieldPoints(parsedCsvResult, new Date(fsStep.start_time).getTime(), new Date(fsStep.end_time).getTime(), "iasKt");
+  }, [fsStep, parsedCsvResult]);
+
+  // Alt/IAS para a manobra completa (visão geral "Completa")
+  const fsManAltPoints = useMemo(() => {
+    if (!fsManeuver || !parsedCsvResult) return [];
+    return extractFieldPoints(parsedCsvResult, new Date(fsManeuver.start_time).getTime(), new Date(fsManeuver.end_time).getTime(), "gpsAltFt");
+  }, [fsManeuver, parsedCsvResult]);
+
+  const fsManIasPoints = useMemo(() => {
+    if (!fsManeuver || !parsedCsvResult) return [];
+    return extractFieldPoints(parsedCsvResult, new Date(fsManeuver.start_time).getTime(), new Date(fsManeuver.end_time).getTime(), "iasKt");
+  }, [fsManeuver, parsedCsvResult]);
+
+  // Ranges para os gráficos da visão geral (pernas ou etapas como cores)
+  const fsManLegRanges = useMemo(() => {
+    const tp = fsLiveReview?.analysis.trafficPattern;
+    const baseMs = parsedCsvResult?.chartTimeBaseMs;
+    if (!tp || !baseMs || !fsManeuver) return null;
+    const manStartMs = new Date(fsManeuver.start_time).getTime();
+    const manEndMs = new Date(fsManeuver.end_time).getTime();
+    const xMin = manStartMs - baseMs;
+    const xMax = manEndMs - baseMs;
+    const consecutive = makeConsecutiveLegs(tp.legs, xMin, xMax, tp.touchdownX);
+    if (consecutive.length === 0) return null;
+    return consecutive.map((l) => ({
+      color: LEG_COLORS[l.type] ?? "#94a3b8",
+      x1: Math.round((baseMs + l.startX - manStartMs) / 1000),
+      x2: Math.round((baseMs + l.endX - manStartMs) / 1000),
+    }));
+  }, [fsLiveReview, parsedCsvResult, fsManeuver]);
+
+  const fsManStepRanges = useMemo(() => {
+    if (!fsLiveReview || !fsManeuver) return [];
+    const manStartMs = new Date(fsManeuver.start_time).getTime();
+    return fsLiveReview.analysis.steps.map((step, i) => ({
+      color: STEP_COLORS[i % STEP_COLORS.length]!,
+      x1: Math.round((new Date(step.start_time).getTime() - manStartMs) / 1000),
+      x2: Math.round((new Date(step.end_time).getTime() - manStartMs) / 1000),
+    }));
+  }, [fsLiveReview, fsManeuver]);
+
+  const fsManChartRanges = useMemo<ReviewChartRange[]>(() =>
+    (fsManLegRanges ?? fsManStepRanges).map((r) => ({ x1: r.x1, x2: r.x2, color: r.color })),
+  [fsManLegRanges, fsManStepRanges]);
+
+  // Linha vertical de touchdown para os gráficos da manobra completa
+  const fsManTdLines = useMemo<ReviewChartVerticalLine[]>(() => {
+    const tp = fsLiveReview?.analysis.trafficPattern;
+    const baseMs = parsedCsvResult?.chartTimeBaseMs;
+    if (!tp || !baseMs || tp.touchdownX == null || !fsManeuver) return [];
+    const t = (baseMs + tp.touchdownX - new Date(fsManeuver.start_time).getTime()) / 1000;
+    return t >= 0 ? [{ t, color: "#94a3b8", label: "TD" }] : [];
+  }, [fsLiveReview, parsedCsvResult, fsManeuver]);
+
+  // Linha vertical de touchdown para os gráficos da etapa selecionada
+  const fsStepTdLines = useMemo<ReviewChartVerticalLine[]>(() => {
+    const tp = fsLiveReview?.analysis.trafficPattern;
+    const baseMs = parsedCsvResult?.chartTimeBaseMs;
+    if (!tp || !baseMs || tp.touchdownX == null || !fsStep) return [];
+    const t = (baseMs + tp.touchdownX - new Date(fsStep.start_time).getTime()) / 1000;
+    const stepDuration = (new Date(fsStep.end_time).getTime() - new Date(fsStep.start_time).getTime()) / 1000;
+    return t >= 0 && t <= stepDuration ? [{ t, color: "#94a3b8", label: "TD" }] : [];
+  }, [fsLiveReview, parsedCsvResult, fsStep]);
+
+  // Janela de viewport para calcular altura ideal de gráficos
+  const [fsWindowH, setFsWindowH] = useState(typeof window !== "undefined" ? window.innerHeight : 600);
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const update = () => setFsWindowH(window.innerHeight);
+    window.addEventListener("resize", update);
+    update();
+    return () => window.removeEventListener("resize", update);
+  }, [isFullscreen]);
+
+  // Número de gráficos na área de charts (para calcular altura)
+  const fsTotalCharts = useMemo(() => {
+    if (fsStepIdx === -1) return (fsManAltPoints.length > 0 ? 1 : 0) + (fsManIasPoints.length > 0 ? 1 : 0);
+    if (!fsStep) return 0;
+    const paramKeys = new Set(fsStep.parameters.map((p) => p.parameter));
+    const showAlt = !paramKeys.has("altitude") && fsStepAltPoints.length > 0;
+    const showIas = !paramKeys.has("ias") && fsStepIasPoints.length > 0;
+    const paramCharts = fsStep.parameters.filter((p) => p.data_points.length > 0).length;
+    return (showAlt ? 1 : 0) + (showIas ? 1 : 0) + paramCharts;
+  }, [fsStepIdx, fsStep, fsManAltPoints.length, fsManIasPoints.length, fsStepAltPoints.length, fsStepIasPoints.length]);
+
+  // Altura ideal de cada chart para maximizar espaço vertical
+  const fsChartH = useMemo(() => {
+    const rows = Math.max(1, Math.ceil(fsTotalCharts / 2));
+    const availH = fsWindowH / 2 - 60 - 20; // metade da tela - barra de tags (~48px) - padding vertical
+    const labelH = 20; // altura da label acima de cada chart
+    const gapH = 8;   // gap-2
+    const h = Math.floor((availH - rows * labelH - (rows - 1) * gapH) / rows);
+    return Math.max(100, h);
+  }, [fsWindowH, fsTotalCharts]);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === fsContainerRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    const el = fsContainerRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen().catch(() => {});
+  };
+
+  const handleFsHoverT = useCallback((t: number | null) => {
+    setFsHoverT(t);
+    if (t === null || !fsStep || !parsedCsvResult?.points.length) {
+      fsMapHoverRef.current?.(null);
+      return;
+    }
+    const stepStartMs = new Date(fsStep.start_time).getTime();
+    const targetMs = stepStartMs + t * 1000;
+    const pts = parsedCsvResult.points;
+    let nearest = pts[0];
+    let minDiff = Infinity;
+    for (const pt of pts) {
+      if (pt.t === null) continue;
+      const diff = Math.abs(pt.t - targetMs);
+      if (diff < minDiff) { minDiff = diff; nearest = pt; }
+      else if (diff > minDiff + 5000) break;
+    }
+    if (nearest) fsMapHoverRef.current?.([nearest.lat, nearest.lon]);
+  }, [fsStep, parsedCsvResult?.points]);
+
+  const SEG_CATEGORY_MAP: Record<string, string> = { takeoff: "takeoff", landing: "landing", tgl: "touch_and_go" };
+
+  const handleAutoAddSegments = async () => {
+    if (!parsedCsvResult || !flight || !user) return;
+    const { chartData, chartTimeBaseMs, points } = parsedCsvResult;
+    if (!chartTimeBaseMs || chartData.length === 0) {
+      showToast({ variant: "error", message: "Telemetria insuficiente para detecção automática." });
+      return;
+    }
+    setAutoAdding(true);
+    try {
+      const segments = detectFlightSegments(chartData, chartTimeBaseMs, points);
+      if (segments.length === 0) {
+        showToast({ variant: "error", message: "Nenhuma decolagem, pouso ou TGL detectados na telemetria." });
+        return;
+      }
+      let added = 0;
+      for (const seg of segments) {
+        const category = SEG_CATEGORY_MAP[seg.type];
+        if (!category) continue;
+        const tmpl = templates.find((t) => t.category === category && t.is_active);
+        if (!tmpl) continue;
+        const startIso = new Date(chartTimeBaseMs + seg.startX).toISOString();
+        const endIso = new Date(chartTimeBaseMs + seg.endX).toISOString();
+        const created = await createFlightManeuver({
+          flight_id: flightId,
+          template_id: tmpl.id,
+          instructor_id: user.id,
+          student_id: flight.student_user_id,
+          aircraft_ident: flight.aircraft_ident,
+          start_time: startIso,
+          end_time: endIso,
+          status: "draft",
+          created_by: user.id,
+        });
+        handleAdded(created);
+        added += 1;
+      }
+      if (added === 0) {
+        showToast({ variant: "error", message: "Nenhum template compatível encontrado para os segmentos detectados." });
+      } else {
+        showToast({ variant: "success", message: `${added} manobra${added > 1 ? "s" : ""} adicionada${added > 1 ? "s" : ""} automaticamente.` });
+      }
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setAutoAdding(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="space-y-3 pt-2">
@@ -1852,7 +2134,7 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
     );
   }
 
-  return (
+  const normalView = (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1860,15 +2142,37 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
           <h3 className="font-semibold text-slate-100">Flight Review</h3>
           <p className="text-xs text-slate-500">Análise de manobras com base na telemetria do voo</p>
         </div>
-        {isInstructor && (
-          <button
-            type="button"
-            onClick={() => setAddOpen(true)}
-            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
-          >
-            + Adicionar manobra
-          </button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {isInstructor && (
+            <>
+              <button
+                type="button"
+                onClick={() => void handleAutoAddSegments()}
+                disabled={autoAdding || !parsedCsvResult}
+                className="rounded-lg border border-sky-700 px-4 py-2 text-sm font-semibold text-sky-300 hover:bg-sky-900/30 disabled:opacity-50"
+              >
+                {autoAdding ? "Detectando…" : "Adicionar decolagens, pousos e TGLs"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddOpen(true)}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+              >
+                + Adicionar manobra
+              </button>
+            </>
+          )}
+          {parsedCsvResult && (
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              title="Tela cheia"
+            >
+              ⤢ Tela cheia
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Detected events info */}
@@ -1908,7 +2212,324 @@ export function FlightReviewTab({ flightId }: { flightId: string }) {
           ))}
         </div>
       )}
+    </div>
+  );
 
+  // Helper: build references for a parameter chart (reuse bank mirroring logic)
+  const buildFsRefs = (p: AnalyzedParameter): ReviewChartReference[] => {
+    const isBank = p.parameter === "bank";
+    const refs: ReviewChartReference[] = [];
+    if (p.expected_min !== null) {
+      refs.push({ y: p.expected_min, ...(p.expected_min_end != null ? { y_end: p.expected_min_end } : {}), color: "#f59e0b" });
+      if (isBank && p.expected_min < 0) refs.push({ y: -p.expected_min, color: "#f59e0b" });
+    }
+    if (p.expected_max !== null) {
+      refs.push({ y: p.expected_max, ...(p.expected_max_end != null ? { y_end: p.expected_max_end } : {}), color: "#f59e0b" });
+      if (isBank && p.expected_max > 0) refs.push({ y: -p.expected_max, color: "#f59e0b" });
+    }
+    return refs;
+  };
+
+  const fullscreenView = (
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+      {/* Top half: maneuver list (25%) + map (75%) */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Left: maneuver list */}
+        <div className="flex w-1/4 flex-col overflow-hidden border-r border-slate-800">
+          <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Manobras</p>
+            <button type="button" onClick={toggleFullscreen} className="text-xs text-slate-500 hover:text-slate-300">✕ Sair</button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-1">
+            {maneuvers.length === 0 ? (
+              <p className="px-1 text-xs text-slate-500">Nenhuma manobra registrada.</p>
+            ) : (
+              maneuvers.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => { setFsManId(m.id); setFsStepIdx(-1); }}
+                  className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                    fsManId === m.id
+                      ? "border border-sky-600/40 bg-sky-600/20 text-sky-300"
+                      : "text-slate-300 hover:bg-slate-800/60"
+                  }`}
+                >
+                  <div className="font-medium leading-tight">{templateMap[m.template_id]?.name ?? "—"}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {MANEUVER_CATEGORY_LABELS[templateMap[m.template_id]?.category ?? "other"]}
+                    {reviewMap[m.id] && (
+                      <span className={`ml-2 ${reviewMap[m.id]!.status === "ok" ? "text-emerald-400" : reviewMap[m.id]!.status === "critical" ? "text-red-400" : "text-yellow-400"}`}>
+                        ● {reviewMap[m.id]!.status}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+        {/* Right: animated map */}
+        <div className="min-w-0 flex-1">
+          {parsedCsvResult && parsedCsvResult.points.length > 0 ? (
+            <FlightMap
+              points={parsedCsvResult.points}
+              selectedRangeT={fsRangeT}
+              className="h-full w-full"
+              hoverCallbackRef={fsMapHoverRef}
+              chartTimeBaseMs={parsedCsvResult.chartTimeBaseMs}
+              trafficPattern={fsManId ? (fsLiveReview?.analysis.trafficPattern ?? null) : null}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-slate-500">Trajeto não disponível</div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom half */}
+      <div className="flex min-h-0 flex-1 overflow-hidden border-t border-slate-800">
+        {/* Left 25%: step tags (topo) + info */}
+        <div className="flex w-1/4 flex-col overflow-hidden border-r border-slate-800">
+          {/* Step TAGs – canto superior esquerdo da metade inferior */}
+          {fsLiveReview && (fsLiveReview.analysis.steps.length > 0 || fsManAltPoints.length > 0 || fsManIasPoints.length > 0) && (
+            <div className="flex flex-wrap gap-1 border-b border-slate-800 p-2">
+              {/* "Completa" sempre aparece primeiro */}
+              <button
+                type="button"
+                onClick={() => setFsStepIdx(-1)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  fsStepIdx === -1
+                    ? "bg-sky-600 text-white"
+                    : "border border-slate-700 text-slate-400 hover:bg-slate-800"
+                }`}
+              >
+                Completa
+              </button>
+              {fsLiveReview.analysis.steps.map((step, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => setFsStepIdx(i)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    fsStepIdx === i
+                      ? "bg-sky-600 text-white"
+                      : "border border-slate-700 text-slate-400 hover:bg-slate-800"
+                  }`}
+                >
+                  {step.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Conteúdo do painel esquerdo inferior */}
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-3">
+            {/* Vista "Completa": legenda de pernas / etapas */}
+            {fsStepIdx === -1 && fsLiveReview && (
+              <>
+                {(fsManLegRanges ?? fsManStepRanges).map((r, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
+                    <span className="text-xs text-slate-300">
+                      {"label" in r ? (r as { label: string }).label : fsLiveReview.analysis.steps[i]?.name ?? `Etapa ${i + 1}`}
+                    </span>
+                  </div>
+                ))}
+                {fsLiveReview.analysis.alerts.length > 0 && (
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Alertas gerais</p>
+                    <div className="space-y-1">
+                      {fsLiveReview.analysis.alerts.map((a, i) => (
+                        <div key={i} className={`rounded-lg px-2 py-1.5 text-xs ${
+                          a.severity === "critical" ? "bg-red-950/40 text-red-300"
+                          : a.severity === "high" ? "bg-orange-950/40 text-orange-300"
+                          : a.severity === "medium" ? "bg-yellow-950/40 text-yellow-300"
+                          : "bg-slate-800/40 text-slate-400"
+                        }`}>{a.message}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Vista de etapa: alertas + tabela de parâmetros */}
+            {fsStep && (
+              <>
+                {fsStep.alerts.length > 0 && (
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Alertas</p>
+                    <div className="space-y-1">
+                      {fsStep.alerts.map((a, i) => (
+                        <div key={i} className={`rounded-lg px-2 py-1.5 text-xs ${
+                          a.severity === "critical" ? "bg-red-950/40 text-red-300"
+                          : a.severity === "high" ? "bg-orange-950/40 text-orange-300"
+                          : a.severity === "medium" ? "bg-yellow-950/40 text-yellow-300"
+                          : "bg-slate-800/40 text-slate-400"
+                        }`}>{a.message}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {fsStep.parameters.length > 0 && (
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Parâmetros</p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-slate-500">
+                          <th className="py-1 text-left font-medium">Param.</th>
+                          <th className="py-1 text-right font-medium">Obs.</th>
+                          <th className="py-1 text-right font-medium">Esp.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fsStep.parameters.map((p, i) => (
+                          <tr key={i} className="border-t border-slate-800/60">
+                            <td className="py-1 text-slate-300">{p.label}</td>
+                            <td className={`py-1 text-right ${p.status === "out_of_range" ? "text-red-400" : p.status === "warning" ? "text-yellow-400" : "text-slate-300"}`}>
+                              {p.avg_observed !== null ? p.avg_observed.toFixed(1) : "—"}
+                            </td>
+                            <td className="py-1 text-right text-slate-500">
+                              {p.expected_min !== null || p.expected_max !== null
+                                ? `${p.expected_min ?? "—"} – ${p.expected_max ?? "—"}`
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+            {!fsManId && (
+              <p className="mt-4 text-center text-xs text-slate-500">Selecione uma manobra na lista</p>
+            )}
+          </div>
+        </div>
+
+        {/* Right 75%: gráficos maximizados */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {fsStepIdx === -1 && fsManeuver ? (
+            /* Vista "Completa": alt + IAS com ranges de etapa/perna + touchdown */
+            <div className={`overflow-y-auto flex-1 p-2 grid gap-2 ${fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+              {fsManAltPoints.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
+                  <CanvasReviewChart
+                    data={fsManAltPoints}
+                    label="Altitude (ft)"
+                    color="#94a3b8"
+                    domain={computeYDomain(fsManAltPoints, null, null)}
+                    height={fsChartH}
+                    ranges={fsManChartRanges}
+                    verticalLines={fsManTdLines}
+                    formatY={(v) => `${Math.round(v)}ft`}
+                    activeT={fsHoverT}
+                    onHoverT={handleFsHoverT}
+                  />
+                </div>
+              )}
+              {fsManIasPoints.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
+                  <CanvasReviewChart
+                    data={fsManIasPoints}
+                    label="IAS (kt)"
+                    color="#38bdf8"
+                    domain={computeYDomain(fsManIasPoints, null, null)}
+                    height={fsChartH}
+                    ranges={fsManChartRanges}
+                    verticalLines={fsManTdLines}
+                    formatY={(v) => `${v.toFixed(1)}kt`}
+                    activeT={fsHoverT}
+                    onHoverT={handleFsHoverT}
+                  />
+                </div>
+              )}
+              {(!fsManAltPoints.length && !fsManIasPoints.length) && (
+                <div className="col-span-2 flex h-full items-center justify-center text-sm text-slate-500">
+                  Telemetria insuficiente para visão geral.
+                </div>
+              )}
+            </div>
+          ) : fsStep ? (
+            /* Vista de etapa: alt/IAS (se não em params) + parâmetros da etapa */
+            (() => {
+              const paramKeys = new Set(fsStep.parameters.map((p) => p.parameter));
+              const showAlt = !paramKeys.has("altitude") && fsStepAltPoints.length > 0;
+              const showIas = !paramKeys.has("ias") && fsStepIasPoints.length > 0;
+              const cols = fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1";
+              return (
+                <div className={`overflow-y-auto flex-1 p-2 grid gap-2 ${cols}`}>
+                  {showAlt && (
+                    <div>
+                      <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
+                      <CanvasReviewChart
+                        data={fsStepAltPoints}
+                        label="Altitude (ft)"
+                        color="#94a3b8"
+                        domain={computeYDomain(fsStepAltPoints, null, null)}
+                        height={fsChartH}
+                        verticalLines={fsStepTdLines}
+                        formatY={(v) => `${Math.round(v)}ft`}
+                        activeT={fsHoverT}
+                        onHoverT={handleFsHoverT}
+                      />
+                    </div>
+                  )}
+                  {showIas && (
+                    <div>
+                      <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
+                      <CanvasReviewChart
+                        data={fsStepIasPoints}
+                        label="IAS (kt)"
+                        color="#38bdf8"
+                        domain={computeYDomain(fsStepIasPoints, null, null)}
+                        height={fsChartH}
+                        verticalLines={fsStepTdLines}
+                        formatY={(v) => `${v.toFixed(1)}kt`}
+                        activeT={fsHoverT}
+                        onHoverT={handleFsHoverT}
+                      />
+                    </div>
+                  )}
+                  {fsStep.parameters.map((p, i) =>
+                    p.data_points.length > 0 ? (
+                      <div key={i}>
+                        <p className="mb-1 text-xs font-medium text-slate-400">{p.label}</p>
+                        <CanvasReviewChart
+                          data={p.data_points}
+                          label={p.label}
+                          color={p.status === "out_of_range" ? "#ef4444" : p.status === "warning" ? "#f59e0b" : "#38bdf8"}
+                          domain={computeYDomain(p.data_points, p.expected_min, p.expected_max, p.parameter === "bank")}
+                          height={fsChartH}
+                          references={buildFsRefs(p)}
+                          verticalLines={fsStepTdLines}
+                          zeroCrossLine={p.parameter === "bank"}
+                          formatY={(v) => v.toFixed(1)}
+                          activeT={fsHoverT}
+                          onHoverT={handleFsHoverT}
+                        />
+                      </div>
+                    ) : null,
+                  )}
+                </div>
+              );
+            })()
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-slate-500">
+              {fsManId ? "Selecione uma etapa ou a visão geral acima." : "Selecione uma manobra para ver os gráficos."}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div ref={fsContainerRef}>
+      {isFullscreen ? fullscreenView : normalView}
       {addOpen && flight && (
         <AddManeuverModal
           flightId={flightId}
