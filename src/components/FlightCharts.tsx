@@ -223,6 +223,9 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelClientXRef = useRef<number | null>(null);
+  const dragStartXRef = useRef<number | null>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
+  const [dragRange, setDragRange] = useState<[number, number] | null>(null);
 
   const keys = useMemo(() => panel.seriesKeys.filter((k) => resolvedMap.has(k)), [panel.seriesKeys, resolvedMap]);
   useEffect(() => setHiddenKeys(defaultHiddenForPanel(panel.id, keys)), [panel.id, keys]);
@@ -357,6 +360,16 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.fillRect(Math.min(fx1, fx2), top, Math.abs(fx2 - fx1), plotH);
       }
 
+      if (dragRange) {
+        const dx1 = toX(dragRange[0]);
+        const dx2 = toX(dragRange[1]);
+        ctx.fillStyle = "rgba(14, 165, 233, 0.18)";
+        ctx.fillRect(Math.min(dx1, dx2), top, Math.abs(dx2 - dx1), plotH);
+        ctx.strokeStyle = "rgba(125, 211, 252, 0.85)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.min(dx1, dx2), top, Math.abs(dx2 - dx1), plotH);
+      }
+
       for (const ev of events ?? []) {
         if (ev.xMs < xMin || ev.xMs > xMax) continue;
         const x = toX(ev.xMs);
@@ -434,7 +447,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
       ro.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [activeHoverX, chartTimeBaseMs, compact, displayData, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
+  }, [activeHoverX, chartTimeBaseMs, compact, displayData, dragRange, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
 
   const toggleKey = (key: string) => {
     setHiddenKeys((prev) => {
@@ -443,6 +456,29 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
       else next.add(key);
       return next;
     });
+  };
+
+  const xValueFromClientX = (clientX: number): number | null => {
+    const canvas = canvasRef.current;
+    if (!canvas || displayData.length === 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    const left = compact ? 36 : 44;
+    const right = 10;
+    const plotW = Math.max(1, rect.width - left - right);
+    const xMin = xDomainRef.current?.[0] ?? displayData[0]?.x ?? 0;
+    const xMax = xDomainRef.current?.[1] ?? displayData[displayData.length - 1]?.x ?? 1;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left - left) / plotW));
+    return xMin + (xMax - xMin) * ratio;
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0 || !onXDomainChangeRef.current || displayData.length < 2) return;
+    const xValue = xValueFromClientX(event.clientX);
+    if (xValue === null) return;
+    dragStartXRef.current = xValue;
+    dragPointerIdRef.current = event.pointerId;
+    setDragRange([xValue, xValue]);
+    event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -457,14 +493,38 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const xMax = xDomainRef.current?.[1] ?? displayData[displayData.length - 1]?.x ?? 1;
     const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - left) / plotW));
     const xValue = xMin + (xMax - xMin) * ratio;
+    if (dragStartXRef.current !== null) {
+      setDragRange([dragStartXRef.current, xValue]);
+    }
     const row = nearestRow(displayData, xValue);
     if (!row) return;
     onHoverXRef.current?.(row.x);
     showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, event.clientX - rect.left + 10, event.clientY - rect.top - 16, rect.width);
   };
 
+  const finishDragSelection = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragPointerIdRef.current !== event.pointerId) return;
+    const start = dragStartXRef.current;
+    const end = xValueFromClientX(event.clientX);
+    dragStartXRef.current = null;
+    dragPointerIdRef.current = null;
+    setDragRange(null);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already have been released by the browser.
+    }
+    if (start === null || end === null) return;
+    const full = fullXDomainRef.current ?? [displayData[0]?.x ?? 0, displayData[displayData.length - 1]?.x ?? 1];
+    const min = Math.max(full[0], Math.min(start, end));
+    const max = Math.min(full[1], Math.max(start, end));
+    const fullSpan = full[1] - full[0] || 1;
+    if ((max - min) < fullSpan * 0.005) return;
+    onXDomainChangeRef.current?.([min, max]);
+  };
+
   const handlePointerLeave = () => {
-    onHoverXRef.current?.(null);
+    if (dragStartXRef.current === null) onHoverXRef.current?.(null);
     if (tooltipRef.current) tooltipRef.current.style.display = "none";
   };
 
@@ -518,7 +578,15 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         </div>
       ) : null}
       <div ref={shellRef} className="relative min-h-0 flex-1 overscroll-contain">
-        <canvas ref={canvasRef} className="block h-full w-full touch-none" onPointerMove={handlePointerMove} onPointerLeave={handlePointerLeave} />
+        <canvas
+          ref={canvasRef}
+          className="block h-full w-full touch-none"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishDragSelection}
+          onPointerCancel={finishDragSelection}
+          onPointerLeave={handlePointerLeave}
+        />
         <div ref={tooltipRef} className="pointer-events-none absolute left-0 top-0 hidden rounded-md border border-slate-700 bg-slate-950/90 px-2 py-1 text-[11px] text-slate-300 shadow-lg" />
       </div>
     </div>

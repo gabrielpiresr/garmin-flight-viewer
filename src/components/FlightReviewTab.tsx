@@ -353,14 +353,30 @@ function CanvasReviewChart({
       }
     };
 
-    const observer = new ResizeObserver(() => {
+    const scheduleDraw = () => {
       if (frame) window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(draw);
-    });
+    };
+    const delayedDraw = () => {
+      scheduleDraw();
+      window.setTimeout(scheduleDraw, 220);
+    };
+
+    const observer = new ResizeObserver(scheduleDraw);
     observer.observe(shell);
-    draw();
+    window.addEventListener("resize", delayedDraw);
+    window.addEventListener("orientationchange", delayedDraw);
+    window.addEventListener("pageshow", delayedDraw);
+    document.addEventListener("visibilitychange", delayedDraw);
+    window.visualViewport?.addEventListener("resize", delayedDraw);
+    scheduleDraw();
     return () => {
       observer.disconnect();
+      window.removeEventListener("resize", delayedDraw);
+      window.removeEventListener("orientationchange", delayedDraw);
+      window.removeEventListener("pageshow", delayedDraw);
+      document.removeEventListener("visibilitychange", delayedDraw);
+      window.visualViewport?.removeEventListener("resize", delayedDraw);
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [activeT, color, data, domain, formatY, height, ranges, references]);
@@ -574,6 +590,45 @@ function SimpleFieldChart({
   );
 }
 
+function routePointsForWindow(points: FlightPoint[], startMs: number, endMs: number): FlightPoint[] {
+  const timed = points
+    .map((point, index) => ({ point, index }))
+    .filter((entry) => entry.point.t !== null);
+  if (timed.length < 2) return [];
+
+  const selected = new Set<number>();
+  for (const entry of timed) {
+    const t = entry.point.t as number;
+    if (t >= startMs && t <= endMs) selected.add(entry.index);
+  }
+  if (selected.size >= 2) {
+    return points.filter((_, index) => selected.has(index));
+  }
+
+  let before: { point: FlightPoint; index: number } | null = null;
+  let after: { point: FlightPoint; index: number } | null = null;
+  for (const entry of timed) {
+    const t = entry.point.t as number;
+    if (t <= startMs) before = entry;
+    if (!after && t >= endMs) after = entry;
+  }
+
+  if (before) selected.add(before.index);
+  if (after) selected.add(after.index);
+
+  if (selected.size < 2) {
+    const firstInside = timed.find((entry) => selected.has(entry.index));
+    const anchorIndex = firstInside?.index ?? before?.index ?? after?.index ?? timed[0]!.index;
+    const timedAnchorIndex = timed.findIndex((entry) => entry.index === anchorIndex);
+    const previous = timed[Math.max(0, timedAnchorIndex - 1)];
+    const next = timed[Math.min(timed.length - 1, timedAnchorIndex + 1)];
+    if (previous) selected.add(previous.index);
+    if (next) selected.add(next.index);
+  }
+
+  return points.filter((_, index) => selected.has(index));
+}
+
 // ---------- Maneuver overview (map + alt + IAS with per-step coloring) ----------
 
 function ManeuverOverview({
@@ -611,18 +666,14 @@ function ManeuverOverview({
 
   // GPS segments for the map: full maneuver path + per-step colored segments
   const { allMapPos, stepSegments } = useMemo(() => {
-    const pts = parsedResult.points.filter(
-      (p) => p.t !== null && p.t >= maneuverStartMs && p.t <= maneuverEndMs,
-    );
+    const pts = routePointsForWindow(parsedResult.points, maneuverStartMs, maneuverEndMs);
     const allPos = pts.map((p) => [p.lat, p.lon] as [number, number]);
 
     const segs = review.analysis.steps.map((step, i) => {
       const sMs = new Date(step.start_time).getTime();
       const eMs = new Date(step.end_time).getTime();
       return {
-        pts: parsedResult.points
-          .filter((p) => p.t !== null && (p.t as number) >= sMs && (p.t as number) <= eMs)
-          .map((p) => [p.lat, p.lon] as [number, number]),
+        pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
         color: STEP_COLORS[i % STEP_COLORS.length]!,
         name: step.name,
       };

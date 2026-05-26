@@ -1,5 +1,5 @@
 import L from "leaflet";
-import { memo, useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import type { FlightPoint } from "../types/flight";
 
@@ -89,9 +89,28 @@ function MapBoundsTracker({
 }: {
   boundsCallbackRef: React.MutableRefObject<((b: L.LatLngBounds) => void) | null>;
 }) {
+  const userMoveRef = useRef(false);
+
   useMapEvents({
-    moveend(e) { boundsCallbackRef.current?.(e.target.getBounds()); },
-    zoomend(e) { boundsCallbackRef.current?.(e.target.getBounds()); },
+    dragstart() {
+      userMoveRef.current = true;
+    },
+    zoomstart(e) {
+      if ((e as L.LeafletEvent & { originalEvent?: Event }).originalEvent) {
+        userMoveRef.current = true;
+      }
+    },
+    moveend(e) {
+      if (!userMoveRef.current) return;
+      boundsCallbackRef.current?.(e.target.getBounds());
+    },
+    zoomend(e) {
+      if (!userMoveRef.current) return;
+      boundsCallbackRef.current?.(e.target.getBounds());
+      window.setTimeout(() => {
+        userMoveRef.current = false;
+      }, 0);
+    },
   });
   return null;
 }
@@ -140,7 +159,7 @@ function ImperativeRouteLayers({
       renderer,
       color: "#d946ef",
       weight: 2.4,
-      opacity: selectedPositions.length > 1 ? 0.35 : 0.9,
+      opacity: selectedPositions.length > 1 ? 0.4 : 0.9,
       dashArray: selectedPositions.length > 1 ? "8 8" : undefined,
       interactive: false,
     }).addTo(group);

@@ -20,6 +20,8 @@ export const AIRCRAFT_MODELS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFT_MOD
 export const AIRCRAFTS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFTS_COL_ID as string | undefined;
 export const AERODROMES_COL_ID =
   (import.meta.env.VITE_APPWRITE_AERODROMES_COL_ID as string | undefined) ?? "aerodromes";
+export const RUNWAYS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_RUNWAYS_COL_ID as string | undefined) ?? "runways";
 export const MAINTENANCE_RULES_COL_ID = import.meta.env.VITE_APPWRITE_MAINTENANCE_RULES_COL_ID as string | undefined;
 export const MAINTENANCE_PROGRAM_ITEMS_COL_ID =
   import.meta.env.VITE_APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID as string | undefined;

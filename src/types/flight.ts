@@ -55,6 +55,32 @@ export type LandingMetrics = {
   maxBrakingG: number | null;
 };
 
+// ─── Traffic pattern ─────────────────────────────────────────────────────────
+
+export type PatternLegType = 'crosswind' | 'downwind' | 'base' | 'final';
+
+export type PatternLeg = {
+  type: PatternLegType;
+  /** Chart x (ms offset) do início da perna. */
+  startX: number;
+  /** Chart x (ms offset) do fim da perna. */
+  endX: number;
+  startAglFt: number | null;
+  endAglFt: number | null;
+};
+
+export type TrafficPatternAnalysis = {
+  /** Rumo verdadeiro (°) utilizado na classificação. */
+  runwayHeadingTrue: number;
+  /** Designador da cabeceira, ex: "33", "10L". Null se derivado da telemetria sem DB. */
+  runwayIdent: string | null;
+  patternDirection: 'left' | 'right' | 'unknown';
+  /** Pernas detectadas em ordem cronológica. */
+  legs: PatternLeg[];
+  /** true = rumo veio da coleção Appwrite "runways", false = derivado da telemetria. */
+  sourceIsDb: boolean;
+};
+
 export type FlightSegment = {
   id: string;
   type: SegmentType;
@@ -66,6 +92,8 @@ export type FlightSegment = {
   events: FlightEvent[];
   takeoffMetrics?: TakeoffMetrics;
   landingMetrics?: LandingMetrics;
+  /** Pernas do circuito de tráfego — preenchido apenas em 'landing' e 'tgl'. */
+  trafficPattern?: TrafficPatternAnalysis;
 };
 
 // ─── GPS track ───────────────────────────────────────────────────────────────

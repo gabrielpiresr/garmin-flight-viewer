@@ -112,6 +112,51 @@ export function labelForKey(key: string): string {
   return TELEMETRY_SERIES.find((s) => s.key === key)?.label ?? key;
 }
 
+const SERIES_COLOR_PALETTE = [
+  "#06b6d4",
+  "#f59e0b",
+  "#22c55e",
+  "#ef4444",
+  "#8b5cf6",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
+  "#3b82f6",
+  "#84cc16",
+  "#e11d48",
+  "#a855f7",
+  "#10b981",
+  "#f43f5e",
+  "#0ea5e9",
+  "#d946ef",
+  "#65a30d",
+  "#dc2626",
+  "#7c3aed",
+  "#0891b2",
+  "#ca8a04",
+  "#16a34a",
+  "#db2777",
+  "#2563eb",
+  "#ea580c",
+  "#059669",
+  "#9333ea",
+  "#be123c",
+  "#0284c7",
+  "#4d7c0f",
+  "#c2410c",
+  "#7e22ce",
+  "#0f766e",
+  "#b91c1c",
+  "#1d4ed8",
+  "#a16207",
+  "#15803d",
+  "#be185d",
+  "#6d28d9",
+  "#0369a1",
+];
+
 export function colorForKey(key: string): string {
-  return TELEMETRY_SERIES.find((s) => s.key === key)?.color ?? "#94a3b8";
+  const index = TELEMETRY_SERIES.findIndex((s) => s.key === key);
+  if (index >= 0) return SERIES_COLOR_PALETTE[index % SERIES_COLOR_PALETTE.length]!;
+  return "#94a3b8";
 }

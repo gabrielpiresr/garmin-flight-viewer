@@ -92,6 +92,8 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const [chartDomain, setChartDomain] = useState<[number, number] | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
+  const telemetryFullscreenRef = useRef<HTMLDivElement | null>(null);
 
   // Imperative hover bridge — no React state involved during hover
   const hoverCallbackRef = useRef<((pos: [number, number] | null) => void) | null>(null);
@@ -103,6 +105,41 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   useEffect(() => { pointsRef.current = points; }, [points]);
   useEffect(() => { chartTimeBaseMsRef.current = chartTimeBaseMs; }, [chartTimeBaseMs]);
   useEffect(() => { selectedSegmentIdRef.current = selectedSegmentId; }, [selectedSegmentId]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFullscreen = document.fullscreenElement === telemetryFullscreenRef.current;
+      setIsBrowserFullscreen(isFullscreen);
+      if (!isFullscreen && mapExpanded) setMapExpanded(false);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, [mapExpanded]);
+
+  const handleToggleMapFullscreen = useCallback(() => {
+    const container = telemetryFullscreenRef.current;
+    if (!container) {
+      setMapExpanded((value) => !value);
+      return;
+    }
+
+    if (mapExpanded) {
+      if (document.fullscreenElement === container) {
+        void document.exitFullscreen().catch(() => setMapExpanded(false));
+      } else {
+        setMapExpanded(false);
+      }
+      return;
+    }
+
+    setMapExpanded(true);
+    const request = container.requestFullscreen?.();
+    if (request) {
+      void request.catch(() => {
+        setIsBrowserFullscreen(false);
+      });
+    }
+  }, [mapExpanded]);
 
   const canEditTelemetry = user?.role === "instrutor" || user?.role === "admin";
   const showTelemetryManagement = user?.role !== "aluno";
@@ -351,11 +388,6 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     return [chartData[0]!.x, chartData[chartData.length - 1]!.x];
   }, [chartData]);
 
-  const selectedRangeT = useMemo<[number, number] | null>(() => {
-    if (!selectedSegment || chartTimeBaseMs == null) return null;
-    return [chartTimeBaseMs + selectedSegment.startX, chartTimeBaseMs + selectedSegment.endX];
-  }, [selectedSegment, chartTimeBaseMs]);
-
   const selectedXDomain = useMemo<[number, number] | null>(
     () => selectedSegment ? [selectedSegment.startX, selectedSegment.endX] : null,
     [selectedSegment],
@@ -365,6 +397,11 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     () => chartDomain ?? selectedXDomain,
     [selectedXDomain, chartDomain],
   );
+
+  const selectedRangeT = useMemo<[number, number] | null>(() => {
+    if (!activeChartXDomain || chartTimeBaseMs == null) return null;
+    return [chartTimeBaseMs + activeChartXDomain[0], chartTimeBaseMs + activeChartXDomain[1]];
+  }, [activeChartXDomain, chartTimeBaseMs]);
 
   const focusDomain = useMemo<[number, number] | null>(
     () => selectedSegment ? null : chartDomain,
@@ -541,8 +578,16 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
       )}
 
       {(points.length > 0 || chartData.length > 0) && (
-        <div className={mapExpanded ? "min-w-0" : "min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]"}>
-          <div className={mapExpanded ? "grid min-h-0 gap-3" : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+        <div
+          ref={telemetryFullscreenRef}
+          className={
+            mapExpanded
+              ? "min-w-0 overflow-hidden bg-slate-950 p-2 text-slate-100"
+              : "min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]"
+          }
+          style={mapExpanded ? { height: isBrowserFullscreen ? "100vh" : "calc(100dvh - 16px)" } : undefined}
+        >
+          <div className={mapExpanded ? "h-full min-h-0" : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
             {chartData.length > 0 && !mapExpanded && (
               <div className="min-h-0 xl:overflow-y-auto xl:pr-1">
                 {selectedSegment ? (
@@ -562,12 +607,15 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
               </div>
             )}
 
-            <div className={mapExpanded ? "grid min-h-0 min-w-0 gap-1" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}>
+            <div
+              className={mapExpanded ? "grid h-full min-h-0 min-w-0 gap-2" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}
+              style={mapExpanded ? { gridTemplateRows: "65% 30%" } : undefined}
+            >
               {points.length >= 2 ? (
-                <div className="relative min-h-0">
+                <div className="relative h-full min-h-0">
                   <button
                     type="button"
-                    onClick={() => setMapExpanded((value) => !value)}
+                    onClick={handleToggleMapFullscreen}
                     className="absolute right-3 top-3 z-[500] rounded-md border border-slate-700 bg-slate-950/85 px-3 py-1.5 text-xs font-medium text-slate-100 shadow-lg hover:bg-slate-900"
                   >
                     {mapExpanded ? "Sair da tela cheia" : "Tela cheia"}
@@ -577,7 +625,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                     selectedRangeT={selectedRangeT}
                     className={
                       mapExpanded
-                        ? "h-[72dvh] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
+                        ? "h-full w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
                         : "h-[420px] max-h-[70vh] min-h-[360px] w-full overflow-hidden rounded-xl border border-slate-700 sm:h-[520px] xl:h-full xl:max-h-none xl:min-h-0"
                     }
                     hoverCallbackRef={hoverCallbackRef}
@@ -590,7 +638,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                 </p>
               )}
 
-              <div className={mapExpanded ? "h-[18dvh] min-h-[140px] min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
+              <div className={mapExpanded ? "min-h-0 min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
                 <FlightCharts
                   chartData={chartData}
                   hasTime={hasChartTime}
@@ -602,7 +650,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                   fullXDomain={fullXDomain}
                   focusDomain={focusDomain}
                   events={selectedSegment?.events}
-                  compact={mapExpanded}
+                  compact={false}
                 />
               </div>
             </div>
