@@ -36,6 +36,7 @@ import { MANEUVER_CATEGORY_LABELS } from "../types/flightReview";
 import type { FlightPoint } from "../types/flight";
 import { FlightMap } from "./FlightMap";
 import { useToast } from "./ui/ToastProvider";
+import CsvWorker from "../workers/csvWorker?worker";
 
 // ---------- Constants ----------
 
@@ -2090,6 +2091,9 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   const [loading, setLoading] = useState(true);
   const [flight, setFlight] = useState<SavedFlightListItem | null>(null);
   const [flightCsvText, setFlightCsvText] = useState<string | null>(null);
+  const [parsedCsvResult, setParsedCsvResult] = useState<ParseResult | null>(null);
+  const [parsedCsvLoading, setParsedCsvLoading] = useState(false);
+  const [parsedCsvError, setParsedCsvError] = useState<string | null>(null);
   const [templates, setTemplates] = useState<ManeuverTemplate[]>([]);
   const [maneuvers, setManeuvers] = useState<FlightManeuver[]>([]);
   const [reviewMap, setReviewMap] = useState<Record<string, FlightManeuverReview>>({});
@@ -2103,6 +2107,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   const [fsHoverT, setFsHoverT] = useState<number | null>(null);
   const fsContainerRef = useRef<HTMLDivElement>(null);
   const fsMapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
+  const csvWorkerRef = useRef<Worker | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2164,9 +2169,51 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   useEffect(() => { void load(); }, [load]);
 
   /** Parsed CSV for reconstructing chart data_points at render time (charts survive page reload). */
-  const parsedCsvResult = useMemo<ParseResult | null>(() => {
-    if (!flightCsvText) return null;
-    try { return parseGarminCsv(flightCsvText); } catch { return null; }
+  useEffect(() => {
+    csvWorkerRef.current?.terminate();
+    csvWorkerRef.current = null;
+    setParsedCsvResult(null);
+    setParsedCsvError(null);
+
+    if (!flightCsvText?.trim()) {
+      setParsedCsvLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setParsedCsvLoading(true);
+    const worker = new CsvWorker();
+    csvWorkerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<{ ok: boolean; result?: ParseResult; error?: string }>) => {
+      worker.terminate();
+      if (csvWorkerRef.current === worker) csvWorkerRef.current = null;
+      if (cancelled) return;
+      setParsedCsvLoading(false);
+      if (!event.data.ok || !event.data.result) {
+        setParsedCsvResult(null);
+        setParsedCsvError(event.data.error ?? "Erro ao processar a telemetria do Flight Review.");
+        return;
+      }
+      setParsedCsvResult(event.data.result);
+    };
+
+    worker.onerror = (error) => {
+      worker.terminate();
+      if (csvWorkerRef.current === worker) csvWorkerRef.current = null;
+      if (cancelled) return;
+      setParsedCsvLoading(false);
+      setParsedCsvResult(null);
+      setParsedCsvError(error.message || "Erro ao processar a telemetria do Flight Review.");
+    };
+
+    worker.postMessage(flightCsvText);
+
+    return () => {
+      cancelled = true;
+      worker.terminate();
+      if (csvWorkerRef.current === worker) csvWorkerRef.current = null;
+    };
   }, [flightCsvText]);
 
   const handleAdded = (m: FlightManeuver) => {
@@ -2540,6 +2587,16 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
           </div>
         </div>
       )}
+
+      {parsedCsvLoading ? (
+        <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-4 text-sm text-sky-100">
+          Processando telemetria do Flight Review...
+        </div>
+      ) : parsedCsvError ? (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+          Nao foi possivel montar os graficos do Flight Review: {parsedCsvError}
+        </div>
+      ) : null}
 
       {/* Maneuvers list */}
       {maneuvers.length === 0 ? (
