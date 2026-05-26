@@ -79,6 +79,8 @@ export type TrafficPatternAnalysis = {
   legs: PatternLeg[];
   /** true = rumo veio da coleção Appwrite "runways", false = derivado da telemetria. */
   sourceIsDb: boolean;
+  /** Chart x-offset (ms) do ponto de toque — data[touchdownIdx].x passado na detecção. */
+  touchdownX?: number | null;
 };
 
 export type FlightSegment = {

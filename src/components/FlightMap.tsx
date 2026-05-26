@@ -1,7 +1,8 @@
 import L from "leaflet";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { FlightPoint } from "../types/flight";
+import { makeConsecutiveLegs } from "../lib/trafficPattern";
+import type { FlightPoint, TrafficPatternAnalysis } from "../types/flight";
 
 function calcBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const phi1 = (lat1 * Math.PI) / 180;
@@ -144,18 +145,22 @@ function ImperativeRouteLayers({
   selectedPositions,
   arrowMarkers,
   planeMarker,
+  legSegments,
 }: {
   positions: [number, number][];
   selectedPositions: [number, number][];
   arrowMarkers: { pos: [number, number]; deg: number }[];
   planeMarker: { pos: [number, number]; deg: number } | null;
+  legSegments?: { color: string; positions: [number, number][] }[] | null;
 }) {
   const map = useMap();
 
   useEffect(() => {
     const renderer = L.canvas({ padding: 0.35 });
     const group = L.layerGroup().addTo(map);
-    const base = L.polyline(positions, {
+
+    // Trajeto base (todo o voo) — esmaecido quando há seleção
+    L.polyline(positions, {
       renderer,
       color: "#d946ef",
       weight: 2.4,
@@ -163,9 +168,23 @@ function ImperativeRouteLayers({
       dashArray: selectedPositions.length > 1 ? "8 8" : undefined,
       interactive: false,
     }).addTo(group);
-    void base;
 
-    if (selectedPositions.length > 1) {
+    const hasLegs = legSegments && legSegments.length > 0 && selectedPositions.length > 1;
+
+    if (hasLegs) {
+      // Trajeto do segmento colorido por perna do circuito
+      for (const seg of legSegments!) {
+        if (seg.positions.length < 2) continue;
+        L.polyline(seg.positions, {
+          renderer,
+          color: seg.color,
+          weight: 3.4,
+          opacity: 0.95,
+          interactive: false,
+        }).addTo(group);
+      }
+    } else if (selectedPositions.length > 1) {
+      // Sem padrão de circuito — trajeto selecionado em fúcsia uniforme
       L.polyline(selectedPositions, {
         renderer,
         color: "#d946ef",
@@ -198,10 +217,17 @@ function ImperativeRouteLayers({
     return () => {
       group.removeFrom(map);
     };
-  }, [arrowMarkers, map, planeMarker, positions, selectedPositions]);
+  }, [arrowMarkers, legSegments, map, planeMarker, positions, selectedPositions]);
 
   return null;
 }
+
+/** Cores por perna do circuito (devem coincidir com PatternLegBar). */
+const LEG_MAP_COLORS: Record<string, string> = {
+  downwind: "#c4b5fd",
+  base:     "#fdba74",
+  final:    "#86efac",
+};
 
 type Props = {
   points: FlightPoint[];
@@ -209,10 +235,12 @@ type Props = {
   className?: string;
   hoverCallbackRef?: React.MutableRefObject<((pos: [number, number] | null) => void) | null>;
   boundsCallbackRef?: React.MutableRefObject<((b: L.LatLngBounds) => void) | null>;
+  trafficPattern?: TrafficPatternAnalysis | null;
+  chartTimeBaseMs?: number | null;
 };
 
 export const FlightMap = memo(
-  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef }: Props) {
+  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs }: Props) {
     const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
       const [t0, t1] = selectedRangeT;
@@ -252,6 +280,29 @@ export const FlightMap = memo(
       };
     }, [positions, points]);
 
+    /** Segmentos coloridos por perna do circuito para o trajeto selecionado. */
+    const legSegments = useMemo(() => {
+      if (!trafficPattern || chartTimeBaseMs == null || selectedPoints.length < 2 || !selectedRangeT) {
+        return null;
+      }
+      const xMin = selectedRangeT[0] - chartTimeBaseMs;
+      const xMax = selectedRangeT[1] - chartTimeBaseMs;
+      const consecutive = makeConsecutiveLegs(trafficPattern.legs, xMin, xMax, trafficPattern.touchdownX);
+      if (consecutive.length === 0) return null;
+
+      return consecutive.map((leg) => {
+        const startT = chartTimeBaseMs + leg.startX;
+        const endT   = chartTimeBaseMs + leg.endX;
+        const legPositions = selectedPoints
+          .filter((p) => p.t != null && p.t >= startT && p.t <= endT)
+          .map((p) => [p.lat, p.lon] as [number, number]);
+        return {
+          color: LEG_MAP_COLORS[leg.type] ?? "#d946ef",
+          positions: legPositions,
+        };
+      }).filter((seg) => seg.positions.length >= 2);
+    }, [trafficPattern, chartTimeBaseMs, selectedPoints, selectedRangeT]);
+
     if (positions.length < 2) {
       return (
         <div className="flex h-64 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/50 text-sm text-slate-500">
@@ -287,6 +338,7 @@ export const FlightMap = memo(
             selectedPositions={selectedPositions}
             arrowMarkers={arrowMarkers}
             planeMarker={planeMarker}
+            legSegments={legSegments}
           />
           {hoverCallbackRef && <ImperativeCursor hoverCallbackRef={hoverCallbackRef} />}
           {boundsCallbackRef && <MapBoundsTracker boundsCallbackRef={boundsCallbackRef} />}
@@ -300,5 +352,7 @@ export const FlightMap = memo(
     prev.selectedRangeT === next.selectedRangeT &&
     prev.className === next.className &&
     prev.hoverCallbackRef === next.hoverCallbackRef &&
-    prev.boundsCallbackRef === next.boundsCallbackRef,
+    prev.boundsCallbackRef === next.boundsCallbackRef &&
+    prev.trafficPattern === next.trafficPattern &&
+    prev.chartTimeBaseMs === next.chartTimeBaseMs,
 );

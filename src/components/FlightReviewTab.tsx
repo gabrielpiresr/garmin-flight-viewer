@@ -19,6 +19,7 @@ import {
   deriveReviewStatus,
   TELEMETRY_FIELD_MAP,
 } from "../lib/flightManeuverAnalysis";
+import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import {
   createFlightManeuver,
   deleteFlightManeuver,
@@ -53,6 +54,19 @@ const STEP_COLORS = [
   "#a78bfa", "#fb923c", "#22d3ee", "#c084fc",
   "#86efac", "#fda4af",
 ];
+
+/** Cores das pernas do circuito (mesmas que PatternLegBar). */
+const LEG_COLORS: Record<string, string> = {
+  downwind: "#c4b5fd",
+  base:     "#fdba74",
+  final:    "#86efac",
+};
+
+const LEG_LABELS: Record<string, string> = {
+  downwind: "Do vento",
+  base:     "Base",
+  final:    "Final",
+};
 
 function InvalidateMapSize() {
   const map = useMap();
@@ -205,6 +219,12 @@ type ReviewChartReference = {
   label?: string;
 };
 
+type ReviewChartVerticalLine = {
+  t: number;
+  color: string;
+  label?: string;
+};
+
 function CanvasReviewChart({
   data,
   label,
@@ -213,6 +233,7 @@ function CanvasReviewChart({
   height,
   ranges = [],
   references = [],
+  verticalLines = [],
   formatY,
   activeT,
   onHoverT,
@@ -224,6 +245,7 @@ function CanvasReviewChart({
   height: number;
   ranges?: ReviewChartRange[];
   references?: ReviewChartReference[];
+  verticalLines?: ReviewChartVerticalLine[];
   formatY: (value: number) => string;
   activeT?: number | null;
   onHoverT?: (t: number | null) => void;
@@ -316,6 +338,28 @@ function CanvasReviewChart({
         }
       }
 
+      // Linhas verticais de evento (ex: touchdown)
+      for (const vLine of verticalLines) {
+        if (vLine.t < xMin || vLine.t > xMax) continue;
+        const x = toX(vLine.t);
+        ctx.save();
+        ctx.strokeStyle = vLine.color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + plotH);
+        ctx.stroke();
+        ctx.restore();
+        if (vLine.label) {
+          ctx.fillStyle = vLine.color;
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.textBaseline = "top";
+          const lx = Math.min(x + 3, width - right - 40);
+          ctx.fillText(vLine.label, lx, top + 2);
+        }
+      }
+
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.9;
       const linePoints: Array<{ x: number; y: number }> = [];
@@ -379,7 +423,7 @@ function CanvasReviewChart({
       window.visualViewport?.removeEventListener("resize", delayedDraw);
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [activeT, color, data, domain, formatY, height, ranges, references]);
+  }, [activeT, color, data, domain, formatY, height, ranges, references, verticalLines]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -664,31 +708,76 @@ function ManeuverOverview({
     [review.analysis.steps, maneuverStartMs],
   );
 
-  // GPS segments for the map: full maneuver path + per-step colored segments
+  // Traffic pattern leg ranges — com pernas consecutivas (sem gaps)
+  const legRanges = useMemo(() => {
+    const tp = review.analysis.trafficPattern;
+    const baseMs = parsedResult.chartTimeBaseMs;
+    if (!tp || !baseMs) return null;
+    // Calcula o domínio da manobra em chart-x space (ms offset desde chartTimeBaseMs)
+    const xMin = maneuverStartMs - baseMs;
+    const xMax = maneuverEndMs   - baseMs;
+    const consecutive = makeConsecutiveLegs(tp.legs, xMin, xMax, tp.touchdownX);
+    if (consecutive.length === 0) return null;
+    return consecutive.map((l) => ({
+      type: l.type,
+      color: LEG_COLORS[l.type] ?? "#94a3b8",
+      label: LEG_LABELS[l.type] ?? l.type,
+      startSec: Math.round((baseMs + l.startX - maneuverStartMs) / 1000),
+      endSec:   Math.round((baseMs + l.endX   - maneuverStartMs) / 1000),
+    }));
+  }, [review.analysis.trafficPattern, parsedResult.chartTimeBaseMs, maneuverStartMs, maneuverEndMs]);
+
+  // Segundo do toque (para marcador vertical nos gráficos)
+  const touchdownVertLines = useMemo<ReviewChartVerticalLine[]>(() => {
+    const tp = review.analysis.trafficPattern;
+    const baseMs = parsedResult.chartTimeBaseMs;
+    if (!tp || !baseMs || tp.touchdownX == null) return [];
+    const t = (baseMs + tp.touchdownX - maneuverStartMs) / 1000;
+    return [{ t, color: "#94a3b8", label: "TD" }];
+  }, [review.analysis.trafficPattern, parsedResult.chartTimeBaseMs, maneuverStartMs]);
+
+  // GPS segments for the map: full maneuver path + per-leg or per-step colored segments
   const { allMapPos, stepSegments } = useMemo(() => {
     const pts = routePointsForWindow(parsedResult.points, maneuverStartMs, maneuverEndMs);
     const allPos = pts.map((p) => [p.lat, p.lon] as [number, number]);
+    const baseMs = parsedResult.chartTimeBaseMs;
 
-    const segs = review.analysis.steps.map((step, i) => {
-      const sMs = new Date(step.start_time).getTime();
-      const eMs = new Date(step.end_time).getTime();
-      return {
-        pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
-        color: STEP_COLORS[i % STEP_COLORS.length]!,
-        name: step.name,
-      };
-    });
+    // Use leg segments when traffic pattern available
+    const segs = (legRanges && baseMs)
+      ? legRanges.map((l) => {
+          const sMs = maneuverStartMs + l.startSec * 1000;
+          const eMs = maneuverStartMs + l.endSec * 1000;
+          return {
+            pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
+            color: l.color,
+            name: l.label,
+          };
+        })
+      : review.analysis.steps.map((step, i) => {
+          const sMs = new Date(step.start_time).getTime();
+          const eMs = new Date(step.end_time).getTime();
+          return {
+            pts: routePointsForWindow(parsedResult.points, sMs, eMs).map((p) => [p.lat, p.lon] as [number, number]),
+            color: STEP_COLORS[i % STEP_COLORS.length]!,
+            name: step.name,
+          };
+        });
 
     return { allMapPos: allPos, stepSegments: segs };
-  }, [parsedResult.points, review.analysis.steps, maneuverStartMs, maneuverEndMs]);
+  }, [parsedResult.points, parsedResult.chartTimeBaseMs, review.analysis.steps, legRanges, maneuverStartMs, maneuverEndMs]);
 
   const syncId = "maneuver-overview";
   const [hoverT, setHoverT] = useState<number | null>(null);
   const altDomain = useMemo(() => computeYDomain(altPoints, null, null), [altPoints]);
   const iasDomain = useMemo(() => computeYDomain(iasPoints, null, null), [iasPoints]);
   const chartRanges = useMemo(
-    () => stepRanges.map((step) => ({ x1: step.startSec, x2: step.endSec, color: step.color })),
-    [stepRanges],
+    () => [
+      // Se há pernas detectadas, usa as cores das pernas; senão usa as cores das etapas
+      ...(legRanges
+        ? legRanges.map((l) => ({ x1: l.startSec, x2: l.endSec, color: l.color }))
+        : stepRanges.map((s) => ({ x1: s.startSec, x2: s.endSec, color: s.color }))),
+    ],
+    [stepRanges, legRanges],
   );
   void syncId;
 
@@ -704,8 +793,18 @@ function ManeuverOverview({
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
           Visão geral da manobra
         </p>
-        {/* Step legend */}
-        {stepRanges.length > 0 && (
+        {/* Leg legend (when traffic pattern detected) or step legend */}
+        {legRanges && legRanges.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="text-xs text-slate-500">Pernas:</span>
+            {legRanges.map((l, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: l.color }} />
+                <span className="text-xs" style={{ color: l.color }}>{l.label}</span>
+              </div>
+            ))}
+          </div>
+        ) : stepRanges.length > 0 ? (
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {stepRanges.map((s, i) => (
               <div key={i} className="flex items-center gap-1.5">
@@ -717,7 +816,7 @@ function ManeuverOverview({
               </div>
             ))}
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Route map with per-step colored segments */}
@@ -762,6 +861,7 @@ function ManeuverOverview({
             domain={altDomain}
             height={130}
             ranges={chartRanges}
+            verticalLines={touchdownVertLines}
             formatY={(value) => `${Math.round(value)}ft`}
             activeT={hoverT}
             onHoverT={setHoverT}
@@ -780,6 +880,7 @@ function ManeuverOverview({
             domain={iasDomain}
             height={110}
             ranges={chartRanges}
+            verticalLines={touchdownVertLines}
             formatY={(value) => `${value.toFixed(1)}kt`}
             activeT={hoverT}
             onHoverT={setHoverT}

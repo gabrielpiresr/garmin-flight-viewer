@@ -6,6 +6,7 @@ import type {
   TakeoffMetrics,
 } from "../types/flight";
 import type { FlightPoint } from "../types/flight";
+import { detectTrafficPattern } from "./trafficPattern";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -186,13 +187,16 @@ function isTouchAndGoRecoveryTouchdown(data: ChartRow[], idx: number): boolean {
  * decreasing, and VSpd has settled. Touch-and-goes can leave the runway again
  * before VSpd becomes stable, so a second detector accepts the touchdown impact
  * pattern: recent descent, brief deceleration, and fast VSpd recovery.
+ *
+ * @param end  Optional upper bound (inclusive). Defaults to `data.length - 4`.
  */
-function findTouchdown(data: ChartRow[], after: number): number | null {
-  for (let i = after + 1; i < data.length - 3; i++) {
+export function findTouchdown(data: ChartRow[], after: number, end?: number): number | null {
+  const limit = end !== undefined ? Math.min(end, data.length - 4) : data.length - 4;
+  for (let i = after + 1; i <= limit; i++) {
     if (isStableRolloutTouchdown(data, i)) return i;
 
     if (isTouchAndGoRecoveryTouchdown(data, i)) {
-      for (let j = i + 1; j <= Math.min(i + 10, data.length - 3); j++) {
+      for (let j = i + 1; j <= Math.min(i + 10, limit); j++) {
         if (isStableRolloutTouchdown(data, j)) return j;
       }
       return i;
@@ -569,6 +573,12 @@ export function detectFlightSegments(
   function pushLandingSegment(id: string, tdIdx: number) {
     const tdStartX = Math.max(0, data[tdIdx]!.x - 300 * ONE_SEC);
     const tdEndX = Math.min(data[data.length - 1]!.x, data[tdIdx]!.x + 30 * ONE_SEC);
+    const segStartIdx = data.findIndex(r => r.x >= tdStartX);
+    const trafficPattern = detectTrafficPattern(
+      data,
+      segStartIdx >= 0 ? segStartIdx : 0,
+      tdIdx,
+    ) ?? undefined;
     segments.push({
       id,
       type: "landing",
@@ -579,6 +589,7 @@ export function detectFlightSegments(
         { type: "touchdown", xMs: data[tdIdx]!.x, label: "Touchdown", color: COLORS.touchdown, rowIdx: tdIdx },
       ],
       landingMetrics: computeLandingMetrics(data, points, chartTimeBaseMs!, tdIdx),
+      trafficPattern,
     });
   }
 
@@ -638,6 +649,12 @@ export function detectFlightSegments(
         : []),
     ];
 
+    const tglSegStartIdx = data.findIndex(r => r.x >= startX);
+    const tglTrafficPattern = detectTrafficPattern(
+      data,
+      tglSegStartIdx >= 0 ? tglSegStartIdx : 0,
+      tdIdx,
+    ) ?? undefined;
     segments.push({
       id,
       type: "tgl",
@@ -647,6 +664,7 @@ export function detectFlightSegments(
       events,
       takeoffMetrics: computeTglTakeoffMetrics(data, points, chartTimeBaseMs!, tdIdx, nextLiftIdx, segmentEndIdx),
       landingMetrics: computeLandingMetrics(data, points, chartTimeBaseMs!, tdIdx),
+      trafficPattern: tglTrafficPattern,
     });
   }
 

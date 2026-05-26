@@ -1,4 +1,6 @@
 import { parseGarminCsv } from "./parseGarminCsv";
+import { detectTrafficPattern } from "./trafficPattern";
+import { findTouchdown } from "./flightSegments";
 import type {
   AnalysisResult,
   AnalyzedParameter,
@@ -11,6 +13,7 @@ import type {
   StepEndCondition,
   StepParameter,
 } from "../types/flightReview";
+import type { TrafficPatternAnalysis } from "../types/flight";
 
 /** Mapeia nomes canônicos de parâmetros para campos reais do ChartRow (parseGarminCsv output). */
 export const TELEMETRY_FIELD_MAP: Record<string, string> = {
@@ -211,38 +214,87 @@ export function analyzeFlightManeuver(
   const analyzedSteps: AnalyzedStep[] = [];
   const overallAlerts: ReviewAlert[] = [];
 
+  // ── Detecção de padrão de circuito (pouso/TGL) ───────────────────────────
+  const isLandingCategory = _template.category === "landing" || _template.category === "touch_and_go";
+  let trafficPattern: TrafficPatternAnalysis | null = null;
+
+  if (isLandingCategory && maneuverRows.length >= 2) {
+    // Encontra os índices em chartData que correspondem à janela da manobra
+    const firstX = maneuverRows[0]!.row.x as number;
+    const lastX  = maneuverRows[maneuverRows.length - 1]!.row.x as number;
+    let segStartIdx = 0;
+    let segEndIdx   = chartData.length - 1;
+    for (let i = 0; i < chartData.length; i++) {
+      if ((chartData[i]!.x as number) >= firstX) { segStartIdx = i; break; }
+    }
+    for (let i = chartData.length - 1; i >= 0; i--) {
+      if ((chartData[i]!.x as number) <= lastX) { segEndIdx = i; break; }
+    }
+    if (segEndIdx > segStartIdx) {
+      // Detecta o toque real dentro da janela da manobra; cai para segEndIdx se não encontrado
+      const actualTdIdx = findTouchdown(chartData, segStartIdx, segEndIdx) ?? segEndIdx;
+      trafficPattern = detectTrafficPattern(chartData, segStartIdx, actualTdIdx) ?? null;
+    }
+  }
+
   let stepCursor = 0; // index into maneuverRows
 
   for (const step of sortedSteps) {
     if (stepCursor >= maneuverRows.length) break;
 
-    const stepStartMs = maneuverRows[stepCursor].absoluteMs;
+    // stepStartCursor pode ser sobrescrito por traffic_pattern_leg
+    let stepStartCursor = stepCursor;
     let stepEndIdx = maneuverRows.length - 1;
 
     // Determine end of step
     if (step.end_condition) {
       const cond = step.end_condition;
       if (cond.type === "time") {
+        const stepStartMs = maneuverRows[stepStartCursor]!.absoluteMs;
         const targetMs = stepStartMs + cond.value_seconds * 1000;
-        for (let i = stepCursor; i < maneuverRows.length; i++) {
-          if (maneuverRows[i].absoluteMs >= targetMs) {
+        for (let i = stepStartCursor; i < maneuverRows.length; i++) {
+          if (maneuverRows[i]!.absoluteMs >= targetMs) {
             stepEndIdx = i;
             break;
           }
         }
       } else if (cond.type === "parameter") {
         const fieldKey = TELEMETRY_FIELD_MAP[cond.parameter] ?? cond.parameter;
-        for (let i = stepCursor; i < maneuverRows.length; i++) {
-          const val = maneuverRows[i].row[fieldKey] as number | null | undefined;
+        for (let i = stepStartCursor; i < maneuverRows.length; i++) {
+          const val = maneuverRows[i]!.row[fieldKey] as number | null | undefined;
           if (val !== null && val !== undefined && compareOperator(val, cond, cond.value)) {
             stepEndIdx = i;
             break;
           }
         }
+      } else if (cond.type === "traffic_pattern_leg" && trafficPattern && chartTimeBaseMs) {
+        const leg = trafficPattern.legs.find((l) => l.type === cond.leg);
+        if (leg) {
+          // Para a perna final, limita o fim a 1 segundo após o toque real
+          const legEndX =
+            leg.type === "final" && trafficPattern.touchdownX != null
+              ? Math.min(leg.endX, trafficPattern.touchdownX + 1000)
+              : leg.endX;
+          const legStartMs = chartTimeBaseMs + leg.startX;
+          const legEndMs   = chartTimeBaseMs + legEndX;
+          // Procura o início da perna em maneuverRows
+          const foundStart = maneuverRows.findIndex((r) => r.absoluteMs >= legStartMs);
+          if (foundStart >= 0) stepStartCursor = foundStart;
+          // Procura o fim da perna
+          stepEndIdx = stepStartCursor;
+          for (let i = stepStartCursor; i < maneuverRows.length; i++) {
+            if (maneuverRows[i]!.absoluteMs > legEndMs) {
+              stepEndIdx = Math.max(stepStartCursor, i - 1);
+              break;
+            }
+            stepEndIdx = i;
+          }
+        }
       }
     }
 
-    const stepRows = maneuverRows.slice(stepCursor, stepEndIdx + 1);
+    const stepStartMs = maneuverRows[stepStartCursor]?.absoluteMs ?? maneuverRows[stepCursor]!.absoluteMs;
+    const stepRows = maneuverRows.slice(stepStartCursor, stepEndIdx + 1);
     const stepEndMs = stepRows[stepRows.length - 1]?.absoluteMs ?? stepStartMs;
     stepCursor = stepEndIdx + 1;
 
@@ -305,6 +357,7 @@ export function analyzeFlightManeuver(
   return {
     steps: analyzedSteps,
     alerts: overallAlerts,
+    trafficPattern,
   };
 }
 

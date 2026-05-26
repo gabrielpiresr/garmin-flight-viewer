@@ -29,7 +29,8 @@ export type ReviewStatus = "ok" | "attention" | "critical" | "unavailable";
 
 export type StepEndCondition =
   | { type: "time"; value_seconds: number }
-  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number };
+  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
+  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" };
 
 export type StepParameter = {
   parameter: string;
@@ -115,9 +116,13 @@ export type AnalyzedStep = {
   alerts: ReviewAlert[];
 };
 
+import type { TrafficPatternAnalysis } from "./flight";
+
 export type AnalysisResult = {
   steps: AnalyzedStep[];
   alerts: ReviewAlert[];
+  /** Padrão de circuito detectado — preenchido apenas em manobras de pouso/TGL. */
+  trafficPattern?: TrafficPatternAnalysis | null;
 };
 
 export type FlightManeuverReview = {

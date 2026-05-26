@@ -25,6 +25,16 @@ import { MANEUVER_CATEGORY_LABELS } from "../../types/flightReview";
 
 const CATEGORIES = Object.entries(MANEUVER_CATEGORY_LABELS) as [ManeuverCategory, string][];
 
+/** Categorias que permitem "por perna do circuito" como condição de fim. */
+const LANDING_CATEGORIES: ManeuverCategory[] = ["landing", "touch_and_go"];
+
+/** Labels em português para as pernas visíveis. */
+const LEG_LABELS_PT: Record<"downwind" | "base" | "final", string> = {
+  downwind: "Do vento",
+  base:     "Base",
+  final:    "Final",
+};
+
 const AVAILABLE_PARAMS = Object.keys(TELEMETRY_FIELD_MAP);
 
 const SEVERITY_OPTIONS: { value: ParameterSeverity; label: string }[] = [
@@ -61,7 +71,8 @@ type TemplateFormData = {
 type EndConditionForm =
   | { type: "none" }
   | { type: "time"; value_seconds: number }
-  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number };
+  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
+  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" };
 
 type ParameterForm = {
   parameter: string;
@@ -117,6 +128,8 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
     end_condition = { type: "none" };
   } else if (step.end_condition.type === "time") {
     end_condition = { type: "time", value_seconds: step.end_condition.value_seconds };
+  } else if (step.end_condition.type === "traffic_pattern_leg") {
+    end_condition = { type: "traffic_pattern_leg", leg: step.end_condition.leg };
   } else {
     end_condition = {
       type: "parameter",
@@ -184,13 +197,18 @@ const labelCls = "mb-1 block text-xs font-semibold uppercase tracking-widest tex
 function EndConditionEditor({
   value,
   onChange,
+  templateCategory,
 }: {
   value: EndConditionForm;
   onChange: (v: EndConditionForm) => void;
+  templateCategory?: ManeuverCategory;
 }) {
+  const isLanding = templateCategory ? LANDING_CATEGORIES.includes(templateCategory) : false;
+
   const handleTypeChange = (type: string) => {
     if (type === "none") onChange({ type: "none" });
     else if (type === "time") onChange({ type: "time", value_seconds: 30 });
+    else if (type === "traffic_pattern_leg") onChange({ type: "traffic_pattern_leg", leg: "final" });
     else onChange({ type: "parameter", parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 });
   };
 
@@ -206,6 +224,9 @@ function EndConditionEditor({
           <option value="none">Nenhuma — etapa cobre toda a manobra</option>
           <option value="time">Por tempo (duração fixa em segundos)</option>
           <option value="parameter">Por parâmetro (aguardar condição na telemetria)</option>
+          {isLanding && (
+            <option value="traffic_pattern_leg">Por perna do circuito</option>
+          )}
         </select>
       </div>
 
@@ -265,6 +286,26 @@ function EndConditionEditor({
               className={inputCls}
             />
           </div>
+        </div>
+      )}
+
+      {value.type === "traffic_pattern_leg" && (
+        <div>
+          <span className={labelCls}>Perna do circuito</span>
+          <select
+            value={value.leg}
+            onChange={(e) =>
+              onChange({ type: "traffic_pattern_leg", leg: e.target.value as "downwind" | "base" | "final" })
+            }
+            className={inputCls}
+          >
+            {(Object.entries(LEG_LABELS_PT) as Array<["downwind" | "base" | "final", string]>).map(([k, label]) => (
+              <option key={k} value={k}>{label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-slate-500">
+            O sistema detecta automaticamente a perna na telemetria e usa esse período como a etapa.
+          </p>
         </div>
       )}
     </div>
@@ -413,7 +454,13 @@ function StepRow({
         <p className="mt-1 text-xs text-slate-600">
           {step.parameters.length} parâmetro(s)
           {step.end_condition
-            ? ` · Fim: ${step.end_condition.type === "time" ? `${step.end_condition.value_seconds}s` : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`}`
+            ? ` · Fim: ${
+                step.end_condition.type === "time"
+                  ? `${step.end_condition.value_seconds}s`
+                  : step.end_condition.type === "traffic_pattern_leg"
+                    ? `perna ${LEG_LABELS_PT[step.end_condition.leg]}`
+                    : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`
+              }`
             : ""}
         </p>
       </div>
@@ -442,11 +489,13 @@ function StepRow({
 function StepModal({
   initialData,
   templateId,
+  templateCategory,
   onClose,
   onSaved,
 }: {
   initialData: { step?: ManeuverTemplateStep; nextOrder: number };
   templateId: string;
+  templateCategory: ManeuverCategory;
   onClose: () => void;
   onSaved: (step: ManeuverTemplateStep) => void;
 }) {
@@ -498,12 +547,14 @@ function StepModal({
           ? null
           : form.end_condition.type === "time"
             ? { type: "time" as const, value_seconds: form.end_condition.value_seconds }
-            : {
-                type: "parameter" as const,
-                parameter: form.end_condition.parameter,
-                operator: form.end_condition.operator,
-                value: form.end_condition.value,
-              };
+            : form.end_condition.type === "traffic_pattern_leg"
+              ? { type: "traffic_pattern_leg" as const, leg: form.end_condition.leg }
+              : {
+                  type: "parameter" as const,
+                  parameter: form.end_condition.parameter,
+                  operator: form.end_condition.operator,
+                  value: form.end_condition.value,
+                };
 
       const stepData = {
         template_id: templateId,
@@ -586,6 +637,7 @@ function StepModal({
           <EndConditionEditor
             value={form.end_condition}
             onChange={(v) => setField("end_condition", v)}
+            templateCategory={templateCategory}
           />
 
           {/* Parâmetros monitorados */}
@@ -729,6 +781,7 @@ function StepsList({ template }: { template: ManeuverTemplate }) {
         <StepModal
           initialData={editingStep}
           templateId={template.id}
+          templateCategory={template.category}
           onClose={() => setEditingStep(null)}
           onSaved={handleSaved}
         />

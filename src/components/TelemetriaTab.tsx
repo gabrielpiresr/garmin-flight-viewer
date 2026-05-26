@@ -1,8 +1,11 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { decodeFlightRecord, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
+import { decodeFlightRecord, type FlightRecordMeta, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
 import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/flightTelemetryAlertsDb";
+import { findRunwaysByAirport } from "../lib/runwaysDb";
+import { enrichTrafficPattern, selectBestRunwayHint } from "../lib/trafficPattern";
+import type { TrafficPatternAnalysis } from "../types/flight";
 import { attachFlightTelemetry } from "../lib/attachFlightTelemetry";
 import { getSavedFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
@@ -92,6 +95,10 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
   const [chartDomain, setChartDomain] = useState<[number, number] | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [mapExpanded, setMapExpanded] = useState(false);
+  // Meta do voo (para obter ICAO de chegada e enriquecer circuito com dados de pista)
+  const [flightMeta, setFlightMeta] = useState<FlightRecordMeta | null>(null);
+  // Padrão de circuito enriquecido com dados do banco de pistas
+  const [enrichedPattern, setEnrichedPattern] = useState<TrafficPatternAnalysis | null>(null);
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
   const telemetryFullscreenRef = useRef<HTMLDivElement | null>(null);
 
@@ -243,6 +250,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
         return;
       }
       const decoded = decodeFlightRecord(data.csv_text);
+      if (decoded.meta) setFlightMeta(decoded.meta);
       const telemetryText = decoded.meta ? decoded.telemetryCsv : data.csv_text;
       if (!telemetryText.trim()) {
         setLoading(false);
@@ -382,6 +390,25 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
     () => segments.find((s) => s.id === selectedSegmentId) ?? null,
     [segments, selectedSegmentId],
   );
+
+  // Enriquecimento assíncrono: quando o segmento muda, busca dados da pista no Appwrite
+  useEffect(() => {
+    setEnrichedPattern(null);
+    if (!selectedSegment?.trafficPattern) return;
+    if (selectedSegment.type !== "landing" && selectedSegment.type !== "tgl") return;
+
+    // Pegar ICAO de chegada: último leg do voo ou parsedResult
+    const arrIcao = flightMeta?.legs?.[flightMeta.legs.length - 1]?.arr?.trim().toUpperCase() ?? null;
+    if (!arrIcao) return;
+
+    const basePattern = selectedSegment.trafficPattern;
+    void findRunwaysByAirport(arrIcao).then((runways) => {
+      if (runways.length === 0) return;
+      const hint = selectBestRunwayHint(runways, basePattern.runwayHeadingTrue);
+      if (!hint) return;
+      setEnrichedPattern(enrichTrafficPattern(basePattern, hint));
+    });
+  }, [selectedSegment?.id, flightMeta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fullXDomain = useMemo<[number, number] | null>(() => {
     if (chartData.length < 2) return null;
@@ -609,7 +636,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
 
             <div
               className={mapExpanded ? "grid h-full min-h-0 min-w-0 gap-2" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}
-              style={mapExpanded ? { gridTemplateRows: "65% 30%" } : undefined}
+              style={mapExpanded ? { gridTemplateRows: "60% 40%" } : undefined}
             >
               {points.length >= 2 ? (
                 <div className="relative h-full min-h-0">
@@ -623,6 +650,8 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                   <FlightMap
                     points={points}
                     selectedRangeT={selectedRangeT}
+                    trafficPattern={enrichedPattern ?? selectedSegment?.trafficPattern}
+                    chartTimeBaseMs={chartTimeBaseMs}
                     className={
                       mapExpanded
                         ? "h-full w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
@@ -651,6 +680,9 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                   focusDomain={focusDomain}
                   events={selectedSegment?.events}
                   compact={false}
+                  trafficPattern={
+                    enrichedPattern ?? selectedSegment?.trafficPattern
+                  }
                 />
               </div>
             </div>

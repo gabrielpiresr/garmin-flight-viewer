@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import type { FlightEvent } from "../types/flight";
+import type { FlightEvent, TrafficPatternAnalysis } from "../types/flight";
 import {
   TELEMETRY_PANELS,
   colorForKey,
@@ -7,6 +7,7 @@ import {
   panelHasData,
   type ChartRow,
 } from "../lib/telemetryCharts";
+import { PatternLegBar } from "./PatternLegBar";
 
 function formatX(v: number, hasTime: boolean, chartTimeBaseMs: number | null) {
   if (hasTime && chartTimeBaseMs != null) {
@@ -45,6 +46,7 @@ type Props = BaseProps & {
   focusDomain?: [number, number] | null;
   events?: FlightEvent[];
   compact?: boolean;
+  trafficPattern?: TrafficPatternAnalysis;
 };
 
 type Domain = [number, number] | null;
@@ -94,6 +96,7 @@ export const FlightCharts = memo(function FlightCharts({
   focusDomain,
   events,
   compact = false,
+  trafficPattern,
 }: Props) {
   const resolvedMap = useMemo(() => new Map(Object.entries(resolved)), [resolved]);
   const panels = useMemo(
@@ -107,6 +110,7 @@ export const FlightCharts = memo(function FlightCharts({
     TELEMETRY_PANELS[2]?.id ?? TELEMETRY_PANELS[0]?.id ?? "vs",
   ]);
   const [activeHoverX, setActiveHoverX] = useState<number | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
   const handlePanelHoverX = (x: number | null) => {
     setActiveHoverX(x);
     onHoverX?.(x);
@@ -127,7 +131,16 @@ export const FlightCharts = memo(function FlightCharts({
   return (
     <div className={`flex h-full min-h-0 flex-col gap-2 rounded-xl border border-slate-700 bg-slate-950/40 ${compact ? "p-1.5" : "p-2.5"}`}>
       {!compact ? (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectionMode((value) => !value)}
+            className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
+              selectionMode ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+            }`}
+          >
+            Selecionar trecho
+          </button>
           {[1, 2, 3].map((n) => (
             <button
               key={n}
@@ -163,6 +176,9 @@ export const FlightCharts = memo(function FlightCharts({
               focusDomain={focusDomain}
               events={events}
               compact={compact}
+              trafficPattern={trafficPattern}
+              selectionMode={selectionMode}
+              onSelectionModeChange={setSelectionMode}
               onPanelChange={(nextPanelId) => {
                 const next = [...slotPanels] as [string, string, string];
                 next[slotIdx] = nextPanelId;
@@ -192,6 +208,9 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   focusDomain,
   events,
   compact,
+  trafficPattern,
+  selectionMode,
+  onSelectionModeChange,
   onPanelChange,
 }: {
   panel: (typeof TELEMETRY_PANELS)[number];
@@ -209,6 +228,9 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   focusDomain?: [number, number] | null;
   events?: FlightEvent[];
   compact: boolean;
+  trafficPattern?: TrafficPatternAnalysis;
+  selectionMode: boolean;
+  onSelectionModeChange: (value: boolean) => void;
   onPanelChange: (panelId: string) => void;
 }) {
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
@@ -381,6 +403,13 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.moveTo(x, top);
         ctx.lineTo(x, top + plotH);
         ctx.stroke();
+        // Label da linha de evento
+        ctx.setLineDash([]);
+        ctx.fillStyle = ev.color;
+        ctx.font = `${compact ? 8 : 9}px system-ui, sans-serif`;
+        ctx.textBaseline = "top";
+        ctx.textAlign = "center";
+        ctx.fillText(ev.label, x, top + 2);
         ctx.restore();
       }
 
@@ -473,6 +502,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || !onXDomainChangeRef.current || displayData.length < 2) return;
+    if (event.pointerType !== "mouse" && !selectionMode) return;
     const xValue = xValueFromClientX(event.clientX);
     if (xValue === null) return;
     dragStartXRef.current = xValue;
@@ -521,6 +551,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const fullSpan = full[1] - full[0] || 1;
     if ((max - min) < fullSpan * 0.005) return;
     onXDomainChangeRef.current?.([min, max]);
+    if (event.pointerType !== "mouse") onSelectionModeChange(false);
   };
 
   const handlePointerLeave = () => {
@@ -578,6 +609,11 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         </div>
       ) : null}
       <div ref={shellRef} className="relative min-h-0 flex-1 overscroll-contain">
+        {selectionMode ? (
+          <div className="pointer-events-none absolute left-2 top-2 z-10 rounded-md border border-cyan-500/40 bg-slate-950/85 px-2 py-1 text-[11px] font-medium text-cyan-100 shadow-lg">
+            Arraste para selecionar
+          </div>
+        ) : null}
         <canvas
           ref={canvasRef}
           className="block h-full w-full touch-none"
@@ -589,6 +625,20 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         />
         <div ref={tooltipRef} className="pointer-events-none absolute left-0 top-0 hidden rounded-md border border-slate-700 bg-slate-950/90 px-2 py-1 text-[11px] text-slate-300 shadow-lg" />
       </div>
+
+      {/* Barra de pernas do circuito — exibida em todos os painéis */}
+      {trafficPattern && (
+        <PatternLegBar
+          pattern={trafficPattern}
+          xDomain={
+            xDomain ??
+            (displayData.length > 0
+              ? [displayData[0]!.x, displayData[displayData.length - 1]!.x]
+              : [0, 1])
+          }
+          className="mt-1 shrink-0"
+        />
+      )}
     </div>
   );
 });
