@@ -106,6 +106,11 @@ export const FlightCharts = memo(function FlightCharts({
     "alt",
     TELEMETRY_PANELS[2]?.id ?? TELEMETRY_PANELS[0]?.id ?? "vs",
   ]);
+  const [activeHoverX, setActiveHoverX] = useState<number | null>(null);
+  const handlePanelHoverX = (x: number | null) => {
+    setActiveHoverX(x);
+    onHoverX?.(x);
+  };
 
   if (chartData.length === 0) {
     return <p className="rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">Sem linhas de dados para graficos.</p>;
@@ -150,7 +155,8 @@ export const FlightCharts = memo(function FlightCharts({
               resolvedMap={resolvedMap}
               hasTime={hasTime}
               chartTimeBaseMs={chartTimeBaseMs}
-              onHoverX={onHoverX}
+              activeHoverX={activeHoverX}
+              onHoverX={handlePanelHoverX}
               onXDomainChange={onXDomainChange}
               xDomain={xDomain}
               fullXDomain={fullXDomain}
@@ -178,6 +184,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   resolvedMap,
   hasTime,
   chartTimeBaseMs,
+  activeHoverX,
   onHoverX,
   onXDomainChange,
   xDomain,
@@ -194,6 +201,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   resolvedMap: Map<string, string>;
   hasTime: boolean;
   chartTimeBaseMs: number | null;
+  activeHoverX: number | null;
   onHoverX?: (x: number | null) => void;
   onXDomainChange?: (domain: [number, number] | null) => void;
   xDomain?: [number, number] | null;
@@ -207,6 +215,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const activeHoverXRef = useRef<number | null>(activeHoverX);
   const xDomainRef = useRef(xDomain);
   const fullXDomainRef = useRef(fullXDomain);
   const onXDomainChangeRef = useRef(onXDomainChange);
@@ -221,6 +230,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   useEffect(() => { fullXDomainRef.current = fullXDomain; }, [fullXDomain]);
   useEffect(() => { onXDomainChangeRef.current = onXDomainChange; }, [onXDomainChange]);
   useEffect(() => { onHoverXRef.current = onHoverX; }, [onHoverX]);
+  useEffect(() => { activeHoverXRef.current = activeHoverX; }, [activeHoverX]);
 
   const visibleKeys = keys.filter((k) => !hiddenKeys.has(k));
   const yDomain = useMemo(() => calcYDomain(displayData, visibleKeys, focusDomain ?? xDomain ?? null), [displayData, visibleKeys, focusDomain, xDomain]);
@@ -384,6 +394,34 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         }
         ctx.stroke();
       }
+
+      if (activeHoverX !== null && activeHoverX >= xMin && activeHoverX <= xMax) {
+        const hoverRow = nearestRow(displayData, activeHoverX);
+        const hoverX = toX(activeHoverX);
+        ctx.save();
+        ctx.strokeStyle = "rgba(226, 232, 240, 0.85)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(hoverX, top);
+        ctx.lineTo(hoverX, top + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (hoverRow) {
+          for (const key of visibleKeys) {
+            const value = hoverRow[key];
+            if (typeof value !== "number" || !Number.isFinite(value)) continue;
+            ctx.fillStyle = colorForKey(key);
+            ctx.strokeStyle = "#0f172a";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(toX(hoverRow.x), toY(value), 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
     };
 
     const ro = new ResizeObserver(() => {
@@ -396,7 +434,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
       ro.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [chartTimeBaseMs, compact, displayData, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
+  }, [activeHoverX, chartTimeBaseMs, compact, displayData, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
 
   const toggleKey = (key: string) => {
     setHiddenKeys((prev) => {
@@ -422,15 +460,37 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const row = nearestRow(displayData, xValue);
     if (!row) return;
     onHoverXRef.current?.(row.x);
-    tooltip.style.display = "block";
-    tooltip.style.transform = `translate(${Math.min(rect.width - 150, Math.max(0, event.clientX - rect.left + 10))}px, ${Math.max(0, event.clientY - rect.top - 16)}px)`;
-    tooltip.innerHTML = tooltipHtml(row, visibleKeys, hasTime, chartTimeBaseMs);
+    showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, event.clientX - rect.left + 10, event.clientY - rect.top - 16, rect.width);
   };
 
   const handlePointerLeave = () => {
     onHoverXRef.current?.(null);
     if (tooltipRef.current) tooltipRef.current.style.display = "none";
   };
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const tooltip = tooltipRef.current;
+    if (!shell || !tooltip) return;
+    if (activeHoverX === null) {
+      tooltip.style.display = "none";
+      return;
+    }
+    const xMin = xDomain?.[0] ?? displayData[0]?.x ?? 0;
+    const xMax = xDomain?.[1] ?? displayData[displayData.length - 1]?.x ?? 1;
+    if (activeHoverX < xMin || activeHoverX > xMax) {
+      tooltip.style.display = "none";
+      return;
+    }
+    const row = nearestRow(displayData, activeHoverX);
+    if (!row) return;
+    const rect = shell.getBoundingClientRect();
+    const left = compact ? 36 : 44;
+    const right = 10;
+    const plotW = Math.max(1, rect.width - left - right);
+    const x = left + ((activeHoverX - xMin) / (xMax - xMin || 1)) * plotW + 10;
+    showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, x, 10, rect.width);
+  }, [activeHoverX, chartTimeBaseMs, compact, displayData, hasTime, visibleKeys, xDomain]);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-700 bg-slate-950/40 p-2">
@@ -499,4 +559,19 @@ function tooltipHtml(row: ChartRow, visibleKeys: string[], hasTime: boolean, cha
     .filter(Boolean)
     .join("");
   return `<div style="color:#cbd5e1;margin-bottom:2px">${formatTooltipX(row.x, hasTime, chartTimeBaseMs)}</div>${lines}`;
+}
+
+function showTooltip(
+  tooltip: HTMLDivElement,
+  row: ChartRow,
+  visibleKeys: string[],
+  hasTime: boolean,
+  chartTimeBaseMs: number | null,
+  x: number,
+  y: number,
+  width: number,
+): void {
+  tooltip.style.display = "block";
+  tooltip.style.transform = `translate(${Math.min(width - 150, Math.max(0, x))}px, ${Math.max(0, y)}px)`;
+  tooltip.innerHTML = tooltipHtml(row, visibleKeys, hasTime, chartTimeBaseMs);
 }

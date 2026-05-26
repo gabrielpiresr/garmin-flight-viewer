@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import {
   CartesianGrid,
   Line,
@@ -193,36 +193,346 @@ const SEVERITY_CONFIG: Record<string, string> = {
 
 // ---------- Charts ----------
 
-function ParameterChart({ param, syncId }: { param: AnalyzedParameter; syncId: string }) {
+type ReviewChartRange = {
+  x1: number;
+  x2: number;
+  color: string;
+};
+
+type ReviewChartReference = {
+  y: number;
+  color: string;
+  label?: string;
+};
+
+function CanvasReviewChart({
+  data,
+  label,
+  color,
+  domain,
+  height,
+  ranges = [],
+  references = [],
+  formatY,
+  activeT,
+  onHoverT,
+}: {
+  data: Array<{ t: number; v: number }>;
+  label: string;
+  color: string;
+  domain: [number, number];
+  height: number;
+  ranges?: ReviewChartRange[];
+  references?: ReviewChartReference[];
+  formatY: (value: number) => string;
+  activeT?: number | null;
+  onHoverT?: (t: number | null) => void;
+}) {
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const canvas = canvasRef.current;
+    if (!shell || !canvas || data.length === 0) return undefined;
+    let frame = 0;
+
+    const draw = () => {
+      frame = 0;
+      const rect = shell.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const left = 48;
+      const right = 10;
+      const top = 8;
+      const bottom = 22;
+      const plotW = Math.max(1, width - left - right);
+      const plotH = Math.max(1, height - top - bottom);
+      const xMin = data[0]?.t ?? 0;
+      const xMax = data[data.length - 1]?.t ?? 1;
+      const yMin = domain[0];
+      const yMax = domain[1];
+      const xSpan = xMax - xMin || 1;
+      const ySpan = yMax - yMin || 1;
+      const toX = (x: number) => left + ((x - xMin) / xSpan) * plotW;
+      const toY = (y: number) => top + plotH - ((y - yMin) / ySpan) * plotH;
+
+      ctx.strokeStyle = "#1e293b";
+      ctx.fillStyle = "#64748b";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.lineWidth = 1;
+      ctx.textBaseline = "middle";
+      for (let i = 0; i <= 4; i += 1) {
+        const y = top + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(width - right, y);
+        ctx.stroke();
+        ctx.fillText(formatY(yMax - (ySpan * i) / 4), 4, y);
+      }
+      ctx.textBaseline = "top";
+      for (let i = 0; i <= 4; i += 1) {
+        const x = left + (plotW * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + plotH);
+        ctx.stroke();
+        ctx.fillText(`${Math.round(xMin + (xSpan * i) / 4)}s`, Math.min(width - 32, Math.max(left, x - 10)), top + plotH + 4);
+      }
+
+      for (const range of ranges) {
+        const x1 = toX(range.x1);
+        const x2 = toX(range.x2);
+        ctx.fillStyle = hexToRgba(range.color, 0.12);
+        ctx.fillRect(Math.min(x1, x2), top, Math.abs(x2 - x1), plotH);
+        ctx.strokeStyle = hexToRgba(range.color, 0.45);
+        ctx.strokeRect(Math.min(x1, x2), top, Math.abs(x2 - x1), plotH);
+      }
+
+      for (const reference of references) {
+        if (reference.y < yMin || reference.y > yMax) continue;
+        const y = toY(reference.y);
+        ctx.save();
+        ctx.strokeStyle = reference.color;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(width - right, y);
+        ctx.stroke();
+        ctx.restore();
+        if (reference.label) {
+          ctx.fillStyle = reference.color;
+          ctx.fillText(reference.label, left + 4, Math.max(top, y - 12));
+        }
+      }
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.9;
+      const linePoints: Array<{ x: number; y: number }> = [];
+      for (const point of data) {
+        if (!Number.isFinite(point.v)) {
+          continue;
+        }
+        linePoints.push({ x: toX(point.t), y: toY(point.v) });
+      }
+      drawSmoothReviewLine(ctx, linePoints);
+
+      if (activeT != null) {
+        const activePoint = findNearestReviewPoint(data, activeT);
+        if (activePoint && activePoint.t >= xMin && activePoint.t <= xMax && Number.isFinite(activePoint.v)) {
+          const x = toX(activePoint.t);
+          const y = toY(activePoint.v);
+          ctx.save();
+          ctx.strokeStyle = "rgba(226, 232, 240, 0.72)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, top + plotH);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#0f172a";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    };
+
+    const observer = new ResizeObserver(() => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(draw);
+    });
+    observer.observe(shell);
+    draw();
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [activeT, color, data, domain, formatY, height, ranges, references]);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const tooltip = tooltipRef.current;
+    if (!shell || !tooltip || activeT == null || data.length === 0) {
+      hideReviewTooltip(tooltipRef.current);
+      return;
+    }
+    const point = findNearestReviewPoint(data, activeT);
+    if (!point) {
+      hideReviewTooltip(tooltip);
+      return;
+    }
+    const rect = shell.getBoundingClientRect();
+    const left = 48;
+    const right = 10;
+    const top = 8;
+    const bottom = 22;
+    const plotW = Math.max(1, rect.width - left - right);
+    const plotH = Math.max(1, height - top - bottom);
+    const xMin = data[0]?.t ?? 0;
+    const xMax = data[data.length - 1]?.t ?? 1;
+    if (activeT < xMin || activeT > xMax) {
+      hideReviewTooltip(tooltip);
+      return;
+    }
+    const xSpan = xMax - xMin || 1;
+    const ySpan = domain[1] - domain[0] || 1;
+    const x = left + ((point.t - xMin) / xSpan) * plotW;
+    const y = top + plotH - ((point.v - domain[0]) / ySpan) * plotH;
+    showReviewTooltip(tooltip, label, point.t, formatY(point.v), x, y, rect.width);
+  }, [activeT, data, domain, formatY, height, label]);
+
+  const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    const shell = shellRef.current;
+    if (!shell || data.length === 0) return;
+    const rect = shell.getBoundingClientRect();
+    const left = 48;
+    const right = 10;
+    const plotW = Math.max(1, rect.width - left - right);
+    const xMin = data[0]?.t ?? 0;
+    const xMax = data[data.length - 1]?.t ?? 1;
+    const xSpan = xMax - xMin || 1;
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - left) / plotW));
+    const point = findNearestReviewPoint(data, xMin + ratio * xSpan);
+    if (point) onHoverT?.(point.t);
+  };
+
+  const handlePointerLeave = () => {
+    onHoverT?.(null);
+    hideReviewTooltip(tooltipRef.current);
+  };
+
+  return (
+    <div ref={shellRef} className="relative min-w-0 overflow-hidden rounded-md bg-slate-950/30" style={{ height }}>
+      <canvas
+        ref={canvasRef}
+        className="block h-full w-full touch-none"
+        onPointerMove={handlePointerMove}
+        onPointerLeave={handlePointerLeave}
+      />
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none absolute left-0 top-0 z-10 hidden rounded-md border border-slate-700 bg-slate-950/95 px-2 py-1 text-[11px] text-slate-200 shadow-lg"
+      />
+    </div>
+  );
+}
+
+function findNearestReviewPoint(data: Array<{ t: number; v: number }>, targetT: number) {
+  if (data.length === 0) return null;
+  let lo = 0;
+  let hi = data.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((data[mid]?.t ?? 0) < targetT) lo = mid + 1;
+    else hi = mid;
+  }
+  const prev = data[Math.max(0, lo - 1)];
+  const next = data[lo];
+  if (!prev) return next ?? null;
+  if (!next) return prev;
+  return Math.abs(prev.t - targetT) <= Math.abs(next.t - targetT) ? prev : next;
+}
+
+function drawSmoothReviewLine(ctx: CanvasRenderingContext2D, points: Array<{ x: number; y: number }>) {
+  if (points.length === 0) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0]!.x, points[0]!.y);
+  if (points.length === 1) {
+    ctx.lineTo(points[0]!.x + 0.01, points[0]!.y);
+  } else {
+    for (let i = 1; i < points.length - 1; i += 1) {
+      const current = points[i]!;
+      const next = points[i + 1]!;
+      const midX = (current.x + next.x) / 2;
+      const midY = (current.y + next.y) / 2;
+      ctx.quadraticCurveTo(current.x, current.y, midX, midY);
+    }
+    const last = points[points.length - 1]!;
+    ctx.lineTo(last.x, last.y);
+  }
+  ctx.stroke();
+}
+
+function showReviewTooltip(
+  tooltip: HTMLDivElement,
+  label: string,
+  t: number,
+  value: string,
+  x: number,
+  y: number,
+  width: number,
+) {
+  tooltip.classList.remove("hidden");
+  tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${Math.round(t)}s - ${value}</div>`;
+  const tooltipWidth = tooltip.offsetWidth || 112;
+  const left = Math.min(Math.max(6, x + 10), Math.max(6, width - tooltipWidth - 6));
+  const top = Math.max(6, y - 28);
+  tooltip.style.transform = `translate(${left}px, ${top}px)`;
+}
+
+function hideReviewTooltip(tooltip: HTMLDivElement | null) {
+  if (!tooltip) return;
+  tooltip.classList.add("hidden");
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const raw = hex.replace("#", "");
+  const r = Number.parseInt(raw.slice(0, 2), 16);
+  const g = Number.parseInt(raw.slice(2, 4), 16);
+  const b = Number.parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function ParameterChart({
+  param,
+  syncId,
+  activeT,
+  onHoverT,
+}: {
+  param: AnalyzedParameter;
+  syncId: string;
+  activeT: number | null;
+  onHoverT: (t: number | null) => void;
+}) {
   if (param.data_points.length === 0) return null;
   const data = param.data_points;
   const domain = computeYDomain(data, param.expected_min, param.expected_max);
   const lineColor =
     param.status === "out_of_range" ? "#ef4444" : param.status === "warning" ? "#f59e0b" : "#38bdf8";
+  const references: ReviewChartReference[] = [];
+  if (param.expected_min !== null) references.push({ y: param.expected_min, color: "#f59e0b", label: `min ${param.expected_min}` });
+  if (param.expected_max !== null) references.push({ y: param.expected_max, color: "#f59e0b", label: `max ${param.expected_max}` });
+  void syncId;
   return (
     <div className="mt-2">
       <p className="mb-1 text-xs font-medium text-slate-400">{param.label}</p>
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={data} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis dataKey="t" tickFormatter={(v: number) => `${v}s`} tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} axisLine={false} domain={domain} width={48} />
-          <Tooltip
-            contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }}
-            labelFormatter={(v: number) => `t=${v}s`}
-            formatter={(v: number) => [typeof v === "number" ? v.toFixed(1) : v, param.label]}
-          />
-          {param.expected_min !== null && (
-            <ReferenceLine y={param.expected_min} stroke="#f59e0b" strokeDasharray="4 2"
-              label={{ value: `min ${param.expected_min}`, fill: "#f59e0b", fontSize: 10 }} />
-          )}
-          {param.expected_max !== null && (
-            <ReferenceLine y={param.expected_max} stroke="#f59e0b" strokeDasharray="4 2"
-              label={{ value: `max ${param.expected_max}`, fill: "#f59e0b", fontSize: 10 }} />
-          )}
-          <Line type="monotone" dataKey="v" stroke={lineColor} dot={false} strokeWidth={1.5} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
+      <CanvasReviewChart
+        data={data}
+        label={param.label}
+        color={lineColor}
+        domain={domain}
+        height={200}
+        references={references}
+        formatY={(value) => value.toFixed(1)}
+        activeT={activeT}
+        onHoverT={onHoverT}
+      />
     </div>
   );
 }
@@ -232,32 +542,34 @@ function SimpleFieldChart({
   label,
   color,
   syncId,
+  activeT,
+  onHoverT,
   unit = "",
 }: {
   data: Array<{ t: number; v: number }>;
   label: string;
   color: string;
   syncId: string;
+  activeT: number | null;
+  onHoverT: (t: number | null) => void;
   unit?: string;
 }) {
   if (data.length === 0) return null;
   const domain = computeYDomain(data, null, null);
+  void syncId;
   return (
     <div className="mt-2">
       <p className="mb-1 text-xs font-medium text-slate-400">{label}</p>
-      <ResponsiveContainer width="100%" height={180}>
-        <LineChart data={data} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis dataKey="t" tickFormatter={(v: number) => `${v}s`} tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} axisLine={false} domain={domain} width={48} />
-          <Tooltip
-            contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }}
-            labelFormatter={(v: number) => `t=${v}s`}
-            formatter={(v: number) => [`${typeof v === "number" ? v.toFixed(1) : v}${unit ? " " + unit : ""}`, label]}
-          />
-          <Line type="monotone" dataKey="v" stroke={color} dot={false} strokeWidth={1.5} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
+      <CanvasReviewChart
+        data={data}
+        label={label}
+        color={color}
+        domain={domain}
+        height={180}
+        formatY={(value) => `${value.toFixed(0)}${unit ? ` ${unit}` : ""}`}
+        activeT={activeT}
+        onHoverT={onHoverT}
+      />
     </div>
   );
 }
@@ -320,8 +632,14 @@ function ManeuverOverview({
   }, [parsedResult.points, review.analysis.steps, maneuverStartMs, maneuverEndMs]);
 
   const syncId = "maneuver-overview";
+  const [hoverT, setHoverT] = useState<number | null>(null);
   const altDomain = useMemo(() => computeYDomain(altPoints, null, null), [altPoints]);
   const iasDomain = useMemo(() => computeYDomain(iasPoints, null, null), [iasPoints]);
+  const chartRanges = useMemo(
+    () => stepRanges.map((step) => ({ x1: step.startSec, x2: step.endSec, color: step.color })),
+    [stepRanges],
+  );
+  void syncId;
 
   const hasMap = allMapPos.length >= 2;
   const hasAlt = altPoints.length > 0;
@@ -386,45 +704,17 @@ function ManeuverOverview({
       {hasAlt && (
         <div className="flex h-[154px] min-w-0 flex-col">
           <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
-          <ResponsiveContainer width="100%" height="100%" debounce={50} className="min-h-0 flex-1">
-            <LineChart data={altPoints} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis
-                dataKey="t"
-                type="number"
-                domain={["dataMin", "dataMax"]}
-                tickFormatter={(v: number) => `${v}s`}
-                tick={{ fontSize: 10, fill: "#64748b" }}
-                tickLine={false}
-              />
-              <YAxis tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} axisLine={false} domain={altDomain} width={48} />
-              <Tooltip
-                contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }}
-                labelFormatter={(v: number) => `t=${v}s`}
-                formatter={(v: number) => [`${Math.round(v)}ft`, "Altitude"]}
-              />
-              {stepRanges.map((s, i) => (
-                <ReferenceArea
-                  key={i}
-                  x1={s.startSec}
-                  x2={s.endSec}
-                  fill={s.color}
-                  fillOpacity={0.1}
-                  stroke={s.color}
-                  strokeOpacity={0.3}
-                  strokeWidth={1}
-                />
-              ))}
-              <Line
-                type="monotone"
-                dataKey="v"
-                stroke="#94a3b8"
-                dot={false}
-                strokeWidth={1.5}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <CanvasReviewChart
+            data={altPoints}
+            label="Altitude (ft)"
+            color="#94a3b8"
+            domain={altDomain}
+            height={130}
+            ranges={chartRanges}
+            formatY={(value) => `${Math.round(value)}ft`}
+            activeT={hoverT}
+            onHoverT={setHoverT}
+          />
         </div>
       )}
 
@@ -432,45 +722,17 @@ function ManeuverOverview({
       {hasIas && (
         <div className="flex h-[134px] min-w-0 flex-col">
           <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
-          <ResponsiveContainer width="100%" height="100%" debounce={50} className="min-h-0 flex-1">
-            <LineChart data={iasPoints} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis
-                dataKey="t"
-                type="number"
-                domain={["dataMin", "dataMax"]}
-                tickFormatter={(v: number) => `${v}s`}
-                tick={{ fontSize: 10, fill: "#64748b" }}
-                tickLine={false}
-              />
-              <YAxis tick={{ fontSize: 10, fill: "#64748b" }} tickLine={false} axisLine={false} domain={iasDomain} width={48} />
-              <Tooltip
-                contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }}
-                labelFormatter={(v: number) => `t=${v}s`}
-                formatter={(v: number) => [`${v.toFixed(1)}kt`, "IAS"]}
-              />
-              {stepRanges.map((s, i) => (
-                <ReferenceArea
-                  key={i}
-                  x1={s.startSec}
-                  x2={s.endSec}
-                  fill={s.color}
-                  fillOpacity={0.1}
-                  stroke={s.color}
-                  strokeOpacity={0.3}
-                  strokeWidth={1}
-                />
-              ))}
-              <Line
-                type="monotone"
-                dataKey="v"
-                stroke="#38bdf8"
-                dot={false}
-                strokeWidth={1.5}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <CanvasReviewChart
+            data={iasPoints}
+            label="IAS (kt)"
+            color="#38bdf8"
+            domain={iasDomain}
+            height={110}
+            ranges={chartRanges}
+            formatY={(value) => `${value.toFixed(1)}kt`}
+            activeT={hoverT}
+            onHoverT={setHoverT}
+          />
         </div>
       )}
     </div>
@@ -489,6 +751,7 @@ function StepCard({
   parsedResult: ParseResult | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [hoverT, setHoverT] = useState<number | null>(null);
   const syncId = `step-${stepIndex}`;
 
   const startMs = useMemo(() => new Date(step.start_time).getTime(), [step.start_time]);
@@ -593,10 +856,30 @@ function StepCard({
             return (
               <div className="space-y-1">
                 <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Gráficos</p>
-                {showAlt && <SimpleFieldChart data={altPoints} label="Altitude (ft)" color="#94a3b8" syncId={syncId} unit="ft" />}
-                {showIas && <SimpleFieldChart data={iasPoints} label="IAS (kt)" color="#38bdf8" syncId={syncId} unit="kt" />}
+                {showAlt && (
+                  <SimpleFieldChart
+                    data={altPoints}
+                    label="Altitude (ft)"
+                    color="#94a3b8"
+                    syncId={syncId}
+                    unit="ft"
+                    activeT={hoverT}
+                    onHoverT={setHoverT}
+                  />
+                )}
+                {showIas && (
+                  <SimpleFieldChart
+                    data={iasPoints}
+                    label="IAS (kt)"
+                    color="#38bdf8"
+                    syncId={syncId}
+                    unit="kt"
+                    activeT={hoverT}
+                    onHoverT={setHoverT}
+                  />
+                )}
                 {step.parameters.map((p, i) => (
-                  <ParameterChart key={i} param={p} syncId={syncId} />
+                  <ParameterChart key={i} param={p} syncId={syncId} activeT={hoverT} onHoverT={setHoverT} />
                 ))}
               </div>
             );
