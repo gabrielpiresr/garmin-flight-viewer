@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import { aggregateJourneyMetrics, type JourneyMetrics } from "../lib/journeyMetrics";
@@ -42,7 +43,7 @@ type JourneySection = "formacao" | "evolucao";
 type FormationDrillView =
   | { kind: "timeline" }
   | { kind: "maneuver-study"; missionName: string; articleIds: string[] }
-  | { kind: "flight-review"; missionName: string; flightId: string };
+  | { kind: "flight-review"; missionName: string; flightId: string; missionIndex: number };
 
 const EMPTY_METRICS = aggregateJourneyMetrics({ summaries: [], landings: [], takeoffs: [] });
 const SCHOOL_REWARD_COLOR = DEFAULT_SCHOOL_RULES.theme.primaryColor;
@@ -300,6 +301,83 @@ function AchievementsSkeleton() {
   );
 }
 
+const DEFAULT_CLUB_BENEFITS = [
+  "Acesso completo à telemetria de todos os voos",
+  "Análise detalhada de manobras e performance",
+  "Vídeos de cockpit e gravações de voo",
+  "Flight Review com feedback do instrutor",
+  "Histórico de evolução e progresso",
+  "Compartilhamento de voos com link público",
+];
+
+function ClubMemberBadge() {
+  const { enabled, isClubMember, lpUrl, benefits } = useFlightReviewClub();
+  const [open, setOpen] = useState(false);
+  if (!enabled || !isClubMember) return null;
+  const displayBenefits = benefits.length > 0 ? benefits : DEFAULT_CLUB_BENEFITS;
+  return (
+    <>
+      <div className="mt-3 flex items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/15 px-3 py-1 text-xs font-bold text-sky-300">
+          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M10 1a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L10 13.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L2.818 7.124a.75.75 0 01.416-1.28l4.21-.611L9.327 1.418A.75.75 0 0110 1z" clipRule="evenodd" />
+          </svg>
+          Flight Review Club
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="text-xs text-sky-400/70 underline-offset-2 hover:text-sky-300 hover:underline"
+        >
+          Ver benefícios
+        </button>
+      </div>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-sky-500/30 bg-slate-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-sky-400">Membership ativo</p>
+                <h3 className="mt-0.5 text-lg font-black text-white">Flight Review Club</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                aria-label="Fechar"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
+              </button>
+            </div>
+            <ul className="mt-4 space-y-2">
+              {displayBenefits.map((benefit, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-sm text-slate-200">
+                  <svg className="mt-0.5 h-4 w-4 shrink-0 text-sky-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" /></svg>
+                  {benefit}
+                </li>
+              ))}
+            </ul>
+            <a
+              href={lpUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-5 block rounded-xl border border-sky-500/30 bg-sky-500/10 py-2 text-center text-sm font-semibold text-sky-300 hover:bg-sky-500/20"
+            >
+              Ver página do clube
+            </a>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function FormationJourney({ state }: { state: FormationState }) {
   const { user, configured } = useAuth();
   const [journeyMetrics, setJourneyMetrics] = useState<JourneyMetrics>(EMPTY_METRICS);
@@ -477,6 +555,7 @@ function FormationJourney({ state }: { state: FormationState }) {
       <JourneyFlightReviewPage
         flightId={drillView.flightId}
         missionName={drillView.missionName}
+        missionIndex={drillView.missionIndex}
         onBack={() => setDrillView({ kind: "timeline" })}
       />
     );
@@ -513,6 +592,7 @@ function FormationJourney({ state }: { state: FormationState }) {
                 ))}
               </select>
             ) : null}
+            <ClubMemberBadge />
           </div>
         </div>
         <div className="mt-4 grid gap-2 md:grid-cols-3">
@@ -636,6 +716,7 @@ function FormationJourney({ state }: { state: FormationState }) {
                       kind: "flight-review",
                       missionName: item.mission.name,
                       flightId: missionFlight.id,
+                      missionIndex: item.index,
                     })}
                     className="block w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-left text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20"
                   >

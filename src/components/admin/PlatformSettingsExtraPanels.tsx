@@ -791,16 +791,31 @@ export function FlightReviewClubPanel() {
                 Mostrar no menu lateral do aluno (abre a LP em nova aba)
               </label>
 
-              <label className="text-xs text-slate-400">
-                Link do CTA de assinatura (botão da página interna)
-                <input
-                  type="url"
-                  value={club.ctaSubscriptionUrl}
-                  onChange={(e) => setClub({ ctaSubscriptionUrl: e.target.value })}
-                  placeholder="https://suaescola.com/assinar"
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
-                />
-              </label>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Link do CTA de assinatura (botão da página interna)
+                  <input
+                    type="url"
+                    value={club.ctaSubscriptionUrl}
+                    onChange={(e) => setClub({ ctaSubscriptionUrl: e.target.value })}
+                    placeholder="https://suaescola.com/assinar"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Voos de trial (0 = desativado)
+                  <p className="mt-0.5 text-[11px] text-slate-500">Primeiros N voos da trilha liberados sem membership.</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={club.trialFlightCount}
+                    onChange={(e) => setClub({ trialFlightCount: Math.max(0, Math.round(Number(e.target.value))) })}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+                  />
+                </label>
+              </div>
 
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Benefícios (moldam a página interna)</p>

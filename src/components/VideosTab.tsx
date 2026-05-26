@@ -61,8 +61,7 @@ import {
   VerticalCompactOverlay,
   type TelemetryOverlayStyle,
 } from "./VideoTelemetryOverlay";
-import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
-import { FlightReviewClubGate } from "./FlightReviewClubGate";
+
 
 const HELPER_URL = "http://127.0.0.1:7842";
 const HELPER_SETUP_PATH = "/video-helper";

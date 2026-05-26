@@ -261,6 +261,8 @@ export function MainLayout() {
     enabled: rules.flightReviewClub.enabled,
     isClubMember,
     lpUrl: clubLpUrl,
+    trialFlightCount: rules.flightReviewClub.trialFlightCount,
+    benefits: rules.flightReviewClub.benefits,
   };
 
   return (

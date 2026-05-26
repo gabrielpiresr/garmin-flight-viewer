@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, type SavedFlightFull } from "../lib/flightsDb";
 import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
@@ -13,6 +15,7 @@ type JourneyFlightReviewTab = "resumo" | "telemetria" | "flight-review" | "video
 type Props = {
   flightId: string;
   missionName: string;
+  missionIndex?: number;
   onBack: () => void;
 };
 
@@ -93,8 +96,11 @@ export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFligh
   );
 }
 
-export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props) {
-  const { isClubMember } = useFlightReviewClub();
+export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, onBack }: Props) {
+  const { user } = useAuth();
+  const { enabled: clubEnabled, isClubMember, trialFlightCount } = useFlightReviewClub();
+  const isTrial = missionIndex !== undefined && trialFlightCount > 0 && missionIndex < trialFlightCount;
+  const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember && !isTrial;
   const [activeTab, setActiveTab] = useState<JourneyFlightReviewTab>("resumo");
   const [flight, setFlight] = useState<SavedFlightFull | null>(null);
   const [loading, setLoading] = useState(true);
@@ -172,9 +178,9 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
       ) : flight ? (
         <>
           {activeTab === "resumo" ? <FlightSummaryPanel flight={flight} missionName={missionName} /> : null}
-          {activeTab === "telemetria" ? <TelemetriaTab flightId={flightId} /> : null}
-          {activeTab === "flight-review" ? <FlightReviewTab flightId={flightId} /> : null}
-          {activeTab === "videos" ? <VideosTab flightId={flightId} /> : null}
+          {activeTab === "telemetria" ? (gatedByClub ? <FlightReviewClubGate /> : <TelemetriaTab flightId={flightId} />) : null}
+          {activeTab === "flight-review" ? (gatedByClub ? <FlightReviewClubGate /> : <FlightReviewTab flightId={flightId} />) : null}
+          {activeTab === "videos" ? (gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />) : null}
         </>
       ) : null}
     </div>

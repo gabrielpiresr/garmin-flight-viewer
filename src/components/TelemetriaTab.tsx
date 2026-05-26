@@ -1,8 +1,7 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
-import { FlightReviewClubGate } from "./FlightReviewClubGate";
+
 import { decodeFlightRecord, type FlightRecordMeta, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
 import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/flightTelemetryAlertsDb";
 import { findRunwaysByAirport } from "../lib/runwaysDb";

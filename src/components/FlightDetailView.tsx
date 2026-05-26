@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
@@ -93,7 +94,8 @@ export function FlightDetailView({
   hideFichaStepMenu = false,
 }: Props) {
   const { user } = useAuth();
-  const { isClubMember } = useFlightReviewClub();
+  const { enabled: clubEnabled, isClubMember } = useFlightReviewClub();
+  const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember;
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("ficha");
   const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set(["ficha"]));
   const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -283,13 +285,13 @@ export function FlightDetailView({
 
         {visitedSubTabs.has("telemetria") ? (
           <div hidden={activeSubTab !== "telemetria"} className="min-h-0 min-w-0">
-            <TelemetriaTab flightId={flightId} parsedResult={parsedResult} />
+            {gatedByClub ? <FlightReviewClubGate /> : <TelemetriaTab flightId={flightId} parsedResult={parsedResult} />}
           </div>
         ) : null}
 
         {visitedSubTabs.has("videos") ? (
           <div hidden={activeSubTab !== "videos"} className="min-h-0 min-w-0">
-            <VideosTab flightId={flightId} />
+            {gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />}
           </div>
         ) : null}
 
@@ -307,7 +309,7 @@ export function FlightDetailView({
 
         {visitedSubTabs.has("flight-review") && flightId ? (
           <div hidden={activeSubTab !== "flight-review"} className="min-h-0 min-w-0">
-            <FlightReviewTab flightId={flightId} />
+            {gatedByClub ? <FlightReviewClubGate /> : <FlightReviewTab flightId={flightId} />}
           </div>
         ) : null}
       </div>
