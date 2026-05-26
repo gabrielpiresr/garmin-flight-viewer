@@ -60,6 +60,30 @@ function FitBounds({ positions }: { positions: [number, number][] }) {
   return null;
 }
 
+function ResizeInvalidator() {
+  const map = useMap();
+  useEffect(() => {
+    const container = map.getContainer();
+    let frame = 0;
+    const invalidate = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        map.invalidateSize(false);
+      });
+    };
+    const observer = new ResizeObserver(invalidate);
+    observer.observe(container);
+    const timers = [50, 180, 420].map((delay) => window.setTimeout(invalidate, delay));
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [map]);
+  return null;
+}
+
 function MapBoundsTracker({
   boundsCallbackRef,
 }: {
@@ -218,7 +242,7 @@ export const FlightMap = memo(
     }
 
     return (
-      <div className={className ?? "h-72 w-full overflow-hidden rounded-xl border border-slate-700 md:h-96"}>
+      <div className={className ?? "h-72 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950 md:h-96"}>
         <MapContainer
           center={center}
           zoom={11}
@@ -238,6 +262,7 @@ export const FlightMap = memo(
             updateWhenZooming
             opacity={1}
           />
+          <ResizeInvalidator />
           <ImperativeRouteLayers
             positions={positions}
             selectedPositions={selectedPositions}

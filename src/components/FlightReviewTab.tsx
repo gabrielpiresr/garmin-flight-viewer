@@ -57,13 +57,22 @@ const STEP_COLORS = [
 function InvalidateMapSize() {
   const map = useMap();
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      map.invalidateSize(false);
-    });
-    const timer = window.setTimeout(() => map.invalidateSize(false), 250);
+    const container = map.getContainer();
+    let frame = 0;
+    const invalidate = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        map.invalidateSize(false);
+      });
+    };
+    const observer = new ResizeObserver(invalidate);
+    observer.observe(container);
+    const timers = [50, 180, 420].map((delay) => window.setTimeout(invalidate, delay));
     return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(timer);
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+      timers.forEach((timer) => window.clearTimeout(timer));
     };
   }, [map]);
   return null;
@@ -344,13 +353,14 @@ function ManeuverOverview({
 
       {/* Route map with per-step colored segments */}
       {hasMap && (
-        <div className="overflow-hidden rounded-lg border border-slate-800" style={{ height: 220 }}>
+        <div className="h-[220px] min-w-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
           <MapContainer
             bounds={allMapPos}
-            style={{ height: "100%", width: "100%" }}
+            className="h-full w-full"
             scrollWheelZoom={false}
             zoomControl={true}
             attributionControl={false}
+            preferCanvas
           >
             <InvalidateMapSize />
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -374,9 +384,9 @@ function ManeuverOverview({
 
       {/* Altitude chart with step shading */}
       {hasAlt && (
-        <div>
+        <div className="flex h-[154px] min-w-0 flex-col">
           <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
-          <ResponsiveContainer width="100%" height={130}>
+          <ResponsiveContainer width="100%" height="100%" debounce={50} className="min-h-0 flex-1">
             <LineChart data={altPoints} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
               <XAxis
@@ -420,9 +430,9 @@ function ManeuverOverview({
 
       {/* IAS chart with step shading */}
       {hasIas && (
-        <div>
+        <div className="flex h-[134px] min-w-0 flex-col">
           <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
-          <ResponsiveContainer width="100%" height={110}>
+          <ResponsiveContainer width="100%" height="100%" debounce={50} className="min-h-0 flex-1">
             <LineChart data={iasPoints} syncId={syncId} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
               <XAxis

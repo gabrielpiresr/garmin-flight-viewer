@@ -562,7 +562,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
               </div>
             )}
 
-            <div className={mapExpanded ? "grid min-h-0 min-w-0 gap-2" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}>
+            <div className={mapExpanded ? "grid min-h-0 min-w-0 gap-1" : "grid min-h-0 min-w-0 gap-3 xl:h-full xl:grid-rows-2"}>
               {points.length >= 2 ? (
                 <div className="relative min-h-0">
                   <button
@@ -577,7 +577,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                     selectedRangeT={selectedRangeT}
                     className={
                       mapExpanded
-                        ? "h-[80vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-slate-700"
+                        ? "h-[72dvh] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
                         : "h-[420px] max-h-[70vh] min-h-[360px] w-full overflow-hidden rounded-xl border border-slate-700 sm:h-[520px] xl:h-full xl:max-h-none xl:min-h-0"
                     }
                     hoverCallbackRef={hoverCallbackRef}
@@ -590,7 +590,7 @@ export function TelemetriaTab({ flightId, parsedResult }: Props) {
                 </p>
               )}
 
-              <div className={mapExpanded ? "h-[20vh] min-h-[180px] min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
+              <div className={mapExpanded ? "h-[18dvh] min-h-[140px] min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
                 <FlightCharts
                   chartData={chartData}
                   hasTime={hasChartTime}
