@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useAuth } from "../contexts/AuthContext";
 import { getAircraftByRegistration } from "../lib/aircraftDb";
 import {
@@ -58,30 +57,6 @@ const LEG_LABELS: Record<string, string> = {
   base:     "Base",
   final:    "Final",
 };
-
-function InvalidateMapSize() {
-  const map = useMap();
-  useEffect(() => {
-    const container = map.getContainer();
-    let frame = 0;
-    const invalidate = () => {
-      if (frame) window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        map.invalidateSize(false);
-      });
-    };
-    const observer = new ResizeObserver(invalidate);
-    observer.observe(container);
-    const timers = [50, 180, 420].map((delay) => window.setTimeout(invalidate, delay));
-    return () => {
-      observer.disconnect();
-      if (frame) window.cancelAnimationFrame(frame);
-      timers.forEach((timer) => window.clearTimeout(timer));
-    };
-  }, [map]);
-  return null;
-}
 
 // ---------- Helpers ----------
 
@@ -255,22 +230,35 @@ function CanvasReviewChart({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const activeTRef = useRef<number | null>(activeT ?? null);
+  const scheduleDrawRef = useRef<(() => void) | null>(null);
+  const lastHoverTRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    activeTRef.current = activeT ?? null;
+    scheduleDrawRef.current?.();
+  }, [activeT]);
 
   useEffect(() => {
     const shell = shellRef.current;
     const canvas = canvasRef.current;
     if (!shell || !canvas || data.length === 0) return undefined;
     let frame = 0;
+    let delayedTimers: number[] = [];
 
     const draw = () => {
       frame = 0;
       const rect = shell.getBoundingClientRect();
       const width = Math.max(1, Math.floor(rect.width));
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
+      const canvasWidth = Math.floor(width * dpr);
+      const canvasHeight = Math.floor(height * dpr);
+      if (canvas.width !== canvasWidth) canvas.width = canvasWidth;
+      if (canvas.height !== canvasHeight) canvas.height = canvasHeight;
+      const styleWidth = `${width}px`;
+      const styleHeight = `${height}px`;
+      if (canvas.style.width !== styleWidth) canvas.style.width = styleWidth;
+      if (canvas.style.height !== styleHeight) canvas.style.height = styleHeight;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -391,8 +379,9 @@ function CanvasReviewChart({
       }
       drawSmoothReviewLine(ctx, linePoints);
 
-      if (activeT != null) {
-        const activePoint = findNearestReviewPoint(data, activeT);
+      const activeTValue = activeTRef.current;
+      if (activeTValue != null) {
+        const activePoint = findNearestReviewPoint(data, activeTValue);
         if (activePoint && activePoint.t >= xMin && activePoint.t <= xMax && Number.isFinite(activePoint.v)) {
           const x = toX(activePoint.t);
           const y = toY(activePoint.v);
@@ -422,12 +411,22 @@ function CanvasReviewChart({
       frame = window.requestAnimationFrame(draw);
     };
     const delayedDraw = () => {
+      delayedTimers.forEach((timer) => window.clearTimeout(timer));
+      delayedTimers = [];
       scheduleDraw();
-      window.setTimeout(scheduleDraw, 220);
+      delayedTimers = [220, 700].map((delay) => window.setTimeout(scheduleDraw, delay));
     };
+    scheduleDrawRef.current = scheduleDraw;
 
     const observer = new ResizeObserver(scheduleDraw);
     observer.observe(shell);
+    const visibilityObserver =
+      "IntersectionObserver" in window
+        ? new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) scheduleDraw();
+          })
+        : null;
+    visibilityObserver?.observe(shell);
     window.addEventListener("resize", delayedDraw);
     window.addEventListener("orientationchange", delayedDraw);
     window.addEventListener("pageshow", delayedDraw);
@@ -436,14 +435,17 @@ function CanvasReviewChart({
     delayedDraw();
     return () => {
       observer.disconnect();
+      visibilityObserver?.disconnect();
       window.removeEventListener("resize", delayedDraw);
       window.removeEventListener("orientationchange", delayedDraw);
       window.removeEventListener("pageshow", delayedDraw);
       document.removeEventListener("visibilitychange", delayedDraw);
       window.visualViewport?.removeEventListener("resize", delayedDraw);
+      delayedTimers.forEach((timer) => window.clearTimeout(timer));
+      if (scheduleDrawRef.current === scheduleDraw) scheduleDrawRef.current = null;
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [activeT, color, data, domain, formatY, height, ranges, references, verticalLines]);
+  }, [color, data, domain, formatY, height, ranges, references, verticalLines, zeroCrossLine]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -478,6 +480,7 @@ function CanvasReviewChart({
   }, [activeT, data, domain, formatY, height, label]);
 
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === "touch") return;
     const shell = shellRef.current;
     if (!shell || data.length === 0) return;
     const rect = shell.getBoundingClientRect();
@@ -489,10 +492,14 @@ function CanvasReviewChart({
     const xSpan = xMax - xMin || 1;
     const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - left) / plotW));
     const point = findNearestReviewPoint(data, xMin + ratio * xSpan);
-    if (point) onHoverT?.(point.t);
+    if (point && point.t !== lastHoverTRef.current) {
+      lastHoverTRef.current = point.t;
+      onHoverT?.(point.t);
+    }
   };
 
   const handlePointerLeave = () => {
+    lastHoverTRef.current = null;
     onHoverT?.(null);
     hideReviewTooltip(tooltipRef.current);
   };
@@ -1084,6 +1091,19 @@ function ManeuverOverview({
 
     return { allMapPos: allPos, stepSegments: segs };
   }, [parsedResult.points, parsedResult.chartTimeBaseMs, review.analysis.steps, legRanges, maneuverStartMs, maneuverEndMs]);
+  void stepSegments;
+
+  const selectedRangeT = useMemo<[number, number]>(() => [maneuverStartMs, maneuverEndMs], [maneuverStartMs, maneuverEndMs]);
+
+  const mapColoredSegments = useMemo(() => {
+    const baseMs = parsedResult.chartTimeBaseMs;
+    if (legRanges && baseMs) return null;
+    return review.analysis.steps.map((step, i) => ({
+      color: STEP_COLORS[i % STEP_COLORS.length]!,
+      startMs: new Date(step.start_time).getTime(),
+      endMs: new Date(step.end_time).getTime(),
+    }));
+  }, [legRanges, parsedResult.chartTimeBaseMs, review.analysis.steps]);
 
   const syncId = "maneuver-overview";
   const [hoverT, setHoverT] = useState<number | null>(null);
@@ -1153,33 +1173,14 @@ function ManeuverOverview({
 
       {/* Route map with per-step colored segments */}
       {hasMap && (
-        <div className="h-[220px] min-w-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
-          <MapContainer
-            bounds={allMapPos}
-            className="h-full w-full"
-            scrollWheelZoom={false}
-            zoomControl={true}
-            attributionControl={false}
-            preferCanvas
-          >
-            <InvalidateMapSize />
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            {/* Faded full-maneuver background path */}
-            <Polyline positions={allMapPos} color="#475569" weight={2} opacity={0.35} />
-            {/* Per-step highlighted segments */}
-            {stepSegments.map((seg, i) =>
-              seg.pts.length >= 2 ? (
-                <Polyline
-                  key={i}
-                  positions={seg.pts}
-                  color={seg.color}
-                  weight={5}
-                  opacity={0.9}
-                />
-              ) : null,
-            )}
-          </MapContainer>
-        </div>
+        <FlightMap
+          points={parsedResult.points}
+          selectedRangeT={selectedRangeT}
+          className="h-[220px] min-w-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950"
+          chartTimeBaseMs={parsedResult.chartTimeBaseMs}
+          trafficPattern={review.analysis.trafficPattern ?? null}
+          coloredSegments={mapColoredSegments}
+        />
       )}
 
       {/* Altitude chart with step shading */}
