@@ -1,4 +1,4 @@
-const { app, Tray, Menu, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell } = require("electron");
 const { fork } = require("child_process");
 const path = require("path");
 const http = require("http");
@@ -14,6 +14,7 @@ const HELPER_JS = path.join(RESOURCES, "helper.js");
 const HELPER_URL_REMOTE = "https://raw.githubusercontent.com/gabrielpiresr/garmin-flight-viewer/main/video-helper/helper.js";
 
 let tray = null;
+let statusWindow = null;
 let helperProc = null;
 let isQuitting = false;
 
@@ -24,11 +25,15 @@ if (!gotLock) {
 }
 
 app.setLoginItemSettings({ openAtLogin: true });
-app.dock?.hide();
 
 app.whenReady().then(() => {
+  createStatusWindow();
   createTray();
   updateHelperThenStart();
+});
+
+app.on("second-instance", () => {
+  showStatusWindow();
 });
 
 app.on("window-all-closed", (e) => e.preventDefault());
@@ -107,6 +112,7 @@ function checkAndUpdateTray() {
     tray.setToolTip(
       ok ? "Flight Video Helper — ativo" : "Flight Video Helper — iniciando..."
     );
+    updateStatusWindow(ok);
     updateMenu(ok);
     // Consume response body to free socket
     res.resume();
@@ -114,9 +120,120 @@ function checkAndUpdateTray() {
   req.on("error", () => {
     tray.setImage(iconPath("off"));
     tray.setToolTip("Flight Video Helper — parado");
+    updateStatusWindow(false);
     updateMenu(false);
   });
   req.setTimeout(2000, () => req.destroy());
+}
+
+function createStatusWindow() {
+  statusWindow = new BrowserWindow({
+    width: 420,
+    height: 300,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: "Flight Video Helper",
+    icon: iconPath("on"),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  statusWindow.setMenuBarVisibility(false);
+  statusWindow.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      statusWindow.hide();
+    }
+  });
+  updateStatusWindow(false);
+  statusWindow.show();
+}
+
+function showStatusWindow() {
+  if (!statusWindow || statusWindow.isDestroyed()) return;
+  if (statusWindow.isMinimized()) statusWindow.restore();
+  statusWindow.show();
+  statusWindow.focus();
+}
+
+function updateStatusWindow(running) {
+  if (!statusWindow || statusWindow.isDestroyed()) return;
+  const dotColor = running ? "#22c55e" : "#f59e0b";
+  const title = running ? "Ferramenta rodando" : "Iniciando ferramenta";
+  const message = running
+    ? "O Flight Video Helper esta ativo. Pode voltar ao sistema e baixar o video com corte e instrumentos."
+    : "Aguarde alguns segundos. A ferramenta esta preparando o processamento local de videos.";
+  const html = `<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';" />
+    <title>Flight Video Helper</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #020617;
+        color: #e5e7eb;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      main {
+        width: 100%;
+        padding: 28px;
+        text-align: center;
+      }
+      .status {
+        width: 58px;
+        height: 58px;
+        margin: 0 auto 18px;
+        border-radius: 18px;
+        display: grid;
+        place-items: center;
+        background: rgba(15, 23, 42, 0.95);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      .dot {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: ${dotColor};
+        box-shadow: 0 0 22px ${dotColor};
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      p {
+        margin: 12px auto 0;
+        max-width: 330px;
+        color: #cbd5e1;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      small {
+        display: block;
+        margin-top: 20px;
+        color: #64748b;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="status"><div class="dot"></div></div>
+      <h1>${title}</h1>
+      <p>${message}</p>
+      <small>Porta local: 7842</small>
+    </main>
+  </body>
+</html>`;
+  statusWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
 function updateMenu(running) {
@@ -131,6 +248,10 @@ function updateMenu(running) {
     {
       label: "Abrir app no navegador",
       click: () => shell.openExternal("http://localhost:5173"),
+    },
+    {
+      label: "Mostrar janela de status",
+      click: showStatusWindow,
     },
     { type: "separator" },
     {

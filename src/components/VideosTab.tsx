@@ -63,6 +63,7 @@ import {
 } from "./VideoTelemetryOverlay";
 
 const HELPER_URL = "http://127.0.0.1:7842";
+const HELPER_SETUP_PATH = "/video-helper";
 
 type HelperStatus = "checking" | "online" | "offline";
 type SelectedFile = { name: string; file: File };
@@ -189,6 +190,23 @@ function isVideoUploadFile(name: string): boolean {
   return /\.(mp4|mov|avi|mkv|mts|m2ts|webm)$/i.test(name);
 }
 
+function isMobileOrTabletDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const uaData = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  if (uaData.userAgentData?.mobile) return true;
+  return /Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle/i.test(ua);
+}
+
+async function getHelperStatus(): Promise<HelperStatus> {
+  try {
+    const res = await fetch(`${HELPER_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok ? "online" : "offline";
+  } catch {
+    return "offline";
+  }
+}
+
 function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
   const settings = getCachedBrandSettings();
   return {
@@ -285,12 +303,7 @@ export function VideosTab({ flightId }: { flightId: string | undefined }) {
 
   const checkHelper = useCallback(async () => {
     setHelperStatus("checking");
-    try {
-      const res = await fetch(`${HELPER_URL}/health`, { signal: AbortSignal.timeout(2000) });
-      setHelperStatus(res.ok ? "online" : "offline");
-    } catch {
-      setHelperStatus("offline");
-    }
+    setHelperStatus(await getHelperStatus());
   }, []);
 
   const loadVideos = useCallback(async () => {
@@ -809,7 +822,10 @@ function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry:
         <div className="space-y-2 text-xs text-slate-300">
           <div className="rounded border border-slate-700 bg-slate-800/60 p-2 space-y-1">
             <p className="font-medium text-slate-200">Opção 1 — Liberar no Chrome (uma vez por máquina)</p>
-            <p className="text-slate-400">Abra uma nova aba e cole:</p>
+            <p className="text-slate-400">
+              Clique no ícone de controles/ferramentas à esquerda da URL e habilite a permissão para permitir apps no dispositivo ou acesso à rede local.
+            </p>
+            <p className="text-slate-400">Se preferir, abra uma nova aba e cole:</p>
             <code className="block select-all rounded bg-slate-900 px-2 py-1 text-sky-400 text-[11px]">
               chrome://settings/content/localNetworkAccess
             </code>
@@ -824,6 +840,14 @@ function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry:
           <button type="button" onClick={requestPermission} className="text-xs text-sky-400 underline-offset-4 hover:underline">
             Solicitar permissão
           </button>
+          <a
+            href={HELPER_SETUP_PATH}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-sky-400 underline-offset-4 hover:underline"
+          >
+            Ver passo a passo
+          </a>
           <button type="button" onClick={onRetry} className="text-xs text-slate-400 underline-offset-4 hover:underline">
             Verificar novamente
           </button>
@@ -843,12 +867,12 @@ function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry:
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <a
-          href="https://github.com/SEU-REPO/releases/latest"
+          href={HELPER_SETUP_PATH}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-sky-400 underline-offset-4 hover:underline"
         >
-          Baixar helper
+          Ver passo a passo
         </a>
         <button type="button" onClick={onRetry} className="text-xs text-slate-400 underline-offset-4 hover:underline">
           Verificar novamente
@@ -1101,6 +1125,7 @@ function useVideoStageSize(
 }
 
 function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
+  const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const videoStageParentRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -1144,6 +1169,7 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
     return { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" };
   }, [orientation, videoStageSize]);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [downloadHelperStatus, setDownloadHelperStatus] = useState<HelperStatus>("checking");
   const [brand, setBrand] = useState(() => getCachedVideoBrand());
   const verticalDragRef = useRef<{ startX: number; startCrop: number; moved: boolean } | null>(null);
   const currentTimeRef = useRef(0);
@@ -1341,6 +1367,13 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
   }, [redrawCharts, redrawRouteMap]);
 
   const hasTelemetry = video.telemetry_present && points.length > 1 && available.length > 0;
+  const isStudent = user?.role !== "instrutor" && user?.role !== "admin";
+  const isMobileOrTablet = useMemo(() => isMobileOrTabletDevice(), []);
+
+  const checkDownloadHelper = useCallback(async () => {
+    setDownloadHelperStatus("checking");
+    setDownloadHelperStatus(await getHelperStatus());
+  }, []);
 
   const seekVideo = useCallback(
     (t: number) => {
@@ -1797,7 +1830,10 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
         {/* Botão de download */}
         <button
           type="button"
-          onClick={() => setShowDownloadModal(true)}
+          onClick={() => {
+            setShowDownloadModal(true);
+            if (isStudent && !isMobileOrTablet) void checkDownloadHelper();
+          }}
           className="mt-0.5 self-start rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700"
         >
           ↓ Baixar
@@ -1818,7 +1854,18 @@ function TelemetryVideoPlayer({ video }: { video: FlightVideo }) {
           videoUrl={video.file_url!}
           hasTelemetry={hasTelemetry}
           exporting={exporting}
+          enhancedDownloadBlockedReason={
+            isStudent && isMobileOrTablet
+              ? "O download com corte e instrumentos só é possível no computador."
+              : isStudent && downloadHelperStatus === "checking"
+                ? "Verificando a ferramenta de edição..."
+                : isStudent && downloadHelperStatus === "offline"
+                  ? "É necessário configurar a ferramenta de edição neste computador."
+                  : null
+          }
+          helperSetupHref={HELPER_SETUP_PATH}
           onClose={() => setShowDownloadModal(false)}
+          onRetryHelper={checkDownloadHelper}
           onDownloadWithWidgets={() => {
             setShowDownloadModal(false);
             void handleRenderedDownload();
@@ -1947,6 +1994,14 @@ function HelperOfflinePanel({ error }: { error: string }) {
         <li>Abra o instalador e siga os passos</li>
         <li>O ícone aparecerá na bandeja do sistema — pronto!</li>
       </ol>
+      <a
+        href={HELPER_SETUP_PATH}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex text-xs font-medium text-sky-300 underline-offset-4 hover:underline"
+      >
+        Abrir página de ajuda
+      </a>
       <p className="text-amber-400/70 text-[10px]">Erro: {error}</p>
     </div>
   );
@@ -2021,15 +2076,23 @@ function DownloadChoiceModal({
   videoUrl,
   hasTelemetry,
   exporting,
+  enhancedDownloadBlockedReason,
+  helperSetupHref,
   onClose,
+  onRetryHelper,
   onDownloadWithWidgets,
 }: {
   videoUrl: string;
   hasTelemetry: boolean;
   exporting: boolean;
+  enhancedDownloadBlockedReason: string | null;
+  helperSetupHref: string;
   onClose: () => void;
+  onRetryHelper: () => void;
   onDownloadWithWidgets: () => void;
 }) {
+  const enhancedDisabled = exporting || Boolean(enhancedDownloadBlockedReason);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
@@ -2053,18 +2116,44 @@ function DownloadChoiceModal({
             </div>
           </a>
           {hasTelemetry && (
-            <button
-              type="button"
-              disabled={exporting}
-              onClick={onDownloadWithWidgets}
-              className="flex items-center gap-3 rounded-lg border border-sky-700/50 bg-sky-950/40 px-4 py-3 text-sm text-sky-200 hover:bg-sky-900/40 disabled:opacity-50"
-            >
-              <span className="text-lg">📊</span>
-              <div className="text-left">
-                <p className="font-medium">Vídeo com corte e instrumentos</p>
-                <p className="text-xs text-sky-400/70">Aplica trecho e overlay de telemetria</p>
-              </div>
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                disabled={enhancedDisabled}
+                onClick={onDownloadWithWidgets}
+                className="flex w-full items-center gap-3 rounded-lg border border-sky-700/50 bg-sky-950/40 px-4 py-3 text-sm text-sky-200 hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:border-slate-700 disabled:bg-slate-800/50 disabled:text-slate-500"
+              >
+                <span className="text-lg">📊</span>
+                <div className="text-left">
+                  <p className="font-medium">Vídeo com corte e instrumentos</p>
+                  <p className="text-xs text-sky-400/70">Aplica trecho e overlay de telemetria</p>
+                </div>
+              </button>
+              {enhancedDownloadBlockedReason && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+                  <p>{enhancedDownloadBlockedReason}</p>
+                  {enhancedDownloadBlockedReason.includes("ferramenta de edição") && (
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      <a
+                        href={helperSetupHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-sky-300 underline-offset-4 hover:underline"
+                      >
+                        Ver passo a passo
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void onRetryHelper()}
+                        className="font-medium text-slate-300 underline-offset-4 hover:underline"
+                      >
+                        Verificar novamente
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </div>
         <button

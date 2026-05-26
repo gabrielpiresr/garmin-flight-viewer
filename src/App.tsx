@@ -12,6 +12,9 @@ const InstructorLayout = lazy(() =>
 const OfflineLogbookPage = lazy(() =>
   import("./pages/OfflineLogbookPage").then((module) => ({ default: module.OfflineLogbookPage })),
 );
+const VideoHelperSetupPage = lazy(() =>
+  import("./pages/VideoHelperSetupPage").then((module) => ({ default: module.VideoHelperSetupPage })),
+);
 
 function AppLoading() {
   return (
@@ -24,6 +27,7 @@ function AppLoading() {
 export default function App() {
   const { user, loading } = useAuth();
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
+  const isVideoHelperRoute = window.location.pathname === "/video-helper";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -34,6 +38,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <OfflineLogbookPage />
+      </Suspense>
+    );
+  }
+
+  if (isVideoHelperRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <VideoHelperSetupPage />
       </Suspense>
     );
   }
