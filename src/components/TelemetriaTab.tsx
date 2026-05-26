@@ -1,6 +1,8 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { decodeFlightRecord, type FlightRecordMeta, type FlightRecordTelemetryFile } from "../lib/flightRecordCodec";
 import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/flightTelemetryAlertsDb";
 import { findRunwaysByAirport } from "../lib/runwaysDb";
@@ -578,7 +580,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     );
   }
 
-  return (
+  const mainContent = (
     <div className="relative min-w-0 flex flex-col gap-2">
       {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       {uploadPanel}
@@ -692,6 +694,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       )}
     </div>
   );
+
+  return mainContent;
 }
 
 const ALERT_SEVERITY_CLASS: Record<string, string> = {

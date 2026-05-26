@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
+import { FlightReviewClubProvider } from "../contexts/FlightReviewClubContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
+import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
@@ -199,6 +201,7 @@ export function MainLayout() {
   const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isClubMember, setIsClubMember] = useState(false);
 
   // Interseção: SchoolRules (escola) E permissão de role (usuário)
   const visibleNavItems = useMemo(
@@ -232,12 +235,36 @@ export function MainLayout() {
   }, []);
 
   useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+    void listStudentTrainingTracks(user.id).then((result) => {
+      if (cancelled) return;
+      const primary = result.data?.find((t) => t.isPrimary) ?? result.data?.[0] ?? null;
+      setIsClubMember(primary?.isFlightReviewClubMember ?? false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
     if (!availableNavItems.some((item) => item.id === section)) {
       setSection(availableNavItems[0]!.id, { replace: true });
     }
   }, [availableNavItems, section]);
 
+  const clubLpUrl = rules.flightReviewClub.landingPageType === "external_url"
+    ? rules.flightReviewClub.externalUrl
+    : `${window.location.origin}/flight-review-club`;
+
+  const clubContextValue = {
+    enabled: rules.flightReviewClub.enabled,
+    isClubMember,
+    lpUrl: clubLpUrl,
+  };
+
   return (
+    <FlightReviewClubProvider value={clubContextValue}>
     <div className="school-themed-shell flex min-h-screen">
       <aside className={`school-themed-surface sticky top-0 hidden h-screen flex-col border-r border-slate-800 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
         <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
@@ -288,6 +315,25 @@ export function MainLayout() {
               </button>
             );
           })}
+          {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
+            <a
+              href={clubLpUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={sidebarCollapsed ? "Flight Review Club" : undefined}
+              aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
+              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+            >
+              <span className="opacity-70 group-hover:opacity-100">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                  <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                </svg>
+              </span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">Flight Review Club</p>
+              </div>
+            </a>
+          ) : null}
         </nav>
 
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
@@ -449,5 +495,6 @@ export function MainLayout() {
         </nav>
       </div>
     </div>
+    </FlightReviewClubProvider>
   );
 }

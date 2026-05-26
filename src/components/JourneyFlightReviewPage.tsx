@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, type SavedFlightFull } from "../lib/flightsDb";
 import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
@@ -93,6 +94,7 @@ export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFligh
 }
 
 export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props) {
+  const { isClubMember } = useFlightReviewClub();
   const [activeTab, setActiveTab] = useState<JourneyFlightReviewTab>("resumo");
   const [flight, setFlight] = useState<SavedFlightFull | null>(null);
   const [loading, setLoading] = useState(true);
@@ -143,17 +145,19 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
         >
           &larr; Jornada
         </button>
-        <div className="flex flex-wrap items-center gap-2">
-          {shareStatus ? <span className="text-xs text-slate-400">{shareStatus}</span> : null}
-          <button
-            type="button"
-            onClick={() => void handleCreatePublicShare()}
-            disabled={shareBusy}
-            className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:cursor-wait disabled:opacity-60"
-          >
-            {shareBusy ? "Gerando..." : "Copiar link público"}
-          </button>
-        </div>
+        {isClubMember && (
+          <div className="flex flex-wrap items-center gap-2">
+            {shareStatus ? <span className="text-xs text-slate-400">{shareStatus}</span> : null}
+            <button
+              type="button"
+              onClick={() => void handleCreatePublicShare()}
+              disabled={shareBusy}
+              className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:cursor-wait disabled:opacity-60"
+            >
+              {shareBusy ? "Gerando..." : "Copiar link público"}
+            </button>
+          </div>
+        )}
       </div>
 
       <Tabs items={REVIEW_TABS} value={activeTab} onChange={setActiveTab} ariaLabel="Flight Review da jornada" accent="sky" />

@@ -1,5 +1,17 @@
 import type { NotificationEventType } from "./notification";
 
+export type FlightReviewClubLpType = "internal_public_page" | "external_url";
+
+export type FlightReviewClubRules = {
+  enabled: boolean;
+  landingPageType: FlightReviewClubLpType;
+  externalUrl: string;
+  showInStudentMenu: boolean;
+  benefits: string[];
+  ctaSubscriptionUrl: string;
+  trialFlightCount: number;
+};
+
 export type StudentPortalTab =
   | "home"
   | "jornada"
@@ -54,6 +66,7 @@ export type SchoolRules = {
   theme: PlatformThemeRules;
   schedule: FlightScheduleRules;
   emailNotifications: Record<NotificationEventType, EmailNotificationRule>;
+  flightReviewClub: FlightReviewClubRules;
   updatedAt: string | null;
 };
 
@@ -85,6 +98,16 @@ export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },
 ];
+
+export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
+  enabled: false,
+  landingPageType: "internal_public_page",
+  externalUrl: "",
+  showInStudentMenu: false,
+  benefits: [],
+  ctaSubscriptionUrl: "",
+  trialFlightCount: 0,
+};
 
 export const DEFAULT_PLATFORM_THEME_RULES: PlatformThemeRules = {
   primaryColor: "#10b981",
@@ -126,6 +149,7 @@ export const DEFAULT_SCHOOL_RULES: SchoolRules = {
   theme: DEFAULT_PLATFORM_THEME_RULES,
   schedule: DEFAULT_FLIGHT_SCHEDULE_RULES,
   emailNotifications: DEFAULT_EMAIL_NOTIFICATION_RULES,
+  flightReviewClub: DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   updatedAt: null,
 };
 
@@ -198,6 +222,21 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       }),
       {} as Record<NotificationEventType, EmailNotificationRule>,
     ),
+    flightReviewClub: (() => {
+      const club = raw.flightReviewClub;
+      const lpType = club?.landingPageType;
+      return {
+        enabled: Boolean(club?.enabled ?? false),
+        landingPageType: lpType === "external_url" ? "external_url" : "internal_public_page",
+        externalUrl: typeof club?.externalUrl === "string" ? club.externalUrl.slice(0, 2048) : "",
+        showInStudentMenu: Boolean(club?.showInStudentMenu ?? false),
+        benefits: Array.isArray(club?.benefits)
+          ? club.benefits.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 20)
+          : [],
+        ctaSubscriptionUrl: typeof club?.ctaSubscriptionUrl === "string" ? club.ctaSubscriptionUrl.slice(0, 2048) : "",
+        trialFlightCount: (() => { const n = Number(club?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
+      };
+    })(),
     updatedAt: raw.updatedAt ?? null,
   };
 }

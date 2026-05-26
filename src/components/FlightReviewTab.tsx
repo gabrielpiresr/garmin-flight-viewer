@@ -1,15 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ReferenceArea,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useAuth } from "../contexts/AuthContext";
 import { getAircraftByRegistration } from "../lib/aircraftDb";
@@ -579,6 +568,255 @@ function showReviewTooltip(
 function hideReviewTooltip(tooltip: HTMLDivElement | null) {
   if (!tooltip) return;
   tooltip.classList.add("hidden");
+}
+
+type ModalTelemetryPoint = {
+  x: number;
+  alt: number | null;
+  ias: number | null;
+  rpm: number | null;
+};
+
+function ModalTelemetryChart({
+  color,
+  data,
+  dataKey,
+  domain,
+  height,
+  label,
+  onHoverX,
+  onSelectX,
+  selectionEnd,
+  selectionStart,
+  tickFmt,
+  telemetryBaseMs,
+  totalMs,
+}: {
+  color: string;
+  data: ModalTelemetryPoint[];
+  dataKey: "alt" | "ias" | "rpm";
+  domain: [number, number] | null;
+  height: number;
+  label: string;
+  onHoverX: (x: number | null) => void;
+  onSelectX: (x: number) => void;
+  selectionEnd: number | null;
+  selectionStart: number | null;
+  tickFmt: (value: number) => string;
+  telemetryBaseMs: number;
+  totalMs: number;
+}) {
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const xDomain = useMemo<[number, number]>(() => domain ?? [0, totalMs], [domain, totalMs]);
+  const visibleData = useMemo(
+    () => data.filter((point) => point.x >= xDomain[0] && point.x <= xDomain[1] && point[dataKey] !== null),
+    [data, dataKey, xDomain],
+  );
+  const yDomain = useMemo(() => {
+    const values = visibleData.map((point) => point[dataKey]).filter((value): value is number => value !== null);
+    if (values.length === 0) return [0, 1] as [number, number];
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const pad = min === max ? Math.max(Math.abs(min) * 0.08, 1) : (max - min) * 0.08;
+    return [min - pad, max + pad] as [number, number];
+  }, [dataKey, visibleData]);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const canvas = canvasRef.current;
+    if (!shell || !canvas) return undefined;
+    let frame = 0;
+
+    const draw = () => {
+      frame = 0;
+      const rect = shell.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const left = 48;
+      const right = 10;
+      const top = 8;
+      const bottom = 22;
+      const plotW = Math.max(1, width - left - right);
+      const plotH = Math.max(1, height - top - bottom);
+      const [xMin, xMax] = xDomain;
+      const [yMin, yMax] = yDomain;
+      const xSpan = xMax - xMin || 1;
+      const ySpan = yMax - yMin || 1;
+      const toX = (x: number) => left + ((x - xMin) / xSpan) * plotW;
+      const toY = (y: number) => top + plotH - ((y - yMin) / ySpan) * plotH;
+
+      ctx.strokeStyle = "#1e293b";
+      ctx.fillStyle = "#64748b";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.lineWidth = 1;
+      ctx.textBaseline = "middle";
+      for (let i = 0; i <= 4; i += 1) {
+        const y = top + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(width - right, y);
+        ctx.stroke();
+        ctx.fillText(tickFmt(yMax - (ySpan * i) / 4), 4, y);
+      }
+      ctx.textBaseline = "top";
+      for (let i = 0; i <= 4; i += 1) {
+        const x = left + (plotW * i) / 4;
+        const value = xMin + (xSpan * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + plotH);
+        ctx.stroke();
+        ctx.fillText(formatHHMM(value, telemetryBaseMs), Math.min(width - right - 42, Math.max(left, x - 18)), top + plotH + 4);
+      }
+
+      if (selectionStart !== null && selectionEnd !== null) {
+        const sx1 = toX(selectionStart);
+        const sx2 = toX(selectionEnd);
+        ctx.fillStyle = "rgba(34, 211, 238, 0.12)";
+        ctx.fillRect(Math.min(sx1, sx2), top, Math.abs(sx2 - sx1), plotH);
+        ctx.strokeStyle = "rgba(34, 211, 238, 0.35)";
+        ctx.strokeRect(Math.min(sx1, sx2), top, Math.abs(sx2 - sx1), plotH);
+      }
+
+      for (const marker of [
+        { x: selectionStart, color: "#22d3ee", text: "Inicio" },
+        { x: selectionEnd, color: "#f97316", text: "Fim" },
+      ]) {
+        if (marker.x === null || marker.x < xMin || marker.x > xMax) continue;
+        const x = toX(marker.x);
+        ctx.save();
+        ctx.strokeStyle = marker.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + plotH);
+        ctx.stroke();
+        ctx.fillStyle = marker.color;
+        ctx.font = "10px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(marker.text, Math.min(width - right - 24, Math.max(left + 24, x)), top + 2);
+        ctx.restore();
+      }
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.7;
+      ctx.beginPath();
+      let active = false;
+      for (const point of visibleData) {
+        const value = point[dataKey];
+        if (value === null || !Number.isFinite(value)) {
+          active = false;
+          continue;
+        }
+        const x = toX(point.x);
+        const y = toY(value);
+        if (!active) {
+          ctx.moveTo(x, y);
+          active = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    };
+
+    const scheduleDraw = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(draw);
+    };
+    const observer = new ResizeObserver(scheduleDraw);
+    observer.observe(shell);
+    scheduleDraw();
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [color, dataKey, height, selectionEnd, selectionStart, telemetryBaseMs, visibleData, xDomain, yDomain, tickFmt]);
+
+  const xFromClient = (clientX: number): number | null => {
+    const shell = shellRef.current;
+    if (!shell) return null;
+    const rect = shell.getBoundingClientRect();
+    const left = 48;
+    const right = 10;
+    const plotW = Math.max(1, rect.width - left - right);
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left - left) / plotW));
+    return xDomain[0] + (xDomain[1] - xDomain[0]) * ratio;
+  };
+
+  const nearest = (x: number): ModalTelemetryPoint | null => {
+    if (data.length === 0) return null;
+    let best = data[0] ?? null;
+    let bestDiff = Infinity;
+    for (const point of data) {
+      const diff = Math.abs(point.x - x);
+      if (diff < bestDiff) {
+        best = point;
+        bestDiff = diff;
+      } else if (point.x > x && diff > bestDiff) {
+        break;
+      }
+    }
+    return best;
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    const tooltip = tooltipRef.current;
+    const shell = shellRef.current;
+    const x = xFromClient(event.clientX);
+    if (!tooltip || !shell || x === null) return;
+    const point = nearest(x);
+    if (!point) return;
+    onHoverX(point.x);
+    const value = point[dataKey];
+    tooltip.classList.remove("hidden");
+    tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${formatHHMMSS(point.x, telemetryBaseMs)} - ${value === null ? "-" : tickFmt(value)}</div>`;
+    const rect = shell.getBoundingClientRect();
+    const tooltipWidth = tooltip.offsetWidth || 132;
+    const left = Math.min(Math.max(6, event.clientX - rect.left + 10), Math.max(6, rect.width - tooltipWidth - 6));
+    const top = Math.max(6, event.clientY - rect.top - 18);
+    tooltip.style.transform = `translate(${left}px, ${top}px)`;
+  };
+
+  const handlePointerLeave = () => {
+    onHoverX(null);
+    tooltipRef.current?.classList.add("hidden");
+  };
+
+  const handleClick = (event: PointerEvent<HTMLCanvasElement>) => {
+    const x = xFromClient(event.clientX);
+    if (x === null) return;
+    const point = nearest(x);
+    onSelectX(point?.x ?? x);
+  };
+
+  return (
+    <div ref={shellRef} className="relative min-w-0 overflow-hidden rounded-md bg-slate-950/30" style={{ height }}>
+      <canvas
+        ref={canvasRef}
+        className="block h-full w-full touch-none"
+        onClick={handleClick}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={handlePointerLeave}
+      />
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none absolute left-0 top-0 z-10 hidden rounded-md border border-slate-700 bg-slate-950/95 px-2 py-1 text-[11px] text-slate-200 shadow-lg"
+      />
+    </div>
+  );
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -1530,11 +1768,8 @@ function AddManeuverModal({
   };
 
   // Chart click: first click = start, second = end, subsequent = restart
-  const handleChartClick = useCallback(
-    (chartEvent: unknown) => {
-      const ev = chartEvent as { activePayload?: Array<{ payload: { x: number } }> } | null;
-      const xMs = ev?.activePayload?.[0]?.payload?.x;
-      if (xMs == null) return;
+  const handleChartSelect = useCallback(
+    (xMs: number) => {
       if (phase === "start") {
         setStartX(xMs);
         setEndX(null);
@@ -1713,7 +1948,7 @@ function AddManeuverModal({
                   </div>
                 )}
 
-                {/* Charts — all share the same syncId for universal tooltip */}
+                {/* Charts */}
                 <div
                   ref={chartContainerRef}
                   className="select-none"
@@ -1745,50 +1980,28 @@ function AddManeuverModal({
                   ].map(({ dataKey, label, color, height, tickFmt }) => (
                     <div key={dataKey}>
                       <p className="mt-1 text-xs font-medium text-slate-500">{label}</p>
-                      <ResponsiveContainer width="100%" height={height}>
-                        <LineChart
-                          data={telemetry.points}
-                          syncId="modal-charts"
-                          onClick={handleChartClick}
-                          onMouseMove={(data: { activePayload?: Array<{ payload: { x: number } }> }) => {
-                            const xMs = data?.activePayload?.[0]?.payload?.x;
-                            if (xMs == null) return;
-                            const pos = findHoverPos(telemetry.flightPoints, telemetry.baseMs, xMs);
-                            mapHoverRef.current?.(pos);
-                          }}
-                          onMouseLeave={() => mapHoverRef.current?.(null)}
-                          margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                          <XAxis
-                            dataKey="x"
-                            type="number"
-                            domain={chartDomain ?? [0, telemetry.totalMs]}
-                            tickFormatter={(v: number) => formatHHMM(v, telemetry.baseMs)}
-                            tick={{ fontSize: 9, fill: "#475569" }}
-                            minTickGap={40}
-                            allowDataOverflow
-                          />
-                          <YAxis dataKey={dataKey} tick={{ fontSize: 9, fill: "#475569" }} width={44} tickFormatter={tickFmt} />
-                          <Tooltip
-                            contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }}
-                            labelFormatter={(v: number) => formatHHMMSS(v, telemetry.baseMs)}
-                            formatter={(v: number) => [tickFmt(v), label]}
-                          />
-                          {startX !== null && endX !== null && (
-                            <ReferenceArea x1={startX} x2={endX} fill="#22d3ee" fillOpacity={0.12} stroke="#22d3ee" strokeOpacity={0.3} />
-                          )}
-                          {startX !== null && (
-                            <ReferenceLine x={startX} stroke="#22d3ee" strokeWidth={2}
-                              label={{ value: "Início", position: "top", fill: "#22d3ee", fontSize: 9 }} />
-                          )}
-                          {endX !== null && (
-                            <ReferenceLine x={endX} stroke="#f97316" strokeWidth={2}
-                              label={{ value: "Fim", position: "top", fill: "#f97316", fontSize: 9 }} />
-                          )}
-                          <Line type="monotone" dataKey={dataKey} stroke={color} dot={false} strokeWidth={1.5} isAnimationActive={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <ModalTelemetryChart
+                        color={color}
+                        data={telemetry.points}
+                        dataKey={dataKey as "alt" | "ias" | "rpm"}
+                        domain={chartDomain}
+                        height={height}
+                        label={label}
+                        onHoverX={(xMs) => {
+                          if (xMs === null) {
+                            mapHoverRef.current?.(null);
+                            return;
+                          }
+                          const pos = findHoverPos(telemetry.flightPoints, telemetry.baseMs, xMs);
+                          mapHoverRef.current?.(pos);
+                        }}
+                        onSelectX={handleChartSelect}
+                        selectionEnd={endX}
+                        selectionStart={startX}
+                        telemetryBaseMs={telemetry.baseMs}
+                        tickFmt={tickFmt}
+                        totalMs={telemetry.totalMs}
+                      />
                     </div>
                   ))}
                 </div>
@@ -2693,7 +2906,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     </div>
   );
 
-  return (
+  const content = (
     <div ref={fsContainerRef}>
       {isFullscreen ? fullscreenView : normalView}
       {addOpen && flight && (
@@ -2720,4 +2933,6 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
       )}
     </div>
   );
+
+  return content;
 }

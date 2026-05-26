@@ -47,6 +47,7 @@ export type StudentTrainingTrack = {
   trackId: string;
   status: StudentTrainingTrackStatus;
   isPrimary: boolean;
+  isFlightReviewClubMember: boolean;
   assignedAt: string;
   updatedAt: string;
   track: TrainingTrack | null;

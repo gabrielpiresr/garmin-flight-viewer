@@ -18,6 +18,9 @@ const VideoHelperSetupPage = lazy(() =>
 const PublicFlightReviewPage = lazy(() =>
   import("./pages/PublicFlightReviewPage").then((module) => ({ default: module.PublicFlightReviewPage })),
 );
+const FlightReviewClubPage = lazy(() =>
+  import("./pages/FlightReviewClubPage").then((module) => ({ default: module.FlightReviewClubPage })),
+);
 
 function AppLoading() {
   return (
@@ -32,6 +35,7 @@ export default function App() {
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
   const isVideoHelperRoute = window.location.pathname === "/video-helper";
   const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
+  const isFlightReviewClubRoute = window.location.pathname === "/flight-review-club";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -58,6 +62,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <PublicFlightReviewPage />
+      </Suspense>
+    );
+  }
+
+  if (isFlightReviewClubRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <FlightReviewClubPage />
       </Suspense>
     );
   }

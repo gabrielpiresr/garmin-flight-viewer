@@ -4409,6 +4409,18 @@ function publicSchoolRules(settings, updatedAt) {
         },
       ]),
     ),
+    flightReviewClub: {
+      enabled: Boolean(settings?.flightReviewClub?.enabled ?? false),
+      landingPageType: ["internal_public_page", "external_url"].includes(settings?.flightReviewClub?.landingPageType)
+        ? settings.flightReviewClub.landingPageType
+        : "internal_public_page",
+      externalUrl: cleanString(settings?.flightReviewClub?.externalUrl).slice(0, 2048),
+      showInStudentMenu: Boolean(settings?.flightReviewClub?.showInStudentMenu ?? false),
+      benefits: Array.isArray(settings?.flightReviewClub?.benefits)
+        ? settings.flightReviewClub.benefits.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 20)
+        : [],
+      ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
+    },
     updatedAt: updatedAt || null,
   };
 }

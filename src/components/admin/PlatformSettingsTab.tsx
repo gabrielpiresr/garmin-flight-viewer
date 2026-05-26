@@ -31,6 +31,7 @@ import {
   AppearanceSettingsPanel,
   EmailBrandSettingsPanel,
   EmailNotificationRulesPanel,
+  FlightReviewClubPanel,
   ScheduleRulesPanel,
 } from "./PlatformSettingsExtraPanels";
 
@@ -682,8 +683,9 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
         </div>
       ) : null}
       {openedSubTabs.has("rules") ? (
-        <div hidden={activeSubTab !== "rules"}>
+        <div hidden={activeSubTab !== "rules"} className="space-y-6">
           <ScheduleRulesPanel />
+          <FlightReviewClubPanel />
         </div>
       ) : null}
       {openedSubTabs.has("badges") ? (

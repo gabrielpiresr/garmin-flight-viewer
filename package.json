@@ -46,6 +46,7 @@
     "appwrite:setup-edb-audit": "node scripts/setup-edb-audit.mjs",
     "appwrite:setup-flight-review": "node scripts/setup-flight-review-collections.mjs",
     "appwrite:setup-public-flight-review-share": "node scripts/setup-public-flight-review-share.mjs",
+    "appwrite:setup-flight-review-club": "node scripts/setup-flight-review-club.mjs",
     "appwrite:fix-flight-review-permissions": "node scripts/fix-flight-review-permissions.mjs",
     "appwrite:setup-flight-status": "node scripts/setup-flight-status.mjs",
     "appwrite:setup-flight-calendar-reminders": "node scripts/setup-flight-calendar-reminders.mjs",

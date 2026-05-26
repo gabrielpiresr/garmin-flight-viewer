@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { FlightReviewTab } from "../components/FlightReviewTab";
 import { FlightSummaryPanel } from "../components/JourneyFlightReviewPage";
 import { TelemetriaTab } from "../components/TelemetriaTab";
@@ -70,6 +70,17 @@ function LoadingState() {
   );
 }
 
+function TabLoadingState({ label = "Carregando..." }: { label?: string }) {
+  return (
+    <div className="flex min-h-[22rem] items-center justify-center">
+      <div className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-5 py-4 text-sm text-slate-300">
+        <span className="h-5 w-5 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+        {label}
+      </div>
+    </div>
+  );
+}
+
 function formatFlightDate(value: string | null | undefined): string {
   const raw = String(value || "").trim();
   if (!raw) return "este voo";
@@ -78,47 +89,18 @@ function formatFlightDate(value: string | null | undefined): string {
   return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
-function ContentLoadingState({ intro }: { intro: PublicFlightReviewIntro }) {
-  const brand = intro.brandSettings;
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 bg-slate-950/95">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-300/80">
-              {brand?.schoolName?.trim() || "Flight Review"}
-            </p>
-            <h1 className="mt-1 break-words text-2xl font-black tracking-tight text-white sm:text-3xl">
-              {intro.missionName || "Flight Review"}
-            </h1>
-          </div>
-          {brand?.logoDataUrl || brand?.logoUrl ? (
-            <img
-              src={brand.logoDataUrl || brand.logoUrl}
-              alt={brand.schoolName || "Escola"}
-              className="h-12 w-auto max-w-40 object-contain"
-            />
-          ) : null}
-        </div>
-      </header>
-      <main className="mx-auto flex min-h-[55vh] max-w-7xl items-center justify-center px-4 py-10">
-        <div className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-5 py-4 text-sm text-slate-300">
-          <span className="h-5 w-5 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-          Carregando o Flight Review...
-        </div>
-      </main>
-    </div>
-  );
-}
-
 export function PublicFlightReviewPage() {
   const [intro, setIntro] = useState<PublicFlightReviewIntro | null>(null);
   const [share, setShare] = useState<PublicFlightReviewShare | null>(null);
   const [activeTab, setActiveTab] = useState<PublicTab>("resumo");
+  const [visitedTabs, setVisitedTabs] = useState<Set<PublicTab>>(() => new Set(["resumo"]));
   const [entered, setEntered] = useState(false);
   const [loadingIntro, setLoadingIntro] = useState(true);
   const [loadingShare, setLoadingShare] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [parsedTelemetry, setParsedTelemetry] = useState<ParseResult | null>(null);
+  const [telemetryReady, setTelemetryReady] = useState(false);
+  const [telemetryParsing, setTelemetryParsing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,17 +136,39 @@ export function PublicFlightReviewPage() {
     };
   }, []);
 
-  const parsedTelemetry = useMemo<ParseResult | null>(() => {
-    if (activeTab !== "telemetria" || !share?.flight.csv_text) return null;
-    const decoded = decodeFlightRecord(share.flight.csv_text);
-    const telemetryText = decoded.meta ? decoded.telemetryCsv : share.flight.csv_text;
-    if (!telemetryText.trim()) return null;
-    try {
-      return parseGarminCsv(telemetryText);
-    } catch {
-      return null;
-    }
-  }, [activeTab, share]);
+  useEffect(() => {
+    setVisitedTabs((current) => {
+      if (current.has(activeTab)) return current;
+      const next = new Set(current);
+      next.add(activeTab);
+      return next;
+    });
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!share?.flight.csv_text || !visitedTabs.has("telemetria") || telemetryReady || telemetryParsing) return;
+    let cancelled = false;
+    setTelemetryParsing(true);
+    const timeoutId = window.setTimeout(() => {
+      try {
+        const decoded = decodeFlightRecord(share.flight.csv_text);
+        const telemetryText = decoded.meta ? decoded.telemetryCsv : share.flight.csv_text;
+        const parsed = telemetryText.trim() ? parseGarminCsv(telemetryText) : null;
+        if (!cancelled) setParsedTelemetry(parsed);
+      } catch {
+        if (!cancelled) setParsedTelemetry(null);
+      } finally {
+        if (!cancelled) {
+          setTelemetryReady(true);
+          setTelemetryParsing(false);
+        }
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [share, telemetryParsing, telemetryReady, visitedTabs]);
 
   if (loadingIntro) return <LoadingState />;
 
@@ -224,21 +228,6 @@ export function PublicFlightReviewPage() {
     );
   }
 
-  if (!share) {
-    if (error && !loadingShare) {
-      return (
-        <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center">
-            <p className="text-sm font-semibold uppercase tracking-widest text-amber-300">Flight Review</p>
-            <h1 className="mt-2 text-2xl font-black">Link indisponível</h1>
-            <p className="mt-2 text-sm text-slate-400">{error || "Este link público não está mais ativo."}</p>
-          </div>
-        </div>
-      );
-    }
-    return <ContentLoadingState intro={intro ?? { flightId: "", missionName: title, studentName, flightDate: "", startTime: "", aircraftIdent: "", brandSettings: brand }} />;
-  }
-
   return (
     <div className="min-h-screen bg-slate-950 pb-[calc(6.5rem+env(safe-area-inset-bottom))] text-slate-100 md:pb-0">
       <header className="border-b border-slate-800 bg-slate-950/95">
@@ -264,21 +253,56 @@ export function PublicFlightReviewPage() {
           <Tabs items={PUBLIC_TABS} value={activeTab} onChange={setActiveTab} ariaLabel="Flight Review público" accent="sky" />
         </div>
 
-        {activeTab === "resumo" ? <FlightSummaryPanel flight={share.flight} missionName={title} /> : null}
-        {activeTab === "telemetria" ? <TelemetriaTab parsedResult={parsedTelemetry ?? undefined} publicMode /> : null}
-        {activeTab === "flight-review" ? (
-          <FlightReviewTab
-            flightId={share.flight.id}
-            publicMode
-            publicData={{
-              flight: share.flight,
-              maneuvers: share.maneuvers,
-              maneuverReviews: share.maneuverReviews,
-              maneuverTemplates: share.maneuverTemplates,
-            }}
-          />
+        {error && !share && !loadingShare ? (
+          <div className="flex min-h-[22rem] items-center justify-center">
+            <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center">
+              <p className="text-sm font-semibold uppercase tracking-widest text-amber-300">Flight Review</p>
+              <h1 className="mt-2 text-2xl font-black">Link indisponível</h1>
+              <p className="mt-2 text-sm text-slate-400">{error || "Este link público não está mais ativo."}</p>
+            </div>
+          </div>
         ) : null}
-        {activeTab === "videos" ? <VideosTab flightId={share.flight.id} publicMode publicVideos={share.videos} /> : null}
+
+        {visitedTabs.has("resumo") || activeTab === "resumo" ? (
+          <section hidden={activeTab !== "resumo"}>
+            {share ? <FlightSummaryPanel flight={share.flight} missionName={title} /> : <TabLoadingState label="Carregando resumo..." />}
+          </section>
+        ) : null}
+
+        {visitedTabs.has("telemetria") || activeTab === "telemetria" ? (
+          <section hidden={activeTab !== "telemetria"}>
+            {!share || telemetryParsing || !telemetryReady ? (
+              <TabLoadingState label="Carregando telemetria..." />
+            ) : (
+              <TelemetriaTab parsedResult={parsedTelemetry ?? undefined} publicMode />
+            )}
+          </section>
+        ) : null}
+
+        {visitedTabs.has("flight-review") || activeTab === "flight-review" ? (
+          <section hidden={activeTab !== "flight-review"}>
+            {share ? (
+              <FlightReviewTab
+                flightId={share.flight.id}
+                publicMode
+                publicData={{
+                  flight: share.flight,
+                  maneuvers: share.maneuvers,
+                  maneuverReviews: share.maneuverReviews,
+                  maneuverTemplates: share.maneuverTemplates,
+                }}
+              />
+            ) : (
+              <TabLoadingState label="Carregando Flight Review..." />
+            )}
+          </section>
+        ) : null}
+
+        {visitedTabs.has("videos") || activeTab === "videos" ? (
+          <section hidden={activeTab !== "videos"}>
+            {share ? <VideosTab flightId={share.flight.id} publicMode publicVideos={share.videos} /> : <TabLoadingState label="Carregando vídeos..." />}
+          </section>
+        ) : null}
       </main>
 
       <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Navegação do Flight Review público">

@@ -61,6 +61,8 @@ import {
   VerticalCompactOverlay,
   type TelemetryOverlayStyle,
 } from "./VideoTelemetryOverlay";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 
 const HELPER_URL = "http://127.0.0.1:7842";
 const HELPER_SETUP_PATH = "/video-helper";
@@ -652,7 +654,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const showFileSelection = isInstructor && selectedFiles.length > 0 && !isActive && !isDone;
   const showProgressUI = isSending || (!!processingJobId && !isDone);
 
-  return (
+  const mainVideosContent = (
     <div className="space-y-6">
       {/* Instrutor: seção de ação */}
       {isInstructor && (
@@ -784,6 +786,8 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       </div>
     </div>
   );
+
+  return mainVideosContent;
 }
 
 // --- Sub-componentes ---

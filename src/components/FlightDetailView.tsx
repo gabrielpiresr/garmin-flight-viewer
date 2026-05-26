@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
@@ -92,6 +93,7 @@ export function FlightDetailView({
   hideFichaStepMenu = false,
 }: Props) {
   const { user } = useAuth();
+  const { isClubMember } = useFlightReviewClub();
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("ficha");
   const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set(["ficha"]));
   const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -217,7 +219,7 @@ export function FlightDetailView({
         <p className="text-sm text-slate-400">
           {flightId ? "Detalhes do voo" : "Novo voo"}
         </p>
-        {flightId && (
+        {flightId && isClubMember && (
           <>
             <button
               type="button"

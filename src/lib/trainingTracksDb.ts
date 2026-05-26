@@ -194,6 +194,7 @@ function toAssignment(doc: Record<string, unknown>, track: TrainingTrack | null)
     trackId: asString(doc.track_id),
     status: status === "completed" || status === "paused" ? status : "active",
     isPrimary: Boolean(doc.is_primary),
+    isFlightReviewClubMember: Boolean(doc.is_flight_review_club_member),
     assignedAt: asString(doc.assigned_at),
     updatedAt: asString(doc.updated_at) || asString(doc.$updatedAt),
     track,
@@ -511,6 +512,24 @@ export async function removeStudentTrainingTrack(assignmentId: string): Promise<
   if (!assignmentsConfigured() || !databases || !DB_ID || !STUDENT_TRACKS_COL_ID) return { error: null };
   try {
     await databases.deleteDocument(DB_ID, STUDENT_TRACKS_COL_ID, assignmentId);
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
+export async function setFlightReviewClubMembership(
+  assignmentId: string,
+  isMember: boolean,
+): Promise<{ error: Error | null }> {
+  if (!assignmentsConfigured() || !databases || !DB_ID || !STUDENT_TRACKS_COL_ID) {
+    return { error: new Error("Coleção de trilhas do aluno não configurada.") };
+  }
+  try {
+    await databases.updateDocument(DB_ID, STUDENT_TRACKS_COL_ID, assignmentId, {
+      is_flight_review_club_member: isMember,
+      updated_at: new Date().toISOString(),
+    });
     return { error: null };
   } catch (error) {
     return { error: error as Error };

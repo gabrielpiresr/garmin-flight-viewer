@@ -11,6 +11,7 @@ import {
   listStudentTrainingTracks,
   listTrainingTracks,
   removeStudentTrainingTrack,
+  setFlightReviewClubMembership,
   setPrimaryStudentTrainingTrack,
 } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
@@ -442,6 +443,27 @@ export function AdminUsersTab() {
     }
   }
 
+  async function handleToggleClubMembership(assignmentId: string, isMember: boolean) {
+    if (!selectedDetail) return;
+    setSavingTrack(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await setFlightReviewClubMembership(assignmentId, isMember);
+      if (result.error) throw result.error;
+      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
+      if (tracks.error) throw tracks.error;
+      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess(isMember ? "Aluno adicionado ao Flight Review Club." : "Aluno removido do Flight Review Club.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingTrack(false);
+    }
+  }
+
   const pageStart = total === 0 ? 0 : offset + 1;
   const pageEnd = Math.min(offset + users.length, total);
   const canGoBack = offset > 0;
@@ -766,6 +788,18 @@ export function AdminUsersTab() {
                                 className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
                               >
                                 Principal
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleClubMembership(row.id, !row.isFlightReviewClubMember)}
+                                disabled={savingTrack}
+                                className={`rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50 ${
+                                  row.isFlightReviewClubMember
+                                    ? "border-sky-700/60 bg-sky-950/30 text-sky-300 hover:bg-sky-950/60"
+                                    : "border-slate-700 text-slate-400 hover:bg-slate-800"
+                                }`}
+                              >
+                                {row.isFlightReviewClubMember ? "Club ✓" : "Club"}
                               </button>
                               <button
                                 type="button"
