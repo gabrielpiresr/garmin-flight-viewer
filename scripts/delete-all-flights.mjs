@@ -59,15 +59,47 @@ if (!ENDPOINT || !PROJECT_ID || !API_KEY || !DB_ID) {
 
 // ── Collection IDs ────────────────────────────────────────────────────────────
 const COLS = {
-  flights:               process.env.APPWRITE_COLLECTION_ID                     || "6a01afb1002232d33950",
-  flight_videos:         process.env.APPWRITE_VIDEOS_COLLECTION_ID              || "6a0200bf00297bfc2231",
-  flight_telemetry_summaries: process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID || "6a0488740032fe62d090",
-  flight_landings:       process.env.APPWRITE_FLIGHT_LANDINGS_COL_ID            || "6a04887600079471ce1d",
-  flight_takeoffs:       process.env.APPWRITE_FLIGHT_TAKEOFFS_COL_ID            || "6a048877000260a0b24b",
-  flight_signatures:     process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID          || "flight_signatures",
-  flight_telemetry_alerts: process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID  || "flight_telemetry_alerts",
-  flight_instructor_payments: process.env.APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID || "flight_instructor_payments",
-  flight_discrepancies:  process.env.APPWRITE_FLIGHT_DISCREPANCIES_COL_ID       || "flight_discrepancies",
+  // ── Voos e correlacionados ──────────────────────────────────────────────────
+  flights:                        process.env.APPWRITE_COLLECTION_ID                               || "6a01afb1002232d33950",
+  flight_videos:                  process.env.APPWRITE_VIDEOS_COLLECTION_ID                        || "6a0200bf00297bfc2231",
+  flight_telemetry_summaries:     process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID           || "6a0488740032fe62d090",
+  flight_landings:                process.env.APPWRITE_FLIGHT_LANDINGS_COL_ID                      || "6a04887600079471ce1d",
+  flight_takeoffs:                process.env.APPWRITE_FLIGHT_TAKEOFFS_COL_ID                      || "6a048877000260a0b24b",
+  flight_signatures:              process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID                    || "flight_signatures",
+  flight_telemetry_alerts:        process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID              || "flight_telemetry_alerts",
+  flight_instructor_payments:     process.env.APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COL_ID           || "flight_instructor_payments",
+  flight_discrepancies:           process.env.APPWRITE_FLIGHT_DISCREPANCIES_COL_ID                 || "flight_discrepancies",
+  // Review de manobras (filho de voo)
+  flight_maneuver_reviews:        process.env.APPWRITE_FLIGHT_MANEUVER_REVIEWS_COL_ID              || "6a1464f40014e9bd5f5b",
+  flight_maneuvers:               process.env.APPWRITE_FLIGHT_MANEUVERS_COL_ID                     || "6a1464e300079d599e22",
+
+  // ── Financeiro ──────────────────────────────────────────────────────────────
+  financial_monthly_closing_lines: process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID    || "financial_monthly_closing_lines",
+  financial_monthly_closings:     process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COL_ID           || "financial_monthly_closings",
+  product_sales:                  process.env.APPWRITE_PRODUCT_SALES_COL_ID                        || "product_sales",
+
+  // ── Alunos ──────────────────────────────────────────────────────────────────
+  student_observations:           process.env.APPWRITE_STUDENT_OBSERVATIONS_COL_ID                 || "6a0af5a00008cdcdbabc",
+  student_training_tracks:        process.env.APPWRITE_STUDENT_TRACKS_COL_ID                       || "student_training_tracks",
+  student_credits:                process.env.APPWRITE_STUDENT_CREDITS_COL_ID                      || "6a0378e600388c30bade",
+
+  // ── Escalas / planejamento ──────────────────────────────────────────────────
+  weekly_plan_avail:              process.env.APPWRITE_WEEKLY_PLAN_AVAIL_COL_ID                    || "6a023d930024cacc5bf7",
+  weekly_plan_items:              process.env.APPWRITE_WEEKLY_PLAN_ITEMS_COL_ID                    || "6a023d880031718b22c0",
+  weekly_plans:                   process.env.APPWRITE_WEEKLY_PLANS_COL_ID                         || "6a023d7d00137ede2f5b",
+  op_slots:                       process.env.APPWRITE_OP_SLOTS_COL_ID                             || "6a0220b9000fef1c3c16",
+  group_cap_days:                 process.env.APPWRITE_GROUP_CAP_DAYS_COL_ID                       || "6a0220b40029acc2d073",
+  group_caps:                     process.env.APPWRITE_GROUP_CAPS_COL_ID                           || "6a0220af0029b9ea3c55",
+  daily_caps:                     process.env.APPWRITE_DAILY_CAPS_COL_ID                           || "6a02206c001d1e2223cb",
+  op_weeks:                       process.env.APPWRITE_OP_WEEKS_COL_ID                             || "6a0220640035de7cc116",
+
+  // ── Manutenção / OS ─────────────────────────────────────────────────────────
+  maintenance_attachments:        process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID              || "6a0c86550039410ff477",
+  maintenance_work_orders:        process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID              || "6a0c863a0021e8c8d337",
+  maintenance_program_items:      process.env.APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID            || "6a0c86220009751f48f3",
+
+  // ── Auditoria ────────────────────────────────────────────────────────────────
+  audit_events:                   process.env.APPWRITE_AUDIT_EVENTS_COL_ID                         || "audit_events",
 };
 
 const DRY_RUN = !process.argv.includes("--confirm");
@@ -153,8 +185,9 @@ async function main() {
   // 1. Conta / coleta IDs de todas as coleções
   console.log("\n📋  Contando documentos em cada coleção...\n");
   const idMap = {};
-  // Correlacionadas primeiro, flights por último
+  // Correlacionadas primeiro, pais por último (dentro de cada grupo)
   const ORDER = [
+    // Voos e correlacionados
     "flight_videos",
     "flight_telemetry_summaries",
     "flight_landings",
@@ -163,7 +196,32 @@ async function main() {
     "flight_telemetry_alerts",
     "flight_instructor_payments",
     "flight_discrepancies",
+    "flight_maneuver_reviews",
+    "flight_maneuvers",
     "flights",
+    // Financeiro
+    "financial_monthly_closing_lines",
+    "financial_monthly_closings",
+    "product_sales",
+    // Alunos
+    "student_observations",
+    "student_training_tracks",
+    "student_credits",
+    // Escalas / planejamento
+    "weekly_plan_avail",
+    "weekly_plan_items",
+    "weekly_plans",
+    "op_slots",
+    "group_cap_days",
+    "group_caps",
+    "daily_caps",
+    "op_weeks",
+    // Manutenção / OS
+    "maintenance_attachments",
+    "maintenance_work_orders",
+    "maintenance_program_items",
+    // Auditoria
+    "audit_events",
   ];
   for (const key of ORDER) {
     idMap[key] = await listAllIds(COLS[key], key);

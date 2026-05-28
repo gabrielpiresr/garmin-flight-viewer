@@ -172,13 +172,23 @@ function analyzeParameter(
     sampleIntervalMs = (valid[valid.length - 1].absoluteMs - valid[0].absoluteMs) / (valid.length - 1);
   }
 
+  const isBank = paramCfg.parameter === "bank";
   let timeOutMs = 0;
   let hasHardLimit = false;
   for (const r of valid) {
     const eMin = effectiveMin(r.absoluteMs);
     const eMax = effectiveMax(r.absoluteMs);
-    const belowMin = eMin !== undefined && r.value < eMin;
-    const aboveMax = eMax !== undefined && r.value > eMax;
+    let belowMin: boolean;
+    let aboveMax: boolean;
+    if (isBank) {
+      // Rolagem é simétrica: max=10 significa ±10°, min=5 significa ±5°
+      const absV = Math.abs(r.value);
+      aboveMax = eMax !== undefined && absV > Math.abs(eMax);
+      belowMin = eMin !== undefined && Math.abs(eMin) > 0 && absV < Math.abs(eMin);
+    } else {
+      belowMin = eMin !== undefined && r.value < eMin;
+      aboveMax = eMax !== undefined && r.value > eMax;
+    }
     if (belowMin || aboveMax) {
       timeOutMs += sampleIntervalMs;
       hasHardLimit = true;
@@ -347,10 +357,13 @@ export function analyzeFlightManeuver(
       const p = analyzedParams[pi]!;
       const paramCfg = step.parameters[pi];
       if (p.status === "out_of_range" && p.time_out_of_range_seconds > 0) {
-        const isAboveMax =
-          p.max_observed !== null && p.expected_max !== null && p.max_observed > p.expected_max;
-        const isBelowMin =
-          p.min_observed !== null && p.expected_min !== null && p.min_observed < p.expected_min;
+        const pIsBank = p.parameter === "bank";
+        const isAboveMax = pIsBank
+          ? p.max_observed !== null && p.expected_max !== null && Math.max(Math.abs(p.max_observed), p.min_observed !== null ? Math.abs(p.min_observed) : 0) > Math.abs(p.expected_max)
+          : p.max_observed !== null && p.expected_max !== null && p.max_observed > p.expected_max;
+        const isBelowMin = pIsBank
+          ? p.min_observed !== null && p.expected_min !== null && Math.abs(p.expected_min) > 0 && Math.min(Math.abs(p.max_observed ?? Infinity), p.min_observed !== null ? Math.abs(p.min_observed) : Infinity) < Math.abs(p.expected_min)
+          : p.min_observed !== null && p.expected_min !== null && p.min_observed < p.expected_min;
         let message: string;
         if (isAboveMax && !isBelowMin && paramCfg?.alert_message_max) {
           message = `${paramCfg.alert_message_max} (${p.time_out_of_range_seconds}s acima)`;

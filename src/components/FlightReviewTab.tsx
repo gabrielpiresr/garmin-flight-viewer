@@ -6,6 +6,7 @@ import {
   buildReviewSummary,
   deriveReviewStatus,
   TELEMETRY_FIELD_MAP,
+  TELEMETRY_PARAMETER_LABELS,
 } from "../lib/flightManeuverAnalysis";
 import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import {
@@ -44,6 +45,13 @@ const STEP_COLORS = [
   "#a78bfa", "#fb923c", "#22d3ee", "#c084fc",
   "#86efac", "#fda4af",
 ];
+
+const SEVERITY_LINE_COLORS: Record<string, string> = {
+  low: "#94a3b8",
+  medium: "#f59e0b",
+  high: "#f97316",
+  critical: "#ef4444",
+};
 
 /** Cores das pernas do circuito (mesmas que PatternLegBar). */
 const LEG_COLORS: Record<string, string> = {
@@ -343,6 +351,15 @@ function CanvasReviewChart({
         ctx.moveTo(left, y0);
         ctx.lineTo(width - right, y0);
         ctx.stroke();
+        ctx.setLineDash([]);
+        // Labels de lado: positivo = Dir. (direita/subida), negativo = Esq. (esquerda/descida)
+        ctx.fillStyle = "#64748b";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        if (y0 - top > 22) ctx.fillText("Dir. ▲", width - right - 4, y0 - 14);
+        if (top + plotH - y0 > 22) ctx.fillText("Esq. ▼", width - right - 4, y0 + 14);
+        ctx.textAlign = "left";
         ctx.restore();
       }
 
@@ -372,9 +389,7 @@ function CanvasReviewChart({
       ctx.lineWidth = 1.9;
       const linePoints: Array<{ x: number; y: number }> = [];
       for (const point of data) {
-        if (!Number.isFinite(point.v)) {
-          continue;
-        }
+        if (!Number.isFinite(point.v)) continue;
         linePoints.push({ x: toX(point.t), y: toY(point.v) });
       }
       drawSmoothReviewLine(ctx, linePoints);
@@ -568,7 +583,10 @@ function showReviewTooltip(
   tooltip.classList.remove("hidden");
   tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${Math.round(t)}s - ${value}</div>`;
   const tooltipWidth = tooltip.offsetWidth || 112;
-  const left = Math.min(Math.max(6, x + 10), Math.max(6, width - tooltipWidth - 6));
+  // Flipa para esquerda quando o ponto está no terço direito do gráfico
+  const preferLeft = x > width * 0.65;
+  const rawLeft = preferLeft ? x - tooltipWidth - 10 : x + 10;
+  const left = Math.min(Math.max(6, rawLeft), Math.max(6, width - tooltipWidth - 6));
   const top = Math.max(6, y - 28);
   tooltip.style.transform = `translate(${left}px, ${top}px)`;
 }
@@ -835,64 +853,123 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/** Agrupa parâmetros pelo mesmo indicador de telemetria (ex: dois "bank" → um gráfico só). */
+function groupParamsByIndicator(params: AnalyzedParameter[]): AnalyzedParameter[][] {
+  const seen = new Set<string>();
+  const result: AnalyzedParameter[][] = [];
+  for (const p of params) {
+    if (seen.has(p.parameter)) continue;
+    seen.add(p.parameter);
+    result.push(params.filter((q) => q.parameter === p.parameter));
+  }
+  return result;
+}
+
+/** Gera referências para um grupo de parâmetros com mesmo indicador. */
+function buildGroupedRefs(group: AnalyzedParameter[]): {
+  refs: ReviewChartReference[];
+  domain: [number, number];
+} {
+  if (group.length === 0) return { refs: [], domain: [0, 1] };
+  const p0 = group[0]!;
+  const isBank = p0.parameter === "bank";
+  const data = p0.data_points;
+  const refs: ReviewChartReference[] = [];
+  let domainMin: number | null = null;
+  let domainMax: number | null = null;
+  const multi = group.length > 1;
+
+  for (const p of group) {
+    const refColor = SEVERITY_LINE_COLORS[p.severity] ?? "#f59e0b";
+
+    if (p.expected_min !== null) {
+      const absMin = Math.abs(p.expected_min);
+      // Para banco: pula o min negativo se ele tiver o mesmo valor absoluto que o max
+      // (min=-10, max=10 são o mesmo limite ±10, não duplicar)
+      const skipBankMin = isBank && p.expected_min < 0 &&
+        p.expected_max !== null && Math.abs(absMin - Math.abs(p.expected_max)) < 0.01;
+      if (!skipBankMin) {
+        const yVal = isBank ? absMin : p.expected_min;
+        const lbl = multi ? `mín ${absMin} (${p.label})` : isBank ? `±${absMin}` : `mín ${p.expected_min}`;
+        // Positivo: label aqui
+        refs.push({
+          y: yVal,
+          ...(p.expected_min_end != null ? { y_end: isBank ? Math.abs(p.expected_min_end) : p.expected_min_end } : {}),
+          color: refColor,
+          label: lbl,
+        });
+        if (isBank) {
+          // Negativo: sem label (simétrico já identificado pelo positivo)
+          refs.push({
+            y: -absMin,
+            ...(p.expected_min_end != null ? { y_end: -Math.abs(p.expected_min_end) } : {}),
+            color: refColor,
+          });
+          if (domainMin === null || -absMin < domainMin) domainMin = -absMin;
+        } else {
+          if (domainMin === null || p.expected_min < domainMin) domainMin = p.expected_min;
+        }
+      }
+    }
+
+    if (p.expected_max !== null) {
+      const absMax = Math.abs(p.expected_max);
+      const yVal = isBank ? absMax : p.expected_max;
+      const lbl = multi ? `máx ${absMax} (${p.label})` : isBank ? `±${absMax}` : `máx ${p.expected_max}`;
+      // Positivo: label aqui
+      refs.push({
+        y: yVal,
+        ...(p.expected_max_end != null ? { y_end: isBank ? Math.abs(p.expected_max_end) : p.expected_max_end } : {}),
+        color: refColor,
+        label: lbl,
+      });
+      if (isBank) {
+        // Negativo: sem label
+        refs.push({
+          y: -absMax,
+          ...(p.expected_max_end != null ? { y_end: -Math.abs(p.expected_max_end) } : {}),
+          color: refColor,
+        });
+        if (domainMax === null || absMax > domainMax) domainMax = absMax;
+      } else {
+        if (domainMax === null || p.expected_max > domainMax) domainMax = p.expected_max;
+      }
+    }
+  }
+
+  const domain = computeYDomain(data, domainMin, domainMax, isBank);
+  return { refs, domain };
+}
+
 function ParameterChart({
-  param,
+  params,
   syncId,
   activeT,
   onHoverT,
 }: {
-  param: AnalyzedParameter;
+  params: AnalyzedParameter[];
   syncId: string;
   activeT: number | null;
   onHoverT: (t: number | null) => void;
 }) {
-  if (param.data_points.length === 0) return null;
-  const isBank = param.parameter === "bank";
-  const data = param.data_points;
-  const minForDomain = param.expected_min_end !== undefined && param.expected_min_end !== null
-    ? Math.min(param.expected_min ?? Infinity, param.expected_min_end)
-    : param.expected_min;
-  const maxForDomain = param.expected_max_end !== undefined && param.expected_max_end !== null
-    ? Math.max(param.expected_max ?? -Infinity, param.expected_max_end)
-    : param.expected_max;
-  const domain = computeYDomain(data, minForDomain, maxForDomain, isBank);
-  const lineColor =
-    param.status === "out_of_range" ? "#ef4444" : param.status === "warning" ? "#f59e0b" : "#38bdf8";
-  const references: ReviewChartReference[] = [];
-  if (param.expected_min !== null) {
-    references.push({
-      y: param.expected_min,
-      ...(param.expected_min_end !== null && param.expected_min_end !== undefined ? { y_end: param.expected_min_end } : {}),
-      color: "#f59e0b",
-      label: `min ${param.expected_min}`,
-    });
-    if (isBank && param.expected_min < 0) {
-      references.push({ y: -param.expected_min, color: "#f59e0b", label: `max ${-param.expected_min}` });
-    }
-  }
-  if (param.expected_max !== null) {
-    references.push({
-      y: param.expected_max,
-      ...(param.expected_max_end !== null && param.expected_max_end !== undefined ? { y_end: param.expected_max_end } : {}),
-      color: "#f59e0b",
-      label: `max ${param.expected_max}`,
-    });
-    if (isBank && param.expected_max > 0) {
-      references.push({ y: -param.expected_max, color: "#f59e0b", label: `max ${param.expected_max}` });
-    }
-  }
+  if (params.length === 0 || params[0]!.data_points.length === 0) return null;
+  const p0 = params[0]!;
+  const isBank = p0.parameter === "bank";
+  const isPitch = p0.parameter === "pitch";
+  const label = params.map((p) => p.label).filter((l, i, arr) => arr.indexOf(l) === i).join(" / ");
+  const { refs, domain } = buildGroupedRefs(params);
   void syncId;
   return (
     <div className="mt-2">
-      <p className="mb-1 text-xs font-medium text-slate-400">{param.label}</p>
+      <p className="mb-1 text-xs font-medium text-slate-400">{label}</p>
       <CanvasReviewChart
-        data={data}
-        label={param.label}
-        color={lineColor}
+        data={p0.data_points}
+        label={label}
+        color="#38bdf8"
         domain={domain}
         height={200}
-        references={references}
-        zeroCrossLine={isBank}
+        references={refs}
+        zeroCrossLine={isBank || isPitch}
         formatY={(value) => value.toFixed(1)}
         activeT={activeT}
         onHoverT={onHoverT}
@@ -1363,8 +1440,8 @@ function StepCard({
                     onHoverT={setHoverT}
                   />
                 )}
-                {step.parameters.map((p, i) => (
-                  <ParameterChart key={i} param={p} syncId={syncId} activeT={hoverT} onHoverT={setHoverT} />
+                {groupParamsByIndicator(step.parameters).map((group, i) => (
+                  <ParameterChart key={i} params={group} syncId={syncId} activeT={hoverT} onHoverT={setHoverT} />
                 ))}
               </div>
             );
@@ -2106,6 +2183,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   const [fsManId, setFsManId] = useState<string | null>(null);
   const [fsStepIdx, setFsStepIdx] = useState(-1); // -1 = "Completa" (visão geral)
   const [fsHoverT, setFsHoverT] = useState<number | null>(null);
+  const [fsExtraFields, setFsExtraFields] = useState<Record<number, string[]>>({});
   const fsContainerRef = useRef<HTMLDivElement>(null);
   const fsMapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
   const csvWorkerRef = useRef<Worker | null>(null);
@@ -2385,9 +2463,10 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     const paramKeys = new Set(fsStep.parameters.map((p) => p.parameter));
     const showAlt = !paramKeys.has("altitude") && fsStepAltPoints.length > 0;
     const showIas = !paramKeys.has("ias") && fsStepIasPoints.length > 0;
-    const paramCharts = fsStep.parameters.filter((p) => p.data_points.length > 0).length;
-    return (showAlt ? 1 : 0) + (showIas ? 1 : 0) + paramCharts;
-  }, [fsStepIdx, fsStep, fsManAltPoints.length, fsManIasPoints.length, fsStepAltPoints.length, fsStepIasPoints.length]);
+    const paramCharts = groupParamsByIndicator(fsStep.parameters).filter((g) => g[0]!.data_points.length > 0).length;
+    const extraCharts = (fsExtraFields[fsStepIdx] ?? []).length;
+    return (showAlt ? 1 : 0) + (showIas ? 1 : 0) + paramCharts + extraCharts;
+  }, [fsStepIdx, fsStep, fsManAltPoints.length, fsManIasPoints.length, fsStepAltPoints.length, fsStepIasPoints.length, fsExtraFields]);
 
   // Altura ideal de cada chart para maximizar espaço vertical
   const fsChartH = useMemo(() => {
@@ -2630,20 +2709,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     </div>
   );
 
-  // Helper: build references for a parameter chart (reuse bank mirroring logic)
-  const buildFsRefs = (p: AnalyzedParameter): ReviewChartReference[] => {
-    const isBank = p.parameter === "bank";
-    const refs: ReviewChartReference[] = [];
-    if (p.expected_min !== null) {
-      refs.push({ y: p.expected_min, ...(p.expected_min_end != null ? { y_end: p.expected_min_end } : {}), color: "#f59e0b" });
-      if (isBank && p.expected_min < 0) refs.push({ y: -p.expected_min, color: "#f59e0b" });
-    }
-    if (p.expected_max !== null) {
-      refs.push({ y: p.expected_max, ...(p.expected_max_end != null ? { y_end: p.expected_max_end } : {}), color: "#f59e0b" });
-      if (isBank && p.expected_max > 0) refs.push({ y: -p.expected_max, color: "#f59e0b" });
-    }
-    return refs;
-  };
+  // buildFsRefs replaced by buildGroupedRefs (defined at module level)
 
   const fullscreenView = (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
@@ -2811,30 +2877,89 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                 {fsStep.parameters.length > 0 && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Parâmetros</p>
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="text-slate-500">
-                          <th className="py-1 text-left font-medium">Param.</th>
-                          <th className="py-1 text-right font-medium">Obs.</th>
-                          <th className="py-1 text-right font-medium">Esp.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {fsStep.parameters.map((p, i) => (
-                          <tr key={i} className="border-t border-slate-800/60">
-                            <td className="py-1 text-slate-300">{p.label}</td>
-                            <td className={`py-1 text-right ${p.status === "out_of_range" ? "text-red-400" : p.status === "warning" ? "text-yellow-400" : "text-slate-300"}`}>
-                              {p.avg_observed !== null ? p.avg_observed.toFixed(1) : "—"}
-                            </td>
-                            <td className="py-1 text-right text-slate-500">
-                              {p.expected_min !== null || p.expected_max !== null
-                                ? `${p.expected_min ?? "—"} – ${p.expected_max ?? "—"}`
-                                : "—"}
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-slate-500">
+                            <th className="py-1 text-left font-medium">Param.</th>
+                            <th className="py-1 text-right font-medium">Mín</th>
+                            <th className="py-1 text-right font-medium">Máx</th>
+                            <th className="py-1 text-right font-medium">Méd.</th>
+                            <th className="py-1 text-right font-medium">Esperado</th>
+                            <th className="py-1 text-right font-medium">Fora(s)</th>
+                            <th className="py-1 text-center font-medium">Status</th>
                           </tr>
+                        </thead>
+                        <tbody>
+                          {fsStep.parameters.map((p, i) => (
+                            <tr key={i} className="border-t border-slate-800/60">
+                              <td className="py-1 text-slate-300">{p.label}</td>
+                              <td className="py-1 text-right text-slate-400">{p.min_observed !== null ? p.min_observed : "—"}</td>
+                              <td className="py-1 text-right text-slate-400">{p.max_observed !== null ? p.max_observed : "—"}</td>
+                              <td className={`py-1 text-right ${p.status === "out_of_range" ? "text-red-400" : p.status === "warning" ? "text-yellow-400" : "text-slate-300"}`}>
+                                {p.avg_observed !== null ? p.avg_observed.toFixed(1) : "—"}
+                              </td>
+                              <td className="py-1 text-right text-slate-500">
+                                {p.expected_min !== null || p.expected_max !== null
+                                  ? `${p.expected_min ?? "—"} – ${p.expected_max ?? "—"}`
+                                  : "—"}
+                              </td>
+                              <td className="py-1 text-right text-slate-400">{p.time_out_of_range_seconds}</td>
+                              <td className="py-1 text-center"><StatusBadge status={p.status} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Seletor de gráficos extras por telemetria */}
+                {parsedCsvResult && (
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">
+                      Gráficos extras
+                    </p>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const key = e.target.value;
+                        if (!key) return;
+                        setFsExtraFields((prev) => {
+                          const current = prev[fsStepIdx] ?? [];
+                          if (current.includes(key)) return prev;
+                          return { ...prev, [fsStepIdx]: [...current, key] };
+                        });
+                        e.target.value = "";
+                      }}
+                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
+                    >
+                      <option value="">＋ Adicionar parâmetro…</option>
+                      {Object.entries(TELEMETRY_PARAMETER_LABELS).map(([key, lbl]) => (
+                        <option key={key} value={key}>{lbl}</option>
+                      ))}
+                    </select>
+                    {(fsExtraFields[fsStepIdx] ?? []).length > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        {(fsExtraFields[fsStepIdx] ?? []).map((key) => (
+                          <div key={key} className="flex items-center justify-between text-xs">
+                            <span className="text-slate-400">{TELEMETRY_PARAMETER_LABELS[key] ?? key}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFsExtraFields((prev) => ({
+                                  ...prev,
+                                  [fsStepIdx]: (prev[fsStepIdx] ?? []).filter((k) => k !== key),
+                                }))
+                              }
+                              className="ml-1 text-slate-600 hover:text-red-400"
+                            >
+                              ✕
+                            </button>
+                          </div>
                         ))}
-                      </tbody>
-                    </table>
+                      </div>
+                    )}
                   </div>
                 )}
               </>
@@ -2931,26 +3056,60 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                       />
                     </div>
                   )}
-                  {fsStep.parameters.map((p, i) =>
-                    p.data_points.length > 0 ? (
+                  {groupParamsByIndicator(fsStep.parameters).map((group, i) => {
+                    const p0 = group[0]!;
+                    if (p0.data_points.length === 0) return null;
+                    const isBank = p0.parameter === "bank";
+                    const isPitch = p0.parameter === "pitch";
+                    const { refs, domain } = buildGroupedRefs(group);
+                    const chartLabel = group.map((p) => p.label).filter((l, li, arr) => arr.indexOf(l) === li).join(" / ");
+                    return (
                       <div key={i}>
-                        <p className="mb-1 text-xs font-medium text-slate-400">{p.label}</p>
+                        <p className="mb-1 text-xs font-medium text-slate-400">{chartLabel}</p>
                         <CanvasReviewChart
-                          data={p.data_points}
-                          label={p.label}
-                          color={p.status === "out_of_range" ? "#ef4444" : p.status === "warning" ? "#f59e0b" : "#38bdf8"}
-                          domain={computeYDomain(p.data_points, p.expected_min, p.expected_max, p.parameter === "bank")}
+                          data={p0.data_points}
+                          label={chartLabel}
+                          color="#38bdf8"
+                          domain={domain}
                           height={fsChartH}
-                          references={buildFsRefs(p)}
+                          references={refs}
                           verticalLines={fsStepTdLines}
-                          zeroCrossLine={p.parameter === "bank"}
+                          zeroCrossLine={isBank || isPitch}
                           formatY={(v) => v.toFixed(1)}
                           activeT={fsHoverT}
                           onHoverT={handleFsHoverT}
                         />
                       </div>
-                    ) : null,
-                  )}
+                    );
+                  })}
+                  {/* Gráficos extras selecionados pelo usuário */}
+                  {parsedCsvResult && (fsExtraFields[fsStepIdx] ?? []).map((fieldKey) => {
+                    const fieldMap = TELEMETRY_FIELD_MAP[fieldKey];
+                    if (!fieldMap) return null;
+                    const stepStartMs = new Date(fsStep.start_time).getTime();
+                    const stepEndMs = new Date(fsStep.end_time).getTime();
+                    const pts = extractFieldPoints(parsedCsvResult, stepStartMs, stepEndMs, fieldMap);
+                    if (pts.length === 0) return null;
+                    const extraLabel = TELEMETRY_PARAMETER_LABELS[fieldKey] ?? fieldKey;
+                    const isZeroCross = fieldKey === "bank" || fieldKey === "pitch";
+                    return (
+                      <div key={fieldKey}>
+                        <p className="mb-1 text-xs font-medium text-slate-400">{extraLabel}</p>
+                        <CanvasReviewChart
+                          data={pts}
+                          label={extraLabel}
+                          color="#a78bfa"
+                          domain={computeYDomain(pts, null, null, isZeroCross)}
+                          height={fsChartH}
+                          verticalLines={fsStepTdLines}
+                          zeroCrossLine={isZeroCross}
+                          formatY={(v) => v.toFixed(1)}
+                          activeT={fsHoverT}
+                          onHoverT={handleFsHoverT}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()
