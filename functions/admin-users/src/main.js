@@ -2147,6 +2147,139 @@ async function ensureDefaultStudentTrainingTrack(actorUserId, targetUserId) {
   return { assigned: true, trackId, alreadyAssigned: false };
 }
 
+const VALID_STUDENT_TRACK_STATUS = new Set(["active", "paused", "completed"]);
+const VALID_STUDENT_TRACK_TRANSITIONS = {
+  active: new Set(["active", "paused", "completed"]),
+  paused: new Set(["paused", "active", "completed"]),
+  completed: new Set(["completed", "active"]),
+};
+
+function assertStudentTracksConfigured() {
+  if (!STUDENT_TRACKS_COLLECTION_ID || !TRAINING_TRACKS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecoes de trilha nao configuradas."), { status: 500 });
+  }
+}
+
+async function requireStudentTrackAssignment(studentUserId, assignmentId) {
+  const assignment = await databases.getDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, assignmentId);
+  if (assignment.student_user_id !== studentUserId) {
+    throw Object.assign(new Error("Trilha nao pertence ao aluno informado."), { status: 403 });
+  }
+  return assignment;
+}
+
+async function setPrimaryStudentTrainingTrack(targetUserId, trackId) {
+  const studentUserId = cleanString(targetUserId);
+  const safeTrackId = cleanString(trackId);
+  if (!studentUserId || !safeTrackId) {
+    throw Object.assign(new Error("Aluno ou trilha nao informados."), { status: 400 });
+  }
+  assertStudentTracksConfigured();
+
+  const res = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.limit(100),
+  ]);
+  const now = new Date().toISOString();
+  await Promise.all(
+    res.documents.map((doc) =>
+      databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, doc.$id, {
+        is_primary: doc.track_id === safeTrackId,
+        updated_at: now,
+      }),
+    ),
+  );
+}
+
+async function assignStudentTrainingTrack(targetUserId, trackId, isPrimary = false, status = "active") {
+  const studentUserId = cleanString(targetUserId);
+  const safeTrackId = cleanString(trackId);
+  const newStatus = VALID_STUDENT_TRACK_STATUS.has(status) ? status : "active";
+  if (!studentUserId || !safeTrackId) {
+    throw Object.assign(new Error("Aluno ou trilha nao informados."), { status: 400 });
+  }
+  assertStudentTracksConfigured();
+
+  const existing = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.equal("track_id", [safeTrackId]),
+    sdk.Query.limit(1),
+  ]);
+  const now = new Date().toISOString();
+
+  if (isPrimary) await setPrimaryStudentTrainingTrack(studentUserId, safeTrackId);
+
+  if (existing.documents[0]) {
+    const currentStatus = VALID_STUDENT_TRACK_STATUS.has(existing.documents[0].status) ? existing.documents[0].status : "active";
+    if (!VALID_STUDENT_TRACK_TRANSITIONS[currentStatus].has(newStatus)) {
+      throw Object.assign(new Error(`Transicao de status invalida: "${currentStatus}" -> "${newStatus}".`), { status: 400 });
+    }
+    await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, existing.documents[0].$id, {
+      status: newStatus,
+      is_primary: Boolean(isPrimary),
+      updated_at: now,
+    });
+    return getUserDetail(studentUserId);
+  }
+
+  await databases.createDocument(
+    DATABASE_ID,
+    STUDENT_TRACKS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      student_user_id: studentUserId,
+      track_id: safeTrackId,
+      status: newStatus,
+      is_primary: Boolean(isPrimary),
+      assigned_at: now,
+      updated_at: now,
+    },
+    studentTrackDocumentPermissions(studentUserId),
+  );
+  return getUserDetail(studentUserId);
+}
+
+async function updatePrimaryStudentTrainingTrack(targetUserId, trackId) {
+  const studentUserId = cleanString(targetUserId);
+  const safeTrackId = cleanString(trackId);
+  if (!studentUserId || !safeTrackId) {
+    throw Object.assign(new Error("Aluno ou trilha nao informados."), { status: 400 });
+  }
+  assertStudentTracksConfigured();
+  await setPrimaryStudentTrainingTrack(studentUserId, safeTrackId);
+  return getUserDetail(studentUserId);
+}
+
+async function removeStudentTrainingTrack(targetUserId, assignmentId) {
+  const studentUserId = cleanString(targetUserId);
+  const safeAssignmentId = cleanString(assignmentId);
+  if (!studentUserId || !safeAssignmentId) {
+    throw Object.assign(new Error("Aluno ou vinculo de trilha nao informados."), { status: 400 });
+  }
+  assertStudentTracksConfigured();
+  await requireStudentTrackAssignment(studentUserId, safeAssignmentId);
+  await databases.deleteDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, safeAssignmentId);
+  return getUserDetail(studentUserId);
+}
+
+async function setStudentTrackFlightReviewClubMembership(targetUserId, assignmentId, isMember) {
+  const studentUserId = cleanString(targetUserId);
+  const safeAssignmentId = cleanString(assignmentId);
+  if (!studentUserId || !safeAssignmentId) {
+    throw Object.assign(new Error("Aluno ou vinculo de trilha nao informados."), { status: 400 });
+  }
+  assertStudentTracksConfigured();
+  await requireStudentTrackAssignment(studentUserId, safeAssignmentId);
+  await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, safeAssignmentId, {
+    is_flight_review_club_member: Boolean(isMember),
+    updated_at: new Date().toISOString(),
+  });
+  return getUserDetail(studentUserId);
+}
+
 async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } = {}) {
   const safeLimit = clampLimit(limit);
   const safeOffset = clampOffset(offset);
@@ -6158,6 +6291,31 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "getDetail") {
       const user = await getUserDetail(String(payload.userId || ""));
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "assignStudentTrainingTrack") {
+      const user = await assignStudentTrainingTrack(
+        payload.userId,
+        payload.trackId,
+        payload.isPrimary === true,
+        String(payload.status || "active"),
+      );
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "setPrimaryStudentTrainingTrack") {
+      const user = await updatePrimaryStudentTrainingTrack(payload.userId, payload.trackId);
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "removeStudentTrainingTrack") {
+      const user = await removeStudentTrainingTrack(payload.userId, payload.assignmentId);
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "setStudentTrackFlightReviewClubMembership") {
+      const user = await setStudentTrackFlightReviewClubMembership(payload.userId, payload.assignmentId, payload.isMember === true);
       return jsonResponse(res, 200, { user });
     }
 

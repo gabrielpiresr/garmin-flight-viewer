@@ -171,6 +171,21 @@ export async function removeAdminUserTrainingTrack(userId: string, assignmentId:
   return response.user;
 }
 
+export async function setAdminUserFlightReviewClubMembership(
+  userId: string,
+  assignmentId: string,
+  isMember: boolean,
+): Promise<AdminUserDetail> {
+  const response = await executeAdminUsers({
+    action: "setStudentTrackFlightReviewClubMembership",
+    userId,
+    assignmentId,
+    isMember,
+  });
+  if (!response.user) throw new Error(response.message || "UsuÃ¡rio nÃ£o retornado pela funÃ§Ã£o.");
+  return response.user;
+}
+
 export async function createAdminUserCredit(input: StudentCreditInput): Promise<void> {
   await executeAdminUsers({ action: "createCredit", credit: input });
 }

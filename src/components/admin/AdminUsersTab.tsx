@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  assignAdminUserTrainingTrack,
   getAdminUserDetail,
   listAdminUserSummaries,
+  removeAdminUserTrainingTrack,
+  setAdminUserFlightReviewClubMembership,
+  setAdminUserPrimaryTrainingTrack,
   updateAdminUserInstructorPreferences,
   updateAdminUserRole,
 } from "../../lib/adminUsersDb";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
-import {
-  assignStudentTrainingTrack,
-  listStudentTrainingTracks,
-  listTrainingTracks,
-  removeStudentTrainingTrack,
-  setFlightReviewClubMembership,
-  setPrimaryStudentTrainingTrack,
-} from "../../lib/trainingTracksDb";
+import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
 import type { UserRole } from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
@@ -290,12 +287,10 @@ export function AdminUsersTab() {
     setLoadingDetail(true);
     setError(null);
     void getAdminUserDetail(selectedId)
-      .then(async (detail) => {
+      .then((detail) => {
         if (cancelled) return;
-        const tracks = detail.role === "aluno" ? await listStudentTrainingTracks(detail.userId) : { data: [], error: null };
-        if (cancelled) return;
-        const detailWithTracks = { ...detail, trainingTracks: tracks.data };
-        if (tracks.error) setError(tracks.error.message);
+        const tracks = detail.role === "aluno" ? detail.trainingTracks ?? [] : [];
+        const detailWithTracks = { ...detail, trainingTracks: tracks };
         setSelectedDetail(detailWithTracks);
         setRoleDraft(detail.role);
         setCustomRoleSlugDraft(detail.customRoleSlug ?? null);
@@ -305,7 +300,7 @@ export function AdminUsersTab() {
           next[availKey(row.dayOfWeek, row.period)] = row.availabilityType;
         }
         setInstructorAvailabilityDraft(next);
-        setTrackDraft(tracks.data.find((row) => row.status === "active")?.trackId ?? "");
+        setTrackDraft(tracks.find((row) => row.status === "active")?.trackId ?? "");
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -382,15 +377,11 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const result = await assignStudentTrainingTrack({
-        studentUserId: selectedDetail.userId,
-        trackId: trackDraft,
-        isPrimary: (selectedDetail.trainingTracks ?? []).length === 0,
-      });
-      if (result.error) throw result.error;
-      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
-      if (tracks.error) throw tracks.error;
-      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      const updated = await assignAdminUserTrainingTrack(
+        selectedDetail.userId,
+        trackDraft,
+        (selectedDetail.trainingTracks ?? []).length === 0,
+      );
       setSelectedDetail(updated);
       replaceSummary(updated);
       setSuccess("Trilha atribuida ao aluno.");
@@ -407,11 +398,7 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const result = await setPrimaryStudentTrainingTrack(selectedDetail.userId, trackId);
-      if (result.error) throw result.error;
-      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
-      if (tracks.error) throw tracks.error;
-      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      const updated = await setAdminUserPrimaryTrainingTrack(selectedDetail.userId, trackId);
       setSelectedDetail(updated);
       replaceSummary(updated);
       setSuccess("Trilha principal atualizada.");
@@ -428,11 +415,7 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const result = await removeStudentTrainingTrack(assignmentId);
-      if (result.error) throw result.error;
-      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
-      if (tracks.error) throw tracks.error;
-      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      const updated = await removeAdminUserTrainingTrack(selectedDetail.userId, assignmentId);
       setSelectedDetail(updated);
       replaceSummary(updated);
       setSuccess("Trilha removida do aluno.");
@@ -449,11 +432,7 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const result = await setFlightReviewClubMembership(assignmentId, isMember);
-      if (result.error) throw result.error;
-      const tracks = await listStudentTrainingTracks(selectedDetail.userId);
-      if (tracks.error) throw tracks.error;
-      const updated = { ...selectedDetail, trainingTracks: tracks.data };
+      const updated = await setAdminUserFlightReviewClubMembership(selectedDetail.userId, assignmentId, isMember);
       setSelectedDetail(updated);
       replaceSummary(updated);
       setSuccess(isMember ? "Aluno adicionado ao Flight Review Club." : "Aluno removido do Flight Review Club.");
