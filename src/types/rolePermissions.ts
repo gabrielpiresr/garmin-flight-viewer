@@ -25,7 +25,9 @@ export type AdminTabKey =
   | "contents.manobras"
   | "contents.manuais"
   | "contents.ajuda"
+  | "contents.exercicios"
   | "users"
+  | "import"
   | "disparos"
   | "disparos.email-mkt"
   | "disparos.avisos"
@@ -41,7 +43,10 @@ export type AdminTabKey =
   | "settings.exercicios"
   | "settings.financeiro"
   | "settings.roles"
-  | "flight-review";
+  | "flight-review"
+  | "contracts"
+  | "contracts.layouts"
+  | "contracts.emitidos";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -55,8 +60,9 @@ export type InstructorTabKey =
   | "fuelings"
   | "profile"
   | "help"
-  | "dre"      // EDB — opcional, desativado por padrão
-  | "schedule"; // Escala — opcional, desativado por padrão
+  | "dre"       // EDB — opcional, desativado por padrão
+  | "schedule"  // Escala — opcional, desativado por padrão
+  | "contratos"; // Contratos — opcional, desativado por padrão
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -71,7 +77,8 @@ export type StudentTabKey =
   | "perfil"
   | "ajuda"
   | "dre"       // EDB — opcional, desativado por padrão
-  | "fuelings"; // Abastecimentos — opcional, desativado por padrão
+  | "fuelings"  // Abastecimentos — opcional, desativado por padrão
+  | "contratos"; // Contratos — opcional, desativado por padrão
 
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
@@ -160,7 +167,9 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contents.manobras": "Conteúdos › Manobras",
   "contents.manuais": "Conteúdos › Manuais",
   "contents.ajuda": "Conteúdos › Central de Ajuda",
+  "contents.exercicios": "Conteúdos › Exercícios",
   "users": "Usuários",
+  "import": "Import",
   "disparos": "Disparos",
   "disparos.email-mkt": "Disparos › Email MKT",
   "disparos.avisos": "Disparos › Avisos",
@@ -177,6 +186,9 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.financeiro": "Configurações › Financeiro",
   "settings.roles": "Configurações › Roles",
   "flight-review": "Flight Review",
+  "contracts": "Contratos",
+  "contracts.layouts": "Contratos › Layouts",
+  "contracts.emitidos": "Contratos › Emitidos",
 };
 
 /** Labels descritivos para abas do portal instrutor */
@@ -193,6 +205,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "help": "Ajuda",
   "dre": "EDB",
   "schedule": "Escala",
+  "contratos": "Contratos",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -209,4 +222,5 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "ajuda": "Ajuda",
   "dre": "EDB",
   "fuelings": "Abastecimentos",
+  "contratos": "Contratos",
 };

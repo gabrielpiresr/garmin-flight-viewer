@@ -26,8 +26,11 @@ import { renderMarkdownBlocks } from "../lib/markdown";
 import { dispatchNotificationEvent } from "../lib/notificationsDb";
 import { parseGarminCsv } from "../lib/parseGarminCsv";
 import { getProfile, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
+import { lookupSagaFlight, type SagaLookupFlightResult } from "../lib/sagaImportDb";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
 import { buildTrainingSnapshot, listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import { listManeuverSections } from "../lib/maneuversDb";
+import type { ManeuverSection } from "../types/maneuver";
 import { computeFlightEventTimes, computeScheduledBlockTimes } from "../lib/flightLogbookTimes";
 import {
   aircraftToWeightBalanceSnapshot,
@@ -321,6 +324,16 @@ function normalizeClockTimeInput(raw: string): string {
 }
 
 /** Duração em pernas — HH:MM (ex.: 01:00 = 1 h de voo); horas podem passar de 23. */
+function sagaZuluToLocalClock(raw: string): string {
+  const normalized = normalizeClockTimeInput(raw);
+  const match = normalized.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return normalized;
+  const h = Number(match[1] ?? "0");
+  const m = Number(match[2] ?? "0");
+  const total = (h * 60 + m - 180 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 function normalizeDurationInput(raw: string): string {
   const digits = raw.replace(/\D/g, "").slice(0, 4);
   if (!digits) return "";
@@ -633,9 +646,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [trainingMissionIds, setTrainingMissionIds] = useState<string[]>([]);
 
   const [legs, setLegs] = useState<LegDraft[]>([emptyLeg(flightDate)]);
+  const [sagaFlightId, setSagaFlightId] = useState("");
+  const [sagaLookupLoading, setSagaLookupLoading] = useState(false);
+  const [sagaLookupError, setSagaLookupError] = useState<string | null>(null);
+  const [sagaLookupResult, setSagaLookupResult] = useState<SagaLookupFlightResult | null>(null);
   const [exerciseCatalog, setExerciseCatalog] = useState<TrainingExercise[]>([]);
   const [exerciseGrades, setExerciseGrades] = useState<FlightExerciseGrade[]>([]);
   const [exercisesLoading, setExercisesLoading] = useState(false);
+  const [maneuverSections, setManeuverSections] = useState<ManeuverSection[]>([]);
   const exerciseCatalogRef = useRef<TrainingExercise[]>([]);
 
   const [wbPersonsOnBoard, setWbPersonsOnBoard] = useState("2");
@@ -750,6 +768,9 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         setExerciseCatalog(res.data);
       })
       .finally(() => setExercisesLoading(false));
+    void listManeuverSections(false).then((res) => {
+      if (!res.error) setManeuverSections(res.data);
+    });
   }, []);
 
   useEffect(() => {
@@ -976,6 +997,21 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     [selectedTrainingTrack, trainingMissionIds],
   );
   const selectedTrainingSnapshot = selectedTrainingSnapshots[0] ?? null;
+
+  const relevantExerciseIds = useMemo<Set<string> | null>(() => {
+    if (selectedTrainingSnapshots.length === 0) return null;
+    const allSectionIds = new Set(
+      selectedTrainingSnapshots.flatMap((s) => s.maneuverSectionIds ?? []),
+    );
+    if (allSectionIds.size === 0) return null;
+    const ids = new Set<string>();
+    for (const section of maneuverSections) {
+      if (allSectionIds.has(section.id)) {
+        section.exerciseIds.forEach((id) => ids.add(id));
+      }
+    }
+    return ids.size > 0 ? ids : null;
+  }, [selectedTrainingSnapshots, maneuverSections]);
   const defaultOccupantsWeightKg = useMemo(() => {
     const studentWeight = selectedProfile?.weightKg ?? null;
     const instructorWeight = initialFlightId ? loadedInstructorWeightKg : instructorProfile?.weightKg ?? null;
@@ -1217,6 +1253,51 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
   const removeLeg = (id: string) => {
     setLegs((prev) => (prev.length <= 1 ? prev : prev.filter((leg) => leg.id !== id)));
+  };
+
+  const handleSagaLookup = async () => {
+    const id = sagaFlightId.trim();
+    if (!id) {
+      setSagaLookupError("Informe o ID do voo no SAGA.");
+      return;
+    }
+    setSagaLookupLoading(true);
+    setSagaLookupError(null);
+    setSagaLookupResult(null);
+    try {
+      const result = await lookupSagaFlight(id);
+      setSagaLookupResult(result);
+    } catch (err) {
+      setSagaLookupError(err instanceof Error ? err.message : "Nao foi possivel buscar o voo no SAGA.");
+    } finally {
+      setSagaLookupLoading(false);
+    }
+  };
+
+  const applySagaLookupToLegs = () => {
+    const flight = sagaLookupResult?.flight;
+    if (!flight?.metaLegs.length) return;
+    const nextLegs: LegDraft[] = flight.metaLegs.map((leg) => ({
+      id: crypto.randomUUID(),
+      date: leg.date || flight.summary.date || flightDate,
+      role: leg.role || "Instrutor de voo",
+      studentRole: emptyLeg().studentRole,
+      instructorRole: leg.role || "Instrutor de voo",
+      dep: sanitizeAerodromeCode(leg.dep),
+      arr: sanitizeAerodromeCode(leg.arr),
+      landings: Number.isFinite(leg.landings) ? leg.landings : 0,
+      flightTime: normalizeDurationInput(leg.flightTime || ""),
+      navTime: normalizeDurationInput(leg.navTime || leg.flightTime || ""),
+      ifrTime: normalizeDurationInput(leg.ifrTime || ""),
+      nightTime: normalizeDurationInput(leg.nightTime || ""),
+      serviceTime: normalizeDurationInput(leg.serviceTime || ""),
+      distance: leg.distance || "",
+    }));
+    setLegs(nextLegs);
+    if (flight.summary.date) setFlightDate(flight.summary.date);
+    if (flight.summary.start) setStartTime(sagaZuluToLocalClock(flight.summary.start));
+    if (flight.summary.end) setEngineCutoffTime(sagaZuluToLocalClock(flight.summary.end));
+    setSavedMessage(`Pernas do voo SAGA ${flight.id} aplicadas na ficha.`);
   };
 
   const updateExerciseGrade = (exerciseId: string, grade: ExerciseGrade) => {
@@ -1739,7 +1820,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       )}
 
       {stepId === "pernas" && (
-        <section className="space-y-3">
+        <section className="flex flex-col gap-3">
           <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-3">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Horários do voo (local)</p>
             <p className="mt-1 text-[11px] text-slate-500">
@@ -1779,6 +1860,104 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                   ? "Ajuste partida/corte: o corte deve ser posterior à partida (ex.: 06:00 → 07:00)."
                   : `Ajuste partida/corte: o corte deve ser posterior à partida e cobrir pelo menos ${formatMinutes(totals.flightMin)} de voo.`}
               </p>
+            ) : null}
+          </div>
+
+          <div className="order-first space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/20 p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold uppercase tracking-wider text-sky-300">Buscar voo no SAGA</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Use o ID do voo para preencher as pernas com a sessao salva pelo admin.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="text"
+                  value={sagaFlightId}
+                  disabled={!canEdit || sagaLookupLoading}
+                  onChange={(e) => setSagaFlightId(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSagaLookup();
+                    }
+                  }}
+                  placeholder="ID SAGA"
+                  className={`${inputClass} min-w-[160px]`}
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleSagaLookup()}
+                  disabled={!canEdit || sagaLookupLoading}
+                  className="rounded-lg bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+                >
+                  {sagaLookupLoading ? "Buscando..." : "Buscar"}
+                </button>
+              </div>
+            </div>
+            {sagaLookupError ? <p className="text-xs text-red-300">{sagaLookupError}</p> : null}
+            {sagaLookupResult?.flight ? (
+              <div className="space-y-3 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="grid flex-1 grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4">
+                    <div>
+                      <span className="block text-slate-500">Aluno</span>
+                      <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.student || "-"}</strong>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Aeronave</span>
+                      <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.aircraft || "-"}</strong>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Rota</span>
+                      <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.route || "-"}</strong>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Tempo</span>
+                      <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.flightTime || "-"}</strong>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={applySagaLookupToLegs}
+                    disabled={!canEdit}
+                    className="rounded-lg border border-emerald-500/60 px-3 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-50"
+                  >
+                    Aplicar pernas
+                  </button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-800 text-xs">
+                    <thead className="text-left uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-2 py-1">Perna</th>
+                        <th className="px-2 py-1">Data</th>
+                        <th className="px-2 py-1">DEP</th>
+                        <th className="px-2 py-1">ARR</th>
+                        <th className="px-2 py-1">Pousos</th>
+                        <th className="px-2 py-1">Voo</th>
+                        <th className="px-2 py-1">Servico</th>
+                        <th className="px-2 py-1">Regras</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70 text-slate-300">
+                      {sagaLookupResult.flight.metaLegs.map((leg, idx) => (
+                        <tr key={`${leg.id}-${idx}`}>
+                          <td className="px-2 py-1">{idx + 1}</td>
+                          <td className="px-2 py-1">{leg.date || "-"}</td>
+                          <td className="px-2 py-1">{leg.dep || "-"}</td>
+                          <td className="px-2 py-1">{leg.arr || "-"}</td>
+                          <td className="px-2 py-1">{leg.landings ?? 0}</td>
+                          <td className="px-2 py-1">{leg.flightTime || "-"}</td>
+                          <td className="px-2 py-1">{leg.serviceTime || "-"}</td>
+                          <td className="px-2 py-1">{leg.rules || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : null}
           </div>
 
@@ -1916,6 +2095,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
             <p className="mt-1 text-xs text-slate-500">
               Avalie cada exercício com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
             </p>
+            {relevantExerciseIds !== null ? (
+              <p className="mt-1 text-xs text-sky-400/80">
+                Mostrando exercícios das manobras vinculadas às missões selecionadas no pré-voo.
+              </p>
+            ) : null}
           </div>
 
           {exercisesLoading && exerciseGrades.length === 0 ? (
@@ -1939,7 +2123,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/80">
-                    {exerciseGrades.map((exercise) => (
+                    {(relevantExerciseIds !== null
+                      ? exerciseGrades.filter((ex) => relevantExerciseIds.has(ex.exerciseId))
+                      : exerciseGrades
+                    ).map((exercise) => (
                       <tr key={exercise.exerciseId} className="align-top">
                         <td className="min-w-56 px-3 py-3 font-medium text-slate-100">{exercise.title}</td>
                         <td className="min-w-64 px-3 py-3">

@@ -69,6 +69,9 @@ function toSection(doc: Record<string, unknown>): ManeuverSection {
     description: asNullableString(doc.description),
     order: (doc.order as number | undefined) ?? 0,
     isPublished: Boolean(doc.is_published),
+    exerciseIds: Array.isArray(doc.exercise_ids)
+      ? (doc.exercise_ids as unknown[]).map(String).filter(Boolean)
+      : [],
     createdAt: (doc.$createdAt as string | undefined) ?? "",
     updatedAt: (doc.$updatedAt as string | undefined) ?? "",
   };
@@ -178,6 +181,29 @@ export async function listManeuverCatalog(includeDrafts = false): Promise<{ data
   }
 }
 
+export async function listManeuverSections(
+  includeDrafts = false,
+): Promise<{ data: ManeuverSection[]; error: Error | null }> {
+  if (!isManeuversConfigured() || !databases || !DB_ID || !MANEUVERS_SECTIONS_COL_ID) {
+    return { data: [], error: null };
+  }
+  try {
+    const schoolFilter = Query.equal("school_id", [DEFAULT_SCHOOL_ID]);
+    const publishedFilter = includeDrafts ? [] : [Query.equal("is_published", [true])];
+    const res = await databases.listDocuments(
+      DB_ID,
+      MANEUVERS_SECTIONS_COL_ID,
+      [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(100)],
+    );
+    return {
+      data: res.documents.map((doc) => toSection(doc as Record<string, unknown>)),
+      error: null,
+    };
+  } catch (error) {
+    return { data: [], error: error as Error };
+  }
+}
+
 export async function createManeuverSection(payload: ManeuverSectionPayload): Promise<{ data: ManeuverSection | null; error: Error | null }> {
   if (!isManeuversConfigured() || !databases || !DB_ID || !MANEUVERS_SECTIONS_COL_ID) {
     return { data: null, error: new Error("Coleção de seções de manobras não configurada.") };
@@ -192,6 +218,7 @@ export async function createManeuverSection(payload: ManeuverSectionPayload): Pr
           description: payload.description ?? null,
           order: payload.order,
           is_published: payload.isPublished,
+          exercise_ids: payload.exerciseIds ?? [],
         },
       });
       if (response.document) return { data: toSection(response.document), error: null };
@@ -202,6 +229,7 @@ export async function createManeuverSection(payload: ManeuverSectionPayload): Pr
       description: payload.description ?? null,
       order: payload.order,
       is_published: payload.isPublished,
+      exercise_ids: payload.exerciseIds ?? [],
     });
     return { data: toSection(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {
@@ -223,6 +251,7 @@ export async function updateManeuverSection(sectionId: string, payload: Maneuver
           description: payload.description ?? null,
           order: payload.order,
           is_published: payload.isPublished,
+          exercise_ids: payload.exerciseIds ?? [],
         },
       });
       if (response.document) return { data: toSection(response.document), error: null };
@@ -232,6 +261,7 @@ export async function updateManeuverSection(sectionId: string, payload: Maneuver
       description: payload.description ?? null,
       order: payload.order,
       is_published: payload.isPublished,
+      exercise_ids: payload.exerciseIds ?? [],
     });
     return { data: toSection(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {

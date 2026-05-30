@@ -42,7 +42,7 @@ type JourneySection = "formacao" | "evolucao";
 
 type FormationDrillView =
   | { kind: "timeline" }
-  | { kind: "maneuver-study"; missionName: string; articleIds: string[] }
+  | { kind: "maneuver-study"; mission: TrainingMission; articleIds: string[] }
   | { kind: "flight-review"; missionName: string; flightId: string; missionIndex: number };
 
 const EMPTY_METRICS = aggregateJourneyMetrics({ summaries: [], landings: [], takeoffs: [] });
@@ -543,7 +543,7 @@ function FormationJourney({ state }: { state: FormationState }) {
     return (
       <ManobrasTab
         articleIds={drillView.articleIds}
-        introText={`Material de estudo vinculado a missao ${drillView.missionName}.`}
+        mission={drillView.mission}
         onBack={() => setDrillView({ kind: "timeline" })}
         backLabel="Jornada"
       />
@@ -701,7 +701,7 @@ function FormationJourney({ state }: { state: FormationState }) {
                     type="button"
                     onClick={() => setDrillView({
                       kind: "maneuver-study",
-                      missionName: item.mission.name,
+                      mission: item.mission,
                       articleIds: maneuverArticles.map((article) => article.id),
                     })}
                     className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"

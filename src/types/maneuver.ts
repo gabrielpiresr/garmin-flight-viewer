@@ -6,6 +6,7 @@ export type ManeuverSection = {
   description: string | null;
   order: number;
   isPublished: boolean;
+  exerciseIds: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -51,6 +52,7 @@ export type ManeuverSectionPayload = {
   description?: string | null;
   order: number;
   isPublished: boolean;
+  exerciseIds?: string[];
 };
 
 export type ManeuverSubsectionPayload = {

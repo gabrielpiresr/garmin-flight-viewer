@@ -30,6 +30,11 @@ type SignupForm = {
   weightKg: string;
   heightCm: string;
   anacCode: string;
+  rg: string;
+  rgOrgaoExpedidor: string;
+  endereco: string;
+  nacionalidade: string;
+  estadoCivil: string;
 };
 
 const EMPTY_SIGNUP_FORM: SignupForm = {
@@ -40,6 +45,11 @@ const EMPTY_SIGNUP_FORM: SignupForm = {
   weightKg: "",
   heightCm: "",
   anacCode: "",
+  rg: "",
+  rgOrgaoExpedidor: "",
+  endereco: "",
+  nacionalidade: "Brasileiro(a)",
+  estadoCivil: "",
 };
 
 export function LoginPage() {
@@ -55,6 +65,7 @@ export function LoginPage() {
   const logoUrl = brand?.logoUrl || "";
   const [signup, setSignup] = useState<SignupForm>(EMPTY_SIGNUP_FORM);
   const [mode, setMode] = useState<"signin" | "signup" | "forgot" | "reset">("signin");
+  const [signupStep, setSignupStep] = useState<1 | 2>(1);
   const [busy, setBusy] = useState(false);
   const recoveryParams = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -129,18 +140,22 @@ export function LoginPage() {
         const heightCm = Number(signup.heightCm.replace(",", "."));
         const anacCode = onlyDigits(signup.anacCode);
 
-        if (
-          !signup.fullName.trim() ||
-          cpfDigits.length !== 11 ||
-          phoneDigits.length < 10 ||
-          !signup.birthDate ||
-          !Number.isFinite(weightKg) ||
-          weightKg <= 0 ||
-          !Number.isFinite(heightCm) ||
-          heightCm <= 0 ||
-          !anacCode
-        ) {
-          showToast({ variant: "warning", message: "Preencha todos os dados do cadastro corretamente antes de continuar." });
+        if (signupStep === 1) {
+          if (
+            !signup.fullName.trim() ||
+            cpfDigits.length !== 11 ||
+            phoneDigits.length < 10 ||
+            !signup.birthDate ||
+            !Number.isFinite(weightKg) ||
+            weightKg <= 0 ||
+            !Number.isFinite(heightCm) ||
+            heightCm <= 0 ||
+            !anacCode
+          ) {
+            showToast({ variant: "warning", message: "Preencha todos os dados da etapa 1 corretamente antes de continuar." });
+            return;
+          }
+          setSignupStep(2);
           return;
         }
 
@@ -152,12 +167,18 @@ export function LoginPage() {
           weightKg,
           heightCm,
           anacCode,
+          rg: signup.rg.trim(),
+          rgOrgaoExpedidor: signup.rgOrgaoExpedidor.trim(),
+          endereco: signup.endereco.trim(),
+          nacionalidade: signup.nacionalidade.trim(),
+          estadoCivil: signup.estadoCivil,
         });
         if (error) {
           showToast({ variant: "error", message: error.message });
           return;
         }
         setSignup(EMPTY_SIGNUP_FORM);
+        setSignupStep(1);
         if (anacSyncPending) {
           showToast({ variant: "warning", message: "Conta criada. Consulta ANAC pendente, tentaremos sincronizar novamente em breve." });
         } else {
@@ -185,7 +206,7 @@ export function LoginPage() {
     : mode === "signin"
       ? "Entrar"
       : mode === "signup"
-        ? "Registrar"
+        ? signupStep === 1 ? "Próximo →" : "Criar conta"
         : mode === "forgot"
           ? "Enviar link de redefinicao"
           : "Redefinir senha";
@@ -305,104 +326,192 @@ export function LoginPage() {
 
             {mode === "signup" ? (
               <>
-                <label className="block text-xs text-slate-500">
-                  Nome completo
-                  <input
-                    type="text"
-                    autoComplete="name"
-                    value={signup.fullName}
-                    onChange={(e) => setSignup((prev) => ({ ...prev, fullName: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="Nome e sobrenome"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  CPF
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    value={signup.cpf}
-                    onChange={(e) =>
-                      setSignup((prev) => ({
-                        ...prev,
-                        cpf: formatCpf(e.target.value),
-                      }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="000.000.000-00"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  Telefone / WhatsApp
-                  <input
-                    type="text"
-                    inputMode="tel"
-                    autoComplete="tel"
-                    value={signup.phone}
-                    onChange={(e) =>
-                      setSignup((prev) => ({
-                        ...prev,
-                        phone: formatPhone(e.target.value),
-                      }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="(11) 99999-9999"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  Data de nascimento
-                  <input
-                    type="date"
-                    autoComplete="bday"
-                    value={signup.birthDate}
-                    onChange={(e) => setSignup((prev) => ({ ...prev, birthDate: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  Peso (kg)
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={1}
-                    step="0.1"
-                    value={signup.weightKg}
-                    onChange={(e) => setSignup((prev) => ({ ...prev, weightKg: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="75.5"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  Altura (cm)
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={1}
-                    step="0.1"
-                    value={signup.heightCm}
-                    onChange={(e) => setSignup((prev) => ({ ...prev, heightCm: e.target.value }))}
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="178"
-                  />
-                </label>
-                <label className="block text-xs text-slate-500">
-                  Código ANAC
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    value={signup.anacCode}
-                    onChange={(e) =>
-                      setSignup((prev) => ({
-                        ...prev,
-                        anacCode: onlyDigits(e.target.value),
-                      }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    placeholder="Ex.: 264933"
-                  />
-                </label>
+                {/* Step indicator */}
+                <div className="flex items-center gap-2 pb-1">
+                  <div className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${signupStep === 1 ? "bg-sky-600 text-white" : "bg-emerald-700/40 text-emerald-400"}`}>
+                    {signupStep > 1 ? "✓" : "1"}
+                  </div>
+                  <span className={`text-xs ${signupStep === 1 ? "text-sky-400" : "text-slate-500"}`}>Dados básicos</span>
+                  <span className="text-slate-700">›</span>
+                  <div className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${signupStep === 2 ? "bg-sky-600 text-white" : "bg-slate-800 text-slate-500"}`}>
+                    2
+                  </div>
+                  <span className={`text-xs ${signupStep === 2 ? "text-sky-400" : "text-slate-500"}`}>Dados pessoais</span>
+                </div>
+
+                {signupStep === 1 && (
+                  <>
+                    <label className="block text-xs text-slate-500">
+                      Nome completo
+                      <input
+                        type="text"
+                        autoComplete="name"
+                        value={signup.fullName}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, fullName: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="Nome e sobrenome"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      CPF
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={signup.cpf}
+                        onChange={(e) =>
+                          setSignup((prev) => ({
+                            ...prev,
+                            cpf: formatCpf(e.target.value),
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="000.000.000-00"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Telefone / WhatsApp
+                      <input
+                        type="text"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        value={signup.phone}
+                        onChange={(e) =>
+                          setSignup((prev) => ({
+                            ...prev,
+                            phone: formatPhone(e.target.value),
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="(11) 99999-9999"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Data de nascimento
+                      <input
+                        type="date"
+                        autoComplete="bday"
+                        value={signup.birthDate}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, birthDate: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Peso (kg)
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={1}
+                        step="0.1"
+                        value={signup.weightKg}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, weightKg: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="75.5"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Altura (cm)
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={1}
+                        step="0.1"
+                        value={signup.heightCm}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, heightCm: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="178"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Código ANAC
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={signup.anacCode}
+                        onChange={(e) =>
+                          setSignup((prev) => ({
+                            ...prev,
+                            anacCode: onlyDigits(e.target.value),
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="Ex.: 264933"
+                      />
+                    </label>
+                  </>
+                )}
+
+                {signupStep === 2 && (
+                  <>
+                    <label className="block text-xs text-slate-500">
+                      RG
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        value={signup.rg}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, rg: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="00.000.000-0"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Órgão Expedidor do RG
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        value={signup.rgOrgaoExpedidor}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, rgOrgaoExpedidor: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="Ex.: SSP/SP"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Nacionalidade
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        value={signup.nacionalidade}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, nacionalidade: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="Brasileiro(a)"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Estado Civil
+                      <select
+                        value={signup.estadoCivil}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, estadoCivil: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="">Selecione...</option>
+                        <option value="Solteiro(a)">Solteiro(a)</option>
+                        <option value="Casado(a)">Casado(a)</option>
+                        <option value="Divorciado(a)">Divorciado(a)</option>
+                        <option value="Viúvo(a)">Viúvo(a)</option>
+                        <option value="União Estável">União Estável</option>
+                      </select>
+                    </label>
+                    <label className="block text-xs text-slate-500">
+                      Endereço completo
+                      <input
+                        type="text"
+                        autoComplete="street-address"
+                        value={signup.endereco}
+                        onChange={(e) => setSignup((prev) => ({ ...prev, endereco: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                        placeholder="Rua, Número, Bairro, Cidade - UF, CEP"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setSignupStep(1)}
+                      className="text-xs text-slate-500 hover:text-slate-300"
+                    >
+                      ← Voltar para etapa 1
+                    </button>
+                  </>
+                )}
               </>
             ) : null}
           </div>

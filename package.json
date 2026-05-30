@@ -51,6 +51,7 @@
     "appwrite:setup-flight-status": "node scripts/setup-flight-status.mjs",
     "appwrite:setup-flight-calendar-reminders": "node scripts/setup-flight-calendar-reminders.mjs",
     "appwrite:migrate:anac-fields": "node scripts/migrate-anac-fields.mjs",
+    "appwrite:setup-saga-import": "node scripts/setup-saga-import-fields.mjs",
     "videos:reconcile": "node scripts/reconcile-processing-videos.mjs",
     "videos:reconcile:watch": "node scripts/reconcile-processing-videos.mjs --watch"
   },

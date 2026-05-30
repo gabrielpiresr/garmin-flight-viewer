@@ -255,6 +255,7 @@ export function buildTrainingSnapshot(
     missionType: found.mission.type,
     durationMinutes: found.mission.durationMinutes,
     maneuvers: found.mission.maneuvers,
+    maneuverSectionIds: found.mission.maneuverSectionIds ?? [],
   };
 }
 

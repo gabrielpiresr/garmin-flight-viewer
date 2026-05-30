@@ -20,7 +20,6 @@ import { Skeleton } from "../ui/Skeleton";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { TrainingTracksTab } from "./TrainingTracksTab";
-import { TrainingExercisesTab } from "./TrainingExercisesTab";
 import { RewardsEditor } from "./RewardsEditor";
 import { SchoolCostsPanel } from "./SchoolCostsPanel";
 import { SchoolProductsPanel } from "./SchoolProductsPanel";
@@ -39,7 +38,7 @@ const RolesSettingsTab = lazy(() =>
   import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
 );
 
-export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "exercises" | "financeiro" | "roles";
+export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "financeiro" | "roles";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -75,15 +74,6 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M10 2.5l2.25 4.56 5.03.73-3.64 3.55.86 5.01L10 13.98l-4.5 2.37.86-5.01-3.64-3.55 5.03-.73L10 2.5z" />
-      </svg>
-    ),
-  },
-  {
-    id: "exercises",
-    label: "Exercicios",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path fillRule="evenodd" d="M4.5 2A2.5 2.5 0 002 4.5v11A2.5 2.5 0 004.5 18h11a2.5 2.5 0 002.5-2.5v-11A2.5 2.5 0 0015.5 2h-11zM6 6.75A.75.75 0 016.75 6h6.5a.75.75 0 010 1.5h-6.5A.75.75 0 016 6.75zM6.75 9.25a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5zM6 13.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -124,7 +114,6 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   brand:       "settings.aparencia",
   badges:      "settings.badges",
   tracks:      "settings.trilhas",
-  exercises:   "settings.exercicios",
   financeiro:  "settings.financeiro",
   roles:       "settings.roles",
 };
@@ -700,11 +689,6 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("tracks") ? (
         <div hidden={activeSubTab !== "tracks"}>
           <TrainingTracksTab />
-        </div>
-      ) : null}
-      {openedSubTabs.has("exercises") ? (
-        <div hidden={activeSubTab !== "exercises"}>
-          <TrainingExercisesTab />
         </div>
       ) : null}
       {openedSubTabs.has("financeiro") ? (

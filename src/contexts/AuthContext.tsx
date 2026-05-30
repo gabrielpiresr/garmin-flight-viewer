@@ -22,6 +22,11 @@ export type SignUpProfileInput = {
   weightKg: number;
   heightCm: number;
   anacCode: string;
+  rg?: string;
+  rgOrgaoExpedidor?: string;
+  endereco?: string;
+  nacionalidade?: string;
+  estadoCivil?: string;
 };
 
 type AuthState = {
@@ -133,9 +138,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         weight_kg: profile.weightKg,
         height_cm: profile.heightCm,
         anac_code: profile.anacCode,
-        anac_sync_status: "pending",
+        anac_sync_status: "pending" as const,
         anac_sync_error: "",
-      } as const;
+        rg: profile.rg ?? "",
+        rg_orgao_expedidor: profile.rgOrgaoExpedidor ?? "",
+        endereco: profile.endereco ?? "",
+        nacionalidade: profile.nacionalidade ?? "",
+        estado_civil: profile.estadoCivil ?? "",
+      };
 
       const { error, trackError } = await ensureProfile(u.$id, u.email, "aluno", baseProfileData);
       if (error) {

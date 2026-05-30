@@ -1,0 +1,212 @@
+import { Query } from "appwrite";
+import { databases, ID, CONTRACTS_COL_ID } from "./appwrite";
+import type { Contract, ContractStatus, ContractProfileData } from "../types/contracts";
+import { resolveSystemVars } from "../types/contracts";
+
+const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
+const PROFILES_COL_ID = import.meta.env.VITE_APPWRITE_PROFILES_COLLECTION_ID as string | undefined;
+
+function docToContract(doc: Record<string, unknown>): Contract {
+  let customVarValues: Record<string, string> = {};
+  try {
+    if (typeof doc.custom_var_values_json === "string" && doc.custom_var_values_json) {
+      customVarValues = JSON.parse(doc.custom_var_values_json) as Record<string, string>;
+    }
+  } catch {
+    customVarValues = {};
+  }
+  return {
+    id: doc.$id as string,
+    schoolId: (doc.school_id as string) ?? "",
+    templateId: (doc.template_id as string) ?? "",
+    templateName: (doc.template_name as string) ?? "",
+    recipientUserId: (doc.recipient_user_id as string) ?? "",
+    recipientName: (doc.recipient_name as string) ?? "",
+    contentResolvedJson: (doc.content_resolved_json as string) ?? "",
+    customVarValues,
+    status: ((doc.status as string) ?? "pending") as ContractStatus,
+    createdBy: (doc.created_by as string) ?? "",
+    createdAt: (doc.created_at as string) ?? (doc.$createdAt as string) ?? "",
+    signedByRecipientAt: (doc.signed_by_recipient_at as string | null) ?? null,
+    signedByAdminAt: (doc.signed_by_admin_at as string | null) ?? null,
+    emailSentAt: (doc.email_sent_at as string | null) ?? null,
+  };
+}
+
+export type ContractFilters = {
+  recipientUserId?: string;
+  status?: ContractStatus;
+  cursor?: string | null;
+};
+
+export async function listContracts(
+  schoolId: string,
+  filters: ContractFilters = {},
+): Promise<{ items: Contract[]; nextCursor: string | null }> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) return { items: [], nextCursor: null };
+
+  const queries: string[] = [
+    Query.equal("school_id", schoolId),
+    Query.orderDesc("created_at"),
+    Query.limit(25),
+  ];
+  if (filters.recipientUserId) {
+    queries.push(Query.equal("recipient_user_id", filters.recipientUserId));
+  }
+  if (filters.status) {
+    queries.push(Query.equal("status", filters.status));
+  }
+  if (filters.cursor) {
+    queries.push(Query.cursorAfter(filters.cursor));
+  }
+
+  const res = await databases.listDocuments(DB_ID, CONTRACTS_COL_ID, queries);
+  const items = res.documents.map((d) => docToContract(d as unknown as Record<string, unknown>));
+  const lastItem = items[items.length - 1];
+  const nextCursor = res.documents.length === 25 && lastItem ? lastItem.id : null;
+  return { items, nextCursor };
+}
+
+export async function listContractsForUser(schoolId: string, userId: string): Promise<Contract[]> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) return [];
+  const res = await databases.listDocuments(DB_ID, CONTRACTS_COL_ID, [
+    Query.equal("school_id", schoolId),
+    Query.equal("recipient_user_id", userId),
+    Query.orderDesc("created_at"),
+    Query.limit(100),
+  ]);
+  return res.documents.map((d) => docToContract(d as unknown as Record<string, unknown>));
+}
+
+export async function getContract(id: string): Promise<Contract | null> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) return null;
+  try {
+    const doc = await databases.getDocument(DB_ID, CONTRACTS_COL_ID, id);
+    return docToContract(doc as unknown as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+export async function loadRecipientProfile(userId: string): Promise<ContractProfileData | null> {
+  if (!databases || !DB_ID || !PROFILES_COL_ID) return null;
+  try {
+    const doc = await databases.getDocument(DB_ID, PROFILES_COL_ID, userId);
+    const d = doc as unknown as Record<string, unknown>;
+    return {
+      fullName: (d.full_name as string) ?? "",
+      cpf: (d.cpf as string) ?? "",
+      phone: (d.phone as string) ?? "",
+      birthDate: (d.birth_date as string) ?? "",
+      email: (d.email as string) ?? "",
+      rg: (d.rg as string) ?? "",
+      rgOrgaoExpedidor: (d.rg_orgao_expedidor as string) ?? "",
+      endereco: (d.endereco as string) ?? "",
+      nacionalidade: (d.nacionalidade as string) ?? "",
+      estadoCivil: (d.estado_civil as string) ?? "",
+      anacCode: (d.anac_code as string) ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function createContract(input: {
+  schoolId: string;
+  templateId: string;
+  templateName: string;
+  templateContentJson: string;
+  recipientUserId: string;
+  recipientName: string;
+  recipientEmail: string;
+  customVarValues: Record<string, string>;
+  createdBy: string;
+}): Promise<Contract> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) {
+    throw new Error("Appwrite não configurado");
+  }
+
+  const profile = await loadRecipientProfile(input.recipientUserId);
+  const profileData: ContractProfileData = profile ?? {
+    fullName: input.recipientName,
+    cpf: "",
+    phone: "",
+    birthDate: "",
+    email: input.recipientEmail,
+    rg: "",
+    rgOrgaoExpedidor: "",
+    endereco: "",
+    nacionalidade: "",
+    estadoCivil: "",
+    anacCode: "",
+  };
+
+  const contentResolved = resolveSystemVars(input.templateContentJson, profileData);
+  const now = new Date().toISOString();
+
+  const doc = await databases.createDocument(DB_ID, CONTRACTS_COL_ID, ID.unique(), {
+    school_id: input.schoolId,
+    template_id: input.templateId,
+    template_name: input.templateName,
+    recipient_user_id: input.recipientUserId,
+    recipient_name: input.recipientName,
+    content_resolved_json: contentResolved,
+    custom_var_values_json: JSON.stringify(input.customVarValues),
+    status: "pending",
+    created_by: input.createdBy,
+    created_at: now,
+  });
+
+  return docToContract(doc as unknown as Record<string, unknown>);
+}
+
+export async function updateContractStatus(
+  id: string,
+  signerRole: "aluno" | "instrutor" | "admin",
+): Promise<Contract> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) {
+    throw new Error("Appwrite não configurado");
+  }
+
+  const current = await getContract(id);
+  if (!current) throw new Error("Contrato não encontrado");
+
+  const now = new Date().toISOString();
+  const isRecipient = signerRole === "aluno" || signerRole === "instrutor";
+  const isAdmin = signerRole === "admin";
+
+  const recipientSigned = isRecipient ? true : current.signedByRecipientAt !== null;
+  const adminSigned = isAdmin ? true : current.signedByAdminAt !== null;
+
+  let newStatus: ContractStatus = current.status;
+  if (recipientSigned && adminSigned) {
+    newStatus = "signed_both";
+  } else if (adminSigned) {
+    newStatus = "signed_admin";
+  } else if (recipientSigned) {
+    newStatus = "signed_recipient";
+  }
+
+  const updateData: Record<string, unknown> = { status: newStatus };
+  if (isRecipient && !current.signedByRecipientAt) {
+    updateData.signed_by_recipient_at = now;
+  }
+  if (isAdmin && !current.signedByAdminAt) {
+    updateData.signed_by_admin_at = now;
+  }
+
+  const doc = await databases.updateDocument(DB_ID, CONTRACTS_COL_ID, id, updateData);
+  return docToContract(doc as unknown as Record<string, unknown>);
+}
+
+export async function cancelContract(id: string): Promise<void> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) return;
+  await databases.updateDocument(DB_ID, CONTRACTS_COL_ID, id, { status: "cancelled" });
+}
+
+export async function markContractEmailSent(id: string): Promise<void> {
+  if (!databases || !DB_ID || !CONTRACTS_COL_ID) return;
+  await databases.updateDocument(DB_ID, CONTRACTS_COL_ID, id, {
+    email_sent_at: new Date().toISOString(),
+  });
+}

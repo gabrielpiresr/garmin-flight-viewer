@@ -24,7 +24,8 @@ export type StudentPortalTab =
   | "ajuda"
   | "perfil"
   | "dre"       // EDB — opcional, desativado por padrão
-  | "fuelings"; // Abastecimentos — opcional, desativado por padrão
+  | "fuelings"  // Abastecimentos — opcional, desativado por padrão
+  | "contratos"; // Contratos — opcional, desativado por padrão
 
 export const SCHOOL_FONT_OPTIONS = [
   { id: "", label: "Padrão do sistema" },
@@ -86,6 +87,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   // Abas opcionais — desativadas por padrão, admin pode ativar por escola e/ou por role
   { id: "dre", label: "EDB", defaultEnabled: false },
   { id: "fuelings", label: "Abastecimentos", defaultEnabled: false },
+  { id: "contratos", label: "Contratos", defaultEnabled: false },
 ];
 
 export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType; label: string }> = [

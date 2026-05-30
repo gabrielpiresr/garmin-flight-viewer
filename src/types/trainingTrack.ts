@@ -63,6 +63,7 @@ export type TrainingSelectionSnapshot = {
   missionType: TrainingMissionType;
   durationMinutes: number;
   maneuvers: string[];
+  maneuverSectionIds?: string[];
 };
 
 export type TrainingMissionSelection = {

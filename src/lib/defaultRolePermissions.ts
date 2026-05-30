@@ -16,6 +16,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
   "contents", "contents.manobras", "contents.manuais", "contents.ajuda",
   "users",
+  "import",
   "disparos", "disparos.email-mkt", "disparos.avisos",
   "logbook",
   "fuelings",

@@ -296,7 +296,31 @@ async function main() {
   });
   console.log(`Deployment created: ${deployment.$id}`);
   const finalDeployment = await waitForDeployment(functions, deployment.$id);
-  console.log(`Deployment status: ${finalDeployment.status || finalDeployment.$status || "unknown"}`);
+  const finalStatus = finalDeployment.status || finalDeployment.$status || "unknown";
+  console.log(`Deployment status: ${finalStatus}`);
+
+  if (finalStatus === "ready") {
+    // activate:true in createDeployment is unreliable in Appwrite Cloud — force activation via PUT
+    const activateRes = await fetch(`${endpoint}/v1/functions/${functionId}`, {
+      method: "PUT",
+      headers: {
+        "x-appwrite-key": apiKey,
+        "x-appwrite-project": projectId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "Admin Users", runtime: "node-22", entrypoint: "src/main.js", execute: ["users"], deployment: deployment.$id }),
+    });
+    const activateJson = await activateRes.json();
+    const activeId = activateJson.deploymentId;
+    if (activeId === deployment.$id) {
+      console.log(`Deployment activated: ${activeId}`);
+    } else {
+      console.warn(`WARNING: Activation may have failed. Active deploymentId=${activeId ?? "(none)"}`);
+    }
+  } else {
+    console.error(`Deployment did not reach 'ready' status (got '${finalStatus}'). Skipping activation.`);
+    process.exit(1);
+  }
 
   upsertEnvLine(envPath, "VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID", functionId);
   console.log("Updated .env.local with VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");

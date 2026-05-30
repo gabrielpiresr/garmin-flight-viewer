@@ -20,6 +20,7 @@ import type { AdminTabKey } from "../../types/rolePermissions";
 const AdminHome = lazy(() => import("./AdminHome").then((module) => ({ default: module.AdminHome })));
 const AdminStudentsTab = lazy(() => import("./AdminStudentsTab").then((module) => ({ default: module.AdminStudentsTab })));
 const AdminUsersTab = lazy(() => import("./AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
+const AdminImportTab = lazy(() => import("./AdminImportTab").then((module) => ({ default: module.AdminImportTab })));
 const FleetTab = lazy(() => import("./FleetTab").then((module) => ({ default: module.FleetTab })));
 const FlightReportsTab = lazy(() => import("./FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })));
 const AdminAllFlightsTab = lazy(() =>
@@ -30,6 +31,9 @@ const MaintenanceProgramTab = lazy(() =>
   import("./MaintenanceProgramTab").then((module) => ({ default: module.MaintenanceProgramTab })),
 );
 const ManobrasTab = lazy(() => import("./ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
+const TrainingExercisesTab = lazy(() =>
+  import("./TrainingExercisesTab").then((module) => ({ default: module.TrainingExercisesTab })),
+);
 const ManuaisAdminTab = lazy(() => import("./ManuaisAdminTab").then((module) => ({ default: module.ManuaisAdminTab })));
 const ModelsTab = lazy(() => import("./ModelsTab").then((module) => ({ default: module.ModelsTab })));
 const NoTelemetryTab = lazy(() => import("./NoTelemetryTab").then((module) => ({ default: module.NoTelemetryTab })));
@@ -56,6 +60,9 @@ const AdminDreTab = lazy(() => import("./AdminDreTab").then((module) => ({ defau
 const FlightReviewAdminTab = lazy(() =>
   import("./FlightReviewAdminTab").then((module) => ({ default: module.FlightReviewAdminTab })),
 );
+const ContractsAdminTab = lazy(() =>
+  import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
+);
 
 type AdminSection =
   | "home"
@@ -66,15 +73,17 @@ type AdminSection =
   | "schedule"
   | "students"
   | "users"
+  | "import"
   | "settings"
   | "logbook"
   | "fuelings"
   | "dre"
-  | "flight-review";
+  | "flight-review"
+  | "contracts";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "help";
+type ContentsSubTab = "maneuvers" | "manuals" | "help" | "exercises";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -161,6 +170,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "import",
+    label: "Import",
+    sublabel: "SAGA e integraÃ§Ãµes",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M12 2.25a.75.75 0 01.75.75v10.19l3.22-3.22a.75.75 0 111.06 1.06l-4.5 4.5a.75.75 0 01-1.06 0l-4.5-4.5a.75.75 0 111.06-1.06l3.22 3.22V3a.75.75 0 01.75-.75zM4.5 14.25A2.25 2.25 0 016.75 12h1.5a.75.75 0 010 1.5h-1.5a.75.75 0 00-.75.75v4.5c0 .414.336.75.75.75h10.5a.75.75 0 00.75-.75v-4.5a.75.75 0 00-.75-.75h-1.5a.75.75 0 010-1.5h1.5a2.25 2.25 0 012.25 2.25v4.5A2.25 2.25 0 0117.25 21H6.75a2.25 2.25 0 01-2.25-2.25v-4.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "disparos",
     label: "Disparos",
     sublabel: "Email marketing e avisos",
@@ -214,6 +233,17 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M2.25 2.25a.75.75 0 000 1.5H3v10.5a3 3 0 003 3h1.21l-1.172 3.513a.75.75 0 001.424.474l.329-.987h8.418l.33.987a.75.75 0 001.422-.474l-1.17-3.513H18a3 3 0 003-3V3.75h.75a.75.75 0 000-1.5H2.25zm6.04 16.5l.5-1.5h6.42l.5 1.5H8.29zm7.46-12a.75.75 0 00-1.5 0v6a.75.75 0 001.5 0v-6zm-3 2.25a.75.75 0 00-1.5 0v3.75a.75.75 0 001.5 0V9zm-3 3a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0V12z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "contracts",
+    label: "Contratos",
+    sublabel: "Templates e contratos emitidos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M7.502 6h7.128A3.375 3.375 0 0118 9.375v9.375a3 3 0 003-3V6.108c0-1.505-1.125-2.811-2.664-2.94a48.972 48.972 0 00-.673-.05A3 3 0 0015 1.5h-1.5a3 3 0 00-2.663 1.618c-.225.015-.45.032-.673.05C8.662 3.295 7.554 4.542 7.502 6zM13.5 3A1.5 1.5 0 0012 4.5h4.5A1.5 1.5 0 0015 3h-1.5z" clipRule="evenodd" />
+        <path fillRule="evenodd" d="M3 9.375C3 8.339 3.84 7.5 4.875 7.5h9.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-9.75A1.875 1.875 0 013 20.625V9.375zm4.5 2.625a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -348,6 +378,15 @@ const CONTENTS_TABS = [
       </svg>
     ),
   },
+  {
+    id: "exercises",
+    label: "Exercícios",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M4.5 3.75a.75.75 0 00-.75.75v15c0 .414.336.75.75.75h15a.75.75 0 00.75-.75v-15a.75.75 0 00-.75-.75h-15zM3 4.5A2.25 2.25 0 015.25 2.25h13.5A2.25 2.25 0 0121 4.5v15A2.25 2.25 0 0118.75 21.75H5.25A2.25 2.25 0 013 19.5v-15zM7.5 9a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5A.75.75 0 017.5 9zm0 3.75a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zM8.25 17.25a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-4.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ] satisfies Array<{ id: ContentsSubTab; label: string; icon: ReactNode }>;
 
 const DISPAROS_TABS = [
@@ -397,6 +436,7 @@ const CONTENTS_ROUTES = [
   { id: "maneuvers", path: "/admin/conteudos/manobras", aliases: ["/admin/manobras"] },
   { id: "manuals", path: "/admin/conteudos/manuais", aliases: ["/admin/manuais"] },
   { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
+  { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
 
 const DISPAROS_ROUTES = [
@@ -410,7 +450,6 @@ const SETTINGS_ROUTES = [
   { id: "brand", path: "/admin/configuracoes/aparencia" },
   { id: "badges", path: "/admin/configuracoes/badges" },
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
-  { id: "exercises", path: "/admin/configuracoes/exercicios", aliases: ["/admin/exercicios"] },
   { id: "financeiro", path: "/admin/configuracoes/financeiro" },
   { id: "roles", path: "/admin/configuracoes/roles" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
@@ -423,11 +462,13 @@ const ADMIN_ROUTES = [
   { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "contents", path: "/admin/conteudos/manobras", aliases: CONTENTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "users", path: "/admin/usuarios" },
+  { id: "import", path: "/admin/import" },
   { id: "disparos", path: "/admin/disparos/email-mkt", aliases: DISPAROS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
   { id: "dre", path: "/admin/dre" },
   { id: "flight-review", path: "/admin/flight-review" },
+  { id: "contracts", path: "/admin/contratos" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
 
@@ -443,7 +484,6 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   brand: "Aparencia",
   badges: "Badges",
   tracks: "Trilhas",
-  exercises: "Exercicios",
   financeiro: "Financeiro",
   roles: "Roles",
 };
@@ -466,6 +506,7 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   maneuvers: "contents.manobras",
   manuals: "contents.manuais",
   help: "contents.ajuda",
+  exercises: "contents.exercicios",
 };
 const DISPAROS_TAB_KEYS: Record<string, AdminTabKey> = {
   "email-mkt": "disparos.email-mkt",
@@ -767,6 +808,9 @@ export function AdminLayout() {
               {openedContentsTabs.has("help") ? (
                 <div hidden={contentsTab !== "help"}><LazyTab><HelpCenterAdminTab /></LazyTab></div>
               ) : null}
+              {openedContentsTabs.has("exercises") ? (
+                <div hidden={contentsTab !== "exercises"}><LazyTab><TrainingExercisesTab /></LazyTab></div>
+              ) : null}
             </div>
           )}
           {openedSections.has("disparos") && (
@@ -793,6 +837,9 @@ export function AdminLayout() {
           {openedSections.has("users") && (
             <div hidden={section !== "users"}><LazyTab><AdminUsersTab /></LazyTab></div>
           )}
+          {openedSections.has("import") && (
+            <div hidden={section !== "import"}><LazyTab><AdminImportTab /></LazyTab></div>
+          )}
           {openedSections.has("settings") && (
             <div hidden={section !== "settings"}>
               <LazyTab>
@@ -811,6 +858,9 @@ export function AdminLayout() {
           )}
           {openedSections.has("flight-review") && (
             <div hidden={section !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>
+          )}
+          {openedSections.has("contracts") && (
+            <div hidden={section !== "contracts"}><LazyTab><ContractsAdminTab /></LazyTab></div>
           )}
         </main>
 

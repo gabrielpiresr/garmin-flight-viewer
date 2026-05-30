@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
+import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
+import { listTrainingExercises } from "../../lib/trainingExercisesDb";
+import type { TrainingExercise } from "../../types/trainingExercise";
 import {
   createManeuverArticle,
   createManeuverSection,
@@ -37,6 +40,7 @@ type SectionForm = {
   description: string;
   order: string;
   isPublished: boolean;
+  exerciseIds: string[];
 };
 
 type SubsectionForm = SectionForm & {
@@ -59,6 +63,7 @@ const emptySectionForm: SectionForm = {
   description: "",
   order: "1",
   isPublished: true,
+  exerciseIds: [],
 };
 
 const emptySubsectionForm: SubsectionForm = {
@@ -102,11 +107,15 @@ export function ManobrasTab() {
   const [articleEditorOpen, setArticleEditorOpen] = useState(false);
   const [sectionEditorOpen, setSectionEditorOpen] = useState(false);
   const [subsectionEditorOpen, setSubsectionEditorOpen] = useState(false);
+  const [exercises, setExercises] = useState<TrainingExercise[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const { data, error: listError } = await listManeuverCatalog(true);
+    const [{ data, error: listError }, { data: exData }] = await Promise.all([
+      listManeuverCatalog(true),
+      listTrainingExercises({ includeInactive: true, schoolId: DEFAULT_SCHOOL_ID }),
+    ]);
     if (listError) {
       setError(listError.message);
       setCatalog({ sections: [], subsections: [], articles: [] });
@@ -114,6 +123,7 @@ export function ManobrasTab() {
       setCatalog(data);
       setSelectedSectionId((current) => current || data.sections[0]?.id || "");
     }
+    setExercises(exData);
     setLoading(false);
   }, []);
 
@@ -203,6 +213,7 @@ export function ManobrasTab() {
       description: sectionForm.description.trim() || null,
       order: toNumber(sectionForm.order, catalog.sections.length + 1),
       isPublished: sectionForm.isPublished,
+      exerciseIds: sectionForm.exerciseIds,
     };
     const result = editingSectionId
       ? await updateManeuverSection(editingSectionId, payload)
@@ -414,6 +425,7 @@ export function ManobrasTab() {
                             description: selectedSection.description ?? "",
                             order: String(selectedSection.order),
                             isPublished: selectedSection.isPublished,
+                            exerciseIds: selectedSection.exerciseIds ?? [],
                           });
                           setSectionEditorOpen(true);
                         }}
@@ -458,6 +470,33 @@ export function ManobrasTab() {
                   </label>
                   <textarea value={sectionForm.description} onChange={(event) => setSectionForm((prev) => ({ ...prev, description: event.target.value }))} placeholder="Descrição opcional" rows={2} className="md:col-span-3 w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
                 </div>
+                {exercises.length > 0 ? (
+                  <div className="mt-3">
+                    <p className="mb-2 text-xs font-medium text-slate-400">Exercícios vinculados a esta manobra</p>
+                    <div className="grid gap-1 sm:grid-cols-2">
+                      {exercises.map((ex) => (
+                        <label key={ex.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs text-slate-300 hover:border-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={sectionForm.exerciseIds.includes(ex.id)}
+                            onChange={(e) =>
+                              setSectionForm((prev) => ({
+                                ...prev,
+                                exerciseIds: e.target.checked
+                                  ? [...prev.exerciseIds, ex.id]
+                                  : prev.exerciseIds.filter((id) => id !== ex.id),
+                              }))
+                            }
+                          />
+                          <span className="min-w-0 flex-1 truncate font-medium">{ex.title}</span>
+                          {!ex.isActive ? (
+                            <span className="shrink-0 rounded px-1 text-[10px] text-slate-500">inativo</span>
+                          ) : null}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <button type="button" disabled={saving} onClick={() => void handleSaveSection()} className="mt-3 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60">
                   {editingSectionId ? "Salvar seção" : "Criar seção"}
                 </button>
@@ -565,6 +604,7 @@ export function ManobrasTab() {
                               description: subsection.description ?? "",
                               order: String(subsection.order),
                               isPublished: subsection.isPublished,
+                              exerciseIds: [],
                             });
                             setSubsectionEditorOpen(true);
                           }}

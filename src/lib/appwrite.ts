@@ -111,6 +111,14 @@ export const BROADCAST_MESSAGES_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST
 // Roles por tenant
 export const TENANT_ROLES_COL_ID = import.meta.env.VITE_APPWRITE_TENANT_ROLES_COL_ID as string | undefined;
 
+// Contratos
+export const CONTRACT_TEMPLATES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CONTRACT_TEMPLATES_COL_ID as string | undefined) ?? "contract_templates";
+export const CONTRACTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CONTRACTS_COL_ID as string | undefined) ?? "contracts";
+export const CONTRACT_SIGNATURES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CONTRACT_SIGNATURES_COL_ID as string | undefined) ?? "contract_signatures";
+
 // Flight Review
 export const MANEUVER_TEMPLATES_COL_ID =
   (import.meta.env.VITE_APPWRITE_MANEUVER_TEMPLATES_COL_ID as string | undefined) ?? "maneuver_templates";
