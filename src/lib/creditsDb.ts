@@ -200,6 +200,14 @@ function modelName(modelId: string | null, modelsById: Map<string, AircraftModel
   return modelsById.get(modelId)?.name || "Modelo não identificado";
 }
 
+/** Scheduled SAGA imports and explicit Previsto; saga-flight-* is never treated as scheduled. */
+function isCreditStatementScheduledFlight(item: SavedFlightListItem): boolean {
+  const source = String(item.source_filename || "").toLowerCase();
+  if (source.includes("saga-schedule") || source.includes("saga-test-schedule")) return true;
+  if (item.saga_schedule_id) return true;
+  return String(item.flight_status || "").trim() === "Previsto";
+}
+
 function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | null): FlightSource | null {
   const decoded = full?.csv_text ? decodeFlightRecord(full.csv_text) : { meta: null };
   const meta = decoded.meta;
@@ -219,7 +227,21 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
     item.landings ??
     0;
   const hours = roundHours(totalMinutes / 60);
-  if (hours <= 0 || landings <= 0) return null;
+  const isScheduled = isCreditStatementScheduledFlight(item);
+  if (hours <= 0 || isScheduled) {
+    if (item.id === "saga_flight_739" || String(item.id || "").startsWith("saga_flight_")) {
+      // #region agent log
+      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildFlightSource',message:'flight excluded from credit statement source',data:{flightId:item.id,flightDate,itemLandings:item.landings,metaLandings:meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ?? null,hours,totalMinutes,blockTimeMinutes:item.block_time_minutes ?? null,totalFlightMinutes:item.total_flight_minutes ?? null,durationSec:item.duration_sec ?? null,isNight:meta?.header.isNight ?? item.is_night ?? false,flightStatus:item.flight_status ?? null,isScheduled,sourceFilename:item.source_filename},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+    return null;
+  }
+
+  if (item.id === "saga_flight_739") {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildFlightSource',message:'flight included in credit statement source',data:{flightId:item.id,flightDate,hours,landings,isNight:meta?.header.isNight ?? item.is_night ?? false},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }
 
   return {
     id: item.id,
@@ -238,6 +260,9 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
   if (flightsResult.error) throw flightsResult.error;
 
   const items = flightsResult.data ?? [];
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H11',location:'creditsDb.ts:listFlightSourcesForStudent',message:'raw flight items before source mapping',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,studentUserId,itemsCount:items.length,sample:items.slice(0,25).map((item)=>({id:item.id,flightDate:item.flight_date,status:item.flight_status,landings:item.landings,blockTime:item.block_time_minutes,totalFlight:item.total_flight_minutes,durationSec:item.duration_sec}))},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   const fullFlights = await mapWithConcurrency(items, 4, async (item) => {
     const hasMaterializedSource =
       ((typeof item.block_time_minutes === "number" && item.block_time_minutes > 0) ||
@@ -249,10 +274,14 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
     return [item, result.data] as const;
   });
 
-  return fullFlights
+  const mappedSources = fullFlights
     .map(([item, full]) => buildFlightSource(item, full))
     .filter((source): source is FlightSource => Boolean(source))
     .sort((a, b) => a.flightDate.localeCompare(b.flightDate));
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H11',location:'creditsDb.ts:listFlightSourcesForStudent',message:'mapped flight sources for credit statement',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,studentUserId,sourcesCount:mappedSources.length,has739:mappedSources.some((source)=>source.id==='saga_flight_739'),sample:mappedSources.slice(0,25)},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  return mappedSources;
 }
 
 function summarizeModel(
@@ -300,6 +329,9 @@ export function buildStudentCreditStatement(params: {
   const debits: StudentCreditFlightDebit[] = params.flights.map((flight) => {
     const aircraft = aircraftByRegistration.get(normalizeRegistration(flight.aircraftIdent));
     const aircraftModelId = aircraft?.model_id || null;
+    const candidateCredits = mutableCredits.filter(
+      (credit) => credit.aircraftModelId === aircraftModelId && credit.remainingHours > EPSILON,
+    );
     const eligibleCredits = mutableCredits
       .filter(
         (credit) =>
@@ -320,16 +352,25 @@ export function buildStudentCreditStatement(params: {
       allocations.push({ creditId: credit.id, hours: roundHours(used) });
     }
 
+    const allocatedHours = roundHours(flight.hours - remainingDebit);
+    const unallocatedHours = roundHours(remainingDebit);
+    if (unallocatedHours > 0 || flight.id === "saga_flight_773") {
+      // #region agent log
+      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-debit-debug',hypothesisId:'H9',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit debit allocation snapshot',data:{userId:params.userId,flightId:flight.id,flightDate:flight.flightDate,flightHours:flight.hours,flightAircraftIdent:flight.aircraftIdent,flightModelId:aircraftModelId,flightIsNight:flight.isNight,candidateCredits:candidateCredits.map((credit)=>({id:credit.id,modelId:credit.aircraftModelId,isNight:credit.isNight,purchaseDate:credit.purchaseDate,expiresAt:credit.expiresAt,remainingHours:credit.remainingHours})).slice(0,20),eligibleCredits:eligibleCredits.map((credit)=>({id:credit.id,remainingHours:credit.remainingHours,isNight:credit.isNight,purchaseDate:credit.purchaseDate,expiresAt:credit.expiresAt})).slice(0,20),allocations,allocatedHours,unallocatedHours},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+
     return {
       id: flight.id,
       flightId: flight.id,
       flightDate: flight.flightDate,
       aircraftIdent: flight.aircraftIdent,
+      isNight: flight.isNight,
       aircraftModelId,
       aircraftModelName: modelName(aircraftModelId, modelsById),
       hours: flight.hours,
-      allocatedHours: roundHours(flight.hours - remainingDebit),
-      unallocatedHours: roundHours(remainingDebit),
+      allocatedHours,
+      unallocatedHours,
       allocations,
     };
   });
@@ -355,6 +396,11 @@ export function buildStudentCreditStatement(params: {
       );
     })
     .sort((a, b) => a.aircraftModelName.localeCompare(b.aircraftModelName, "pt-BR"));
+
+  const debit739 = debits.find((debit) => debit.flightId === "saga_flight_739");
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit statement totals snapshot',data:{userId:params.userId,debitsCount:debits.length,has739:!!debit739,debit739:debit739?{hours:debit739.hours,allocatedHours:debit739.allocatedHours,unallocatedHours:debit739.unallocatedHours,isNight:debit739.isNight}:null,consumedHours:roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),unallocatedHours:roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0))},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
   return {
     userId: params.userId,

@@ -7,6 +7,8 @@ export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | und
 export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
 export const ADMIN_USERS_FUNCTION_ID = import.meta.env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID as string | undefined;
+export const INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID as string | undefined) ?? "instructor-patch-flight";
 export const SIGN_FLIGHT_FUNCTION_ID =
   (import.meta.env.VITE_APPWRITE_SIGN_FLIGHT_FUNCTION_ID as string | undefined) ?? "sign-flight";
 export const WEB_PUSH_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY as string | undefined;
@@ -52,6 +54,10 @@ export const HELP_MEDIA_BUCKET_ID =
 export const INSTRUCTOR_PREFS_COL_ID = import.meta.env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID as string | undefined;
 export const STUDENT_CREDITS_COL_ID = import.meta.env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID as string | undefined;
 export const PLATFORM_SETTINGS_COL_ID = import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID as string | undefined;
+export const ONBOARDING_STEPS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_ONBOARDING_STEPS_COL_ID as string | undefined) ?? "6a1f23d2001937e83aa9";
+export const ONBOARDING_MEDIA_BUCKET_ID =
+  (import.meta.env.VITE_APPWRITE_ONBOARDING_MEDIA_BUCKET_ID as string | undefined) ?? "6a1f21ba003cd923ba15";
 export const PUSH_SUBSCRIPTIONS_COL_ID = import.meta.env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID as string | undefined;
 export const NOTIFICATION_DELIVERIES_COL_ID = import.meta.env
   .VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID as string | undefined;
@@ -82,6 +88,8 @@ export const STUDENT_OBSERVATIONS_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_OBSERVATIONS_COL_ID as string | undefined) ?? "student_observations";
 export const INSTRUCTOR_STUDENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID as string | undefined) ?? "instructor_students";
+export const PROFILE_DOCUMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID as string | undefined) ?? "profile_documents";
 
 // Custos e financeiro
 export const INSTRUCTOR_COSTS_COL_ID =
@@ -118,6 +126,10 @@ export const CONTRACTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CONTRACTS_COL_ID as string | undefined) ?? "contracts";
 export const CONTRACT_SIGNATURES_COL_ID =
   (import.meta.env.VITE_APPWRITE_CONTRACT_SIGNATURES_COL_ID as string | undefined) ?? "contract_signatures";
+
+// CRM
+export const CRM_LEADS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CRM_LEADS_COL_ID as string | undefined) ?? "crm_leads";
 
 // Flight Review
 export const MANEUVER_TEMPLATES_COL_ID =

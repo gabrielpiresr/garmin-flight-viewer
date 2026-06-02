@@ -1,0 +1,101 @@
+import { functions, INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID } from "./appwrite";
+import type { FlightWeightBalanceMeta } from "./weightBalance";
+import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
+
+export type InstructorPatchFlightPayload = {
+  flightId: string;
+  instructorUserId: string;
+  csvText?: string;
+  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
+  trainingTrackId?: string | null;
+  trainingStageId?: string | null;
+  trainingMissionId?: string | null;
+  trainingSnapshot?: TrainingSelectionSnapshot | null;
+};
+
+export async function instructorPatchFlight(
+  payload: InstructorPatchFlightPayload,
+): Promise<{ error: Error | null }> {
+  if (!functions || !INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID) {
+    return { error: new Error("Funcao de atualizacao nao configurada.") };
+  }
+
+  try {
+    const body = {
+      action: "patchFlightAsInstructor",
+      flightId: payload.flightId,
+      instructorUserId: payload.instructorUserId,
+      csvText: payload.csvText,
+      flightStatus: payload.flightStatus,
+      trainingTrackId: payload.trainingTrackId ?? null,
+      trainingStageId: payload.trainingStageId ?? null,
+      trainingMissionId: payload.trainingMissionId ?? null,
+      trainingSnapshotJson: payload.trainingSnapshot
+        ? JSON.stringify(payload.trainingSnapshot)
+        : null,
+    };
+
+    const execution = await functions.createExecution(
+      INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID,
+      JSON.stringify(body),
+      false,
+    );
+
+    const response = (() => {
+      try {
+        return JSON.parse(execution.responseBody || "{}") as { ok?: boolean; message?: string };
+      } catch {
+        return { ok: false, message: "Resposta invalida da funcao." };
+      }
+    })();
+
+    if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+      return { error: new Error(response.message || "Falha ao atualizar ficha.") };
+    }
+
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
+export async function studentPatchFlightWeightBalance(payload: {
+  flightId: string;
+  studentUserId: string;
+  csvText: string;
+  weightBalance: FlightWeightBalanceMeta;
+}): Promise<{ error: Error | null }> {
+  if (!functions || !INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID) {
+    return { error: new Error("Função de atualização não configurada.") };
+  }
+
+  try {
+    const execution = await functions.createExecution(
+      INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID,
+      JSON.stringify({
+        action: "patchWeightBalanceAsStudent",
+        flightId: payload.flightId,
+        studentUserId: payload.studentUserId,
+        csvText: payload.csvText,
+        weightBalance: payload.weightBalance,
+      }),
+      false,
+    );
+
+    const response = (() => {
+      try {
+        return JSON.parse(execution.responseBody || "{}") as { ok?: boolean; message?: string };
+      } catch {
+        return { ok: false, message: "Resposta inválida da função." };
+      }
+    })();
+
+    if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+      return { error: new Error(response.message || "Falha ao salvar peso e balanceamento.") };
+    }
+
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}

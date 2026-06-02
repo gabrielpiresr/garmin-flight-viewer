@@ -95,6 +95,8 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "settings.trilhas", label: "Trilhas" },
       { key: "settings.exercicios", label: "Exercícios" },
       { key: "settings.financeiro", label: "Financeiro" },
+      { key: "settings.onboarding", label: "Onboarding" },
+      { key: "settings.indique-ganhe", label: "Indique e ganhe" },
       { key: "settings.roles", label: "Roles" },
     ],
   },
@@ -103,6 +105,14 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
 const INSTRUCTOR_TABS: Array<{ key: InstructorTabKey; label: string }> = Object.entries(INSTRUCTOR_TAB_LABELS).map(
   ([key, label]) => ({ key: key as InstructorTabKey, label }),
 );
+
+const INSTRUCTOR_SCHEDULE_SUBTABS: InstructorTabKey[] = [
+  "schedule.voos",
+  "schedule.disponibilidades",
+  "schedule.gerador",
+];
+
+const INSTRUCTOR_SCHEDULE_ACTIONS: ActionKey[] = ["flight.create", "flight.edit", "flight.delete"];
 
 const STUDENT_TABS: Array<{ key: StudentTabKey; label: string }> = Object.entries(STUDENT_TAB_LABELS).map(
   ([key, label]) => ({ key: key as StudentTabKey, label }),
@@ -240,6 +250,29 @@ function RoleEditorModal({
     setPermissions((prev) => ({ ...prev, actions: { ...prev.actions, [key]: val } }));
   }
 
+  function handleInstructorTabToggle(key: InstructorTabKey, checked: boolean) {
+    if (key !== "schedule") {
+      handleTabsChange({ ...permissions.tabs, [key]: checked });
+      return;
+    }
+    const next: RolePermissions["tabs"] = { ...permissions.tabs, schedule: checked };
+    if (!checked) {
+      for (const subKey of INSTRUCTOR_SCHEDULE_SUBTABS) next[subKey] = false;
+    }
+    handleTabsChange(next);
+    if (!checked) {
+      setPermissions((prev) => ({
+        ...prev,
+        actions: {
+          ...prev.actions,
+          "flight.create": false,
+          "flight.edit": false,
+          "flight.delete": false,
+        },
+      }));
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     await onSave({ name, slug, portalType, permissions });
@@ -342,18 +375,38 @@ function RoleEditorModal({
               <AdminTabsEditor tabs={permissions.tabs} onChange={handleTabsChange} />
             )}
             {portalType === "instrutor" && (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {INSTRUCTOR_TABS.map(({ key, label }) => (
-                  <label key={key} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={permissions.tabs[key] !== false}
-                      onChange={(e) => handleTabsChange({ ...permissions.tabs, [key]: e.target.checked })}
-                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-emerald-500"
-                    />
-                    <span className="text-sm text-slate-300">{label}</span>
-                  </label>
-                ))}
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {INSTRUCTOR_TABS.filter(({ key }) => !INSTRUCTOR_SCHEDULE_SUBTABS.includes(key)).map(({ key, label }) => (
+                    <label key={key} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={permissions.tabs[key] !== false}
+                        onChange={(e) => handleInstructorTabToggle(key, e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-emerald-500"
+                      />
+                      <span className="text-sm text-slate-300">{label}</span>
+                    </label>
+                  ))}
+                </div>
+                {permissions.tabs.schedule !== false ? (
+                  <div className="rounded-lg border border-slate-700/70 bg-slate-900/40 p-3">
+                    <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Escala: subabas visíveis para INVA</p>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {INSTRUCTOR_SCHEDULE_SUBTABS.map((subKey) => (
+                        <label key={subKey} className="flex cursor-pointer items-center gap-2 rounded border border-slate-700 bg-slate-800/50 px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={permissions.tabs[subKey] !== false}
+                            onChange={(e) => handleTabsChange({ ...permissions.tabs, [subKey]: e.target.checked })}
+                            className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-emerald-500"
+                          />
+                          <span className="text-xs text-slate-300">{INSTRUCTOR_TAB_LABELS[subKey]}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
             {portalType === "aluno" && (
@@ -379,7 +432,8 @@ function RoleEditorModal({
               Ações permitidas
             </h3>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {ALL_ACTIONS.map(({ key, label }) => (
+              {ALL_ACTIONS.filter(({ key }) => portalType !== "instrutor" || !key.startsWith("flight.") || INSTRUCTOR_SCHEDULE_ACTIONS.includes(key))
+                .map(({ key, label }) => (
                 <label key={key} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2.5">
                   <input
                     type="checkbox"

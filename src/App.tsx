@@ -2,6 +2,9 @@ import { lazy, Suspense, useEffect } from "react";
 import { useAuth } from "./contexts/AuthContext";
 import { PermissionsProvider } from "./contexts/PermissionsContext";
 import { LoginPage } from "./pages/LoginPage";
+import { PendingApprovalScreen } from "./components/PendingApprovalScreen";
+import { OnboardingFlow } from "./components/OnboardingFlow";
+import { useOnboardingGate } from "./hooks/useOnboardingGate";
 import { refreshBrandCache } from "./lib/schoolRulesDb";
 
 const MainLayout = lazy(() => import("./components/MainLayout").then((module) => ({ default: module.MainLayout })));
@@ -21,6 +24,12 @@ const PublicFlightReviewPage = lazy(() =>
 const FlightReviewClubPage = lazy(() =>
   import("./pages/FlightReviewClubPage").then((module) => ({ default: module.FlightReviewClubPage })),
 );
+const QualificacaoPage = lazy(() =>
+  import("./pages/QualificacaoPage").then((module) => ({ default: module.QualificacaoPage })),
+);
+const CadastroPage = lazy(() =>
+  import("./pages/CadastroPage").then((module) => ({ default: module.CadastroPage })),
+);
 
 function AppLoading() {
   return (
@@ -32,10 +41,13 @@ function AppLoading() {
 
 export default function App() {
   const { user, loading } = useAuth();
+  const onboardingGate = useOnboardingGate();
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
   const isVideoHelperRoute = window.location.pathname === "/video-helper";
   const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
   const isFlightReviewClubRoute = window.location.pathname === "/flight-review-club";
+  const isQualificacaoRoute = window.location.pathname === "/qualificacao";
+  const isCadastroRoute = window.location.pathname === "/cadastro";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -74,6 +86,22 @@ export default function App() {
     );
   }
 
+  if (isQualificacaoRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <QualificacaoPage />
+      </Suspense>
+    );
+  }
+
+  if (isCadastroRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <CadastroPage />
+      </Suspense>
+    );
+  }
+
   if (loading) {
     return <AppLoading />;
   }
@@ -99,6 +127,23 @@ export default function App() {
           <InstructorLayout />
         </Suspense>
       </PermissionsProvider>
+    );
+  }
+
+  if (user.approvalStatus === "pending") {
+    return <PendingApprovalScreen />;
+  }
+
+  if (user.role === "aluno" && onboardingGate.loading) {
+    return <AppLoading />;
+  }
+
+  if (user.role === "aluno" && onboardingGate.shouldShow) {
+    return (
+      <OnboardingFlow
+        steps={onboardingGate.steps}
+        onComplete={onboardingGate.complete}
+      />
     );
   }
 

@@ -333,3 +333,11 @@ body {
 .telemetry-progress-bar {
   animation: telemetry-progress-slide 1.4s ease-in-out infinite;
 }
+
+@keyframes step-fade-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.step-animate {
+  animation: step-fade-in 0.22s ease-out both;
+}

@@ -1,4 +1,4 @@
-import type { PilotLicense, PilotMedical, PilotRating, UserRole } from "../lib/rbac";
+import type { PilotLicense, PilotMedical, PilotRating, ProfileDocumentAttachments, UserRole } from "../lib/rbac";
 import type { AvailabilityType } from "./planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "./schedule";
 import type { WeeklyFlightPlanStatus } from "./planning";
@@ -61,10 +61,12 @@ export type AdminUserPlannedFlight = {
 
 export type AdminUserProfileSummary = {
   docId: string | null;
+  isActive: boolean;
   fullName: string;
   cpf: string;
   phone: string;
   anacCode: string;
+  sagaUserId: string;
   anacSyncStatus: string;
   anacLastSyncAt: string;
   instructorPreferenceLevel: InstructorPreferenceLevel;
@@ -84,6 +86,28 @@ export type AdminUserProfileDetail = AdminUserProfileSummary & {
   anacMedical: PilotMedical;
   anacPhotoFileId: string;
   anacSyncError: string;
+  documents?: ProfileDocumentAttachments;
+  rg?: string;
+  rgOrgaoExpedidor?: string;
+  rgDataEmissao?: string;
+  endereco?: string;
+  cep?: string;
+  cidade?: string;
+  uf?: string;
+  nacionalidade?: string;
+  estadoCivil?: string;
+  sexo?: string;
+  naturalidade?: string;
+  filiacaoPai?: string;
+  filiacaoMae?: string;
+  escolaridade?: string;
+  escolaridadePeriodo?: string;
+  escolaridadeCurso?: string;
+  alergiasMedicamentos?: string;
+  emergenciaNome?: string;
+  emergenciaParentesco?: string;
+  emergenciaEndereco?: string;
+  emergenciaTelefone?: string;
 };
 
 export type AdminExecutedMetrics = {

@@ -78,6 +78,39 @@ function parseDurationToMinutes(value) {
   return Number.isFinite(asDecimal) && asDecimal > 0 ? Math.round(asDecimal * 60) : 0;
 }
 
+function parseClockMinutes(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function clockDiffMinutes(start, end) {
+  const startMinutes = parseClockMinutes(start);
+  const endMinutes = parseClockMinutes(end);
+  if (startMinutes === null || endMinutes === null) return null;
+  const diff = endMinutes >= startMinutes ? endMinutes - startMinutes : endMinutes + 24 * 60 - startMinutes;
+  return diff > 0 ? diff : null;
+}
+
+function blockMinutesFromMeta(meta) {
+  let total = 0;
+  let found = false;
+  for (const leg of meta?.legs || []) {
+    const minutes = clockDiffMinutes(leg.engineStart, leg.engineCut);
+    if (minutes === null) continue;
+    total += minutes;
+    found = true;
+  }
+  return found ? total : clockDiffMinutes(meta?.header?.departureTimeUtc, meta?.header?.engineCutoffTimeUtc);
+}
+
+function firstLegEngineStart(meta) {
+  return (meta?.legs || []).find((leg) => String(leg.engineStart || "").trim())?.engineStart?.trim() || null;
+}
+
 function parseMiles(value) {
   const normalized = String(value || "").replace(/[^\d.,-]/g, "").replace(",", ".");
   const parsed = Number(normalized);
@@ -131,6 +164,7 @@ function buildMaterializedFields(csvText, fallbackMissionId) {
     if (arr && airports[airports.length - 1] !== arr) airports.push(arr);
   }
   const totalFlightMinutes = (meta.legs || []).reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const blockTimeMinutes = blockMinutesFromMeta(meta);
   const landings = (meta.legs || []).reduce((acc, leg) => acc + Math.max(0, Math.round(Number(leg.landings || 0))), 0);
   const totalMiles = (meta.legs || []).reduce((acc, leg) => acc + parseMiles(leg.distance), 0);
   const instructorSuggestion = String(meta.preFlight?.instructorSuggestionMd || "").trim();
@@ -138,9 +172,10 @@ function buildMaterializedFields(csvText, fallbackMissionId) {
 
   return {
     flight_date: meta.header?.date || null,
-    start_time: String(meta.header?.startTime || "").trim() || null,
+    start_time: firstLegEngineStart(meta) || String(meta.header?.departureTimeUtc || meta.header?.startTime || "").trim() || null,
     from_to: airports.length > 0 ? airports.join(" -> ") : null,
     landings,
+    block_time_minutes: blockTimeMinutes ?? null,
     total_flight_minutes: totalFlightMinutes,
     total_miles: Number(totalMiles.toFixed(1)),
     telemetry_present: decoded.telemetryCsv.trim().length > 0,
@@ -203,6 +238,8 @@ module.exports = async ({ req, res, log, error }) => {
       sdk.Permission.read(sdk.Role.label("admin")),
       sdk.Permission.update(sdk.Role.label("admin")),
       sdk.Permission.delete(sdk.Role.label("admin")),
+      sdk.Permission.read(sdk.Role.label("instrutor")),
+      sdk.Permission.update(sdk.Role.label("instrutor")),
     ];
 
     let csvFileId = null;

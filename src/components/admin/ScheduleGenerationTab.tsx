@@ -4,6 +4,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { insertFlight, updateFlight } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
+import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSyncResult } from "../../lib/sagaImportDb";
 import { getScheduleWeekData, getScheduleWeekOptions, AUTO_SOURCE_PREFIX } from "../../lib/scheduleGenerationDb";
 import { assignInstructorsToSuggestions, generateSchedulePreview } from "../../lib/scheduleGenerator";
 import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
@@ -52,6 +53,74 @@ const DAY_LABEL: Record<number, string> = {
   6: "Sáb",
 };
 const INSTRUCTOR_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+
+type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
+  id: string;
+  createdAt: string;
+};
+
+function sagaSyncVariant(status: SagaScheduleSyncResult["status"]): "success" | "warning" | "error" {
+  if (status === "synced" || status === "cancelled") return "success";
+  if (status === "skipped") return "warning";
+  return "error";
+}
+
+function normalizeSagaSyncStatus(status: unknown): SagaScheduleSyncResult["status"] {
+  return status === "synced" || status === "cancelled" || status === "skipped" || status === "failed"
+    ? status
+    : "failed";
+}
+
+function SagaScheduleSyncLogPanel({
+  logs,
+  onClear,
+}: {
+  logs: SagaScheduleSyncLogItem[];
+  onClear: () => void;
+}) {
+  if (!logs.length) return null;
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100">Log SAGA</h3>
+          <p className="text-xs text-slate-500">Falhas no SAGA nao desfazem a agenda local.</p>
+        </div>
+        <button type="button" onClick={onClear} className="text-xs font-semibold text-slate-400 hover:text-slate-200">
+          Limpar
+        </button>
+      </div>
+      <div className="space-y-2">
+        {logs.map((item) => {
+          const status = normalizeSagaSyncStatus(item.status);
+          return (
+            <details key={item.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+              <summary className="cursor-pointer list-none">
+                <span className={`font-semibold ${status === "failed" ? "text-rose-300" : status === "skipped" ? "text-amber-200" : "text-emerald-300"}`}>
+                  {status.toUpperCase()}
+                </span>
+                <span className="ml-2">{item.message || "Sem mensagem retornada pela sincronizacao SAGA."}</span>
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-2 text-[11px] text-slate-400">
+{JSON.stringify({
+  at: item.createdAt,
+  mode: item.mode,
+  flightId: item.flightId,
+  sagaScheduleId: item.sagaScheduleId,
+  endpoint: item.endpoint,
+  httpStatus: item.httpStatus,
+  requestPayload: item.requestPayload,
+  response: item.response,
+  logs: item.logs,
+}, null, 2)}
+              </pre>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
 
 const PERIOD_LABEL: Record<SchedulePeriod, string> = {
   morning: "Manhã",
@@ -364,6 +433,7 @@ function buildAutoMeta(
   studentAnac?: string | null,
   instructor?: InstructorIdentity | null,
 ): FlightRecordMeta {
+  const engineCut = composeEndTime(suggestion.startTime, suggestion.durationHours);
   return {
     schedule: {
       version: "AUTO_SCHEDULE_V1",
@@ -382,6 +452,8 @@ function buildAutoMeta(
       instructorAnac: instructor?.anacCode ?? suggestion.instructorAnac ?? "",
       date: suggestion.weekDate,
       startTime: suggestion.startTime,
+      departureTimeUtc: suggestion.startTime,
+      engineCutoffTimeUtc: engineCut,
       aircraft: suggestion.aircraftRegistration,
     },
     preFlight: {
@@ -400,7 +472,11 @@ function buildAutoMeta(
         navTime: "00:00",
         ifrTime: "00:00",
         nightTime: "00:00",
-        serviceTime: "00:00",
+        serviceTime: flightDurationToHHMM(suggestion.durationHours),
+        engineStart: suggestion.startTime,
+        takeoff: "",
+        landing: "",
+        engineCut,
         distance: "0",
       },
     ],
@@ -702,6 +778,7 @@ function summarizeStudents(
   }
 
   return [...map.values()]
+    .filter((row) => row.requestedFlights > 0)
     .map((row) => {
       const requestedHours = Number(row.requestedHours.toFixed(2));
       const allocatedHours = Number(row.allocatedHours.toFixed(2));
@@ -1216,6 +1293,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
   const [finalConfirmOpen, setFinalConfirmOpen] = useState(false);
   const [persistedCount, setPersistedCount] = useState(0);
   const [lastClosedWeekMessage, setLastClosedWeekMessage] = useState<string | null>(null);
+  const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
 
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
@@ -1224,6 +1302,43 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
   useEffect(() => {
     if (lastClosedWeekMessage) showToast({ variant: "success", message: lastClosedWeekMessage });
   }, [lastClosedWeekMessage, showToast]);
+
+  const runSagaScheduleSync = useCallback(
+    async (flightId: string, mode: SagaScheduleSyncMode, options: { allowCreate?: boolean; sagaScheduleId?: string | null } = {}) => {
+      const result = await syncSagaScheduleEvent(flightId, mode, options).catch((error) => ({
+        ok: false,
+        mode,
+        status: "failed" as const,
+        message: error instanceof Error ? error.message : "Falha ao chamar sincronizacao SAGA.",
+        flightId,
+        sagaScheduleId: null,
+        httpStatus: null,
+        endpoint: null,
+        requestPayload: null,
+        response: null,
+        logs: [],
+      }));
+      const normalizedResult = {
+        ...result,
+        status: normalizeSagaSyncStatus(result.status),
+        message: result.message || "Sem mensagem retornada pela sincronizacao SAGA.",
+      };
+      const item: SagaScheduleSyncLogItem = {
+        ...normalizedResult,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        createdAt: new Date().toISOString(),
+      };
+      setSagaSyncLogs((current) => [item, ...current].slice(0, 20));
+      showToast({
+        variant: sagaSyncVariant(normalizedResult.status),
+        title: "SAGA",
+        message: normalizedResult.message,
+        durationMs: normalizedResult.status === "failed" ? 8000 : 4500,
+      });
+      return normalizedResult;
+    },
+    [showToast],
+  );
 
   const readSavedPreview = useCallback((weekStart: string): SavedPreviewDraft | null => {
     if (!user) return null;
@@ -1570,10 +1685,12 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
           const result = await updateFlight(existing.id, payload);
           if (result.error) throw result.error;
           void syncFlightCalendarEvent(existing.id, "upsert");
+          void runSagaScheduleSync(existing.id, "upsert", { sagaScheduleId: existing.sagaScheduleId ?? null });
         } else {
           const result = await insertFlight(payload);
           if (result.error) throw result.error;
           if (result.id) void syncFlightCalendarEvent(result.id, "upsert");
+          if (result.id) void runSagaScheduleSync(result.id, "upsert", { allowCreate: true });
         }
         successCount += 1;
       }
@@ -1855,6 +1972,8 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala Automática</h2>
         <p className="text-xs text-slate-500">Cruze intenções dos alunos com disponibilidade operacional e gere voos.</p>
       </div>
+
+      <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} />
 
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-3">
         <div>

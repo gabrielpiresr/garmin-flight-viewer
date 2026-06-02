@@ -7,6 +7,7 @@ interface ImportMetaEnv {
   readonly VITE_APPWRITE_DATABASE_ID: string;
   readonly VITE_APPWRITE_COLLECTION_ID: string;
   readonly VITE_APPWRITE_PROFILES_COLLECTION_ID: string;
+  readonly VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID?: string;
   readonly VITE_APPWRITE_BUCKET_ID?: string;
   readonly VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID?: string;
   readonly VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID?: string;
@@ -15,6 +16,8 @@ interface ImportMetaEnv {
   readonly VITE_APPWRITE_NOTICES_COL_ID?: string;
   readonly VITE_APPWRITE_NOTICES_BUCKET_ID?: string;
   readonly VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID?: string;
+  readonly VITE_APPWRITE_ONBOARDING_STEPS_COL_ID?: string;
+  readonly VITE_APPWRITE_ONBOARDING_MEDIA_BUCKET_ID?: string;
   readonly VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID?: string;
   readonly VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID?: string;
   readonly VITE_APPWRITE_MANEUVER_TEMPLATES_COL_ID?: string;

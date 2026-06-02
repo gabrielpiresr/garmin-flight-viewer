@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { account, ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
-import { deriveRoleFromLabels, ensureProfile, getUserRoleInfo, type UserRole } from "../lib/rbac";
+import { deriveRoleFromLabels, ensureProfile, getApprovalStatus, getUserRoleInfo, type ApprovalStatus, type UserRole } from "../lib/rbac";
 import { ensureSystemRoles } from "../lib/tenantRolesDb";
+import { createLead, getLeadByEmail, updateLead } from "../lib/crmDb";
 
 type AppwriteUser = {
   id: string;
@@ -12,6 +13,7 @@ type AppwriteUser = {
   /** Slug do role customizado atribuído (ex: "chefe-de-oficina"). Null = role padrão do portal. */
   customRoleSlug: string | null;
   schoolId: string;
+  approvalStatus: ApprovalStatus;
 };
 
 export type SignUpProfileInput = {
@@ -62,6 +64,8 @@ async function resolveUser(u: {
     void ensureSystemRoles(DEFAULT_SCHOOL_ID);
   }
 
+  const approvalStatus = role === "aluno" ? await getApprovalStatus(u.$id) : "approved";
+
   return {
     id: u.$id,
     email: u.email,
@@ -69,6 +73,7 @@ async function resolveUser(u: {
     role,
     customRoleSlug,
     schoolId: DEFAULT_SCHOOL_ID,
+    approvalStatus,
   };
 }
 
@@ -185,6 +190,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       }
 
+      // Criar ou vincular lead no CRM (best-effort)
+      void (async () => {
+        const { data: existing } = await getLeadByEmail(u.email);
+        if (existing) {
+          // Lead já existe (veio do form de qualificação ou cadastro) — só vincula userId
+          void updateLead(existing.id, { userId: u.$id });
+        } else {
+          void createLead({ userId: u.$id, name: profile.fullName, email: u.email, phone: profile.phone, crmStatus: "novo_lead" });
+        }
+      })();
+
       setUser({
         id: u.$id,
         email: u.email,
@@ -192,6 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role: "aluno",
         customRoleSlug: null,
         schoolId: DEFAULT_SCHOOL_ID,
+        approvalStatus: "pending",
       });
       return { error: null, anacSyncPending };
     } catch (e) {

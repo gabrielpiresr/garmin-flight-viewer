@@ -1,6 +1,6 @@
 import { Query } from "appwrite";
 import { databases, ID, CONTRACT_TEMPLATES_COL_ID } from "./appwrite";
-import type { ContractTemplate, CustomVariable } from "../types/contracts";
+import type { ContractStandardType, ContractTemplate, CustomVariable } from "../types/contracts";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -17,6 +17,7 @@ function docToTemplate(doc: Record<string, unknown>): ContractTemplate {
     id: doc.$id as string,
     schoolId: (doc.school_id as string) ?? "",
     name: (doc.name as string) ?? "",
+    standardType: normalizeStandardType(doc.standard_type as string | undefined),
     contentJson: (doc.content_json as string) ?? "",
     customVariables,
     createdBy: (doc.created_by as string) ?? "",
@@ -25,10 +26,28 @@ function docToTemplate(doc: Record<string, unknown>): ContractTemplate {
   };
 }
 
+function normalizeStandardType(value: string | undefined): ContractStandardType {
+  return value === "matricula" || value === "instrutor" ? value : "";
+}
+
 export async function listContractTemplates(schoolId: string): Promise<ContractTemplate[]> {
   if (!databases || !DB_ID || !CONTRACT_TEMPLATES_COL_ID) return [];
   const res = await databases.listDocuments(DB_ID, CONTRACT_TEMPLATES_COL_ID, [
     Query.equal("school_id", schoolId),
+    Query.orderDesc("created_at"),
+    Query.limit(100),
+  ]);
+  return res.documents.map((d) => docToTemplate(d as unknown as Record<string, unknown>));
+}
+
+export async function listStandardContractTemplates(
+  schoolId: string,
+  standardType: Exclude<ContractStandardType, "">,
+): Promise<ContractTemplate[]> {
+  if (!databases || !DB_ID || !CONTRACT_TEMPLATES_COL_ID) return [];
+  const res = await databases.listDocuments(DB_ID, CONTRACT_TEMPLATES_COL_ID, [
+    Query.equal("school_id", schoolId),
+    Query.equal("standard_type", standardType),
     Query.orderDesc("created_at"),
     Query.limit(100),
   ]);
@@ -48,6 +67,7 @@ export async function getContractTemplate(id: string): Promise<ContractTemplate 
 export async function createContractTemplate(input: {
   schoolId: string;
   name: string;
+  standardType: ContractStandardType;
   contentJson: string;
   customVariables: CustomVariable[];
   createdBy: string;
@@ -59,6 +79,7 @@ export async function createContractTemplate(input: {
   const doc = await databases.createDocument(DB_ID, CONTRACT_TEMPLATES_COL_ID, ID.unique(), {
     school_id: input.schoolId,
     name: input.name,
+    standard_type: input.standardType,
     content_json: input.contentJson,
     custom_variables_json: JSON.stringify(input.customVariables),
     created_by: input.createdBy,
@@ -72,6 +93,7 @@ export async function updateContractTemplate(
   id: string,
   input: {
     name: string;
+    standardType: ContractStandardType;
     contentJson: string;
     customVariables: CustomVariable[];
   },
@@ -82,6 +104,7 @@ export async function updateContractTemplate(
   const now = new Date().toISOString();
   const doc = await databases.updateDocument(DB_ID, CONTRACT_TEMPLATES_COL_ID, id, {
     name: input.name,
+    standard_type: input.standardType,
     content_json: input.contentJson,
     custom_variables_json: JSON.stringify(input.customVariables),
     updated_at: now,

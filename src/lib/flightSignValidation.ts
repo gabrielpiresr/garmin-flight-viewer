@@ -12,10 +12,11 @@ function parseDurationToMinutes(value: string): number {
 export function validateFlightForInstructorSign(meta: FlightRecordMeta): string[] {
   const errors: string[] = [];
 
-  if (!meta.header.departureTimeUtc?.trim()) {
-    errors.push("Horário de partida não preenchido.");
+  const hasLegBlockTimes = meta.legs.some((leg) => leg.engineStart?.trim() && leg.engineCut?.trim());
+  if (!hasLegBlockTimes && !meta.header.departureTimeUtc?.trim()) {
+    errors.push("Horário de partida/acionamento não preenchido.");
   }
-  if (!meta.header.engineCutoffTimeUtc?.trim()) {
+  if (!hasLegBlockTimes && !meta.header.engineCutoffTimeUtc?.trim()) {
     errors.push("Horário de corte dos motores não preenchido.");
   }
 
@@ -32,14 +33,6 @@ export function validateFlightForInstructorSign(meta: FlightRecordMeta): string[
   const totalFlightMinutes = meta.legs.reduce((sum, leg) => sum + parseDurationToMinutes(leg.flightTime), 0);
   if (totalFlightMinutes <= 0) {
     errors.push("Soma dos tempos de voo das pernas é zero.");
-  }
-
-  const totalDistance = meta.legs.reduce((sum, leg) => {
-    const d = Number((leg.distance ?? "").toString().replace(",", "."));
-    return sum + (Number.isFinite(d) ? d : 0);
-  }, 0);
-  if (totalDistance <= 0) {
-    errors.push("Distância zerada em todas as pernas.");
   }
 
   const wb = meta.weightBalance;

@@ -123,7 +123,6 @@ export function ContractsUserTab({ userId, schoolId, userRole }: Props) {
       {viewContract && (
         <ContractViewSignModal
           contract={viewContract}
-          signerUserId={userId}
           signerRole={userRole}
           onSigned={handleSigned}
           onClose={() => setViewContract(null)}

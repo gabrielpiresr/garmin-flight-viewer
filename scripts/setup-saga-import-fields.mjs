@@ -48,6 +48,19 @@ async function attr(factory, label) {
   }
 }
 
+async function optionalAttr(factory, label) {
+  try {
+    await attr(factory, label);
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (/maximum number|maximum.*attributes|attribute_limit_exceeded/i.test(message)) {
+      console.log(`skipped optional attribute ${label}: collection attribute limit reached`);
+      return;
+    }
+    throw error;
+  }
+}
+
 async function index(collectionId, key, attributes) {
   try {
     await db.createIndex(databaseId, collectionId, key, "key", attributes);
@@ -68,8 +81,15 @@ await attr(() => db.createStringAttribute(databaseId, profilesId, "saga_user_id"
 await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_flight_id", 64, false), "flights.saga_flight_id");
 await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_imported_at", 64, false), "flights.saga_imported_at");
 await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_legs_json", 65535, false), "flights.saga_legs_json");
+await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_schedule_id", 64, false), "flights.saga_schedule_id");
+await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_schedule_synced_at", 64, false), "flights.saga_schedule_synced_at");
+await attr(() => db.createStringAttribute(databaseId, flightsId, "saga_schedule_sync_status", 16, false), "flights.saga_schedule_sync_status");
+await optionalAttr(() => db.createStringAttribute(databaseId, flightsId, "saga_schedule_error", 1024, false), "flights.saga_schedule_error");
+await optionalAttr(() => db.createStringAttribute(databaseId, flightsId, "saga_schedule_log_json", 4096, false), "flights.saga_schedule_log_json");
 
 await index(profilesId, "profiles_saga_user_idx", ["saga_user_id"]);
 await index(flightsId, "flights_saga_flight_idx", ["saga_flight_id"]);
+await index(flightsId, "flights_saga_schedule_idx", ["saga_schedule_id"]);
+await index(flightsId, "flights_saga_schedule_status_idx", ["saga_schedule_sync_status"]);
 
 console.log("SAGA import fields ready.");

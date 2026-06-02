@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Client, Databases, ID, Permission, Role } from "node-appwrite";
+import { Client, Databases, ID, Permission, Query, Role } from "node-appwrite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -58,9 +58,29 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function listAllCollections() {
+  const out = [];
+  let offset = 0;
+  while (true) {
+    const page = await db.listCollections(DATABASE_ID, [Query.limit(100), Query.offset(offset)]);
+    out.push(...(page.collections || []));
+    if (!page.collections || page.collections.length < 100 || out.length >= (page.total || 0)) break;
+    offset += 100;
+  }
+  return out;
+}
+
+function envCollectionIdForName(name) {
+  if (name === "contract_templates") return env.VITE_APPWRITE_CONTRACT_TEMPLATES_COL_ID || process.env.APPWRITE_CONTRACT_TEMPLATES_COL_ID;
+  if (name === "contracts") return env.VITE_APPWRITE_CONTRACTS_COL_ID || process.env.APPWRITE_CONTRACTS_COL_ID;
+  if (name === "contract_signatures") return env.VITE_APPWRITE_CONTRACT_SIGNATURES_COL_ID || process.env.APPWRITE_CONTRACT_SIGNATURES_COL_ID;
+  return "";
+}
+
 async function ensureCollection(name, perms) {
-  const list = await db.listCollections(DATABASE_ID);
-  const found = list.collections.find((c) => c.name === name);
+  const collections = await listAllCollections();
+  const envId = envCollectionIdForName(name);
+  const found = collections.find((c) => c.$id === envId) || collections.find((c) => c.name === name);
   if (found) {
     console.log(`  • Collection "${name}" already exists (${found.$id})`);
     return found;
@@ -106,6 +126,7 @@ async function setupContractTemplates() {
   const id = col.$id;
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "school_id", 36, true), "school_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "name", 255, true), "name");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "standard_type", 20, false, ""), "standard_type");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "content_json", 65535, true), "content_json");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "custom_variables_json", 4096, false), "custom_variables_json");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "created_by", 36, false), "created_by");
@@ -113,6 +134,7 @@ async function setupContractTemplates() {
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "updated_at", false), "updated_at");
   await sleep(3000);
   await idx(id, "tmpl_school_idx", ["school_id", "created_at"], ["ASC", "DESC"]);
+  await idx(id, "tmpl_standard_idx", ["school_id", "standard_type"], ["ASC", "ASC"]);
   return id;
 }
 
@@ -123,6 +145,9 @@ async function setupContracts() {
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "school_id", 36, true), "school_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "template_id", 36, true), "template_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "template_name", 255, false), "template_name");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "lead_id", 36, false), "lead_id");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "standard_type", 20, false, ""), "standard_type");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "contract_kind", 40, false, "standard_contract"), "contract_kind");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "recipient_user_id", 36, true), "recipient_user_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "recipient_name", 255, false), "recipient_name");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "content_resolved_json", 65535, false), "content_resolved_json");
@@ -133,9 +158,12 @@ async function setupContracts() {
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "signed_by_recipient_at", false), "signed_by_recipient_at");
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "signed_by_admin_at", false), "signed_by_admin_at");
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "email_sent_at", false), "email_sent_at");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "enrollment_pdf_file_id", 64, false), "enrollment_pdf_file_id");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "signed_pdf_file_id", 64, false), "signed_pdf_file_id");
   await sleep(3000);
   await idx(id, "contract_recipient_idx", ["school_id", "recipient_user_id"], ["ASC", "ASC"]);
   await idx(id, "contract_status_idx", ["school_id", "status", "created_at"], ["ASC", "ASC", "DESC"]);
+  await idx(id, "contract_lead_idx", ["lead_id"], ["ASC"]);
   return id;
 }
 

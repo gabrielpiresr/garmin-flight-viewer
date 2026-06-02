@@ -1,25 +1,22 @@
-import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
+import { getReferAndEarnPublic, programConfigForRole } from "../../lib/referAndEarnDb";
+import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab";
+import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 import { InstallPwaButton } from "../InstallPwaButton";
 import type { InstructorTabKey } from "../../types/rolePermissions";
 
 const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
-const InstructorDreTab = lazy(() =>
-  import("./InstructorDreTab").then((module) => ({ default: module.InstructorDreTab })),
-);
 const InstructorFlightsTab = lazy(() =>
   import("./InstructorFlightsTab").then((module) => ({ default: module.InstructorFlightsTab })),
 );
 const InstructorHome = lazy(() => import("./InstructorHome").then((module) => ({ default: module.InstructorHome })));
 const InstructorProfileTab = lazy(() =>
   import("./InstructorProfileTab").then((module) => ({ default: module.InstructorProfileTab })),
-);
-const InstructorScheduleTab = lazy(() =>
-  import("./InstructorScheduleTab").then((module) => ({ default: module.InstructorScheduleTab })),
 );
 const InstructorStudentsTab = lazy(() =>
   import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
@@ -30,8 +27,23 @@ const ManuaisTab = lazy(() => import("../ManuaisTab").then((module) => ({ defaul
 const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const ContractsUserTab = lazy(() => import("../ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
+const ReferAndEarnTab = lazy(() => import("../ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 
-type InstructorSection = "home" | "journey" | "flights" | "fuelings" | "notices" | "manuals" | "maneuvers" | "students" | "profile" | "help" | "dre" | "schedule" | "contratos";
+type InstructorSection =
+  | "home"
+  | "journey"
+  | "flights"
+  | "fuelings"
+  | "notices"
+  | "manuals"
+  | "maneuvers"
+  | "students"
+  | "profile"
+  | "help"
+  | "dre"
+  | "schedule"
+  | "contratos"
+  | "indique-ganhe";
 
 type NavItem = {
   id: InstructorSection;
@@ -148,8 +160,8 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "dre",
-    label: "EDB",
-    sublabel: "Extrato financeiro",
+    label: "Diário de bordo",
+    sublabel: "Mesma visão do admin",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M12 7.5a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
@@ -161,7 +173,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: "schedule",
     label: "Escala",
-    sublabel: "Escala de voos",
+    sublabel: "Mesma escala do admin",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm13.5 9a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5z" clipRule="evenodd" />
@@ -176,6 +188,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M7.502 6h7.128A3.375 3.375 0 0118 9.375v9.375a3 3 0 003-3V6.108c0-1.505-1.125-2.811-2.664-2.94a48.972 48.972 0 00-.673-.05A3 3 0 0015 1.5h-1.5a3 3 0 00-2.663 1.618c-.225.015-.45.032-.673.05C8.662 3.295 7.554 4.542 7.502 6zM13.5 3A1.5 1.5 0 0012 4.5h4.5A1.5 1.5 0 0015 3h-1.5z" clipRule="evenodd" />
         <path fillRule="evenodd" d="M3 9.375C3 8.339 3.84 7.5 4.875 7.5h9.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-9.75A1.875 1.875 0 013 20.625V9.375zm4.5 2.625a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "indique-ganhe",
+    label: "Indique e ganhe",
+    sublabel: "Indique alunos e acompanhe",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M5.25 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM13.5 3.873a3.375 3.375 0 106.75 0 3.375 3.375 0 00-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63v-.003zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 003.958-1.006 3.375 3.375 0 00-3.725-3.725 10.088 10.088 0 00-1.006 3.958 2.25 2.25 0 01-.96.233h-.144z" />
       </svg>
     ),
   },
@@ -195,6 +217,7 @@ const SECTION_ROUTES = [
   { id: "dre", path: "/instrutor/edb" },
   { id: "schedule", path: "/instrutor/escala" },
   { id: "contratos", path: "/instrutor/contratos" },
+  { id: "indique-ganhe", path: "/instrutor/indique-ganhe" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
 function TabLoading() {
@@ -216,11 +239,42 @@ export function InstructorLayout() {
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [referProgramActive, setReferProgramActive] = useState(false);
   const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
 
+  useEffect(() => {
+    let cancelled = false;
+    void getReferAndEarnPublic()
+      .then(({ referAndEarn }) => {
+        if (cancelled) return;
+        setReferProgramActive(programConfigForRole(referAndEarn, "instrutor").active);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setReferProgramActive(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const visibleScheduleTabs = useMemo<ScheduleSubTab[]>(() => {
+    const out: ScheduleSubTab[] = [];
+    if (canTab("schedule.voos")) out.push("flights");
+    if (canTab("schedule.disponibilidades")) out.push("weekly");
+    if (canTab("schedule.gerador")) out.push("generator");
+    return out;
+  }, [canTab]);
+
   const visibleNavItems = useMemo(
-    () => NAV_ITEMS.filter((item) => canTab(item.id as InstructorTabKey)),
-    [canTab],
+    () =>
+      NAV_ITEMS.filter((item) => {
+        if (!canTab(item.id as InstructorTabKey)) return false;
+        if (item.id === "indique-ganhe") return referProgramActive;
+        if (item.id === "schedule") return visibleScheduleTabs.length > 0;
+        return true;
+      }),
+    [canTab, referProgramActive, visibleScheduleTabs],
   );
 
   return (
@@ -392,14 +446,14 @@ export function InstructorLayout() {
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}>
               <LazyTab>
-                <InstructorDreTab />
+                <DiarioDeBordoTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("schedule") && (
             <div hidden={section !== "schedule"}>
               <LazyTab>
-                <InstructorScheduleTab />
+                <ScheduleAdminTab visibleSubTabsOverride={visibleScheduleTabs} />
               </LazyTab>
             </div>
           )}
@@ -411,6 +465,13 @@ export function InstructorLayout() {
                   schoolId={user?.schoolId ?? ""}
                   userRole="instrutor"
                 />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("indique-ganhe") && (
+            <div hidden={section !== "indique-ganhe"}>
+              <LazyTab>
+                <ReferAndEarnTab portalRole="instrutor" />
               </LazyTab>
             </div>
           )}

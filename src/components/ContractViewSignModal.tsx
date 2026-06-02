@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useToast } from "./ui/ToastProvider";
-import { createContractSignature } from "../lib/contractSignaturesDb";
-import { updateContractStatus } from "../lib/contractsDb";
+import { ensureEnrollmentFormPreviewViaAdminFunction, getContractPdfUrl, signContractViaAdminFunction } from "../lib/contractsDb";
+import { listSignaturesForContract } from "../lib/contractSignaturesDb";
+import { openContractPdf } from "../lib/contractPdf";
+import { getCachedBrandSettings } from "../lib/notificationsDb";
 import type { Contract } from "../types/contracts";
 import { CONTRACT_STATUS_LABELS, CONTRACT_STATUS_COLORS, resolveCustomVars } from "../types/contracts";
 import { renderRichContent } from "../lib/maneuverContent";
@@ -9,7 +11,6 @@ import type { ManeuverRichContent } from "../types/maneuver";
 
 type Props = {
   contract: Contract;
-  signerUserId: string;
   signerRole: "aluno" | "instrutor" | "admin";
   onSigned: (updated: Contract) => void;
   onClose: () => void;
@@ -37,10 +38,14 @@ function SignStatusBadge({ label, signedAt }: { label: string; signedAt: string 
   );
 }
 
-export function ContractViewSignModal({ contract, signerUserId, signerRole, onSigned, onClose }: Props) {
+export function ContractViewSignModal({ contract, signerRole, onSigned, onClose }: Props) {
   const { showToast } = useToast();
   const [confirmed, setConfirmed] = useState(false);
   const [signing, setSigning] = useState(false);
+  const [previewFileId, setPreviewFileId] = useState(contract.enrollmentPdfFileId || contract.signedPdfFileId || "");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // Assinaturas carregadas no mount para que o PDF possa ser gerado de forma síncrona no clique
+  const [signatures, setSignatures] = useState<import("../types/contracts").ContractSignature[]>([]);
 
   const isRecipient = signerRole === "aluno" || signerRole === "instrutor";
   const isAdmin = signerRole === "admin";
@@ -50,6 +55,7 @@ export function ContractViewSignModal({ contract, signerUserId, signerRole, onSi
     (isAdmin && contract.signedByAdminAt !== null);
 
   const canSign = !alreadySigned && contract.status !== "cancelled";
+  const isEnrollmentForm = contract.contractKind === "enrollment_form";
 
   const resolvedContentJson = resolveCustomVars(
     contract.contentResolvedJson,
@@ -63,17 +69,47 @@ export function ContractViewSignModal({ contract, signerUserId, signerRole, onSi
     richContent = null;
   }
 
+  // Carregar assinaturas antecipadamente para que o PDF seja gerado de forma síncrona no clique
+  useEffect(() => {
+    if (contract.contractKind === "enrollment_form") return;
+    void listSignaturesForContract(contract.id).then(setSignatures);
+  }, [contract.id, contract.contractKind]);
+
+  useEffect(() => {
+    if (contract.contractKind !== "enrollment_form") {
+      setPreviewFileId(contract.enrollmentPdfFileId || contract.signedPdfFileId || "");
+      return;
+    }
+    if (contract.signedPdfFileId) {
+      setPreviewFileId(contract.signedPdfFileId);
+      return;
+    }
+    setPreviewLoading(true);
+    void ensureEnrollmentFormPreviewViaAdminFunction(contract.id)
+      .then((fileId) => setPreviewFileId(fileId))
+      .catch((e) => showToast({ variant: "error", message: (e as Error).message || "Erro ao carregar ficha." }))
+      .finally(() => setPreviewLoading(false));
+  }, [contract.id, contract.contractKind, contract.signedPdfFileId]);
+
+  // Síncrono — window.open precisa ocorrer diretamente no handler de clique
+  function handleExportPdf() {
+    const brand = getCachedBrandSettings();
+    openContractPdf({
+      contract,
+      signatures,
+      schoolName: brand?.schoolName || "Escola de Aviação",
+      logoUrl: brand?.logoUrl || undefined,
+    });
+  }
+
   async function handleSign() {
     if (!confirmed) return;
     setSigning(true);
     try {
-      await createContractSignature({
+      const updated = await signContractViaAdminFunction({
         contractId: contract.id,
-        signerUserId,
         signerRole,
-        schoolId: contract.schoolId,
       });
-      const updated = await updateContractStatus(contract.id, signerRole);
       showToast({ variant: "success", message: "Contrato assinado com sucesso." });
       onSigned(updated);
     } catch (e) {
@@ -92,10 +128,24 @@ export function ContractViewSignModal({ contract, signerUserId, signerRole, onSi
             <h2 className="text-base font-semibold text-slate-100">{contract.templateName}</h2>
             <p className="mt-0.5 text-xs text-slate-500">{contract.recipientName}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <span className={`rounded border px-2 py-0.5 text-xs ${CONTRACT_STATUS_COLORS[contract.status]}`}>
               {CONTRACT_STATUS_LABELS[contract.status]}
             </span>
+            {/* Exportar PDF — disponível para todos (aluno, instrutor, admin) */}
+            {contract.contractKind !== "enrollment_form" && (
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                title="Exportar como PDF"
+                className="flex items-center gap-1.5 rounded-lg border border-slate-600 px-2.5 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+                  <path fillRule="evenodd" d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.621a1.5 1.5 0 00-.44-1.06l-4.12-4.122A1.5 1.5 0 0011.378 2H4.5zm4.75 9.75a.75.75 0 011.5 0v2.546l.943-1.048a.75.75 0 111.114 1.004l-2.25 2.5a.75.75 0 01-1.114 0l-2.25-2.5a.75.75 0 111.114-1.004l.943 1.048V11.75z" clipRule="evenodd" />
+                </svg>
+                Exportar PDF
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -119,7 +169,37 @@ export function ContractViewSignModal({ contract, signerUserId, signerRole, onSi
 
         {/* Contract content */}
         <div className="px-6 py-5">
-          {richContent ? (
+          {isEnrollmentForm ? (
+            <div className="space-y-3">
+              {previewLoading ? (
+                <div className="flex h-[70vh] items-center justify-center rounded-xl border border-slate-800 bg-slate-950 text-sm text-slate-500">
+                  Carregando ficha de matricula...
+                </div>
+              ) : previewFileId ? (
+                <>
+                  <div className="overflow-hidden rounded-xl border border-slate-700 bg-white">
+                    <iframe
+                      title="Ficha de matricula"
+                      src={getContractPdfUrl(previewFileId, "view")}
+                      className="h-[70vh] w-full"
+                    />
+                  </div>
+                  <a
+                    href={getContractPdfUrl(previewFileId, "download")}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800"
+                  >
+                    Abrir PDF
+                  </a>
+                </>
+              ) : (
+                <p className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-8 text-center text-sm italic text-slate-500">
+                  PDF da ficha nao disponivel.
+                </p>
+              )}
+            </div>
+          ) : richContent ? (
             <div className="prose prose-invert prose-sm max-w-none leading-relaxed text-slate-200">
               {renderRichContent(richContent)}
             </div>

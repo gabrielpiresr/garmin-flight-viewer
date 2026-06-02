@@ -109,13 +109,31 @@ async function waitForDeployment(functions, deploymentId) {
   return functions.getDeployment({ functionId, deploymentId });
 }
 
+async function buildArchiveFromSource() {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(process.execPath, ["scripts/deploy-admin-function.mjs"], {
+    cwd: root,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    throw new Error("Falha ao gerar o pacote da function (deploy-admin-function.mjs).");
+  }
+}
+
 async function main() {
+  await buildArchiveFromSource();
   const env = parseEnvFile(envPath);
   const endpoint = process.env.APPWRITE_ENDPOINT || env.VITE_APPWRITE_ENDPOINT;
   const projectId = process.env.APPWRITE_PROJECT_ID || env.VITE_APPWRITE_PROJECT_ID;
   const apiKey = process.env.APPWRITE_API_KEY || env.APPWRITE_API_KEY;
   const databaseId = process.env.APPWRITE_DATABASE_ID || env.VITE_APPWRITE_DATABASE_ID;
   const profilesCollectionId = process.env.APPWRITE_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_PROFILES_COLLECTION_ID;
+  const profileDocumentsCollectionId =
+    process.env.APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID ||
+    process.env.APPWRITE_PROFILE_DOCUMENTS_COL_ID ||
+    env.VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID ||
+    "profile_documents";
   const flightsCollectionId = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || env.VITE_APPWRITE_COLLECTION_ID;
   const weeklyPlansCollectionId =
     process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || env.VITE_APPWRITE_WEEKLY_PLANS_COL_ID;
@@ -154,6 +172,8 @@ async function main() {
     env.VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID;
   const flightLandingsCollectionId =
     process.env.APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID || env.VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID;
+  const flightTakeoffsCollectionId =
+    process.env.APPWRITE_FLIGHT_TAKEOFFS_COLLECTION_ID || env.VITE_APPWRITE_FLIGHT_TAKEOFFS_COL_ID;
   const flightTelemetryAlertsCollectionId =
     process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID ||
     env.VITE_APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID ||
@@ -180,10 +200,35 @@ async function main() {
     process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_HELP_ARTICLES_COL_ID;
   const platformSettingsCollectionId =
     process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
+  const onboardingStepsCollectionId =
+    process.env.APPWRITE_ONBOARDING_STEPS_COLLECTION_ID || env.VITE_APPWRITE_ONBOARDING_STEPS_COL_ID;
   const trainingTracksCollectionId =
     process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID || "training_tracks";
   const studentTracksCollectionId =
     process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID || "student_training_tracks";
+  const studentObservationsCollectionId =
+    process.env.APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID ||
+    process.env.APPWRITE_STUDENT_OBSERVATIONS_COL_ID ||
+    env.VITE_APPWRITE_STUDENT_OBSERVATIONS_COL_ID ||
+    "student_observations";
+  const contractsCollectionId =
+    process.env.APPWRITE_CONTRACTS_COLLECTION_ID || process.env.APPWRITE_CONTRACTS_COL_ID || env.VITE_APPWRITE_CONTRACTS_COL_ID || "contracts";
+  const contractTemplatesCollectionId =
+    process.env.APPWRITE_CONTRACT_TEMPLATES_COLLECTION_ID ||
+    process.env.APPWRITE_CONTRACT_TEMPLATES_COL_ID ||
+    env.VITE_APPWRITE_CONTRACT_TEMPLATES_COL_ID ||
+    "contract_templates";
+  const contractSignaturesCollectionId =
+    process.env.APPWRITE_CONTRACT_SIGNATURES_COLLECTION_ID ||
+    process.env.APPWRITE_CONTRACT_SIGNATURES_COL_ID ||
+    env.VITE_APPWRITE_CONTRACT_SIGNATURES_COL_ID ||
+    "contract_signatures";
+  const crmLeadsCollectionId =
+    process.env.APPWRITE_CRM_LEADS_COLLECTION_ID || process.env.APPWRITE_CRM_LEADS_COL_ID || env.VITE_APPWRITE_CRM_LEADS_COL_ID || "crm_leads";
+  const maintenanceAttachmentsCollectionId =
+    process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COLLECTION_ID ||
+    process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID ||
+    env.VITE_APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID;
   const pushSubscriptionsCollectionId =
     process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID || env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID;
   const notificationDeliveriesCollectionId =
@@ -238,6 +283,7 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_API_KEY", apiKey, true);
   await upsertVariable(functions, "APPWRITE_DATABASE_ID", databaseId);
   await upsertVariable(functions, "APPWRITE_PROFILES_COLLECTION_ID", profilesCollectionId);
+  await upsertVariable(functions, "APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID", profileDocumentsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHTS_COLLECTION_ID", flightsCollectionId);
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
@@ -254,6 +300,7 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID", financialMonthlyClosingLinesCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID", flightTelemetrySummariesCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID", flightLandingsCollectionId);
+  if (flightTakeoffsCollectionId) await upsertVariable(functions, "APPWRITE_FLIGHT_TAKEOFFS_COLLECTION_ID", flightTakeoffsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID", flightTelemetryAlertsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID", flightSignaturesCollectionId);
   await upsertVariable(functions, "APPWRITE_AUDIT_EVENTS_COLLECTION_ID", auditEventsCollectionId);
@@ -264,8 +311,19 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID", helpSubsectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_HELP_ARTICLES_COLLECTION_ID", helpArticlesCollectionId);
   await upsertVariable(functions, "APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", platformSettingsCollectionId);
+  if (onboardingStepsCollectionId) {
+    await upsertVariable(functions, "APPWRITE_ONBOARDING_STEPS_COLLECTION_ID", onboardingStepsCollectionId);
+  }
   await upsertVariable(functions, "APPWRITE_TRAINING_TRACKS_COLLECTION_ID", trainingTracksCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID", studentObservationsCollectionId);
+  await upsertVariable(functions, "APPWRITE_CONTRACT_TEMPLATES_COLLECTION_ID", contractTemplatesCollectionId);
+  await upsertVariable(functions, "APPWRITE_CONTRACTS_COLLECTION_ID", contractsCollectionId);
+  await upsertVariable(functions, "APPWRITE_CONTRACT_SIGNATURES_COLLECTION_ID", contractSignaturesCollectionId);
+  await upsertVariable(functions, "APPWRITE_CRM_LEADS_COLLECTION_ID", crmLeadsCollectionId);
+  if (maintenanceAttachmentsCollectionId) {
+    await upsertVariable(functions, "APPWRITE_MAINTENANCE_ATTACHMENTS_COLLECTION_ID", maintenanceAttachmentsCollectionId);
+  }
   await upsertVariable(functions, "APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID", pushSubscriptionsCollectionId);
   await upsertVariable(functions, "APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID", notificationDeliveriesCollectionId);
   if (webPushPublicKey) await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
@@ -301,14 +359,28 @@ async function main() {
 
   if (finalStatus === "ready") {
     // activate:true in createDeployment is unreliable in Appwrite Cloud — force activation via PUT
-    const activateRes = await fetch(`${endpoint}/v1/functions/${functionId}`, {
+    const apiBase = endpoint.replace(/\/+$/, "");
+    const activateRes = await fetch(`${apiBase}/functions/${functionId}`, {
       method: "PUT",
       headers: {
         "x-appwrite-key": apiKey,
         "x-appwrite-project": projectId,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ name: "Admin Users", runtime: "node-22", entrypoint: "src/main.js", execute: ["users"], deployment: deployment.$id }),
+      body: JSON.stringify({
+        name: "Admin Users",
+        runtime: "node-22",
+        entrypoint: "src/main.js",
+        execute: ["users"],
+        events: [],
+        schedule: "*/15 * * * *",
+        timeout: 60,
+        enabled: true,
+        logging: true,
+        commands: "npm install",
+        scopes: [],
+        deployment: deployment.$id,
+      }),
     });
     const activateJson = await activateRes.json();
     const activeId = activateJson.deploymentId;

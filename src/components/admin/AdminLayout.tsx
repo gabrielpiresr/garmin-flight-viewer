@@ -63,6 +63,7 @@ const FlightReviewAdminTab = lazy(() =>
 const ContractsAdminTab = lazy(() =>
   import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
 );
+const CrmTab = lazy(() => import("./CrmTab").then((module) => ({ default: module.CrmTab })));
 
 type AdminSection =
   | "home"
@@ -79,7 +80,8 @@ type AdminSection =
   | "fuelings"
   | "dre"
   | "flight-review"
-  | "contracts";
+  | "contracts"
+  | "crm";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -244,6 +246,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M7.502 6h7.128A3.375 3.375 0 0118 9.375v9.375a3 3 0 003-3V6.108c0-1.505-1.125-2.811-2.664-2.94a48.972 48.972 0 00-.673-.05A3 3 0 0015 1.5h-1.5a3 3 0 00-2.663 1.618c-.225.015-.45.032-.673.05C8.662 3.295 7.554 4.542 7.502 6zM13.5 3A1.5 1.5 0 0012 4.5h4.5A1.5 1.5 0 0015 3h-1.5z" clipRule="evenodd" />
         <path fillRule="evenodd" d="M3 9.375C3 8.339 3.84 7.5 4.875 7.5h9.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-9.75A1.875 1.875 0 013 20.625V9.375zm4.5 2.625a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75zm-2.25 3a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H8.25a.75.75 0 01-.75-.75v-.008zm2.25 0a.75.75 0 01.75-.75h3.75a.75.75 0 010 1.5H10.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "crm",
+    label: "CRM",
+    sublabel: "Funil de qualificação",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M3.792 2.938A49.069 49.069 0 0112 2.25c2.797 0 5.54.236 8.209.688a1.857 1.857 0 011.541 1.836v1.044a3 3 0 01-.879 2.121l-6.182 6.182a1.5 1.5 0 00-.439 1.061v2.927a3 3 0 01-1.658 2.684l-1.757.878A.75.75 0 019.75 21v-5.818a1.5 1.5 0 00-.44-1.06L3.13 8.938a3 3 0 01-.879-2.121V4.774c0-.897.64-1.683 1.542-1.836z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -451,6 +463,8 @@ const SETTINGS_ROUTES = [
   { id: "badges", path: "/admin/configuracoes/badges" },
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
   { id: "financeiro", path: "/admin/configuracoes/financeiro" },
+  { id: "onboarding", path: "/admin/configuracoes/onboarding" },
+  { id: "indique-ganhe", path: "/admin/configuracoes/indique-ganhe" },
   { id: "roles", path: "/admin/configuracoes/roles" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
@@ -469,6 +483,7 @@ const ADMIN_ROUTES = [
   { id: "dre", path: "/admin/dre" },
   { id: "flight-review", path: "/admin/flight-review" },
   { id: "contracts", path: "/admin/contratos" },
+  { id: "crm", path: "/admin/crm" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
 
@@ -485,6 +500,8 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   badges: "Badges",
   tracks: "Trilhas",
   financeiro: "Financeiro",
+  onboarding: "Onboarding",
+  "indique-ganhe": "Indique e ganhe",
   roles: "Roles",
 };
 
@@ -861,6 +878,9 @@ export function AdminLayout() {
           )}
           {openedSections.has("contracts") && (
             <div hidden={section !== "contracts"}><LazyTab><ContractsAdminTab /></LazyTab></div>
+          )}
+          {openedSections.has("crm") && (
+            <div hidden={section !== "crm"}><LazyTab><CrmTab /></LazyTab></div>
           )}
         </main>
 

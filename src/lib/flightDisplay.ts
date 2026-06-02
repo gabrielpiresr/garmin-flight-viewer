@@ -48,6 +48,14 @@ function addMinutesToTime(startTime: string, minutes: number): string {
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
+function firstLegEngineStart(meta: ReturnType<typeof decodeFlightRecord>["meta"]): string {
+  return meta?.legs.find((leg) => leg.engineStart?.trim())?.engineStart?.trim() || "";
+}
+
+function lastLegEngineCut(meta: ReturnType<typeof decodeFlightRecord>["meta"]): string {
+  return [...(meta?.legs ?? [])].reverse().find((leg) => leg.engineCut?.trim())?.engineCut?.trim() || "";
+}
+
 function parseMiles(value: string): number {
   const raw = (value ?? "").trim();
   if (!raw) return 0;
@@ -74,10 +82,15 @@ export function isFutureFlight(item: SavedFlightListItem, info?: FlightDisplayIn
 }
 
 export function isCompletedFlight(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
+  if (isFutureFlight(item, info)) return false;
+  const status = item.flight_status ?? "";
+  if (status === "Previsto") return false;
   const totalFlightMinutes =
     info?.totalFlightMinutes ??
     (typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0);
-  return totalFlightMinutes > 0 && (info?.landings ?? 0) > 0;
+  if (totalFlightMinutes <= 0) return false;
+  const landings = info?.landings ?? item.landings ?? 0;
+  return landings > 0 || status === "Realizado";
 }
 
 export function buildFlightDisplayInfo(
@@ -152,8 +165,8 @@ export function buildFlightDisplayInfo(
 
   return {
     flightDateIso: meta.header.date || defaultInfo.flightDateIso,
-    startTime: meta.header.startTime || "",
-    endTime: addMinutesToTime(meta.header.startTime || "", durationMin),
+    startTime: firstLegEngineStart(meta) || meta.header.startTime || meta.header.departureTimeUtc || "",
+    endTime: lastLegEngineCut(meta) || addMinutesToTime(meta.header.startTime || meta.header.departureTimeUtc || "", durationMin),
     studentName: meta.header.studentName || fallback?.studentName || meta.header.studentLabel || "—",
     studentAnac: meta.header.studentAnac || fallback?.studentAnac || "—",
     instructorName: meta.header.instructorName || fallback?.instructorName || "",

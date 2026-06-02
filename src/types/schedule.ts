@@ -89,6 +89,9 @@ export type ExistingScheduledFlight = {
   durationHours: number;
   isNight?: boolean;
   sourceFilename: string;
+  sagaScheduleId?: string | null;
+  sagaScheduleSyncStatus?: string | null;
+  sagaScheduleSyncedAt?: string | null;
   /** Voo agendado fora do gerador de escala (não usa prefixo auto/manual-scale). */
   isOutsideGenerator?: boolean;
 };

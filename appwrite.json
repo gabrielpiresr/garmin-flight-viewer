@@ -1,0 +1,22 @@
+{
+  "projectId": "6a01ac8a0009fbf94f05",
+  "endpoint": "https://sfo.cloud.appwrite.io/v1",
+  "functions": [
+    {
+      "functionId": "admin-users",
+      "name": "Admin Users",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/admin-users",
+      "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
+    },
+    {
+      "functionId": "instructor-patch-flight",
+      "name": "Instructor Patch Flight",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/instructor-patch-flight",
+      "ignore": ["node_modules", ".npm"]
+    }
+  ]
+}

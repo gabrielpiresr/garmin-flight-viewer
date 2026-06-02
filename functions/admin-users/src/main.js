@@ -1,7 +1,11 @@
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const sdk = require("node-appwrite");
+const { buildEnrollmentFormPdf } = require("./enrollmentFormPdf");
 const { Resend } = require("resend");
 const webpush = require("web-push");
+const pdfParse = require("pdf-parse");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -15,6 +19,10 @@ const functions = new sdk.Functions(client);
 
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID;
+const PROFILE_DOCUMENTS_COLLECTION_ID =
+  process.env.APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID ||
+  process.env.APPWRITE_PROFILE_DOCUMENTS_COL_ID ||
+  "profile_documents";
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
 const FLIGHT_VIDEOS_COLLECTION_ID =
   process.env.APPWRITE_VIDEOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_VIDEOS_COLLECTION_ID || "6a0200bf00297bfc2231";
@@ -67,12 +75,29 @@ const FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID;
 const FLIGHT_LANDINGS_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_LANDINGS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_LANDINGS_COL_ID;
+const FLIGHT_TAKEOFFS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_TAKEOFFS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TAKEOFFS_COL_ID;
 const FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_TELEMETRY_ALERTS_COL_ID;
 const TRAINING_TRACKS_COLLECTION_ID =
   process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || process.env.APPWRITE_TRAINING_TRACKS_COL_ID;
 const STUDENT_TRACKS_COLLECTION_ID =
   process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID;
+const STUDENT_OBSERVATIONS_COLLECTION_ID =
+  process.env.APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID ||
+  process.env.APPWRITE_STUDENT_OBSERVATIONS_COL_ID ||
+  "student_observations";
+const CONTRACTS_COLLECTION_ID =
+  process.env.APPWRITE_CONTRACTS_COLLECTION_ID || process.env.APPWRITE_CONTRACTS_COL_ID || "contracts";
+const CONTRACT_TEMPLATES_COLLECTION_ID =
+  process.env.APPWRITE_CONTRACT_TEMPLATES_COLLECTION_ID || process.env.APPWRITE_CONTRACT_TEMPLATES_COL_ID || "contract_templates";
+const CONTRACT_SIGNATURES_COLLECTION_ID =
+  process.env.APPWRITE_CONTRACT_SIGNATURES_COLLECTION_ID ||
+  process.env.APPWRITE_CONTRACT_SIGNATURES_COL_ID ||
+  "contract_signatures";
+const CRM_LEADS_COLLECTION_ID = process.env.APPWRITE_CRM_LEADS_COLLECTION_ID || process.env.APPWRITE_CRM_LEADS_COL_ID || "crm_leads";
+const MAINTENANCE_ATTACHMENTS_COLLECTION_ID =
+  process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COLLECTION_ID || process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID;
 const MANEUVERS_SECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID;
 const MANEUVERS_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SUBSECTIONS_COLLECTION_ID;
 const MANEUVERS_ARTICLES_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_ARTICLES_COLLECTION_ID;
@@ -80,6 +105,7 @@ const HELP_SECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SECTIONS_COLLECTIO
 const HELP_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID;
 const HELP_ARTICLES_COLLECTION_ID = process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID;
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
+const ONBOARDING_STEPS_COLLECTION_ID = process.env.APPWRITE_ONBOARDING_STEPS_COLLECTION_ID;
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
 const BROADCAST_SEGMENTS_COLLECTION_ID = process.env.APPWRITE_BROADCAST_SEGMENTS_COLLECTION_ID;
@@ -96,7 +122,6 @@ const GOOGLE_CALENDAR_PRIVATE_KEY = process.env.GOOGLE_CALENDAR_PRIVATE_KEY || "
 // Identificador único da escola — usado para isolar dados em ambiente multi-tenant.
 const SYNC_ANAC_FUNCTION_ID = process.env.APPWRITE_SYNC_ANAC_FUNCTION_ID || process.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID || "sync-anac-profile";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
-
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_FLIGHT_STATUSES = new Set(["Previsto", "Cancelado", "Realizado"]);
 const VALID_INSTRUCTOR_PREFERENCES = new Set(["low", "medium", "high"]);
@@ -125,6 +150,9 @@ const FLIGHT_SELECT = [
   "training_mission_id",
   "training_snapshot_json",
   "flight_status",
+  "saga_schedule_id",
+  "saga_schedule_synced_at",
+  "saga_schedule_sync_status",
   "public_share_enabled",
   "public_share_created_at",
   "public_share_last_generated_at",
@@ -146,6 +174,7 @@ const FLIGHT_DETAIL_SELECT = [
 const PROFILE_SELECT = [
   "$id",
   "user_id",
+  "is_active",
   "role",
   "email",
   "full_name",
@@ -163,6 +192,38 @@ const PROFILE_SELECT = [
   "anac_sync_error",
   "anac_last_sync_at",
   "custom_role_slug",
+  "saga_user_id",
+  "rg",
+  "rg_orgao_expedidor",
+  "rg_data_emissao",
+  "endereco",
+  "cep",
+  "cidade",
+  "uf",
+  "nacionalidade",
+  "estado_civil",
+  "sexo",
+  "naturalidade",
+  "filiacao_pai",
+  "filiacao_mae",
+  "escolaridade",
+  "escolaridade_periodo",
+  "escolaridade_curso",
+  "alergias_medicamentos",
+  "emergencia_nome",
+  "emergencia_parentesco",
+  "emergencia_endereco",
+  "emergencia_telefone",
+];
+const PROFILE_DOCUMENT_SELECT = [
+  "$id",
+  "user_id",
+  "document_type",
+  "file_id",
+  "file_name",
+  "mime_type",
+  "file_size",
+  "uploaded_at",
 ];
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
 const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active"];
@@ -308,6 +369,23 @@ function jsonResponse(res, status, payload) {
   return res.json(payload, status);
 }
 
+function parseFunctionPayload(req) {
+  if (req?.bodyJson && typeof req.bodyJson === "object") return req.bodyJson;
+  const rawCandidates = [req?.body, req?.bodyRaw, req?.payload];
+  for (const raw of rawCandidates) {
+    if (!raw) continue;
+    if (typeof raw === "object") return raw;
+    if (typeof raw !== "string") continue;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // Keep compatibility with runtimes that expose a non-JSON body.
+    }
+  }
+  return {};
+}
+
 const SAGA_BASE_URL = "https://epeac.saga.aero";
 const SAGA_AUTH_SESSION_KEY = "sagaAuthSession";
 
@@ -357,10 +435,25 @@ function sagaRestoreCookieJar(cookieJar, snapshot) {
   for (const [key, value] of snapshot.entries()) cookieJar.set(key, value);
 }
 
+function sagaPersistableCookieKey(key) {
+  const normalized = cleanString(key);
+  if (!normalized) return false;
+  return normalized === "XSRF-TOKEN" || /session/i.test(normalized);
+}
+
+function sagaHasAuthCookie(cookieJar) {
+  if (!cookieJar || cookieJar.size === 0) return false;
+  if (cookieJar.get("saga_session")) return true;
+  for (const key of cookieJar.keys()) {
+    if (/session/i.test(String(key))) return true;
+  }
+  return false;
+}
+
 function sagaCookieJarToObject(cookieJar) {
   const out = {};
   for (const [key, value] of cookieJar.entries()) {
-    if (key === "XSRF-TOKEN" || key === "saga_session") out[key] = value;
+    if (sagaPersistableCookieKey(key)) out[key] = value;
   }
   return out;
 }
@@ -368,9 +461,12 @@ function sagaCookieJarToObject(cookieJar) {
 function sagaCookieJarFromObject(cookies) {
   const jar = new Map();
   if (!cookies || typeof cookies !== "object") return jar;
-  for (const key of ["XSRF-TOKEN", "saga_session"]) {
-    const value = cleanString(cookies[key]);
-    if (value) jar.set(key, value);
+  for (const [key, value] of Object.entries(cookies)) {
+    const normalizedKey = cleanString(key);
+    const normalizedValue = cleanString(value);
+    if (normalizedKey && normalizedValue && sagaPersistableCookieKey(normalizedKey)) {
+      jar.set(normalizedKey, normalizedValue);
+    }
   }
   return jar;
 }
@@ -378,7 +474,7 @@ function sagaCookieJarFromObject(cookies) {
 async function saveSagaAuthSession(cookieJar, email) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
   const cookies = sagaCookieJarToObject(cookieJar);
-  if (!cookies["saga_session"]) return null;
+  if (!sagaHasAuthCookie(cookieJar)) return null;
   const settings = {
     cookies,
     loginEmail: cleanString(email),
@@ -396,7 +492,7 @@ async function loadSagaAuthSession() {
   const doc = await getSettingDoc(SAGA_AUTH_SESSION_KEY);
   const settings = parseJsonObject(doc?.settings_json, {});
   const cookieJar = sagaCookieJarFromObject(settings.cookies);
-  if (!cookieJar.get("saga_session")) {
+  if (!sagaHasAuthCookie(cookieJar)) {
     throw Object.assign(new Error("Sessao SAGA nao configurada. Entre em Admin > Import e faca login no SAGA primeiro."), { status: 401 });
   }
   return {
@@ -407,10 +503,181 @@ async function loadSagaAuthSession() {
 }
 
 function extractSagaCsrfToken(html) {
-  const inputMatch = String(html || "").match(/<input\b[^>]*name=["']_token["'][^>]*value=["']([^"']+)["']/i);
-  if (inputMatch?.[1]) return inputMatch[1];
-  const metaMatch = String(html || "").match(/<meta\b[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i);
-  return metaMatch?.[1] || "";
+  const text = String(html || "");
+  const patterns = [
+    /<input\b[^>]*name=["']_token["'][^>]*value=["']([^"']+)["']/i,
+    /<input\b[^>]*value=["']([^"']+)["'][^>]*name=["']_token["']/i,
+    /<meta\b[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i,
+    /<meta\b[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i,
+    /csrfToken["']\s*:\s*["']([^"']+)["']/i,
+    /"_token"\s*:\s*"([^"']+)"/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function resolveSagaCsrfToken(html, cookieJar) {
+  const fromHtml = extractSagaCsrfToken(html);
+  if (fromHtml) return fromHtml;
+  const xsrf = cleanString(cookieJar?.get("XSRF-TOKEN"));
+  if (!xsrf) return "";
+  try {
+    return decodeURIComponent(xsrf);
+  } catch {
+    return xsrf;
+  }
+}
+
+function sagaResolveFetchPath(location, basePath = "") {
+  const raw = cleanString(location);
+  if (!raw) return "";
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    const url = new URL(raw);
+    return `${url.pathname}${url.search}`;
+  }
+  if (raw.startsWith("/")) return raw;
+  const base = cleanString(basePath).replace(/\/+$/, "");
+  return `${base}/${raw}`.replace(/\/{2,}/g, "/");
+}
+
+async function sagaFetchHtmlFollow(path, options, cookieJar, maxHops = 6) {
+  let nextPath = cleanString(path) || "/";
+  let last = null;
+  for (let hop = 0; hop < maxHops; hop += 1) {
+    const result = await sagaFetch(
+      nextPath,
+      {
+        method: "GET",
+        ...options,
+      },
+      cookieJar,
+    );
+    last = result;
+    const status = result.response.status;
+    if (status >= 300 && status < 400) {
+      const location = result.response.headers.get("location") || "";
+      if (!location || /\/login(?:$|[?#])/i.test(location)) return result;
+      nextPath = sagaResolveFetchPath(location, nextPath);
+      if (!nextPath) return result;
+      continue;
+    }
+    return result;
+  }
+  return last;
+}
+
+async function assertSagaAuthSessionAlive(cookieJar) {
+  const probe = await sagaFetch(
+    `/users/ajax?_=${Date.now()}`,
+    {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/javascript, */*; q=0.01",
+        referer: `${SAGA_BASE_URL}/users`,
+        "x-requested-with": "XMLHttpRequest",
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(probe)) {
+    throw Object.assign(new Error("Sessao SAGA expirada. Faca login novamente em Admin > Import."), { status: 401 });
+  }
+  if (probe.response.status >= 400) {
+    throw Object.assign(new Error(`Sessao SAGA invalida (HTTP ${probe.response.status}). Faca login novamente em Admin > Import.`), {
+      status: 401,
+    });
+  }
+  try {
+    JSON.parse(probe.html);
+  } catch {
+    throw Object.assign(new Error("Sessao SAGA expirada. Faca login novamente em Admin > Import."), { status: 401 });
+  }
+}
+
+async function fetchSagaStudentCreateContext(cookieJar) {
+  const candidates = [
+    { path: "/users/create?access_type=student", referer: `${SAGA_BASE_URL}/users` },
+    { path: "/users/create", referer: `${SAGA_BASE_URL}/users` },
+    { path: "/students/create", referer: `${SAGA_BASE_URL}/students` },
+  ];
+  const attempts = [];
+  for (const candidate of candidates) {
+    const page = await sagaFetchHtmlFollow(
+      candidate.path,
+      {
+        headers: {
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          referer: candidate.referer,
+        },
+      },
+      cookieJar,
+    );
+    if (!page) continue;
+    if (isSagaLoginResponse(page)) {
+      attempts.push({ path: candidate.path, status: page.response.status, login: true });
+      continue;
+    }
+    const token = resolveSagaCsrfToken(page.html, cookieJar);
+    attempts.push({
+      path: candidate.path,
+      status: page.response.status,
+      token: Boolean(token),
+      htmlLength: String(page.html || "").length,
+    });
+    if (token) {
+      return { page, path: candidate.path, token, referer: candidate.referer, attempts, html: page.html };
+    }
+  }
+  return { page: null, path: null, token: null, referer: null, attempts, html: "" };
+}
+
+function extractSagaFormPostPath(html, fallbackGetPath) {
+  const text = String(html || "");
+  const formMatch = text.match(/<form\b[^>]*\baction=["']([^"']+)["']/i);
+  if (formMatch?.[1]) {
+    const action = cleanString(formMatch[1]);
+    if (action && action !== "#" && !/^javascript:/i.test(action)) {
+      if (action.startsWith("http://") || action.startsWith("https://")) {
+        const url = new URL(action);
+        return `${url.pathname}${url.search}`;
+      }
+      return action.startsWith("/") ? action : `/${action}`;
+    }
+  }
+  const getPath = cleanString(fallbackGetPath) || "/users/create";
+  if (getPath.endsWith("/create")) {
+    const base = getPath.replace(/\/create$/, "");
+    return base || "/users";
+  }
+  return getPath.includes("/students") ? "/students" : "/users";
+}
+
+function sagaPostStudentPath(html, createPath) {
+  const fromForm = extractSagaFormPostPath(html, createPath);
+  if (fromForm === "/users" || fromForm.startsWith("/users?")) return "/users";
+  return "/users";
+}
+
+async function sagaPostStudentCreate(cookieJar, { html, createPath, createReferer, formBody }) {
+  const postPath = sagaPostStudentPath(html, createPath);
+  const post = await sagaFetch(
+    postPath,
+    {
+      method: "POST",
+      body: formBody,
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: SAGA_BASE_URL,
+        referer: createReferer,
+      },
+    },
+    cookieJar,
+  );
+  return { post, postPath, attempts: [{ postPath, status: post.response.status }] };
 }
 
 async function sagaFetch(path, options, cookieJar) {
@@ -568,15 +835,15 @@ const SAGA_FINANCE_HEADER_MAP = {
 };
 
 const SAGA_CREDIT_COLUMN_DEFS = [
-  { key: "model", label: "Modelo", defaultIndex: 1 },
-  { key: "hours", label: "Creditos (h)", defaultIndex: 2 },
-  { key: "hoursHhmm", label: "Creditos (hh:mm)", defaultIndex: 3 },
-  { key: "hourlyValue", label: "Valor Hora", defaultIndex: 4 },
-  { key: "totalValue", label: "Valor Total", defaultIndex: 5 },
-  { key: "purchaseDate", label: "Data", defaultIndex: 6 },
-  { key: "expiresAt", label: "Data de Validade", defaultIndex: 7 },
-  { key: "notes", label: "Obs", defaultIndex: 8 },
-  { key: "responsible", label: "Usuario Responsavel", defaultIndex: 9 },
+  { key: "model", label: "Modelo", defaultIndex: 0 },
+  { key: "hours", label: "Creditos (h)", defaultIndex: 1 },
+  { key: "hoursHhmm", label: "Creditos (hh:mm)", defaultIndex: 2 },
+  { key: "hourlyValue", label: "Valor Hora", defaultIndex: 3 },
+  { key: "totalValue", label: "Valor Total", defaultIndex: 4 },
+  { key: "purchaseDate", label: "Data", defaultIndex: 5 },
+  { key: "expiresAt", label: "Data de Validade", defaultIndex: 6 },
+  { key: "notes", label: "Obs", defaultIndex: 7 },
+  { key: "responsible", label: "Usuario Responsavel", defaultIndex: 8 },
 ];
 
 const SAGA_DEFAULT_CREDIT_COLUMN_MAP = Object.fromEntries(SAGA_CREDIT_COLUMN_DEFS.map((def) => [def.key, def.defaultIndex]));
@@ -660,7 +927,17 @@ function sagaCreditFromCells(cells, columnMap = SAGA_DEFAULT_CREDIT_COLUMN_MAP) 
 }
 
 function applySagaCreditColumnMap(rows, columnMap) {
-  return (rows || []).map((row) => sagaCreditFromCells(Array.isArray(row.rawCells) ? row.rawCells : [], columnMap));
+  return (rows || []).map((row) => {
+    const mapped = sagaCreditFromCells(Array.isArray(row.rawCells) ? row.rawCells : [], columnMap);
+    // Preserve metadata attached during scraping (student/anac/sagaUserId).
+    return {
+      ...mapped,
+      sagaUserId: cleanString(row?.sagaUserId),
+      studentName: cleanString(row?.studentName),
+      studentEmail: cleanString(row?.studentEmail),
+      studentAnac: cleanString(row?.studentAnac),
+    };
+  });
 }
 
 function translateSagaCreditRows(html) {
@@ -719,6 +996,100 @@ function sagaDateRangeMonths(months) {
   start.setMonth(start.getMonth() - Math.max(1, Number(months) || 24));
   const iso = (date) => date.toISOString().slice(0, 10);
   return { startDate: iso(start), endDate: iso(end) };
+}
+
+function sagaScheduleMonthTargets(monthCount = 3) {
+  const base = new Date();
+  const targets = [];
+  for (let offset = 0; offset < monthCount; offset += 1) {
+    const date = new Date(base.getFullYear(), base.getMonth() + offset, 1);
+    targets.push({ year: date.getFullYear(), month: date.getMonth() + 1 });
+  }
+  return targets;
+}
+
+function sagaLocalDateTimeParts(value) {
+  const match = cleanString(value).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return { date: "", time: "" };
+  return { date: `${match[1]}-${match[2]}-${match[3]}`, time: `${match[4]}:${match[5]}` };
+}
+
+function sagaScheduleDateMs(schedule) {
+  const iso = Date.parse(cleanString(schedule?.start_at));
+  if (Number.isFinite(iso)) return iso;
+  const raw = cleanString(schedule?.start_at_raw).replace(" ", "T");
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sagaScheduleIsFuture(schedule) {
+  return sagaScheduleDateMs(schedule) > Date.now();
+}
+
+function normalizeSagaScheduleStatus(value) {
+  return cleanString(value).toUpperCase();
+}
+
+function translateSagaScheduleItem(item) {
+  const schedule = item && typeof item === "object" ? item : {};
+  const student = schedule.student && typeof schedule.student === "object" ? schedule.student : {};
+  const instructor = schedule.instructor && typeof schedule.instructor === "object" ? schedule.instructor : {};
+  const aircraft = schedule.aircraft && typeof schedule.aircraft === "object" ? schedule.aircraft : {};
+  return {
+    id: cleanString(schedule.id),
+    startAt: cleanString(schedule.start_at),
+    endAt: cleanString(schedule.end_at),
+    startAtRaw: cleanString(schedule.start_at_raw),
+    endAtRaw: cleanString(schedule.end_at_raw),
+    studentSagaId: cleanString(schedule.student_id || student.id),
+    instructorSagaId: cleanString(schedule.instructor_id || instructor.id),
+    aircraftSagaId: cleanString(schedule.aircraft_id || aircraft.id),
+    aircraft: cleanString(aircraft.registration),
+    aircraftModel: cleanString(aircraft.model),
+    studentName: cleanString(student.name || student.nickname),
+    instructorName: cleanString(instructor.name || instructor.nickname),
+    notes: cleanString(schedule.notes),
+    status: normalizeSagaScheduleStatus(schedule.status),
+    active: schedule.active !== false && schedule.active !== 0,
+    raw: schedule,
+  };
+}
+
+async function fetchSagaScheduledFlights(cookieJar, logs = []) {
+  const rows = [];
+  for (const target of sagaScheduleMonthTargets(3)) {
+    const path = `/schedules/management/get-by-month?year=${target.year}&month=${target.month}`;
+    const result = await sagaFetch(
+      path,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json,*/*",
+          referer: `${SAGA_BASE_URL}/schedules/management`,
+        },
+      },
+      cookieJar,
+    );
+    if (isSagaLoginResponse(result)) {
+      logs.push(`GET ${path}: SAGA retornou login; escala nao importada neste mes.`);
+      continue;
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(result.html);
+    } catch {
+      logs.push(`GET ${path}: resposta da escala nao estava em JSON valido.`);
+      continue;
+    }
+    const schedules = Array.isArray(parsed?.schedules) ? parsed.schedules : [];
+    const translated = schedules
+      .map(translateSagaScheduleItem)
+      .filter((schedule) => schedule.id && schedule.active && schedule.status !== "CANCELED" && sagaScheduleIsFuture(schedule.raw));
+    rows.push(...translated);
+    logs.push(`GET ${path}: status ${result.response.status}, ${translated.length}/${schedules.length} voos futuros agendados.`);
+  }
+  rows.sort((a, b) => sagaScheduleDateMs(a.raw) - sagaScheduleDateMs(b.raw));
+  return rows;
 }
 
 async function sagaFetchUsers(payload) {
@@ -904,11 +1275,17 @@ async function sagaFetchUsers(payload) {
   logs.push("GET /credits/create: buscando amostra de creditos dos alunos para preview.");
   const creditPreview = await fetchSagaCreditPreview(translatedUsers, cookieJar, logs, statuses, htmlLengths);
   logs.push(`GET /credits/create: ${creditPreview.rows.length} linhas de creditos extraidas de ${creditPreview.sampledUserIds.length} alunos.`);
+  const scheduleLogs = [];
+  const scheduledFlights = await fetchSagaScheduledFlights(cookieJar, scheduleLogs).catch((err) => {
+    logs.push(`GET /schedules/management: nao foi possivel carregar escala para IDs de aeronave: ${err?.message || err}.`);
+    return [];
+  });
+  logs.push(...scheduleLogs);
 
   const [mapping, catalogs] = await Promise.all([loadSagaImportMapping(), listSagaImportCatalogs()]);
   const mappedFlightRows = applySagaFlightColumnMap(flights.rows, mapping.flightColumnMap);
   const mappedCreditRows = applySagaCreditColumnMap(creditPreview.rows, mapping.creditColumnMap);
-  const proposedMapping = proposeSagaImportMapping(mappedFlightRows, mapping, catalogs, mappedCreditRows);
+  const proposedMapping = proposeSagaImportMapping(mappedFlightRows, mapping, catalogs, mappedCreditRows, scheduledFlights);
 
   return {
     ok: true,
@@ -941,16 +1318,33 @@ async function sagaFetchUsers(payload) {
 }
 
 const SAGA_IMPORT_MAPPING_KEY = "sagaImportMapping";
+const SAGA_IMPORT_LAST_SUMMARY_KEY = "sagaImportLastSummary";
 
 function defaultSagaImportMapping() {
   return {
     aircraftBySaga: {},
+    aircraftIdByRegistration: {},
     courseBySaga: {},
     creditAircraftBySaga: {},
     flightColumnMap: { ...SAGA_DEFAULT_FLIGHT_COLUMN_MAP },
     creditColumnMap: { ...SAGA_DEFAULT_CREDIT_COLUMN_MAP },
+    sendFlightsToSaga: false,
     updatedAt: null,
   };
+}
+
+function normalizeSagaCreditColumnMap(value) {
+  const out = { ...SAGA_DEFAULT_CREDIT_COLUMN_MAP };
+  if (!value || typeof value !== "object") return out;
+  for (const def of SAGA_CREDIT_COLUMN_DEFS) {
+    const raw = Number(value[def.key]);
+    if (Number.isInteger(raw) && raw >= 0 && raw < 50) out[def.key] = raw;
+  }
+  const legacyOffset = SAGA_CREDIT_COLUMN_DEFS.every((def) => out[def.key] === def.defaultIndex + 1);
+  if (legacyOffset) {
+    for (const def of SAGA_CREDIT_COLUMN_DEFS) out[def.key] = def.defaultIndex;
+  }
+  return out;
 }
 
 function sanitizeSagaImportMapping(input = {}) {
@@ -959,6 +1353,16 @@ function sanitizeSagaImportMapping(input = {}) {
     if (!value || typeof value !== "object") return out;
     for (const [key, mapped] of Object.entries(value)) {
       const cleanKey = cleanString(key);
+      const cleanMapped = cleanString(mapped);
+      if (cleanKey && cleanMapped) out[cleanKey] = cleanMapped;
+    }
+    return out;
+  };
+  const normalizeAircraftIdMap = (value) => {
+    const out = {};
+    if (!value || typeof value !== "object") return out;
+    for (const [key, mapped] of Object.entries(value)) {
+      const cleanKey = normalizeAircraftIdent(key);
       const cleanMapped = cleanString(mapped);
       if (cleanKey && cleanMapped) out[cleanKey] = cleanMapped;
     }
@@ -975,19 +1379,12 @@ function sanitizeSagaImportMapping(input = {}) {
   };
   return {
     aircraftBySaga: normalizeMap(input.aircraftBySaga),
+    aircraftIdByRegistration: normalizeAircraftIdMap(input.aircraftIdByRegistration),
     courseBySaga: normalizeMap(input.courseBySaga),
     creditAircraftBySaga: normalizeMap(input.creditAircraftBySaga),
     flightColumnMap: normalizeColumnMap(input.flightColumnMap),
-    creditColumnMap: (() => {
-      const out = { ...SAGA_DEFAULT_CREDIT_COLUMN_MAP };
-      const value = input.creditColumnMap;
-      if (!value || typeof value !== "object") return out;
-      for (const def of SAGA_CREDIT_COLUMN_DEFS) {
-        const raw = Number(value[def.key]);
-        if (Number.isInteger(raw) && raw >= 0 && raw < 50) out[def.key] = raw;
-      }
-      return out;
-    })(),
+    creditColumnMap: normalizeSagaCreditColumnMap(input.creditColumnMap),
+    sendFlightsToSaga: input.sendFlightsToSaga === true,
     updatedAt: input.updatedAt || null,
   };
 }
@@ -998,6 +1395,31 @@ async function loadSagaImportMapping() {
   const doc = await getSettingDoc(SAGA_IMPORT_MAPPING_KEY);
   if (!doc) return defaults;
   return sanitizeSagaImportMapping(parseJsonObject(doc.settings_json, defaults));
+}
+
+function compactSagaImportSummary(summary) {
+  if (!summary || typeof summary !== "object") return summary;
+  return {
+    ...summary,
+    logs: Array.isArray(summary.logs) ? summary.logs.slice(-120) : [],
+    skippedFlights: Array.isArray(summary.skippedFlights) ? summary.skippedFlights.slice(0, 100) : [],
+    skippedCredits: Array.isArray(summary.skippedCredits) ? summary.skippedCredits.slice(0, 100) : [],
+  };
+}
+
+async function saveSagaImportLastSummary(summary) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID || !summary) return;
+  const compact = compactSagaImportSummary(summary);
+  const data = {
+    key: SAGA_IMPORT_LAST_SUMMARY_KEY,
+    settings_json: JSON.stringify({ summary: compact, savedAt: nowIso() }),
+  };
+  const current = await getSettingDoc(SAGA_IMPORT_LAST_SUMMARY_KEY);
+  if (current) {
+    await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.$id, data);
+  } else {
+    await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  }
 }
 
 async function saveSagaImportMapping(input) {
@@ -1060,7 +1482,7 @@ function uniqueCleanValues(values) {
   return Array.from(new Set((values || []).map(cleanString).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
-function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = []) {
+function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [], scheduledFlights = []) {
   const mapping = sanitizeSagaImportMapping(savedMapping);
   const aircrafts = catalogs?.aircrafts || [];
   const tracks = catalogs?.trainingTracks || [];
@@ -1070,6 +1492,7 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [])
   const modelsByName = new Map(models.map((item) => [normalizeSearch(item.name), item]).filter(([key]) => key));
   const tracksByName = new Map(tracks.map((item) => [normalizeSearch(item.name), item]));
   const aircraftBySaga = { ...mapping.aircraftBySaga };
+  const aircraftIdByRegistration = { ...mapping.aircraftIdByRegistration };
   const courseBySaga = { ...mapping.courseBySaga };
   const creditAircraftBySaga = { ...mapping.creditAircraftBySaga };
 
@@ -1078,6 +1501,21 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [])
     const registration = extractSagaAircraftRegistration(sagaAircraft);
     const match = registration ? aircraftByRegistration.get(normalizeAircraftIdent(registration)) : null;
     if (match?.registration) aircraftBySaga[sagaAircraft] = match.registration;
+  }
+
+  for (const schedule of scheduledFlights || []) {
+    const sagaAircraft = cleanString(schedule.aircraft);
+    const sagaAircraftId = cleanString(schedule.aircraftSagaId);
+    if (!sagaAircraft || !sagaAircraftId) continue;
+    const mappedRegistration = cleanString(aircraftBySaga[sagaAircraft]);
+    const registration =
+      mappedRegistration ||
+      cleanString(aircraftByRegistration.get(normalizeAircraftIdent(sagaAircraft))?.registration) ||
+      extractSagaAircraftRegistration(sagaAircraft);
+    const normalizedRegistration = normalizeAircraftIdent(registration);
+    if (normalizedRegistration && !aircraftIdByRegistration[normalizedRegistration]) {
+      aircraftIdByRegistration[normalizedRegistration] = sagaAircraftId;
+    }
   }
 
   for (const sagaCourse of uniqueCleanValues((flights || []).map((flight) => flight.curso))) {
@@ -1112,10 +1550,12 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [])
 
   return {
     aircraftBySaga,
+    aircraftIdByRegistration,
     courseBySaga,
     creditAircraftBySaga,
     flightColumnMap: mapping.flightColumnMap,
     creditColumnMap: mapping.creditColumnMap,
+    sendFlightsToSaga: mapping.sendFlightsToSaga === true,
     missingAircrafts: uniqueCleanValues((flights || []).map((flight) => flight.aeronave)).filter((value) => !aircraftBySaga[value]),
     missingCourses: uniqueCleanValues((flights || []).map((flight) => flight.curso)).filter((value) => !courseBySaga[value]),
     missingCreditAircrafts: uniqueCleanValues((credits || []).map((credit) => credit.model)).filter((value) => !creditAircraftBySaga[value]),
@@ -1199,10 +1639,15 @@ async function sagaLoginSession(email, password, logs = []) {
     cookieJar,
   );
   const location = login.response.headers.get("location") || "";
+  const hasSagaSession = Boolean(cleanString(cookieJar.get("saga_session")));
   const ok = (login.response.status === 302 && location.includes("/dashboard")) ||
-    (login.response.status === 200 && /dashboard|logout|\/users/i.test(login.html) && !/name=["']_token["']/i.test(login.html));
+    (login.response.status === 200 && /dashboard|logout|\/users/i.test(login.html) && !/name=["']_token["']/i.test(login.html)) ||
+    (login.response.status === 302 && location.includes("/login") && hasSagaSession);
   logs.push(`SAGA login para importacao: status ${login.response.status}, redirect ${location || "sem redirect"}.`);
-  if (!ok) throw Object.assign(new Error("Login SAGA nao confirmado durante importacao."), { status: 401 });
+  if (!ok) {
+    logs.push(`SAGA login debug: saga_session_cookie=${hasSagaSession ? "yes" : "no"}, html_has_token=${/name=["']_token["']/i.test(login.html) ? "yes" : "no"}, html_size=${String(login.html || "").length}.`);
+    throw Object.assign(new Error("Login SAGA nao confirmado durante importacao."), { status: 401 });
+  }
   await saveSagaAuthSession(cookieJar, cleanEmail).catch((err) => {
     logs.push(`Sessao SAGA autenticada, mas nao foi possivel salvar a sessao: ${err?.message || err}.`);
   });
@@ -1288,14 +1733,14 @@ function sagaTestEmailAlias(email) {
   return `gabrielpirexs+${localPart || "saga"}@gmail.com`;
 }
 
-async function importSagaUser(sagaUser, role, { testMode = false } = {}) {
+async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias = false } = {}) {
   const sagaId = cleanString(sagaUser.id);
-  const email = testMode ? sagaTestEmailAlias(sagaUser.email) : cleanString(sagaUser.email).toLowerCase();
+  const email = useEmailAlias ? sagaTestEmailAlias(sagaUser.email) : cleanString(sagaUser.email).toLowerCase();
   if (!sagaId || !sagaEmailLooksValid(email)) {
     return { skipped: true, reason: "missing_email_or_id", userId: null };
   }
 
-  const deterministicId = sagaDocId(testMode ? "saga_test" : "saga", sagaId);
+  const deterministicId = sagaDocId(testMode ? "saga_test" : useEmailAlias ? "saga_alias" : "saga", sagaId);
   let authUser = null;
   try {
     authUser = await users.get({ userId: deterministicId });
@@ -1356,43 +1801,340 @@ async function syncSagaUserAnac(userId, sagaUser) {
 }
 
 function sagaCreditDocId(testMode, userId, credit) {
+  const segment = credit?.segmentPart === "night" || credit?.isNight === true ? "night" : "day";
+  const stableTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
   const raw = [
     userId,
     cleanString(credit.model),
     cleanString(credit.purchaseDate),
     cleanString(credit.expiresAt),
-    cleanString(credit.hours || credit.hoursHhmm),
-    cleanString(credit.totalValue),
+    stableTotalValue,
+    segment,
+  ].join("|");
+  const hash = crypto.createHash("sha1").update(raw).digest("hex").slice(0, 20);
+  const prefix = testMode ? "saga_test_credit" : "saga_credit";
+  return `${prefix}_${hash}`;
+}
+
+function sagaFinancialCreditDocId(testMode, userId, entry) {
+  const raw = [
+    userId,
+    cleanString(entry.id),
+    cleanString(entry.data),
+    cleanString(entry.valorTotal),
+    cleanString(entry.natureza),
   ].join("_").replace(/[^a-zA-Z0-9._-]/g, "_");
-  return sagaDocId(testMode ? "saga_test_credit" : "saga_credit", raw);
+  return sagaDocId(testMode ? "saga_test_fin_credit" : "saga_fin_credit", raw);
+}
+
+function sagaCreditFingerprint(userId, credit) {
+  return [
+    userId,
+    dateBrToIso(credit.purchaseDate) || cleanString(credit.purchaseDate),
+    sagaMoneyValue(credit.totalValue).toFixed(2),
+    cleanString(credit.model).toLowerCase(),
+    sagaHoursValue(credit.hours || credit.hoursHhmm).toFixed(2),
+  ].join("|");
+}
+
+function sagaFinancialEntryMatchesStudent(entry, sagaUser) {
+  const client = normalizeSearch(entry?.cliente);
+  const rawClient = cleanString(entry?.cliente).replace(/\D/g, "");
+  if (!client && !rawClient) return false;
+  const textChecks = [sagaUser?.nome, sagaUser?.name, sagaUser?.email, sagaUser?.codigoAnac, sagaUser?.id]
+    .map(normalizeSearch)
+    .filter(Boolean);
+  if (textChecks.some((value) => client.includes(value) || value.includes(client))) return true;
+  const numericChecks = [sagaUser?.cpf, sagaUser?.codigoAnac, sagaUser?.id]
+    .map((value) => cleanString(value).replace(/\D/g, ""))
+    .filter(Boolean);
+  return numericChecks.some((value) => rawClient.includes(value) || value.includes(rawClient));
+}
+
+function findSagaCreditForFinancialEntry(entry, userId, creditRows) {
+  const entryDate = dateBrToIso(entry.data) || cleanString(entry.data);
+  const entryAmount = sagaMoneyValue(entry.valorTotal);
+  const candidates = (creditRows || []).filter((credit) => {
+    if (cleanString(credit.userId) && cleanString(credit.userId) !== userId) return false;
+    const creditDate = dateBrToIso(credit.purchaseDate) || cleanString(credit.purchaseDate);
+    const creditAmount = sagaMoneyValue(credit.totalValue);
+    const sameDate = !entryDate || !creditDate || entryDate === creditDate;
+    const sameAmount = entryAmount <= 0 || creditAmount <= 0 || Math.abs(entryAmount - creditAmount) < 0.01;
+    return sameDate && sameAmount;
+  });
+  return candidates[0] || null;
+}
+
+function findSagaFinancialModel(entry, matchedCredit, mapping, catalogs) {
+  const matchedModel = cleanString(matchedCredit?.model);
+  if (matchedModel) return { sagaModel: matchedModel, modelId: cleanString(mapping.creditAircraftBySaga?.[matchedModel]) };
+  const haystack = normalizeSearch(`${entry?.natureza || ""} ${entry?.acoes || ""}`);
+  for (const [sagaModel, modelId] of Object.entries(mapping.creditAircraftBySaga || {})) {
+    if (sagaModel && haystack.includes(normalizeSearch(sagaModel))) return { sagaModel: cleanString(sagaModel), modelId: cleanString(modelId) };
+  }
+  for (const model of catalogs.aircraftModels || []) {
+    if (model?.name && haystack.includes(normalizeSearch(model.name))) return { sagaModel: cleanString(model.name), modelId: cleanString(model.id) };
+  }
+  return { sagaModel: "", modelId: "" };
+}
+
+function sagaFinancialHours(entry, matchedCredit) {
+  const matchedHours = sagaHoursValue(matchedCredit?.hours || matchedCredit?.hoursHhmm);
+  if (matchedHours > 0) return matchedHours;
+  return sagaHoursValue(`${entry?.natureza || ""} ${entry?.acoes || ""}`);
+}
+
+function sagaRoundCreditHours(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0;
+}
+
+function sagaCreditPurchaseDateIso(value) {
+  const br = dateBrToIso(value);
+  if (br) return br;
+  const raw = cleanString(value);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+}
+
+function sagaResolveCreditModelIdForFlightGroup(group, mapping, catalogs) {
+  const firstLeg = group?.legs?.[0] || {};
+  const sagaAircraft = cleanString(firstLeg.aeronave);
+  const mappedRegistration = cleanString(mapping?.aircraftBySaga?.[sagaAircraft]);
+  if (!mappedRegistration) return "";
+  const normalized = normalizeAircraftIdent(mappedRegistration);
+  const aircraft = (catalogs?.aircrafts || []).find(
+    (item) => normalizeAircraftIdent(item.registration) === normalized,
+  );
+  return cleanString(aircraft?.modelId);
+}
+
+function sagaLegNightMinutes(leg) {
+  const explicitNight = parseDurationToMinutes(leg?.nightTime || "");
+  if (explicitNight > 0) return explicitNight;
+  const isNight = /not/i.test(cleanString(leg?.diurnoOuNoturno));
+  if (!isNight) return 0;
+  return parseDurationToMinutes(leg?.tempoDeVooHhmm || leg?.tempoDeVooHoras || "");
+}
+
+function collectSagaNightHourDemands(selectedGroups, usersByCanac, mapping, catalogs) {
+  const demands = [];
+  for (const group of selectedGroups || []) {
+    const firstLeg = group?.legs?.[0] || {};
+    const userId = usersByCanac.get(cleanString(firstLeg.canacAluno)) || "";
+    if (!userId) continue;
+    const modelId = sagaResolveCreditModelIdForFlightGroup(group, mapping, catalogs);
+    if (!modelId) continue;
+    const flightDate = sagaCreditPurchaseDateIso(firstLeg.dataDoVoo) || dateBrToIso(firstLeg.dataDoVoo) || "";
+    if (!flightDate) continue;
+    const nightMinutes = (group?.legs || []).reduce((acc, leg) => acc + sagaLegNightMinutes(leg), 0);
+    const hours = sagaRoundCreditHours(nightMinutes / 60);
+    if (hours <= 0) continue;
+    demands.push({ userId, modelId, flightDate, hours });
+  }
+  return demands;
+}
+
+function sagaCreditAmountForHours(credit, hours, originalHours) {
+  const effectiveHours = sagaRoundCreditHours(hours);
+  if (effectiveHours <= 0) return 0;
+  const hourlyValue = sagaMoneyValue(credit?.hourlyValue);
+  if (hourlyValue > 0) return Number((effectiveHours * hourlyValue).toFixed(2));
+  const totalValue = sagaMoneyValue(credit?._originalTotalValue ?? credit?.totalValue);
+  if (totalValue > 0 && originalHours > 0) {
+    return Number(((totalValue * effectiveHours) / originalHours).toFixed(2));
+  }
+  return 0;
+}
+
+function buildSagaEffectiveCreditRow(credit, { hours, isNight, segmentPart, segmentNote = "" }) {
+  const originalTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
+  return {
+    sagaUserId: credit.sagaUserId,
+    studentName: credit.studentName,
+    studentEmail: credit.studentEmail,
+    studentAnac: credit.studentAnac,
+    userId: credit.userId,
+    modelId: credit.modelId,
+    model: credit.model,
+    purchaseDate: credit.purchaseDate,
+    expiresAt: credit.expiresAt,
+    hourlyValue: credit.hourlyValue,
+    notes: credit.notes,
+    responsible: credit.responsible,
+    rawCells: credit.rawCells,
+    _originalTotalValue: originalTotalValue,
+    hours,
+    hoursHhmm: "",
+    totalValue: sagaCreditAmountForHours(credit, hours, credit.originalHours),
+    isNight,
+    segmentPart,
+    segmentNote,
+    _sourceCredit: credit._sourceCredit || credit,
+  };
+}
+
+function segmentSagaCreditsForNightModel(purchases, demands) {
+  const sourceCredits = (purchases || [])
+    .map((credit) => {
+      const purchaseDateIso = sagaCreditPurchaseDateIso(credit.purchaseDate);
+      const hours = sagaHoursValue(credit.hours || credit.hoursHhmm);
+      const originalTotalValue = cleanString(credit.totalValue);
+      return {
+        ...credit,
+        _originalTotalValue: originalTotalValue,
+        purchaseDateIso,
+        originalHours: hours,
+        remainingHours: hours,
+        nightHoursTaken: 0,
+        _sourceCredit: credit,
+      };
+    })
+    .filter((credit) => credit.originalHours > 0)
+    .sort((a, b) => a.purchaseDateIso.localeCompare(b.purchaseDateIso) || a.originalHours - b.originalHours);
+
+  const sortedDemands = [...(demands || [])]
+    .filter((demand) => sagaRoundCreditHours(demand?.hours) > 0 && cleanString(demand?.flightDate))
+    .sort((a, b) => cleanString(a.flightDate).localeCompare(cleanString(b.flightDate)));
+
+  let nightHoursReclassified = 0;
+  let uncoveredNightHours = 0;
+  for (const demand of sortedDemands) {
+    let remaining = sagaRoundCreditHours(demand.hours);
+    let index = sourceCredits.length - 1;
+    while (index >= 0 && sourceCredits[index].purchaseDateIso > demand.flightDate) index -= 1;
+    if (index < 0) {
+      uncoveredNightHours = sagaRoundCreditHours(uncoveredNightHours + remaining);
+      continue;
+    }
+    while (index >= 0 && remaining > 0) {
+      const credit = sourceCredits[index];
+      if (credit.remainingHours > 0) {
+        const consumed = sagaRoundCreditHours(Math.min(credit.remainingHours, remaining));
+        credit.remainingHours = sagaRoundCreditHours(credit.remainingHours - consumed);
+        credit.nightHoursTaken = sagaRoundCreditHours(credit.nightHoursTaken + consumed);
+        remaining = sagaRoundCreditHours(remaining - consumed);
+        nightHoursReclassified = sagaRoundCreditHours(nightHoursReclassified + consumed);
+      }
+      index -= 1;
+    }
+    if (remaining > 0) uncoveredNightHours = sagaRoundCreditHours(uncoveredNightHours + remaining);
+  }
+
+  const effectiveCredits = [];
+  let nightCreditRecordsCreated = 0;
+  for (const credit of sourceCredits) {
+    const dayHours = sagaRoundCreditHours(credit.originalHours - credit.nightHoursTaken);
+    const nightHours = sagaRoundCreditHours(credit.nightHoursTaken);
+    if (dayHours > 0) {
+      effectiveCredits.push(buildSagaEffectiveCreditRow(credit, { hours: dayHours, isNight: false, segmentPart: "day" }));
+    }
+    if (nightHours > 0) {
+      nightCreditRecordsCreated += 1;
+      effectiveCredits.push(
+        buildSagaEffectiveCreditRow(credit, {
+          hours: nightHours,
+          isNight: true,
+          segmentPart: "night",
+          segmentNote: "Credito noturno reclassificado na importacao SAGA",
+        }),
+      );
+    }
+  }
+
+  return { effectiveCredits, nightHoursReclassified, nightCreditRecordsCreated, uncoveredNightHours };
+}
+
+function segmentSagaCreditsForNight(purchases, demands) {
+  const modelIds = new Set();
+  for (const purchase of purchases || []) modelIds.add(cleanString(purchase.modelId));
+  for (const demand of demands || []) modelIds.add(cleanString(demand.modelId));
+  if (!modelIds.size && (purchases || []).length) modelIds.add("");
+
+  const effectiveCredits = [];
+  let nightHoursReclassified = 0;
+  let nightCreditRecordsCreated = 0;
+  let uncoveredNightHours = 0;
+  for (const modelId of modelIds) {
+    const modelPurchases = (purchases || []).filter((purchase) => cleanString(purchase.modelId) === modelId);
+    if (!modelPurchases.length) continue;
+    const modelDemands = (demands || []).filter((demand) => cleanString(demand.modelId) === modelId);
+    const part = segmentSagaCreditsForNightModel(modelPurchases, modelDemands);
+    effectiveCredits.push(...part.effectiveCredits);
+    nightHoursReclassified = sagaRoundCreditHours(nightHoursReclassified + part.nightHoursReclassified);
+    nightCreditRecordsCreated += part.nightCreditRecordsCreated;
+    uncoveredNightHours = sagaRoundCreditHours(uncoveredNightHours + part.uncoveredNightHours);
+  }
+
+  return { effectiveCredits, nightHoursReclassified, nightCreditRecordsCreated, uncoveredNightHours };
+}
+
+function buildSagaUnsegmentedCredits(purchases) {
+  return (purchases || [])
+    .map((credit) => {
+      const hours = sagaHoursValue(credit.hours || credit.hoursHhmm);
+      if (hours <= 0) return null;
+      return buildSagaEffectiveCreditRow(
+        {
+          ...credit,
+          _originalTotalValue: cleanString(credit.totalValue),
+          originalHours: hours,
+          _sourceCredit: credit,
+        },
+        { hours, isNight: false, segmentPart: "day" },
+      );
+    })
+    .filter(Boolean);
 }
 
 async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode = false } = {}) {
   if (!STUDENT_CREDITS_COLLECTION_ID) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1628',message:'credit skipped missing credits collection',data:{userId,model:cleanString(credit?.model)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     return { skipped: true, reason: "credits_collection_missing", aircraft: cleanString(credit.model) };
   }
   const sagaModel = cleanString(credit.model);
   const modelId = cleanString(mapping.creditAircraftBySaga?.[sagaModel]);
   const model = (catalogs.aircraftModels || []).find((item) => item.id === modelId);
   const hours = sagaHoursValue(credit.hours || credit.hoursHhmm);
-  if (!modelId) return { skipped: true, reason: "missing_credit_aircraft_mapping", aircraft: sagaModel };
-  if (hours <= 0) return { skipped: true, reason: "zero_credit_balance", aircraft: sagaModel };
+  if (!modelId) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1635',message:'credit skipped missing model mapping',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),model:sagaModel,hoursRaw:cleanString(credit?.hours||credit?.hoursHhmm)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return { skipped: true, reason: "missing_credit_aircraft_mapping", aircraft: sagaModel };
+  }
+  if (hours <= 0) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1636',message:'credit skipped zero hours',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),model:sagaModel,hoursRaw:cleanString(credit?.hours||credit?.hoursHhmm),hours},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return { skipped: true, reason: "zero_credit_balance", aircraft: sagaModel };
+  }
   const docId = sagaCreditDocId(testMode, userId, credit);
   const purchaseDate = dateBrToIso(credit.purchaseDate) || nowIso().slice(0, 10);
   const expiresAt = dateBrToIso(credit.expiresAt) || purchaseDate;
   const validityDays = Math.max(0, Math.round((new Date(`${expiresAt}T12:00:00`).getTime() - new Date(`${purchaseDate}T12:00:00`).getTime()) / 86400000));
+  const splitAmount =
+    typeof credit.totalValue === "number" && Number.isFinite(credit.totalValue)
+      ? Number(credit.totalValue.toFixed(2))
+      : sagaMoneyValue(credit.totalValue);
+  const originalAmount = sagaMoneyValue(credit._originalTotalValue ?? credit.totalValue);
   const data = sanitizeCreditInput({
     userId,
     purchaseDate,
     aircraftModelId: modelId,
     aircraftModelName: model?.name || sagaModel,
-    amountPaid: sagaMoneyValue(credit.totalValue),
+    amountPaid: splitAmount > 0 ? splitAmount : originalAmount,
     paymentMethod: "SAGA",
     paymentInstallments: null,
     validityDays,
     hours,
-    notes: [`Importado do SAGA`, cleanString(credit.notes), cleanString(credit.responsible)].filter(Boolean).join(". "),
-    isNight: false,
+    notes: [
+      "Importado do SAGA",
+      cleanString(credit.notes),
+      cleanString(credit.responsible),
+      cleanString(credit.segmentNote),
+    ].filter(Boolean).join(". "),
+    isNight: Boolean(credit.isNight),
   });
   const payload = {
     ...data,
@@ -1402,6 +2144,9 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
   };
   const existing = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId).catch(() => null);
   if (existing) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1661',message:'credit updated existing doc',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),docId,model:sagaModel,hours},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     await databases.updateDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
       ...data,
       updated_by: actorUserId,
@@ -1412,19 +2157,109 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
   return { created: true, hours, aircraft: sagaModel };
 }
 
+async function upsertSagaFinancialCredit(actorUserId, entry, userId, mapping, catalogs, { testMode = false, matchedCredit = null } = {}) {
+  if (!STUDENT_CREDITS_COLLECTION_ID) {
+    return { skipped: true, reason: "credits_collection_missing", aircraft: "" };
+  }
+  const { sagaModel, modelId } = findSagaFinancialModel(entry, matchedCredit, mapping, catalogs);
+  const model = (catalogs.aircraftModels || []).find((item) => cleanString(item.id) === modelId);
+  const hours = sagaFinancialHours(entry, matchedCredit);
+  if (!modelId) return { skipped: true, reason: "missing_credit_aircraft_mapping", aircraft: sagaModel || cleanString(entry.natureza) };
+  if (hours <= 0) return { skipped: true, reason: "missing_financial_credit_hours", aircraft: sagaModel };
+  const purchaseDate = dateBrToIso(entry.data) || dateBrToIso(matchedCredit?.purchaseDate) || nowIso().slice(0, 10);
+  const expiresAt = dateBrToIso(matchedCredit?.expiresAt) || purchaseDate;
+  const validityDays = Math.max(0, Math.round((new Date(`${expiresAt}T12:00:00`).getTime() - new Date(`${purchaseDate}T12:00:00`).getTime()) / 86400000));
+  const data = sanitizeCreditInput({
+    userId,
+    purchaseDate,
+    aircraftModelId: modelId,
+    aircraftModelName: model?.name || sagaModel,
+    amountPaid: sagaMoneyValue(entry.valorTotal) || sagaMoneyValue(matchedCredit?.totalValue),
+    paymentMethod: cleanString(entry.banco) || "SAGA",
+    paymentInstallments: null,
+    validityDays,
+    hours,
+    notes: [
+      "Importado do financeiro SAGA",
+      cleanString(entry.natureza),
+      cleanString(entry.status),
+      cleanString(entry.id) ? `ID ${cleanString(entry.id)}` : "",
+    ].filter(Boolean).join(". "),
+    isNight: false,
+  });
+  const docId = sagaFinancialCreditDocId(testMode, userId, entry);
+  const existing = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId).catch(() => null);
+  if (existing) {
+    await databases.updateDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
+      ...data,
+      updated_by: actorUserId,
+    });
+    return { updated: true, hours, aircraft: sagaModel };
+  }
+  await databases.createDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
+    ...data,
+    school_id: SCHOOL_ID,
+    created_by: actorUserId,
+    updated_by: actorUserId,
+  }, creditPermissions(userId));
+  return { created: true, hours, aircraft: sagaModel };
+}
+
+function sagaFlightLegNumber(flight) {
+  const parsed = Number(cleanString(flight?.perna).replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sagaFlightGroupKey(id, legs, ordinal) {
+  if (ordinal <= 1) return cleanString(id);
+  const firstLeg = legs[0] || {};
+  const lastLeg = legs[legs.length - 1] || firstLeg;
+  const raw = [
+    id,
+    ordinal,
+    firstLeg.dataDoVoo,
+    firstLeg.canacAluno,
+    firstLeg.aeronave,
+    firstLeg.acionamento || firstLeg.decolagem,
+    lastLeg.corte || lastLeg.pouso,
+    legs.length,
+  ].map(cleanString).join("_");
+  return `${cleanString(id)}_${crypto.createHash("sha1").update(raw).digest("hex").slice(0, 8)}`;
+}
+
+function sagaFlightStartsNewGroup(current, flight) {
+  if (!current) return true;
+  const firstLeg = current.legs[0] || {};
+  const previousLeg = current.legs[current.legs.length - 1] || {};
+  if (cleanString(firstLeg.dataDoVoo) !== cleanString(flight.dataDoVoo)) return true;
+  if (cleanString(firstLeg.canacAluno) !== cleanString(flight.canacAluno)) return true;
+  if (cleanString(firstLeg.aeronave) !== cleanString(flight.aeronave)) return true;
+  const previousLegNumber = sagaFlightLegNumber(previousLeg);
+  const nextLegNumber = sagaFlightLegNumber(flight);
+  return previousLegNumber > 0 && nextLegNumber > 0 && nextLegNumber <= previousLegNumber;
+}
+
 function groupSagaFlightsById(flights) {
-  const groups = new Map();
+  const groups = [];
+  const activeById = new Map();
+  const ordinalsById = new Map();
   for (const flight of flights || []) {
     const id = cleanString(flight.id);
     if (!id) continue;
-    const list = groups.get(id) || [];
-    list.push(flight);
-    groups.set(id, list);
+    let group = activeById.get(id);
+    if (sagaFlightStartsNewGroup(group, flight)) {
+      const ordinal = (ordinalsById.get(id) || 0) + 1;
+      ordinalsById.set(id, ordinal);
+      group = { id, ordinal, key: "", legs: [] };
+      activeById.set(id, group);
+      groups.push(group);
+    }
+    group.legs.push(flight);
   }
-  return Array.from(groups.entries()).map(([id, legs]) => ({
-    id,
-    legs: legs.sort((a, b) => Number(a.perna || 0) - Number(b.perna || 0)),
-  }));
+  return groups.map((group) => {
+    const legs = group.legs.sort((a, b) => sagaFlightLegNumber(a) - sagaFlightLegNumber(b));
+    return { ...group, key: sagaFlightGroupKey(group.id, legs, group.ordinal), legs };
+  });
 }
 
 function sagaRouteFromLegs(legs) {
@@ -1450,7 +2285,7 @@ function sagaMetaLeg(leg, legIndex, flightDate) {
     arr: cleanString(leg.destino).toUpperCase(),
     landings: Math.max(0, Math.round(Number(cleanString(leg.numeroPousos).replace(",", ".")) || 0)),
     flightTime,
-    navTime: flightTime,
+    navTime: "",
     ifrTime: /ifr/i.test(cleanString(leg.regrasDeVoo)) ? flightTime : "",
     nightTime: night ? flightTime : "",
     serviceTime,
@@ -1481,7 +2316,10 @@ function sagaLookupSummary(group) {
   const firstLeg = group.legs[0] || {};
   const lastLeg = group.legs[group.legs.length - 1] || firstLeg;
   const totalFlightMinutes = group.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.tempoDeVooHhmm || leg.tempoDeVooHoras), 0);
-  const totalServiceMinutes = group.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.tempoDeServicoHhmm || leg.tempoDeServicoHoras), 0);
+  const totalServiceMinutes = group.legs.reduce(
+    (acc, leg) => acc + (sagaLegBlockMinutes(leg) ?? parseDurationToMinutes(leg.tempoDeServicoHhmm || leg.tempoDeServicoHoras)),
+    0,
+  );
   const landings = group.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(cleanString(leg.numeroPousos).replace(",", ".")) || 0)), 0);
   const flightDate = dateBrToIso(firstLeg.dataDoVoo) || "";
   return {
@@ -1503,6 +2341,487 @@ function sagaLookupSummary(group) {
   };
 }
 
+function sagaFormatDurationMinutes(minutes) {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+  return `${String(Math.floor(safeMinutes / 60)).padStart(2, "0")}:${String(safeMinutes % 60).padStart(2, "0")}`;
+}
+
+function sagaPdfLineKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function sagaPdfLines(text) {
+  return String(text || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function sagaDecodeHtmlEntities(value) {
+  const named = {
+    nbsp: " ",
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: "\"",
+    apos: "'",
+    "#039": "'",
+    ccedil: "ç",
+    Ccedil: "Ç",
+    atilde: "ã",
+    Atilde: "Ã",
+    aacute: "á",
+    Aacute: "Á",
+    agrave: "à",
+    Agrave: "À",
+    acirc: "â",
+    Acirc: "Â",
+    eacute: "é",
+    Eacute: "É",
+    ecirc: "ê",
+    Ecirc: "Ê",
+    iacute: "í",
+    Iacute: "Í",
+    oacute: "ó",
+    Oacute: "Ó",
+    ocirc: "ô",
+    Ocirc: "Ô",
+    otilde: "õ",
+    Otilde: "Õ",
+    uacute: "ú",
+    Uacute: "Ú",
+  };
+  return String(value || "").replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);/gi, (match, entity) => {
+    const key = String(entity);
+    if (Object.prototype.hasOwnProperty.call(named, key)) return named[key];
+    if (key.startsWith("#x")) {
+      const code = Number.parseInt(key.slice(2), 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+    if (key.startsWith("#")) {
+      const code = Number.parseInt(key.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+    return match;
+  });
+}
+
+function sagaTextFromDocumentHtml(html) {
+  return sagaDecodeHtmlEntities(String(html || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "\n")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "\n")
+    .replace(/<input\b[^>]*>/gi, (tag) => {
+      const match = String(tag || "").match(/\bvalue\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+      const value = match ? (match[1] ?? match[2] ?? match[3] ?? "") : "";
+      return value ? ` ${value} ` : " ";
+    })
+    .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|section|article|header|footer|table|thead|tbody|tfoot|tr|td|th|li|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim());
+}
+
+function sagaPdfLineContainsLabel(line, label) {
+  return sagaPdfLineKey(line).includes(sagaPdfLineKey(label));
+}
+
+function sagaPdfValueFromLabelLine(line, label) {
+  const raw = String(line || "").trim();
+  const labelKey = sagaPdfLineKey(label);
+  const rawChars = Array.from(raw);
+  for (let end = rawChars.length; end >= 0; end -= 1) {
+    const prefix = rawChars.slice(0, end).join("");
+    const key = sagaPdfLineKey(prefix);
+    if (key === labelKey || key.endsWith(labelKey)) {
+      return rawChars.slice(end).join("").replace(/^[:\s-]+/, "").trim();
+    }
+  }
+  return raw.replace(new RegExp(`^${String(label).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:?\\s*`, "i"), "").trim();
+}
+
+function sagaStripLeadingSectionLabels(text, labels) {
+  const lines = String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const labelList = Array.isArray(labels) ? labels : [labels];
+  for (let guard = 0; guard < 5 && lines.length; guard += 1) {
+    const first = lines[0];
+    const matchedLabel = labelList.find((label) => sagaPdfLineKey(first).startsWith(sagaPdfLineKey(label)));
+    if (!matchedLabel) break;
+    const value = sagaPdfValueFromLabelLine(first, matchedLabel);
+    if (value && sagaPdfLineKey(value) !== sagaPdfLineKey(first)) {
+      lines[0] = value;
+    } else {
+      lines.shift();
+    }
+  }
+  return lines.join("\n").trim();
+}
+
+function sagaPdfExtractSection(lines, label, stopLabels) {
+  const startIndex = lines.findIndex((line) => sagaPdfLineContainsLabel(line, label));
+  if (startIndex < 0) return "";
+  const parts = [];
+  const firstValue = sagaPdfValueFromLabelLine(lines[startIndex], label);
+  if (firstValue) parts.push(firstValue);
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (stopLabels.some((stopLabel) => sagaPdfLineContainsLabel(line, stopLabel))) break;
+    parts.push(line);
+  }
+  return sagaStripLeadingSectionLabels(parts.join("\n"), label);
+}
+
+function sagaSplitResultFromComments(comments) {
+  const text = cleanString(comments);
+  const match = text.match(/(?:^|\n)\s*Resultado\s*:\s*([\s\S]*)$/i);
+  if (!match) return { commentsMd: text, result: "" };
+  return {
+    commentsMd: text.slice(0, match.index).trim(),
+    result: cleanString(sagaTextBeforeLabels(match[1], ["ASSINATURAS"])),
+  };
+}
+
+function sagaTextBeforeLabels(text, labels) {
+  let out = String(text || "");
+  for (const label of labels) {
+    const index = sagaPdfLineKey(out).indexOf(sagaPdfLineKey(label));
+    if (index < 0) continue;
+    let rawIndex = 0;
+    let normalized = "";
+    for (const char of Array.from(out)) {
+      if (sagaPdfLineKey(normalized + char).length > index) break;
+      normalized += char;
+      rawIndex += char.length;
+    }
+    out = out.slice(0, rawIndex);
+  }
+  return out.trim();
+}
+
+function sagaPdfNumberFromLabel(lines, labels) {
+  const labelList = Array.isArray(labels) ? labels : [labels];
+  for (const label of labelList) {
+    const index = lines.findIndex((line) => sagaPdfLineContainsLabel(line, label));
+    if (index < 0) continue;
+    const candidates = [
+      sagaPdfValueFromLabelLine(lines[index], label),
+      lines[index + 1] || "",
+    ];
+    for (const candidate of candidates) {
+      const match = String(candidate).match(/-?\d+(?:[.,]\d+)?/);
+      if (!match) continue;
+      const parsed = Number(match[0].replace(",", "."));
+      if (Number.isFinite(parsed)) {
+        const unitSource = `${lines[index]} ${candidate}`;
+        const unit = /\bkg\b/i.test(unitSource) ? "kg" : "l";
+        return { value: parsed, unit };
+      }
+    }
+  }
+  return null;
+}
+
+function sagaPdfStationNumber(lines, labels) {
+  const labelList = Array.isArray(labels) ? labels : [labels];
+  for (const label of labelList) {
+    const index = lines.findIndex((line) => sagaPdfLineContainsLabel(line, label));
+    if (index < 0) continue;
+    const sameLine = sagaPdfValueFromLabelLine(lines[index], label);
+    const candidates = [sameLine, lines[index + 1] || "", lines[index + 2] || ""];
+    for (const candidate of candidates) {
+      const match = String(candidate).match(/-?\d+(?:[.,]\d+)?/);
+      if (!match) continue;
+      const parsed = Number(match[0].replace(",", "."));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function sagaPdfBlock(lines, startLabel, stopLabels) {
+  const startIndex = lines.findIndex((line) => sagaPdfLineContainsLabel(line, startLabel));
+  if (startIndex < 0) return [];
+  const out = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (stopLabels.some((stopLabel) => sagaPdfLineContainsLabel(line, stopLabel))) break;
+    out.push(line);
+  }
+  return out;
+}
+
+function sagaPdfNumbersFromBlock(lines) {
+  const matches = lines.join("\n").match(/-?\d+(?:[.,]\d+)?/g) || [];
+  return matches.map((value) => Number(value.replace(",", "."))).filter((value) => Number.isFinite(value));
+}
+
+function sagaPdfDurationToMinutes(value) {
+  const raw = cleanString(value).replace(/\s*h$/i, "");
+  const match = raw.match(/^(\d{1,3}):(\d{2})$/);
+  if (!match) return 0;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes > 59) return 0;
+  return hours * 60 + minutes;
+}
+
+function sagaParsePdfLegRows(lines) {
+  const startIndex = lines.findIndex((line) => sagaPdfLineKey(line) === "PERNAS" || sagaPdfLineContainsLabel(line, "PERNAS"));
+  if (startIndex < 0) return { legs: [], totalNavigationTime: "00:00" };
+  const stopLabels = ["DESCRICAO DO PERIGO", "DESCRICAO DO RISCO", "PARECER DO INSTRUTOR", "ASSINATURAS", "PESO E BALANCEAMENTO"];
+  const block = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (stopLabels.some((label) => sagaPdfLineContainsLabel(line, label))) break;
+    block.push(line);
+  }
+
+  const legs = [];
+  const joined = block.join(" ");
+  const rowPattern = /(\d{2}\/\d{2}\/\d{4})\s+(?:\[[^\]]+\]|[A-Z]{1,4})\s+([A-Z]{4})\s+([A-Z]{4})\s+(\d+)\s+(\d{1,3}:\d{2})h?\s+(\d{1,3}:\d{2})h?\s+(\d{1,3}:\d{2})h?\s+(\d{1,3}:\d{2})h?\s+(\d{1,3}:\d{2})h?/g;
+  for (const match of joined.matchAll(rowPattern)) {
+    const navMinutes = sagaPdfDurationToMinutes(match[6]);
+    legs.push({
+      date: match[1],
+      dep: match[2],
+      arr: match[3],
+      landings: Number(match[4]) || 0,
+      flightTime: sagaFormatDurationMinutes(sagaPdfDurationToMinutes(match[5])),
+      navTime: sagaFormatDurationMinutes(navMinutes),
+      ifrTime: sagaFormatDurationMinutes(sagaPdfDurationToMinutes(match[7])),
+      nightTime: sagaFormatDurationMinutes(sagaPdfDurationToMinutes(match[8])),
+      serviceTime: sagaFormatDurationMinutes(sagaPdfDurationToMinutes(match[9])),
+    });
+  }
+
+  const totalNavigationMinutes = legs.reduce((acc, leg) => acc + sagaPdfDurationToMinutes(leg.navTime), 0);
+  return { legs, totalNavigationTime: sagaFormatDurationMinutes(totalNavigationMinutes) };
+}
+
+function sagaParseExerciseGrade(value) {
+  const match = cleanString(value).match(/(?:^|\s)(NO|[1-4])(?:\s*\((?:SA|IN|NO)\))?(?=\s|$)/);
+  if (!match) return null;
+  const grade = String(match[1] || "").toUpperCase();
+  return grade === "NO" ? "NO" : grade;
+}
+
+function sagaParseExerciseRows(lines) {
+  const headerIndex = lines.findIndex((line, index) => {
+    const joined = [line, lines[index + 1], lines[index + 2]].filter(Boolean).join(" ");
+    return sagaPdfLineContainsLabel(joined, "EXERCICIO") &&
+      sagaPdfLineContainsLabel(joined, "GRAU");
+  });
+  if (headerIndex < 0) return [];
+  const rows = [];
+  const stopLabels = ["COMENTARIOS", "PESO E BALANCEAMENTO", "PERNAS", "ASSINATURAS", "NOTA DO BRIEFING"];
+  const dataLines = [];
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (stopLabels.some((label) => sagaPdfLineContainsLabel(line, label))) break;
+    if (sagaPdfLineContainsLabel(line, "EXERCICIO") || sagaPdfLineKey(line) === "GRAU" || sagaPdfLineContainsLabel(line, "PROFICIENCIA ACEITAVEL")) continue;
+    dataLines.push(line);
+  }
+
+  for (let index = 0; index < dataLines.length; index += 1) {
+    const line = dataLines[index];
+    const inlineGrade = line.match(/(?:^|\s)(NO|[1-4])(?:\s*\((?:SA|IN|NO)\))?(?=\s|$)/);
+    if (inlineGrade) {
+      const title = line.slice(0, inlineGrade.index).trim();
+      const grade = sagaParseExerciseGrade(inlineGrade[0]);
+      if (title && grade && !sagaPdfLineContainsLabel(title, "GRAUS")) rows.push({ title, grade });
+      continue;
+    }
+    const nextGrade = sagaParseExerciseGrade(dataLines[index + 1] || "");
+    if (nextGrade && line.trim()) {
+      rows.push({ title: line.trim(), grade: nextGrade });
+      index += 1;
+    }
+  }
+
+  return rows;
+}
+
+function sagaParseFlightRecordPdfText(text) {
+  const lines = sagaPdfLines(sagaDecodeHtmlEntities(text));
+  const sectionStops = [
+    "OBJETIVO DA LICAO",
+    "NOTA DO BRIEFING",
+    "COMENTARIOS",
+    "PESO E BALANCEAMENTO",
+    "OCUPANTES",
+    "BAGAGEM",
+    "COMBUSTIVEL",
+    "DISCREPANCIAS",
+    "OCORRENCIAS",
+  ];
+  const briefingStops = [...sectionStops, "GRAUS: SATISFATORIO", "GRAUS: SATISFATÓRIO"];
+  const rawComments = sagaPdfExtractSection(lines, "COMENTARIOS", ["PERNAS", "DATA", "PESO E BALANCEAMENTO", "DISCREPANCIAS", "OCORRENCIAS"]);
+  const commentsResult = sagaSplitResultFromComments(rawComments);
+  const dangerMd = sagaPdfExtractSection(lines, "DESCRICAO DO PERIGO", ["DESCRICAO DO RISCO", "DESCRICAO DO GERENCIAMENTO DO RISCO", "PARECER DO INSTRUTOR", "ASSINATURAS"]);
+  const riskMd = sagaPdfExtractSection(lines, "DESCRICAO DO RISCO", ["DESCRICAO DO GERENCIAMENTO DO RISCO", "PARECER DO INSTRUTOR", "ASSINATURAS"]);
+  const managementMd = sagaPdfExtractSection(lines, "DESCRICAO DO GERENCIAMENTO DO RISCO", ["PARECER DO INSTRUTOR", "ASSINATURAS"]);
+  const resultFromLine = commentsResult.result || sagaTextBeforeLabels(
+    sagaPdfExtractSection(lines, "RESULTADO", ["PERNAS", "DATA", "PESO E BALANCEAMENTO", "OCUPANTES", "BAGAGEM", "COMBUSTIVEL", "DISCREPANCIAS", "OCORRENCIAS"]),
+    ["ASSINATURAS"],
+  );
+  const occupantsKg = sagaPdfStationNumber(lines, ["OCUPANTES"]);
+  const personsOnBoard = sagaPdfNumberFromLabel(lines, ["PESSOAS A BORDO", "PESSOAS À BORDO"]);
+  const baggageKg = sagaPdfStationNumber(lines, ["BAGAGEM"]);
+  const rampFuelKg = sagaPdfStationNumber(lines, ["COMBUSTIVEL TOTAL A BORDO", "COMBUSTIVEL (TOTAL A BORDO)", "COMBUSTIVEL TOTAL"]);
+  const taxiFuel = sagaPdfNumberFromLabel(lines, ["COMBUSTIVEL TAXI", "COMBUSTIVEL TÁXI"]);
+  const tripFuel = sagaPdfNumberFromLabel(lines, ["COMBUSTIVEL ATE POUSO", "COMBUSTIVEL ATÉ POUSO", "COMBUSTIVEL POUSO"]);
+  const taxiFuelKg = sagaPdfStationNumber(lines, ["COMBUSTIVEL (TAXI)", "COMBUSTIVEL TAXI"]);
+  const tripFuelKg = sagaPdfStationNumber(lines, ["COMBUSTIVEL ETAPA", "COMBUSTIVEL (ETAPA)"]);
+  const likelyPersonsFromOccupants = occupantsKg && occupantsKg > 0 && occupantsKg <= 10 ? Math.round(occupantsKg) : null;
+  const wbFallback = sagaPdfNumbersFromBlock(sagaPdfBlock(lines, "PESO E BALANCEAMENTO", ["COMENTARIOS", "COMENTÃRIOS", "PERNAS", "ASSINATURAS"]));
+
+  const pdfLegRows = sagaParsePdfLegRows(lines);
+
+  return {
+    objectiveMd: sagaPdfExtractSection(lines, "OBJETIVO DA LICAO", sectionStops),
+    briefingMd: sagaPdfExtractSection(lines, "NOTA DO BRIEFING", briefingStops),
+    commentsMd: commentsResult.commentsMd,
+    dangerMd,
+    riskMd,
+    managementMd,
+    result: resultFromLine,
+    exercises: sagaParseExerciseRows(lines),
+    legs: pdfLegRows.legs,
+    totalNavigationTime: pdfLegRows.totalNavigationTime,
+    weightBalance: {
+      personsOnBoard: personsOnBoard?.value ?? likelyPersonsFromOccupants,
+      occupantsWeightKg: occupantsKg ?? wbFallback[3] ?? null,
+      baggageWeightKg: baggageKg ?? wbFallback[6] ?? null,
+      rampFuel: rampFuelKg != null ? { value: rampFuelKg, unit: "kg" } : wbFallback[9] != null ? { value: wbFallback[9], unit: "kg" } : null,
+      taxiFuel: taxiFuelKg != null ? { value: taxiFuelKg, unit: "kg" } : wbFallback[15] != null ? { value: wbFallback[15], unit: "kg" } : null,
+      tripFuel: tripFuelKg != null ? { value: tripFuelKg, unit: "kg" } : wbFallback[21] != null ? { value: wbFallback[21], unit: "kg" } : null,
+    },
+  };
+}
+
+function sagaRecordHasExtractedData(record) {
+  const wb = record?.weightBalance || {};
+  return Boolean(
+    cleanString(record?.objectiveMd) ||
+      cleanString(record?.briefingMd) ||
+      cleanString(record?.commentsMd) ||
+      cleanString(record?.dangerMd) ||
+      cleanString(record?.riskMd) ||
+      cleanString(record?.managementMd) ||
+      cleanString(record?.result) ||
+      cleanString(record?.totalNavigationTime) ||
+      (Array.isArray(record?.legs) && record.legs.length > 0) ||
+      (Array.isArray(record?.exercises) && record.exercises.length > 0) ||
+      wb.personsOnBoard != null ||
+      wb.occupantsWeightKg != null ||
+      wb.baggageWeightKg != null ||
+      wb.rampFuel?.value != null ||
+      wb.taxiFuel?.value != null ||
+      wb.tripFuel?.value != null,
+  );
+}
+
+async function sagaFetchFlightRecordPdf(flightId, cookieJar, logs, statuses, locations, htmlLengths) {
+  const path = `/flight_records/pdf/${encodeURIComponent(flightId)}`;
+  logs.push(`GET ${path}: consultando PDF da ficha SAGA.`);
+  let url = `${SAGA_BASE_URL}${path}`;
+  let response = null;
+  let bodyBuffer = null;
+  let contentType = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const headers = {
+      accept: "application/pdf,text/html;q=0.9,*/*;q=0.8",
+      referer: attempt === 0 ? `${SAGA_BASE_URL}/flight_records/${encodeURIComponent(flightId)}` : `${SAGA_BASE_URL}${path}`,
+    };
+    const cookie = sagaCookieHeader(cookieJar);
+    if (cookie) headers.cookie = cookie;
+    response = await fetch(url, { method: "GET", headers, redirect: "manual" });
+    sagaMergeCookies(cookieJar, response.headers);
+    contentType = response.headers.get("content-type") || "";
+    const location = response.headers.get("location") || "";
+    statuses.flightRecordPdf = response.status;
+    locations.flightRecordPdf = location || null;
+
+    if (response.status >= 300 && response.status < 400 && location) {
+      const nextUrl = new URL(location, url).toString();
+      logs.push(`GET ${path}: redirect ${response.status} para ${nextUrl}.`);
+      if (/\/login(?:$|[?#])/i.test(nextUrl)) {
+        return { ok: false, url: `${SAGA_BASE_URL}${path}`, message: "Sessao SAGA expirada ao consultar o PDF da ficha." };
+      }
+      url = nextUrl;
+      continue;
+    }
+
+    bodyBuffer = Buffer.from(await response.arrayBuffer());
+    break;
+  }
+
+  if (!response || !bodyBuffer) {
+    return { ok: false, url: `${SAGA_BASE_URL}${path}`, message: "PDF da ficha nao foi retornado pelo SAGA." };
+  }
+
+  htmlLengths.flightRecordPdf = bodyBuffer.length;
+  const looksLikePdf = bodyBuffer.subarray(0, 5).toString("utf8") === "%PDF-";
+  if (/application\/pdf/i.test(contentType) || looksLikePdf) {
+    const buffer = bodyBuffer;
+    const parsed = await pdfParse(buffer);
+    logs.push(`GET ${path}: PDF lido (${buffer.length} bytes, ${cleanString(parsed.text).length} caracteres de texto, content-type ${contentType || "sem content-type"}).`);
+    return {
+      ok: true,
+      url: `${SAGA_BASE_URL}${path}`,
+      ...sagaParseFlightRecordPdfText(parsed.text || ""),
+    };
+  }
+
+  const html = bodyBuffer.toString("utf8");
+  if (isSagaLoginResponse({ response, html })) {
+    logs.push(`GET ${path}: SAGA retornou login ao consultar o PDF.`);
+    return { ok: false, url: `${SAGA_BASE_URL}${path}`, message: "Sessao SAGA expirada ao consultar o PDF da ficha." };
+  }
+  if (/text\/html/i.test(contentType) || /<!doctype html|<html\b/i.test(html)) {
+    const parsedFromHtml = sagaParseFlightRecordPdfText(sagaTextFromDocumentHtml(html));
+    if (sagaRecordHasExtractedData(parsedFromHtml)) {
+      logs.push(`GET ${path}: ficha veio em HTML; dados extraidos do HTML (${bodyBuffer.length} bytes).`);
+      return {
+        ok: true,
+        url: `${SAGA_BASE_URL}${path}`,
+        ...parsedFromHtml,
+      };
+    }
+  }
+  logs.push(`GET ${path}: resposta nao-PDF (status ${response.status}, content-type ${contentType || "sem content-type"}, ${bodyBuffer.length} bytes).`);
+  return {
+    ok: false,
+    url: `${SAGA_BASE_URL}${path}`,
+    message: `PDF da ficha nao foi retornado pelo SAGA (status ${response.status}, ${contentType || "sem content-type"}).`,
+  };
+}
+
+function sagaApplyPdfNavigationToMetaLegs(metaLegs, pdfRecord) {
+  if (!pdfRecord?.ok) return metaLegs.map((leg) => ({ ...leg, navTime: leg.navTime || "00:00" }));
+  const pdfLegs = Array.isArray(pdfRecord.legs) ? pdfRecord.legs : [];
+  if (pdfLegs.length === metaLegs.length) {
+    return metaLegs.map((leg, index) => ({ ...leg, navTime: cleanString(pdfLegs[index]?.navTime) || "00:00" }));
+  }
+  const totalNavigationTime = cleanString(pdfRecord.totalNavigationTime);
+  if (totalNavigationTime) {
+    return metaLegs.map((leg, index) => ({ ...leg, navTime: index === 0 ? totalNavigationTime : "00:00" }));
+  }
+  return metaLegs.map((leg) => ({ ...leg, navTime: leg.navTime || "00:00" }));
+}
+
 async function sagaLookupFlight(payload = {}) {
   const flightId = cleanString(payload.sagaFlightId || payload.flightId || payload.id);
   if (!flightId) throw Object.assign(new Error("Informe o ID do voo no SAGA."), { status: 400 });
@@ -1510,12 +2829,29 @@ async function sagaLookupFlight(payload = {}) {
   const statuses = {};
   const locations = {};
   const htmlLengths = {};
-  const session = await loadSagaAuthSession();
+
+  // Sessão + mapping em paralelo (2 leituras de DB → 1 round-trip)
+  const [session, mapping] = await Promise.all([
+    loadSagaAuthSession(),
+    loadSagaImportMapping(),
+  ]);
   const { cookieJar } = session;
-  const mapping = await loadSagaImportMapping();
+
   const range = sagaDateRangeMonths(24);
   const filteredPath = `/reports/operations?start_date=${range.startDate}&end_date=${range.endDate}&id=${encodeURIComponent(flightId)}`;
   logs.push(`GET /reports/operations: buscando voo SAGA ${flightId} usando sessao salva do admin.`);
+
+  // Inicia o PDF em paralelo com a busca de operações — é a parte mais lenta (redirects + download + parse)
+  const pdfPromise = sagaFetchFlightRecordPdf(flightId, cookieJar, logs, statuses, locations, htmlLengths)
+    .catch((err) => {
+      logs.push(`PDF da ficha SAGA ${flightId}: ${err?.message || err}.`);
+      return {
+        ok: false,
+        url: `${SAGA_BASE_URL}/flight_records/pdf/${encodeURIComponent(flightId)}`,
+        message: "Nao foi possivel consultar o PDF da ficha.",
+      };
+    });
+
   let operations = await sagaFetch(
     filteredPath,
     {
@@ -1562,7 +2898,12 @@ async function sagaLookupFlight(payload = {}) {
     group = groupSagaFlightsById(mappedRows).find((item) => cleanString(item.id) === flightId);
   }
 
-  await saveSagaAuthSession(cookieJar, session.loginEmail).catch(() => null);
+  // Aguarda PDF e salva sessão em paralelo — PDF provavelmente já terminou enquanto buscava operações
+  const [pdfRecord] = await Promise.all([
+    pdfPromise,
+    saveSagaAuthSession(cookieJar, session.loginEmail).catch(() => null),
+  ]);
+
   if (!group) {
     logs.push(`Voo SAGA ${flightId} nao encontrado no periodo ${range.startDate} a ${range.endDate}.`);
     return { ok: false, flight: null, message: "Voo SAGA nao encontrado nos ultimos 24 meses.", statuses, locations, htmlLengths, logs };
@@ -1571,6 +2912,7 @@ async function sagaLookupFlight(payload = {}) {
   const firstLeg = group.legs[0] || {};
   const flightDate = dateBrToIso(firstLeg.dataDoVoo) || "";
   const metaLegs = group.legs.map((leg, legIndex) => sagaMetaLeg(leg, legIndex, flightDate));
+  const metaLegsWithPdfNavigation = sagaApplyPdfNavigationToMetaLegs(metaLegs, pdfRecord);
   logs.push(`Voo SAGA ${flightId}: ${group.legs.length} perna(s) encontradas.`);
   return {
     ok: true,
@@ -1578,7 +2920,8 @@ async function sagaLookupFlight(payload = {}) {
       id: group.id,
       summary: sagaLookupSummary(group),
       legs: group.legs,
-      metaLegs,
+      metaLegs: metaLegsWithPdfNavigation,
+      pdfRecord,
       headers: parsed.headers,
     },
     statuses,
@@ -1590,11 +2933,16 @@ async function sagaLookupFlight(payload = {}) {
 
 function sagaFlightPermissions(studentUserId, instructorUserId) {
   const perms = [
-    sdk.Permission.read(sdk.Role.user(studentUserId)),
+    sdk.Permission.read(sdk.Role.users()),
     sdk.Permission.read(sdk.Role.label("admin")),
     sdk.Permission.update(sdk.Role.label("admin")),
     sdk.Permission.delete(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+    sdk.Permission.update(sdk.Role.label("instrutor")),
   ];
+  if (studentUserId) {
+    perms.push(sdk.Permission.read(sdk.Role.user(studentUserId)));
+  }
   if (instructorUserId) {
     perms.push(sdk.Permission.read(sdk.Role.user(instructorUserId)));
     perms.push(sdk.Permission.update(sdk.Role.user(instructorUserId)));
@@ -1602,12 +2950,131 @@ function sagaFlightPermissions(studentUserId, instructorUserId) {
   return Array.from(new Set(perms));
 }
 
-function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId) {
+function sagaImportZuluToLocalClock(raw) {
+  const match = cleanString(raw).match(/^(\d{2}):(\d{2})$/);
+  if (!match) return cleanString(raw);
+  const total = (Number(match[1]) * 60 + Number(match[2]) - 180 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function sagaImportNormalizeDuration(raw) {
+  const digits = cleanString(raw).replace(/\D/g, "").slice(0, 4);
+  if (!digits) return "";
+  if (digits.length <= 2) return digits;
+  const hh = Math.max(0, Number(digits.slice(0, 2)) || 0);
+  if (digits.length === 3) return `${String(hh).padStart(2, "0")}:${digits[2]}`;
+  const mm = Math.min(59, Math.max(0, Number(digits.slice(2, 4)) || 0));
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function sagaImportSanitizeAerodrome(value) {
+  const code = cleanString(value).toUpperCase();
+  return code === "---" ? "" : code;
+}
+
+function sagaImportInstructorOutcome(text) {
+  const normalized = cleanString(text).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/\b(reprovado|reprovada|insatisfatorio|inapto|nao aprovado|nao aprovada)\b/.test(normalized)) return "failed";
+  if (/\b(aprovado|aprovada|satisfatorio|apto|apta)\b/.test(normalized)) return "approved";
+  return "";
+}
+
+function sagaImportFuelInput(input) {
+  if (!input || typeof input.value !== "number" || !Number.isFinite(input.value)) {
+    return { value: null, unit: "l", weightKg: null };
+  }
+  const unit = input.unit === "kg" ? "kg" : "l";
+  return {
+    value: input.value,
+    unit,
+    weightKg: unit === "kg" ? input.value : Number((input.value * 0.72).toFixed(2)),
+  };
+}
+
+function sagaImportWeightBalanceMeta(pdfRecord, aircraftIdent) {
+  const wb = pdfRecord?.weightBalance;
+  if (!wb) return null;
+  return {
+    version: "WEIGHT_BALANCE_V1",
+    aircraft: {
+      registration: cleanString(aircraftIdent),
+      emptyWeightKg: null,
+      emptyArmMm: null,
+      occupantsArmMm: null,
+      occupantsMaxKg: null,
+      baggageArmMm: null,
+      baggageMaxKg: null,
+      fuelArmMm: null,
+      fuelMaxKg: null,
+      fuelDensityKgPerL: 0.72,
+      maxWeightKg: null,
+      armMinMm: null,
+      armMaxMm: null,
+    },
+    inputs: {
+      personsOnBoard: typeof wb.personsOnBoard === "number" ? wb.personsOnBoard : null,
+      occupantsWeightKg: typeof wb.occupantsWeightKg === "number" ? wb.occupantsWeightKg : null,
+      baggageWeightKg: typeof wb.baggageWeightKg === "number" ? wb.baggageWeightKg : null,
+      rampFuel: sagaImportFuelInput(wb.rampFuel),
+      taxiFuel: sagaImportFuelInput(wb.taxiFuel),
+      tripFuel: sagaImportFuelInput(wb.tripFuel),
+    },
+    results: {
+      stationIssues: ["Dados da aeronave indisponiveis na importacao SAGA; calculo de envelope pendente."],
+      points: [
+        { id: "ramp", label: "Rampa", weightKg: null, momentKgMm: null, armMm: null, inEnvelope: null, issues: ["Dados insuficientes para calcular."] },
+        { id: "takeoff", label: "Decolagem", weightKg: null, momentKgMm: null, armMm: null, inEnvelope: null, issues: ["Dados insuficientes para calcular."] },
+        { id: "landing", label: "Pouso", weightKg: null, momentKgMm: null, armMm: null, inEnvelope: null, issues: ["Dados insuficientes para calcular."] },
+      ],
+      isComplete: false,
+      isWithinLimits: false,
+    },
+    updatedAt: nowIso(),
+  };
+}
+
+function sagaImportMetaLegFromLookup(leg, summary, fallbackDate) {
+  return {
+    id: crypto.randomUUID(),
+    date: cleanString(leg.date || summary?.date || fallbackDate),
+    role: cleanString(leg.role) || "Instrutor de voo",
+    studentRole: "",
+    instructorRole: cleanString(leg.role) || "Instrutor de voo",
+    dep: sagaImportSanitizeAerodrome(leg.dep),
+    arr: sagaImportSanitizeAerodrome(leg.arr),
+    landings: Number.isFinite(leg.landings) ? leg.landings : 0,
+    flightTime: sagaImportNormalizeDuration(leg.flightTime || "") || "00:00",
+    navTime: sagaImportNormalizeDuration(leg.navTime || "") || "00:00",
+    ifrTime: sagaImportNormalizeDuration(leg.ifrTime || "") || "00:00",
+    nightTime: sagaImportNormalizeDuration(leg.nightTime || "") || "00:00",
+    serviceTime: sagaImportNormalizeDuration(leg.serviceTime || "") || "00:00",
+    engineStart: sagaImportZuluToLocalClock(leg.engineStart || ""),
+    takeoff: sagaImportZuluToLocalClock(leg.takeoff || ""),
+    landing: sagaImportZuluToLocalClock(leg.landing || ""),
+    engineCut: sagaImportZuluToLocalClock(leg.engineCut || ""),
+    distance: cleanString(leg.distance),
+  };
+}
+
+function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId, pdfRecord = null) {
   const lastLeg = group.legs[group.legs.length - 1] || firstLeg;
   const flightDate = materialized.flight_date || "";
+  const lookupSummary = sagaLookupSummary(group);
+  const groupKey = cleanString(group.key || group.id);
+  const metaLegs = sagaApplyPdfNavigationToMetaLegs(
+    group.legs.map((leg, legIndex) => sagaMetaLeg(leg, legIndex, flightDate)),
+    pdfRecord,
+  ).map((leg) => sagaImportMetaLegFromLookup(leg, lookupSummary, flightDate));
+  const firstEngineStart = metaLegs.find((leg) => cleanString(leg.engineStart))?.engineStart || "";
+  const lastEngineCut = [...metaLegs].reverse().find((leg) => cleanString(leg.engineCut))?.engineCut || "";
+  const firstTakeoff = metaLegs.find((leg) => cleanString(leg.takeoff))?.takeoff || "";
+  const lastLanding = [...metaLegs].reverse().find((leg) => cleanString(leg.landing))?.landing || "";
+  const pdfOk = pdfRecord?.ok === true;
   const meta = {
     source: "saga",
     sagaFlightId: group.id,
+    sagaFlightGroupKey: groupKey,
+    sagaFlightGroupOrdinal: group.ordinal || 1,
     header: {
       studentUserId: studentUserId || "",
       studentLabel: cleanString(firstLeg.aluno),
@@ -1616,39 +3083,59 @@ function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, in
       instructorName: cleanString(firstLeg.instrutor) || null,
       date: flightDate,
       aircraft: materialized.aircraft_ident || "",
-      startTime: materialized.start_time || null,
-      departureTimeUtc: cleanString(firstLeg.acionamento).slice(0, 5) || null,
-      engineCutoffTimeUtc: cleanString(lastLeg.corte).slice(0, 5) || null,
-      takeoffTimeUtc: cleanString(firstLeg.decolagem).slice(0, 5) || null,
-      landingTimeUtc: cleanString(lastLeg.pouso).slice(0, 5) || null,
+      startTime: firstEngineStart || materialized.start_time || null,
+      departureTimeUtc: firstEngineStart || sagaImportZuluToLocalClock(cleanString(firstLeg.acionamento).slice(0, 5)) || null,
+      engineCutoffTimeUtc: lastEngineCut || sagaImportZuluToLocalClock(cleanString(lastLeg.corte).slice(0, 5)) || null,
+      takeoffTimeUtc: firstTakeoff || sagaImportZuluToLocalClock(cleanString(firstLeg.decolagem).slice(0, 5)) || null,
+      landingTimeUtc: lastLanding || sagaImportZuluToLocalClock(cleanString(lastLeg.pouso).slice(0, 5)) || null,
       isNight: group.legs.some((leg) => /not/i.test(cleanString(leg.diurnoOuNoturno))),
     },
     preFlight: {
-      objectiveMd: "",
-      briefingMd: "",
+      objectiveMd: pdfOk ? cleanString(pdfRecord.objectiveMd) : "",
+      briefingMd: pdfOk ? cleanString(pdfRecord.briefingMd) : "",
     },
-    legs: group.legs.map((leg, legIndex) => sagaMetaLeg(leg, legIndex, flightDate)),
+    legs: metaLegs,
+    exercises: pdfOk && Array.isArray(pdfRecord.exercises)
+      ? pdfRecord.exercises.map((exercise) => ({
+          id: sagaDocId("saga_exercise", `${groupKey}_${cleanString(exercise.title)}`).slice(0, 64),
+          title: cleanString(exercise.title),
+          grade: ["NO", "1", "2", "3", "4"].includes(cleanString(exercise.grade)) ? cleanString(exercise.grade) : "NO",
+        })).filter((exercise) => exercise.title)
+      : [],
+    ...(pdfOk && pdfRecord.weightBalance ? { weightBalance: sagaImportWeightBalanceMeta(pdfRecord, materialized.aircraft_ident) } : {}),
     risk: {
-      commentsMd: "",
-      dangerMd: "",
-      riskMd: "",
-      managementMd: "",
-      instructorOpinionMd: "",
+      commentsMd: pdfOk ? cleanString(pdfRecord.commentsMd) : "",
+      dangerMd: pdfOk ? cleanString(pdfRecord.dangerMd) : "",
+      riskMd: pdfOk ? cleanString(pdfRecord.riskMd) : "",
+      managementMd: pdfOk ? cleanString(pdfRecord.managementMd) : "",
+      instructorOutcome: pdfOk ? sagaImportInstructorOutcome(pdfRecord.result) : "",
+      instructorOpinionMd: pdfOk ? cleanString(pdfRecord.result) : "",
     },
     saga: {
       legs: group.legs,
+      pdfRecord: pdfRecord || null,
     },
   };
   return `${META_PREFIX}${Buffer.from(JSON.stringify(meta), "utf8").toString("base64")}\n`;
 }
 
-async function updateSagaFlightDocument(docId, materialized, optionalFields) {
+async function updateSagaFlightDocument(docId, materialized, optionalFields, studentUserId, instructorUserId) {
+  const existing = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
+  const permissions = existing
+    ? Array.from(new Set([...(existing.$permissions || []), ...sagaFlightPermissions(studentUserId, instructorUserId)]))
+    : sagaFlightPermissions(studentUserId, instructorUserId);
   try {
-    return await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, { ...materialized, ...optionalFields });
+    return await databases.updateDocument(
+      DATABASE_ID,
+      FLIGHTS_COLLECTION_ID,
+      docId,
+      { ...materialized, ...optionalFields },
+      permissions,
+    );
   } catch (err) {
     const message = String(err?.message || "");
     if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
-    return databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, materialized);
+    return databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, materialized, permissions);
   }
 }
 
@@ -1661,8 +3148,9 @@ async function ensureSagaStudentTrack(studentUserId, trainingTrackId) {
   }
 }
 
-async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = false } = {}) {
+async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = false, cookieJar = null, logs = null } = {}) {
   const firstLeg = group.legs[0] || {};
+  const groupKey = cleanString(group.key || group.id);
   const sagaAircraft = cleanString(firstLeg.aeronave);
   const sagaCourse = cleanString(firstLeg.curso);
   const aircraftIdent = cleanString(mapping.aircraftBySaga?.[sagaAircraft]);
@@ -1676,14 +3164,32 @@ async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = 
     aircraft: sagaAircraft,
     course: sagaCourse,
   };
-  if (!aircraftIdent) return { skipped: true, reason: "missing_aircraft_mapping", ...baseFailure };
-  if (!trainingTrackId) return { skipped: true, reason: "missing_course_mapping", ...baseFailure };
-  if (!studentUserId) return { skipped: true, reason: "missing_student", ...baseFailure };
+  if (!aircraftIdent) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2664',message:'flight skipped missing aircraft mapping',data:{groupId:group?.id,groupKey,sagaAircraft,date:cleanString(firstLeg?.dataDoVoo),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return { skipped: true, reason: "missing_aircraft_mapping", ...baseFailure };
+  }
+  if (!trainingTrackId) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2665',message:'flight skipped missing course mapping',data:{groupId:group?.id,groupKey,sagaCourse,date:cleanString(firstLeg?.dataDoVoo),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return { skipped: true, reason: "missing_course_mapping", ...baseFailure };
+  }
+  if (!studentUserId) {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2666',message:'flight skipped missing student mapping',data:{groupId:group?.id,groupKey,date:cleanString(firstLeg?.dataDoVoo),student:cleanString(firstLeg?.aluno),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return { skipped: true, reason: "missing_student", ...baseFailure };
+  }
 
-  const docId = sagaDocId(testMode ? "saga_test_flight" : "saga_flight", group.id);
+  const docId = sagaDocId(testMode ? "saga_test_flight" : "saga_flight", groupKey);
   const existingDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
   const totalFlightMinutes = group.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.tempoDeVooHhmm || leg.tempoDeVooHoras), 0);
-  const blockTimeMinutes = group.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.tempoDeServicoHhmm || leg.tempoDeServicoHoras), 0);
+  const blockTimeMinutes = group.legs.reduce(
+    (acc, leg) => acc + (sagaLegBlockMinutes(leg) ?? parseDurationToMinutes(leg.tempoDeServicoHhmm || leg.tempoDeServicoHoras)),
+    0,
+  );
   const landings = group.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(Number(cleanString(leg.numeroPousos).replace(",", ".")) || 0)), 0);
   const totalMiles = group.legs.reduce((acc, leg) => acc + parseMiles(leg.distancia), 0);
   const materialized = {
@@ -1692,14 +3198,14 @@ async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = 
     student_user_id: studentUserId,
     instructor_user_id: instructorUserId,
     created_by_role: "admin",
-    name: `SAGA ${group.id} - ${cleanString(firstLeg.aluno) || "Voo"}`.slice(0, 255),
-    source_filename: `${testMode ? "saga-test-flight" : "saga-flight"}-${group.id}`,
+    name: `SAGA ${group.id}${group.ordinal > 1 ? ` #${group.ordinal}` : ""} - ${cleanString(firstLeg.aluno) || "Voo"}`.slice(0, 255),
+    source_filename: `${testMode ? "saga-test-flight" : "saga-flight"}-${groupKey}`,
     csv_text: "",
     csv_file_id: null,
     aircraft_ident: aircraftIdent,
     duration_sec: totalFlightMinutes * 60,
     flight_date: dateBrToIso(firstLeg.dataDoVoo) || null,
-    start_time: cleanString(firstLeg.decolagem || firstLeg.acionamento).slice(0, 8) || null,
+    start_time: cleanString(firstLeg.acionamento || firstLeg.decolagem).slice(0, 8) || null,
     from_to: sagaRouteFromLegs(group.legs).slice(0, 255) || null,
     landings,
     block_time_minutes: blockTimeMinutes || null,
@@ -1713,15 +3219,34 @@ async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = 
     training_snapshot_json: JSON.stringify({ source: "saga", course: sagaCourse, mission: firstLeg.missaoDoAluno || null }),
     flight_status: "Realizado",
   };
-  materialized.csv_text = buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId);
+  let pdfRecord = null;
+  if (cookieJar) {
+    const statuses = {};
+    const locations = {};
+    const htmlLengths = {};
+    pdfRecord = await sagaFetchFlightRecordPdf(group.id, cookieJar, logs || [], statuses, locations, htmlLengths)
+      .catch((err) => {
+        if (logs) logs.push(`Ficha SAGA ${group.id}: ${err?.message || err}.`);
+        return { ok: false, message: "Nao foi possivel consultar a ficha SAGA durante o import." };
+      });
+    if (logs) {
+      logs.push(pdfRecord?.ok
+        ? `Ficha SAGA ${group.id}: dados da ficha aplicados ao voo importado.`
+        : `Ficha SAGA ${group.id}: ${pdfRecord?.message || "sem dados aplicados"}`);
+    }
+  }
+  materialized.csv_text = buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId, pdfRecord);
   const optionalFields = {
-    saga_flight_id: `${testMode ? "test:" : ""}${cleanString(group.id)}`.slice(0, 64),
-    saga_legs_json: JSON.stringify(group.legs).slice(0, 65535),
+    saga_flight_id: `${testMode ? "test:" : ""}${groupKey}`.slice(0, 64),
+    saga_legs_json: JSON.stringify(group.legs.map((leg) => ({ ...leg, sagaFlightId: group.id, sagaFlightGroupKey: groupKey }))).slice(0, 65535),
     saga_imported_at: nowIso(),
   };
 
   if (existingDoc) {
-    await updateSagaFlightDocument(docId, materialized, optionalFields);
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H2',location:'main.js:2727',message:'flight updated existing doc',data:{groupId:group?.id,groupKey,docId,date:materialized.flight_date,studentUserId,aircraftIdent},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    await updateSagaFlightDocument(docId, materialized, optionalFields, studentUserId, instructorUserId);
     const assigned = await ensureSagaStudentTrack(studentUserId, trainingTrackId);
     return { updated: true, duplicate: true, id: group.id, documentId: docId, trackAssigned: assigned };
   }
@@ -1754,15 +3279,184 @@ async function importSagaFlightGroup(group, mapping, usersByCanac, { testMode = 
   return { created: true, id: group.id, documentId: doc.$id, trackAssigned };
 }
 
-async function sagaImportData(payload = {}, actorUserId = "saga-import") {
+function resolveSagaScheduleAircraft(schedule, mapping, catalogs) {
+  const sagaAircraft = cleanString(schedule.aircraft);
+  const mapped = cleanString(mapping.aircraftBySaga?.[sagaAircraft]);
+  if (mapped) return mapped;
+  const normalized = normalizeAircraftIdent(sagaAircraft);
+  const match = (catalogs?.aircrafts || []).find((aircraft) => normalizeAircraftIdent(aircraft.registration) === normalized);
+  return cleanString(match?.registration);
+}
+
+function sagaScheduleDurationMinutes(schedule) {
+  const start = Date.parse(cleanString(schedule.startAt));
+  const end = Date.parse(cleanString(schedule.endAt));
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) return Math.round((end - start) / 60000);
+  return clockDiffMinutes(sagaLocalDateTimeParts(schedule.startAtRaw).time, sagaLocalDateTimeParts(schedule.endAtRaw).time) || 0;
+}
+
+function buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, instructorUserId) {
+  const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+  const end = sagaLocalDateTimeParts(schedule.endAtRaw || schedule.endAt);
+  const meta = {
+    source: "saga_schedule",
+    sourceVersion: 1,
+    scheduleId: cleanString(schedule.id),
+    importedAt: nowIso(),
+    header: {
+      flightDate: materialized.flight_date || start.date || "",
+      studentUserId,
+      instructorUserId: instructorUserId || null,
+      studentLabel: cleanString(schedule.studentName),
+      studentName: cleanString(schedule.studentName),
+      instructorName: cleanString(schedule.instructorName) || null,
+      aircraft: materialized.aircraft_ident || "",
+      startTime: materialized.start_time || start.time || null,
+      departureTimeUtc: start.time || null,
+      engineCutoffTimeUtc: end.time || null,
+      isNight: false,
+      notes: cleanString(schedule.notes),
+    },
+    preFlight: {
+      objectiveMd: cleanString(schedule.notes),
+      briefingMd: "",
+    },
+    legs: [],
+    risk: {
+      commentsMd: "",
+      dangerMd: "",
+      riskMd: "",
+      managementMd: "",
+      instructorOpinionMd: "",
+    },
+    saga: {
+      schedule: schedule.raw,
+    },
+  };
+  return `${META_PREFIX}${Buffer.from(JSON.stringify(meta), "utf8").toString("base64")}\n`;
+}
+
+async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode = false } = {}) {
+  const aircraftIdent = resolveSagaScheduleAircraft(schedule, mapping, catalogs);
+  const studentUserId = usersBySagaId.get(cleanString(schedule.studentSagaId)) || null;
+  const instructorUserId = usersBySagaId.get(cleanString(schedule.instructorSagaId)) || null;
+  const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+  const end = sagaLocalDateTimeParts(schedule.endAtRaw || schedule.endAt);
+  const baseFailure = {
+    id: schedule.id,
+    date: start.date,
+    student: cleanString(schedule.studentName),
+    aircraft: cleanString(schedule.aircraft),
+    course: "",
+  };
+  if (!aircraftIdent) return { skipped: true, reason: "missing_aircraft_mapping", ...baseFailure };
+  if (!studentUserId) return { skipped: true, reason: "missing_student", ...baseFailure };
+  if (!start.date) return { skipped: true, reason: "missing_schedule_date", ...baseFailure };
+
+  const docId = sagaDocId(testMode ? "saga_test_schedule" : "saga_schedule", schedule.id);
+  const existingDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
+  const durationMinutes = sagaScheduleDurationMinutes(schedule);
+  const materialized = {
+    school_id: SCHOOL_ID,
+    user_id: studentUserId,
+    student_user_id: studentUserId,
+    instructor_user_id: instructorUserId,
+    created_by_role: "admin",
+    name: `SAGA Agendado ${schedule.id} - ${cleanString(schedule.studentName) || "Voo"}`.slice(0, 255),
+    source_filename: `${testMode ? "saga-test-schedule" : "saga-schedule"}-${schedule.id}`,
+    csv_text: "",
+    csv_file_id: null,
+    aircraft_ident: aircraftIdent,
+    duration_sec: durationMinutes > 0 ? durationMinutes * 60 : null,
+    flight_date: start.date,
+    start_time: start.time || null,
+    from_to: cleanString(schedule.notes).slice(0, 255) || null,
+    landings: 0,
+    block_time_minutes: durationMinutes || null,
+    total_flight_minutes: durationMinutes || null,
+    total_miles: null,
+    telemetry_present: false,
+    is_night: false,
+    training_track_id: null,
+    training_stage_id: null,
+    training_mission_id: null,
+    training_snapshot_json: JSON.stringify({ source: "saga_schedule", notes: cleanString(schedule.notes) || null }),
+    flight_status: "Previsto",
+  };
+  materialized.csv_text = buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, instructorUserId);
+  const optionalFields = {
+    saga_flight_id: `${testMode ? "test:" : ""}schedule:${cleanString(schedule.id)}`.slice(0, 64),
+    saga_legs_json: JSON.stringify([schedule.raw]).slice(0, 65535),
+    saga_imported_at: nowIso(),
+  };
+
+  if (existingDoc) {
+    await updateSagaFlightDocument(docId, materialized, optionalFields, studentUserId, instructorUserId);
+    return { updated: true, duplicate: true, id: schedule.id, documentId: docId };
+  }
+
+  let doc;
+  try {
+    doc = await databases.createDocument(
+      DATABASE_ID,
+      FLIGHTS_COLLECTION_ID,
+      docId,
+      { ...materialized, ...optionalFields },
+      sagaFlightPermissions(studentUserId, instructorUserId),
+    );
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+    doc = await databases.createDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, materialized, sagaFlightPermissions(studentUserId, instructorUserId));
+  }
+  return { created: true, id: schedule.id, documentId: doc.$id };
+}
+
+async function sagaImportData(payload = {}, actorUserId = "saga-import", runtimeLog = null) {
+  const logLine = (message) => {
+    if (typeof runtimeLog === "function") runtimeLog(message);
+  };
   const usersInput = Array.isArray(payload.users) ? payload.users : [];
   const testMode = payload.testMode !== false;
-  const mapping = sanitizeSagaImportMapping(payload.mapping || (await loadSagaImportMapping()));
+  const useEmailAlias = payload.useEmailAlias === true;
+  let mapping = sanitizeSagaImportMapping(payload.mapping || (await loadSagaImportMapping()));
+  const catalogs = await listSagaImportCatalogs();
   const flightsInput = applySagaFlightColumnMap(Array.isArray(payload.flights) ? payload.flights : [], mapping.flightColumnMap);
+  const financialEntriesInput = Array.isArray(payload.financialEntries) ? payload.financialEntries : [];
   const groupedFlights = groupSagaFlightsById(flightsInput);
-  const selectedGroups = testMode ? groupedFlights.slice(0, 5) : groupedFlights;
+  const requestedSagaUserIds = new Set((Array.isArray(payload.selectedSagaUserIds) ? payload.selectedSagaUserIds : []).map(cleanString).filter(Boolean));
+  const selectedStudentCanacs = new Set(
+    requestedSagaUserIds.size
+      ? usersInput.filter((user) => requestedSagaUserIds.has(cleanString(user.id))).map((user) => cleanString(user.codigoAnac)).filter(Boolean)
+      : [],
+  );
+  const filteredGroups = requestedSagaUserIds.size
+    ? groupedFlights.filter((group) => group.legs.some((leg) => selectedStudentCanacs.has(cleanString(leg.canacAluno))))
+    : groupedFlights;
+  const selectedGroups = testMode ? filteredGroups.slice(0, 5) : filteredGroups;
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H3',location:'main.js:2912',message:'flight selection counts',data:{testMode,requestedSagaUsers:requestedSagaUserIds.size,flightsInput:flightsInput.length,groupedFlights:groupedFlights.length,filteredGroups:filteredGroups.length,selectedGroups:selectedGroups.length},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  const scheduleLogs = [];
+  let scheduledFlights = [];
+  let importCookieJar = null;
+  try {
+    importCookieJar = await sagaLoginSession(payload.email, payload.password, scheduleLogs);
+    scheduledFlights = await fetchSagaScheduledFlights(importCookieJar, scheduleLogs);
+    await saveSagaAuthSession(importCookieJar, payload.email).catch((err) => {
+      scheduleLogs.push(`Sessao SAGA da escala atualizada, mas nao foi possivel salvar os cookies finais: ${err?.message || err}.`);
+    });
+  } catch (err) {
+    scheduleLogs.push(`Escala SAGA nao importada: ${String(err?.message || err)}`);
+  }
+  const filteredScheduledFlights = requestedSagaUserIds.size
+    ? scheduledFlights.filter((schedule) => requestedSagaUserIds.has(cleanString(schedule.studentSagaId)))
+    : scheduledFlights;
+  const selectedScheduledFlights = testMode ? filteredScheduledFlights.slice(0, 5) : filteredScheduledFlights;
   const selectedCanacs = new Set();
   const instructorCanacs = new Set();
+  const selectedSagaUserIds = new Set();
+  for (const id of requestedSagaUserIds) selectedSagaUserIds.add(id);
   for (const group of selectedGroups) {
     for (const leg of group.legs) {
       if (cleanString(leg.canacAluno)) selectedCanacs.add(cleanString(leg.canacAluno));
@@ -1772,14 +3466,26 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
       }
     }
   }
-  const selectedUsers = testMode && selectedCanacs.size
-    ? usersInput.filter((user) => selectedCanacs.has(cleanString(user.codigoAnac)))
-    : usersInput;
+  for (const schedule of selectedScheduledFlights) {
+    if (cleanString(schedule.studentSagaId)) selectedSagaUserIds.add(cleanString(schedule.studentSagaId));
+    if (cleanString(schedule.instructorSagaId)) selectedSagaUserIds.add(cleanString(schedule.instructorSagaId));
+  }
+  const selectedUsers = testMode && (selectedCanacs.size || selectedSagaUserIds.size)
+    ? usersInput.filter((user) => selectedCanacs.has(cleanString(user.codigoAnac)) || selectedSagaUserIds.has(cleanString(user.id)))
+    : requestedSagaUserIds.size
+      ? usersInput.filter((user) => selectedCanacs.has(cleanString(user.codigoAnac)) || selectedSagaUserIds.has(cleanString(user.id)))
+      : usersInput;
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H4',location:'main.js:2950',message:'selected users for import',data:{usersInput:usersInput.length,selectedUsers:selectedUsers.length,selectedCanacs:selectedCanacs.size,instructorCanacs:instructorCanacs.size},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
   const summary = {
     testMode,
+    useEmailAlias,
+    selectedSagaUsers: requestedSagaUserIds.size,
     requestedUsers: selectedUsers.length,
     requestedFlightGroups: selectedGroups.length,
+    requestedScheduledFlights: selectedScheduledFlights.length,
     usersCreated: 0,
     usersUpdated: 0,
     usersSkipped: 0,
@@ -1787,6 +3493,9 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
     flightsUpdated: 0,
     flightsSkipped: 0,
     duplicateFlights: 0,
+    scheduledFlightsCreated: 0,
+    scheduledFlightsUpdated: 0,
+    scheduledFlightsSkipped: 0,
     trainingAssignmentsTouched: 0,
     anacSynced: 0,
     anacPending: 0,
@@ -1794,7 +3503,12 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
     creditsCreated: 0,
     creditsUpdated: 0,
     creditsSkipped: 0,
+    financialCreditsCreated: 0,
+    financialCreditsUpdated: 0,
+    financialCreditsSkipped: 0,
     creditHoursImported: 0,
+    nightHoursReclassified: 0,
+    nightCreditRecordsCreated: 0,
     skippedFlights: [],
     skippedCredits: [],
     missing: {
@@ -1803,23 +3517,27 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
       students: [],
       creditAircrafts: [],
     },
-    logs: [],
+    logs: [...scheduleLogs],
   };
 
+  try {
   const usersByCanac = new Map();
+  const usersBySagaId = new Map();
   const existingProfiles = await safeListAllDocuments(PROFILES_COLLECTION_ID, [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
-    ...selectQuery(["$id", "user_id", "anac_code"]),
+    ...selectQuery(["$id", "user_id", "anac_code", "saga_user_id"]),
   ]);
   for (const profile of existingProfiles) {
     if (cleanString(profile.anac_code) && cleanString(profile.user_id)) usersByCanac.set(cleanString(profile.anac_code), cleanString(profile.user_id));
+    if (cleanString(profile.saga_user_id) && cleanString(profile.user_id)) usersBySagaId.set(cleanString(profile.saga_user_id), cleanString(profile.user_id));
   }
 
   const importedUsers = [];
   for (const sagaUser of selectedUsers) {
     const role = sagaUserRole(sagaUser, instructorCanacs);
-    const result = await importSagaUser(sagaUser, role, { testMode });
+    const result = await importSagaUser(sagaUser, role, { testMode, useEmailAlias });
     if (result.userId && cleanString(sagaUser.codigoAnac)) usersByCanac.set(cleanString(sagaUser.codigoAnac), result.userId);
+    if (result.userId && cleanString(sagaUser.id)) usersBySagaId.set(cleanString(sagaUser.id), result.userId);
     if (result.userId) {
       importedUsers.push({ sagaUser, userId: result.userId, role });
       const anac = await syncSagaUserAnac(result.userId, sagaUser);
@@ -1833,14 +3551,16 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
   }
 
   for (const group of selectedGroups) {
-    const result = await importSagaFlightGroup(group, mapping, usersByCanac, { testMode });
+    const result = await importSagaFlightGroup(group, mapping, usersByCanac, { testMode, cookieJar: importCookieJar, logs: summary.logs });
     if (result.created) {
       summary.flightsCreated += 1;
+      summary.logs.push(`Voo importado: id=${result.id || group.id} doc=${result.documentId || "(sem-doc)"} student=${cleanString(group.legs?.[0]?.aluno)} date=${cleanString(group.legs?.[0]?.dataDoVoo)}`);
       if (result.trackAssigned !== false) summary.trainingAssignmentsTouched += 1;
       continue;
     }
     if (result.updated) {
       summary.flightsUpdated += 1;
+      summary.logs.push(`Voo atualizado: id=${result.id || group.id} doc=${result.documentId || "(sem-doc)"} duplicate=${result.duplicate ? "yes" : "no"}`);
       if (result.duplicate) summary.duplicateFlights += 1;
       if (result.trackAssigned) summary.trainingAssignmentsTouched += 1;
       continue;
@@ -1861,7 +3581,38 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
     });
   }
 
+  for (const schedule of selectedScheduledFlights) {
+    const result = await importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode });
+    if (result.created) {
+      summary.scheduledFlightsCreated += 1;
+      summary.flightsCreated += 1;
+      continue;
+    }
+    if (result.updated) {
+      summary.scheduledFlightsUpdated += 1;
+      summary.flightsUpdated += 1;
+      if (result.duplicate) summary.duplicateFlights += 1;
+      continue;
+    }
+    summary.scheduledFlightsSkipped += 1;
+    summary.flightsSkipped += 1;
+    if (result.reason === "missing_aircraft_mapping") summary.missing.aircrafts.push(cleanString(schedule.aircraft));
+    if (result.reason === "missing_student") summary.missing.students.push(cleanString(schedule.studentName));
+    summary.skippedFlights.push({
+      id: `schedule:${result.id || schedule.id}`,
+      date: result.date || sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt).date,
+      student: result.student || cleanString(schedule.studentName),
+      aircraft: result.aircraft || cleanString(schedule.aircraft),
+      course: "",
+      reason: result.reason || "unknown",
+      message: sagaImportSkipReasonLabel(result.reason || "unknown"),
+    });
+  }
+
   const importedStudents = importedUsers.filter((item) => item.role === "aluno");
+  // #region agent log
+  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H4',location:'main.js:3078',message:'imported users role split',data:{importedUsers:importedUsers.length,importedStudents:importedStudents.length,importedInstructors:importedUsers.filter((item)=>item.role==='instrutor').length},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   if (importedStudents.length && STUDENT_CREDITS_COLLECTION_ID) {
     try {
       const cookieJar = await sagaLoginSession(payload.email, payload.password, summary.logs);
@@ -1869,34 +3620,121 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
         await fetchSagaCreditsForUsers(importedStudents.map((item) => item.sagaUser), cookieJar, summary.logs),
         mapping.creditColumnMap,
       );
+      // #region agent log
+      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:3085',message:'credit rows fetched after remap',data:{importedStudents:importedStudents.length,creditRows:creditRows.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      logLine(`Creditos SAGA: ${creditRows.length} linhas brutas para ${importedStudents.length} aluno(s).`);
+      const creditModels = uniqueCleanValues(creditRows.map((credit) => credit.model));
+      logLine(`Creditos SAGA modelos: ${creditModels.join(", ") || "(nenhum)"}`);
+      const proposedCreditMapping = proposeSagaImportMapping(flightsInput, mapping, catalogs, creditRows, scheduledFlights);
+      mapping = {
+        ...mapping,
+        creditAircraftBySaga: { ...proposedCreditMapping.creditAircraftBySaga, ...mapping.creditAircraftBySaga },
+      };
+      const unmappedCreditModels = creditModels.filter((model) => !cleanString(mapping.creditAircraftBySaga?.[model]));
+      if (unmappedCreditModels.length) {
+        summary.logs.push(`Creditos sem de-para de modelo: ${unmappedCreditModels.join(", ")}`);
+        logLine(`Creditos sem de-para: ${unmappedCreditModels.join(", ")}`);
+      }
       await saveSagaAuthSession(cookieJar, payload.email).catch((err) => {
         summary.logs.push(`Sessao SAGA atualizada, mas nao foi possivel salvar os cookies finais: ${err?.message || err}.`);
       });
       const userBySagaId = new Map(importedStudents.map((item) => [cleanString(item.sagaUser.id), item.userId]));
-      const catalogs = await listSagaImportCatalogs();
+      const creditRowsByUserId = new Map();
+      const coveredCreditFingerprints = new Set();
       for (const credit of creditRows) {
         const userId = userBySagaId.get(cleanString(credit.sagaUserId));
         if (!userId) continue;
-        const result = await upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode });
+        const list = creditRowsByUserId.get(userId) || [];
+        list.push({ ...credit, userId, modelId: cleanString(mapping.creditAircraftBySaga?.[cleanString(credit.model)]) });
+        creditRowsByUserId.set(userId, list);
+      }
+      const nightDemands = collectSagaNightHourDemands(selectedGroups, usersByCanac, mapping, catalogs);
+      const nightDemandsByUserId = new Map();
+      for (const demand of nightDemands) {
+        const list = nightDemandsByUserId.get(demand.userId) || [];
+        list.push(demand);
+        nightDemandsByUserId.set(demand.userId, list);
+      }
+
+      const effectiveCreditsByUserId = new Map();
+      for (const [userId, userCredits] of creditRowsByUserId.entries()) {
+        const userDemands = nightDemandsByUserId.get(userId) || [];
+        const segmented = segmentSagaCreditsForNight(userCredits, userDemands);
+        summary.nightHoursReclassified += segmented.nightHoursReclassified || 0;
+        summary.nightCreditRecordsCreated += segmented.nightCreditRecordsCreated || 0;
+        if (segmented.uncoveredNightHours > 0) {
+          summary.logs.push(`Creditos noturnos: aluno ${userId} com ${segmented.uncoveredNightHours}h sem saldo diurno suficiente para reclassificar.`);
+        }
+        let effectiveCredits = segmented.effectiveCredits;
+        if (!effectiveCredits.length && userCredits.length) {
+          effectiveCredits = buildSagaUnsegmentedCredits(userCredits);
+          summary.logs.push(
+            `Creditos: segmentacao noturna nao gerou pacotes para o aluno ${userId}; importando ${effectiveCredits.length} pacote(s) diurno(s) original(is).`,
+          );
+        }
+        effectiveCreditsByUserId.set(userId, effectiveCredits);
+      }
+
+      for (const [userId, effectiveCredits] of effectiveCreditsByUserId.entries()) {
+        for (const credit of effectiveCredits) {
+          const result = await upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode });
+          if (result.created) {
+            summary.creditsCreated += 1;
+            summary.creditHoursImported += result.hours || 0;
+            coveredCreditFingerprints.add(sagaCreditFingerprint(userId, credit._sourceCredit || credit));
+          } else if (result.updated) {
+            summary.creditsUpdated += 1;
+            summary.creditHoursImported += result.hours || 0;
+            coveredCreditFingerprints.add(sagaCreditFingerprint(userId, credit._sourceCredit || credit));
+          } else {
+            summary.creditsSkipped += 1;
+            if (result.reason === "missing_credit_aircraft_mapping") summary.missing.creditAircrafts.push(cleanString(result.aircraft));
+            summary.skippedCredits.push({
+              student: cleanString(credit.studentName),
+              model: cleanString(credit.model),
+              hours: cleanString(credit.hours || credit.hoursHhmm),
+              reason: result.reason || "unknown",
+              message: sagaImportCreditSkipReasonLabel(result.reason || "unknown"),
+            });
+          }
+        }
+      }
+      const financialEntries = financialEntriesInput.filter((entry) => !/cancel|estorn|exclu/i.test(cleanString(entry.status)));
+      let financialCoveredByCredit = 0;
+      for (const entry of financialEntries) {
+        const student = importedStudents.find((item) => sagaFinancialEntryMatchesStudent(entry, item.sagaUser));
+        if (!student) continue;
+        const userCreditRows = creditRowsByUserId.get(student.userId) || [];
+        const matchedCredit = findSagaCreditForFinancialEntry(entry, student.userId, userCreditRows);
+        if (matchedCredit && coveredCreditFingerprints.has(sagaCreditFingerprint(student.userId, matchedCredit))) {
+          financialCoveredByCredit += 1;
+          continue;
+        }
+        const result = await upsertSagaFinancialCredit(actorUserId, entry, student.userId, mapping, catalogs, { testMode, matchedCredit });
         if (result.created) {
-          summary.creditsCreated += 1;
+          summary.financialCreditsCreated += 1;
           summary.creditHoursImported += result.hours || 0;
         } else if (result.updated) {
-          summary.creditsUpdated += 1;
+          summary.financialCreditsUpdated += 1;
           summary.creditHoursImported += result.hours || 0;
         } else {
-          summary.creditsSkipped += 1;
+          summary.financialCreditsSkipped += 1;
           if (result.reason === "missing_credit_aircraft_mapping") summary.missing.creditAircrafts.push(cleanString(result.aircraft));
           summary.skippedCredits.push({
-            student: cleanString(credit.studentName),
-            model: cleanString(credit.model),
-            hours: cleanString(credit.hours || credit.hoursHhmm),
+            student: cleanString(entry.cliente),
+            model: cleanString(result.aircraft || entry.natureza),
+            hours: cleanString(matchedCredit?.hours || matchedCredit?.hoursHhmm),
             reason: result.reason || "unknown",
             message: sagaImportCreditSkipReasonLabel(result.reason || "unknown"),
           });
         }
       }
+      if (financialEntriesInput.length) {
+        summary.logs.push(`Financeiro SAGA: ${summary.financialCreditsCreated} creditos criados, ${summary.financialCreditsUpdated} atualizados, ${summary.financialCreditsSkipped} ignorados, ${financialCoveredByCredit} ja cobertos por creditos SAGA.`);
+      }
       summary.creditHoursImported = Number(summary.creditHoursImported.toFixed(2));
+      summary.nightHoursReclassified = Number(summary.nightHoursReclassified.toFixed(2));
     } catch (err) {
       summary.logs.push(`Creditos SAGA nao importados: ${String(err?.message || err)}`);
     }
@@ -1910,15 +3748,31 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import") {
   summary.missing.creditAircrafts = uniqueCleanValues(summary.missing.creditAircrafts);
   summary.logs.push(`Usuarios: ${summary.usersCreated} criados, ${summary.usersUpdated} atualizados, ${summary.usersSkipped} ignorados.`);
   summary.logs.push(`Voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.duplicateFlights} duplicados, ${summary.flightsSkipped} ignorados.`);
+  summary.logs.push(`Escala: ${summary.scheduledFlightsCreated} previstos criados, ${summary.scheduledFlightsUpdated} atualizados, ${summary.scheduledFlightsSkipped} ignorados.`);
   summary.logs.push(`ANAC: ${summary.anacSynced} atualizados, ${summary.anacPending} pendentes, ${summary.anacFailed} falhas.`);
   summary.logs.push(`Creditos: ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados (${summary.creditHoursImported}h).`);
-  return { ok: true, summary };
+  summary.logs.push(`Creditos noturnos: ${summary.nightCreditRecordsCreated} ordens noturnas geradas (${summary.nightHoursReclassified}h reclassificadas).`);
+  logLine(`Resumo voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsSkipped} ignorados.`);
+  logLine(`Resumo creditos: ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados.`);
+  const compactSummary = compactSagaImportSummary(summary);
+  await saveSagaImportLastSummary(compactSummary).catch((err) => {
+    summary.logs.push(`Nao foi possivel salvar resumo da importacao: ${err?.message || err}`);
+  });
+  return { ok: true, summary: compactSummary };
+  } catch (err) {
+    summary.logs.push(`Erro inesperado durante importacao: ${String(err?.message || err)}`);
+    logLine(`Erro importacao: ${String(err?.message || err)}`);
+    const compactSummary = compactSagaImportSummary(summary);
+    await saveSagaImportLastSummary(compactSummary).catch(() => {});
+    return { ok: false, summary: compactSummary, message: String(err?.message || err) };
+  }
 }
 
 function sagaImportSkipReasonLabel(reason) {
   if (reason === "missing_aircraft_mapping") return "Aeronave sem de-para.";
   if (reason === "missing_course_mapping") return "Curso/trilha sem de-para.";
   if (reason === "missing_student") return "Aluno nao encontrado/importado pelo CANAC.";
+  if (reason === "missing_schedule_date") return "Data do agendamento nao encontrada.";
   if (reason === "duplicate") return "Voo ja importado.";
   return "Motivo nao identificado.";
 }
@@ -1926,6 +3780,7 @@ function sagaImportSkipReasonLabel(reason) {
 function sagaImportCreditSkipReasonLabel(reason) {
   if (reason === "missing_credit_aircraft_mapping") return "Aeronave/modelo de credito sem de-para.";
   if (reason === "zero_credit_balance") return "Saldo de credito zerado no SAGA.";
+  if (reason === "missing_financial_credit_hours") return "Lancamento financeiro sem horas identificaveis.";
   if (reason === "credits_collection_missing") return "Colecao de creditos nao configurada.";
   return "Motivo nao identificado.";
 }
@@ -2019,6 +3874,35 @@ function parseClockMinutes(value) {
   return hours * 60 + minutes;
 }
 
+function clockDiffMinutes(start, end) {
+  const startMinutes = parseClockMinutes(start);
+  const endMinutes = parseClockMinutes(end);
+  if (startMinutes === null || endMinutes === null) return null;
+  const diff = endMinutes >= startMinutes ? endMinutes - startMinutes : endMinutes + 24 * 60 - startMinutes;
+  return diff > 0 ? diff : null;
+}
+
+function sagaLegBlockMinutes(leg) {
+  return clockDiffMinutes(cleanString(leg?.acionamento).slice(0, 5), cleanString(leg?.corte).slice(0, 5));
+}
+
+function metaLegBlockMinutes(leg) {
+  return clockDiffMinutes(leg?.engineStart, leg?.engineCut);
+}
+
+function metaBlockMinutes(meta) {
+  let total = 0;
+  let found = false;
+  for (const leg of meta?.legs || []) {
+    const minutes = metaLegBlockMinutes(leg);
+    if (minutes === null) continue;
+    total += minutes;
+    found = true;
+  }
+  if (found && total > 0) return total;
+  return clockDiffMinutes(meta?.header?.departureTimeUtc, meta?.header?.engineCutoffTimeUtc);
+}
+
 function parseMiles(value) {
   const raw = String(value || "").trim();
   if (!raw) return 0;
@@ -2098,7 +3982,12 @@ function isFutureFlight(flight) {
 }
 
 function isCompletedFlight(flight) {
-  return (flight.durationSec || 0) > 0 && (flight.landings || 0) > 0;
+  if (isFutureFlight(flight)) return false;
+  if (flight.flightStatus === "Previsto") return false;
+  const hasDuration = (flight.durationSec || 0) > 0;
+  if (!hasDuration) return false;
+  // SAGA may import realized flights with duration but zero landing count (e.g. local SBJD->SBJD).
+  return (flight.landings || 0) > 0 || flight.flightStatus === "Realizado";
 }
 
 function normalizeFlightStatus(value, flight) {
@@ -2310,6 +4199,52 @@ async function getInstructorPrefsByUserIds(userIds) {
   return new Map(docs.map((pref) => [pref.user_id, pref]));
 }
 
+function toProfileDocuments(docs) {
+  const allowed = new Set([
+    "identification",
+    "voterTitle",
+    "proofOfResidence",
+    "militaryCertificate",
+    "enrollmentForm",
+  ]);
+  const documents = {};
+  for (const doc of docs || []) {
+    const type = doc.document_type || "";
+    if (!allowed.has(type) || !doc.file_id) continue;
+    documents[type] = {
+      fileId: doc.file_id,
+      fileName: doc.file_name || "Documento",
+      mimeType: doc.mime_type || "application/octet-stream",
+      size: typeof doc.file_size === "number" ? doc.file_size : 0,
+      uploadedAt: doc.uploaded_at || "",
+    };
+  }
+  return documents;
+}
+
+async function getProfileDocumentsByUserIds(userIds) {
+  if (!PROFILE_DOCUMENTS_COLLECTION_ID || !userIds.length) return new Map();
+  const docs = [];
+  const batchSize = 50;
+  for (let i = 0; i < userIds.length; i += batchSize) {
+    const batch = userIds.slice(i, i + batchSize);
+    docs.push(
+      ...(await listAllDocuments(PROFILE_DOCUMENTS_COLLECTION_ID, [
+        sdk.Query.equal("user_id", batch),
+        ...selectQuery(PROFILE_DOCUMENT_SELECT),
+      ]).catch(() => [])),
+    );
+  }
+  const grouped = new Map();
+  for (const doc of docs) {
+    const userId = doc.user_id || "";
+    if (!userId) continue;
+    if (!grouped.has(userId)) grouped.set(userId, []);
+    grouped.get(userId).push(doc);
+  }
+  return new Map(Array.from(grouped.entries()).map(([userId, rows]) => [userId, toProfileDocuments(rows)]));
+}
+
 async function getFlightsByUserIds(userIds, { includeCsv = false } = {}) {
   if (!FLIGHTS_COLLECTION_ID || !userIds.length) return [];
   const batchSize = 25;
@@ -2384,6 +4319,1192 @@ async function requireInstructorOrAdmin(actorUserId) {
   return actor;
 }
 
+function contractPermissions(recipientUserId) {
+  return [
+    sdk.Permission.read(sdk.Role.users()),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.user(recipientUserId)),
+  ];
+}
+
+function profileDocumentPermissions(userId) {
+  return [
+    sdk.Permission.read(sdk.Role.users()),
+    sdk.Permission.read(sdk.Role.user(userId)),
+    sdk.Permission.update(sdk.Role.user(userId)),
+    sdk.Permission.delete(sdk.Role.user(userId)),
+  ];
+}
+
+function signaturePermissions() {
+  return [
+    sdk.Permission.read(sdk.Role.users()),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+  ];
+}
+
+function parseJsonSafe(value, fallback) {
+  if (!value || typeof value !== "string") return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function richTextDoc(text) {
+  return JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text }],
+      },
+    ],
+  });
+}
+
+function sagaOnlyDigits(value) {
+  return cleanString(value).replace(/\D/g, "");
+}
+
+function formatSagaCpf(value) {
+  const digits = sagaOnlyDigits(value).slice(0, 11);
+  if (digits.length !== 11) return cleanString(value);
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+}
+
+function toSagaBirthdate(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  return dateBrToIso(raw) || raw.slice(0, 10);
+}
+
+function mapSagaGender(sexo) {
+  const normalized = cleanString(sexo).toUpperCase();
+  return normalized === "F" ? "F" : normalized === "M" ? "M" : "";
+}
+
+function resolveSagaCourseName(trackId, trackName, mapping) {
+  const courseBySaga = mapping?.courseBySaga || {};
+  for (const [sagaCourse, gfTrackId] of Object.entries(courseBySaga)) {
+    if (cleanString(gfTrackId) === cleanString(trackId)) return sagaCourse;
+  }
+  return cleanString(trackName);
+}
+
+const SAGA_ENROLLMENT_COURSE = "Piloto Privado - Prático";
+
+function stripSagaAnacForStorage(data) {
+  if (!data || typeof data !== "object") return null;
+  const { picture_jpeg, ...rest } = data;
+  return rest;
+}
+
+function parseSagaAnacFromLeadOrProfile(profile, lead) {
+  const raw = cleanString(lead?.saga_anac_json) || cleanString(profile?.saga_anac_json);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSagaAnacPerson(cookieJar, { anacCode, birthDate, cpf }) {
+  const anacDigits = sagaOnlyDigits(anacCode);
+  const cpfDigits = sagaOnlyDigits(cpf);
+  const birth = toSagaBirthdate(birthDate);
+  if (!anacDigits || cpfDigits.length !== 11 || !birth) {
+    return { ok: false, message: "ANAC, CPF (11 digitos) e data de nascimento sao obrigatorios." };
+  }
+  const path = `/anac/person/${anacDigits}/${birth}/${cpfDigits}`;
+  const result = await sagaFetch(
+    path,
+    {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/javascript, */*; q=0.01",
+        referer: `${SAGA_BASE_URL}/users/create?access_type=student`,
+        "x-requested-with": "XMLHttpRequest",
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(result)) {
+    return { ok: false, message: "Sessao SAGA expirada na consulta ANAC." };
+  }
+  if (result.response.status >= 400) {
+    return { ok: false, message: `SAGA retornou HTTP ${result.response.status} na consulta ANAC.` };
+  }
+  try {
+    const data = JSON.parse(result.html);
+    if (!cleanString(data?.name)) {
+      return { ok: false, message: "Dados ANAC nao encontrados no SAGA." };
+    }
+    return { ok: true, data };
+  } catch {
+    return { ok: false, message: "Resposta invalida da consulta ANAC no SAGA." };
+  }
+}
+
+async function resolveSagaAnacPersonData(cookieJar, profile, lead) {
+  const cached = parseSagaAnacFromLeadOrProfile(profile, lead);
+  if (cached?.name) return { ok: true, data: cached, source: "cache" };
+  const anacCode = cleanString(profile?.anac_code) || cleanString(lead?.anac_code);
+  const birthDate = cleanString(profile?.birth_date) || cleanString(lead?.birth_date);
+  const cpf = cleanString(profile?.cpf) || cleanString(lead?.cpf);
+  const fetched = await fetchSagaAnacPerson(cookieJar, { anacCode, birthDate, cpf });
+  if (!fetched.ok) return fetched;
+  return { ok: true, data: fetched.data, source: "saga" };
+}
+
+function appendSagaAnacFieldsToForm(form, sagaAnac) {
+  if (!sagaAnac || typeof sagaAnac !== "object") return;
+  const cma = sagaAnac.cma && typeof sagaAnac.cma === "object" ? sagaAnac.cma : {};
+  form.set("medical_certificate[class]", cleanString(cma.class));
+  form.set("medical_certificate[val]", cleanString(cma.val));
+  form.set("medical_certificate[issued_by]", cleanString(cma.issued_by));
+  form.set("medical_certificate[remarks]", typeof cma.remarks === "string" ? cma.remarks : "");
+  if (Array.isArray(sagaAnac.licenses)) {
+    form.set("licenses", JSON.stringify(sagaAnac.licenses));
+  }
+  if (Array.isArray(sagaAnac.types)) {
+    form.set("types", JSON.stringify(sagaAnac.types));
+  }
+  if (Array.isArray(sagaAnac.languages)) {
+    form.set("languages", JSON.stringify(sagaAnac.languages));
+  }
+  const anacName = cleanString(sagaAnac.name);
+  if (anacName) {
+    form.set("name", anacName);
+    form.set("nickname", anacName.replace(/\s+/g, ""));
+  }
+}
+
+async function persistSagaAnacJsonOnLead(leadId, sagaAnac) {
+  if (!leadId || !CRM_LEADS_COLLECTION_ID || !sagaAnac) return;
+  const stored = stripSagaAnacForStorage(sagaAnac);
+  if (!stored) return;
+  try {
+    await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, leadId, {
+      saga_anac_json: JSON.stringify(stored),
+    });
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+  }
+}
+
+async function persistSagaAnacJsonOnProfile(recipientUserId, sagaAnac) {
+  if (!recipientUserId || !sagaAnac) return;
+  const profileDoc = await getProfileByUserId(recipientUserId);
+  if (!profileDoc?.$id) return;
+  const stored = stripSagaAnacForStorage(sagaAnac);
+  if (!stored) return;
+  try {
+    await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileDoc.$id, {
+      saga_anac_json: JSON.stringify(stored),
+    });
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+  }
+}
+
+function sagaAnacEnrollmentMissingFields(sagaAnac) {
+  if (!sagaAnac || typeof sagaAnac !== "object") return ["name"];
+  const missing = [];
+  if (!cleanString(sagaAnac.name)) missing.push("name");
+  const cma = sagaAnac.cma && typeof sagaAnac.cma === "object" ? sagaAnac.cma : {};
+  if (!cleanString(cma.class)) missing.push("medical_certificate[class]");
+  if (!cleanString(cma.val)) missing.push("medical_certificate[val]");
+  if (!cleanString(cma.issued_by)) missing.push("medical_certificate[issued_by]");
+  if (typeof cma.remarks !== "string") missing.push("medical_certificate[remarks]");
+  if (!Array.isArray(sagaAnac.licenses) || sagaAnac.licenses.length === 0) missing.push("licenses");
+  if (!Array.isArray(sagaAnac.types) || sagaAnac.types.length === 0) missing.push("types");
+  if (!Array.isArray(sagaAnac.languages) || sagaAnac.languages.length === 0) missing.push("languages");
+  return missing;
+}
+
+function hasSagaAnacData(profile, lead) {
+  const cached = parseSagaAnacFromLeadOrProfile(profile, lead);
+  return sagaAnacEnrollmentMissingFields(cached).length === 0;
+}
+
+async function lookupSagaAnacPersonCore(cookieJar, payload = {}) {
+  const anacCode = cleanString(payload.anacCode);
+  const birthDate = cleanString(payload.birthDate);
+  const cpf = cleanString(payload.cpf);
+  const result = await fetchSagaAnacPerson(cookieJar, { anacCode, birthDate, cpf });
+  if (!result.ok) return result;
+  const stored = stripSagaAnacForStorage(result.data);
+  return { ok: true, data: stored };
+}
+
+async function persistSagaAnacLookupResult(payload, stored) {
+  const leadId = cleanString(payload.leadId);
+  const userId = cleanString(payload.userId);
+  const email = cleanString(payload.email).toLowerCase();
+  const cpf = cleanString(payload.cpf);
+  if (leadId) await persistSagaAnacJsonOnLead(leadId, stored).catch(() => undefined);
+  if (userId) await persistSagaAnacJsonOnProfile(userId, stored).catch(() => undefined);
+  if (email && CRM_LEADS_COLLECTION_ID && !leadId) {
+    try {
+      const leads = await listAllDocuments(CRM_LEADS_COLLECTION_ID, [
+        sdk.Query.equal("email", [email]),
+        sdk.Query.limit(1),
+      ]);
+      const lead = leads[0];
+      if (lead?.$id) {
+        const updates = { saga_anac_json: JSON.stringify(stored) };
+        const cpfDigits = sagaOnlyDigits(cpf);
+        if (cpfDigits.length === 11) updates.cpf = formatSagaCpf(cpfDigits);
+        await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, lead.$id, updates).catch(() => undefined);
+      }
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+async function lookupSagaAnacPersonPublic(payload = {}) {
+  const cookieSession = await loadSagaAuthSession();
+  const cookieJar = cookieSession.cookieJar;
+  await assertSagaAuthSessionAlive(cookieJar);
+  const result = await lookupSagaAnacPersonCore(cookieJar, payload);
+  if (!result.ok) return result;
+  await saveSagaAuthSession(cookieJar, cookieSession.loginEmail).catch(() => undefined);
+  await persistSagaAnacLookupResult(payload, result.data);
+  return { ok: true, data: result.data };
+}
+
+async function lookupSagaAnacPersonAdmin(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const leadId = cleanString(payload.leadId);
+  let anacCode = cleanString(payload.anacCode);
+  let birthDate = cleanString(payload.birthDate);
+  let cpf = cleanString(payload.cpf);
+  let userId = cleanString(payload.userId);
+  if (leadId) {
+    const lead = await getLeadById(leadId).catch(() => null);
+    if (lead) {
+      anacCode = anacCode || cleanString(lead.anac_code);
+      birthDate = birthDate || cleanString(lead.birth_date);
+      cpf = cpf || cleanString(lead.cpf);
+      userId = userId || cleanString(lead.user_id);
+    }
+  }
+  if (userId && (!cpf || !anacCode || !birthDate)) {
+    const profile = await getProfileByUserId(userId);
+    if (profile) {
+      anacCode = anacCode || cleanString(profile.anac_code);
+      birthDate = birthDate || cleanString(profile.birth_date);
+      cpf = cpf || cleanString(profile.cpf);
+    }
+  }
+  const cookieSession = await loadSagaAuthSession();
+  const cookieJar = cookieSession.cookieJar;
+  await assertSagaAuthSessionAlive(cookieJar);
+  const result = await lookupSagaAnacPersonCore(cookieJar, { anacCode, birthDate, cpf });
+  if (!result.ok) return result;
+  await saveSagaAuthSession(cookieJar, cookieSession.loginEmail).catch(() => undefined);
+  await persistSagaAnacLookupResult({ ...payload, leadId, userId, anacCode, birthDate, cpf }, result.data);
+  return { ok: true, data: result.data };
+}
+
+async function resolveSagaCsrfTokenForUser(cookieJar, sagaUserId) {
+  const paths = [`/users/${sagaUserId}/edit`, `/users/${sagaUserId}`];
+  for (const path of paths) {
+    const page = await sagaFetchHtmlFollow(
+      path,
+      {
+        headers: {
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          referer: `${SAGA_BASE_URL}/users`,
+        },
+      },
+      cookieJar,
+    );
+    const token = resolveSagaCsrfToken(page.html, cookieJar);
+    if (token) return { token, referer: `${SAGA_BASE_URL}${path}` };
+  }
+  const createContext = await fetchSagaStudentCreateContext(cookieJar);
+  if (createContext.token) {
+    return {
+      token: createContext.token,
+      referer: createContext.referer || `${SAGA_BASE_URL}/users/${sagaUserId}`,
+    };
+  }
+  return { token: null, referer: `${SAGA_BASE_URL}/users/${sagaUserId}` };
+}
+
+async function deleteSagaUserAdmin(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const sagaUserId = cleanString(payload.sagaUserId);
+  const userId = cleanString(payload.userId);
+  if (!sagaUserId) {
+    throw Object.assign(new Error("ID SAGA nao informado."), { status: 400 });
+  }
+  const cookieSession = await loadSagaAuthSession();
+  const cookieJar = cookieSession.cookieJar;
+  await assertSagaAuthSessionAlive(cookieJar);
+  const csrf = await resolveSagaCsrfTokenForUser(cookieJar, sagaUserId);
+  if (!csrf.token) {
+    return { ok: false, message: "Token CSRF do SAGA nao encontrado para exclusao. Faca login novamente em Admin > Import." };
+  }
+  const form = new URLSearchParams();
+  form.set("_token", csrf.token);
+  form.set("_method", "DELETE");
+  const post = await sagaFetch(
+    `/users/${sagaUserId}`,
+    {
+      method: "POST",
+      body: form.toString(),
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: SAGA_BASE_URL,
+        referer: csrf.referer,
+      },
+    },
+    cookieJar,
+  );
+  await saveSagaAuthSession(cookieJar, cookieSession.loginEmail).catch(() => undefined);
+  if (isSagaLoginResponse(post)) {
+    return { ok: false, message: "Sessao SAGA expirada ao excluir usuario." };
+  }
+  const status = post.response.status;
+  if (status >= 400) {
+    return { ok: false, message: `SAGA retornou HTTP ${status} ao excluir usuario.` };
+  }
+  if (userId) {
+    const profileDoc = await getProfileByUserId(userId);
+    if (profileDoc?.$id) {
+      try {
+        await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileDoc.$id, {
+          saga_user_id: null,
+        });
+      } catch (err) {
+        const message = String(err?.message || "");
+        if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+      }
+    }
+  }
+  return { ok: true, message: `Usuario ${sagaUserId} excluido no SAGA.` };
+}
+
+function buildSagaStudentForm(profile, lead, token, sagaAnac) {
+  const data = contractProfileData(profile, lead);
+  const form = new URLSearchParams();
+  const anacDigits = sagaOnlyDigits(data.anacCode || lead?.anac_code);
+  const fullName = cleanString(data.fullName);
+  form.set("_token", token);
+  form.set("anac", anacDigits || cleanString(data.anacCode || lead?.anac_code));
+  form.set("birthdate", toSagaBirthdate(data.birthDate || lead?.birth_date));
+  form.set("cpf", formatSagaCpf(data.cpf || lead?.cpf));
+  form.set("business_config_id", "1");
+  form.set("name", fullName);
+  form.set("nickname", fullName.replace(/\s+/g, ""));
+  form.set("course", SAGA_ENROLLMENT_COURSE);
+  form.set("access_type", "student");
+  form.set("is_coordinator", "0");
+  form.set("gender", mapSagaGender(profile?.sexo));
+  form.set("email", anacDigits ? `aluno+${anacDigits}@epeac.com.br` : "");
+  appendSagaAnacFieldsToForm(form, sagaAnac);
+  return form;
+}
+
+function sagaCreateRedirectLocation(result) {
+  return String(result?.response?.headers?.get?.("location") || "");
+}
+
+function sagaCreateRedirectPath(result) {
+  const location = sagaCreateRedirectLocation(result);
+  if (!location) return "";
+  try {
+    if (location.startsWith("http://") || location.startsWith("https://")) {
+      return new URL(location).pathname;
+    }
+  } catch {
+    // ignore malformed Location header
+  }
+  return location.startsWith("/") ? location.split("?")[0] : `/${location.split("?")[0]}`;
+}
+
+function sagaCreateResponseSucceeded(result) {
+  const path = sagaCreateRedirectPath(result);
+  if (/\/users\/create|\/students\/create/i.test(path)) return false;
+  if (extractSagaStudentIdFromResponse(result)) return true;
+  const status = result?.response?.status ?? 0;
+  if (status === 302 || status === 303) {
+    if (/\/users\/\d+/i.test(path) || /\/students\/\d+/i.test(path)) return true;
+    // Laravel redireciona para a listagem apos criar com sucesso
+    if (/^\/users\/?$/i.test(path) || /^\/students\/?$/i.test(path)) return true;
+  }
+  return false;
+}
+
+async function persistSagaUserIdOnProfile(recipientUserId, sagaUserId) {
+  const profileDoc = await getProfileByUserId(recipientUserId);
+  if (!profileDoc?.$id) return;
+  try {
+    await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileDoc.$id, {
+      saga_user_id: cleanString(sagaUserId).slice(0, 64) || null,
+    });
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+  }
+}
+
+async function findSagaUserIdByAnac(cookieJar, anacCode) {
+  const anacDigits = sagaOnlyDigits(anacCode);
+  if (!anacDigits) return null;
+  const users = await sagaFetch(
+    `/users/ajax?_=${Date.now()}`,
+    {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/javascript, */*; q=0.01",
+        referer: `${SAGA_BASE_URL}/users`,
+        "x-requested-with": "XMLHttpRequest",
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(users)) return null;
+  try {
+    const usersJson = JSON.parse(users.html);
+    const rows = Array.isArray(usersJson?.data) ? usersJson.data.map(translateSagaUserRow) : [];
+    const match = rows.find((row) => sagaOnlyDigits(row.codigoAnac) === anacDigits);
+    return match?.id ? cleanString(match.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractSagaStudentIdFromResponse(result) {
+  const location = result?.response?.headers?.get?.("location") || "";
+  const locMatch = location.match(/\/(?:students|users)\/(\d+)/i);
+  if (locMatch?.[1]) return locMatch[1];
+  const html = String(result?.html || "");
+  const urlMatch = html.match(/\/(?:students|users)\/(\d+)/i);
+  return urlMatch?.[1] || "";
+}
+
+async function createSagaStudentFromEnrollment({
+  profile,
+  lead,
+  recipientUserId,
+  trainingTrackId,
+  trainingTrackName,
+  ignoreSagaDuplicates = false,
+}) {
+  try {
+    const existingId = cleanString(profile?.saga_user_id);
+    if (existingId) {
+      return { ok: true, skipped: true, sagaUserId: existingId, message: "Perfil ja vinculado ao SAGA." };
+    }
+
+    const anacCode = cleanString(profile?.anac_code) || cleanString(lead?.anac_code);
+    const anacDigits = sagaOnlyDigits(anacCode);
+    if (!anacDigits) {
+      return { ok: false, message: "Codigo ANAC ausente; nao foi possivel criar no SAGA." };
+    }
+
+    const cookieSession = await loadSagaAuthSession();
+    const cookieJar = cookieSession.cookieJar;
+    await assertSagaAuthSessionAlive(cookieJar);
+
+    if (!ignoreSagaDuplicates) {
+      const foundId = await findSagaUserIdByAnac(cookieJar, anacCode);
+      if (foundId) {
+        await persistSagaUserIdOnProfile(recipientUserId, foundId);
+        return { ok: true, skipped: true, sagaUserId: foundId, message: "Aluno ja existia no SAGA; perfil vinculado." };
+      }
+    }
+
+    const createContext = await fetchSagaStudentCreateContext(cookieJar);
+    if (!createContext.token || !createContext.page) {
+      const attemptSummary = (createContext.attempts || [])
+        .map((item) => `${item.path} HTTP ${item.status}${item.login ? " (login)" : item.token ? " (ok)" : ""}`)
+        .join("; ");
+      return {
+        ok: false,
+        message: attemptSummary
+          ? `Token CSRF do SAGA nao encontrado na criacao de aluno. Tentativas: ${attemptSummary}. Faca login novamente em Admin > Import.`
+          : "Token CSRF do SAGA nao encontrado na tela de criacao de aluno. Faca login novamente em Admin > Import.",
+      };
+    }
+
+    const sagaAnacResult = await resolveSagaAnacPersonData(cookieJar, profile, lead);
+    if (!sagaAnacResult.ok) {
+      return { ok: false, message: sagaAnacResult.message || "Nao foi possivel obter dados ANAC no SAGA." };
+    }
+    const sagaAnac = sagaAnacResult.data;
+    const anacMissing = sagaAnacEnrollmentMissingFields(sagaAnac);
+    if (anacMissing.length) {
+      return {
+        ok: false,
+        message: `Dados ANAC incompletos para o SAGA: ${anacMissing.join(", ")}. Consulte ANAC novamente no CRM.`,
+      };
+    }
+    if (sagaAnacResult.source === "saga") {
+      await persistSagaAnacJsonOnLead(lead?.$id, sagaAnac).catch(() => undefined);
+      await persistSagaAnacJsonOnProfile(recipientUserId, sagaAnac).catch(() => undefined);
+    }
+
+    const token = createContext.token;
+    const createPath = createContext.path || "/users/create";
+    const createReferer = createContext.referer || `${SAGA_BASE_URL}${createPath}`;
+
+    const form = buildSagaStudentForm(profile, lead, token, sagaAnac);
+    const postResult = await sagaPostStudentCreate(cookieJar, {
+      html: createContext.html || createContext.page?.html || "",
+      createPath,
+      createReferer,
+      formBody: form.toString(),
+    });
+    const post = postResult.post;
+    const postPath = postResult.postPath;
+    await saveSagaAuthSession(cookieJar, cookieSession.loginEmail).catch(() => undefined);
+
+    if (isSagaLoginResponse(post)) {
+      return { ok: false, message: "Sessao SAGA expirada ao enviar cadastro." };
+    }
+
+    const status = post.response.status;
+    const redirectLocation = sagaCreateRedirectLocation(post);
+    if (status >= 400) {
+      const attemptSummary = (postResult.attempts || []).map((item) => `${item.postPath} HTTP ${item.status}`).join("; ");
+      return {
+        ok: false,
+        message: attemptSummary
+          ? `SAGA retornou HTTP ${status} ao criar aluno. Tentativas: ${attemptSummary}.`
+          : `SAGA retornou HTTP ${status} ao criar aluno (POST ${postPath}).`,
+      };
+    }
+
+    if (!sagaCreateResponseSucceeded(post)) {
+      const validationHint = sagaHtmlSnippet(post.html, 240);
+      if (/\/users\/create|\/students\/create/i.test(redirectLocation)) {
+        return {
+          ok: false,
+          message: validationHint
+            ? `SAGA nao criou o aluno (voltou para cadastro). ${validationHint}`
+            : "SAGA nao criou o aluno (redirecionou de volta para a tela de cadastro).",
+        };
+      }
+      if (/erro|invalid|already exists|ja existe|obrigat/i.test(post.html)) {
+        return { ok: false, message: `SAGA recusou criacao: ${validationHint}` };
+      }
+      return {
+        ok: false,
+        message: redirectLocation
+          ? `SAGA nao criou o aluno (HTTP ${status}, Location: ${redirectLocation}).`
+          : `SAGA nao criou o aluno (HTTP ${status}).`,
+      };
+    }
+
+    let sagaUserId = extractSagaStudentIdFromResponse(post);
+    if (!sagaUserId) {
+      sagaUserId = await findSagaUserIdByAnac(cookieJar, anacCode);
+      if (!sagaUserId) {
+        return { ok: false, message: "SAGA nao criou o aluno; nao encontrado pela ANAC apos o envio." };
+      }
+    }
+
+    await persistSagaUserIdOnProfile(recipientUserId, sagaUserId);
+    return { ok: true, sagaUserId, message: "Aluno criado no SAGA." };
+  } catch (err) {
+    return { ok: false, message: String(err?.message || err).slice(0, 500) };
+  }
+}
+
+function contractProfileData(profile, fallback = {}) {
+  return {
+    fullName: cleanString(profile?.full_name || fallback.name),
+    cpf: cleanString(profile?.cpf),
+    phone: cleanString(profile?.phone || fallback.phone),
+    birthDate: cleanString(profile?.birth_date),
+    email: cleanString(profile?.email || fallback.email),
+    rg: cleanString(profile?.rg),
+    rgOrgaoExpedidor: cleanString(profile?.rg_orgao_expedidor),
+    rgIssueDate: cleanString(profile?.rg_data_emissao),
+    endereco: cleanString(profile?.endereco),
+    cep: cleanString(profile?.cep),
+    city: cleanString(profile?.cidade),
+    state: cleanString(profile?.uf),
+    nacionalidade: cleanString(profile?.nacionalidade),
+    estadoCivil: cleanString(profile?.estado_civil),
+    sex: cleanString(profile?.sexo),
+    birthplace: cleanString(profile?.naturalidade),
+    fatherName: cleanString(profile?.filiacao_pai),
+    motherName: cleanString(profile?.filiacao_mae),
+    educationLevel: cleanString(profile?.escolaridade),
+    educationPeriod: cleanString(profile?.escolaridade_periodo),
+    educationCourse: cleanString(profile?.escolaridade_curso),
+    allergies: cleanString(profile?.alergias_medicamentos),
+    emergencyName: cleanString(profile?.emergencia_nome),
+    emergencyRelation: cleanString(profile?.emergencia_parentesco),
+    emergencyAddress: cleanString(profile?.emergencia_endereco),
+    emergencyPhone: cleanString(profile?.emergencia_telefone),
+    anacCode: cleanString(profile?.anac_code),
+  };
+}
+
+function formatDateBr(value) {
+  if (!value) return "";
+  const date = new Date(String(value).includes("T") ? value : `${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("pt-BR");
+}
+
+function resolveSystemContractVars(contentJson, profileData) {
+  const map = {
+    "{{nome_completo}}": profileData.fullName,
+    "{{cpf}}": profileData.cpf,
+    "{{rg}}": profileData.rg,
+    "{{rg_orgao_expedidor}}": profileData.rgOrgaoExpedidor,
+    "{{data_nascimento}}": formatDateBr(profileData.birthDate),
+    "{{endereco}}": profileData.endereco,
+    "{{nacionalidade}}": profileData.nacionalidade,
+    "{{estado_civil}}": profileData.estadoCivil,
+    "{{email}}": profileData.email,
+    "{{telefone}}": profileData.phone,
+    "{{codigo_anac}}": profileData.anacCode,
+    "{{data_hoje}}": formatDateBr(new Date().toISOString()),
+  };
+  let out = String(contentJson || "");
+  for (const [key, value] of Object.entries(map)) out = out.split(key).join(value || "");
+  return out;
+}
+
+async function getLeadById(leadId) {
+  if (!CRM_LEADS_COLLECTION_ID) throw Object.assign(new Error("Coleção de CRM não configurada."), { status: 500 });
+  return databases.getDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, leadId);
+}
+
+async function listProfileDocumentsByUserId(userId) {
+  if (!PROFILE_DOCUMENTS_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [userId]),
+    sdk.Query.limit(50),
+  ]);
+  return res.documents || [];
+}
+
+function missingEnrollmentRequirements(lead, profile, documents) {
+  const data = contractProfileData(profile, lead);
+  const missing = [];
+  if (!lead?.user_id) missing.push("Conta vinculada ao lead");
+  const fieldLabels = [
+    ["fullName", "Nome completo"],
+    ["email", "E-mail"],
+    ["phone", "Telefone"],
+    ["cpf", "CPF"],
+    ["rg", "RG"],
+    ["rgOrgaoExpedidor", "Órgão expedidor do RG"],
+    ["rgIssueDate", "Data de emissão do RG"],
+    ["birthDate", "Data de nascimento"],
+    ["sex", "Sexo"],
+    ["endereco", "Endereço"],
+    ["cep", "CEP"],
+    ["city", "Cidade"],
+    ["state", "UF"],
+    ["birthplace", "Naturalidade"],
+    ["fatherName", "Filiação (pai)"],
+    ["motherName", "Filiação (mãe)"],
+    ["nacionalidade", "Nacionalidade"],
+    ["estadoCivil", "Estado civil"],
+    ["educationLevel", "Escolaridade"],
+    ["allergies", "Alergias a medicamentos"],
+    ["emergencyName", "Contato de emergência (nome)"],
+    ["emergencyRelation", "Contato de emergência (parentesco)"],
+    ["emergencyAddress", "Contato de emergência (endereço)"],
+    ["emergencyPhone", "Contato de emergência (telefone)"],
+    ["anacCode", "Código ANAC"],
+  ];
+  for (const [key, label] of fieldLabels) {
+    if (!data[key]) missing.push(label);
+  }
+  const byType = new Set((documents || []).map((doc) => cleanString(doc.document_type)));
+  const docLabels = {
+    identification: "Documento de identificação",
+    voterTitle: "Título de eleitor",
+    proofOfResidence: "Comprovante de residência",
+  };
+  for (const [type, label] of Object.entries(docLabels)) {
+    if (!byType.has(type)) missing.push(label);
+  }
+  if (!hasSagaAnacData(profile, lead)) {
+    const cached = parseSagaAnacFromLeadOrProfile(profile, lead);
+    const anacMissing = sagaAnacEnrollmentMissingFields(cached);
+    if (anacMissing.length) {
+      missing.push(`Dados ANAC do SAGA incompletos: ${anacMissing.join(", ")}`);
+    } else {
+      missing.push("Dados ANAC do SAGA (consulte ANAC no detalhe do lead)");
+    }
+  }
+  return missing;
+}
+
+async function listEnrollmentTemplates() {
+  if (!CONTRACT_TEMPLATES_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, CONTRACT_TEMPLATES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("standard_type", ["matricula"]),
+    sdk.Query.orderDesc("created_at"),
+    sdk.Query.limit(100),
+  ]);
+  return res.documents || [];
+}
+
+async function createContractDocument(payload, recipientUserId) {
+  return databases.createDocument(
+    DATABASE_ID,
+    CONTRACTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    payload,
+    contractPermissions(recipientUserId),
+  );
+}
+
+async function uploadEnrollmentPdfFile(contract, pdfBytes, suffix) {
+  if (!FLIGHTS_CSV_BUCKET_ID) {
+    throw Object.assign(new Error("Storage nao configurado."), { status: 500 });
+  }
+  const fileName = `ficha-matricula-${contract.recipient_user_id}-${suffix}.pdf`;
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([pdfBytes], fileName, { type: "application/pdf" })
+      : sdk.InputFile?.fromBuffer
+        ? sdk.InputFile.fromBuffer(pdfBytes, fileName)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de PDF nao suportado neste runtime."), { status: 500 });
+  return storage.createFile(
+    FLIGHTS_CSV_BUCKET_ID,
+    sdk.ID.unique(),
+    inputFile,
+    profileDocumentPermissions(contract.recipient_user_id),
+  );
+}
+
+async function ensureEnrollmentFormPreview(contract) {
+  if (contract.contract_kind !== "enrollment_form") {
+    throw Object.assign(new Error("Contrato nao e uma ficha de matricula."), { status: 400 });
+  }
+  const pdfBytes = await renderEnrollmentPdf({
+    ...contract,
+    signed_by_recipient_at: null,
+    signed_by_admin_at: null,
+  });
+  const uploaded = await uploadEnrollmentPdfFile(contract, pdfBytes, "preview");
+  await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contract.$id, {
+    enrollment_pdf_file_id: uploaded.$id,
+  });
+  await syncEnrollmentFormProfileDocument(contract, {
+    fileId: uploaded.$id,
+    fileName: `ficha-matricula-${contract.recipient_user_id}-preview.pdf`,
+    fileSize: pdfBytes.length,
+  });
+  return uploaded.$id;
+}
+
+async function sendContractNotificationEmail(contract, recipient) {
+  try {
+    const { settings } = await loadEmailSettings();
+    const { publicSettings: brand } = await loadEmailBrandSettings();
+    const result = await sendEmailToUser(settings, brand, recipient, {
+      eventType: "contract.created",
+      eyebrow: "Contrato para assinatura",
+      title: "Novo documento disponível para assinatura",
+      intro: `Olá${recipient.name ? `, ${recipient.name}` : ""}.`,
+      body: `O documento "${contract.template_name || "Contrato"}" está disponível na plataforma para assinatura.`,
+      ctaLabel: "Abrir plataforma",
+      url: brand.appUrl || APP_URL,
+    });
+    if (result?.status !== "skipped") {
+      await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contract.$id, {
+        email_sent_at: new Date().toISOString(),
+      }).catch(() => undefined);
+    }
+  } catch (err) {
+    console.warn("Contract email skipped:", err?.message || err);
+  }
+}
+
+async function getTrainingTrackName(trackId) {
+  const safeTrackId = cleanString(trackId);
+  if (!safeTrackId || !TRAINING_TRACKS_COLLECTION_ID) return "";
+  try {
+    const doc = await databases.getDocument(DATABASE_ID, TRAINING_TRACKS_COLLECTION_ID, safeTrackId);
+    return cleanString(doc.name);
+  } catch {
+    return "";
+  }
+}
+
+async function runEnrollmentAutomation(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  if (!CONTRACTS_COLLECTION_ID) throw Object.assign(new Error("Coleção de contratos não configurada."), { status: 500 });
+  const leadId = cleanString(payload.leadId);
+  if (!leadId) throw Object.assign(new Error("Lead não informado."), { status: 400 });
+  const trainingTrackId = cleanString(payload.trainingTrackId);
+  if (!trainingTrackId) {
+    throw Object.assign(new Error("Selecione a trilha de treinamento do aluno."), { status: 400 });
+  }
+  const trainingTrackName = await getTrainingTrackName(trainingTrackId);
+  if (!trainingTrackName) {
+    throw Object.assign(new Error("Trilha de treinamento inválida ou não encontrada."), { status: 400 });
+  }
+  const lead = await getLeadById(leadId);
+  const recipientUserId = cleanString(lead.user_id);
+  const profile = recipientUserId ? await getProfileByUserId(recipientUserId) : null;
+  const documents = recipientUserId ? await listProfileDocumentsByUserId(recipientUserId) : [];
+  const missing = missingEnrollmentRequirements(lead, profile, documents);
+  if (missing.length > 0) {
+    throw Object.assign(new Error(`Pendências para matrícula: ${missing.join(", ")}.`), { status: 422 });
+  }
+  if (recipientUserId) {
+    await assignStudentTrainingTrack(recipientUserId, trainingTrackId, true, "active");
+  }
+
+  let sagaResult = null;
+  if (payload.createInSaga !== false && recipientUserId) {
+    sagaResult = await createSagaStudentFromEnrollment({
+      profile,
+      lead,
+      recipientUserId,
+      trainingTrackId,
+      trainingTrackName,
+      ignoreSagaDuplicates: payload.ignoreSagaDuplicates === true,
+    });
+    if (!sagaResult.ok && !sagaResult.skipped) {
+      throw Object.assign(new Error(sagaResult.message || "Falha ao criar aluno no SAGA."), { status: 422 });
+    }
+  }
+
+  const profileData = contractProfileData(profile, lead);
+  const customVarValues = payload.customVarValues && typeof payload.customVarValues === "object" ? payload.customVarValues : {};
+  const enrollmentTrackMeta = { trainingTrackId, trainingTrackName };
+  const now = new Date().toISOString();
+  const allTemplates = await listEnrollmentTemplates();
+  const requestedTemplateIds = Array.isArray(payload.templateIds)
+    ? payload.templateIds.map(cleanString).filter(Boolean)
+    : null;
+  const allowedTemplateIds = new Set(allTemplates.map((item) => item.$id));
+  const templates =
+    requestedTemplateIds === null
+      ? allTemplates
+      : allTemplates.filter((item) => requestedTemplateIds.includes(item.$id) && allowedTemplateIds.has(item.$id));
+  const created = [];
+
+  for (const template of templates) {
+    const doc = await createContractDocument({
+      school_id: SCHOOL_ID,
+      template_id: template.$id,
+      template_name: cleanString(template.name) || "Contrato de matrícula",
+      lead_id: lead.$id,
+      standard_type: "matricula",
+      contract_kind: "standard_contract",
+      recipient_user_id: recipientUserId,
+      recipient_name: profileData.fullName,
+      content_resolved_json: resolveSystemContractVars(template.content_json, profileData),
+      custom_var_values_json: JSON.stringify(customVarValues),
+      status: "pending",
+      created_by: actorUserId,
+      created_at: now,
+    }, recipientUserId);
+    created.push(doc);
+  }
+
+  const enrollmentForm = await createContractDocument({
+    school_id: SCHOOL_ID,
+    template_id: "enrollment_form",
+    template_name: "Ficha de matrícula",
+    lead_id: lead.$id,
+    standard_type: "matricula",
+    contract_kind: "enrollment_form",
+    recipient_user_id: recipientUserId,
+    recipient_name: profileData.fullName,
+    content_resolved_json: richTextDoc("Ficha de matrícula gerada a partir do PDF padrão da escola. Assine para concluir o processo de matrícula."),
+    custom_var_values_json: JSON.stringify(enrollmentTrackMeta),
+    status: "pending",
+    created_by: actorUserId,
+    created_at: now,
+  }, recipientUserId);
+  await ensureEnrollmentFormPreview(enrollmentForm);
+  created.push(enrollmentForm);
+
+  await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, lead.$id, {
+    crm_status: "aguardando_assinatura_pagamento",
+  });
+
+  for (const contract of created) {
+    await sendContractNotificationEmail(contract, {
+      userId: recipientUserId,
+      email: profileData.email,
+      name: profileData.fullName,
+    });
+  }
+
+  return {
+    createdContracts: created.length,
+    nextStatus: "aguardando_assinatura_pagamento",
+    saga: sagaResult,
+  };
+}
+
+async function loadEnrollmentPhotoBytes(profile) {
+  const fileId = cleanString(profile?.anac_photo_file_id);
+  if (!fileId || !FLIGHTS_CSV_BUCKET_ID) return null;
+  try {
+    const buffer = await storage.getFileDownload(FLIGHTS_CSV_BUCKET_ID, fileId);
+    return Buffer.from(buffer);
+  } catch (err) {
+    console.warn("Enrollment photo load skipped:", err?.message || err);
+    return null;
+  }
+}
+
+function parseJsonArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function buildEnrollmentPdfExtras(contract, profile, documents) {
+  const lead = contract.lead_id ? await getLeadById(contract.lead_id).catch(() => null) : null;
+  const docTypes = new Set((documents || []).map((doc) => cleanString(doc.document_type)));
+  const medical = parseJsonObject(profile?.anac_medical_json, {});
+  const data = contractProfileData(profile, lead || {});
+  const trackMeta = parseJsonObject(contract.custom_var_values_json, {});
+  let courseName = cleanString(trackMeta.trainingTrackName);
+  if (!courseName && trackMeta.trainingTrackId) {
+    courseName = await getTrainingTrackName(trackMeta.trainingTrackId);
+  }
+  if (!courseName) courseName = cleanString(lead?.desired_course);
+  return {
+    courseName,
+    sex: data.sex,
+    cep: data.cep,
+    city: data.city,
+    state: data.state,
+    birthplace: data.birthplace,
+    fatherName: data.fatherName,
+    motherName: data.motherName,
+    rgIssueDate: formatDateBr(data.rgIssueDate) || data.rgIssueDate,
+    educationLevel: data.educationLevel,
+    educationPeriod: data.educationPeriod,
+    educationCourse: data.educationCourse,
+    allergies: data.allergies || "Nenhuma",
+    emergencyName: data.emergencyName,
+    emergencyRelation: data.emergencyRelation,
+    emergencyAddress: data.emergencyAddress,
+    emergencyPhone: data.emergencyPhone,
+    signLocation: data.city,
+    documentFlags: {
+      identification: docTypes.has("identification"),
+      voterTitle: docTypes.has("voterTitle"),
+      proofOfResidence: docTypes.has("proofOfResidence"),
+      militaryCertificate: docTypes.has("militaryCertificate"),
+      medical: Boolean(cleanString(medical.validade)),
+    },
+    medicalClass: cleanString(medical.classe),
+    medicalIssuer: cleanString(medical.orgao_expedidor),
+    medicalValidUntil: formatDateBr(medical.validade),
+    anacLicenses: parseJsonArray(profile?.anac_licenses_json),
+    anacRatings: parseJsonArray(profile?.anac_ratings_json),
+    enrollmentStartDate: formatDateBr(contract.created_at),
+    enrollmentNumber: cleanString(contract.$id).slice(-6).toUpperCase(),
+  };
+}
+
+async function renderEnrollmentPdf(contract) {
+  const [profile, brandResult] = await Promise.all([
+    getProfileByUserId(contract.recipient_user_id),
+    loadEmailBrandSettings(),
+  ]);
+  const documents = await listProfileDocumentsByUserId(contract.recipient_user_id);
+  const profileData = contractProfileData(profile, {
+    name: contract.recipient_name,
+    email: profile?.email,
+    phone: profile?.phone,
+  });
+  const brand = brandResult.publicSettings || defaultEmailBrandSettings();
+  const logoDataUrl = await logoUrlToDataUrl(brand.logoUrl);
+  const photoBytes = await loadEnrollmentPhotoBytes(profile);
+  const issuedAt = contract.created_at ? new Date(contract.created_at) : new Date();
+  const extras = await buildEnrollmentPdfExtras(contract, profile, documents);
+
+  return buildEnrollmentFormPdf({
+    profileData: {
+      ...profileData,
+      birthDateFormatted: formatDateBr(profileData.birthDate),
+    },
+    brand,
+    logoDataUrl,
+    photoBytes,
+    issuedAt,
+    extras,
+    signatures: {
+      recipient: Boolean(contract.signed_by_recipient_at),
+      admin: Boolean(contract.signed_by_admin_at),
+      recipientAt: formatDateBr(contract.signed_by_recipient_at),
+      adminAt: formatDateBr(contract.signed_by_admin_at),
+    },
+  });
+}
+
+async function syncEnrollmentFormProfileDocument(contract, { fileId, fileName, fileSize }) {
+  const userId = cleanString(contract.recipient_user_id);
+  const safeFileId = cleanString(fileId);
+  if (!userId || !safeFileId || !PROFILE_DOCUMENTS_COLLECTION_ID) return null;
+
+  const safeName = cleanString(fileName) || `ficha-matricula-${userId}.pdf`;
+  const existing = await databases.listDocuments(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [userId]),
+    sdk.Query.equal("document_type", ["enrollmentForm"]),
+    sdk.Query.limit(1),
+  ]);
+  const payload = {
+    school_id: SCHOOL_ID,
+    user_id: userId,
+    document_type: "enrollmentForm",
+    file_id: safeFileId,
+    file_name: safeName,
+    mime_type: "application/pdf",
+    file_size: typeof fileSize === "number" && fileSize > 0 ? fileSize : 0,
+    uploaded_at: new Date().toISOString(),
+  };
+  if (existing.documents?.[0]) {
+    await databases.updateDocument(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, existing.documents[0].$id, payload);
+  } else {
+    await databases.createDocument(
+      DATABASE_ID,
+      PROFILE_DOCUMENTS_COLLECTION_ID,
+      sdk.ID.unique(),
+      payload,
+      profileDocumentPermissions(userId),
+    );
+  }
+  return safeFileId;
+}
+
+async function attachEnrollmentFormToProfile(contract) {
+  if (contract.contract_kind !== "enrollment_form" || contract.status !== "signed_both") return null;
+  if (contract.signed_pdf_file_id) {
+    await syncEnrollmentFormProfileDocument(contract, {
+      fileId: contract.signed_pdf_file_id,
+      fileName: `ficha-matricula-${contract.recipient_user_id}.pdf`,
+    });
+    return contract.signed_pdf_file_id;
+  }
+  if (!FLIGHTS_CSV_BUCKET_ID || !PROFILE_DOCUMENTS_COLLECTION_ID) {
+    throw Object.assign(new Error("Storage ou coleção de documentos do perfil não configurados."), { status: 500 });
+  }
+  const pdfBytes = await renderEnrollmentPdf(contract);
+  const fileName = `ficha-matricula-${contract.recipient_user_id}.pdf`;
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([pdfBytes], fileName, { type: "application/pdf" })
+      : sdk.InputFile?.fromBuffer
+        ? sdk.InputFile.fromBuffer(pdfBytes, fileName)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de PDF não suportado neste runtime."), { status: 500 });
+  const uploaded = await storage.createFile(
+    FLIGHTS_CSV_BUCKET_ID,
+    sdk.ID.unique(),
+    inputFile,
+    profileDocumentPermissions(contract.recipient_user_id),
+  );
+  await syncEnrollmentFormProfileDocument(contract, {
+    fileId: uploaded.$id,
+    fileName,
+    fileSize: pdfBytes.length,
+  });
+  await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contract.$id, {
+    signed_pdf_file_id: uploaded.$id,
+  });
+  return uploaded.$id;
+}
+
+async function signContract(actorUserId, payload = {}) {
+  const contractId = cleanString(payload.contractId);
+  const signerRole = cleanString(payload.signerRole);
+  if (!contractId) throw Object.assign(new Error("Contrato não informado."), { status: 400 });
+  if (!["aluno", "instrutor", "admin"].includes(signerRole)) {
+    throw Object.assign(new Error("Papel de assinatura inválido."), { status: 400 });
+  }
+  const contract = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+  if (contract.status === "cancelled") throw Object.assign(new Error("Contrato cancelado."), { status: 400 });
+  if (signerRole === "admin") {
+    await requireAdmin(actorUserId);
+  } else {
+    const role = await getActorRole(actorUserId);
+    if (actorUserId !== contract.recipient_user_id || role !== signerRole) {
+      throw Object.assign(new Error("Usuário sem permissão para assinar este contrato."), { status: 403 });
+    }
+  }
+
+  const already = await databases.listDocuments(DATABASE_ID, CONTRACT_SIGNATURES_COLLECTION_ID, [
+    sdk.Query.equal("contract_id", [contractId]),
+    sdk.Query.equal("signer_user_id", [actorUserId]),
+    sdk.Query.equal("signer_role", [signerRole]),
+    sdk.Query.limit(1),
+  ]);
+  const now = new Date().toISOString();
+  if (!already.documents?.[0]) {
+    await databases.createDocument(DATABASE_ID, CONTRACT_SIGNATURES_COLLECTION_ID, sdk.ID.unique(), {
+      contract_id: contractId,
+      signer_user_id: actorUserId,
+      signer_role: signerRole,
+      signed_at: now,
+      school_id: contract.school_id || SCHOOL_ID,
+      created_at: now,
+    }, signaturePermissions());
+  }
+
+  const recipientSigned = signerRole === "admin" ? Boolean(contract.signed_by_recipient_at) : true;
+  const adminSigned = signerRole === "admin" ? true : Boolean(contract.signed_by_admin_at);
+  const patch = {
+    status: recipientSigned && adminSigned ? "signed_both" : adminSigned ? "signed_admin" : "signed_recipient",
+  };
+  if (signerRole === "admin" && !contract.signed_by_admin_at) patch.signed_by_admin_at = now;
+  if (signerRole !== "admin" && !contract.signed_by_recipient_at) patch.signed_by_recipient_at = now;
+  let updated = await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId, patch);
+  if (updated.contract_kind === "enrollment_form" && updated.status === "signed_both") {
+    await attachEnrollmentFormToProfile(updated);
+    updated = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+  }
+  return updated;
+}
+
+async function ensureEnrollmentFormPreviewForActor(actorUserId, payload = {}) {
+  const contractId = cleanString(payload.contractId);
+  if (!contractId) throw Object.assign(new Error("Contrato nao informado."), { status: 400 });
+  const contract = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+  const role = await getActorRole(actorUserId);
+  if (role === "admin") {
+    await requireAdmin(actorUserId);
+  } else if (actorUserId !== contract.recipient_user_id) {
+    throw Object.assign(new Error("Usuario sem permissao para ver esta ficha."), { status: 403 });
+  }
+  const fileId = await ensureEnrollmentFormPreview(contract);
+  return { fileId };
+}
+
 function toFlight(doc) {
   const meta = decodeFlightMeta(doc.csv_text);
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
@@ -2404,11 +5525,7 @@ function toFlight(doc) {
   const blockTimeMinutes =
     typeof doc.block_time_minutes === "number" && doc.block_time_minutes > 0
       ? doc.block_time_minutes
-      : (() => {
-          const depMin = parseClockMinutes(meta?.header?.departureTimeUtc);
-          const cutMin = parseClockMinutes(meta?.header?.engineCutoffTimeUtc);
-          return depMin !== null && cutMin !== null && cutMin > depMin ? cutMin - depMin : null;
-        })();
+      : metaBlockMinutes(meta);
   const durationSec =
     blockTimeMinutes !== null
       ? blockTimeMinutes * 60
@@ -2481,7 +5598,7 @@ function toPlan(doc) {
   };
 }
 
-function toProfile(profile, preference) {
+function toProfile(profile, preference, documents = {}) {
   const defaultMedical = {
     classe: "",
     validade: "",
@@ -2490,6 +5607,7 @@ function toProfile(profile, preference) {
   };
   return {
     docId: profile?.$id || null,
+    isActive: profile?.is_active !== false,
     fullName: profile?.full_name || "",
     cpf: profile?.cpf || "",
     phone: profile?.phone || "",
@@ -2497,6 +5615,7 @@ function toProfile(profile, preference) {
     weightKg: typeof profile?.weight_kg === "number" ? profile.weight_kg : null,
     heightCm: typeof profile?.height_cm === "number" ? profile.height_cm : null,
     anacCode: profile?.anac_code || "",
+    sagaUserId: profile?.saga_user_id || "",
     anacRatings: parseJsonList(profile?.anac_ratings_json),
     anacLicenses: parseJsonList(profile?.anac_licenses_json),
     anacMedical: parseJsonObject(profile?.anac_medical_json, defaultMedical),
@@ -2504,6 +5623,28 @@ function toProfile(profile, preference) {
     anacSyncStatus: profile?.anac_sync_status || "",
     anacSyncError: profile?.anac_sync_error || "",
     anacLastSyncAt: profile?.anac_last_sync_at || "",
+    rg: profile?.rg || "",
+    rgOrgaoExpedidor: profile?.rg_orgao_expedidor || "",
+    rgDataEmissao: profile?.rg_data_emissao || "",
+    endereco: profile?.endereco || "",
+    cep: profile?.cep || "",
+    cidade: profile?.cidade || "",
+    uf: profile?.uf || "",
+    nacionalidade: profile?.nacionalidade || "",
+    estadoCivil: profile?.estado_civil || "",
+    sexo: profile?.sexo || "",
+    naturalidade: profile?.naturalidade || "",
+    filiacaoPai: profile?.filiacao_pai || "",
+    filiacaoMae: profile?.filiacao_mae || "",
+    escolaridade: profile?.escolaridade || "",
+    escolaridadePeriodo: profile?.escolaridade_periodo || "",
+    escolaridadeCurso: profile?.escolaridade_curso || "",
+    alergiasMedicamentos: profile?.alergias_medicamentos || "",
+    emergenciaNome: profile?.emergencia_nome || "",
+    emergenciaParentesco: profile?.emergencia_parentesco || "",
+    emergenciaEndereco: profile?.emergencia_endereco || "",
+    emergenciaTelefone: profile?.emergencia_telefone || "",
+    documents,
     instructorPreferenceLevel: VALID_INSTRUCTOR_PREFERENCES.has(preference?.preference_level)
       ? preference.preference_level
       : "medium",
@@ -2565,9 +5706,9 @@ function summarizeFlights(flights, plans, profilesByUserId = new Map()) {
   };
 }
 
-function toUserRecord(user, profile, preference, flights, plans, trainingTracks = [], profilesByUserId = new Map()) {
+function toUserRecord(user, profile, preference, flights, plans, trainingTracks = [], profilesByUserId = new Map(), documents = {}) {
   const role = VALID_ROLES.has(profile?.role) ? profile.role : deriveRoleFromLabels(user.labels || []);
-  const profilePayload = toProfile(profile, preference);
+  const profilePayload = toProfile(profile, preference, documents);
   const summary = summarizeFlights(flights, plans, profilesByUserId);
 
   return {
@@ -2603,10 +5744,12 @@ function toUserSummary(user, profile, preference, flights, plans, trainingTracks
     createdAt: detail.createdAt,
     profile: {
       docId: detail.profile.docId,
+      isActive: detail.profile.isActive,
       fullName: detail.profile.fullName,
       cpf: detail.profile.cpf,
       phone: detail.profile.phone,
       anacCode: detail.profile.anacCode,
+      sagaUserId: detail.profile.sagaUserId,
       anacSyncStatus: detail.profile.anacSyncStatus,
       anacLastSyncAt: detail.profile.anacLastSyncAt,
       instructorPreferenceLevel: detail.profile.instructorPreferenceLevel,
@@ -3439,6 +6582,72 @@ function rowMatchesReportFilters(row, filters) {
   return true;
 }
 
+function weekEndFromWeekStart(weekStart) {
+  const start = new Date(`${weekStart}T12:00:00`);
+  if (Number.isNaN(start.getTime())) return weekStart;
+  start.setDate(start.getDate() + 6);
+  return start.toISOString().slice(0, 10);
+}
+
+function toScheduleWeekFlightRow(doc) {
+  return {
+    id: doc.$id,
+    source_filename: doc.source_filename || "",
+    created_at: doc.$createdAt,
+    aircraft_ident: doc.aircraft_ident ?? null,
+    duration_sec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
+    flight_date: doc.flight_date ?? null,
+    start_time: doc.start_time ?? null,
+    student_user_id: doc.student_user_id ?? doc.user_id ?? null,
+    instructor_user_id: doc.instructor_user_id ?? null,
+    is_night: doc.is_night ?? false,
+    schedule_week_start: doc.schedule_week_start ?? null,
+    schedule_demand_id: doc.schedule_demand_id ?? null,
+    saga_schedule_id: doc.saga_schedule_id ?? null,
+    saga_schedule_sync_status: doc.saga_schedule_sync_status ?? null,
+    saga_schedule_synced_at: doc.saga_schedule_synced_at ?? null,
+  };
+}
+
+/** Lista todos os voos da semana (escola inteira) com API key — para escala do INVA. */
+async function listScheduleWeekFlights(weekStart) {
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const normalizedWeekStart = cleanString(weekStart);
+  if (!normalizedWeekStart) throw Object.assign(new Error("Semana nao informada."), { status: 400 });
+
+  const weekEnd = weekEndFromWeekStart(normalizedWeekStart);
+  const schoolFilter = sdk.Query.equal("school_id", [SCHOOL_ID]);
+  const select = selectQuery(FLIGHT_SELECT);
+
+  const [byDate, byScheduleWeek, autoRows, manualRows] = await Promise.all([
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      schoolFilter,
+      sdk.Query.greaterThanEqual("flight_date", normalizedWeekStart),
+      sdk.Query.lessThanEqual("flight_date", weekEnd),
+      ...select,
+    ]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      schoolFilter,
+      sdk.Query.equal("schedule_week_start", normalizedWeekStart),
+      ...select,
+    ]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.startsWith("source_filename", `auto-scale-${normalizedWeekStart}`),
+      ...select,
+    ]),
+    listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.startsWith("source_filename", `manual-scale-${normalizedWeekStart}`),
+      ...select,
+    ]),
+  ]);
+
+  const byId = new Map();
+  for (const doc of [...byDate, ...byScheduleWeek, ...autoRows, ...manualRows]) {
+    byId.set(doc.$id, toScheduleWeekFlightRow(doc));
+  }
+  return [...byId.values()];
+}
+
 async function listFlightReports(params = {}) {
   const limit = clampReportLimit(params.limit);
   const cursor = String(params.cursor || "").trim();
@@ -3979,17 +7188,46 @@ async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } 
   };
 }
 
+async function backfillEnrollmentFormProfileDocument(userId, documents = {}) {
+  if (documents?.enrollmentForm?.fileId || !CONTRACTS_COLLECTION_ID || !PROFILE_DOCUMENTS_COLLECTION_ID) {
+    return documents;
+  }
+  const res = await databases.listDocuments(DATABASE_ID, CONTRACTS_COLLECTION_ID, [
+    sdk.Query.equal("recipient_user_id", [userId]),
+    sdk.Query.equal("contract_kind", ["enrollment_form"]),
+    sdk.Query.orderDesc("created_at"),
+    sdk.Query.limit(1),
+  ]);
+  const contract = res.documents?.[0];
+  if (!contract) return documents;
+  const fileId = cleanString(contract.signed_pdf_file_id) || cleanString(contract.enrollment_pdf_file_id);
+  if (!fileId) return documents;
+  const suffix = contract.signed_pdf_file_id ? "" : "-preview";
+  await syncEnrollmentFormProfileDocument(contract, {
+    fileId,
+    fileName: `ficha-matricula-${userId}${suffix}.pdf`,
+  });
+  const refreshed = await getProfileDocumentsByUserIds([userId]);
+  return refreshed.get(userId) || documents;
+}
+
 async function getUserDetail(targetUserId) {
   if (!targetUserId) {
     throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
   }
   const user = await users.get({ userId: targetUserId });
-  const [[profileByUserId, prefByUserId], flights, plans, trainingByUserId] = await Promise.all([
-    Promise.all([getProfilesByUserIds([targetUserId]), getInstructorPrefsByUserIds([targetUserId])]),
+  const [[profileByUserId, prefByUserId, documentsByUserId], flights, plans, trainingByUserId] = await Promise.all([
+    Promise.all([
+      getProfilesByUserIds([targetUserId]),
+      getInstructorPrefsByUserIds([targetUserId]),
+      getProfileDocumentsByUserIds([targetUserId]),
+    ]),
     getFlightsByUserIds([targetUserId], { includeCsv: true }),
     getPlansByUserIds([targetUserId]),
     getTrainingAssignmentsByUserIds([targetUserId]),
   ]);
+  let documents = documentsByUserId.get(targetUserId) || {};
+  documents = await backfillEnrollmentFormProfileDocument(targetUserId, documents);
   // Resolve instructor names: collect unique instructor_user_id values from this user's flights
   const instructorIds = [...new Set(flights.map((f) => f.instructor_user_id).filter(Boolean))];
   const instructorProfilesByUserId = await getProfilesByUserIds(instructorIds);
@@ -4001,6 +7239,7 @@ async function getUserDetail(targetUserId) {
     plans,
     trainingByUserId.get(targetUserId) || [],
     instructorProfilesByUserId,
+    documents,
   );
 }
 
@@ -4011,6 +7250,7 @@ async function upsertProfile(userId, email, role, customRoleSlug = null) {
     email,
     role,
     school_id: SCHOOL_ID,
+    is_active: existing?.is_active !== false,
     custom_role_slug: customRoleSlug || null,
   };
 
@@ -4058,6 +7298,103 @@ async function updateRole(actorUserId, targetUserId, role, customRoleSlug = null
   await upsertProfile(targetUserId, user.email || "", role, slugToStore);
 
   return getUserDetail(targetUserId);
+}
+
+function profileStringEqual(next, current) {
+  return cleanString(next) === cleanString(current);
+}
+
+async function updateAdminUserProfile(actorUserId, targetUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const safeUserId = cleanString(targetUserId);
+  if (!safeUserId) throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
+
+  const profile = await getProfileByUserId(safeUserId);
+  if (!profile?.$id) throw Object.assign(new Error("Perfil nao encontrado."), { status: 404 });
+
+  const authUser = await users.get({ userId: safeUserId });
+  const updates = {};
+
+  if (payload.fullName !== undefined) {
+    const fullName = cleanString(payload.fullName).slice(0, 255);
+    if (!profileStringEqual(fullName, profile.full_name)) {
+      updates.full_name = fullName || null;
+      if (fullName && !profileStringEqual(fullName, authUser.name)) {
+        await users.updateName({ userId: safeUserId, name: fullName.slice(0, 128) });
+      }
+    }
+  }
+
+  if (payload.email !== undefined) {
+    const email = cleanString(payload.email).toLowerCase();
+    const currentEmail = cleanString(authUser.email || profile.email).toLowerCase();
+    if (email !== currentEmail) {
+      if (!email || !sagaEmailLooksValid(email)) {
+        throw Object.assign(new Error("E-mail invalido."), { status: 400 });
+      }
+      await users.updateEmail({ userId: safeUserId, email });
+      updates.email = email;
+    }
+  }
+
+  if (payload.cpf !== undefined) {
+    const cpf = cleanString(payload.cpf).slice(0, 14) || null;
+    if (!profileStringEqual(cpf, profile.cpf)) updates.cpf = cpf;
+  }
+  if (payload.phone !== undefined) {
+    const phone = cleanString(payload.phone).slice(0, 32) || null;
+    if (!profileStringEqual(phone, profile.phone)) updates.phone = phone;
+  }
+  if (payload.birthDate !== undefined) {
+    const birthDate = cleanString(payload.birthDate);
+    const nextBirth = birthDate ? (toSagaBirthdate(birthDate) || birthDate.slice(0, 10)) : null;
+    if (!profileStringEqual(nextBirth, profile.birth_date)) updates.birth_date = nextBirth;
+  }
+  if (payload.anacCode !== undefined) {
+    const anacCode = cleanString(payload.anacCode).slice(0, 32) || null;
+    if (!profileStringEqual(anacCode, profile.anac_code)) updates.anac_code = anacCode;
+  }
+  if (payload.sagaUserId !== undefined) {
+    const sagaUserId = cleanString(payload.sagaUserId).slice(0, 64) || null;
+    const currentSaga = cleanString(profile.saga_user_id) || null;
+    if (sagaUserId !== currentSaga) updates.saga_user_id = sagaUserId;
+  }
+  if (payload.weightKg !== undefined) {
+    const weight = Number(payload.weightKg);
+    const nextWeight = Number.isFinite(weight) && weight > 0 ? weight : null;
+    const currentWeight = typeof profile.weight_kg === "number" ? profile.weight_kg : null;
+    if (nextWeight !== currentWeight) updates.weight_kg = nextWeight;
+  }
+  if (payload.heightCm !== undefined) {
+    const height = Number(payload.heightCm);
+    const nextHeight = Number.isFinite(height) && height > 0 ? height : null;
+    const currentHeight = typeof profile.height_cm === "number" ? profile.height_cm : null;
+    if (nextHeight !== currentHeight) updates.height_cm = nextHeight;
+  }
+  if (payload.isActive !== undefined) {
+    const nextActive = payload.isActive !== false;
+    if (nextActive !== (profile.is_active !== false)) updates.is_active = nextActive;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return getUserDetail(safeUserId);
+  }
+
+  try {
+    await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, updates);
+  } catch (err) {
+    const message = String(err?.message || err);
+    if (updates.saga_user_id !== undefined && /attribute|unknown|invalid document structure/i.test(message)) {
+      const { saga_user_id: _ignored, ...rest } = updates;
+      if (Object.keys(rest).length > 0) {
+        await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, rest);
+      }
+      throw Object.assign(new Error("Nao foi possivel atualizar o ID SAGA neste ambiente."), { status: 500 });
+    }
+    throw err;
+  }
+
+  return getUserDetail(safeUserId);
 }
 
 async function updateInstructorPreferences(targetUserId, preferenceLevel, availability) {
@@ -4143,6 +7480,201 @@ async function deleteCredit(creditId, userId) {
     throw Object.assign(new Error("Credito nao pertence ao aluno selecionado."), { status: 400 });
   }
   await databases.deleteDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, creditId);
+}
+
+function incrementDeletedCount(summary, collectionId, amount = 1) {
+  const key = cleanString(collectionId) || "unknown";
+  summary.deletedByCollection[key] = (summary.deletedByCollection[key] || 0) + amount;
+  summary.deletedDocuments += amount;
+}
+
+function recordDeleteError(summary, collectionId, field, err) {
+  summary.errors.push({
+    collectionId: cleanString(collectionId) || "unknown",
+    field: cleanString(field) || "",
+    message: cleanString(err?.message || err).slice(0, 500),
+  });
+}
+
+async function deleteDocumentQuietly(summary, collectionId, documentId, field = "") {
+  if (!collectionId || !documentId) return;
+  try {
+    await databases.deleteDocument(DATABASE_ID, collectionId, documentId);
+    incrementDeletedCount(summary, collectionId);
+  } catch (err) {
+    recordDeleteError(summary, collectionId, field, err);
+  }
+}
+
+async function deleteDocsByEqual(summary, collectionId, field, values, extraQueries = []) {
+  const cleanValues = Array.from(new Set((Array.isArray(values) ? values : [values]).map(cleanString).filter(Boolean)));
+  if (!collectionId || !field || !cleanValues.length) return [];
+  const deleted = [];
+  try {
+    const docs = await listDocumentsByFieldIn(collectionId, field, cleanValues, extraQueries, 25);
+    const uniqueDocs = Array.from(new Map(docs.map((doc) => [doc.$id, doc])).values());
+    for (const doc of uniqueDocs) {
+      await databases.deleteDocument(DATABASE_ID, collectionId, doc.$id);
+      deleted.push(doc);
+      incrementDeletedCount(summary, collectionId);
+    }
+    return deleted;
+  } catch (err) {
+    recordDeleteError(summary, collectionId, field, err);
+    return deleted;
+  }
+}
+
+async function deleteStorageFileQuietly(summary, bucketId, fileId) {
+  if (!bucketId || !fileId) return;
+  try {
+    await storage.deleteFile(bucketId, fileId);
+    summary.deletedFiles += 1;
+  } catch (err) {
+    summary.fileErrors.push({
+      bucketId: cleanString(bucketId) || "unknown",
+      fileId: cleanString(fileId),
+      message: cleanString(err?.message || err).slice(0, 500),
+    });
+  }
+}
+
+async function deleteAdminUserCascade(actorUserId, targetUserId, req) {
+  const safeUserId = cleanString(targetUserId);
+  if (!safeUserId) throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
+  if (actorUserId === safeUserId) {
+    throw Object.assign(new Error("Nao e permitido excluir o proprio usuario logado."), { status: 400 });
+  }
+
+  const [targetUser, profile] = await Promise.all([
+    users.get({ userId: safeUserId }),
+    getProfileByUserId(safeUserId).catch(() => null),
+  ]);
+  const summary = {
+    userId: safeUserId,
+    deletedAuthUser: false,
+    deletedDocuments: 0,
+    deletedFiles: 0,
+    deletedByCollection: {},
+    errors: [],
+    fileErrors: [],
+  };
+  const beforeSnapshot = {
+    user: {
+      id: targetUser.$id,
+      email: targetUser.email || "",
+      name: targetUser.name || "",
+      labels: targetUser.labels || [],
+    },
+    profile: profile ? {
+      id: profile.$id,
+      role: profile.role || null,
+      email: profile.email || null,
+      fullName: profile.full_name || null,
+      anacCode: profile.anac_code || null,
+    } : null,
+  };
+
+  const profileDocs = await listAllDocuments(PROFILE_DOCUMENTS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [safeUserId]),
+  ]).catch((err) => {
+    recordDeleteError(summary, PROFILE_DOCUMENTS_COLLECTION_ID, "user_id", err);
+    return [];
+  });
+
+  const flightDocs = [];
+  for (const field of ["student_user_id", "user_id", "instructor_user_id"]) {
+    const docs = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal(field, [safeUserId]),
+      ...selectQuery(["$id", "csv_file_id"]),
+    ]).catch((err) => {
+      recordDeleteError(summary, FLIGHTS_COLLECTION_ID, field, err);
+      return [];
+    });
+    flightDocs.push(...docs);
+  }
+  const uniqueFlights = Array.from(new Map(flightDocs.map((doc) => [doc.$id, doc])).values());
+  const flightIds = uniqueFlights.map((doc) => doc.$id).filter(Boolean);
+
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVERS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_VIDEOS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_SIGNATURES_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_TAKEOFFS_COLLECTION_ID, "flight_id", flightIds);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, "flight_id", flightIds);
+
+  for (const field of ["signer_user_id", "student_user_id", "instructor_user_id"]) {
+    await deleteDocsByEqual(summary, FLIGHT_SIGNATURES_COLLECTION_ID, field, safeUserId);
+  }
+  for (const field of ["student_user_id", "instructor_user_id"]) {
+    await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, field, safeUserId);
+    await deleteDocsByEqual(summary, FLIGHT_LANDINGS_COLLECTION_ID, field, safeUserId);
+    await deleteDocsByEqual(summary, FLIGHT_TAKEOFFS_COLLECTION_ID, field, safeUserId);
+    await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, field, safeUserId);
+  }
+  for (const field of ["student_id", "instructor_id", "created_by"]) {
+    await deleteDocsByEqual(summary, FLIGHT_MANEUVERS_COLLECTION_ID, field, safeUserId);
+  }
+  await deleteDocsByEqual(summary, FLIGHT_VIDEOS_COLLECTION_ID, "uploaded_by", safeUserId);
+
+  for (const flight of uniqueFlights) {
+    await deleteDocumentQuietly(summary, FLIGHTS_COLLECTION_ID, flight.$id, "user");
+  }
+
+  await deleteDocsByEqual(summary, WEEKLY_PLANS_COLLECTION_ID, "student_id", safeUserId, [sdk.Query.equal("school_id", [SCHOOL_ID])]);
+  await deleteDocsByEqual(summary, STUDENT_TRACKS_COLLECTION_ID, "student_user_id", safeUserId);
+  await deleteDocsByEqual(summary, STUDENT_CREDITS_COLLECTION_ID, "user_id", safeUserId);
+  await deleteDocsByEqual(summary, PRODUCT_SALES_COLLECTION_ID, "user_id", safeUserId);
+  await deleteDocsByEqual(summary, INSTRUCTOR_COSTS_COLLECTION_ID, "instructor_user_id", safeUserId);
+  await deleteDocsByEqual(summary, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, "instructor_user_id", safeUserId);
+  await deleteDocsByEqual(summary, INSTRUCTOR_PREFS_COLLECTION_ID, "user_id", safeUserId);
+  await deleteDocsByEqual(summary, STUDENT_OBSERVATIONS_COLLECTION_ID, "student_user_id", safeUserId);
+  await deleteDocsByEqual(summary, STUDENT_OBSERVATIONS_COLLECTION_ID, "author_user_id", safeUserId);
+  await deleteDocsByEqual(summary, PUSH_SUBSCRIPTIONS_COLLECTION_ID, "user_id", safeUserId);
+  await deleteDocsByEqual(summary, NOTIFICATION_DELIVERIES_COLLECTION_ID, "recipient_user_id", safeUserId);
+  await deleteDocsByEqual(summary, CONTRACTS_COLLECTION_ID, "recipient_user_id", safeUserId);
+  await deleteDocsByEqual(summary, CONTRACT_SIGNATURES_COLLECTION_ID, "signer_user_id", safeUserId);
+  await deleteDocsByEqual(summary, FUELINGS_COLLECTION_ID, "student_user_id", safeUserId);
+  await deleteDocsByEqual(summary, FUELINGS_COLLECTION_ID, "responsible_user_id", safeUserId);
+  await deleteDocsByEqual(summary, MAINTENANCE_ATTACHMENTS_COLLECTION_ID, "uploaded_by", safeUserId);
+
+  for (const doc of profileDocs) {
+    await deleteDocumentQuietly(summary, PROFILE_DOCUMENTS_COLLECTION_ID, doc.$id, "user_id");
+    await deleteStorageFileQuietly(summary, FLIGHTS_CSV_BUCKET_ID, doc.file_id);
+  }
+  if (profile?.anac_photo_file_id) {
+    await deleteStorageFileQuietly(summary, FLIGHTS_CSV_BUCKET_ID, profile.anac_photo_file_id);
+  }
+  if (profile) {
+    await deleteDocumentQuietly(summary, PROFILES_COLLECTION_ID, profile.$id, "user_id");
+  }
+
+  for (const flight of uniqueFlights) {
+    await deleteStorageFileQuietly(summary, FLIGHTS_CSV_BUCKET_ID, flight.csv_file_id);
+  }
+
+  await createAuditEvent(actorUserId, {
+    eventType: "user_deleted_cascade",
+    entityType: "user",
+    entityId: safeUserId,
+    reason: cleanString(req?.bodyJson?.reason) || "Exclusao manual via Admin Usuarios",
+    beforeSnapshot,
+    afterSnapshot: summary,
+    ip: req?.headers?.["x-forwarded-for"] || req?.headers?.["x-real-ip"] || "",
+    userAgent: req?.headers?.["user-agent"] || "",
+  }).catch((err) => recordDeleteError(summary, AUDIT_EVENTS_COLLECTION_ID, "create", err));
+
+  try {
+    await users.delete({ userId: safeUserId });
+    summary.deletedAuthUser = true;
+  } catch (err) {
+    recordDeleteError(summary, "auth.users", "userId", err);
+  }
+
+  return summary;
 }
 
 // --- Financial DRE ---------------------------------------------------------
@@ -4255,12 +7787,7 @@ function parseMaybeJson(value, fallback) {
 
 function flightBlockMinutes(doc) {
   const meta = decodeFlightMeta(doc?.csv_text);
-  const departureMinutes = parseClockMinutes(meta?.header?.departureTimeUtc);
-  const cutoffMinutes = parseClockMinutes(meta?.header?.engineCutoffTimeUtc);
-  if (departureMinutes !== null && cutoffMinutes !== null && cutoffMinutes > departureMinutes) {
-    return cutoffMinutes - departureMinutes;
-  }
-  return 0;
+  return metaBlockMinutes(meta) ?? 0;
 }
 
 function parseTaxConfigDoc(doc) {
@@ -5256,6 +8783,8 @@ async function deleteHelpDocument(kind, documentId) {
 const EMAIL_SETTINGS_KEY = "email";
 const EMAIL_BRAND_SETTINGS_KEY = "emailBrand";
 const SCHOOL_RULES_KEY = "schoolRules";
+const ONBOARDING_SETTINGS_KEY = "onboarding";
+const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
@@ -6312,6 +9841,288 @@ async function loadSchoolRules() {
   };
 }
 
+function defaultOnboardingConfig() {
+  return { enabled: false };
+}
+
+function publicOnboardingConfig(settings, updatedAt) {
+  return {
+    enabled: Boolean(settings?.enabled),
+    updatedAt: updatedAt || null,
+  };
+}
+
+function sanitizeOnboardingConfigInput(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  return { enabled: Boolean(raw.enabled) };
+}
+
+async function loadOnboardingConfig() {
+  const doc = await getSettingDoc(ONBOARDING_SETTINGS_KEY);
+  if (!doc) {
+    const defaults = defaultOnboardingConfig();
+    return { settings: defaults, publicSettings: publicOnboardingConfig(defaults, null), doc: null };
+  }
+  const settings = parseJsonObject(doc.settings_json, defaultOnboardingConfig());
+  return {
+    settings,
+    publicSettings: publicOnboardingConfig(settings, doc.$updatedAt || null),
+    doc,
+  };
+}
+
+async function saveOnboardingConfig(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const settings = sanitizeOnboardingConfigInput(input);
+  const data = { key: ONBOARDING_SETTINGS_KEY, settings_json: JSON.stringify(settings) };
+  const current = await loadOnboardingConfig();
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicOnboardingConfig(settings, doc.$updatedAt || null);
+}
+
+function emptyRichDoc() {
+  return { type: "doc", content: [{ type: "paragraph" }] };
+}
+
+function legacyPlainTextToRichDoc(text) {
+  const trimmed = cleanString(text);
+  if (!trimmed) return emptyRichDoc();
+  const blocks = trimmed.split(/\n\s*\n/).filter(Boolean);
+  return {
+    type: "doc",
+    content: blocks.length
+      ? blocks.map((block) => ({
+          type: "paragraph",
+          content: [{ type: "text", text: block.replace(/\n/g, " ") }],
+        }))
+      : [{ type: "paragraph" }],
+  };
+}
+
+function sanitizeRulesJson(raw, legacyRules) {
+  if (raw && typeof raw === "object" && raw.type === "doc") return raw;
+  return legacyPlainTextToRichDoc(legacyRules);
+}
+
+function defaultReferralProgramConfig() {
+  return { active: false, prize: "", requiredHours: 10, rulesJson: emptyRichDoc(), rulesHtml: "" };
+}
+
+function defaultReferAndEarnConfig() {
+  return {
+    aluno: defaultReferralProgramConfig(),
+    instrutor: defaultReferralProgramConfig(),
+  };
+}
+
+function sanitizeReferralProgramInput(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const requiredHours = Number(input.requiredHours);
+  const legacyRules = cleanString(input.rules);
+  return {
+    active: Boolean(input.active),
+    prize: cleanString(input.prize),
+    requiredHours: Number.isFinite(requiredHours) && requiredHours > 0 ? requiredHours : 10,
+    rulesJson: sanitizeRulesJson(input.rulesJson, legacyRules),
+    rulesHtml: cleanString(input.rulesHtml),
+  };
+}
+
+function sanitizeReferAndEarnConfigInput(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  return {
+    aluno: sanitizeReferralProgramInput(raw.aluno),
+    instrutor: sanitizeReferralProgramInput(raw.instrutor),
+  };
+}
+
+function publicReferAndEarnConfig(settings, updatedAt) {
+  const safe = settings && typeof settings === "object" ? settings : defaultReferAndEarnConfig();
+  return {
+    aluno: sanitizeReferralProgramInput(safe.aluno),
+    instrutor: sanitizeReferralProgramInput(safe.instrutor),
+    updatedAt: updatedAt || null,
+  };
+}
+
+async function loadReferAndEarnConfig() {
+  const doc = await getSettingDoc(REFER_AND_EARN_SETTINGS_KEY);
+  if (!doc) {
+    const defaults = defaultReferAndEarnConfig();
+    return { settings: defaults, publicSettings: publicReferAndEarnConfig(defaults, null), doc: null };
+  }
+  const settings = parseJsonObject(doc.settings_json, defaultReferAndEarnConfig());
+  return {
+    settings,
+    publicSettings: publicReferAndEarnConfig(settings, doc.$updatedAt || null),
+    doc,
+  };
+}
+
+async function saveReferAndEarnConfig(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const settings = sanitizeReferAndEarnConfigInput(input);
+  const data = { key: REFER_AND_EARN_SETTINGS_KEY, settings_json: JSON.stringify(settings) };
+  const current = await loadReferAndEarnConfig();
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicReferAndEarnConfig(settings, doc.$updatedAt || null);
+}
+
+function referrerFirstName(fullName) {
+  const trimmed = cleanString(fullName);
+  if (!trimmed) return "";
+  return trimmed.split(/\s+/)[0] || trimmed;
+}
+
+async function isValidReferrerUserId(userId) {
+  const safeUserId = cleanString(userId);
+  if (!safeUserId) return false;
+  const profile = await getProfileByUserId(safeUserId);
+  if (!profile) return false;
+  const role = normalizeRole(profile.role);
+  return role === "aluno" || role === "instrutor";
+}
+
+async function getReferralWelcomeInfo(userId) {
+  const { publicSettings: brand } = await loadEmailBrandSettings();
+  const schoolName = cleanString(brand?.schoolName) || "Escola";
+  const safeUserId = cleanString(userId);
+  if (!safeUserId || !(await isValidReferrerUserId(safeUserId))) {
+    return { valid: false, referrerFirstName: null, schoolName };
+  }
+  const profile = await getProfileByUserId(safeUserId);
+  const firstName = referrerFirstName(profile?.full_name);
+  return {
+    valid: Boolean(firstName),
+    referrerFirstName: firstName || null,
+    schoolName,
+  };
+}
+
+function flightHoursFromDoc(doc) {
+  if (String(doc?.flight_status || "").trim() === "Previsto") return 0;
+  if (typeof doc?.block_time_minutes === "number" && doc.block_time_minutes > 0) {
+    return doc.block_time_minutes / 60;
+  }
+  if (typeof doc?.total_flight_minutes === "number" && doc.total_flight_minutes > 0) {
+    return doc.total_flight_minutes / 60;
+  }
+  if (typeof doc?.duration_sec === "number" && doc.duration_sec > 0) {
+    return doc.duration_sec / 3600;
+  }
+  return 0;
+}
+
+function roundReferralHours(value) {
+  return Math.round(Number(value || 0) * 10) / 10;
+}
+
+async function listCrmLeadsByReferrer(referrerUserId) {
+  if (!CRM_LEADS_COLLECTION_ID || !referrerUserId) return [];
+  return listAllDocuments(CRM_LEADS_COLLECTION_ID, [
+    sdk.Query.equal("referrer_user_id", [referrerUserId]),
+    sdk.Query.orderDesc("qual_filled_at"),
+    sdk.Query.limit(200),
+  ]);
+}
+
+async function getMyReferrals(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  const program = role === "instrutor" ? "instrutor" : "aluno";
+  const { publicSettings } = await loadReferAndEarnConfig();
+  const programConfig = program === "instrutor" ? publicSettings.instrutor : publicSettings.aluno;
+  const leads = await listCrmLeadsByReferrer(actorUserId);
+  const studentUserIds = [...new Set(leads.map((lead) => cleanString(lead.user_id)).filter(Boolean))];
+  const flights = studentUserIds.length ? await getFlightsByUserIds(studentUserIds) : [];
+  const hoursByStudent = new Map();
+  for (const flight of flights) {
+    const studentId = cleanString(flight.student_user_id);
+    if (!studentId) continue;
+    const hours = flightHoursFromDoc(flight);
+    if (hours <= 0) continue;
+    hoursByStudent.set(studentId, roundReferralHours((hoursByStudent.get(studentId) || 0) + hours));
+  }
+  const requiredHours = programConfig.requiredHours || 10;
+  const referrals = leads.map((lead) => {
+    const userId = cleanString(lead.user_id) || null;
+    const flownHours = userId ? hoursByStudent.get(userId) || 0 : 0;
+    const progressPct = requiredHours > 0 ? Math.min(100, Math.round((flownHours / requiredHours) * 100)) : 0;
+    return {
+      id: lead.$id,
+      name: cleanString(lead.name),
+      email: cleanString(lead.email),
+      crmStatus: cleanString(lead.crm_status) || "novo_lead",
+      userId,
+      flownHours,
+      requiredHours,
+      progressPct,
+      qualifiedAt: cleanString(lead.qual_filled_at) || null,
+    };
+  });
+  return { program, programConfig, referrals };
+}
+
+function parseStoredRichJsonField(value) {
+  if (value && typeof value === "object" && value.type === "doc") return value;
+  if (typeof value === "string" && value.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && parsed.type === "doc") return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function mapOnboardingStepDoc(doc) {
+  const plainDescription = cleanString(doc.description);
+  const descriptionJson =
+    parseStoredRichJsonField(doc.description_json) ||
+    (plainDescription ? legacyPlainTextToRichDoc(plainDescription) : emptyRichDoc());
+  return {
+    id: doc.$id,
+    title: cleanString(doc.title),
+    description: plainDescription || "",
+    descriptionJson,
+    descriptionHtml: cleanString(doc.description_html),
+    imageFileId: cleanString(doc.image_file_id) || null,
+    sortOrder: Number(doc.sort_order) || 0,
+    updatedAt: doc.$updatedAt || null,
+  };
+}
+
+async function listOnboardingSteps() {
+  if (!ONBOARDING_STEPS_COLLECTION_ID) return [];
+  const res = await databases.listDocuments(DATABASE_ID, ONBOARDING_STEPS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.orderAsc("sort_order"),
+    sdk.Query.limit(100),
+  ]);
+  return (res.documents || []).map(mapOnboardingStepDoc);
+}
+
 async function loadGoogleCalendarSettings() {
   const doc = await getSettingDoc(GOOGLE_CALENDAR_SETTINGS_KEY);
   if (!doc) {
@@ -7175,6 +10986,271 @@ async function syncFlightCalendarEvent(actorUserId, payload = {}) {
   }
 }
 
+function sagaScheduleLogEntry(patch) {
+  return {
+    at: nowIso(),
+    ...patch,
+  };
+}
+
+function truncateSagaScheduleLog(logs) {
+  return JSON.stringify((Array.isArray(logs) ? logs : []).slice(-8)).slice(0, 4096);
+}
+
+async function safeUpdateFlightSagaScheduleFields(flightId, fields) {
+  if (!FLIGHTS_COLLECTION_ID || !flightId) return;
+  try {
+    await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, fields);
+  } catch (err) {
+    const message = String(err?.message || err).toLowerCase();
+    if (!message.includes("attribute") && !message.includes("invalid document structure")) throw err;
+    const fallback = { ...fields };
+    delete fallback.saga_schedule_error;
+    delete fallback.saga_schedule_log_json;
+    if (Object.keys(fallback).length === Object.keys(fields).length || Object.keys(fallback).length === 0) return;
+    await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, fallback);
+  }
+}
+
+function sagaScheduleDateTimes(flight) {
+  const date = cleanString(flight.flight_date);
+  const start = cleanString(flight.start_time).slice(0, 5);
+  const durationSec = Number(flight.duration_sec || 0);
+  const [hh, mm] = start.split(":").map(Number);
+  if (!date || !Number.isFinite(hh) || !Number.isFinite(mm)) {
+    throw Object.assign(new Error("Voo sem data ou horario valido para enviar ao SAGA."), { status: 422 });
+  }
+  const safeDurationMinutes = Math.max(30, Math.round((Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 3600) / 60));
+  const endBase = new Date(`${date}T12:00:00`);
+  const totalEndMinutes = hh * 60 + mm + safeDurationMinutes;
+  endBase.setDate(endBase.getDate() + Math.floor(totalEndMinutes / 1440));
+  const endMinutesInDay = ((totalEndMinutes % 1440) + 1440) % 1440;
+  const endDate = endBase.toISOString().slice(0, 10);
+  const endTime = `${String(Math.floor(endMinutesInDay / 60)).padStart(2, "0")}:${String(endMinutesInDay % 60).padStart(2, "0")}`;
+  return {
+    startAt: `${date}T${start}`,
+    endAt: `${endDate}T${endTime}`,
+  };
+}
+
+function sagaScheduleRequestHeaders(cookieJar) {
+  const token = cleanString(cookieJar?.get("XSRF-TOKEN"));
+  return {
+    accept: "application/json,*/*",
+    "content-type": "application/json",
+    origin: SAGA_BASE_URL,
+    referer: `${SAGA_BASE_URL}/schedules/management`,
+    ...(token ? { "x-xsrf-token": decodeURIComponent(token) } : {}),
+  };
+}
+
+async function sagaScheduleRequest(path, options, cookieJar) {
+  const result = await sagaFetch(
+    path,
+    {
+      ...options,
+      headers: {
+        ...sagaScheduleRequestHeaders(cookieJar),
+        ...(options.headers || {}),
+      },
+    },
+    cookieJar,
+  );
+  let data = null;
+  try {
+    data = result.html ? JSON.parse(result.html) : null;
+  } catch {
+    data = { raw: sagaHtmlSnippet(result.html, 1000) };
+  }
+  if (!result.response.ok) {
+    const message = data?.message || `SAGA retornou HTTP ${result.response.status}.`;
+    throw Object.assign(new Error(message), {
+      status: result.response.status,
+      sagaResponse: data,
+      endpoint: `${SAGA_BASE_URL}${path}`,
+    });
+  }
+  return { httpStatus: result.response.status, data, endpoint: `${SAGA_BASE_URL}${path}` };
+}
+
+function sagaScheduleSummaryPayload(ctx, mapping) {
+  const { flight, studentUser, instructorUser, studentProfile, instructorProfile } = ctx;
+  const aircraftIdent = normalizeAircraftIdent(flight.aircraft_ident);
+  const aircraftId = cleanString(mapping.aircraftIdByRegistration?.[aircraftIdent]);
+  if (!aircraftId) throw Object.assign(new Error(`ID SAGA da aeronave ${aircraftIdent || "do voo"} nao encontrado no de-para.`), { status: 422 });
+  const { startAt, endAt } = sagaScheduleDateTimes(flight);
+  const studentName = cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || "Aluno";
+  const instructorName = cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name);
+  const notes = [
+    `GFV ${flight.$id}`,
+    `Aluno: ${studentName}`,
+    instructorName ? `Instrutor: ${instructorName}` : "",
+    aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
+    cleanString(flight.flight_date) ? `Data: ${cleanString(flight.flight_date)}` : "",
+    cleanString(flight.start_time) ? `Horario: ${cleanString(flight.start_time).slice(0, 5)}` : "",
+  ].filter(Boolean).join(" | ");
+  return {
+    aircraft_id: aircraftId,
+    student_id: "0",
+    instructor_id: "0",
+    start_at: startAt,
+    end_at: endAt,
+    status: "PLANNED",
+    notes: notes.slice(0, 255),
+  };
+}
+
+async function syncSagaScheduleEvent(actorUserId, payload = {}) {
+  const flightId = cleanString(payload.flightId);
+  const mode = cleanString(payload.mode) === "cancel" ? "cancel" : "upsert";
+  const allowCreate = payload.allowCreate === true;
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+  await requireInstructorOrAdmin(actorUserId);
+
+  const mapping = await loadSagaImportMapping();
+  const logs = [];
+  const baseResult = {
+    ok: false,
+    mode,
+    status: "failed",
+    message: "",
+    flightId,
+    sagaScheduleId: null,
+    httpStatus: null,
+    endpoint: null,
+    requestPayload: null,
+    response: null,
+    logs,
+  };
+
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  const sagaScheduleId = cleanString(flight.saga_schedule_id) || cleanString(payload.sagaScheduleId);
+  baseResult.sagaScheduleId = sagaScheduleId || null;
+
+  if (mapping.sendFlightsToSaga !== true) {
+    const entry = sagaScheduleLogEntry({ mode, status: "skipped", message: "Envio de voos ao SAGA desligado." });
+    logs.push(entry.message);
+    await safeUpdateFlightSagaScheduleFields(flightId, {
+      saga_schedule_sync_status: "skipped",
+      saga_schedule_synced_at: nowIso(),
+      saga_schedule_error: null,
+      saga_schedule_log_json: truncateSagaScheduleLog([entry]),
+    });
+    return { ...baseResult, ok: true, skipped: true, status: "skipped", message: entry.message };
+  }
+
+  if (mode === "cancel" && !sagaScheduleId) {
+    const entry = sagaScheduleLogEntry({ mode, status: "skipped", message: "Voo sem ID de agenda SAGA; remocao remota ignorada." });
+    logs.push(entry.message);
+    await safeUpdateFlightSagaScheduleFields(flightId, {
+      saga_schedule_sync_status: "skipped",
+      saga_schedule_synced_at: nowIso(),
+      saga_schedule_error: null,
+      saga_schedule_log_json: truncateSagaScheduleLog([entry]),
+    });
+    return { ...baseResult, ok: true, skipped: true, status: "skipped", message: entry.message };
+  }
+
+  if (mode === "upsert" && !sagaScheduleId && !allowCreate) {
+    const entry = sagaScheduleLogEntry({ mode, status: "skipped", message: "Voo antigo ou ja existente sem ID SAGA; criacao remota ignorada." });
+    logs.push(entry.message);
+    await safeUpdateFlightSagaScheduleFields(flightId, {
+      saga_schedule_sync_status: "skipped",
+      saga_schedule_synced_at: nowIso(),
+      saga_schedule_error: null,
+      saga_schedule_log_json: truncateSagaScheduleLog([entry]),
+    });
+    return { ...baseResult, ok: true, skipped: true, status: "skipped", message: entry.message };
+  }
+
+  try {
+    const ctx = await getFlightCalendarContext(flightId);
+    const cookieSession = await loadSagaAuthSession();
+    const requestPayload = sagaScheduleSummaryPayload(ctx, mapping);
+    baseResult.requestPayload = requestPayload;
+    const path = mode === "cancel"
+      ? `/schedules/management/${encodeURIComponent(sagaScheduleId)}`
+      : sagaScheduleId
+        ? `/schedules/management/${encodeURIComponent(sagaScheduleId)}`
+        : "/schedules/management";
+    const bodyPayload = mode === "cancel"
+      ? undefined
+      : {
+          ...(sagaScheduleId ? { schedule_id: sagaScheduleId, event_id: "" } : {}),
+          ...requestPayload,
+        };
+    const sagaResult = await sagaScheduleRequest(
+      path,
+      {
+        method: mode === "cancel" ? "DELETE" : sagaScheduleId ? "PUT" : "POST",
+        ...(bodyPayload ? { body: JSON.stringify(bodyPayload) } : {}),
+      },
+      cookieSession.cookieJar,
+    );
+    const nextSagaScheduleId = cleanString(sagaResult.data?.schedule?.id) || sagaScheduleId || null;
+    const status = mode === "cancel" ? "cancelled" : "synced";
+    const message = mode === "cancel"
+      ? `Evento SAGA ${nextSagaScheduleId || sagaScheduleId} removido.`
+      : sagaScheduleId
+        ? `Evento SAGA ${nextSagaScheduleId} atualizado.`
+        : `Evento SAGA ${nextSagaScheduleId} criado.`;
+    const entry = sagaScheduleLogEntry({
+      mode,
+      status,
+      message,
+      endpoint: sagaResult.endpoint,
+      httpStatus: sagaResult.httpStatus,
+      sagaScheduleId: nextSagaScheduleId,
+      requestPayload: bodyPayload || null,
+    });
+    logs.push(message);
+    await safeUpdateFlightSagaScheduleFields(flightId, {
+      saga_schedule_id: nextSagaScheduleId,
+      saga_schedule_sync_status: status,
+      saga_schedule_synced_at: nowIso(),
+      saga_schedule_error: null,
+      saga_schedule_log_json: truncateSagaScheduleLog([entry]),
+    });
+    return {
+      ...baseResult,
+      ok: true,
+      status,
+      message,
+      sagaScheduleId: nextSagaScheduleId,
+      httpStatus: sagaResult.httpStatus,
+      endpoint: sagaResult.endpoint,
+      response: sagaResult.data,
+    };
+  } catch (err) {
+    const message = String(err?.message || err);
+    const entry = sagaScheduleLogEntry({
+      mode,
+      status: "failed",
+      message,
+      endpoint: err?.endpoint || null,
+      httpStatus: err?.status || null,
+      requestPayload: baseResult.requestPayload,
+      response: err?.sagaResponse || null,
+    });
+    logs.push(message);
+    await safeUpdateFlightSagaScheduleFields(flightId, {
+      saga_schedule_sync_status: "failed",
+      saga_schedule_synced_at: nowIso(),
+      saga_schedule_error: message.slice(0, 1024),
+      saga_schedule_log_json: truncateSagaScheduleLog([entry]),
+    });
+    return {
+      ...baseResult,
+      ok: false,
+      status: "failed",
+      message,
+      httpStatus: err?.status || null,
+      endpoint: err?.endpoint || null,
+      response: err?.sagaResponse || null,
+    };
+  }
+}
+
 function flightStartDate(flight) {
   const date = cleanString(flight.flight_date);
   const start = cleanString(flight.start_time).slice(0, 5) || "23:59";
@@ -7637,7 +11713,7 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     const actorUserId = await resolveActorUserId(req);
-    const payload = req.bodyJson || {};
+    const payload = parseFunctionPayload(req);
     const action = String(payload.action || "listSummaries");
     log(`[action=${action}] userId=${actorUserId || "(none)"}`);
 
@@ -7691,6 +11767,42 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { schoolRules: publicSettings });
     }
 
+    if (action === "getOnboardingPublic") {
+      const { publicSettings } = await loadOnboardingConfig();
+      const steps = await listOnboardingSteps();
+      return jsonResponse(res, 200, { onboarding: publicSettings, steps });
+    }
+
+    if (action === "getReferAndEarnPublic") {
+      const { publicSettings } = await loadReferAndEarnConfig();
+      const { publicSettings: brand } = await loadEmailBrandSettings();
+      return jsonResponse(res, 200, {
+        referAndEarn: publicSettings,
+        schoolName: cleanString(brand?.schoolName) || "Escola",
+      });
+    }
+
+    if (action === "getReferralWelcome") {
+      const welcome = await getReferralWelcomeInfo(payload.userId);
+      return jsonResponse(res, 200, { welcome });
+    }
+
+    if (action === "getReferAndEarnConfig") {
+      const { publicSettings } = await loadReferAndEarnConfig();
+      return jsonResponse(res, 200, { referAndEarn: publicSettings });
+    }
+
+    if (action === "saveReferAndEarnConfig") {
+      await requireAdmin(actorUserId);
+      const referAndEarn = await saveReferAndEarnConfig(payload.config || payload);
+      return jsonResponse(res, 200, { referAndEarn });
+    }
+
+    if (action === "lookupSagaAnacPerson") {
+      const result = await lookupSagaAnacPersonPublic(payload);
+      return jsonResponse(res, result.ok === false ? 422 : 200, result);
+    }
+
     if (action === "getPublicFlightReviewShare") {
       if (payload.summaryOnly === true) {
         const intro = await getPublicFlightReviewIntro(payload);
@@ -7711,7 +11823,37 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, result.ok === false ? 404 : 200, result);
     }
 
+    if (action === "syncSagaScheduleEvent") {
+      const result = await syncSagaScheduleEvent(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "signContract") {
+      const contract = await signContract(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, contract });
+    }
+
+    if (action === "ensureEnrollmentFormPreview") {
+      const result = await ensureEnrollmentFormPreviewForActor(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "getMyReferrals") {
+      const referrals = await getMyReferrals(actorUserId);
+      return jsonResponse(res, 200, { referrals });
+    }
+
     await requireAdmin(actorUserId);
+
+    if (action === "lookupSagaAnacPersonAdmin") {
+      const result = await lookupSagaAnacPersonAdmin(actorUserId, payload);
+      return jsonResponse(res, result.ok === false ? 422 : 200, result);
+    }
+
+    if (action === "deleteSagaUser") {
+      const result = await deleteSagaUserAdmin(actorUserId, payload);
+      return jsonResponse(res, result.ok === false ? 422 : 200, result);
+    }
 
     if (action === "sagaFetchUsers") {
       const result = await sagaFetchUsers(payload);
@@ -7724,8 +11866,14 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "sagaImportData") {
-      const result = await sagaImportData(payload, actorUserId);
+      const result = await sagaImportData(payload, actorUserId, log);
       return jsonResponse(res, 200, result);
+    }
+
+    if (action === "sagaGetLastImportSummary") {
+      const doc = await getSettingDoc(SAGA_IMPORT_LAST_SUMMARY_KEY);
+      const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
+      return jsonResponse(res, 200, { ok: true, summary: parsed.summary || null, savedAt: parsed.savedAt || null });
     }
 
     if (action === "reopenFlightForEdit") {
@@ -7777,6 +11925,17 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { schoolRules });
     }
 
+    if (action === "getOnboardingConfig") {
+      const { publicSettings } = await loadOnboardingConfig();
+      const steps = await listOnboardingSteps();
+      return jsonResponse(res, 200, { onboarding: publicSettings, steps });
+    }
+
+    if (action === "saveOnboardingConfig") {
+      const onboarding = await saveOnboardingConfig(payload.config || payload);
+      return jsonResponse(res, 200, { onboarding });
+    }
+
     if (action === "getGoogleCalendarSettings") {
       const { publicSettings } = await loadGoogleCalendarSettings();
       return jsonResponse(res, 200, { googleCalendarSettings: publicSettings });
@@ -7802,6 +11961,23 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true });
     }
 
+    if (action === "sendContractEmail") {
+      const contractId = cleanString(payload.contractId);
+      if (!contractId) throw Object.assign(new Error("Contrato não informado."), { status: 400 });
+      const contract = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+      await sendContractNotificationEmail(contract, {
+        userId: contract.recipient_user_id,
+        email: cleanString(payload.recipientEmail),
+        name: cleanString(payload.recipientName || contract.recipient_name),
+      });
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "runEnrollmentAutomation") {
+      const result = await runEnrollmentAutomation(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
     if (action === "updateRole") {
       const customRoleSlug = payload.customRoleSlug ? String(payload.customRoleSlug) : null;
       const user = await updateRole(actorUserId, String(payload.userId || ""), String(payload.role || ""), customRoleSlug);
@@ -7814,6 +11990,11 @@ module.exports = async ({ req, res, log, error }) => {
         String(payload.preferenceLevel || "medium"),
         payload.availability,
       );
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "updateProfile") {
+      const user = await updateAdminUserProfile(actorUserId, String(payload.userId || ""), payload.profile || payload);
       return jsonResponse(res, 200, { user });
     }
 
@@ -7830,6 +12011,11 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "deleteCredit") {
       await deleteCredit(String(payload.creditId || ""), String(payload.userId || ""));
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "deleteUserCascade") {
+      const deletion = await deleteAdminUserCascade(actorUserId, String(payload.userId || ""), req);
+      return jsonResponse(res, 200, { ok: true, deletion });
     }
 
     if (action === "getFinancialDre") {
@@ -7947,6 +12133,10 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "getDetail") {
       const user = await getUserDetail(String(payload.userId || ""));
+      const executedIds = (user.executedFlights || []).map((flight) => flight.id);
+      log(
+        `[getDetail] userId=${user.userId} executed=${executedIds.length} planned=${(user.plannedFlights || []).length} has739=${executedIds.includes("saga_flight_739")} ids=${executedIds.slice(0, 20).join(",")}`,
+      );
       return jsonResponse(res, 200, { user });
     }
 
@@ -7975,6 +12165,12 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { user });
     }
 
+    if (action === "listScheduleWeekFlights") {
+      await requireInstructorOrAdmin(actorUserId);
+      const scheduleWeekFlights = await listScheduleWeekFlights(String(payload.weekStart || ""));
+      return jsonResponse(res, 200, { scheduleWeekFlights });
+    }
+
     if (action === "listFlightReports") {
       const report = await listFlightReports(payload);
       return jsonResponse(res, 200, report);
@@ -7996,6 +12192,9 @@ module.exports = async ({ req, res, log, error }) => {
         limit: payload.limit,
         offset: payload.offset,
       });
+      log(
+        `[listSummaries] search="${String(payload.search || "")}" total=${page.total} pageUsers=${(page.users || []).length}`,
+      );
       return jsonResponse(res, 200, page);
     }
 

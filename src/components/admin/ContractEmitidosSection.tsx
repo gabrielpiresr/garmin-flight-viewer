@@ -179,7 +179,6 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
       {viewContract && (
         <ContractViewSignModal
           contract={viewContract}
-          signerUserId={adminUserId}
           signerRole="admin"
           onSigned={handleSigned}
           onClose={() => setViewContract(null)}

@@ -58,6 +58,9 @@ export type SavedFlightListItem = {
   admin_operator_signed: boolean | null;
   instructor_signed_at: string | null;
   flight_status: FlightStatus;
+  saga_schedule_id?: string | null;
+  saga_schedule_synced_at?: string | null;
+  saga_schedule_sync_status?: string | null;
 };
 
 export type SavedFlightFull = SavedFlightListItem & { csv_text: string };
@@ -104,10 +107,17 @@ const MATERIALIZED_FLIGHT_LIST_FIELDS = [
 const SCHEDULE_FLIGHT_LIST_FIELDS = ["schedule_week_start", "schedule_demand_id"];
 const SIGNATURE_FLIGHT_LIST_FIELDS = ["instructor_signed", "student_signed", "admin_operator_signed", "instructor_signed_at"];
 const STATUS_FLIGHT_LIST_FIELDS = ["flight_status"];
+const SAGA_SCHEDULE_LIST_FIELDS = ["saga_schedule_id", "saga_schedule_synced_at", "saga_schedule_sync_status"];
 
 const FLIGHT_LIST_SELECT = [...LEGACY_FLIGHT_LIST_SELECT, ...MATERIALIZED_FLIGHT_LIST_FIELDS];
 
-const FLIGHT_LIST_SELECT_WITH_SCHEDULE = [...FLIGHT_LIST_SELECT, ...SCHEDULE_FLIGHT_LIST_FIELDS, ...SIGNATURE_FLIGHT_LIST_FIELDS, ...STATUS_FLIGHT_LIST_FIELDS];
+const FLIGHT_LIST_SELECT_WITH_SCHEDULE = [
+  ...FLIGHT_LIST_SELECT,
+  ...SCHEDULE_FLIGHT_LIST_FIELDS,
+  ...SIGNATURE_FLIGHT_LIST_FIELDS,
+  ...STATUS_FLIGHT_LIST_FIELDS,
+  ...SAGA_SCHEDULE_LIST_FIELDS,
+];
 
 function isSchemaAttributeError(error: unknown): boolean {
   const message = ((error as { message?: string })?.message ?? String(error)).toLowerCase();
@@ -162,6 +172,9 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
     admin_operator_signed: readBoolean(d.admin_operator_signed),
     instructor_signed_at: (d.instructor_signed_at as string | null | undefined) ?? null,
     flight_status: normalizeFlightStatus(d.flight_status),
+    saga_schedule_id: (d.saga_schedule_id as string | null | undefined) ?? null,
+    saga_schedule_synced_at: (d.saga_schedule_synced_at as string | null | undefined) ?? null,
+    saga_schedule_sync_status: (d.saga_schedule_sync_status as string | null | undefined) ?? null,
   };
 }
 
@@ -211,6 +224,11 @@ function parseMiles(value: string): number {
   const normalized = String(value || "").replace(/[^\d.,-]/g, "").replace(",", ".");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function firstLegEngineStart(meta: FlightRecordMeta | null | undefined): string | null {
+  const value = meta?.legs.find((leg) => leg.engineStart?.trim())?.engineStart?.trim();
+  return value || null;
 }
 
 function flightMissionIdsFromMeta(csvText: string, fallbackMissionId?: string | null): string[] {
@@ -295,7 +313,7 @@ function getFlightScheduleFields(csvText: string): { flight_date: string | null;
   const meta = decodeFlightRecord(csvText).meta;
   return {
     flight_date: meta?.header.date || null,
-    start_time: meta?.header.departureTimeUtc?.trim() || meta?.header.startTime?.trim() || null,
+    start_time: firstLegEngineStart(meta) || meta?.header.departureTimeUtc?.trim() || meta?.header.startTime?.trim() || null,
   };
 }
 
@@ -621,12 +639,18 @@ export async function listSavedFlights(
   } else if (viewer.role === "instrutor") {
     roleQueries.push(Query.equal("instructor_user_id", [viewer.userId]));
   }
-  const toPage = (res: { documents: Array<{ [key: string]: unknown; $id: string; $createdAt: string }>; total: number }): SavedFlightsPage => ({
-    data: res.documents.map(toSavedFlightListItem),
-    error: null,
-    total: res.total,
-    nextCursor: res.documents.length === limit ? res.documents[res.documents.length - 1]?.$id ?? null : null,
-  });
+  const toPage = (res: { documents: Array<{ [key: string]: unknown; $id: string; $createdAt: string }>; total: number }): SavedFlightsPage => {
+    const data = res.documents.map(toSavedFlightListItem);
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'flight-list-debug',hypothesisId:'H6',location:'flightsDb.ts:listSavedFlights',message:'listSavedFlights page loaded',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,total:res.total,pageCount:data.length,cursor:options.cursor||null,ids:data.map((item)=>item.id).slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return {
+      data,
+      error: null,
+      total: res.total,
+      nextCursor: res.documents.length === limit ? res.documents[res.documents.length - 1]?.$id ?? null : null,
+    };
+  };
   if (!isAppwriteConfigured || !databases) {
     return { data: null, error: new Error("Appwrite nao configurado"), total: 0, nextCursor: null };
   }
@@ -786,7 +810,7 @@ export async function listStudentFlightHistory(params: {
     }
 
     const queries = [
-      Query.select(FLIGHT_LIST_SELECT),
+      Query.select(FLIGHT_LIST_SELECT_WITH_SCHEDULE),
       Query.equal("student_user_id", [params.studentUserId]),
       Query.orderDesc("$createdAt"),
       Query.limit(100),
@@ -796,12 +820,22 @@ export async function listStudentFlightHistory(params: {
       res = await databases.listDocuments(DB_ID, COL_ID, queries);
     } catch (e) {
       if (!isSchemaAttributeError(e)) throw e;
-      res = await databases.listDocuments(DB_ID, COL_ID, [
-        Query.select(LEGACY_FLIGHT_LIST_SELECT),
-        Query.equal("student_user_id", [params.studentUserId]),
-        Query.orderDesc("$createdAt"),
-        Query.limit(100),
-      ]);
+      try {
+        res = await databases.listDocuments(DB_ID, COL_ID, [
+          Query.select(FLIGHT_LIST_SELECT),
+          Query.equal("student_user_id", [params.studentUserId]),
+          Query.orderDesc("$createdAt"),
+          Query.limit(100),
+        ]);
+      } catch (e2) {
+        if (!isSchemaAttributeError(e2)) throw e2;
+        res = await databases.listDocuments(DB_ID, COL_ID, [
+          Query.select(LEGACY_FLIGHT_LIST_SELECT),
+          Query.equal("student_user_id", [params.studentUserId]),
+          Query.orderDesc("$createdAt"),
+          Query.limit(100),
+        ]);
+      }
     }
     const data = res.documents.map(toSavedFlightListItem);
     return { data, error: null };
@@ -1244,7 +1278,24 @@ export async function updateFlight(id: string, payload: {
     }
     return { error: null };
   } catch (e) {
-    return { error: e as Error };
+    const err = e as Error;
+    // Appwrite 401: instructor trying to update an admin-created flight.
+    // Fall back to the cloud function which has API-key-level permissions.
+    const appwriteCode = (err as unknown as { code?: number }).code;
+    if (payload.actorRole === "instrutor" && (appwriteCode === 401 || err.message?.toLowerCase().includes("not authorized"))) {
+      const { instructorPatchFlight } = await import("./instructorPatchFlightDb");
+      return instructorPatchFlight({
+        flightId: id,
+        instructorUserId: payload.actorUserId,
+        csvText: payload.csv_text,
+        flightStatus: payload.flightStatus ?? undefined,
+        trainingTrackId: payload.trainingTrackId,
+        trainingStageId: payload.trainingStageId,
+        trainingMissionId: payload.trainingMissionId,
+        trainingSnapshot: payload.trainingSnapshot,
+      });
+    }
+    return { error: err };
   }
 }
 
@@ -1373,7 +1424,35 @@ export async function updateFlightWeightBalance(id: string, payload: {
     });
     return { error: null };
   } catch (e) {
-    return { error: e as Error };
+    const err = e as Error;
+    const appwriteCode = (err as unknown as { code?: number }).code;
+    const unauthorized = appwriteCode === 401 || err.message?.toLowerCase().includes("not authorized");
+    if (payload.actorRole === "aluno" && unauthorized) {
+      const saved = await getSavedFlight(id);
+      if (saved.error || !saved.data) {
+        return { error: saved.error ?? err };
+      }
+      const decoded = decodeFlightRecord(saved.data.csv_text);
+      if (!decoded.meta) {
+        return { error: new Error("Ficha do voo sem metadados para atualizar.") };
+      }
+      const csvText = encodeFlightRecord({
+        meta: {
+          ...decoded.meta,
+          weightBalance: payload.weightBalance,
+        },
+        telemetryCsv: decoded.telemetryCsv,
+        telemetryFiles: decoded.telemetryFiles,
+      });
+      const { studentPatchFlightWeightBalance } = await import("./instructorPatchFlightDb");
+      return studentPatchFlightWeightBalance({
+        flightId: id,
+        studentUserId: payload.actorUserId,
+        csvText,
+        weightBalance: payload.weightBalance,
+      });
+    }
+    return { error: err };
   }
 }
 

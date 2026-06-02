@@ -1,4 +1,5 @@
 import { functions, ADMIN_USERS_FUNCTION_ID } from "./appwrite";
+import type { SagaAnacPerson } from "./sagaAnacSync";
 import type { UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
@@ -9,10 +10,29 @@ import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types
 import type { StudentCreditInput } from "../types/credits";
 import type { StudentTrainingTrack } from "../types/trainingTrack";
 
+export type ScheduleWeekFlightRow = {
+  id: string;
+  source_filename: string;
+  created_at: string;
+  aircraft_ident: string | null;
+  duration_sec: number | null;
+  flight_date: string | null;
+  start_time: string | null;
+  student_user_id: string | null;
+  instructor_user_id: string | null;
+  is_night: boolean | null;
+  schedule_week_start: string | null;
+  schedule_demand_id: string | null;
+  saga_schedule_id: string | null;
+  saga_schedule_sync_status: string | null;
+  saga_schedule_synced_at: string | null;
+};
+
 type AdminUsersResponse = {
   users?: AdminUserSummary[];
   user?: AdminUserDetail;
   flights?: AdminFlightReportPage["flights"];
+  scheduleWeekFlights?: ScheduleWeekFlightRow[];
   nextCursor?: string | null;
   dashboard?: AdminDashboardData;
   studentsProgress?: AdminStudentsProgressData;
@@ -23,6 +43,29 @@ type AdminUsersResponse = {
   message?: string;
   auditEvent?: { id: string };
   auditEvents?: AdminAuditEvent[];
+  deletion?: AdminUserDeletionSummary;
+  createdContracts?: number;
+  nextStatus?: string;
+  saga?: EnrollmentSagaResult;
+  data?: SagaAnacPerson;
+  ok?: boolean;
+};
+
+export type EnrollmentSagaResult = {
+  ok: boolean;
+  skipped?: boolean;
+  sagaUserId?: string;
+  message?: string;
+};
+
+export type AdminUserDeletionSummary = {
+  userId: string;
+  deletedAuthUser: boolean;
+  deletedDocuments: number;
+  deletedFiles: number;
+  deletedByCollection: Record<string, number>;
+  errors: Array<{ collectionId: string; field: string; message: string }>;
+  fileErrors: Array<{ bucketId: string; fileId: string; message: string }>;
 };
 
 export type AdminAuditEvent = {
@@ -53,6 +96,10 @@ function parseResponse(body: string | undefined): AdminUsersResponse {
   }
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function executeAdminUsers(payload: Record<string, unknown>): Promise<AdminUsersResponse> {
   if (!functions || !ADMIN_USERS_FUNCTION_ID) {
     throw new Error("Função de usuários não configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
@@ -62,6 +109,29 @@ async function executeAdminUsers(payload: Record<string, unknown>): Promise<Admi
   const response = parseResponse(execution.responseBody);
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
     throw new Error(response.message || "Falha ao executar função de usuários.");
+  }
+  return response;
+}
+
+async function executeAdminUsersAsync(payload: Record<string, unknown>, timeoutMs = 120000): Promise<AdminUsersResponse> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    throw new Error("FunÃ§Ã£o de usuÃ¡rios nÃ£o configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
+  }
+
+  const created = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), true);
+  const startedAt = Date.now();
+  let execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
+  while (execution.status === "processing" || execution.status === "waiting") {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("A exclusao ainda esta em andamento no Appwrite. Aguarde um pouco e confira as execucoes da Function.");
+    }
+    await sleep(2000);
+    execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
+  }
+
+  const response = parseResponse(execution.responseBody);
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao executar funcao de usuarios.");
   }
   return response;
 }
@@ -77,6 +147,68 @@ export async function listAdminUserSummaries(params: {
     total: response.total ?? response.users?.length ?? 0,
     limit: response.limit ?? params.limit,
     offset: response.offset ?? params.offset,
+  };
+}
+
+export async function runEnrollmentAutomation(input: {
+  leadId: string;
+  trainingTrackId: string;
+  templateIds: string[];
+  customVarValues: Record<string, string>;
+  createInSaga?: boolean;
+  ignoreSagaDuplicates?: boolean;
+}): Promise<{ createdContracts: number; nextStatus: string; saga?: EnrollmentSagaResult }> {
+  const response = await executeAdminUsers({
+    action: "runEnrollmentAutomation",
+    leadId: input.leadId,
+    trainingTrackId: input.trainingTrackId,
+    templateIds: input.templateIds,
+    customVarValues: input.customVarValues,
+    createInSaga: input.createInSaga !== false,
+    ignoreSagaDuplicates: input.ignoreSagaDuplicates === true,
+  });
+  return {
+    createdContracts: response.createdContracts ?? 0,
+    nextStatus: response.nextStatus ?? "aguardando_assinatura_pagamento",
+    saga: response.saga,
+  };
+}
+
+export async function lookupSagaAnacPersonAdmin(input: {
+  leadId: string;
+  userId?: string | null;
+  anacCode?: string;
+  birthDate?: string;
+  cpf?: string;
+}): Promise<{ ok: boolean; data: SagaAnacPerson | null; message: string }> {
+  const response = await executeAdminUsers({
+    action: "lookupSagaAnacPersonAdmin",
+    leadId: input.leadId,
+    userId: input.userId || undefined,
+    anacCode: input.anacCode,
+    birthDate: input.birthDate,
+    cpf: input.cpf,
+  });
+  const ok = response.ok === true && Boolean(response.data?.name);
+  return {
+    ok,
+    data: ok ? (response.data ?? null) : null,
+    message: response.message || (ok ? "Dados ANAC obtidos no SAGA." : "Consulta ANAC no SAGA não retornou dados."),
+  };
+}
+
+export async function deleteSagaUser(input: {
+  sagaUserId: string;
+  userId?: string | null;
+}): Promise<{ ok: boolean; message: string }> {
+  const response = await executeAdminUsers({
+    action: "deleteSagaUser",
+    sagaUserId: input.sagaUserId,
+    userId: input.userId || undefined,
+  });
+  return {
+    ok: response.ok === true,
+    message: response.message || (response.ok ? "Usuário excluído no SAGA." : "Falha ao excluir no SAGA."),
   };
 }
 
@@ -106,6 +238,32 @@ export async function getAdminStudentsProgress(params: AdminStudentsProgressPara
   const response = await executeAdminUsers({ action: "getStudentsProgress", ...params });
   if (!response.studentsProgress) throw new Error(response.message || "Painel de alunos não retornado pela função.");
   return response.studentsProgress;
+}
+
+export type AdminUserProfileUpdateInput = {
+  fullName?: string;
+  email?: string;
+  cpf?: string;
+  phone?: string;
+  birthDate?: string;
+  anacCode?: string;
+  sagaUserId?: string;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  isActive?: boolean;
+};
+
+export async function updateAdminUserProfile(
+  userId: string,
+  profile: AdminUserProfileUpdateInput,
+): Promise<AdminUserDetail> {
+  const response = await executeAdminUsers({
+    action: "updateProfile",
+    userId,
+    profile,
+  });
+  if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
+  return response.user;
 }
 
 export async function updateAdminUserRole(
@@ -198,6 +356,12 @@ export async function deleteAdminUserCredit(creditId: string, userId: string): P
   await executeAdminUsers({ action: "deleteCredit", creditId, userId });
 }
 
+export async function deleteAdminUserCascade(userId: string, reason?: string): Promise<AdminUserDeletionSummary> {
+  const response = await executeAdminUsersAsync({ action: "deleteUserCascade", userId, reason: reason ?? null });
+  if (!response.deletion) throw new Error(response.message || "Resumo da exclusao nao retornado pela funcao.");
+  return response.deletion;
+}
+
 export async function listAdminUsers(search: string): Promise<AdminUserSummary[]> {
   const page = await listAdminUserSummaries({ search, limit: 25, offset: 0 });
   return page.users;
@@ -239,4 +403,13 @@ export async function listFlightAuditEvents(flightId: string): Promise<AdminAudi
     flightId,
   });
   return response.auditEvents ?? [];
+}
+
+/** Voos da semana para a escala (visão completa), via função admin com API key. */
+export async function listScheduleWeekFlights(weekStart: string): Promise<ScheduleWeekFlightRow[]> {
+  const response = await executeAdminUsers({
+    action: "listScheduleWeekFlights",
+    weekStart,
+  });
+  return response.scheduleWeekFlights ?? [];
 }

@@ -23,7 +23,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "dre",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
-  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.roles",
+  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles",
 ];
 
 const ALL_ACTIONS: ActionKey[] = [
@@ -45,7 +45,7 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
   "home", "journey", "flights", "notices", "manuals", "maneuvers", "students", "fuelings", "profile", "help",
-  "dre", "schedule",
+  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "indique-ganhe",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
@@ -55,7 +55,7 @@ const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
 
 /** Ações habilitadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ACTIONS: Set<ActionKey> = new Set([
-  "fueling.launch", "fueling.edit", "flight.create", "flight.edit", "os.create",
+  "fueling.launch", "fueling.edit", "os.create",
 ]);
 
 export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
@@ -77,7 +77,7 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
   "home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
-  "dre", "fuelings",
+  "dre", "fuelings", "contratos", "indique-ganhe",
 ];
 
 /** Abas ativadas por padrão para o aluno */

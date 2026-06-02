@@ -28,6 +28,7 @@ export type StudentCreditFlightDebit = {
   flightId: string;
   flightDate: string;
   aircraftIdent: string;
+  isNight: boolean;
   aircraftModelId: string | null;
   aircraftModelName: string;
   hours: number;

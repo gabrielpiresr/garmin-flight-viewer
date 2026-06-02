@@ -49,17 +49,20 @@ const SCHEDULE_SUB_TAB_KEY: Record<ScheduleSubTab, AdminTabKey> = {
 type ScheduleAdminTabProps = {
   subTab?: ScheduleSubTab;
   onSubTabChange?: (tab: ScheduleSubTab) => void;
+  visibleSubTabsOverride?: ScheduleSubTab[];
 };
 
-export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange }: ScheduleAdminTabProps = {}) {
+export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange, visibleSubTabsOverride }: ScheduleAdminTabProps = {}) {
   const [internalSubTab, setInternalSubTab] = useState<ScheduleSubTab>("flights");
   const [flightsFocusWeekStart, setFlightsFocusWeekStart] = useState<string | null>(null);
   const { canTab } = usePermissions();
 
-  const visibleSubTabs = useMemo(
-    () => SUB_TABS.filter((t) => canTab(SCHEDULE_SUB_TAB_KEY[t.id] as AdminTabKey)),
-    [canTab],
-  );
+  const visibleSubTabs = useMemo(() => {
+    if (visibleSubTabsOverride && visibleSubTabsOverride.length > 0) {
+      return SUB_TABS.filter((t) => visibleSubTabsOverride.includes(t.id));
+    }
+    return SUB_TABS.filter((t) => canTab(SCHEDULE_SUB_TAB_KEY[t.id] as AdminTabKey));
+  }, [canTab, visibleSubTabsOverride]);
 
   const subTab = controlledSubTab ?? internalSubTab;
   const activeSubTab: ScheduleSubTab =

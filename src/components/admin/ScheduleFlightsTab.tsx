@@ -6,6 +6,7 @@ import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
+import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSyncResult } from "../../lib/sagaImportDb";
 import {
   buildConflictsByFlightId,
   detectFlightConflicts,
@@ -67,6 +68,74 @@ const INSTRUCTOR_BORDER_CLASSES = [
 ];
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
+type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
+  id: string;
+  createdAt: string;
+};
+
+function sagaSyncVariant(status: SagaScheduleSyncResult["status"]): "success" | "warning" | "error" {
+  if (status === "synced" || status === "cancelled") return "success";
+  if (status === "skipped") return "warning";
+  return "error";
+}
+
+function normalizeSagaSyncStatus(status: unknown): SagaScheduleSyncResult["status"] {
+  return status === "synced" || status === "cancelled" || status === "skipped" || status === "failed"
+    ? status
+    : "failed";
+}
+
+function SagaScheduleSyncLogPanel({
+  logs,
+  onClear,
+}: {
+  logs: SagaScheduleSyncLogItem[];
+  onClear: () => void;
+}) {
+  if (!logs.length) return null;
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100">Log SAGA</h3>
+          <p className="text-xs text-slate-500">Falhas no SAGA nao desfazem a agenda local.</p>
+        </div>
+        <button type="button" onClick={onClear} className="text-xs font-semibold text-slate-400 hover:text-slate-200">
+          Limpar
+        </button>
+      </div>
+      <div className="space-y-2">
+        {logs.map((item) => {
+          const status = normalizeSagaSyncStatus(item.status);
+          return (
+            <details key={item.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+              <summary className="cursor-pointer list-none">
+                <span className={`font-semibold ${status === "failed" ? "text-rose-300" : status === "skipped" ? "text-amber-200" : "text-emerald-300"}`}>
+                  {status.toUpperCase()}
+                </span>
+                <span className="ml-2">{item.message || "Sem mensagem retornada pela sincronizacao SAGA."}</span>
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-2 text-[11px] text-slate-400">
+{JSON.stringify({
+  at: item.createdAt,
+  mode: item.mode,
+  flightId: item.flightId,
+  sagaScheduleId: item.sagaScheduleId,
+  endpoint: item.endpoint,
+  httpStatus: item.httpStatus,
+  requestPayload: item.requestPayload,
+  response: item.response,
+  logs: item.logs,
+}, null, 2)}
+              </pre>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function aircraftCardColor(className: string): string {
   return className
     .split(" ")
@@ -96,6 +165,7 @@ type FlightFormDraft = {
   startHour: number;
   durationHours: number;
   isNight?: boolean;
+  sagaScheduleId?: string | null;
 };
 
 type CalendarFlightItem = {
@@ -146,6 +216,7 @@ function parseStartHour(startTime: string): number {
 
 function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: InstructorIdentity | null): FlightRecordMeta {
   const weekDate = weekDateFromStart(weekStart, draft.dayOfWeek);
+  const engineCut = minutesToScheduleHHMM(parseScheduleTimeToMinutes(draft.startTime) + Math.round(draft.durationHours * 60));
   return {
     schedule: {
       version: "AUTO_SCHEDULE_V1",
@@ -161,6 +232,8 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
       instructorAnac: instructor?.anacCode ?? draft.instructorAnac ?? "",
       date: weekDate,
       startTime: draft.startTime,
+      departureTimeUtc: draft.startTime,
+      engineCutoffTimeUtc: engineCut,
       aircraft: draft.aircraftRegistration,
       isNight: draft.isNight ?? false,
     },
@@ -180,7 +253,11 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
         navTime: "00:00",
         ifrTime: "00:00",
         nightTime: "00:00",
-        serviceTime: "00:00",
+        serviceTime: hoursToHHMM(draft.durationHours),
+        engineStart: draft.startTime,
+        takeoff: "",
+        landing: "",
+        engineCut,
         distance: "0",
       },
     ],
@@ -225,6 +302,7 @@ function CalendarGrid({
   weekStart,
   onItemClick,
   onItemDrop,
+  onEmptySlotClick,
 }: {
   items: CalendarFlightItem[];
   colorByAircraft: Map<string, string>;
@@ -233,6 +311,7 @@ function CalendarGrid({
   weekStart: string;
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
+  onEmptySlotClick?: (target: CalendarDropTarget) => void;
 }) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
@@ -445,6 +524,11 @@ function CalendarGrid({
                     }}
                     className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
                     style={{ height: `${boardHeight}px` }}
+                    onClick={(e) => {
+                      if (!onEmptySlotClick || dragState) return;
+                      const target = resolveDropTarget(e.clientX, e.clientY);
+                      if (target) onEmptySlotClick(target);
+                    }}
                   >
                     {backgroundSupply
                       ? SLOT_HOURS.map((hour, idx) => {
@@ -559,6 +643,11 @@ function CalendarGrid({
                         else nightRowRefs.current.delete(day);
                       }}
                       className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightState === "blocked" ? "border-slate-700/40 bg-slate-800/20" : nightState ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
+                      onClick={(e) => {
+                        if (!onEmptySlotClick || dragState) return;
+                        const target = resolveDropTarget(e.clientX, e.clientY);
+                        if (target) onEmptySlotClick(target);
+                      }}
                     >
                       {nightItems.length === 0 && !(dragState?.preview.dayOfWeek === day && dragState.preview.isNight) ? (
                         <p className="text-center text-[10px] text-slate-600">—</p>
@@ -658,6 +747,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const { user } = useAuth();
   const { showToast } = useToast();
   const { canAction } = usePermissions();
+  const canCreateFlight = canAction("flight.create");
+  const canEditFlight = canAction("flight.edit");
+  const canDeleteFlight = canAction("flight.delete");
   const [weekOptions, setWeekOptions] = useState<ScheduleWeekOption[]>([]);
   const [selectedWeekStart, setSelectedWeekStart] = useState("");
   const [weekData, setWeekData] = useState<ScheduleWeekData | null>(null);
@@ -675,6 +767,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
+  const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
@@ -694,6 +787,57 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     lastErrorToastRef.current = error;
     showToast({ variant: "error", message: error });
   }, [error, showToast]);
+
+  const runSagaScheduleSync = useCallback(
+    async (flightId: string, mode: SagaScheduleSyncMode, options: { allowCreate?: boolean; sagaScheduleId?: string | null } = {}) => {
+      const result = await syncSagaScheduleEvent(flightId, mode, options).catch((error) => ({
+        ok: false,
+        mode,
+        status: "failed" as const,
+        message: error instanceof Error ? error.message : "Falha ao chamar sincronizacao SAGA.",
+        flightId,
+        sagaScheduleId: null,
+        httpStatus: null,
+        endpoint: null,
+        requestPayload: null,
+        response: null,
+        logs: [],
+      }));
+      const normalizedResult = {
+        ...result,
+        status: normalizeSagaSyncStatus(result.status),
+        message: result.message || "Sem mensagem retornada pela sincronizacao SAGA.",
+      };
+      const item: SagaScheduleSyncLogItem = {
+        ...normalizedResult,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        createdAt: new Date().toISOString(),
+      };
+      setSagaSyncLogs((current) => [item, ...current].slice(0, 12));
+      if (normalizedResult.sagaScheduleId) {
+        setFlights((current) =>
+          current.map((row) =>
+            row.id === flightId
+              ? {
+                  ...row,
+                  sagaScheduleId: normalizedResult.status === "cancelled" ? null : normalizedResult.sagaScheduleId,
+                  sagaScheduleSyncStatus: normalizedResult.status,
+                  sagaScheduleSyncedAt: item.createdAt,
+                }
+              : row,
+          ),
+        );
+      }
+      showToast({
+        variant: sagaSyncVariant(normalizedResult.status),
+        title: "SAGA",
+        message: normalizedResult.message,
+        durationMs: normalizedResult.status === "failed" ? 8000 : 4500,
+      });
+      return normalizedResult;
+    },
+    [showToast],
+  );
 
   const loadWeek = useCallback(
     async (weekStart: string, weekOverride?: ScheduleWeekOption, options?: { showSkeleton?: boolean }) => {
@@ -970,17 +1114,15 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const servedStudents = useMemo(() => {
     if (!weekData) return [];
+    const activeStudentIds = new Set(weekData.students.map((student) => student.userId));
     const map = new Map<string, { id: string; label: string; flights: number; hours: number }>();
     for (const student of weekData.students) {
       map.set(student.userId, { id: student.userId, label: student.label, flights: 0, hours: 0 });
     }
     for (const flight of flights) {
-      const current = map.get(flight.studentId) ?? {
-        id: flight.studentId,
-        label: studentLabelMap.get(flight.studentId) ?? flight.studentId,
-        flights: 0,
-        hours: 0,
-      };
+      if (!activeStudentIds.has(flight.studentId)) continue;
+      const current = map.get(flight.studentId);
+      if (!current) continue;
       current.flights += 1;
       current.hours += flight.durationHours;
       map.set(flight.studentId, current);
@@ -1041,6 +1183,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   }
 
   async function openEditModal(row: ExistingScheduledFlight) {
+    if (!canEditFlight) return;
     const full = await getSavedFlight(row.id);
     const decoded = full.data ? decodeFlightRecord(full.data.csv_text).meta : null;
     setFormMode("edit");
@@ -1068,6 +1211,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           : parseStartHour(row.startTime),
       durationHours: row.durationHours,
       isNight: decoded?.header.isNight ?? row.isNight ?? false,
+      sagaScheduleId: row.sagaScheduleId ?? null,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -1115,6 +1259,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         const result = await updateFlight(formDraft.id, payload);
         if (result.error) throw result.error;
         void syncFlightCalendarEvent(formDraft.id, "upsert");
+        void runSagaScheduleSync(formDraft.id, "upsert", { sagaScheduleId: formDraft.sagaScheduleId ?? null });
         void dispatchNotificationEvent({
           eventType: "flight.updated",
           flightId: formDraft.id,
@@ -1134,6 +1279,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         if (result.error) throw result.error;
         if (result.id) {
           void syncFlightCalendarEvent(result.id, "upsert");
+          void runSagaScheduleSync(result.id, "upsert", { allowCreate: true });
           void dispatchNotificationEvent({
             eventType: "flight.scheduled",
             flightId: result.id,
@@ -1165,6 +1311,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!window.confirm("Excluir este voo?")) return;
     setError(null);
     try {
+      await runSagaScheduleSync(row.id, "cancel", { sagaScheduleId: row.sagaScheduleId ?? null });
       await syncFlightCalendarEvent(row.id, "cancel");
       const result = await deleteSavedFlight(row.id);
       if (result.error) throw result.error;
@@ -1192,6 +1339,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala</h2>
         <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
       </div>
+
+      <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} />
 
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-4">
         <div className="md:col-span-2">
@@ -1222,7 +1371,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             })}
           </select>
         </div>
-        {canAction("flight.create") ? (
+        {canCreateFlight ? (
         <div className="flex items-end md:col-span-2">
           <button
             type="button"
@@ -1410,6 +1559,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           <button
                             type="button"
                             onClick={() => {
+                              if (!canEditFlight) return;
                               const selected = flights.find((row) => row.id === item.id);
                               if (selected) void openEditModal(selected);
                             }}
@@ -1448,10 +1598,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               backgroundSupply={selectedSupplyForBackground}
               weekStart={weekData.week.weekStart}
               onItemClick={(item) => {
+                if (!canEditFlight) return;
                 const selected = flights.find((row) => row.id === item.id);
                 if (selected) void openEditModal(selected);
               }}
-              onItemDrop={(item, target) => {
+              onItemDrop={canEditFlight ? (item, target) => {
                 const selected = flights.find((row) => row.id === item.id);
                 if (!selected) return;
                 void (async () => {
@@ -1468,6 +1619,21 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       : prev,
                   );
                 })();
+              } : undefined}
+              onEmptySlotClick={(target) => {
+                if (!canCreateFlight) return;
+                openCreateModal();
+                setFormDraft((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        dayOfWeek: target.dayOfWeek,
+                        startHour: target.startHour,
+                        startTime: target.startTime,
+                        isNight: target.isNight,
+                      }
+                    : prev,
+                );
               }}
             />
           </div>
@@ -1478,6 +1644,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               <button
                 type="button"
                 onClick={() => openCreateModal()}
+                disabled={!canCreateFlight}
                 className="rounded-lg border border-violet-500/60 px-3 py-2 text-xs font-semibold text-violet-400 hover:bg-violet-600/20"
               >
                 Adicionar voo
@@ -1521,7 +1688,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         </td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-2">
-                            {canAction("flight.edit") ? (
+                            {canEditFlight ? (
                             <button
                               type="button"
                               onClick={() => void openEditModal(row)}
@@ -1530,7 +1697,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                               Editar
                             </button>
                             ) : null}
-                            {canAction("flight.delete") ? (
+                            {canDeleteFlight ? (
                             <button
                               type="button"
                               onClick={() => void handleDeleteFlight(row)}
@@ -1827,10 +1994,28 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               >
                 Cancelar
               </button>
+              {formMode === "edit" && canDeleteFlight ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetId = formDraft.id;
+                    if (!targetId) return;
+                    const row = flights.find((flight) => flight.id === targetId);
+                    if (!row) return;
+                    void (async () => {
+                      await handleDeleteFlight(row);
+                      setFormDraft(null);
+                    })();
+                  }}
+                  className="w-full rounded border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 sm:w-auto"
+                >
+                  Excluir voo
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void handleSaveForm()}
-                disabled={formSaving}
+                disabled={formSaving || (formMode === "create" ? !canCreateFlight : !canEditFlight)}
                 className="w-full rounded bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50 sm:w-auto"
               >
                 {formSaving ? "Salvando..." : "Salvar voo"}

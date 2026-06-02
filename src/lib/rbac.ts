@@ -1,7 +1,18 @@
 import { Query } from "appwrite";
 import { resolveProfileDocumentPermissions } from "./appwriteClientPermissions";
 import { ensureDefaultStudentTrainingTrack } from "./trainingTracksDb";
-import { databases, ID, INSTRUCTOR_PREFS_COL_ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "./appwrite";
+import {
+  BUCKET_ID,
+  databases,
+  ID,
+  INSTRUCTOR_PREFS_COL_ID,
+  isAppwriteConfigured,
+  DEFAULT_SCHOOL_ID,
+  Permission,
+  PROFILE_DOCUMENTS_COL_ID,
+  Role,
+  storage,
+} from "./appwrite";
 
 
 import type { InstructorIdentity, InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
@@ -13,6 +24,7 @@ const PROFILES_COL_ID = import.meta.env.VITE_APPWRITE_PROFILES_COLLECTION_ID as 
 
 export type UserRole = "admin" | "instrutor" | "aluno";
 export type AnacSyncStatus = "pending" | "success" | "error";
+export type ApprovalStatus = "pending" | "approved";
 export type PilotRating = { habilitacao: string; validade: string };
 export type PilotLicense = { licenca: string; expedicao: string };
 export type PilotMedical = {
@@ -21,15 +33,51 @@ export type PilotMedical = {
   orgao_expedidor: string;
   observacoes: string;
 };
+export type ProfileDocumentType =
+  | "identification"
+  | "voterTitle"
+  | "proofOfResidence"
+  | "militaryCertificate"
+  | "enrollmentForm";
+export type ProfileDocumentAttachment = {
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
+};
+export type ProfileDocumentAttachments = Partial<Record<ProfileDocumentType, ProfileDocumentAttachment>>;
 export type PilotProfile = {
   docId: string;
   userId: string;
+  isActive: boolean;
   email: string;
   role: UserRole;
   fullName: string;
   cpf: string;
+  rg: string;
+  rgOrgaoExpedidor: string;
   phone: string;
   birthDate: string;
+  endereco: string;
+  cep: string;
+  cidade: string;
+  uf: string;
+  nacionalidade: string;
+  estadoCivil: string;
+  sexo: string;
+  naturalidade: string;
+  filiacaoPai: string;
+  filiacaoMae: string;
+  rgDataEmissao: string;
+  escolaridade: string;
+  escolaridadePeriodo: string;
+  escolaridadeCurso: string;
+  alergiasMedicamentos: string;
+  emergenciaNome: string;
+  emergenciaParentesco: string;
+  emergenciaEndereco: string;
+  emergenciaTelefone: string;
   weightKg: number | null;
   heightCm: number | null;
   anacCode: string;
@@ -40,7 +88,9 @@ export type PilotProfile = {
   anacSyncStatus: AnacSyncStatus;
   anacSyncError: string;
   anacLastSyncAt: string;
+  documents: ProfileDocumentAttachments;
   instructorAvailability: InstructorIdentity["defaultAvailability"];
+  approvalStatus: ApprovalStatus;
 };
 
 export type PilotProfileSummary = Pick<PilotProfile, "fullName" | "anacCode">;
@@ -61,12 +111,34 @@ export type ScheduleStudentIdentity = {
 
 type ProfileDoc = {
   user_id?: string;
+  is_active?: boolean;
   role?: string;
   email?: string;
   full_name?: string;
   cpf?: string;
+  rg?: string;
+  rg_orgao_expedidor?: string;
   phone?: string;
   birth_date?: string;
+  endereco?: string;
+  cep?: string;
+  cidade?: string;
+  uf?: string;
+  nacionalidade?: string;
+  estado_civil?: string;
+  sexo?: string;
+  naturalidade?: string;
+  filiacao_pai?: string;
+  filiacao_mae?: string;
+  rg_data_emissao?: string;
+  escolaridade?: string;
+  escolaridade_periodo?: string;
+  escolaridade_curso?: string;
+  alergias_medicamentos?: string;
+  emergencia_nome?: string;
+  emergencia_parentesco?: string;
+  emergencia_endereco?: string;
+  emergencia_telefone?: string;
   weight_kg?: number;
   height_cm?: number;
   anac_code?: string;
@@ -77,12 +149,25 @@ type ProfileDoc = {
   anac_sync_status?: string;
   anac_sync_error?: string;
   anac_last_sync_at?: string;
+  documents_json?: string;
+  approval_status?: string;
 };
 
 type InstructorPreferenceDoc = {
   user_id?: string;
   preference_level?: string;
   availability_json?: string;
+};
+
+type ProfileDocumentDoc = {
+  $id: string;
+  user_id?: string;
+  document_type?: string;
+  file_id?: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+  uploaded_at?: string;
 };
 
 export type EnsureProfileUpdates = Partial<{
@@ -102,6 +187,29 @@ export type EnsureProfileUpdates = Partial<{
   anac_last_sync_at: string;
   instructor_availability_json: string;
   instructor_preference_level: InstructorPreferenceLevel;
+  // Dados pessoais adicionais
+  rg: string;
+  rg_orgao_expedidor: string;
+  endereco: string;
+  cep: string;
+  cidade: string;
+  uf: string;
+  nacionalidade: string;
+  estado_civil: string;
+  sexo: string;
+  naturalidade: string;
+  filiacao_pai: string;
+  filiacao_mae: string;
+  rg_data_emissao: string;
+  escolaridade: string;
+  escolaridade_periodo: string;
+  escolaridade_curso: string;
+  alergias_medicamentos: string;
+  emergencia_nome: string;
+  emergencia_parentesco: string;
+  emergencia_endereco: string;
+  emergencia_telefone: string;
+  referrer_user_id: string;
 }>;
 
 function normalizeInstructorPreference(value: string | null | undefined): InstructorPreferenceLevel {
@@ -154,6 +262,71 @@ function parseJsonObject<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function parseProfileDocuments(value: unknown): ProfileDocumentAttachments {
+  const parsed = parseJsonObject<ProfileDocumentAttachments>(value, {});
+  const documents: ProfileDocumentAttachments = {};
+  for (const key of ["identification", "voterTitle", "proofOfResidence", "militaryCertificate", "enrollmentForm"] as const) {
+    const item = parsed[key];
+    if (!item?.fileId) continue;
+    documents[key] = {
+      fileId: String(item.fileId),
+      fileName: String(item.fileName || "Documento"),
+      mimeType: String(item.mimeType || "application/octet-stream"),
+      size: Number(item.size || 0),
+      uploadedAt: String(item.uploadedAt || ""),
+    };
+  }
+  return documents;
+}
+
+function toProfileDocuments(docs: ProfileDocumentDoc[]): ProfileDocumentAttachments {
+  const documents: ProfileDocumentAttachments = {};
+  for (const doc of docs) {
+    const type = doc.document_type as ProfileDocumentType | undefined;
+    if (
+      type !== "identification" &&
+      type !== "voterTitle" &&
+      type !== "proofOfResidence" &&
+      type !== "militaryCertificate" &&
+      type !== "enrollmentForm"
+    ) {
+      continue;
+    }
+    if (!doc.file_id) continue;
+    documents[type] = {
+      fileId: doc.file_id,
+      fileName: doc.file_name || "Documento",
+      mimeType: doc.mime_type || "application/octet-stream",
+      size: typeof doc.file_size === "number" ? doc.file_size : 0,
+      uploadedAt: doc.uploaded_at || "",
+    };
+  }
+  return documents;
+}
+
+async function listProfileDocumentDocs(userId: string): Promise<ProfileDocumentDoc[]> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILE_DOCUMENTS_COL_ID) return [];
+  try {
+    const res = await databases.listDocuments(DB_ID, PROFILE_DOCUMENTS_COL_ID, [
+      Query.equal("user_id", [userId]),
+      Query.limit(25),
+    ]);
+    return res.documents as unknown as ProfileDocumentDoc[];
+  } catch {
+    return [];
+  }
+}
+
+async function getProfileDocumentDoc(userId: string, type: ProfileDocumentType): Promise<ProfileDocumentDoc | null> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILE_DOCUMENTS_COL_ID) return null;
+  const res = await databases.listDocuments(DB_ID, PROFILE_DOCUMENTS_COL_ID, [
+    Query.equal("user_id", [userId]),
+    Query.equal("document_type", [type]),
+    Query.limit(1),
+  ]);
+  return (res.documents[0] as unknown as ProfileDocumentDoc | undefined) ?? null;
 }
 
 function toStudentOption(doc: ProfileDoc): StudentOption | null {
@@ -276,17 +449,40 @@ export async function getProfile(userId: string): Promise<{ data: PilotProfile |
     };
     const role = normalizeUserRole(doc.role);
     const instructorPreference = role === "instrutor" ? await getInstructorPreference(doc.user_id ?? userId) : undefined;
+    const documentDocs = await listProfileDocumentDocs(doc.user_id ?? userId);
 
     return {
       data: {
         docId: doc.$id,
         userId: doc.user_id ?? userId,
+        isActive: doc.is_active !== false,
         email: doc.email ?? "",
         role,
         fullName: doc.full_name ?? "",
         cpf: doc.cpf ?? "",
+        rg: doc.rg ?? "",
+        rgOrgaoExpedidor: doc.rg_orgao_expedidor ?? "",
         phone: doc.phone ?? "",
         birthDate: doc.birth_date ?? "",
+        endereco: doc.endereco ?? "",
+        cep: doc.cep ?? "",
+        cidade: doc.cidade ?? "",
+        uf: doc.uf ?? "",
+        nacionalidade: doc.nacionalidade ?? "",
+        estadoCivil: doc.estado_civil ?? "",
+        sexo: doc.sexo ?? "",
+        naturalidade: doc.naturalidade ?? "",
+        filiacaoPai: doc.filiacao_pai ?? "",
+        filiacaoMae: doc.filiacao_mae ?? "",
+        rgDataEmissao: doc.rg_data_emissao ?? "",
+        escolaridade: doc.escolaridade ?? "",
+        escolaridadePeriodo: doc.escolaridade_periodo ?? "",
+        escolaridadeCurso: doc.escolaridade_curso ?? "",
+        alergiasMedicamentos: doc.alergias_medicamentos ?? "",
+        emergenciaNome: doc.emergencia_nome ?? "",
+        emergenciaParentesco: doc.emergencia_parentesco ?? "",
+        emergenciaEndereco: doc.emergencia_endereco ?? "",
+        emergenciaTelefone: doc.emergencia_telefone ?? "",
         weightKg: typeof doc.weight_kg === "number" ? doc.weight_kg : null,
         heightCm: typeof doc.height_cm === "number" ? doc.height_cm : null,
         anacCode: doc.anac_code ?? "",
@@ -298,10 +494,37 @@ export async function getProfile(userId: string): Promise<{ data: PilotProfile |
           doc.anac_sync_status === "success" || doc.anac_sync_status === "error" ? doc.anac_sync_status : "pending",
         anacSyncError: doc.anac_sync_error ?? "",
         anacLastSyncAt: doc.anac_last_sync_at ?? "",
+        documents: documentDocs.length > 0 ? toProfileDocuments(documentDocs) : parseProfileDocuments(doc.documents_json),
+        approvalStatus: doc.approval_status === "approved" ? "approved" : "pending",
         instructorAvailability: parseInstructorAvailability(instructorPreference?.availability_json),
       },
       error: null,
     };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function updateProfileFields(
+  userId: string,
+  updates: EnsureProfileUpdates & Partial<{ email: string; role: UserRole }>,
+): Promise<{ data: PilotProfile | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) {
+    return { data: null, error: new Error("Appwrite nao configurado.") };
+  }
+
+  try {
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", [userId]),
+      Query.limit(1),
+    ]);
+    const doc = res.documents[0] as (ProfileDoc & { $id: string }) | undefined;
+    if (!doc) return { data: null, error: new Error("Perfil nao encontrado.") };
+    await databases.updateDocument(DB_ID, PROFILES_COL_ID, doc.$id, {
+      school_id: DEFAULT_SCHOOL_ID,
+      ...updates,
+    });
+    return getProfile(userId);
   } catch (error) {
     return { data: null, error: error as Error };
   }
@@ -334,6 +557,144 @@ export async function listProfileSummariesByUserIds(
   }
 
   return out;
+}
+
+function profileDocumentPermissions(userId: string): string[] {
+  return [
+    Permission.read(Role.user(userId)),
+    Permission.read(Role.users()),
+    Permission.update(Role.user(userId)),
+    Permission.delete(Role.user(userId)),
+  ];
+}
+
+export function getProfileDocumentUrl(fileId: string, mode: "view" | "download" = "download"): string {
+  if (!storage || !BUCKET_ID || !fileId) return "";
+  const url = mode === "view" ? storage.getFileView(BUCKET_ID, fileId) : storage.getFileDownload(BUCKET_ID, fileId);
+  return url.toString();
+}
+
+export async function uploadProfileDocumentAttachment(
+  profile: Pick<PilotProfile, "docId" | "userId" | "documents">,
+  type: ProfileDocumentType,
+  file: File,
+): Promise<{ data: ProfileDocumentAttachments | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases || !storage || !DB_ID || !PROFILE_DOCUMENTS_COL_ID || !BUCKET_ID) {
+    return { data: null, error: new Error("Appwrite Storage nao configurado.") };
+  }
+
+  let uploadedFileId = "";
+  try {
+    const previousFileId = profile.documents[type]?.fileId;
+    const existingDoc = await getProfileDocumentDoc(profile.userId, type);
+    const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, profileDocumentPermissions(profile.userId));
+    uploadedFileId = uploaded.$id;
+    const nextDocuments: ProfileDocumentAttachments = {
+      ...profile.documents,
+      [type]: {
+        fileId: uploaded.$id,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+      },
+    };
+
+    const payload = {
+      school_id: DEFAULT_SCHOOL_ID,
+      user_id: profile.userId,
+      document_type: type,
+      file_id: uploaded.$id,
+      file_name: file.name,
+      mime_type: file.type || "application/octet-stream",
+      file_size: file.size,
+      uploaded_at: new Date().toISOString(),
+    };
+
+    if (existingDoc) {
+      await databases.updateDocument(DB_ID, PROFILE_DOCUMENTS_COL_ID, existingDoc.$id, payload);
+    } else {
+      await databases.createDocument(
+        DB_ID,
+        PROFILE_DOCUMENTS_COL_ID,
+        ID.unique(),
+        payload,
+        profileDocumentPermissions(profile.userId),
+      );
+    }
+
+    if (previousFileId && previousFileId !== uploaded.$id) {
+      await storage.deleteFile(BUCKET_ID, previousFileId).catch(() => undefined);
+    }
+
+    return { data: nextDocuments, error: null };
+  } catch (error) {
+    if (uploadedFileId) {
+      await storage.deleteFile(BUCKET_ID, uploadedFileId).catch(() => undefined);
+    }
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function deleteProfileDocumentAttachment(
+  profile: Pick<PilotProfile, "userId" | "documents">,
+  type: ProfileDocumentType,
+): Promise<{ data: ProfileDocumentAttachments | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases || !storage || !DB_ID || !PROFILE_DOCUMENTS_COL_ID || !BUCKET_ID) {
+    return { data: null, error: new Error("Appwrite Storage nao configurado.") };
+  }
+
+  try {
+    const fileId = profile.documents[type]?.fileId;
+    const existingDoc = await getProfileDocumentDoc(profile.userId, type);
+    const nextDocuments: ProfileDocumentAttachments = { ...profile.documents };
+    delete nextDocuments[type];
+
+    if (existingDoc) {
+      await databases.deleteDocument(DB_ID, PROFILE_DOCUMENTS_COL_ID, existingDoc.$id);
+    }
+
+    if (fileId) {
+      await storage.deleteFile(BUCKET_ID, fileId).catch(() => undefined);
+    }
+
+    return { data: nextDocuments, error: null };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function getApprovalStatus(userId: string): Promise<ApprovalStatus> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return "pending";
+  try {
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", [userId]),
+      Query.limit(1),
+    ]);
+    const doc = (res.documents[0] ?? null) as (ProfileDoc & { $id: string }) | null;
+    if (!doc) return "pending";
+    return doc.approval_status === "approved" ? "approved" : "pending";
+  } catch {
+    return "pending";
+  }
+}
+
+export async function approveStudentAccess(userId: string): Promise<{ error: Error | null }> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) {
+    return { error: new Error("Appwrite não configurado.") };
+  }
+  try {
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", [userId]),
+      Query.limit(1),
+    ]);
+    const doc = res.documents[0] as (ProfileDoc & { $id: string }) | undefined;
+    if (!doc) return { error: new Error("Perfil não encontrado.") };
+    await databases.updateDocument(DB_ID, PROFILES_COL_ID, doc.$id, { approval_status: "approved" });
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
 }
 
 export async function ensureProfile(
@@ -373,7 +734,15 @@ export async function ensureProfile(
         DB_ID,
         PROFILES_COL_ID,
         ID.unique(),
-        { user_id: userId, email, role, school_id: DEFAULT_SCHOOL_ID, ...updates },
+        {
+          user_id: userId,
+          email,
+          role,
+          school_id: DEFAULT_SCHOOL_ID,
+          is_active: true,
+          approval_status: role === "aluno" ? "pending" : "approved",
+          ...updates,
+        },
         resolveProfileDocumentPermissions(userId, userId),
       );
     }
@@ -404,7 +773,7 @@ async function listStudentsFromProfiles(actorUserId: string): Promise<StudentOpt
     .filter((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";
       const role = normalizeUserRole((doc.role as string | undefined) ?? null);
-      if (!userId || userId === actorUserId) return false;
+      if (!userId || userId === actorUserId || doc.is_active === false) return false;
       return role !== "admin" && role !== "instrutor";
     })
     .map((doc) =>
@@ -443,7 +812,7 @@ export async function listStudentIdentitiesForSchedule(actorUserId: string): Pro
     .filter((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";
       const role = normalizeUserRole((doc.role as string | undefined) ?? null);
-      if (!userId || userId === actorUserId) return false;
+      if (!userId || userId === actorUserId || doc.is_active === false) return false;
       return role !== "admin" && role !== "instrutor";
     })
     .map((doc) => {
@@ -489,6 +858,7 @@ export async function listFuelingResponsibleUsers(actorRole: UserRole): Promise<
   return res.documents
     .map((doc) => {
       const role = normalizeUserRole((doc.role as string | undefined) ?? null);
+      if (doc.is_active === false) return null;
       if (role !== "admin" && role !== "instrutor") return null;
       const userId = (doc.user_id as string | undefined) ?? "";
       if (!userId) return null;
@@ -528,7 +898,7 @@ export async function listAssignableInstructors(actorRole: UserRole): Promise<In
     (preferencesRes.documents as unknown as InstructorPreferenceDoc[]).map((doc) => [doc.user_id ?? "", doc]),
   );
   return profilesRes.documents
-    .filter((doc) => normalizeUserRole((doc.role as string | undefined) ?? null) === "instrutor")
+    .filter((doc) => doc.is_active !== false && normalizeUserRole((doc.role as string | undefined) ?? null) === "instrutor")
     .map((doc) =>
       toInstructorIdentity({
         user_id: (doc.user_id as string | undefined) ?? "",

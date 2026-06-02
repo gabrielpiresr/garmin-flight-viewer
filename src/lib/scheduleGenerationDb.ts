@@ -297,6 +297,9 @@ function savedFlightToScheduledFlight(row: SavedFlightListItem): ExistingSchedul
     durationHours,
     isNight: row.is_night ?? false,
     sourceFilename,
+    sagaScheduleId: row.saga_schedule_id ?? null,
+    sagaScheduleSyncStatus: row.saga_schedule_sync_status ?? null,
+    sagaScheduleSyncedAt: row.saga_schedule_synced_at ?? null,
     isOutsideGenerator,
   };
 }
@@ -466,33 +469,6 @@ export async function getScheduleWeekData(params: {
   const aircraftMap = new Map(aircrafts.map((aircraft) => [aircraft.id, aircraft]));
   const identityByUserId = new Map(studentIdentities.map((student) => [student.userId, student]));
 
-  for (const flight of existingGeneratedFlights) {
-    if (!identityByUserId.has(flight.studentId)) {
-      identityByUserId.set(flight.studentId, {
-        userId: flight.studentId,
-        label: flight.studentId,
-        email: null,
-        anacCode: null,
-        weightKg: null,
-        heightCm: null,
-      });
-    }
-  }
-
-  for (const plan of planDocs) {
-    const studentId = plan.student_id ?? "";
-    if (studentId && !identityByUserId.has(studentId)) {
-      identityByUserId.set(studentId, {
-        userId: studentId,
-        label: studentId,
-        email: null,
-        anacCode: null,
-        weightKg: null,
-        heightCm: null,
-      });
-    }
-  }
-
   const supplies: AircraftWeekSupply[] = (opWeeksRes.documents as unknown as OpWeekDoc[]).map((doc) => {
     const registration =
       aircraftMap.get(doc.aircraft_id ?? "")?.registration ??
@@ -515,6 +491,7 @@ export async function getScheduleWeekData(params: {
     for (const plan of planDocs) {
       const studentId = plan.student_id ?? "";
       const identity = identityByUserId.get(studentId);
+      if (!identity) continue;
       const studentLabel = identity?.label || studentId;
       const parsedItems = parsePlanItems(plan.items_json);
       for (const item of parsedItems.filter((entry) =>

@@ -104,6 +104,7 @@ export function AlunoProfileDashboard() {
       eyebrow="Perfil"
       title="Dados do aluno"
       description="Dados cadastrais e informações importadas da ANAC."
+      onProfileUpdated={setProfile}
       action={{
         label: "Atualizar da ANAC",
         loadingLabel: "Atualizando...",

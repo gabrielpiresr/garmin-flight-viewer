@@ -171,11 +171,12 @@ export function CreditStatementView({
               {statement.flightDebits.length === 0 ? (
                 <p className="px-3 py-4 text-sm text-slate-500">Nenhuma saída por voo encontrada.</p>
               ) : (
-                <table className="w-full min-w-[820px] text-left text-sm">
+                <table className="w-full min-w-[900px] text-left text-sm">
                   <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 font-medium">Data</th>
                       <th className="px-3 py-2 font-medium">Aeronave</th>
+                      <th className="px-3 py-2 font-medium">Período</th>
                       <th className="px-3 py-2 font-medium">Modelo</th>
                       <th className="px-3 py-2 font-medium">Horas</th>
                       <th className="px-3 py-2 font-medium">Debitado</th>
@@ -188,6 +189,7 @@ export function CreditStatementView({
                       <tr key={debit.id} className="text-slate-300">
                         <td className="px-3 py-2">{formatDate(debit.flightDate)}</td>
                         <td className="px-3 py-2">{debit.aircraftIdent || "Aeronave não informada"}</td>
+                        <td className="px-3 py-2">{debit.isNight ? "Noturno" : "Diurno"}</td>
                         <td className="px-3 py-2">{debit.aircraftModelName}</td>
                         <td className="px-3 py-2">{formatHours(debit.hours)}</td>
                         <td className="px-3 py-2">{formatHours(debit.allocatedHours)}</td>

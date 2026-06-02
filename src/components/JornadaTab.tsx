@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
-import { decodeFlightRecord } from "../lib/flightRecordCodec";
-import { getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
+import { decodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCodec";
+import { getFlightRecordMetaBatch, getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import { aggregateJourneyMetrics, type JourneyMetrics } from "../lib/journeyMetrics";
 import { listJourneyTelemetrySummaries } from "../lib/flightTelemetryMetricsDb";
 import { listManeuverCatalog } from "../lib/maneuversDb";
@@ -23,10 +23,14 @@ const JornadaEvolutionPanel = lazy(() =>
   import("./JornadaEvolutionPanel").then((module) => ({ default: module.JornadaEvolutionPanel })),
 );
 
+type FlightOutcome = "approved" | "failed" | "";
+
 type FormationState = {
   tracks: StudentTrainingTrack[];
   flights: Array<SavedFlightListItem & { trainingMissionIds: string[] }>;
   fullFlights: SavedFlightFull[];
+  approvedMissionIds: Set<string>;
+  flightOutcomes: Map<string, FlightOutcome>;
   loading: boolean;
   error: string | null;
 };
@@ -78,12 +82,12 @@ const FLIGHT_DETAIL_BATCH = 4;
 
 function useFormationProgress(): FormationState {
   const { user, configured } = useAuth();
-  const [state, setState] = useState<FormationState>({ tracks: [], flights: [], fullFlights: [], loading: true, error: null });
+  const [state, setState] = useState<FormationState>({ tracks: [], flights: [], fullFlights: [], approvedMissionIds: new Set(), flightOutcomes: new Map(), loading: true, error: null });
 
   useEffect(() => {
     let cancelled = false;
     if (!configured || !user) {
-      setState({ tracks: [], flights: [], fullFlights: [], loading: false, error: configured ? null : "Appwrite não configurado" });
+      setState({ tracks: [], flights: [], fullFlights: [], approvedMissionIds: new Set(), flightOutcomes: new Map(), loading: false, error: configured ? null : "Appwrite não configurado" });
       return () => {
         cancelled = true;
       };
@@ -95,24 +99,41 @@ function useFormationProgress(): FormationState {
       tracks: StudentTrainingTrack[],
       errorMessage: string | null,
     ) {
-      const flightsNeedingDetails = baseFlights.filter(
+      // Parte A: busca completa APENAS para voos sem mission IDs materializados (comportamento original)
+      const flightsNeedingFullData = baseFlights.filter(
         (flight) => flight.training_track_id && flightMissionIds(flight).length === 0,
       );
-      if (flightsNeedingDetails.length === 0 || cancelled) return;
+      // Parte B: busca leve de meta (apenas 1ª linha do CSV via Range HTTP) para TODOS os voos da trilha
+      const allTrackFlightIds = baseFlights
+        .filter((f) => f.training_track_id)
+        .map((f) => f.id);
+
+      if (flightsNeedingFullData.length === 0 && allTrackFlightIds.length === 0) return;
+      if (cancelled) return;
 
       const fullFlights: SavedFlightFull[] = [];
       const fullById = new Map<string, SavedFlightFull>();
 
-      for (let index = 0; index < flightsNeedingDetails.length; index += FLIGHT_DETAIL_BATCH) {
-        if (cancelled) return;
-        const batch = flightsNeedingDetails.slice(index, index + FLIGHT_DETAIL_BATCH);
-        const results = await Promise.all(batch.map((flight) => getSavedFlight(flight.id)));
-        results.forEach((full, batchIndex) => {
-          if (!full.data) return;
-          fullFlights.push(full.data);
-          fullById.set(batch[batchIndex]!.id, full.data);
-        });
-      }
+      // Executa A e B em paralelo — A é pesado mas raro; B é leve e cobre todos
+      const [, metaMap] = await Promise.all([
+        (async () => {
+          for (let index = 0; index < flightsNeedingFullData.length; index += FLIGHT_DETAIL_BATCH) {
+            if (cancelled) return;
+            const batch = flightsNeedingFullData.slice(index, index + FLIGHT_DETAIL_BATCH);
+            const results = await Promise.all(batch.map((flight) => getSavedFlight(flight.id)));
+            results.forEach((full, batchIndex) => {
+              if (!full.data) return;
+              fullFlights.push(full.data);
+              fullById.set(batch[batchIndex]!.id, full.data);
+            });
+          }
+        })(),
+        allTrackFlightIds.length > 0
+          ? getFlightRecordMetaBatch(allTrackFlightIds, { concurrency: 8 })
+          : Promise.resolve(new Map<string, FlightRecordMeta | null>()),
+      ]);
+
+      if (cancelled) return;
 
       const trainingFlights = baseFlights.map((flight) => {
         const materializedMissionIds = flightMissionIds(flight);
@@ -131,11 +152,35 @@ function useFormationProgress(): FormationState {
         };
       });
 
+      // Calcula approved + outcomes usando o meta leve (sem precisar do CSV de telemetria)
+      const approvedMissionIds = new Set<string>();
+      const flightOutcomes = new Map<string, FlightOutcome>();
+      for (const enrichedFlight of trainingFlights) {
+        const meta = metaMap.get(enrichedFlight.id) ?? null;
+        if (!meta?.risk) continue;
+        const explicitOutcome = meta.risk.instructorOutcome;
+        let resolvedOutcome: FlightOutcome = explicitOutcome ?? "";
+        if (!explicitOutcome && meta.risk.instructorOpinionMd) {
+          const normalized = meta.risk.instructorOpinionMd
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .toLowerCase();
+          if (/\b(aprovado|aprovada|satisfatorio|apto|apta)\b/.test(normalized)) resolvedOutcome = "approved";
+          else if (/\b(reprovado|reprovada|insatisfatorio|inapto|nao aprovado|nao aprovada)\b/.test(normalized)) resolvedOutcome = "failed";
+        }
+        flightOutcomes.set(enrichedFlight.id, resolvedOutcome);
+        if (resolvedOutcome === "approved") {
+          enrichedFlight.trainingMissionIds.forEach((id) => approvedMissionIds.add(id));
+        }
+      }
+
       if (cancelled) return;
       setState({
         tracks,
         flights: trainingFlights,
         fullFlights,
+        approvedMissionIds,
+        flightOutcomes,
         loading: false,
         error: errorMessage,
       });
@@ -159,6 +204,8 @@ function useFormationProgress(): FormationState {
         tracks,
         flights: initialFlights,
         fullFlights: [],
+        approvedMissionIds: new Set(),
+        flightOutcomes: new Map(),
         loading: false,
         error: error?.message ?? null,
       });
@@ -206,6 +253,14 @@ function flattenTrackMissions(track: TrainingTrack): Array<{ stage: TrainingStag
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+
+function formatFlightDate(dateStr: string | null): string {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-");
+  if (parts.length !== 3) return dateStr;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
 function EmptyJourneyCard({ title = "Jornada pronta para decolar" }: { title?: string }) {
@@ -402,13 +457,14 @@ function FormationJourney({ state }: { state: FormationState }) {
     () => new Set(trackFlights.flatMap((flight) => flight.trainingMissionIds)),
     [trackFlights],
   );
+  const approvedMissionIds = state.approvedMissionIds;
   const missionRows = useMemo(() => (track ? flattenTrackMissions(track) : []), [track]);
-  const firstOpenIndex = missionRows.findIndex((row) => !completedMissionIds.has(row.mission.id));
+  const firstOpenIndex = missionRows.findIndex((row) => !approvedMissionIds.has(row.mission.id));
   const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
   const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
     ...row,
     index,
-    status: completedMissionIds.has(row.mission.id) ? "done" : index === nextIndex && firstOpenIndex >= 0 ? "next" : "locked",
+    status: approvedMissionIds.has(row.mission.id) ? "done" : index === nextIndex && firstOpenIndex >= 0 ? "next" : "locked",
   }));
   const completedCount = timeline.filter((item) => item.status === "done").length;
   const nextMission = timeline.find((item) => item.status === "next") ?? null;
@@ -438,14 +494,14 @@ function FormationJourney({ state }: { state: FormationState }) {
     map.forEach((articles) => articles.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, "pt-BR")));
     return map;
   }, [maneuverCatalog.articles]);
-  const completedStageIds = useMemo(() => completedStagesForTrack(track, completedMissionIds), [completedMissionIds, track]);
+  const completedStageIds = useMemo(() => completedStagesForTrack(track, approvedMissionIds), [approvedMissionIds, track]);
   const evaluatedAchievements = useMemo(
     () =>
       evaluateRewards(trackRewards, {
         journey: journeyMetrics,
         flights: state.flights,
         fullFlights: state.fullFlights,
-        formation: { selectedTrack: track, completedMissionIds, completedStageIds },
+        formation: { selectedTrack: track, completedMissionIds: approvedMissionIds, completedStageIds },
       }),
     [completedMissionIds, completedStageIds, journeyMetrics, state.flights, state.fullFlights, track, trackRewards],
   );
@@ -664,7 +720,7 @@ function FormationJourney({ state }: { state: FormationState }) {
                   .map((article) => [article.id, article]),
               ).values(),
             );
-            const missionFlight = trackFlights.find((flight) => flight.trainingMissionIds.includes(item.mission.id)) ?? null;
+            const missionFlights = trackFlights.filter((flight) => flight.trainingMissionIds.includes(item.mission.id));
             return (
             <article
               key={item.mission.id}
@@ -709,20 +765,30 @@ function FormationJourney({ state }: { state: FormationState }) {
                     Detalhes das manobras
                   </button>
                 ) : null}
-                {missionFlight ? (
-                  <button
-                    type="button"
-                    onClick={() => setDrillView({
-                      kind: "flight-review",
-                      missionName: item.mission.name,
-                      flightId: missionFlight.id,
-                      missionIndex: item.index,
-                    })}
-                    className="block w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-left text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20"
-                  >
-                    Flight Review
-                  </button>
-                ) : null}
+                {missionFlights.map((missionFlight) => {
+                  const outcome = state.flightOutcomes.get(missionFlight.id) ?? null;
+                  return (
+                    <button
+                      key={missionFlight.id}
+                      type="button"
+                      onClick={() => setDrillView({
+                        kind: "flight-review",
+                        missionName: item.mission.name,
+                        flightId: missionFlight.id,
+                        missionIndex: item.index,
+                      })}
+                      className={`block w-full rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${
+                        outcome === "approved"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                          : outcome === "failed"
+                            ? "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                            : "border-slate-600/50 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50"
+                      }`}
+                    >
+                      Flight Review{missionFlight.flight_date ? ` · ${formatFlightDate(missionFlight.flight_date)}` : ""}
+                    </button>
+                  );
+                })}
               </div>
             </article>
             );

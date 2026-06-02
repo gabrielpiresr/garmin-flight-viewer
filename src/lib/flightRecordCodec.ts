@@ -48,6 +48,11 @@ export type FlightRecordMeta = {
     snapshot?: TrainingSelectionSnapshot | null;
     snapshots?: TrainingSelectionSnapshot[];
   };
+  cancellation?: {
+    reasonCode: string;
+    reasonText?: string;
+    updatedAt?: string;
+  };
   preFlight: {
     objectiveMd: string;
     briefingMd: string;
@@ -68,6 +73,11 @@ export type FlightRecordMeta = {
     ifrTime: string;
     nightTime: string;
     serviceTime: string;
+    /** Horarios locais por perna; nomes mantem compatibilidade com campos historicos do header. */
+    engineStart?: string;
+    takeoff?: string;
+    landing?: string;
+    engineCut?: string;
     distance: string;
     fuelLiters?: number | null;
   }>;
@@ -86,6 +96,7 @@ export type FlightRecordMeta = {
     dangerMd: string;
     riskMd: string;
     managementMd: string;
+    instructorOutcome?: "approved" | "failed" | "";
     instructorOpinionMd: string;
   };
 };

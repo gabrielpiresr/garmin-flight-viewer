@@ -373,8 +373,14 @@ function entryFromLeg(
 
   legCount: number,
 ): AnacLogbookEntry {
+  const toUtc = (local: string | undefined) =>
+    local?.trim() ? localTimeToUtcHhMm(flightDateIso, local.trim()) : "—";
   return {
     ...base,
+    departureUtc: leg.engineStart?.trim() ? toUtc(leg.engineStart) : base.departureUtc,
+    takeoffUtc: leg.takeoff?.trim() ? toUtc(leg.takeoff) : base.takeoffUtc,
+    landingUtc: leg.landing?.trim() ? toUtc(leg.landing) : base.landingUtc,
+    engineCutoffUtc: leg.engineCut?.trim() ? toUtc(leg.engineCut) : base.engineCutoffUtc,
 
     legIndex,
 

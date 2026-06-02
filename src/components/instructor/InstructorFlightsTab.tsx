@@ -31,9 +31,10 @@ import { listFlightVideoFlags } from "../../lib/flightVideosDb";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
+import { PreencherFichaFlow } from "./PreencherFichaFlow";
 import { Skeleton } from "../ui/Skeleton";
 
-type View = "list" | "detail" | "create";
+type View = "list" | "detail" | "create" | "preencher-ficha";
 type DisplayMode = "cards" | "calendar" | "table";
 const FLIGHT_PAGE_SIZE = 50;
 const FULL_INFO_PRELOAD_LIMIT = 24;
@@ -195,6 +196,7 @@ function FlightCard({
   onOpen,
   onDelete,
   onEditSuggestion,
+  onPreencherFicha,
   onExportFicha,
   exportingFicha,
   sigs,
@@ -208,6 +210,7 @@ function FlightCard({
   onOpen: () => void;
   onDelete: () => void;
   onEditSuggestion: () => void;
+  onPreencherFicha?: () => void;
   onExportFicha?: () => void;
   exportingFicha?: boolean;
   sigs?: FlightSignaturesForFlight | null;
@@ -279,6 +282,18 @@ function FlightCard({
         </div>
 
         <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto">
+          {onPreencherFicha ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPreencherFicha();
+              }}
+              className="w-full cursor-pointer rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
+            >
+              Preencher Ficha
+            </button>
+          ) : null}
           {future ? (
             <button
               type="button"
@@ -715,6 +730,25 @@ export function InstructorFlightsTab() {
     );
   }
 
+  if (view === "preencher-ficha" && selectedFlightId) {
+    return (
+      <PreencherFichaFlow
+        flightId={selectedFlightId}
+        onBack={() => setView("list")}
+        onOpenManual={(id) => {
+          setSelectedFlightId(id);
+          setView("detail");
+        }}
+        onDone={(id) => {
+          invalidateFlightListDisplayCache([id]);
+          setRefreshKey((k) => k + 1);
+          setSelectedFlightId(id);
+          setView("detail");
+        }}
+      />
+    );
+  }
+
   if (view === "detail") {
     return <FlightDetailView flightId={selectedFlightId} onBack={() => setView("list")} />;
   }
@@ -830,6 +864,10 @@ export function InstructorFlightsTab() {
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
             onEditSuggestion={openSuggestion}
+            onPreencherFicha={(id) => {
+              setSelectedFlightId(id);
+              setView("preencher-ficha");
+            }}
           />
           <FlightTableSection
             title="Voos antigos"
@@ -840,6 +878,13 @@ export function InstructorFlightsTab() {
             emptyLabel="Nenhum voo antigo."
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
+            onPreencherFicha={(id) => {
+              const item = items.find((f) => f.id === id);
+              if (item?.flight_status === "Previsto") {
+                setSelectedFlightId(id);
+                setView("preencher-ficha");
+              }
+            }}
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
             signaturesByFlightId={signaturesByFlightId}
@@ -878,6 +923,11 @@ export function InstructorFlightsTab() {
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
                         onEditSuggestion={() => openSuggestion(item.id)}
+                        onPreencherFicha={
+                          user?.role === "instrutor" && item.instructor_user_id === user.id
+                            ? () => { setSelectedFlightId(item.id); setView("preencher-ficha"); }
+                            : undefined
+                        }
                       />
                     ))}
                   </ul>
@@ -907,6 +957,13 @@ export function InstructorFlightsTab() {
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
                         onEditSuggestion={() => openSuggestion(item.id)}
+                        onPreencherFicha={
+                          item.flight_status === "Previsto" &&
+                          user?.role === "instrutor" &&
+                          item.instructor_user_id === user.id
+                            ? () => { setSelectedFlightId(item.id); setView("preencher-ficha"); }
+                            : undefined
+                        }
                         onExportFicha={() => void exportFicha(item.id)}
                         exportingFicha={exportingFichaId === item.id}
                         sigs={signaturesByFlightId[item.id] ?? null}
@@ -1201,6 +1258,7 @@ function FlightTableSection({
   onOpen,
   onDelete,
   onEditSuggestion,
+  onPreencherFicha,
   onExportFicha,
   exportingFichaId,
   signaturesByFlightId,
@@ -1216,6 +1274,7 @@ function FlightTableSection({
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onEditSuggestion?: (id: string) => void;
+  onPreencherFicha?: (id: string) => void;
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
   signaturesByFlightId?: Record<string, FlightSignaturesForFlight>;
@@ -1317,6 +1376,18 @@ function FlightTableSection({
                         ) : null}
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
+                            {onPreencherFicha && (isFutureSection || item.flight_status === "Previsto") ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onPreencherFicha(item.id);
+                                }}
+                                className="inline-flex cursor-pointer items-center gap-1 rounded border border-emerald-600/40 bg-emerald-900/20 px-2 py-1 text-xs font-semibold text-emerald-300 hover:bg-emerald-900/40"
+                              >
+                                Preencher Ficha
+                              </button>
+                            ) : null}
                             {isFutureSection && onEditSuggestion ? (
                               <button
                                 type="button"

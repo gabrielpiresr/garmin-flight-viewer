@@ -12,6 +12,7 @@ if (!ENDPOINT || !PROJECT_ID || !API_KEY) {
 const DB_NAME = "flights-db";
 const FLIGHTS_COL_NAME = "flights";
 const PROFILES_COL_NAME = "profiles";
+const PROFILE_DOCUMENTS_COL_NAME = "profile_documents";
 const REL_COL_NAME = "instructor_students";
 const FLIGHT_VIDEOS_COL_NAME = "flight_videos";
 const FLIGHT_TELEMETRY_SUMMARIES_COL_NAME = "flight_telemetry_summaries";
@@ -75,9 +76,9 @@ async function safeCreateAttribute(createFn, label) {
   }
 }
 
-async function safeCreateIndex(databaseId, collectionId, key, attributes, orders = ["ASC"]) {
+async function safeCreateIndex(databaseId, collectionId, key, attributes, orders = ["ASC"], type = "key") {
   try {
-    await db.createIndex(databaseId, collectionId, key, "key", attributes, orders);
+    await db.createIndex(databaseId, collectionId, key, type, attributes, orders);
     await sleep(700);
     console.log(`   ✓ index ${key}`);
   } catch (error) {
@@ -155,6 +156,7 @@ async function configureProfiles(databaseId, collectionId) {
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "user_id", 64, true), "user_id");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "email", 255, true), "email");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "role", 16, true), "role");
+  await safeCreateAttribute(() => db.createBooleanAttribute(databaseId, collectionId, "is_active", false, true), "is_active");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "full_name", 255, false), "full_name");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "cpf", 14, false), "cpf");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "phone", 32, false), "phone");
@@ -193,6 +195,21 @@ async function configureProfiles(databaseId, collectionId) {
   await safeCreateIndex(databaseId, collectionId, "profiles_role_idx", ["role"]);
   await safeCreateIndex(databaseId, collectionId, "profiles_cpf_idx", ["cpf"]);
   await safeCreateIndex(databaseId, collectionId, "profiles_anac_code_idx", ["anac_code"]);
+}
+
+async function configureProfileDocuments(databaseId, collectionId) {
+  console.log("\nConfiguring profile_documents collection...");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "school_id", 64, true), "school_id");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "user_id", 64, true), "user_id");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "document_type", 40, true), "document_type");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "file_id", 64, true), "file_id");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "file_name", 255, true), "file_name");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "mime_type", 128, false), "mime_type");
+  await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "file_size", false), "file_size");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "uploaded_at", 64, true), "uploaded_at");
+  await safeCreateIndex(databaseId, collectionId, "profile_docs_user_idx", ["user_id"]);
+  await safeCreateIndex(databaseId, collectionId, "profile_docs_type_idx", ["document_type"]);
+  await safeCreateIndex(databaseId, collectionId, "profile_docs_unique_idx", ["user_id", "document_type"], ["ASC", "ASC"], "unique");
 }
 
 async function configureInstructorStudents(databaseId, collectionId) {
@@ -342,6 +359,7 @@ async function main() {
   const database = await ensureDatabase();
   const flights = await ensureCollection(database.$id, FLIGHTS_COL_NAME);
   const profiles = await ensureCollection(database.$id, PROFILES_COL_NAME);
+  const profileDocuments = await ensureCollection(database.$id, PROFILE_DOCUMENTS_COL_NAME);
   const relationships = await ensureCollection(database.$id, REL_COL_NAME);
   const flightVideos = await ensureCollection(database.$id, FLIGHT_VIDEOS_COL_NAME);
   const telemetrySummaries = await ensureCollection(database.$id, FLIGHT_TELEMETRY_SUMMARIES_COL_NAME);
@@ -350,6 +368,7 @@ async function main() {
 
   await configureFlights(database.$id, flights.$id);
   await configureProfiles(database.$id, profiles.$id);
+  await configureProfileDocuments(database.$id, profileDocuments.$id);
   await configureInstructorStudents(database.$id, relationships.$id);
   await configureFlightVideos(database.$id, flightVideos.$id);
   await configureTelemetrySummaries(database.$id, telemetrySummaries.$id);
@@ -362,6 +381,7 @@ async function main() {
   console.log(`VITE_APPWRITE_DATABASE_ID=${database.$id}`);
   console.log(`VITE_APPWRITE_COLLECTION_ID=${flights.$id}`);
   console.log(`VITE_APPWRITE_PROFILES_COLLECTION_ID=${profiles.$id}`);
+  console.log(`VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID=${profileDocuments.$id}`);
   console.log(`VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID=${relationships.$id}`);
   console.log(`VITE_APPWRITE_VIDEOS_COLLECTION_ID=${flightVideos.$id}`);
   console.log(`VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID=${telemetrySummaries.$id}`);

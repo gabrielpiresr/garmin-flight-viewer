@@ -1,6 +1,6 @@
 import { Query } from "appwrite";
-import { databases, ID, CONTRACTS_COL_ID } from "./appwrite";
-import type { Contract, ContractStatus, ContractProfileData } from "../types/contracts";
+import { BUCKET_ID, databases, ID, CONTRACTS_COL_ID, functions, ADMIN_USERS_FUNCTION_ID, storage } from "./appwrite";
+import type { Contract, ContractKind, ContractStandardType, ContractStatus, ContractProfileData } from "../types/contracts";
 import { resolveSystemVars } from "../types/contracts";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -20,6 +20,9 @@ function docToContract(doc: Record<string, unknown>): Contract {
     schoolId: (doc.school_id as string) ?? "",
     templateId: (doc.template_id as string) ?? "",
     templateName: (doc.template_name as string) ?? "",
+    leadId: (doc.lead_id as string | null) ?? null,
+    standardType: normalizeStandardType(doc.standard_type as string | undefined),
+    contractKind: normalizeContractKind(doc.contract_kind as string | undefined),
     recipientUserId: (doc.recipient_user_id as string) ?? "",
     recipientName: (doc.recipient_name as string) ?? "",
     contentResolvedJson: (doc.content_resolved_json as string) ?? "",
@@ -30,7 +33,17 @@ function docToContract(doc: Record<string, unknown>): Contract {
     signedByRecipientAt: (doc.signed_by_recipient_at as string | null) ?? null,
     signedByAdminAt: (doc.signed_by_admin_at as string | null) ?? null,
     emailSentAt: (doc.email_sent_at as string | null) ?? null,
+    enrollmentPdfFileId: (doc.enrollment_pdf_file_id as string | null) ?? null,
+    signedPdfFileId: (doc.signed_pdf_file_id as string | null) ?? null,
   };
+}
+
+function normalizeStandardType(value: string | undefined): ContractStandardType {
+  return value === "matricula" || value === "instrutor" ? value : "";
+}
+
+function normalizeContractKind(value: string | undefined): ContractKind {
+  return value === "enrollment_form" ? "enrollment_form" : "standard_contract";
 }
 
 export type ContractFilters = {
@@ -116,6 +129,9 @@ export async function createContract(input: {
   templateId: string;
   templateName: string;
   templateContentJson: string;
+  leadId?: string | null;
+  standardType?: ContractStandardType;
+  contractKind?: ContractKind;
   recipientUserId: string;
   recipientName: string;
   recipientEmail: string;
@@ -148,6 +164,9 @@ export async function createContract(input: {
     school_id: input.schoolId,
     template_id: input.templateId,
     template_name: input.templateName,
+    ...(input.leadId !== undefined ? { lead_id: input.leadId } : {}),
+    ...(input.standardType !== undefined ? { standard_type: input.standardType } : {}),
+    ...(input.contractKind !== undefined ? { contract_kind: input.contractKind } : {}),
     recipient_user_id: input.recipientUserId,
     recipient_name: input.recipientName,
     content_resolved_json: contentResolved,
@@ -209,4 +228,59 @@ export async function markContractEmailSent(id: string): Promise<void> {
   await databases.updateDocument(DB_ID, CONTRACTS_COL_ID, id, {
     email_sent_at: new Date().toISOString(),
   });
+}
+
+function parseFunctionResponse(body: string | undefined): {
+  contract?: Record<string, unknown>;
+  fileId?: string;
+  message?: string;
+} {
+  if (!body) return {};
+  try {
+    return JSON.parse(body) as { contract?: Record<string, unknown>; fileId?: string; message?: string };
+  } catch {
+    return {};
+  }
+}
+
+export function getContractPdfUrl(fileId: string, mode: "view" | "download" = "view"): string {
+  if (!storage || !BUCKET_ID || !fileId) return "";
+  const url = mode === "download" ? storage.getFileDownload(BUCKET_ID, fileId) : storage.getFileView(BUCKET_ID, fileId);
+  return url.toString();
+}
+
+export async function ensureEnrollmentFormPreviewViaAdminFunction(contractId: string): Promise<string> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    throw new Error("Funcao de usuarios nao configurada.");
+  }
+  const execution = await functions.createExecution(
+    ADMIN_USERS_FUNCTION_ID,
+    JSON.stringify({ action: "ensureEnrollmentFormPreview", contractId }),
+    false,
+  );
+  const response = parseFunctionResponse(execution.responseBody);
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao gerar preview da ficha.");
+  }
+  if (!response.fileId) throw new Error("Preview da ficha nao retornado.");
+  return response.fileId;
+}
+
+export async function signContractViaAdminFunction(input: {
+  contractId: string;
+  signerRole: "aluno" | "instrutor" | "admin";
+}): Promise<Contract> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    throw new Error("Função administrativa não configurada.");
+  }
+  const execution = await functions.createExecution(
+    ADMIN_USERS_FUNCTION_ID,
+    JSON.stringify({ action: "signContract", contractId: input.contractId, signerRole: input.signerRole }),
+    false,
+  );
+  const response = parseFunctionResponse(execution.responseBody);
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.contract) {
+    throw new Error(response.message || "Falha ao assinar contrato.");
+  }
+  return docToContract(response.contract);
 }

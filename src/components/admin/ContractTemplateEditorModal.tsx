@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useToast } from "../ui/ToastProvider";
 import { createContractTemplate, updateContractTemplate } from "../../lib/contractTemplatesDb";
 import { uploadManeuverMedia } from "../../lib/maneuversDb";
-import type { ContractTemplate, CustomVariable } from "../../types/contracts";
+import type { ContractStandardType, ContractTemplate, CustomVariable } from "../../types/contracts";
 import { SYSTEM_VARIABLES } from "../../types/contracts";
 import type { ManeuverRichContent } from "../../types/maneuver";
 import { ManeuverRichTextEditor } from "./ManeuverRichTextEditor";
@@ -20,6 +20,7 @@ const EMPTY_CONTENT: ManeuverRichContent = { type: "doc", content: [] };
 export function ContractTemplateEditorModal({ schoolId, adminUserId, template, onSaved, onClose }: Props) {
   const { showToast } = useToast();
   const [name, setName] = useState(template?.name ?? "");
+  const [standardType, setStandardType] = useState<ContractStandardType>(template?.standardType ?? "");
   const [content, setContent] = useState<ManeuverRichContent>(() => {
     if (!template?.contentJson) return EMPTY_CONTENT;
     try { return JSON.parse(template.contentJson) as ManeuverRichContent; }
@@ -44,11 +45,12 @@ export function ContractTemplateEditorModal({ schoolId, adminUserId, template, o
       const contentJson = JSON.stringify(content);
       let saved: ContractTemplate;
       if (template) {
-        saved = await updateContractTemplate(template.id, { name: name.trim(), contentJson, customVariables: customVars });
+        saved = await updateContractTemplate(template.id, { name: name.trim(), standardType, contentJson, customVariables: customVars });
       } else {
         saved = await createContractTemplate({
           schoolId,
           name: name.trim(),
+          standardType,
           contentJson,
           customVariables: customVars,
           createdBy: adminUserId,
@@ -114,6 +116,19 @@ export function ContractTemplateEditorModal({ schoolId, adminUserId, template, o
                 placeholder="Ex.: Contrato de Matrícula"
                 className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none"
               />
+            </label>
+
+            <label className="block text-xs text-slate-500">
+              Padrão?
+              <select
+                value={standardType}
+                onChange={(e) => setStandardType(e.target.value as ContractStandardType)}
+                className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+              >
+                <option value="">Nenhum</option>
+                <option value="matricula">Matrícula</option>
+                <option value="instrutor">Instrutor</option>
+              </select>
             </label>
 
             <div>

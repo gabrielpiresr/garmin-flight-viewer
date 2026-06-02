@@ -55,6 +55,12 @@ export function ContractLayoutsSection({ schoolId, adminUserId }: Props) {
     setEditorOpen(false);
   }
 
+  function standardTypeLabel(value: ContractTemplate["standardType"]) {
+    if (value === "matricula") return "Padrão: Matrícula";
+    if (value === "instrutor") return "Padrão: Instrutor";
+    return null;
+  }
+
   async function handleDelete(id: string) {
     if (!confirm("Excluir este layout de contrato? Contratos já emitidos não serão afetados.")) return;
     setDeletingId(id);
@@ -111,7 +117,14 @@ export function ContractLayoutsSection({ schoolId, adminUserId }: Props) {
               className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-slate-100">{template.name}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="truncate text-sm font-medium text-slate-100">{template.name}</p>
+                  {standardTypeLabel(template.standardType) && (
+                    <span className="rounded border border-sky-700/50 bg-sky-950/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-300">
+                      {standardTypeLabel(template.standardType)}
+                    </span>
+                  )}
+                </div>
                 <p className="mt-0.5 text-xs text-slate-500">
                   {template.customVariables.length > 0
                     ? `${template.customVariables.length} variável${template.customVariables.length > 1 ? "is" : ""} personalizada${template.customVariables.length > 1 ? "s" : ""} · `

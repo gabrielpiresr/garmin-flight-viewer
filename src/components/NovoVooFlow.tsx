@@ -51,6 +51,19 @@ import { useToast } from "./ui/ToastProvider";
 const DEFAULT_BRIEFING =
   "Tipo de voo: DC - Aluno deverá estudar as manobras a serem realizadas, repassando verbalmente os procedimentos, antes de iniciar o voo. O voo deverá ser realizado na área de manobras ou área adequada de acordo com o INVA, que também verificará planos de contingência.";
 const DEFAULT_DANGER = "Sem perigos a serem reportados.";
+const FLIGHT_CANCELLATION_REASONS = [
+  "Meteorologia - vento",
+  "Meteorologia - visibilidade",
+  "Meteorologia - outros",
+  "Cancelado pelo aluno",
+  "Cancelado pelo instrutor",
+  "Manutenção corretiva",
+  "Manutenção preventiva",
+  "Indisponibilidade aeroporto",
+  "Aluno atrasado",
+  "Aluno não se preparou",
+  "Outro",
+] as const;
 const DEFAULT_RISK = "Sem riscos a serem reportados.";
 const DEFAULT_RISK_MANAGEMENT = "Não houveram quaisquer riscos na instrução prática.";
 const DEFAULT_APPROVED_TEXT = "Aluno e Voo foram considerados dentro dos padrões na instrução prática.";
@@ -61,6 +74,65 @@ const OCCURRENCE_TEMPLATE = `* Data e Hora (UTC):
 * Local:
 * Qualificação civil das pessoas envolvidas:
 * Descrição dos fatos: `;
+
+type InstructorOutcome = "approved" | "failed" | "";
+
+function inferInstructorOutcome(text: string): InstructorOutcome {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/\b(reprovado|reprovada|insatisfatorio|inapto|nao aprovado|nao aprovada)\b/.test(normalized)) return "failed";
+  if (/\b(aprovado|aprovada|satisfatorio|apto|apta)\b/.test(normalized)) return "approved";
+  return "";
+}
+
+function normalizeExerciseTitle(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function exerciseTitleScore(source: string, target: string): number {
+  const a = normalizeExerciseTitle(source);
+  const b = normalizeExerciseTitle(target);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.9;
+  const aWords = new Set(a.split(" ").filter((word) => word.length > 2));
+  const bWords = new Set(b.split(" ").filter((word) => word.length > 2));
+  if (aWords.size === 0 || bWords.size === 0) return 0;
+  const common = Array.from(aWords).filter((word) => bWords.has(word)).length;
+  return common / Math.max(aWords.size, bWords.size);
+}
+
+function applySagaExerciseGrades(
+  current: FlightExerciseGrade[],
+  sagaExercises: Array<{ title: string; grade: ExerciseGrade }>,
+): { next: FlightExerciseGrade[]; applied: number } {
+  let applied = 0;
+  const used = new Set<number>();
+  const next = current.map((exercise) => {
+    let bestIndex = -1;
+    let bestScore = 0;
+    sagaExercises.forEach((sagaExercise, index) => {
+      if (used.has(index)) return;
+      const score = exerciseTitleScore(sagaExercise.title, exercise.title);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    });
+    if (bestIndex < 0 || bestScore < 0.55) return exercise;
+    used.add(bestIndex);
+    applied += 1;
+    return { ...exercise, grade: sagaExercises[bestIndex].grade };
+  });
+  return { next, applied };
+}
 
 const FLIGHT_NATURE_OPTIONS = [
   ["AE", "autorização especial"],
@@ -224,6 +296,10 @@ type LegDraft = {
   ifrTime: string;
   nightTime: string;
   serviceTime: string;
+  engineStart: string;
+  takeoff: string;
+  landing: string;
+  engineCut: string;
   distance: string;
 };
 
@@ -269,6 +345,10 @@ function emptyLeg(date = todayIso()): LegDraft {
     ifrTime: "",
     nightTime: "",
     serviceTime: "",
+    engineStart: "",
+    takeoff: "",
+    landing: "",
+    engineCut: "",
     distance: "",
   };
 }
@@ -311,6 +391,39 @@ function addMinutesToTime(startTime: string, minutes: number): string {
 }
 
 /** Horário do dia (partida/corte) — HH:MM local, 00:00–23:59. */
+function parseClockToMinutes(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const h = Number(match[1] ?? "0");
+  const m = Number(match[2] ?? "0");
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+
+function clockDiffMinutes(start: string, end: string): number | null {
+  const startMin = parseClockToMinutes(start);
+  const endMin = parseClockToMinutes(end);
+  if (startMin === null || endMin === null) return null;
+  const diff = endMin >= startMin ? endMin - startMin : endMin + 24 * 60 - startMin;
+  return diff > 0 ? diff : null;
+}
+
+function sumLegBlockMinutes(legs: LegDraft[]): number | null {
+  let total = 0;
+  let found = false;
+  for (const leg of legs) {
+    const minutes = clockDiffMinutes(leg.engineStart, leg.engineCut);
+    if (minutes === null) continue;
+    total += minutes;
+    found = true;
+  }
+  return found && total > 0 ? total : null;
+}
+
+function firstNonEmpty(values: Array<string | null | undefined>): string {
+  return values.find((value) => value?.trim())?.trim() ?? "";
+}
+
 function normalizeClockTimeInput(raw: string): string {
   const digits = raw.replace(/\D/g, "").slice(0, 4);
   if (!digits) return "";
@@ -631,6 +744,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [studentSearch, setStudentSearch] = useState("");
   const [flightDate, setFlightDate] = useState(todayIso());
   const [flightStatus, setFlightStatus] = useState<FlightStatus>("Previsto");
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [cancellationReasonText, setCancellationReasonText] = useState("");
   const [startTime, setStartTime] = useState("");
   const [aircraft, setAircraft] = useState("");
   const [aerodromeOptions, setAerodromeOptions] = useState<AerodromeOption[]>([]);
@@ -680,6 +795,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [dangerMd, setDangerMd] = useState(DEFAULT_DANGER);
   const [riskMd, setRiskMd] = useState(DEFAULT_RISK);
   const [managementMd, setManagementMd] = useState(DEFAULT_RISK_MANAGEMENT);
+  const [instructorOutcome, setInstructorOutcome] = useState<InstructorOutcome>("");
   const [instructorOpinionMd, setInstructorOpinionMd] = useState("");
 
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
@@ -827,6 +943,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           setStudentLabel("");
           setFlightDate(loadedDate);
           setFlightStatus(data.flight_status);
+          setCancellationReason("");
+          setCancellationReasonText("");
           setStartTime("");
           setAircraft(data.aircraft_ident ?? "");
           setTrainingTrackId(data.training_track_id ?? "");
@@ -850,15 +968,23 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         }
 
         const loadedDate = meta.header.date || (data.created_at ?? "").slice(0, 10) || todayIso();
-        const loadedStartTime = meta.header.departureTimeUtc ?? meta.header.startTime ?? "";
+        const loadedStartTime =
+          firstNonEmpty(meta.legs.map((leg) => leg.engineStart)) ||
+          meta.header.departureTimeUtc ||
+          meta.header.startTime ||
+          "";
+        const loadedEngineCut = firstNonEmpty([...(meta.legs ?? []).map((leg) => leg.engineCut)].reverse());
         const loadedDurationMinutes = (meta.legs ?? []).reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime || ""), 0);
         setStudentId(meta.header.studentUserId ?? data.student_user_id ?? "");
         setStudentLabel(meta.header.studentName ?? meta.header.studentLabel ?? "");
         setFlightDate(loadedDate);
         setFlightStatus(data.flight_status);
+        setCancellationReason(meta.cancellation?.reasonCode ?? "");
+        setCancellationReasonText(meta.cancellation?.reasonText ?? "");
         setStartTime(loadedStartTime);
         setEngineCutoffTime(
-          meta.header.engineCutoffTimeUtc ??
+          loadedEngineCut ||
+            meta.header.engineCutoffTimeUtc ||
             (loadedStartTime && loadedDurationMinutes > 0
               ? addMinutesToTime(loadedStartTime, loadedDurationMinutes + 30)
               : ""),
@@ -878,12 +1004,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         setScheduleMeta(meta.schedule);
         setLegs(
           meta.legs?.length
-            ? meta.legs.map((leg) => {
-                const legacyRole = leg.role || "Instrutor de voo";
-                return ({
-                id: leg.id || crypto.randomUUID(),
-                date: leg.date || todayIso(),
-                role: legacyRole,
+              ? meta.legs.map((leg, idx, allLegs) => {
+                 const legacyRole = leg.role || "Instrutor de voo";
+                 const isFirst = idx === 0;
+                 const isLast = idx === allLegs.length - 1;
+                 return ({
+                 id: leg.id || crypto.randomUUID(),
+                 date: leg.date || todayIso(),
+                 role: legacyRole,
                 studentRole: leg.studentRole || "Piloto em Instrução",
                 instructorRole: leg.instructorRole || legacyRole,
                 dep: sanitizeAerodromeCode(leg.dep),
@@ -891,12 +1019,16 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 landings: Number.isFinite(leg.landings) ? leg.landings : 0,
                 flightTime: leg.flightTime || "",
                 navTime: leg.navTime || "",
-                ifrTime: leg.ifrTime || "",
-                nightTime: leg.nightTime || "",
-                serviceTime: leg.serviceTime || "",
-                distance: leg.distance || "",
-                });
-              })
+                 ifrTime: leg.ifrTime || "",
+                 nightTime: leg.nightTime || "",
+                 serviceTime: leg.serviceTime || "",
+                 engineStart: leg.engineStart || (isFirst ? meta.header.departureTimeUtc ?? meta.header.startTime ?? "" : ""),
+                 takeoff: leg.takeoff || (isFirst ? meta.header.takeoffTimeUtc ?? "" : ""),
+                 landing: leg.landing || (isLast ? meta.header.landingTimeUtc ?? "" : ""),
+                 engineCut: leg.engineCut || (isLast ? meta.header.engineCutoffTimeUtc ?? "" : ""),
+                 distance: leg.distance || "",
+                 });
+               })
             : [emptyLeg()],
         );
         setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, normalizeSavedExercises(meta.exercises)));
@@ -931,6 +1063,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         setDangerMd(meta.risk.dangerMd ?? DEFAULT_DANGER);
         setRiskMd(meta.risk.riskMd ?? DEFAULT_RISK);
         setManagementMd(meta.risk.managementMd ?? DEFAULT_RISK_MANAGEMENT);
+        setInstructorOutcome(meta.risk.instructorOutcome ?? inferInstructorOutcome(meta.risk.instructorOpinionMd ?? ""));
         setInstructorOpinionMd(meta.risk.instructorOpinionMd ?? "");
         setLoadedInstructorName(
           meta.header.instructorName ||
@@ -957,6 +1090,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       ifrMin: sum((leg) => leg.ifrTime),
       nightMin: sum((leg) => leg.nightTime),
       serviceMin: sum((leg) => leg.serviceTime),
+      blockMin: sumLegBlockMinutes(legs) ?? 0,
     };
   }, [legs]);
 
@@ -1095,6 +1229,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   }, [occurrenceCode, occurrences]);
 
   const isPrevistoStatus = normalizeFlightStatus(flightStatus) === "Previsto";
+  const isCancelledStatus = normalizeFlightStatus(flightStatus) === "Cancelado";
 
   const computedEventTimes = useMemo(() => {
     if (!startTime.trim() || !engineCutoffTime.trim()) return null;
@@ -1115,14 +1250,18 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   }, [engineCutoffTime, isPrevistoStatus, startTime, totals.flightMin]);
 
   const buildFlightMeta = (): FlightRecordMeta => {
+    const firstEngineStart = firstNonEmpty(legs.map((leg) => leg.engineStart)) || startTime.trim();
+    const lastEngineCut = firstNonEmpty([...legs].reverse().map((leg) => leg.engineCut)) || engineCutoffTime.trim();
+    const firstTakeoff = firstNonEmpty(legs.map((leg) => leg.takeoff));
+    const lastLanding = firstNonEmpty([...legs].reverse().map((leg) => leg.landing));
     const timesResult = isPrevistoStatus && totals.flightMin <= 0
       ? computeScheduledBlockTimes({
-          departureTimeUtc: startTime.trim(),
-          engineCutoffTimeUtc: engineCutoffTime.trim(),
+          departureTimeUtc: firstEngineStart,
+          engineCutoffTimeUtc: lastEngineCut,
         })
       : computeFlightEventTimes({
-          departureTimeUtc: startTime.trim(),
-          engineCutoffTimeUtc: engineCutoffTime.trim(),
+          departureTimeUtc: firstEngineStart,
+          engineCutoffTimeUtc: lastEngineCut,
           totalFlightMinutes: totals.flightMin,
         });
     const eventTimes = "error" in timesResult ? null : timesResult;
@@ -1141,6 +1280,15 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           },
         }
       : {}),
+    ...(isCancelledStatus
+      ? {
+          cancellation: {
+            reasonCode: cancellationReason,
+            reasonText: cancellationReasonText.trim(),
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
     header: {
       studentUserId: studentId,
       studentLabel,
@@ -1149,11 +1297,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       instructorName: displayInstructorName,
       instructorAnac: displayInstructorAnac,
       date: flightDate,
-      startTime: (eventTimes?.departureTimeUtc ?? startTime).trim(),
-      departureTimeUtc: eventTimes?.departureTimeUtc ?? (startTime.trim() || undefined),
-      engineCutoffTimeUtc: eventTimes?.engineCutoffTimeUtc ?? (engineCutoffTime.trim() || undefined),
-      takeoffTimeUtc: eventTimes?.takeoffTimeUtc,
-      landingTimeUtc: eventTimes?.landingTimeUtc,
+      startTime: (eventTimes?.departureTimeUtc ?? firstEngineStart).trim(),
+      departureTimeUtc: eventTimes?.departureTimeUtc ?? (firstEngineStart || undefined),
+      engineCutoffTimeUtc: eventTimes?.engineCutoffTimeUtc ?? (lastEngineCut || undefined),
+      takeoffTimeUtc: firstTakeoff || eventTimes?.takeoffTimeUtc,
+      landingTimeUtc: lastLanding || eventTimes?.landingTimeUtc,
       aircraft: aircraft.trim(),
       flightNature,
       cargo,
@@ -1183,6 +1331,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       ifrTime: leg.ifrTime.trim(),
       nightTime: leg.nightTime.trim(),
       serviceTime: leg.serviceTime.trim(),
+      engineStart: leg.engineStart.trim(),
+      takeoff: leg.takeoff.trim(),
+      landing: leg.landing.trim(),
+      engineCut: leg.engineCut.trim(),
       distance: leg.distance.trim(),
       fuelLiters,
       };
@@ -1211,6 +1363,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       dangerMd: dangerMd.trim(),
       riskMd: riskMd.trim(),
       managementMd: managementMd.trim(),
+      instructorOutcome,
       instructorOpinionMd: instructorOpinionMd.trim(),
     },
   };
@@ -1286,18 +1439,108 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       dep: sanitizeAerodromeCode(leg.dep),
       arr: sanitizeAerodromeCode(leg.arr),
       landings: Number.isFinite(leg.landings) ? leg.landings : 0,
-      flightTime: normalizeDurationInput(leg.flightTime || ""),
-      navTime: normalizeDurationInput(leg.navTime || leg.flightTime || ""),
-      ifrTime: normalizeDurationInput(leg.ifrTime || ""),
-      nightTime: normalizeDurationInput(leg.nightTime || ""),
-      serviceTime: normalizeDurationInput(leg.serviceTime || ""),
+      flightTime: normalizeDurationInput(leg.flightTime || "") || "00:00",
+      navTime: normalizeDurationInput(leg.navTime || "") || "00:00",
+      ifrTime: normalizeDurationInput(leg.ifrTime || "") || "00:00",
+      nightTime: normalizeDurationInput(leg.nightTime || "") || "00:00",
+      serviceTime: normalizeDurationInput(leg.serviceTime || "") || "00:00",
+      engineStart: sagaZuluToLocalClock(leg.engineStart || ""),
+      takeoff: sagaZuluToLocalClock(leg.takeoff || ""),
+      landing: sagaZuluToLocalClock(leg.landing || ""),
+      engineCut: sagaZuluToLocalClock(leg.engineCut || ""),
       distance: leg.distance || "",
     }));
     setLegs(nextLegs);
     if (flight.summary.date) setFlightDate(flight.summary.date);
     if (flight.summary.start) setStartTime(sagaZuluToLocalClock(flight.summary.start));
     if (flight.summary.end) setEngineCutoffTime(sagaZuluToLocalClock(flight.summary.end));
-    setSavedMessage(`Pernas do voo SAGA ${flight.id} aplicadas na ficha.`);
+    const pdfRecord = flight.pdfRecord;
+    let appliedPdfFields = 0;
+    if (pdfRecord?.ok) {
+      if (!objectiveMd.trim() && pdfRecord.objectiveMd?.trim()) {
+        setObjectiveMd(pdfRecord.objectiveMd.trim());
+        appliedPdfFields += 1;
+      }
+      if ((!briefingMd.trim() || briefingMd === DEFAULT_BRIEFING) && pdfRecord.briefingMd?.trim()) {
+        setBriefingMd(pdfRecord.briefingMd.trim());
+        appliedPdfFields += 1;
+      }
+      if (!commentsMd.trim()) {
+        const comments = pdfRecord.commentsMd?.trim() ?? "";
+        if (comments) {
+          setCommentsMd(comments);
+          appliedPdfFields += 1;
+        }
+      }
+      if ((!dangerMd.trim() || dangerMd === DEFAULT_DANGER) && pdfRecord.dangerMd?.trim()) {
+        setDangerMd(pdfRecord.dangerMd.trim());
+        appliedPdfFields += 1;
+      }
+      if ((!riskMd.trim() || riskMd === DEFAULT_RISK) && pdfRecord.riskMd?.trim()) {
+        setRiskMd(pdfRecord.riskMd.trim());
+        appliedPdfFields += 1;
+      }
+      if ((!managementMd.trim() || managementMd === DEFAULT_RISK_MANAGEMENT) && pdfRecord.managementMd?.trim()) {
+        setManagementMd(pdfRecord.managementMd.trim());
+        appliedPdfFields += 1;
+      }
+      if (!instructorOpinionMd.trim() && pdfRecord.result?.trim()) {
+        const resultText = pdfRecord.result.trim();
+        setInstructorOpinionMd(resultText);
+        setInstructorOutcome(inferInstructorOutcome(resultText));
+        appliedPdfFields += 1;
+      }
+      if (pdfRecord.exercises?.length) {
+        const { next, applied } = applySagaExerciseGrades(exerciseGrades, pdfRecord.exercises);
+        if (applied > 0) {
+          setExerciseGrades(next);
+          appliedPdfFields += applied;
+        }
+      }
+
+      const wb = pdfRecord.weightBalance;
+      if (wb) {
+        const shouldOverwriteWeightBalance =
+          !wbPersonsOnBoard.trim() ||
+          !wbOccupantsWeight.trim() ||
+          !wbBaggageWeight.trim() ||
+          !wbRampFuelValue.trim() ||
+          !wbTaxiFuelValue.trim() ||
+          !wbTripFuelValue.trim();
+        if (shouldOverwriteWeightBalance && wb.personsOnBoard != null) {
+          setWbPersonsOnBoard(String(wb.personsOnBoard));
+          appliedPdfFields += 1;
+        }
+        if (shouldOverwriteWeightBalance && wb.occupantsWeightKg != null) {
+          setWbOccupantsWeight(String(wb.occupantsWeightKg));
+          appliedPdfFields += 1;
+        }
+        if (shouldOverwriteWeightBalance && wb.baggageWeightKg != null) {
+          setWbBaggageWeight(String(wb.baggageWeightKg));
+          appliedPdfFields += 1;
+        }
+        if (shouldOverwriteWeightBalance && wb.rampFuel) {
+          setWbRampFuelValue(String(wb.rampFuel.value));
+          setWbRampFuelUnit(wb.rampFuel.unit);
+          appliedPdfFields += 1;
+        }
+        if (shouldOverwriteWeightBalance && wb.taxiFuel) {
+          setWbTaxiFuelValue(String(wb.taxiFuel.value));
+          setWbTaxiFuelUnit(wb.taxiFuel.unit);
+          appliedPdfFields += 1;
+        }
+        if (shouldOverwriteWeightBalance && wb.tripFuel) {
+          setWbTripFuelValue(String(wb.tripFuel.value));
+          setWbTripFuelUnit(wb.tripFuel.unit);
+          appliedPdfFields += 1;
+        }
+      }
+    }
+    setSavedMessage(
+      appliedPdfFields > 0
+        ? `Pernas e dados do PDF do voo SAGA ${flight.id} aplicados na ficha.`
+        : `Pernas do voo SAGA ${flight.id} aplicadas na ficha.`,
+    );
   };
 
   const updateExerciseGrade = (exerciseId: string, grade: ExerciseGrade) => {
@@ -1349,35 +1592,37 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       setError("Selecione um aluno para continuar.");
       return false;
     }
+    if (normalizeFlightStatus(flightStatus) === "Cancelado") {
+      if (!cancellationReason) {
+        setError("Selecione o motivo do cancelamento.");
+        return false;
+      }
+      if (cancellationReason === "Outro" && !cancellationReasonText.trim()) {
+        setError("Descreva o motivo do cancelamento.");
+        return false;
+      }
+    }
 
     setSaving(true);
     setError(null);
     setSavedMessage(null);
 
-    const timesCheck =
-      isPrevistoStatus && totals.flightMin <= 0
-        ? computeScheduledBlockTimes({
-            departureTimeUtc: startTime.trim(),
-            engineCutoffTimeUtc: engineCutoffTime.trim(),
-          })
-        : computeFlightEventTimes({
-            departureTimeUtc: startTime.trim(),
-            engineCutoffTimeUtc: engineCutoffTime.trim(),
-            totalFlightMinutes: totals.flightMin,
-          });
-    if ("error" in timesCheck) {
+    const invalidLegIndex = legs.findIndex((leg) => {
+      const hasAnyBlockTime = leg.engineStart.trim() || leg.engineCut.trim();
+      return Boolean(hasAnyBlockTime) && clockDiffMinutes(leg.engineStart, leg.engineCut) === null;
+    });
+    const blockMinutes = sumLegBlockMinutes(legs);
+    if (invalidLegIndex >= 0 || blockMinutes === null) {
       setSaving(false);
-      setError(timesCheck.error);
+      setError(
+        invalidLegIndex >= 0
+          ? `Ajuste acionamento/corte da perna ${invalidLegIndex + 1}: o corte deve ser posterior ao acionamento.`
+          : "Informe acionamento e corte em pelo menos uma perna para calcular o tempo de motor ligado.",
+      );
       return false;
     }
 
-    const blockMinutes = timesCheck.blockMinutes ?? 0;
-    const durationSec =
-      totals.flightMin > 0
-        ? totals.flightMin * 60
-        : blockMinutes > 0
-          ? blockMinutes * 60
-          : null;
+    const durationSec = blockMinutes * 60;
 
     const meta = buildFlightMeta();
     const csvPayload = encodeFlightRecord({ meta, telemetryCsv, telemetryFiles });
@@ -1610,7 +1855,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
               <span className="mb-1 block text-xs text-slate-500">Status do voo</span>
               <select
                 value={flightStatus}
-                onChange={(e) => setFlightStatus(normalizeFlightStatus(e.target.value))}
+                onChange={(e) => {
+                  const next = normalizeFlightStatus(e.target.value);
+                  setFlightStatus(next);
+                  if (next !== "Cancelado") {
+                    setCancellationReason("");
+                    setCancellationReasonText("");
+                  }
+                }}
                 disabled={!canEdit}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
               >
@@ -1621,6 +1873,36 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 ))}
               </select>
             </label>
+            {isCancelledStatus ? (
+              <>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-slate-500">Motivo do cancelamento</span>
+                  <select
+                    value={cancellationReason}
+                    onChange={(e) => setCancellationReason(e.target.value)}
+                    disabled={!canEdit}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
+                  >
+                    <option value="">Selecione</option>
+                    {FLIGHT_CANCELLATION_REASONS.map((reason) => (
+                      <option key={reason} value={reason}>
+                        {reason}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1 block text-xs text-slate-500">Detalhe do cancelamento</span>
+                  <textarea
+                    value={cancellationReasonText}
+                    onChange={(e) => setCancellationReasonText(e.target.value)}
+                    disabled={!canEdit}
+                    rows={3}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-70"
+                  />
+                </label>
+              </>
+            ) : null}
             <label className="block">
               <span className="mb-1 block text-xs text-slate-500">Aeronave / Matrícula</span>
               {!canEdit ? (
@@ -1822,11 +2104,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       {stepId === "pernas" && (
         <section className="flex flex-col gap-3">
           <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Horários do voo (local)</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Horários por perna (local)</p>
             <p className="mt-1 text-[11px] text-slate-500">
-              O corte deve ser depois da partida no mesmo dia (ex.: partida 06:00, 1 h de voo → corte 07:00 ou mais). Decolagem e pouso são calculados com margens iguais.
+              O tempo usado em cobrança, pagamento e manutenção é a soma de corte - acionamento de cada perna.
             </p>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-3 hidden grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <Input label="Horário de partida">
                 <input
                   type="text"
@@ -1854,13 +2136,19 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 <div className={`${inputClass} text-slate-400`}>{computedEventTimes?.landingTimeUtc ?? "—"}</div>
               </Input>
             </div>
-            {startTime.trim() && engineCutoffTime.trim() && !computedEventTimes ? (
+            {false && startTime.trim() && engineCutoffTime.trim() && !computedEventTimes ? (
               <p className="mt-2 text-xs text-amber-400">
                 {isPrevistoStatus && totals.flightMin <= 0
                   ? "Ajuste partida/corte: o corte deve ser posterior à partida (ex.: 06:00 → 07:00)."
                   : `Ajuste partida/corte: o corte deve ser posterior à partida e cobrir pelo menos ${formatMinutes(totals.flightMin)} de voo.`}
               </p>
             ) : null}
+
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <TotalCard label="Motor ligado" value={formatMinutes(totals.blockMin)} />
+              <TotalCard label="Primeiro acionamento" value={firstNonEmpty(legs.map((leg) => leg.engineStart)) || "-"} />
+              <TotalCard label="Ultimo corte" value={firstNonEmpty([...legs].reverse().map((leg) => leg.engineCut)) || "-"} />
+            </div>
           </div>
 
           <div className="order-first space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/20 p-3">
@@ -1892,15 +2180,27 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                   disabled={!canEdit || sagaLookupLoading}
                   className="rounded-lg bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
                 >
-                  {sagaLookupLoading ? "Buscando..." : "Buscar"}
+                  Buscar
                 </button>
               </div>
             </div>
+            {sagaLookupLoading ? (
+              <div className="flex items-center gap-3 rounded-lg border border-sky-700/40 bg-sky-950/50 px-3 py-3">
+                <svg className="h-5 w-5 shrink-0 animate-spin text-sky-400" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <div>
+                  <p className="text-sm font-semibold text-sky-300">Consultando SAGA...</p>
+                  <p className="text-xs text-slate-400">Buscando operações e PDF da ficha em paralelo. Aguarde alguns segundos.</p>
+                </div>
+              </div>
+            ) : null}
             {sagaLookupError ? <p className="text-xs text-red-300">{sagaLookupError}</p> : null}
             {sagaLookupResult?.flight ? (
               <div className="space-y-3 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="grid flex-1 grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4">
+                  <div className="grid flex-1 grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
                     <div>
                       <span className="block text-slate-500">Aluno</span>
                       <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.student || "-"}</strong>
@@ -1917,6 +2217,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                       <span className="block text-slate-500">Tempo</span>
                       <strong className="font-medium text-slate-100">{sagaLookupResult.flight.summary.flightTime || "-"}</strong>
                     </div>
+                    <div>
+                      <span className="block text-slate-500">PDF</span>
+                      <strong className={sagaLookupResult.flight.pdfRecord?.ok ? "font-medium text-emerald-200" : "font-medium text-amber-200"}>
+                        {sagaLookupResult.flight.pdfRecord?.ok ? "Lido" : "Indisponivel"}
+                      </strong>
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -1924,9 +2230,27 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                     disabled={!canEdit}
                     className="rounded-lg border border-emerald-500/60 px-3 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-50"
                   >
-                    Aplicar pernas
+                    Aplicar ficha
                   </button>
                 </div>
+                {sagaLookupResult.flight.pdfRecord?.ok ? (
+                  <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-3">
+                    <div className="rounded-md border border-slate-800 bg-slate-950/40 p-2">
+                      <span className="block text-slate-500">Objetivo</span>
+                      <strong className="line-clamp-2 font-medium text-slate-100">{sagaLookupResult.flight.pdfRecord.objectiveMd || "-"}</strong>
+                    </div>
+                    <div className="rounded-md border border-slate-800 bg-slate-950/40 p-2">
+                      <span className="block text-slate-500">Briefing</span>
+                      <strong className="line-clamp-2 font-medium text-slate-100">{sagaLookupResult.flight.pdfRecord.briefingMd || "-"}</strong>
+                    </div>
+                    <div className="rounded-md border border-slate-800 bg-slate-950/40 p-2">
+                      <span className="block text-slate-500">Resultado</span>
+                      <strong className="line-clamp-2 font-medium text-slate-100">{sagaLookupResult.flight.pdfRecord.result || "-"}</strong>
+                    </div>
+                  </div>
+                ) : sagaLookupResult.flight.pdfRecord?.message ? (
+                  <p className="text-xs text-amber-200">{sagaLookupResult.flight.pdfRecord.message}</p>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-800 text-xs">
                     <thead className="text-left uppercase tracking-wider text-slate-500">
@@ -1998,6 +2322,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                             ifrTime: "",
                             nightTime: "",
                             serviceTime: "",
+                            engineStart: "",
+                            takeoff: "",
+                            landing: "",
+                            engineCut: "",
                           };
                           return [...prev, reversed];
                         });
@@ -2060,6 +2388,18 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                   <Input label="Tempo de Serviço">
                     <input type="text" placeholder="HH:MM" value={leg.serviceTime} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { serviceTime: normalizeDurationInput(e.target.value) })} className={inputClass} />
                   </Input>
+                  <Input label="Acionamento">
+                    <input type="text" placeholder="HH:MM" value={leg.engineStart} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { engineStart: normalizeClockTimeInput(e.target.value) })} className={inputClass} />
+                  </Input>
+                  <Input label="Decolagem">
+                    <input type="text" placeholder="HH:MM" value={leg.takeoff} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { takeoff: normalizeClockTimeInput(e.target.value) })} className={inputClass} />
+                  </Input>
+                  <Input label="Pouso">
+                    <input type="text" placeholder="HH:MM" value={leg.landing} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { landing: normalizeClockTimeInput(e.target.value) })} className={inputClass} />
+                  </Input>
+                  <Input label="Corte">
+                    <input type="text" placeholder="HH:MM" value={leg.engineCut} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { engineCut: normalizeClockTimeInput(e.target.value) })} className={inputClass} />
+                  </Input>
                   <Input label="Distância (NM)">
                     <input type="number" min={0} step="any" value={leg.distance} disabled={!canEdit} onChange={(e) => updateLeg(leg.id, { distance: e.target.value })} className={inputClass} />
                   </Input>
@@ -2084,6 +2424,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
             <TotalCard label="IFR" value={formatMinutes(totals.ifrMin)} />
             <TotalCard label="Noturno" value={formatMinutes(totals.nightMin)} />
             <TotalCard label="Serviço" value={formatMinutes(totals.serviceMin)} />
+            <TotalCard label="Motor ligado" value={formatMinutes(totals.blockMin)} />
           </div>
         </section>
       )}
@@ -2400,6 +2741,31 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
             minRows={3}
             disabled={!canEdit}
           />
+          <div className="space-y-2 rounded-xl border border-slate-700/70 bg-slate-900/30 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Resultado</p>
+            <div className="grid grid-cols-2 gap-2 sm:max-w-sm">
+              {[
+                ["approved", "Aprovado"],
+                ["failed", "Reprovado"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setInstructorOutcome(value as InstructorOutcome)}
+                  disabled={!canEdit}
+                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition disabled:opacity-60 ${
+                    instructorOutcome === value
+                      ? value === "approved"
+                        ? "border-emerald-500 bg-emerald-500/20 text-emerald-100"
+                        : "border-rose-500 bg-rose-500/20 text-rose-100"
+                      : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <MarkdownField
             label="PARECER DO INSTRUTOR"
             value={instructorOpinionMd}

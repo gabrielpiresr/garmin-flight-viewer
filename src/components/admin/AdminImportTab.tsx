@@ -4,6 +4,7 @@ import {
   DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
   fetchSagaUsers,
   importSagaData,
+  normalizeSagaCreditColumnMap,
   saveSagaImportMapping,
   type SagaFinancialEntry,
   type SagaFlight,
@@ -58,10 +59,12 @@ const CREDIT_COLUMNS: Array<TableColumn<SagaCredit>> = [
 
 const EMPTY_MAPPING: SagaImportMapping = {
   aircraftBySaga: {},
+  aircraftIdByRegistration: {},
   courseBySaga: {},
   creditAircraftBySaga: {},
   flightColumnMap: DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
   creditColumnMap: DEFAULT_SAGA_CREDIT_COLUMN_MAP,
+  sendFlightsToSaga: false,
   updatedAt: null,
 };
 
@@ -124,6 +127,34 @@ function flightGroupCount(flights: SagaFlight[]) {
   return new Set(flights.map((flight) => flight.id).filter(Boolean)).size;
 }
 
+function sagaFlightDateMs(flight: SagaFlight): number {
+  const raw = String(flight.dataDoVoo || "").trim();
+  const brMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (brMatch) {
+    const [, day, month, year, hour = "12", minute = "00"] = brMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+    return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+  }
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function latestSagaFlights(flights: SagaFlight[], limit = 200): SagaFlight[] {
+  return flights
+    .map((flight, index) => ({ flight, index, dateMs: sagaFlightDateMs(flight) }))
+    .sort((a, b) => (b.dateMs - a.dateMs) || (a.index - b.index))
+    .slice(0, limit)
+    .map((item) => item.flight);
+}
+
+function userSearchText(user: SagaUser): string {
+  return [user.nome, user.email, user.codigoAnac, user.cpf, user.id].map((value) => String(value ?? "")).join(" ").toLowerCase();
+}
+
+function selectedUserIdsSet(ids: string[]): Set<string> {
+  return new Set(ids.map((id) => String(id).trim()).filter(Boolean));
+}
+
 function DataTable<T>({
   title,
   subtitle,
@@ -180,6 +211,114 @@ function DataTable<T>({
   );
 }
 
+function SagaStudentSelectionPanel({
+  users,
+  selectedIds,
+  onChange,
+}: {
+  users: SagaUser[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const studentUsers = useMemo(
+    () => users.filter((user) => String(user.id ?? "").trim() && !/instrutor|inva|diretor|admin/i.test(String(user.perfil ?? ""))),
+    [users],
+  );
+  const selected = useMemo(() => selectedUserIdsSet(selectedIds), [selectedIds]);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return studentUsers;
+    return studentUsers.filter((user) => userSearchText(user).includes(q));
+  }, [query, studentUsers]);
+  const allFilteredSelected = filtered.length > 0 && filtered.every((user) => selected.has(String(user.id)));
+
+  function toggle(userId: string) {
+    const next = new Set(selected);
+    if (next.has(userId)) next.delete(userId);
+    else next.add(userId);
+    onChange(Array.from(next));
+  }
+
+  function setFiltered(checked: boolean) {
+    const next = new Set(selected);
+    for (const user of filtered) {
+      const id = String(user.id ?? "").trim();
+      if (!id) continue;
+      if (checked) next.add(id);
+      else next.delete(id);
+    }
+    onChange(Array.from(next));
+  }
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-100">Alunos para importar</h3>
+          <p className="mt-1 text-sm text-slate-500">
+            Selecione alunos para limitar usuários, voos, créditos e escala. Sem seleção, o import continua trazendo todos.
+          </p>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Pesquisar aluno, email ou ANAC"
+            className="min-w-72 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-emerald-500"
+          />
+          <button
+            type="button"
+            onClick={() => setFiltered(!allFilteredSelected)}
+            disabled={!filtered.length}
+            className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {allFilteredSelected ? "Desmarcar filtrados" : "Marcar filtrados"}
+          </button>
+        </div>
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">
+        <span>{selected.size} selecionado(s)</span>
+        <span>{filtered.length} exibido(s)</span>
+        {selected.size ? (
+          <button type="button" onClick={() => onChange([])} className="font-semibold text-sky-300 hover:text-sky-200">
+            limpar seleção
+          </button>
+        ) : null}
+      </div>
+      {studentUsers.length ? (
+        <div className="max-h-80 overflow-auto rounded-xl border border-slate-800">
+          {filtered.length ? filtered.map((user) => {
+            const id = String(user.id ?? "").trim();
+            const checked = selected.has(id);
+            return (
+              <label key={id} className="flex cursor-pointer items-center gap-3 border-b border-slate-800 px-3 py-2 last:border-b-0 hover:bg-slate-800/40">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(id)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-slate-200">{user.nome || user.email || id}</span>
+                  <span className="block truncate text-xs text-slate-500">{[user.codigoAnac ? `ANAC ${user.codigoAnac}` : "", user.email].filter(Boolean).join(" | ")}</span>
+                </span>
+              </label>
+            );
+          }) : (
+            <p className="px-4 py-10 text-center text-sm text-slate-500">Nenhum aluno encontrado na busca.</p>
+          )}
+        </div>
+      ) : (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-10 text-center text-sm text-slate-500">
+          Faça a busca no SAGA para listar os alunos.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function MappingSelect({
   value,
   onChange,
@@ -219,7 +358,8 @@ function MappingPanel({
   saving: boolean;
 }) {
   const mappedFlights = applyColumnMapToFlights(result.flights, mapping.flightColumnMap);
-  const mappedCredits = applyColumnMapToCredits(result.credits, mapping.creditColumnMap);
+  const creditColumnMap = normalizeSagaCreditColumnMap(mapping.creditColumnMap);
+  const mappedCredits = applyColumnMapToCredits(result.credits, creditColumnMap);
   const aircraftValues = unique(mappedFlights.map((flight) => flight.aeronave));
   const courseValues = unique(mappedFlights.map((flight) => flight.curso));
   const creditAircraftValues = unique(mappedCredits.map((credit) => credit.model));
@@ -238,6 +378,7 @@ function MappingPanel({
   const missingAircrafts = aircraftValues.filter((value) => !mapping.aircraftBySaga[value]);
   const missingCourses = courseValues.filter((value) => !mapping.courseBySaga[value]);
   const missingCreditAircrafts = creditAircraftValues.filter((value) => !mapping.creditAircraftBySaga[value]);
+  const sagaAircraftIdsCount = Object.values(mapping.aircraftIdByRegistration ?? {}).filter(Boolean).length;
 
   function setAircraft(sagaValue: string, localValue: string) {
     onMappingChange({
@@ -288,6 +429,9 @@ function MappingPanel({
           De-para completo para os voos carregados.
         </p>
       )}
+      <p className="mb-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-xs text-slate-400">
+        IDs de aeronave do SAGA resolvidos para envio de agenda: {sagaAircraftIdsCount}. Eles sao inferidos da escala do SAGA quando a busca encontra a aeronave correspondente.
+      </p>
 
       <div className="grid gap-4 xl:grid-cols-3">
         <div className="overflow-hidden rounded-xl border border-slate-800">
@@ -357,7 +501,8 @@ function FlightMappingTable({
   onMappingChange: (mapping: SagaImportMapping) => void;
 }) {
   const flightHeaders = result?.flightHeaders ?? [];
-  const flights = result?.flights ?? [];
+  const flights = applyColumnMapToFlights(result?.flights ?? [], mapping.flightColumnMap);
+  const visibleFlights = latestSagaFlights(flights, 200);
   const defs = result?.flightColumnDefs?.length
     ? result.flightColumnDefs
     : Object.entries(DEFAULT_SAGA_FLIGHT_COLUMN_MAP).map(([key, defaultIndex]) => ({
@@ -386,7 +531,7 @@ function FlightMappingTable({
         <h3 className="text-base font-semibold text-slate-100">Voos</h3>
         <p className="text-sm text-slate-500">
           {flightHeaders.length
-            ? `${flights.length} pernas | ${groups} voos agrupados por ID SAGA. Selecione o campo interno abaixo de cada coluna.`
+            ? `${flights.length} pernas | ${groups} voos agrupados por ID SAGA. Exibindo os 200 mais recentes por data.`
             : "Nenhum voo extraido ainda."}
         </p>
       </div>
@@ -417,7 +562,7 @@ function FlightMappingTable({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800 bg-slate-900/30">
-                {flights.slice(0, 100).map((flight, rowIdx) => (
+                {visibleFlights.map((flight, rowIdx) => (
                   <tr key={rowIdx} className="hover:bg-slate-800/40">
                     {flightHeaders.map((_, colIdx) => {
                       const value = flight.rawCells?.[colIdx] ?? "";
@@ -432,8 +577,8 @@ function FlightMappingTable({
               </tbody>
             </table>
           </div>
-          {flights.length > 100 && (
-            <p className="mt-2 text-center text-xs text-slate-600">Exibindo 100 de {flights.length} pernas.</p>
+          {flights.length > visibleFlights.length && (
+            <p className="mt-2 text-center text-xs text-slate-600">Exibindo {visibleFlights.length} de {flights.length} pernas, em ordem decrescente de data.</p>
           )}
         </>
       ) : (
@@ -456,6 +601,7 @@ function CreditMappingTable({
 }) {
   const creditHeaders = result?.creditHeaders ?? [];
   const credits = result?.credits ?? [];
+  const creditColumnMap = normalizeSagaCreditColumnMap(mapping.creditColumnMap);
   const defs = result?.creditColumnDefs?.length
     ? result.creditColumnDefs
     : Object.entries(DEFAULT_SAGA_CREDIT_COLUMN_MAP).map(([key, defaultIndex]) => ({
@@ -466,14 +612,19 @@ function CreditMappingTable({
   const fieldOptions = defs.map((def) => ({ value: String(def.key), label: def.label }));
 
   function fieldForColumn(colIdx: number): string {
-    return Object.entries(mapping.creditColumnMap).find(([, idx]) => idx === colIdx)?.[0] ?? "";
+    return Object.entries(creditColumnMap).find(([, idx]) => idx === colIdx)?.[0] ?? "";
   }
 
   function setFieldForColumn(colIdx: number, field: string) {
     if (!field) return;
+    const nextColumnMap = { ...creditColumnMap };
+    for (const key of Object.keys(nextColumnMap)) {
+      if (nextColumnMap[key] === colIdx) delete nextColumnMap[key];
+    }
+    nextColumnMap[field] = colIdx;
     onMappingChange({
       ...mapping,
-      creditColumnMap: { ...mapping.creditColumnMap, [field]: colIdx },
+      creditColumnMap: nextColumnMap,
     });
   }
 
@@ -543,7 +694,9 @@ export function AdminImportTab() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingMapping, setSavingMapping] = useState(false);
-  const [importing, setImporting] = useState<"test" | "full" | null>(null);
+  const [importing, setImporting] = useState<"test" | "selection" | "full" | null>(null);
+  const [selectedSagaUserIds, setSelectedSagaUserIds] = useState<string[]>([]);
+  const [useEmailAlias, setUseEmailAlias] = useState(true);
 
   const users = result?.users ?? [];
   const flights = useMemo(
@@ -551,7 +704,7 @@ export function AdminImportTab() {
     [result?.flights, mappingDraft.flightColumnMap],
   );
   const credits = useMemo(
-    () => applyColumnMapToCredits(result?.credits ?? [], mappingDraft.creditColumnMap),
+    () => applyColumnMapToCredits(result?.credits ?? [], normalizeSagaCreditColumnMap(mappingDraft.creditColumnMap)),
     [result?.credits, mappingDraft.creditColumnMap],
   );
   const financialEntries = result?.financialEntries ?? [];
@@ -569,15 +722,18 @@ export function AdminImportTab() {
     setError(null);
     setResult(null);
     setImportSummary(null);
+    setSelectedSagaUserIds([]);
     try {
       const next = await fetchSagaUsers({ email: cleanEmail, password });
       setResult(next);
       setMappingDraft({
         aircraftBySaga: next.proposedMapping.aircraftBySaga,
+        aircraftIdByRegistration: next.proposedMapping.aircraftIdByRegistration ?? {},
         courseBySaga: next.proposedMapping.courseBySaga,
         creditAircraftBySaga: next.proposedMapping.creditAircraftBySaga,
         flightColumnMap: next.proposedMapping.flightColumnMap,
-        creditColumnMap: next.proposedMapping.creditColumnMap,
+        creditColumnMap: normalizeSagaCreditColumnMap(next.proposedMapping.creditColumnMap),
+        sendFlightsToSaga: next.proposedMapping.sendFlightsToSaga === true,
         updatedAt: next.mapping.updatedAt,
       });
     } catch (err) {
@@ -593,7 +749,10 @@ export function AdminImportTab() {
     setSavingMapping(true);
     setError(null);
     try {
-      const saved = await saveSagaImportMapping(mappingDraft);
+      const saved = await saveSagaImportMapping({
+        ...mappingDraft,
+        creditColumnMap: normalizeSagaCreditColumnMap(mappingDraft.creditColumnMap),
+      });
       setMappingDraft(saved);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao salvar de-para.");
@@ -602,21 +761,27 @@ export function AdminImportTab() {
     }
   }
 
-  async function handleImport(testMode: boolean) {
+  async function handleImport(testMode: boolean, selectionOnly = false) {
     if (!result) return;
-    setImporting(testMode ? "test" : "full");
+    setImporting(testMode ? "test" : selectionOnly ? "selection" : "full");
     setError(null);
     setImportSummary(null);
     try {
-      const saved = await saveSagaImportMapping(mappingDraft);
+      const saved = await saveSagaImportMapping({
+        ...mappingDraft,
+        creditColumnMap: normalizeSagaCreditColumnMap(mappingDraft.creditColumnMap),
+      });
       setMappingDraft(saved);
       const summary = await importSagaData({
         users,
         flights,
+        financialEntries,
         mapping: saved,
         testMode,
         email: email.trim(),
         password,
+        selectedSagaUserIds: selectionOnly || selectedSagaUserIds.length ? selectedSagaUserIds : [],
+        useEmailAlias,
       });
       setImportSummary(summary);
     } catch (err) {
@@ -628,13 +793,15 @@ export function AdminImportTab() {
 
   return (
     <div className="space-y-4">
-      {importing === "full" ? (
+      {importing === "full" || importing === "selection" ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-slate-900 p-5 shadow-2xl shadow-slate-950">
             <div className="h-2 overflow-hidden rounded-full bg-slate-800">
               <div className="h-full w-2/3 animate-pulse rounded-full bg-emerald-400" />
             </div>
-            <h3 className="mt-4 text-lg font-semibold text-slate-100">Importacao completa em andamento</h3>
+            <h3 className="mt-4 text-lg font-semibold text-slate-100">
+              {importing === "selection" ? "Importacao da selecao em andamento" : "Importacao completa em andamento"}
+            </h3>
             <p className="mt-2 text-sm text-slate-400">
               Usuarios, ANAC, creditos e voos estao sendo processados em fila. Mantenha esta aba aberta ate finalizar.
             </p>
@@ -649,6 +816,20 @@ export function AdminImportTab() {
             <p className="mt-1 max-w-3xl text-sm text-slate-400">
               Carrega usuarios e voos dos ultimos 24 meses, prepara o de-para e importa sem duplicar pelo ID do SAGA.
             </p>
+            <label className="mt-4 flex max-w-3xl cursor-pointer items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <input
+                type="checkbox"
+                checked={mappingDraft.sendFlightsToSaga === true}
+                onChange={(event) => setMappingDraft((current) => ({ ...current, sendFlightsToSaga: event.target.checked }))}
+                className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-slate-100">Enviar voos ao SAGA</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Quando ligado, somente novos voos criados na nossa agenda tentam criar evento no SAGA. Voos antigos sem ID SAGA salvo nao serao alterados, recriados ou removidos.
+                </span>
+              </span>
+            </label>
           </div>
           <form onSubmit={handleSubmit} className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_minmax(12rem,1fr)_auto]">
             <label className="sr-only" htmlFor="saga-email">Email SAGA</label>
@@ -703,6 +884,12 @@ export function AdminImportTab() {
 
       {result ? (
         <>
+          <SagaStudentSelectionPanel
+            users={users}
+            selectedIds={selectedSagaUserIds}
+            onChange={setSelectedSagaUserIds}
+          />
+
           <MappingPanel
             result={result}
             mapping={mappingDraft}
@@ -716,8 +903,17 @@ export function AdminImportTab() {
               <div>
                 <h3 className="text-base font-semibold text-slate-100">Importar para o sistema</h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Modo teste importa os 5 primeiros voos agrupados por ID SAGA e apenas os alunos/instrutores relacionados a eles.
+                  Modo teste importa os 5 primeiros voos realizados, 5 voos agendados futuros e apenas os alunos/instrutores relacionados a eles.
                 </p>
+                <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={useEmailAlias}
+                    onChange={(event) => setUseEmailAlias(event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                  />
+                  Usar alias de email no import
+                </label>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -727,6 +923,14 @@ export function AdminImportTab() {
                   className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {importing === "test" ? "Importando..." : "Importar teste"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleImport(false, true)}
+                  disabled={Boolean(importing) || !flights.length || !selectedSagaUserIds.length}
+                  className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {importing === "selection" ? "Importando..." : "Importar seleção"}
                 </button>
                 <button
                   type="button"
@@ -753,6 +957,10 @@ export function AdminImportTab() {
                   <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.duplicateFlights}</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-xs uppercase tracking-widest text-slate-500">Agendados</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.scheduledFlightsCreated ?? 0} criados | {importSummary.scheduledFlightsUpdated ?? 0} atual.</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
                   <p className="text-xs uppercase tracking-widest text-slate-500">Ignorados</p>
                   <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.flightsSkipped}</p>
                 </div>
@@ -765,8 +973,18 @@ export function AdminImportTab() {
                   <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.creditsCreated} criados | {importSummary.creditsUpdated} atual.</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-xs uppercase tracking-widest text-slate-500">Financeiro</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.financialCreditsCreated ?? 0} criados | {importSummary.financialCreditsUpdated ?? 0} atual.</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
                   <p className="text-xs uppercase tracking-widest text-slate-500">Horas credito</p>
                   <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.creditHoursImported}h</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-xs uppercase tracking-widest text-slate-500">Creditos noturnos</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-100">
+                    {importSummary.nightCreditRecordsCreated ?? 0} ordens | {importSummary.nightHoursReclassified ?? 0}h
+                  </p>
                 </div>
                 <div className="md:col-span-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3 font-mono text-xs text-slate-300">
                   {importSummary.logs.map((line) => <p key={line}>{line}</p>)}
@@ -873,7 +1091,7 @@ export function AdminImportTab() {
 
       <DataTable
         title="Lancamentos financeiros"
-        subtitle={`${financialEntries.length} lancamentos extraidos de /finance/cashier. Ainda nao serao importados.`}
+        subtitle={`${financialEntries.length} lancamentos extraidos de /finance/cashier. Na importacao, viram creditos quando o aluno e as horas/modelo forem identificados.`}
         emptyText="Nenhum lancamento financeiro extraido ainda."
         rows={financialEntries}
         columns={FINANCE_COLUMNS}

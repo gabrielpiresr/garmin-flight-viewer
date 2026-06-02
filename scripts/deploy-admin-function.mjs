@@ -10,7 +10,7 @@
 import { Client, Functions } from "node-appwrite";
 import { InputFile } from "node-appwrite/file";
 import { createGzip } from "node:zlib";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
@@ -112,6 +112,11 @@ console.log(`    ${files.length} files:`, files.map(f => f.relPath).join(", "));
 const tarBuf = buildTarBuffer(files);
 const gzBuf = await gzip(tarBuf);
 console.log(`✅  Archive ready — ${(gzBuf.length / 1024).toFixed(1)} KB`);
+
+const archivePath = join(ROOT, ".tmp", "admin-users-function.tar.gz");
+mkdirSync(join(ROOT, ".tmp"), { recursive: true });
+writeFileSync(archivePath, gzBuf);
+console.log(`    Saved: ${archivePath}`);
 
 // Upload to Appwrite
 const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);

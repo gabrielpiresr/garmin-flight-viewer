@@ -15,6 +15,7 @@ const FILTER_STORAGE_KEY = "admin-students-filter-presets-v1";
 const COLUMNS_STORAGE_KEY = "admin-students-columns-v1";
 
 type SortDirection = "asc" | "desc";
+type ActiveStateFilter = "active" | "disabled" | "all";
 type StudentColumnCategory = "identity" | "training" | "activity" | "alerts" | "hours" | "agenda";
 type StudentColumnKey =
   | "student"
@@ -493,6 +494,7 @@ export function AdminStudentsTab() {
   const [data, setData] = useState<AdminStudentsProgressData | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [activeStateFilter, setActiveStateFilter] = useState<ActiveStateFilter>("active");
   const [filters, setFilters] = useState<StudentFilters>(DEFAULT_FILTERS);
   const [savedPresets, setSavedPresets] = useState<SavedStudentPreset[]>(() => readPresets());
   const [presetName, setPresetName] = useState("");
@@ -538,13 +540,23 @@ export function AdminStudentsTab() {
     return () => { cancelled = true; };
   }, [selectedStudent, showToast]);
 
-  const trackOptions = useMemo(() => Array.from(new Set((data?.students ?? []).map((student) => student.trainingProgress?.trackName || "").filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR")), [data?.students]);
+  const allStudents = data?.students ?? [];
+  const activeStateStudents = useMemo(
+    () =>
+      allStudents.filter((student) => {
+        if (activeStateFilter === "active") return student.profile.isActive !== false;
+        if (activeStateFilter === "disabled") return student.profile.isActive === false;
+        return true;
+      }),
+    [activeStateFilter, allStudents],
+  );
+  const trackOptions = useMemo(() => Array.from(new Set(activeStateStudents.map((student) => student.trainingProgress?.trackName || "").filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR")), [activeStateStudents]);
   const visibleColumns = useMemo(() => COLUMNS.filter((column) => selectedColumns.includes(column.key)), [selectedColumns]);
   const sortColumn = useMemo(() => COLUMNS.find((column) => column.key === sortKey) ?? COLUMNS[0], [sortKey]);
 
   const tableStudents = useMemo(() => {
     const normalized = query.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-    return (data?.students ?? []).filter((student) => {
+    return activeStateStudents.filter((student) => {
       if (normalized && !searchText(student).includes(normalized)) return false;
       if (filters.tracks.length && !filters.tracks.includes(student.trainingProgress?.trackName || "")) return false;
       if (!rangeMatches(student.daysSinceLastFlight, filters.daysWithoutFlying)) return false;
@@ -554,16 +566,29 @@ export function AdminStudentsTab() {
       if (!rangeMatches(student.executed.landings, filters.landings)) return false;
       return true;
     });
-  }, [data?.students, filters, query]);
+  }, [activeStateStudents, filters, query]);
 
   const sortedStudents = useMemo(() => sortRows(tableStudents, sortColumn, sortDirection), [tableStudents, sortColumn, sortDirection]);
-  const allStudents = data?.students ?? [];
-  const inactiveStudents = useMemo(() => allStudents.filter((student) => student.status === "inactive" || student.status === "noFlights"), [allStudents]);
+  const inactiveStudents = useMemo(() => activeStateStudents.filter((student) => student.status === "inactive" || student.status === "noFlights"), [activeStateStudents]);
   const bucketStudents = useMemo(() => {
     const map = {} as Record<AdminStudentAgendaBucketKey, AdminStudentProgressRow[]>;
-    (["yesterday", "today", "tomorrow", "week"] as AdminStudentAgendaBucketKey[]).forEach((key) => { map[key] = allStudents.filter((student) => student.agenda[key].flights > 0); });
+    (["yesterday", "today", "tomorrow", "week"] as AdminStudentAgendaBucketKey[]).forEach((key) => { map[key] = activeStateStudents.filter((student) => student.agenda[key].flights > 0); });
     return map;
-  }, [allStudents]);
+  }, [activeStateStudents]);
+
+  const visibleSummary = useMemo(() => ({
+    totalStudents: activeStateStudents.length,
+    activeStudents: activeStateStudents.filter((student) => student.status === "active").length,
+    inactiveOrNoFlights: activeStateStudents.filter((student) => student.status === "inactive" || student.status === "noFlights").length,
+    totalHours: Number(activeStateStudents.reduce((acc, student) => acc + student.executed.hours, 0).toFixed(1)),
+    totalExecutedFlights: activeStateStudents.reduce((acc, student) => acc + student.executed.count, 0),
+    buckets: {
+      yesterday: bucketStudents.yesterday ?? [],
+      today: bucketStudents.today ?? [],
+      tomorrow: bucketStudents.tomorrow ?? [],
+      week: bucketStudents.week ?? [],
+    },
+  }), [activeStateStudents, bucketStudents]);
 
   function changeInactiveDays(next: number) {
     setInactiveDays(next);
@@ -583,6 +608,7 @@ export function AdminStudentsTab() {
   function clearFilters() {
     setFilters(DEFAULT_FILTERS);
     setQuery("");
+    setActiveStateFilter("active");
   }
 
   function handleSort(column: ColumnDef) {
@@ -634,6 +660,7 @@ export function AdminStudentsTab() {
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <label className="min-w-56 text-xs font-medium text-slate-400">Buscar aluno<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Nome, email, ANAC ou trilha" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" /></label>
+            <label className="min-w-40 text-xs font-medium text-slate-400">Status cadastral<select value={activeStateFilter} onChange={(event) => setActiveStateFilter(event.target.value as ActiveStateFilter)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"><option value="active">Ativos</option><option value="disabled">Desativados</option><option value="all">Todos</option></select></label>
             <div>
               <p className="mb-1 text-xs font-medium text-slate-400">Sem voar ha</p>
               <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-1">{INACTIVE_OPTIONS.map((days) => <button key={days} type="button" onClick={() => changeInactiveDays(days)} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${inactiveDays === days ? "bg-emerald-500/15 text-emerald-300" : "text-slate-400 hover:text-slate-200"}`}>{days}d</button>)}</div>
@@ -649,13 +676,13 @@ export function AdminStudentsTab() {
       ) : data ? (
         <>
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-            <SummaryCard label="Alunos" value={data.summary.totalStudents} hint={`${data.summary.activeStudents} em ritmo`} />
-            <SummaryCard label="Sem voar" value={data.summary.inactiveStudents + data.summary.studentsWithoutFlights} hint={`corte ${data.inactiveDays} dias`} />
-            <SummaryCard label="Horas totais" value={formatHours(data.summary.totalHours)} hint={`${data.summary.totalExecutedFlights} voos`} />
-            <SummaryCard label="Ontem" value={data.buckets.yesterday.flights} hint={`${data.buckets.yesterday.students} alunos`} />
-            <SummaryCard label="Hoje" value={data.buckets.today.flights} hint={`${data.buckets.today.students} alunos`} />
-            <SummaryCard label="Amanha" value={data.buckets.tomorrow.flights} hint={`${data.buckets.tomorrow.students} alunos`} />
-            <SummaryCard label="Semana" value={data.buckets.week.flights} hint={`${data.buckets.week.students} alunos`} />
+            <SummaryCard label="Alunos" value={visibleSummary.totalStudents} hint={`${visibleSummary.activeStudents} em ritmo`} />
+            <SummaryCard label="Sem voar" value={visibleSummary.inactiveOrNoFlights} hint={`corte ${data.inactiveDays} dias`} />
+            <SummaryCard label="Horas totais" value={formatHours(visibleSummary.totalHours)} hint={`${visibleSummary.totalExecutedFlights} voos`} />
+            <SummaryCard label="Ontem" value={visibleSummary.buckets.yesterday.reduce((acc, student) => acc + student.agenda.yesterday.flights, 0)} hint={`${visibleSummary.buckets.yesterday.length} alunos`} />
+            <SummaryCard label="Hoje" value={visibleSummary.buckets.today.reduce((acc, student) => acc + student.agenda.today.flights, 0)} hint={`${visibleSummary.buckets.today.length} alunos`} />
+            <SummaryCard label="Amanha" value={visibleSummary.buckets.tomorrow.reduce((acc, student) => acc + student.agenda.tomorrow.flights, 0)} hint={`${visibleSummary.buckets.tomorrow.length} alunos`} />
+            <SummaryCard label="Semana" value={visibleSummary.buckets.week.reduce((acc, student) => acc + student.agenda.week.flights, 0)} hint={`${visibleSummary.buckets.week.length} alunos`} />
           </section>
 
           <section className="grid gap-4 xl:grid-cols-5">

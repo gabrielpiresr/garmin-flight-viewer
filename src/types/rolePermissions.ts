@@ -42,6 +42,8 @@ export type AdminTabKey =
   | "settings.trilhas"
   | "settings.exercicios"
   | "settings.financeiro"
+  | "settings.onboarding"
+  | "settings.indique-ganhe"
   | "settings.roles"
   | "flight-review"
   | "contracts"
@@ -60,9 +62,13 @@ export type InstructorTabKey =
   | "fuelings"
   | "profile"
   | "help"
-  | "dre"       // EDB — opcional, desativado por padrão
+  | "dre"       // Diário de bordo — opcional, desativado por padrão
   | "schedule"  // Escala — opcional, desativado por padrão
-  | "contratos"; // Contratos — opcional, desativado por padrão
+  | "schedule.voos"
+  | "schedule.disponibilidades"
+  | "schedule.gerador"
+  | "contratos"
+  | "indique-ganhe";
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -76,9 +82,10 @@ export type StudentTabKey =
   | "manobras"
   | "perfil"
   | "ajuda"
-  | "dre"       // EDB — opcional, desativado por padrão
-  | "fuelings"  // Abastecimentos — opcional, desativado por padrão
-  | "contratos"; // Contratos — opcional, desativado por padrão
+  | "dre"
+  | "fuelings"
+  | "contratos"
+  | "indique-ganhe";
 
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
@@ -184,6 +191,8 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.trilhas": "Configurações › Trilhas",
   "settings.exercicios": "Configurações › Exercícios",
   "settings.financeiro": "Configurações › Financeiro",
+  "settings.onboarding": "Configurações › Onboarding",
+  "settings.indique-ganhe": "Configurações › Indique e ganhe",
   "settings.roles": "Configurações › Roles",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
@@ -203,9 +212,13 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "fuelings": "Abastecimentos",
   "profile": "Perfil",
   "help": "Ajuda",
-  "dre": "EDB",
+  "dre": "Diário de bordo",
   "schedule": "Escala",
+  "schedule.voos": "Escala › Voos",
+  "schedule.disponibilidades": "Escala › Disponibilidades",
+  "schedule.gerador": "Escala › Gerador",
   "contratos": "Contratos",
+  "indique-ganhe": "Indique e ganhe",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -223,4 +236,5 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "dre": "EDB",
   "fuelings": "Abastecimentos",
   "contratos": "Contratos",
+  "indique-ganhe": "Indique e ganhe",
 };

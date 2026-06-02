@@ -70,6 +70,7 @@ export function InstructorProfileTab() {
       photoAlt="Foto do instrutor ANAC"
       title="Dados do instrutor"
       description="Dados cadastrais, informações da ANAC e disponibilidade semanal."
+      onProfileUpdated={setProfile}
       childrenBeforeAnac={
         <section className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
           <div className="mb-4">

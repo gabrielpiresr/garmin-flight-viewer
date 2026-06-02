@@ -467,6 +467,12 @@ export function MeusVoosTab() {
     });
   }, [items, infoById, instructorFilter, aircraftFilter, dateFrom, dateTo]);
 
+  useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'flight-list-debug',hypothesisId:'H7',location:'MeusVoosTab.tsx:filteredItems',message:'meus voos filtered snapshot',data:{userId:user?.id||null,role:user?.role||null,rawCount:items.length,filteredCount:filteredItems.length,dateFrom,dateTo,instructorFilter,aircraftFilter,rawIds:items.map((item)=>item.id).slice(0,120),filteredIds:filteredItems.map((item)=>item.id).slice(0,120)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [items, filteredItems, user?.id, user?.role, dateFrom, dateTo, instructorFilter, aircraftFilter]);
+
   const groups = useMemo(() => groupFlights(filteredItems, infoById), [filteredItems, infoById]);
   const futureGroups = useMemo(() => {
     const future = filteredItems.filter((item) => isScheduledFlightStatus(item, infoById[item.id]));

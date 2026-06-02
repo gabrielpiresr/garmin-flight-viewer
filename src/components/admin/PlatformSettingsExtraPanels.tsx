@@ -8,7 +8,6 @@ import {
   DEFAULT_SCHOOL_RULES,
   EMAIL_NOTIFICATION_EVENT_OPTIONS,
   SCHOOL_FONT_OPTIONS,
-  STUDENT_PORTAL_TAB_OPTIONS,
   type SchoolRules,
   type SchoolRulesInput,
 } from "../../types/schoolRules";
@@ -117,10 +116,6 @@ export function AppearanceSettingsPanel() {
   }, [error, showToast]);
 
   async function handleSave() {
-    if (!Object.values(rulesForm.studentTabs).some(Boolean)) {
-      setError("Mantenha ao menos uma aba disponível para os alunos.");
-      return;
-    }
     if (!/^https?:\/\//i.test(String(brandForm.appUrl ?? ""))) {
       setError("Informe a URL completa da plataforma, começando com http:// ou https://.");
       return;
@@ -248,7 +243,7 @@ export function AppearanceSettingsPanel() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Portal do aluno</h3>
-            <p className="mt-1 text-xs text-slate-500">Abas disponíveis, fonte, modo e duas cores principais da interface.</p>
+            <p className="mt-1 text-xs text-slate-500">Fonte, modo e duas cores principais da interface. Abas são configuradas em Roles.</p>
           </div>
           <p className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
             Atualizado: {formatUpdatedAt(rulesUpdatedAt)}
@@ -256,24 +251,6 @@ export function AppearanceSettingsPanel() {
         </div>
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-5">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Abas disponíveis para alunos</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {STUDENT_PORTAL_TAB_OPTIONS.map((tab) => (
-                  <label key={tab.id} className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={rulesForm.studentTabs[tab.id]}
-                      onChange={(e) =>
-                        setRulesForm((prev) => ({ ...prev, studentTabs: { ...prev.studentTabs, [tab.id]: e.target.checked } }))
-                      }
-                      className="h-4 w-4 accent-emerald-500"
-                    />
-                    {tab.label}
-                  </label>
-                ))}
-              </div>
-            </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cores da plataforma</p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">

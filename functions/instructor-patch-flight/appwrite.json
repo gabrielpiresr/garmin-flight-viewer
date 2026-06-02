@@ -1,0 +1,12 @@
+{
+  "projectId": "6a01ac8a0009fbf94f05",
+  "functions": [
+    {
+      "functionId": "instructor-patch-flight",
+      "name": "Instructor Patch Flight",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "ignore": ["node_modules", ".npm"]
+    }
+  ]
+}

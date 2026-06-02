@@ -2,12 +2,16 @@ export type ContractTemplate = {
   id: string;
   schoolId: string;
   name: string;
+  standardType: ContractStandardType;
   contentJson: string;
   customVariables: CustomVariable[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
 };
+
+export type ContractStandardType = "" | "matricula" | "instrutor";
+export type ContractKind = "standard_contract" | "enrollment_form";
 
 export type CustomVariable = {
   name: string;
@@ -27,6 +31,9 @@ export type Contract = {
   schoolId: string;
   templateId: string;
   templateName: string;
+  leadId: string | null;
+  standardType: ContractStandardType;
+  contractKind: ContractKind;
   recipientUserId: string;
   recipientName: string;
   contentResolvedJson: string;
@@ -37,6 +44,8 @@ export type Contract = {
   signedByRecipientAt: string | null;
   signedByAdminAt: string | null;
   emailSentAt: string | null;
+  enrollmentPdfFileId: string | null;
+  signedPdfFileId: string | null;
 };
 
 export type ContractSignature = {

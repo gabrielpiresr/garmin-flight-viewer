@@ -9,16 +9,23 @@ type ManeuverRichTextEditorProps = {
   onChange: (value: ManeuverRichContent) => void;
   onUploadMedia: (file: File) => Promise<ManeuverMediaUpload | null>;
   disabled?: boolean;
+  placeholder?: string;
 };
 
 function isYoutubeUrl(url: string): boolean {
   return /youtube\.com|youtu\.be/i.test(url);
 }
 
-export function ManeuverRichTextEditor({ value, onChange, onUploadMedia, disabled = false }: ManeuverRichTextEditorProps) {
+export function ManeuverRichTextEditor({
+  value,
+  onChange,
+  onUploadMedia,
+  disabled = false,
+  placeholder = "Escreva o artigo da manobra...",
+}: ManeuverRichTextEditorProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
-  const extensions = useMemo(() => getManeuverEditorExtensions("Escreva o artigo da manobra..."), []);
+  const extensions = useMemo(() => getManeuverEditorExtensions(placeholder), [placeholder]);
   const editor = useEditor({
     extensions,
     content: value,

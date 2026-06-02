@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   assignAdminUserTrainingTrack,
+  deleteAdminUserCascade,
   getAdminUserDetail,
   listAdminUserSummaries,
   removeAdminUserTrainingTrack,
   setAdminUserFlightReviewClubMembership,
   setAdminUserPrimaryTrainingTrack,
   updateAdminUserInstructorPreferences,
+  updateAdminUserProfile,
   updateAdminUserRole,
+  type AdminUserProfileUpdateInput,
 } from "../../lib/adminUsersDb";
+import { AdminUserProfileEditSection } from "./AdminUserProfileEditSection";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
-import type { UserRole } from "../../lib/rbac";
+import { approveStudentAccess, getApprovalStatus, getProfileDocumentUrl, type ApprovalStatus, type ProfileDocumentType, type UserRole } from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../../types/schedule";
 import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlannedFlight } from "../../types/adminUsers";
@@ -24,6 +28,7 @@ import { InstructorCostsSection } from "./InstructorCostsSection";
 import { UserSalesSection } from "./UserSalesSection";
 import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
+import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
@@ -37,6 +42,13 @@ const ROLE_LABEL: Record<UserRole, string> = {
 };
 
 const ROLE_OPTIONS: UserRole[] = ["aluno", "instrutor", "admin"];
+type UserSubTab = "profile" | "flights" | "finance" | "observations";
+const USER_SUB_TABS: Array<{ id: UserSubTab; label: string }> = [
+  { id: "profile", label: "Perfil" },
+  { id: "flights", label: "Voos" },
+  { id: "finance", label: "Financeiro" },
+  { id: "observations", label: "Observacoes" },
+];
 const INSTRUCTOR_DAYS = [1, 2, 3, 4, 5, 6] as const;
 const DAY_LABEL: Record<number, string> = { 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sab" };
 const PERIOD_LABEL: Record<SchedulePeriod, string> = { morning: "Manha", afternoon: "Tarde", night: "Noite" };
@@ -46,6 +58,13 @@ const INSTRUCTOR_PREFERENCE_LABEL: Record<InstructorPreferenceLevel, string> = {
   high: "Alta",
 };
 const AVAIL_CYCLE: Array<AvailabilityType | undefined> = [undefined, "available", "preferred"];
+const PROFILE_DOCUMENT_LABELS: Array<{ type: ProfileDocumentType; label: string }> = [
+  { type: "identification", label: "Documento de Identificacao" },
+  { type: "voterTitle", label: "Titulo de Eleitor" },
+  { type: "proofOfResidence", label: "Comp. de Residencia" },
+  { type: "militaryCertificate", label: "Cert. Militar" },
+  { type: "enrollmentForm", label: "Ficha de Matricula" },
+];
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "-";
@@ -114,10 +133,12 @@ function detailToSummary(detail: AdminUserDetail): AdminUserSummary {
     createdAt: detail.createdAt,
     profile: {
       docId: detail.profile.docId,
+      isActive: detail.profile.isActive,
       fullName: detail.profile.fullName,
       cpf: detail.profile.cpf,
       phone: detail.profile.phone,
       anacCode: detail.profile.anacCode,
+      sagaUserId: detail.profile.sagaUserId,
       anacSyncStatus: detail.profile.anacSyncStatus,
       anacLastSyncAt: detail.profile.anacLastSyncAt,
       instructorPreferenceLevel: detail.profile.instructorPreferenceLevel,
@@ -137,6 +158,116 @@ function MetricCard({ label, value, hint }: { label: string; value: string | num
       <p className="mt-1 text-2xl font-semibold text-slate-100">{value}</p>
       {hint ? <p className="text-xs text-slate-400">{hint}</p> : null}
     </div>
+  );
+}
+
+function displayField(value: string | null | undefined): string {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function EnrollmentProfileDetailsCollapsible({ profile }: { profile: AdminUserDetail["profile"] }) {
+  const [open, setOpen] = useState(false);
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "RG", value: displayField(profile.rg) },
+    { label: "Órgão expedidor", value: displayField(profile.rgOrgaoExpedidor) },
+    { label: "Data emissão RG", value: displayField(profile.rgDataEmissao) },
+    { label: "Endereço", value: displayField(profile.endereco) },
+    { label: "CEP", value: displayField(profile.cep) },
+    { label: "Cidade", value: displayField(profile.cidade) },
+    { label: "UF", value: displayField(profile.uf) },
+    { label: "Nacionalidade", value: displayField(profile.nacionalidade) },
+    { label: "Estado civil", value: displayField(profile.estadoCivil) },
+    { label: "Sexo", value: displayField(profile.sexo) },
+    { label: "Naturalidade", value: displayField(profile.naturalidade) },
+    { label: "Filiação (pai)", value: displayField(profile.filiacaoPai) },
+    { label: "Filiação (mãe)", value: displayField(profile.filiacaoMae) },
+    { label: "Escolaridade", value: displayField(profile.escolaridade) },
+    { label: "Série/período", value: displayField(profile.escolaridadePeriodo) },
+    { label: "Curso (escolaridade)", value: displayField(profile.escolaridadeCurso) },
+    { label: "Alergias a medicamentos", value: displayField(profile.alergiasMedicamentos) },
+    { label: "Emergência — nome", value: displayField(profile.emergenciaNome) },
+    { label: "Emergência — parentesco", value: displayField(profile.emergenciaParentesco) },
+    { label: "Emergência — endereço", value: displayField(profile.emergenciaEndereco) },
+    { label: "Emergência — telefone", value: displayField(profile.emergenciaTelefone) },
+  ];
+  const filledCount = rows.filter((row) => row.value !== "-").length;
+
+  return (
+    <div className="mt-4 rounded-lg border border-slate-700/60 bg-slate-950/30">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-800/40"
+      >
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Ficha de matrícula</p>
+          <p className="text-sm text-slate-300">Dados complementares do cadastro</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-[11px] text-slate-500">{filledCount} preenchido(s)</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className={`h-4 w-4 text-slate-400 transition ${open ? "rotate-180" : ""}`}
+          >
+            <path
+              fillRule="evenodd"
+              d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </div>
+      </button>
+      {open ? (
+        <dl className="grid grid-cols-1 gap-3 border-t border-slate-800 px-3 py-3 text-sm md:grid-cols-2 lg:grid-cols-3">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt className="text-xs text-slate-500">{row.label}</dt>
+              <dd className="break-words text-slate-200 [overflow-wrap:anywhere]">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+function ProfileDocumentsCard({ documents }: { documents: AdminUserDetail["profile"]["documents"] }) {
+  const docs = documents ?? {};
+
+  return (
+    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+      <div className="mb-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Documentos</p>
+        <h3 className="text-sm font-semibold text-slate-200">Anexos do perfil</h3>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {PROFILE_DOCUMENT_LABELS.map((item) => {
+          const attachment = docs[item.type];
+          const url = attachment ? getProfileDocumentUrl(attachment.fileId, "download") : "";
+          return (
+            <div key={item.type} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+              <p className="text-sm font-medium text-slate-200">{item.label}</p>
+              <p className="mt-1 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
+                {attachment ? attachment.fileName : "Nenhum arquivo anexado"}
+              </p>
+              {url ? (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500 hover:text-cyan-200"
+                >
+                  Abrir documento
+                </a>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -198,12 +329,19 @@ export function AdminUsersTab() {
   const [offset, setOffset] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<AdminUserDetail | null>(null);
+  const [showUserList, setShowUserList] = useState(true);
+  const [activeSubTab, setActiveSubTab] = useState<UserSubTab>("profile");
   const [search, setSearch] = useState("");
   const [loadingList, setLoadingList] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
+  const [savingActiveState, setSavingActiveState] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus | null>(null);
+  const [approvingAccess, setApprovingAccess] = useState(false);
   const [savingInstructorPrefs, setSavingInstructorPrefs] = useState(false);
   const [savingTrack, setSavingTrack] = useState(false);
+  const [deletingUser, setDeletingUser] = useState(false);
   const [roleDraft, setRoleDraft] = useState<UserRole>("aluno");
   const [customRoleSlugDraft, setCustomRoleSlugDraft] = useState<string | null>(null);
   const [tenantRoles, setTenantRoles] = useState<TenantRole[]>([]);
@@ -213,6 +351,7 @@ export function AdminUsersTab() {
   const [instructorAvailabilityDraft, setInstructorAvailabilityDraft] = useState<Record<string, AvailabilityType>>({});
   const [activeFlightId, setActiveFlightId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
@@ -281,6 +420,7 @@ export function AdminUsersTab() {
   useEffect(() => {
     if (!selectedId) {
       setSelectedDetail(null);
+      setApprovalStatus(null);
       return;
     }
     let cancelled = false;
@@ -292,8 +432,14 @@ export function AdminUsersTab() {
         const tracks = detail.role === "aluno" ? detail.trainingTracks ?? [] : [];
         const detailWithTracks = { ...detail, trainingTracks: tracks };
         setSelectedDetail(detailWithTracks);
+        setApprovalStatus(null); // reset enquanto busca
         setRoleDraft(detail.role);
         setCustomRoleSlugDraft(detail.customRoleSlug ?? null);
+        if (detail.role === "aluno") {
+          void getApprovalStatus(detail.userId).then((status) => {
+            if (!cancelled) setApprovalStatus(status);
+          });
+        }
         setInstructorPreferenceDraft(detail.profile.instructorPreferenceLevel ?? "medium");
         const next: Record<string, AvailabilityType> = {};
         for (const row of detail.profile.instructorAvailability ?? []) {
@@ -322,6 +468,46 @@ export function AdminUsersTab() {
     !!selectedDetail &&
     (roleDraft !== selectedDetail.role ||
       (customRoleSlugDraft ?? null) !== (selectedDetail.customRoleSlug ?? null));
+
+  async function handleSaveProfile(payload: AdminUserProfileUpdateInput) {
+    if (!selectedDetail) return;
+    setSavingProfile(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const updated = await updateAdminUserProfile(selectedDetail.userId, payload);
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess(`Dados de ${displayName(updated)} atualizados.`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function handleToggleActiveState() {
+    if (!selectedDetail) return;
+    if (authUser?.id === selectedDetail.userId && selectedDetail.profile.isActive) {
+      setError("Nao e permitido desabilitar o proprio usuario logado.");
+      return;
+    }
+    setSavingActiveState(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const updated = await updateAdminUserProfile(selectedDetail.userId, {
+        isActive: !selectedDetail.profile.isActive,
+      });
+      setSelectedDetail(updated);
+      replaceSummary(updated);
+      setSuccess(`${displayName(updated)} ${updated.profile.isActive ? "habilitado" : "desabilitado"}.`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingActiveState(false);
+    }
+  }
 
   async function handleUpdateRole() {
     if (!selectedDetail || !roleDraftChanged) return;
@@ -443,6 +629,59 @@ export function AdminUsersTab() {
     }
   }
 
+  async function handleApproveAccess() {
+    if (!selectedDetail) return;
+    setApprovingAccess(true);
+    setError(null);
+    try {
+      const { error } = await approveStudentAccess(selectedDetail.userId);
+      if (error) throw error;
+      setApprovalStatus("approved");
+      showToast({ variant: "success", message: `Acesso liberado para ${displayName(selectedDetail)}.` });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setApprovingAccess(false);
+    }
+  }
+
+  async function handleDeleteSelectedUser() {
+    if (!selectedDetail) return;
+    if (authUser?.id === selectedDetail.userId) {
+      setError("Nao e permitido excluir o proprio usuario logado.");
+      return;
+    }
+    const name = displayName(selectedDetail);
+    const confirmation = window.prompt(
+      `Esta acao vai excluir ${name} e os dados correlacionados a este usuario.\n\nDigite EXCLUIR para confirmar.`,
+    );
+    if (confirmation !== "EXCLUIR") return;
+
+    setDeletingUser(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const deletion = await deleteAdminUserCascade(
+        selectedDetail.userId,
+        `Exclusao manual via Admin Usuarios: ${name}`,
+      );
+      setSelectedDetail(null);
+      setSelectedId(null);
+      setActiveFlightId(null);
+      await loadPage(Math.max(0, offset - (users.length === 1 && offset > 0 ? PAGE_SIZE : 0)), search);
+      const issueCount = deletion.errors.length + deletion.fileErrors.length;
+      setSuccess(
+        `Usuario excluido. ${deletion.deletedDocuments} documento(s) e ${deletion.deletedFiles} arquivo(s) removidos${
+          issueCount ? `; ${issueCount} item(ns) tiveram erro e foram registrados no resumo.` : "."
+        }`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeletingUser(false);
+    }
+  }
+
   const pageStart = total === 0 ? 0 : offset + 1;
   const pageEnd = Math.min(offset + users.length, total);
   const canGoBack = offset > 0;
@@ -459,6 +698,7 @@ export function AdminUsersTab() {
           className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"
           onSubmit={(e) => {
             e.preventDefault();
+            setShowUserList(true);
             void loadPage(0, search);
           }}
         >
@@ -478,8 +718,10 @@ export function AdminUsersTab() {
         </form>
       </div>
 
-      <section className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
+      <section className={`grid min-w-0 grid-cols-1 gap-4 transition-[grid-template-columns] duration-300 ease-out ${showUserList ? "lg:grid-cols-[360px_minmax(0,1fr)]" : "lg:grid-cols-1"}`}>
+        <div className={`overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/40 p-3 transition-all duration-300 ease-out ${
+          showUserList ? "max-h-[820px] opacity-100" : "pointer-events-none max-h-0 border-transparent p-0 opacity-0 lg:hidden"
+        }`}>
           <div className="mb-3 flex items-center justify-between gap-2">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
               {pageStart}-{pageEnd} de {total} usuários
@@ -516,7 +758,10 @@ export function AdminUsersTab() {
                     <button
                       key={user.userId}
                       type="button"
-                      onClick={() => setSelectedId(user.userId)}
+                      onClick={() => {
+                        setSelectedId(user.userId);
+                        setShowUserList(false);
+                      }}
                       className={`w-full rounded-lg border px-3 py-2 text-left transition ${
                         active
                           ? "border-cyan-500/40 bg-cyan-500/10"
@@ -532,6 +777,11 @@ export function AdminUsersTab() {
                           {ROLE_LABEL[user.role]}
                         </span>
                       </div>
+                      {user.profile.isActive === false ? (
+                        <p className="mt-2 inline-flex rounded-full border border-amber-700/60 bg-amber-950/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                          Desabilitado
+                        </p>
+                      ) : null}
                       <p className="mt-2 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
                         {user.executed.count} executados · {formatHours(user.executed.hours)} · {user.planned.count} planejados · {user.intentions.requestedFlights} intencoes
                       </p>
@@ -563,14 +813,28 @@ export function AdminUsersTab() {
           )}
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 transition-all duration-300 ease-out">
+          {!showUserList ? (
+            <button
+              type="button"
+              onClick={() => setShowUserList(true)}
+              className="inline-flex rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
+            >
+              Voltar para usuarios
+            </button>
+          ) : null}
           {selectedSummary ? (
-            loadingDetail || !selectedDetail ? (
+            !selectedDetail ? (
               <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
                 Carregando detalhe de {displayName(selectedSummary)}...
               </section>
             ) : (
-              <>
+              <div className={`space-y-4 transition-opacity duration-200 ${loadingDetail ? "opacity-80" : "opacity-100"}`}>
+                {loadingDetail ? (
+                  <section className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-xs text-cyan-200">
+                    Atualizando detalhes de {displayName(selectedSummary)}...
+                  </section>
+                ) : null}
                 <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                   <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-start">
                     <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">
@@ -587,7 +851,21 @@ export function AdminUsersTab() {
                         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dados do usuário</p>
                         <h3 className="mt-1 break-words text-lg font-semibold text-slate-100 [overflow-wrap:anywhere]">{displayName(selectedDetail)}</h3>
                         <p className="break-words text-sm text-slate-400 [overflow-wrap:anywhere]">{selectedDetail.email}</p>
-                        <p className="mt-1 break-words text-xs text-slate-600 [overflow-wrap:anywhere]">ID: {selectedDetail.userId}</p>
+                        <p className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          selectedDetail.profile.isActive
+                            ? "border-emerald-700/60 bg-emerald-950/30 text-emerald-300"
+                            : "border-amber-700/60 bg-amber-950/30 text-amber-300"
+                        }`}>
+                          {selectedDetail.profile.isActive ? "Habilitado" : "Desabilitado"}
+                        </p>
+                        <p className="mt-1 break-words text-xs text-slate-600 [overflow-wrap:anywhere]">ID Appwrite: {selectedDetail.userId}</p>
+                        {selectedDetail.profile.sagaUserId ? (
+                          <p className="break-words text-xs text-slate-600 [overflow-wrap:anywhere]">
+                            ID SAGA: <span className="font-mono text-slate-400">{selectedDetail.profile.sagaUserId}</span>
+                          </p>
+                        ) : (
+                          <p className="text-xs text-slate-600">ID SAGA: <span className="text-slate-500">não vinculado</span></p>
+                        )}
                       </div>
                     </div>
                     {canAction("users.manage") ? (
@@ -632,15 +910,62 @@ export function AdminUsersTab() {
                       <button
                         type="button"
                         onClick={() => void handleUpdateRole()}
-                        disabled={savingRole || !roleDraftChanged}
+                        disabled={savingRole || !roleDraftChanged || deletingUser}
                         className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
                       >
                         {savingRole ? "Salvando..." : "Alterar permissao"}
+                      </button>
+                      {selectedDetail.role === "aluno" && approvalStatus === "pending" && (
+                        <button
+                          type="button"
+                          onClick={() => void handleApproveAccess()}
+                          disabled={approvingAccess}
+                          className="rounded-lg border border-emerald-700/60 bg-emerald-950/30 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-950/60 disabled:opacity-50"
+                        >
+                          {approvingAccess ? "Liberando..." : "Liberar acesso"}
+                        </button>
+                      )}
+                      {selectedDetail.role === "aluno" && approvalStatus === "approved" && (
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-3 py-2 text-xs font-medium text-emerald-400">
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                            <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 01.208 1.04l-5 7.5a.75.75 0 01-1.154.114l-3-3a.75.75 0 011.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 011.04-.207z" clipRule="evenodd" />
+                          </svg>
+                          Acesso liberado
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleActiveState()}
+                        disabled={savingActiveState || deletingUser || (authUser?.id === selectedDetail.userId && selectedDetail.profile.isActive)}
+                        className={`rounded-lg border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          selectedDetail.profile.isActive
+                            ? "border-amber-700/60 bg-amber-950/30 text-amber-200 hover:bg-amber-950/60"
+                            : "border-emerald-700/60 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-950/60"
+                        }`}
+                      >
+                        {savingActiveState
+                          ? "Salvando..."
+                          : selectedDetail.profile.isActive
+                            ? "Desabilitar usuario"
+                            : "Habilitar usuario"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteSelectedUser()}
+                        disabled={deletingUser || authUser?.id === selectedDetail.userId}
+                        className="rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-2 text-sm font-semibold text-red-200 transition hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deletingUser ? "Excluindo..." : "Excluir usuario"}
                       </button>
                     </div>
                     ) : null}
                   </div>
 
+                  <div className="mt-4 border-t border-slate-800 pt-2">
+                    <Tabs items={USER_SUB_TABS} value={activeSubTab} onChange={setActiveSubTab} ariaLabel="Detalhes do usuario" accent="cyan" />
+                  </div>
+
+                  <div className={`transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-5">
                     <MetricCard label="Voos executados" value={selectedDetail.executed.count} hint={`Ultimo ${formatDate(selectedDetail.executed.lastFlightAt)}`} />
                     <MetricCard label="Total de horas" value={formatHours(selectedDetail.executed.hours)} hint="Horas executadas" />
@@ -650,6 +975,8 @@ export function AdminUsersTab() {
                   </div>
 
                   <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+                    <div><dt className="text-xs text-slate-500">Código ANAC</dt><dd className="text-slate-200">{selectedDetail.profile.anacCode || "-"}</dd></div>
+                    <div><dt className="text-xs text-slate-500">ID SAGA</dt><dd className="font-mono text-slate-200">{selectedDetail.profile.sagaUserId || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">CPF</dt><dd className="text-slate-200">{selectedDetail.profile.cpf || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Telefone</dt><dd className="text-slate-200">{selectedDetail.profile.phone || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Nascimento</dt><dd className="text-slate-200">{selectedDetail.profile.birthDate || "-"}</dd></div>
@@ -657,9 +984,22 @@ export function AdminUsersTab() {
                     <div><dt className="text-xs text-slate-500">Email verificado</dt><dd className="text-slate-200">{selectedDetail.emailVerification ? "Sim" : "Não"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Criado em</dt><dd className="text-slate-200">{formatDate(selectedDetail.createdAt)}</dd></div>
                   </dl>
+                  {canAction("users.manage") ? (
+                    <AdminUserProfileEditSection
+                      detail={selectedDetail}
+                      saving={savingProfile}
+                      onSave={(payload) => void handleSaveProfile(payload)}
+                    />
+                  ) : null}
+                  <EnrollmentProfileDetailsCollapsible profile={selectedDetail.profile} />
+                  </div>
                 </section>
 
-                <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className={`transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
+                  <ProfileDocumentsCard documents={selectedDetail.profile.documents} />
+                </div>
+
+                <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 lg:grid-cols-3 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <h3 className="text-sm font-semibold text-slate-200">Habilitações</h3>
                     {selectedDetail.profile.anacRatings.length === 0 ? (
@@ -714,7 +1054,7 @@ export function AdminUsersTab() {
 
                 {selectedDetail.role === "aluno" ? (
                   <>
-                    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                    <section className={`rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
                       <div className="flex flex-wrap items-end justify-between gap-3">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Trilhas do aluno</p>
@@ -799,13 +1139,15 @@ export function AdminUsersTab() {
                       </div>
                     </section>
 
-                    <AdminUserCreditsSection
-                      studentUserId={selectedDetail.userId}
-                      studentName={displayName(selectedDetail)}
-                      anacCode={selectedDetail.profile.anacCode || "-"}
-                    />
+                    <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
+                      <AdminUserCreditsSection
+                        studentUserId={selectedDetail.userId}
+                        studentName={displayName(selectedDetail)}
+                        anacCode={selectedDetail.profile.anacCode || "-"}
+                      />
+                    </div>
 
-                    {authUser ? (
+                    {authUser && activeSubTab === "observations" ? (
                       <StudentObservationsSection
                         studentUserId={selectedDetail.userId}
                         currentUser={{ id: authUser.id, name: authUser.name || authUser.email, role: "admin" }}
@@ -816,8 +1158,10 @@ export function AdminUsersTab() {
 
                 {(roleDraft === "instrutor" || selectedDetail.role === "instrutor") ? (
                   <>
-                    <InstructorCostsSection instructorUserId={selectedDetail.userId} />
-                  <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                    <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
+                      <InstructorCostsSection instructorUserId={selectedDetail.userId} />
+                    </div>
+                  <section className={`rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
                     <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Preferência padrão do instrutor</p>
@@ -898,9 +1242,11 @@ export function AdminUsersTab() {
                   </>
                 ) : null}
 
-                <UserSalesSection userId={selectedDetail.userId} />
+                <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
+                  <UserSalesSection userId={selectedDetail.userId} />
+                </div>
 
-                <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 xl:grid-cols-3 ${activeSubTab === "flights" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Voos executados</p>
                     <div className="space-y-2">
@@ -929,7 +1275,7 @@ export function AdminUsersTab() {
                     </div>
                   </div>
                 </section>
-              </>
+              </div>
             )
           ) : (
             <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-8 text-center text-sm text-slate-500">

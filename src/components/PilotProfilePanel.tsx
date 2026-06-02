@@ -1,5 +1,12 @@
-import type { ReactNode } from "react";
-import type { PilotProfile } from "../lib/rbac";
+import { useRef, useState, type ReactNode } from "react";
+import {
+  deleteProfileDocumentAttachment,
+  getProfileDocumentUrl,
+  uploadProfileDocumentAttachment,
+  type PilotProfile,
+  type ProfileDocumentType,
+} from "../lib/rbac";
+import { useToast } from "./ui/ToastProvider";
 
 type ProfileAction = {
   label: string;
@@ -19,7 +26,16 @@ type PilotProfilePanelProps = {
   action?: ProfileAction;
   message?: string;
   childrenBeforeAnac?: ReactNode;
+  onProfileUpdated?: (profile: PilotProfile) => void;
 };
+
+const DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string }> = [
+  { type: "identification", label: "Documento de Identificacao (RG, CNH, Passaporte)" },
+  { type: "voterTitle", label: "Titulo de Eleitor" },
+  { type: "proofOfResidence", label: "Comp. de Residencia" },
+  { type: "militaryCertificate", label: "Cert. Militar" },
+  { type: "enrollmentForm", label: "Ficha de Matricula" },
+];
 
 function field(label: string, value: string | number | null | undefined) {
   return (
@@ -59,8 +75,42 @@ export function PilotProfilePanel({
   action,
   message,
   childrenBeforeAnac,
+  onProfileUpdated,
 }: PilotProfilePanelProps) {
+  const { showToast } = useToast();
+  const fileInputs = useRef<Partial<Record<ProfileDocumentType, HTMLInputElement | null>>>({});
+  const [busyDocument, setBusyDocument] = useState<ProfileDocumentType | null>(null);
   const medicalExpired = isExpiredDate(profile.anacMedical.validade);
+
+  const updateDocuments = (documents: PilotProfile["documents"]) => {
+    onProfileUpdated?.({ ...profile, documents });
+  };
+
+  const handleUpload = async (type: ProfileDocumentType, file: File | undefined) => {
+    if (!file) return;
+    setBusyDocument(type);
+    const result = await uploadProfileDocumentAttachment(profile, type, file);
+    if (result.error || !result.data) {
+      showToast({ variant: "error", message: result.error?.message ?? "Nao foi possivel anexar o documento." });
+    } else {
+      updateDocuments(result.data);
+      showToast({ variant: "success", message: "Documento anexado ao perfil." });
+    }
+    if (fileInputs.current[type]) fileInputs.current[type]!.value = "";
+    setBusyDocument(null);
+  };
+
+  const handleDelete = async (type: ProfileDocumentType) => {
+    setBusyDocument(type);
+    const result = await deleteProfileDocumentAttachment(profile, type);
+    if (result.error || !result.data) {
+      showToast({ variant: "error", message: result.error?.message ?? "Nao foi possivel remover o documento." });
+    } else {
+      updateDocuments(result.data);
+      showToast({ variant: "success", message: "Documento removido do perfil." });
+    }
+    setBusyDocument(null);
+  };
 
   return (
     <div className="space-y-5">
@@ -110,6 +160,72 @@ export function PilotProfilePanel({
       </section>
 
       {childrenBeforeAnac}
+
+      <section className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
+        <div className="mb-4">
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Documentos</p>
+          <h3 className="text-sm font-semibold text-slate-200">Anexos do perfil</h3>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          {DOCUMENT_TYPES.map((item) => {
+            const attachment = profile.documents[item.type];
+            const isBusy = busyDocument === item.type;
+            const url = attachment ? getProfileDocumentUrl(attachment.fileId, "download") : "";
+            return (
+              <div key={item.type} className="rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-200">{item.label}</p>
+                    <p className="mt-1 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
+                      {attachment ? attachment.fileName : "Nenhum arquivo anexado"}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {url ? (
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-sky-500 hover:text-sky-200"
+                      >
+                        Abrir
+                      </a>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => fileInputs.current[item.type]?.click()}
+                      disabled={isBusy}
+                      className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+                    >
+                      {attachment ? "Trocar" : "Anexar"}
+                    </button>
+                    {attachment ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(item.type)}
+                        disabled={isBusy}
+                        className="rounded-md border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-950/30 disabled:opacity-50"
+                      >
+                        Remover
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <input
+                  ref={(node) => {
+                    fileInputs.current[item.type] = node;
+                  }}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                  onChange={(event) => void handleUpload(item.type, event.currentTarget.files?.[0])}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       <section className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">

@@ -4,8 +4,9 @@ import { usePermissions } from "../contexts/PermissionsContext";
 import { FlightReviewClubProvider } from "../contexts/FlightReviewClubContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
+import { getReferAndEarnPublic, programConfigForRole } from "../lib/referAndEarnDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
-import { DEFAULT_SCHOOL_RULES, type SchoolRules, type StudentPortalTab } from "../types/schoolRules";
+import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
 import { InstallPwaButton } from "./InstallPwaButton";
@@ -26,8 +27,9 @@ const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default
 const StudentDreTab = lazy(() => import("./StudentDreTab").then((module) => ({ default: module.StudentDreTab })));
 const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ default: module.StudentHome })));
 const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
+const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 
-type Section = StudentPortalTab;
+type Section = StudentTabKey;
 
 type NavItem = {
   id: Section;
@@ -176,6 +178,16 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "indique-ganhe",
+    label: "Indique e ganhe",
+    sublabel: "Indique amigos e acompanhe",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M5.25 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM13.5 3.873a3.375 3.375 0 106.75 0 3.375 3.375 0 00-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63v-.003zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 003.958-1.006 3.375 3.375 0 00-3.725-3.725 10.088 10.088 0 00-1.006 3.958 2.25 2.25 0 01-.96.233h-.144zM21.884 19.128a.75.75 0 00-.233-.96 4.5 4.5 0 00-1.424-1.424.75.75 0 00-.96-.233h-.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 003.958 1.006 3.375 3.375 0 003.725-3.725 10.088 10.088 0 00-1.006-3.958 2.25 2.25 0 01-.96-.233h.144a.75.75 0 00.96.233 4.5 4.5 0 001.424 1.424.75.75 0 00.233.96z" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -192,6 +204,7 @@ const SECTION_ROUTES = [
   { id: "dre", path: "/aluno/edb" },
   { id: "fuelings", path: "/aluno/abastecimentos" },
   { id: "contratos", path: "/aluno/contratos" },
+  { id: "indique-ganhe", path: "/aluno/indique-ganhe" },
 ] satisfies readonly TabRoute<Section>[];
 
 function TabLoading() {
@@ -215,11 +228,16 @@ export function MainLayout() {
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isClubMember, setIsClubMember] = useState(false);
+  const [referProgramActive, setReferProgramActive] = useState(false);
 
-  // Interseção: SchoolRules (escola) E permissão de role (usuário)
   const visibleNavItems = useMemo(
-    () => NAV_ITEMS.filter((item) => rules.studentTabs[item.id as StudentPortalTab] && canTab(item.id as StudentTabKey)),
-    [rules.studentTabs, canTab],
+    () =>
+      NAV_ITEMS.filter((item) => {
+        if (!canTab(item.id as StudentTabKey)) return false;
+        if (item.id === "indique-ganhe") return referProgramActive;
+        return true;
+      }),
+    [canTab, referProgramActive],
   );
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
@@ -241,6 +259,22 @@ export function MainLayout() {
         if (cancelled) return;
         setRules(DEFAULT_SCHOOL_RULES);
         applySchoolTheme(DEFAULT_SCHOOL_RULES);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getReferAndEarnPublic()
+      .then(({ referAndEarn }) => {
+        if (cancelled) return;
+        setReferProgramActive(programConfigForRole(referAndEarn, "aluno").active);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setReferProgramActive(false);
       });
     return () => {
       cancelled = true;
@@ -489,6 +523,13 @@ export function MainLayout() {
                   schoolId={user?.schoolId ?? ""}
                   userRole="aluno"
                 />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("indique-ganhe") && (
+            <div hidden={section !== "indique-ganhe"}>
+              <LazyTab>
+                <ReferAndEarnTab portalRole="aluno" />
               </LazyTab>
             </div>
           )}

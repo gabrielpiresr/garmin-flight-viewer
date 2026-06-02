@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts, createAircraft, updateAircraft, toggleAircraftActive, uploadAircraftPhoto } from "../../lib/aircraftDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
-import { getFlightRecordMetaBatch, listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
+import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
 import { flightAircraftHours } from "../../lib/flightHours";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import type { Aircraft, AircraftModel, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
@@ -182,14 +182,9 @@ function flightDateMs(flight: SavedFlightListItem): number {
   return Number.isFinite(ms) ? ms : new Date(flight.created_at).getTime();
 }
 
-function aircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[]): SavedFlightListItem[] {
-  const normalizedRegistration = aircraft.registration.trim().toUpperCase();
-  return flights.filter((flight) => (flight.aircraft_ident ?? "").trim().toUpperCase() === normalizedRegistration);
-}
-
-function scheduledAircraftFlights(aircraft: Aircraft, flights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): SavedFlightListItem[] {
+function scheduledAircraftFlights(flights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): SavedFlightListItem[] {
   const now = Date.now();
-  return aircraftFlights(aircraft, flights)
+  return flights
     .filter((flight) => flightDateMs(flight) > now)
     .filter((flight) => flightDurationHours(flight, metaByFlightId) > 0)
     .sort((a, b) => flightDateMs(a) - flightDateMs(b));
@@ -244,7 +239,7 @@ function currentAircraftHoursFromBaseline(params: {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
   if (opening.ttaf == null) return null;
   const now = Date.now();
-  const flownHours = aircraftFlights(params.aircraft, params.flights)
+  const flownHours = params.flights
     .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
     .filter((flight) => flightDateMs(flight) <= now)
     .reduce((sum, flight) => sum + flightDurationHours(flight, params.metaByFlightId), 0);
@@ -260,7 +255,7 @@ function currentAircraftTotalsFromBaseline(params: {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
   const hours = currentAircraftHoursFromBaseline(params);
   if (opening.ttaf == null) return { hours, cycles: null, landings: null };
-  const flown = aircraftFlights(params.aircraft, params.flights)
+  const flown = params.flights
     .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
     .filter((flight) => flightDateMs(flight) <= Date.now());
   const additionalLandings = flown.reduce((sum, flight) => sum + (flight.landings ?? 0), 0);
@@ -333,7 +328,6 @@ export function FleetTab() {
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [workOrders, setWorkOrders] = useState<MaintenanceWorkOrder[]>([]);
   const [flights, setFlights] = useState<SavedFlightListItem[]>([]);
-  const [flightMetaById, setFlightMetaById] = useState<Map<string, FlightRecordMeta | null>>(new Map());
   const [programItemsByModel, setProgramItemsByModel] = useState<Record<string, MaintenanceProgramItem[]>>({});
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
@@ -367,8 +361,7 @@ export function FleetTab() {
         if (flightRows.error) throw flightRows.error;
         const flightList = flightRows.data ?? [];
         setFlights(flightList);
-        setFlightMetaById(await getFlightRecordMetaBatch(flightList.map((flight) => flight.id), { concurrency: 12 }));
-const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
+        const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
         const programEntries = await Promise.all(
           uniqueModelIds.map(async (modelId) => [modelId, await listProgramItemsByModel(modelId)] as const),
         );
@@ -490,10 +483,20 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
   const workOrdersByAircraft = useMemo(() => {
     const grouped: Record<string, MaintenanceWorkOrder[]> = {};
     for (const order of workOrders) {
-      grouped[order.aircraft_id] = [...(grouped[order.aircraft_id] ?? []), order];
+      (grouped[order.aircraft_id] ??= []).push(order);
     }
     return grouped;
   }, [workOrders]);
+  const flightsByAircraftIdent = useMemo(() => {
+    const grouped: Record<string, SavedFlightListItem[]> = {};
+    for (const flight of flights) {
+      const key = (flight.aircraft_ident ?? "").trim().toUpperCase();
+      if (!key) continue;
+      (grouped[key] ??= []).push(flight);
+    }
+    return grouped;
+  }, [flights]);
+  const emptyMetaByFlightId = useMemo(() => new Map<string, FlightRecordMeta | null>(), []);
 
   const visible = aircrafts.filter((a) => {
     if (filter === "active") return a.active;
@@ -873,16 +876,22 @@ const uniqueModelIds = [...new Set(aircraftRows.map((aircraft) => aircraft.model
             const model = modelMap[ac.model_id];
             const img = ac.image_url ?? model?.default_image;
             const aircraftOrders = workOrdersByAircraft[ac.id] ?? [];
-            const scheduledFlights = scheduledAircraftFlights(ac, flights, flightMetaById);
-            const totals = currentAircraftTotalsFromBaseline({ aircraft: ac, orders: aircraftOrders, flights, metaByFlightId: flightMetaById });
+            const aircraftFlightRows = flightsByAircraftIdent[ac.registration.trim().toUpperCase()] ?? [];
+            const scheduledFlights = scheduledAircraftFlights(aircraftFlightRows, emptyMetaByFlightId);
+            const totals = currentAircraftTotalsFromBaseline({
+              aircraft: ac,
+              orders: aircraftOrders,
+              flights: aircraftFlightRows,
+              metaByFlightId: emptyMetaByFlightId,
+            });
             const currentHours = totals.hours;
-const upcoming = buildUpcomingMaintenance({
+            const upcoming = buildUpcomingMaintenance({
               aircraft: ac,
               modelItems: programItemsByModel[ac.model_id] ?? [],
               aircraftOrders,
               currentHours,
               scheduledFlights,
-              metaByFlightId: flightMetaById,
+              metaByFlightId: emptyMetaByFlightId,
             });
             return (
               <div
