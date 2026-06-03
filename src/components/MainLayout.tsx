@@ -241,6 +241,8 @@ export function MainLayout() {
   );
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
+  const ajudaNavItem = availableNavItems.find((item) => item.id === "ajuda") ?? null;
+  const mainNavItems = availableNavItems.filter((item) => item.id !== "ajuda");
 
   function openSection(target: Section) {
     const targetIsAvailable = availableNavItems.some((item) => item.id === target);
@@ -342,7 +344,7 @@ export function MainLayout() {
         </div>
 
         <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
-          {availableNavItems.map((item) => {
+          {mainNavItems.map((item) => {
             const isActive = section === item.id;
             return (
               <button
@@ -385,6 +387,26 @@ export function MainLayout() {
           ) : null}
         </nav>
 
+        {ajudaNavItem ? (
+          <div className={`${sidebarCollapsed ? "px-2 pb-1" : "px-3 pb-1"}`}>
+            <button
+              type="button"
+              onClick={() => openSection(ajudaNavItem.id)}
+              title={sidebarCollapsed ? ajudaNavItem.label : undefined}
+              aria-label={sidebarCollapsed ? ajudaNavItem.label : undefined}
+              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                section === ajudaNavItem.id
+                  ? SELECTED_NAV_CLASS
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
+              }`}
+            >
+              <span className={section === ajudaNavItem.id ? "" : "opacity-60 group-hover:opacity-100"}>{ajudaNavItem.icon}</span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">{ajudaNavItem.label}</p>
+              </div>
+            </button>
+          </div>
+        ) : null}
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
           {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
           <button

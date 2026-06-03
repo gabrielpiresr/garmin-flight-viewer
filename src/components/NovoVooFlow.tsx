@@ -1233,7 +1233,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
   const computedEventTimes = useMemo(() => {
     if (!startTime.trim() || !engineCutoffTime.trim()) return null;
-    if (isPrevistoStatus && totals.flightMin <= 0) {
+    if (isPrevistoStatus) {
       const result = computeScheduledBlockTimes({
         departureTimeUtc: startTime.trim(),
         engineCutoffTimeUtc: engineCutoffTime.trim(),
@@ -1254,7 +1254,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     const lastEngineCut = firstNonEmpty([...legs].reverse().map((leg) => leg.engineCut)) || engineCutoffTime.trim();
     const firstTakeoff = firstNonEmpty(legs.map((leg) => leg.takeoff));
     const lastLanding = firstNonEmpty([...legs].reverse().map((leg) => leg.landing));
-    const timesResult = isPrevistoStatus && totals.flightMin <= 0
+    const timesResult = isPrevistoStatus
       ? computeScheduledBlockTimes({
           departureTimeUtc: firstEngineStart,
           engineCutoffTimeUtc: lastEngineCut,
@@ -1607,22 +1607,31 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     setError(null);
     setSavedMessage(null);
 
-    const invalidLegIndex = legs.findIndex((leg) => {
-      const hasAnyBlockTime = leg.engineStart.trim() || leg.engineCut.trim();
-      return Boolean(hasAnyBlockTime) && clockDiffMinutes(leg.engineStart, leg.engineCut) === null;
-    });
-    const blockMinutes = sumLegBlockMinutes(legs);
-    if (invalidLegIndex >= 0 || blockMinutes === null) {
-      setSaving(false);
-      setError(
-        invalidLegIndex >= 0
-          ? `Ajuste acionamento/corte da perna ${invalidLegIndex + 1}: o corte deve ser posterior ao acionamento.`
-          : "Informe acionamento e corte em pelo menos uma perna para calcular o tempo de motor ligado.",
-      );
-      return false;
+    const normalizedStatus = normalizeFlightStatus(flightStatus);
+    let durationSec = 0;
+    if (normalizedStatus === "Previsto") {
+      const scheduledMinutes =
+        startTime.trim() && engineCutoffTime.trim()
+          ? clockDiffMinutes(startTime.trim(), engineCutoffTime.trim())
+          : null;
+      durationSec = Math.max(0, Math.round((scheduledMinutes ?? totals.flightMin) * 60));
+    } else {
+      const invalidLegIndex = legs.findIndex((leg) => {
+        const hasAnyBlockTime = leg.engineStart.trim() || leg.engineCut.trim();
+        return Boolean(hasAnyBlockTime) && clockDiffMinutes(leg.engineStart, leg.engineCut) === null;
+      });
+      const blockMinutes = sumLegBlockMinutes(legs);
+      if (invalidLegIndex >= 0 || blockMinutes === null) {
+        setSaving(false);
+        setError(
+          invalidLegIndex >= 0
+            ? `Ajuste acionamento/corte da perna ${invalidLegIndex + 1}: o corte deve ser posterior ao acionamento.`
+            : "Informe acionamento e corte em pelo menos uma perna para calcular o tempo de motor ligado.",
+        );
+        return false;
+      }
+      durationSec = blockMinutes * 60;
     }
-
-    const durationSec = blockMinutes * 60;
 
     const meta = buildFlightMeta();
     const csvPayload = encodeFlightRecord({ meta, telemetryCsv, telemetryFiles });
@@ -1654,7 +1663,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       trainingSnapshot: selectedTrainingSnapshot,
       telemetryMetrics,
       telemetryAlertParsed: parsedTelemetry,
-      flightStatus: normalizeFlightStatus(flightStatus),
+      flightStatus: normalizedStatus,
     };
     if (flightId) {
       const { error: updateErr } = await updateFlight(flightId, payload);

@@ -2443,6 +2443,8 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
     return { skipped: true, reason: "missing_email_or_id", userId: null };
   }
 
+  const cpfPassword = role === "aluno" ? cleanString(sagaUser.cpf).replace(/\D/g, "") : "";
+  const shouldUseCpfPassword = cpfPassword.length === 11;
   const deterministicId = sagaDocId(testMode ? "saga_test" : useEmailAlias ? "saga_alias" : "saga", sagaId);
   let authUser = null;
   try {
@@ -2456,7 +2458,7 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
     authUser = await users.create({
       userId: deterministicId,
       email,
-      password: crypto.randomBytes(18).toString("base64url"),
+      password: shouldUseCpfPassword ? cpfPassword : crypto.randomBytes(18).toString("base64url"),
       name: cleanString(sagaUser.nome).slice(0, 128) || email,
     });
     created = true;
@@ -2465,6 +2467,13 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
       authUser = await users.updateName({ userId: authUser.$id, name: cleanString(sagaUser.nome).slice(0, 128) });
     } catch {
       // Name updates are best effort during imports.
+    }
+  }
+  if (!created && shouldUseCpfPassword) {
+    try {
+      await users.updatePassword({ userId: authUser.$id, password: cpfPassword });
+    } catch {
+      // Password updates are best effort during imports.
     }
   }
 
@@ -3856,6 +3865,7 @@ function sagaFlightPermissions(studentUserId, instructorUserId) {
   ];
   if (studentUserId) {
     perms.push(sdk.Permission.read(sdk.Role.user(studentUserId)));
+    perms.push(sdk.Permission.update(sdk.Role.user(studentUserId)));
   }
   if (instructorUserId) {
     perms.push(sdk.Permission.read(sdk.Role.user(instructorUserId)));
@@ -5454,9 +5464,8 @@ function flightDateTimeKey(flight) {
 function isFutureFlight(flight) {
   const date = flight.flightDate || (flight.createdAt || "").slice(0, 10);
   if (!date) return false;
-  const time = flight.startTime || "23:59";
-  const dateTime = new Date(`${date}T${time.length === 5 ? time : "23:59"}:00`);
-  return !Number.isNaN(dateTime.getTime()) && dateTime.getTime() > Date.now();
+  const today = new Date().toISOString().slice(0, 10);
+  return date >= today;
 }
 
 function isCompletedFlight(flight) {

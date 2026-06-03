@@ -1341,36 +1341,26 @@ export async function updateStudentFlightSuggestion(id: string, payload: {
       return { error: new Error("Este voo está bloqueado pois foi assinado pelo instrutor.") };
     }
 
-    const decoded = decodeFlightRecord(saved.data.csv_text);
-    if (!decoded.meta) {
-      return { error: new Error("Ficha do voo sem metadados para atualizar.") };
-    }
-
-    const nextMeta = {
-      ...decoded.meta,
-      preFlight: {
-        ...decoded.meta.preFlight,
-        studentSuggestionMd: payload.suggestionMd.trim(),
-      },
-    };
-    const csvText = encodeFlightRecord({
-      meta: nextMeta,
-      telemetryCsv: decoded.telemetryCsv,
-      telemetryFiles: decoded.telemetryFiles,
+    const { studentPatchFlightSuggestion } = await import("./instructorPatchFlightDb");
+    return studentPatchFlightSuggestion({
+      flightId: id,
+      studentUserId: payload.actorUserId,
+      suggestionMd: payload.suggestionMd.trim(),
+      csvText: saved.data.csv_text,
     });
-
-    await updateFlightDocumentWithMaterializedFallback({
-      id,
-      basePayload: {
-        csv_text: csvText,
-        csv_file_id: null,
-      },
-      csvText,
-      trainingMissionId: saved.data.training_mission_id,
-    });
-    return { error: null };
   } catch (e) {
-    return { error: e as Error };
+    const err = e as Error;
+    const appwriteCode = (err as unknown as { code?: number }).code;
+    const unauthorized = appwriteCode === 401 || err.message?.toLowerCase().includes("not authorized");
+    if (unauthorized) {
+      const { studentPatchFlightSuggestion } = await import("./instructorPatchFlightDb");
+      return studentPatchFlightSuggestion({
+        flightId: id,
+        studentUserId: payload.actorUserId,
+        suggestionMd: payload.suggestionMd.trim(),
+      });
+    }
+    return { error: err };
   }
 }
 
@@ -1396,6 +1386,16 @@ export async function updateFlightWeightBalance(id: string, payload: {
     }
     if (saved.data.instructor_signed) {
       return { error: new Error("Este voo está bloqueado pois foi assinado pelo instrutor.") };
+    }
+
+    if (payload.actorRole === "aluno") {
+      const { studentPatchFlightWeightBalance } = await import("./instructorPatchFlightDb");
+      return studentPatchFlightWeightBalance({
+        flightId: id,
+        studentUserId: payload.actorUserId,
+        weightBalance: payload.weightBalance,
+        csvText: saved.data.csv_text,
+      });
     }
 
     const decoded = decodeFlightRecord(saved.data.csv_text);
@@ -1428,27 +1428,10 @@ export async function updateFlightWeightBalance(id: string, payload: {
     const appwriteCode = (err as unknown as { code?: number }).code;
     const unauthorized = appwriteCode === 401 || err.message?.toLowerCase().includes("not authorized");
     if (payload.actorRole === "aluno" && unauthorized) {
-      const saved = await getSavedFlight(id);
-      if (saved.error || !saved.data) {
-        return { error: saved.error ?? err };
-      }
-      const decoded = decodeFlightRecord(saved.data.csv_text);
-      if (!decoded.meta) {
-        return { error: new Error("Ficha do voo sem metadados para atualizar.") };
-      }
-      const csvText = encodeFlightRecord({
-        meta: {
-          ...decoded.meta,
-          weightBalance: payload.weightBalance,
-        },
-        telemetryCsv: decoded.telemetryCsv,
-        telemetryFiles: decoded.telemetryFiles,
-      });
       const { studentPatchFlightWeightBalance } = await import("./instructorPatchFlightDb");
       return studentPatchFlightWeightBalance({
         flightId: id,
         studentUserId: payload.actorUserId,
-        csvText,
         weightBalance: payload.weightBalance,
       });
     }

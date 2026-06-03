@@ -276,6 +276,8 @@ export function InstructorLayout() {
       }),
     [canTab, referProgramActive, visibleScheduleTabs],
   );
+  const helpNavItem = visibleNavItems.find((item) => item.id === "help") ?? null;
+  const mainNavItems = visibleNavItems.filter((item) => item.id !== "help");
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -306,7 +308,7 @@ export function InstructorLayout() {
         </div>
 
         <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
-          {visibleNavItems.map((item) => {
+          {mainNavItems.map((item) => {
             const isActive = section === item.id;
             return (
               <button
@@ -330,6 +332,26 @@ export function InstructorLayout() {
           })}
         </nav>
 
+        {helpNavItem ? (
+          <div className={`${sidebarCollapsed ? "px-2 pb-1" : "px-3 pb-1"}`}>
+            <button
+              type="button"
+              onClick={() => setSection(helpNavItem.id)}
+              title={sidebarCollapsed ? helpNavItem.label : undefined}
+              aria-label={sidebarCollapsed ? helpNavItem.label : undefined}
+              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                section === helpNavItem.id
+                  ? SELECTED_NAV_CLASS
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
+              }`}
+            >
+              <span className={section === helpNavItem.id ? "" : "opacity-60 group-hover:opacity-100"}>{helpNavItem.icon}</span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">{helpNavItem.label}</p>
+              </div>
+            </button>
+          </div>
+        ) : null}
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
           {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
           <button

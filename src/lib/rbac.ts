@@ -762,7 +762,7 @@ export async function ensureProfile(
   }
 }
 
-async function listStudentsFromProfiles(actorUserId: string): Promise<StudentOption[]> {
+async function listStudentsFromProfiles(_actorUserId: string): Promise<StudentOption[]> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
   const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
     Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
@@ -773,8 +773,8 @@ async function listStudentsFromProfiles(actorUserId: string): Promise<StudentOpt
     .filter((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";
       const role = normalizeUserRole((doc.role as string | undefined) ?? null);
-      if (!userId || userId === actorUserId || doc.is_active === false) return false;
-      return role !== "admin" && role !== "instrutor";
+      if (!userId || doc.is_active === false) return false;
+      return role !== "admin";
     })
     .map((doc) =>
       toStudentOption({
@@ -800,7 +800,7 @@ export async function listAssignableStudents(actorUserId: string, actorRole: Use
 }
 
 /** Uma query em perfis — evita N× getProfile na escala. */
-export async function listStudentIdentitiesForSchedule(actorUserId: string): Promise<ScheduleStudentIdentity[]> {
+export async function listStudentIdentitiesForSchedule(_actorUserId: string): Promise<ScheduleStudentIdentity[]> {
   if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return [];
 
   const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
@@ -812,8 +812,8 @@ export async function listStudentIdentitiesForSchedule(actorUserId: string): Pro
     .filter((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";
       const role = normalizeUserRole((doc.role as string | undefined) ?? null);
-      if (!userId || userId === actorUserId || doc.is_active === false) return false;
-      return role !== "admin" && role !== "instrutor";
+      if (!userId || doc.is_active === false) return false;
+      return role !== "admin";
     })
     .map((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";

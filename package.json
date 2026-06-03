@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "pwa:assets": "node scripts/generate-pwa-assets.mjs",
     "appwrite:deploy-admin-function": "node scripts/deploy-admin-function.mjs",
+    "appwrite:deploy-instructor-patch-function": "node scripts/deploy-instructor-patch-function.mjs",
     "appwrite:setup": "node scripts/setup-appwrite.mjs",
     "appwrite:setup-sign-flight": "node scripts/setup-sign-flight.mjs",
     "appwrite:setup-performance": "node scripts/setup-performance-indexes.mjs",

@@ -28,7 +28,7 @@ export const CRM_STATUS_LABELS: Record<CrmStatus, string> = {
   aguardando_qualificacao:         "Aguardando Qualificação",
   aguardando_proposta:             "Aguardando Proposta",
   proposta_enviada:                "Proposta Enviada",
-  registro_enviado:                "Registro Enviado",
+  registro_enviado:                "Enviar Registro",
   registro_preenchido:             "Registro Preenchido",
   matricula_enviada:               "Enviar Matrícula",
   aguardando_assinatura_pagamento: "Aguardando Assinatura e Pagamento",

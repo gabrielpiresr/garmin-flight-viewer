@@ -87,6 +87,7 @@ export type ExistingScheduledFlight = {
   date: string;
   startTime: string;
   durationHours: number;
+  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
   isNight?: boolean;
   sourceFilename: string;
   sagaScheduleId?: string | null;
@@ -139,6 +140,7 @@ export type ScheduledFlightSuggestion = {
   startTime: string;
   endTime: string;
   durationHours: number;
+  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
   priorityLevel: 1 | 2 | 3;
   flexibilityLevel: FlexibilityLevel;
   preferredModelId: string | null;

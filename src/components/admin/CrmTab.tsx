@@ -1274,7 +1274,7 @@ function LeadDetailDrawer({
               <div className="space-y-2">
                 {CRM_DOCUMENT_TYPES.map(({ type, label }) => {
                   const attachment = profile.documents[type];
-                  const url = attachment ? getProfileDocumentUrl(attachment.fileId, "download") : "";
+                  const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
                   return (
                     <div key={type} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
                       <div className="min-w-0">
@@ -1564,6 +1564,14 @@ export function CrmTab() {
   const { visibleFields, toggle: toggleField } = useCardFieldSettings();
 
   const { toast, show: showToast } = useToast();
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function reloadLeads() {
+    setRefreshing(true);
+    const { data, error } = await listLeads();
+    if (!error && data) setLeads(data);
+    setRefreshing(false);
+  }
 
   useEffect(() => {
     void (async () => {
@@ -1588,6 +1596,20 @@ export function CrmTab() {
       } catch (e) {
         showToast((e as Error).message || "Erro ao preparar automação de matrícula.", "error");
       }
+      return;
+    }
+    if (targetStatus === "registro_enviado") {
+      const lead = draggedLead;
+      setDraggedLead(null);
+      const prev = lead.crmStatus;
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: targetStatus } : l));
+      const { error } = await updateLead(lead.id, { crmStatus: targetStatus });
+      if (error) {
+        setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
+        showToast("Erro ao mover lead.", "error");
+        return;
+      }
+      setCadastroModal({ ...lead, crmStatus: targetStatus });
       return;
     }
     if (targetStatus === "aluno_pronto" && draggedLead.userId) {
@@ -1760,6 +1782,17 @@ export function CrmTab() {
               <path d="M7.752 2.5a.75.75 0 000 1.5h3.69l-8.97 8.97a.75.75 0 001.06 1.06l8.97-8.97v3.69a.75.75 0 001.5 0v-5.5a.75.75 0 00-.75-.75h-5.5z" />
             </svg>
             Link qualificação
+          </button>
+          <button
+            type="button"
+            onClick={() => void reloadLeads()}
+            disabled={refreshing}
+            title="Atualizar leads"
+            className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition disabled:opacity-50"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}>
+              <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.389zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
+            </svg>
           </button>
           <button
             type="button"

@@ -140,11 +140,17 @@ type CalendarFlightItem = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  flightStatus?: FlightStatus;
   startTime: string;
   endTime: string;
   isNight?: boolean;
   isOutsideGenerator?: boolean;
 };
+
+function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
+  if (item.flightStatus === "Cancelado") return "bg-red-700/90";
+  return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+}
 
 function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undefined): string {
   const short = label.trim().split(/\s+/).slice(0, 2).join(" ");
@@ -570,7 +576,7 @@ function CalendarGrid({
                       if (dragState?.item.id === item.id) return null;
                       const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                      const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                      const color = calendarItemColor(item, colorByAircraft);
                       const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
@@ -628,7 +634,7 @@ function CalendarGrid({
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
-                      const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                      const color = calendarItemColor(item, colorByAircraft);
                       return (
                         <div
                           key="preview"
@@ -673,7 +679,7 @@ function CalendarGrid({
                       ) : (
                         <div className="space-y-0.5">
                           {nightItems.map(({ item }) => {
-                            const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                            const color = calendarItemColor(item, colorByAircraft);
                             const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                             if (dragState?.item.id === item.id) return null;
                             return (
@@ -1118,7 +1124,7 @@ function DailyCalendarGrid({
                           const item = entry.item;
                           const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                          const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                          const color = calendarItemColor(item, colorByAircraft);
                           const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
@@ -1171,7 +1177,7 @@ function DailyCalendarGrid({
                           const entry = entries.find((e) => e.item.id === item.id) ?? { item, columnIndex: 0, columnCount: 1 };
                           const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                          const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                          const color = calendarItemColor(item, colorByAircraft);
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
                           const previewCol = groupBy === "instructor"
@@ -1217,7 +1223,7 @@ function DailyCalendarGrid({
                         ) : (
                           <div className="space-y-0.5">
                             {nightItems.map((item) => {
-                              const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                              const color = calendarItemColor(item, colorByAircraft);
                               const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                               if (dragState?.item.id === item.id) return null;
                               return (
@@ -1609,6 +1615,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             dayOfWeek,
             startHour,
             durationHours: row.durationHours,
+            flightStatus: row.flightStatus,
             startTime: row.startTime,
             endTime: hoursToHHMM(startHour + row.durationHours),
             isNight: row.isNight ?? false,
@@ -1724,6 +1731,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
+      flightStatus: "Previsto",
       isNight: false,
     });
     setFormConflicts([]);
@@ -1773,7 +1781,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!user || !weekData || !formDraft) return;
     setError(null);
     const conflicts = detectFlightConflicts({
-      draft: { ...formDraft, studentLabel: formDraft.studentLabel || formDraft.studentId },
+      draft: {
+        ...formDraft,
+        studentLabel: formDraft.studentLabel || formDraft.studentId,
+        flightStatus: formDraft.flightStatus ?? "Previsto",
+      },
       supplies: weekData.supplies,
       flights,
       minGapMinutes,
@@ -1793,8 +1805,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       const normalizedLabel = formDraft.studentLabel.trim() || formDraft.studentId;
       const instructor = formDraft.instructorId ? instructorById.get(formDraft.instructorId) ?? null : null;
       const baseMeta = buildAutoMeta({ ...formDraft, studentLabel: normalizedLabel }, weekData.week.weekStart, instructor);
-      const isCancelledEdit = formMode === "edit" && formDraft.flightStatus === "Cancelado";
-      const finalMeta: FlightRecordMeta = isCancelledEdit && formDraft.cancellationReason
+      const isCancelledFlight = formDraft.flightStatus === "Cancelado";
+      const finalMeta: FlightRecordMeta = isCancelledFlight && formDraft.cancellationReason
         ? { ...baseMeta, cancellation: { reasonCode: formDraft.cancellationReason, reasonText: formDraft.cancellationReasonText ?? "", updatedAt: new Date().toISOString() } } as FlightRecordMeta
         : baseMeta;
       const csvText = encodeFlightRecord({ meta: finalMeta, telemetryCsv: "" });
@@ -1807,7 +1819,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         csv_text: csvText,
         aircraft_ident: formDraft.aircraftRegistration,
         duration_sec: Math.round(formDraft.durationHours * 3600),
-        ...(formMode === "edit" && formDraft.flightStatus ? { flightStatus: formDraft.flightStatus } : {}),
+        flightStatus: formDraft.flightStatus ?? "Previsto",
       };
 
       if (formMode === "edit" && formDraft.id) {

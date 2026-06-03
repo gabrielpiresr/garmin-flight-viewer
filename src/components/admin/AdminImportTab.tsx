@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
@@ -22,6 +22,7 @@ import {
 } from "../../lib/sagaImportDb";
 import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
 import { useSagaImportMissionPrompt } from "../../hooks/useSagaImportMissionPrompt";
+import { allMissionOptions, collectMissionLookupKeysFromFlights } from "../../lib/sagaMissionMappingUi";
 
 type TableColumn<T> = { key: keyof T; label: string; className?: string };
 
@@ -402,7 +403,7 @@ function MappingSelect({
     <select
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="w-full min-w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-emerald-500"
+      className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-emerald-500"
     >
       <option value="">{placeholder}</option>
       {options.map((option) => (
@@ -443,9 +444,15 @@ function MappingPanel({
     value: model.id,
     label: [model.name, model.manufacturer].filter(Boolean).join(" | "),
   }));
+  const missionValues = unique([
+    ...collectMissionLookupKeysFromFlights(mappedFlights),
+    ...Object.keys(mapping.missionBySaga ?? {}),
+  ]);
+  const missionOptions = allMissionOptions(result.catalogs);
   const missingAircrafts = aircraftValues.filter((value) => !mapping.aircraftBySaga[value]);
   const missingCourses = courseValues.filter((value) => !mapping.courseBySaga[value]);
   const missingCreditAircrafts = creditAircraftValues.filter((value) => !mapping.creditAircraftBySaga[value]);
+  const missingMissions = missionValues.filter((value) => !mapping.missionBySaga?.[value]);
   const sagaAircraftIdsCount = Object.values(mapping.aircraftIdByRegistration ?? {}).filter(Boolean).length;
 
   function setAircraft(sagaValue: string, localValue: string) {
@@ -469,13 +476,69 @@ function MappingPanel({
     });
   }
 
+  function setMission(sagaValue: string, localValue: string) {
+    onMappingChange({
+      ...mapping,
+      missionBySaga: { ...(mapping.missionBySaga ?? {}), [sagaValue]: localValue },
+    });
+  }
+
+  function MappingCard({
+    title,
+    emptyMessage,
+    values,
+    renderRow,
+  }: {
+    title: string;
+    emptyMessage?: string;
+    values: string[];
+    renderRow: (sagaValue: string) => ReactNode;
+  }) {
+    return (
+      <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-800">
+        <div className="border-b border-slate-800 bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-200">{title}</div>
+        <div className="max-h-96 divide-y divide-slate-800 overflow-x-hidden overflow-y-auto">
+          {values.length ? values.map((sagaValue) => (
+            <div key={sagaValue} className="min-w-0 px-3 py-3">
+              {renderRow(sagaValue)}
+            </div>
+          )) : (
+            <p className="px-3 py-10 text-center text-sm text-slate-500">{emptyMessage ?? "Nenhum item."}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function MappingRow({
+    sagaLabel,
+    mono = false,
+    children,
+  }: {
+    sagaLabel: string;
+    mono?: boolean;
+    children: ReactNode;
+  }) {
+    return (
+      <div className="flex min-w-0 flex-col gap-2">
+        <span
+          className={`break-words text-sm text-slate-300 ${mono ? "font-mono text-xs" : ""}`}
+          title={sagaLabel}
+        >
+          {sagaLabel}
+        </span>
+        <div className="min-w-0">{children}</div>
+      </div>
+    );
+  }
+
   return (
-    <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+    <section className="min-w-0 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h3 className="text-base font-semibold text-slate-100">De-para para importacao</h3>
           <p className="mt-1 text-sm text-slate-500">
-            Ajuste aeronaves e cursos existentes antes de gravar voos. O de-para fica salvo para as proximas execucoes.
+            Ajuste aeronaves, cursos e missoes antes de gravar voos. O de-para fica salvo para as proximas execucoes.
           </p>
         </div>
         <button
@@ -488,9 +551,10 @@ function MappingPanel({
         </button>
       </div>
 
-      {(missingAircrafts.length || missingCourses.length || missingCreditAircrafts.length) ? (
+      {(missingAircrafts.length || missingCourses.length || missingCreditAircrafts.length || missingMissions.length) ? (
         <p className="mb-4 rounded-xl border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
-          Existem {missingAircrafts.length} aeronaves, {missingCourses.length} cursos e {missingCreditAircrafts.length} modelos de credito sem correspondencia.
+          Existem {missingAircrafts.length} aeronaves, {missingCourses.length} cursos, {missingMissions.length} missoes e{" "}
+          {missingCreditAircrafts.length} modelos de credito sem correspondencia.
         </p>
       ) : (
         <p className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-4 py-3 text-sm text-emerald-100">
@@ -501,59 +565,60 @@ function MappingPanel({
         IDs de aeronave do SAGA resolvidos para envio de agenda: {sagaAircraftIdsCount}. Eles sao inferidos da escala do SAGA quando a busca encontra a aeronave correspondente.
       </p>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <div className="overflow-hidden rounded-xl border border-slate-800">
-          <div className="border-b border-slate-800 bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-200">Aeronaves</div>
-          <div className="max-h-96 divide-y divide-slate-800 overflow-auto">
-            {aircraftValues.map((sagaValue) => (
-              <div key={sagaValue} className="grid gap-2 px-3 py-3 md:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)] md:items-center">
-                <span className="truncate text-sm text-slate-300" title={sagaValue}>{sagaValue}</span>
-                <MappingSelect
-                  value={mapping.aircraftBySaga[sagaValue] ?? ""}
-                  onChange={(value) => setAircraft(sagaValue, value)}
-                  options={aircraftOptions}
-                  placeholder="Selecione a aeronave"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
+      <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+        <MappingCard title="Aeronaves" values={aircraftValues} renderRow={(sagaValue) => (
+          <MappingRow sagaLabel={sagaValue}>
+            <MappingSelect
+              value={mapping.aircraftBySaga[sagaValue] ?? ""}
+              onChange={(value) => setAircraft(sagaValue, value)}
+              options={aircraftOptions}
+              placeholder="Selecione a aeronave"
+            />
+          </MappingRow>
+        )} />
 
-        <div className="overflow-hidden rounded-xl border border-slate-800">
-          <div className="border-b border-slate-800 bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-200">Cursos</div>
-          <div className="max-h-96 divide-y divide-slate-800 overflow-auto">
-            {courseValues.map((sagaValue) => (
-              <div key={sagaValue} className="grid gap-2 px-3 py-3 md:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)] md:items-center">
-                <span className="truncate text-sm text-slate-300" title={sagaValue}>{sagaValue}</span>
-                <MappingSelect
-                  value={mapping.courseBySaga[sagaValue] ?? ""}
-                  onChange={(value) => setCourse(sagaValue, value)}
-                  options={courseOptions}
-                  placeholder="Selecione o curso"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
+        <MappingCard title="Cursos" values={courseValues} renderRow={(sagaValue) => (
+          <MappingRow sagaLabel={sagaValue}>
+            <MappingSelect
+              value={mapping.courseBySaga[sagaValue] ?? ""}
+              onChange={(value) => setCourse(sagaValue, value)}
+              options={courseOptions}
+              placeholder="Selecione o curso"
+            />
+          </MappingRow>
+        )} />
 
-        <div className="overflow-hidden rounded-xl border border-slate-800">
-          <div className="border-b border-slate-800 bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-200">Movimentacoes de credito por modelo</div>
-          <div className="max-h-96 divide-y divide-slate-800 overflow-auto">
-            {creditAircraftValues.length ? creditAircraftValues.map((sagaValue) => (
-              <div key={sagaValue} className="grid gap-2 px-3 py-3 md:grid-cols-[minmax(10rem,1fr)_minmax(12rem,1fr)] md:items-center">
-                <span className="truncate text-sm text-slate-300" title={sagaValue}>{sagaValue}</span>
-                <MappingSelect
-                  value={mapping.creditAircraftBySaga[sagaValue] ?? ""}
-                  onChange={(value) => setCreditAircraft(sagaValue, value)}
-                  options={creditModelOptions}
-                  placeholder="Selecione o modelo"
-                />
-              </div>
-            )) : (
-              <p className="px-3 py-10 text-center text-sm text-slate-500">Nenhum credito carregado na amostra.</p>
-            )}
-          </div>
-        </div>
+        <MappingCard
+          title="Missoes SAGA"
+          values={missionValues}
+          emptyMessage="Nenhuma missao detectada nos voos carregados."
+          renderRow={(sagaValue) => (
+            <MappingRow sagaLabel={sagaValue} mono>
+              <MappingSelect
+                value={mapping.missionBySaga?.[sagaValue] ?? ""}
+                onChange={(value) => setMission(sagaValue, value)}
+                options={missionOptions}
+                placeholder="Selecione a missao local"
+              />
+            </MappingRow>
+          )}
+        />
+
+        <MappingCard
+          title="Creditos por modelo"
+          values={creditAircraftValues}
+          emptyMessage="Nenhum credito carregado na amostra."
+          renderRow={(sagaValue) => (
+            <MappingRow sagaLabel={sagaValue}>
+              <MappingSelect
+                value={mapping.creditAircraftBySaga[sagaValue] ?? ""}
+                onChange={(value) => setCreditAircraft(sagaValue, value)}
+                options={creditModelOptions}
+                placeholder="Selecione o modelo"
+              />
+            </MappingRow>
+          )}
+        />
       </div>
     </section>
   );
@@ -796,6 +861,25 @@ export function AdminImportTab() {
   const importModeLabel = importing === "selection" ? "Selecao" : importing === "test" ? "Teste" : "Completo";
   const displayPendingMission = pendingMission ?? importProgress?.pendingMission ?? null;
 
+  function handleMissionBySagaChange(lookupKey: string, missionId: string) {
+    if (!lookupKey || !missionId) return;
+    setMappingDraft((current) => ({
+      ...current,
+      missionBySaga: { ...(current.missionBySaga ?? {}), [lookupKey]: missionId },
+    }));
+  }
+
+  function handleConfirmSagaMission(missionId: string) {
+    const lookupKey = displayPendingMission?.lookupKey;
+    if (lookupKey && missionId) {
+      setMappingDraft((current) => ({
+        ...current,
+        missionBySaga: { ...(current.missionBySaga ?? {}), [lookupKey]: missionId },
+      }));
+    }
+    confirmMissionMapping(missionId);
+  }
+
   useEffect(() => {
     let cancelled = false;
     setSettingsLoading(true);
@@ -974,8 +1058,10 @@ export function AdminImportTab() {
         importStartedAt={importStartedAt}
         progressTick={progressTick}
         catalogs={catalogs}
+        missionBySaga={mappingDraft.missionBySaga ?? {}}
+        onMissionBySagaChange={handleMissionBySagaChange}
         pendingMission={displayPendingMission}
-        onConfirmMission={confirmMissionMapping}
+        onConfirmMission={handleConfirmSagaMission}
       />
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">

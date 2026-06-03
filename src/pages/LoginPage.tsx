@@ -229,31 +229,12 @@ export function LoginPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-5 shadow-xl backdrop-blur-sm sm:p-6">
-          {mode !== "reset" ? (
-            <div className="mb-5 flex gap-2">
-              <button
-                type="button"
-                onClick={() => { setMode("signin"); }}
-                className="flex-1 rounded-lg py-2 text-sm font-medium transition-colors text-slate-400 hover:text-white"
-                style={mode === "signin" ? { background: "var(--school-primary, #0ea5e9)", color: "#fff" } : undefined}
-              >
-                Entrar
-              </button>
-              <button
-                type="button"
-                onClick={() => { setMode("signup"); }}
-                className="flex-1 rounded-lg py-2 text-sm font-medium transition-colors text-slate-400 hover:text-white"
-                style={mode === "signup" ? { background: "var(--school-primary, #0ea5e9)", color: "#fff" } : undefined}
-              >
-                Criar conta
-              </button>
-            </div>
-          ) : (
+          {mode === "reset" ? (
             <div className="mb-5">
               <h2 className="text-lg font-semibold text-white">Redefinir senha</h2>
               <p className="mt-1 text-sm text-slate-400">Informe uma nova senha para concluir a recuperacao da conta.</p>
             </div>
-          )}
+          ) : null}
 
           <div className="space-y-3">
             {mode !== "reset" ? (

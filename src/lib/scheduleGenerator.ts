@@ -368,7 +368,7 @@ export function assignInstructorsToSuggestions(input: {
     loadByInstructor.set(instructorId, (loadByInstructor.get(instructorId) ?? 0) + durationHours);
   };
 
-  for (const existing of input.existingFlights ?? []) {
+  for (const existing of (input.existingFlights ?? []).filter((flight) => flight.flightStatus !== "Cancelado")) {
     if (!existing.instructorId || suggestionDemandIds.has(existing.demandId)) continue;
     const [hh, mm] = existing.startTime.split(":").map(Number);
     const startMinute = (Number.isFinite(hh) ? hh : 6) * 60 + (Number.isFinite(mm) ? mm : 0);
@@ -499,6 +499,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
   const nightFlightStartHour = input.nightFlightStartHour ?? 18;
   const instructors = input.instructors ?? [];
   const instructorConfigs = input.instructorConfigs ?? [];
+  const activeExistingFlights = input.existingFlights.filter((flight) => flight.flightStatus !== "Cancelado");
 
   const allSupplies = input.supplies.filter((supply) => supply.aircraftId.length > 0);
   const aircraftWeekHours = new Map<string, number>();
@@ -519,7 +520,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     return hours * 10 + flights;
   };
 
-  for (const existing of input.existingFlights) {
+  for (const existing of activeExistingFlights) {
     const supply = findSupplyByRegistration(allSupplies, existing.aircraftRegistration);
     if (!supply) continue;
     aircraftWeekHours.set(
@@ -559,7 +560,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     demandStats.set(demand.studentId, current);
   }
 
-  for (const existing of input.existingFlights) {
+  for (const existing of activeExistingFlights) {
     const stats = demandStats.get(existing.studentId);
     if (!stats) continue;
     stats.served = Math.min(stats.requested, stats.served + 1);
@@ -983,7 +984,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     suggestions,
     instructors,
     instructorConfigs,
-    existingFlights: input.existingFlights,
+    existingFlights: activeExistingFlights,
     minGapMinutes: input.minGapMinutes,
   });
 
@@ -1036,7 +1037,7 @@ export function generateSchedulePreview(input: ScheduleGeneratorInput): Schedule
     row.allocatedHours += suggestion.durationHours;
   }
 
-  for (const existing of input.existingFlights) {
+  for (const existing of activeExistingFlights) {
     if (assignedDemandIds.has(existing.demandId)) continue;
     const row = studentSummaryMap.get(existing.studentId);
     if (!row) continue;

@@ -12,6 +12,7 @@ export type ConflictFlightDraft = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
   isNight?: boolean;
 };
 
@@ -34,6 +35,10 @@ function toMinutes(startHour: number, durationHours: number): { start: number; e
   return { start, end };
 }
 
+function isCancelledFlight(row: { flightStatus?: "Previsto" | "Cancelado" | "Realizado" }): boolean {
+  return row.flightStatus === "Cancelado";
+}
+
 const DAY_LABEL: Record<number, string> = {
   0: "Dom",
   1: "Seg",
@@ -52,6 +57,8 @@ export function detectFlightConflicts(params: {
 }): DetectedFlightConflict[] {
   const conflicts: DetectedFlightConflict[] = [];
   const draft = params.draft;
+  if (isCancelledFlight(draft)) return [];
+  const activeFlights = params.flights.filter((row) => !isCancelledFlight(row));
 
   if (!Number.isFinite(draft.startHour) || !Number.isFinite(draft.durationHours) || draft.durationHours <= 0) {
     conflicts.push({
@@ -87,7 +94,7 @@ export function detectFlightConflicts(params: {
   }
 
   if (draft.isNight) {
-    const nightOnAircraft = params.flights.filter(
+    const nightOnAircraft = activeFlights.filter(
       (row) =>
         (!draft.id || row.id !== draft.id) &&
         row.aircraftRegistration === draft.aircraftRegistration &&
@@ -103,7 +110,7 @@ export function detectFlightConflicts(params: {
     }
 
     if (draft.instructorId) {
-      const nightByInstructor = params.flights.filter(
+      const nightByInstructor = activeFlights.filter(
         (row) =>
           (!draft.id || row.id !== draft.id) &&
           row.instructorId === draft.instructorId &&
@@ -121,7 +128,7 @@ export function detectFlightConflicts(params: {
   }
 
   const minGap = Math.max(0, params.minGapMinutes);
-  for (const row of params.flights) {
+  for (const row of activeFlights) {
     if (draft.id && row.id === draft.id) continue;
     if (!row.aircraftRegistration) continue;
     if (row.aircraftRegistration !== draft.aircraftRegistration) continue;
@@ -154,7 +161,7 @@ export function detectFlightConflicts(params: {
     }
   }
 
-  for (const row of params.flights) {
+  for (const row of activeFlights) {
     if (draft.id && row.id === draft.id) continue;
     if (row.studentId !== draft.studentId) continue;
     const date = new Date(`${row.date}T12:00:00`);
@@ -174,7 +181,7 @@ export function detectFlightConflicts(params: {
   }
 
   if (draft.instructorId) {
-    for (const row of params.flights) {
+    for (const row of activeFlights) {
       if (draft.id && row.id === draft.id) continue;
       if (row.instructorId !== draft.instructorId) continue;
       const date = new Date(`${row.date}T12:00:00`);
@@ -210,6 +217,7 @@ export function buildConflictsByFlightId(params: {
 }): Map<string, DetectedFlightConflict[]> {
   const out = new Map<string, DetectedFlightConflict[]>();
   for (const row of params.flights) {
+    if (isCancelledFlight(row)) continue;
     const draft: ConflictFlightDraft = {
       id: row.id,
       studentId: row.studentId,
@@ -222,6 +230,7 @@ export function buildConflictsByFlightId(params: {
         return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
       })(),
       durationHours: row.durationHours,
+      flightStatus: row.flightStatus,
       isNight: row.isNight ?? false,
     };
     const conflicts = detectFlightConflicts({

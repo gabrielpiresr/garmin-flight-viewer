@@ -162,6 +162,11 @@ function aircraftCardColor(className: string): string {
     .join(" ");
 }
 
+function suggestionCardColor(item: Pick<ScheduledFlightSuggestion, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
+  if (item.flightStatus === "Cancelado") return "bg-red-700/90";
+  return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+}
+
 const SLOT_BG_TINT: Record<SlotState, string> = {
   preferred: "bg-emerald-500/20",
   normal: "bg-sky-500/20",
@@ -388,6 +393,7 @@ function toGeneratedSuggestion(
     startTime: existing.startTime,
     endTime: hoursToHHMM((Number(hh) || 6) + existing.durationHours),
     durationHours: existing.durationHours,
+    flightStatus: existing.flightStatus,
     priorityLevel: 2,
     flexibilityLevel: "medium",
     preferredModelId: null,
@@ -761,7 +767,7 @@ function summarizeStudents(
     map.set(suggestion.studentId, current);
   }
 
-  for (const flight of existingFlights) {
+  for (const flight of existingFlights.filter((row) => row.flightStatus !== "Cancelado")) {
     if (previewDemandIds.has(flight.demandId)) continue;
     const current = map.get(flight.studentId) ?? {
       studentId: flight.studentId,
@@ -1071,7 +1077,7 @@ function CalendarGrid({
                         const startMinute = suggestionStartMinute(item);
                         const top = calendarTopPx(startMinute, rowHeight);
                         const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                        const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                        const color = suggestionCardColor(item, colorByAircraft);
                         const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                         const overlay = isOverlayItem(item);
                         const draggable = Boolean(onItemDrop) && !overlay;
@@ -1134,7 +1140,7 @@ function CalendarGrid({
                         const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                         const widthPercent = 100 / Math.max(1, entry.columnCount);
                         const leftPercent = entry.columnIndex * widthPercent;
-                        const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                        const color = suggestionCardColor(item, colorByAircraft);
                         return (
                           <div
                             key="preview"
@@ -1174,7 +1180,7 @@ function CalendarGrid({
                       ) : (
                         <div className="space-y-0.5">
                           {nightItems.map(({ item }) => {
-                            const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                            const color = suggestionCardColor(item, colorByAircraft);
                             const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                             const overlay = isOverlayItem(item);
                             const itemDraggable = Boolean(onItemDrop) && !overlay;

@@ -10,7 +10,22 @@ function extractMaterializedFields(csvText) {
     const meta = decodeMeta(csvText);
     if (!meta) return {};
     const legs = meta.legs ?? [];
-    if (!legs.length) return {};
+    const instructorSuggestion = String(meta.preFlight?.instructorSuggestionMd || "").trim();
+    const studentSuggestion = String(meta.preFlight?.studentSuggestionMd || "").trim();
+    const base = {
+      instructor_suggestion_md: instructorSuggestion || null,
+      student_suggestion_md: studentSuggestion || null,
+      instructor_suggestion_present: instructorSuggestion.length > 0,
+      student_suggestion_present: studentSuggestion.length > 0,
+      weight_balance_complete: isWeightBalanceComplete(meta.weightBalance),
+    };
+    if (!legs.length) {
+      return {
+        ...base,
+        ...(meta.header?.flightDate || meta.header?.date ? { flight_date: meta.header.flightDate || meta.header.date } : {}),
+        ...(meta.header?.startTime || meta.header?.departureTimeUtc ? { start_time: meta.header.startTime || meta.header.departureTimeUtc } : {}),
+      };
+    }
 
     const firstLeg = legs[0];
     const lastLeg = legs[legs.length - 1];
@@ -41,17 +56,17 @@ function extractMaterializedFields(csvText) {
     }
     const totalFlightMinutes = legs.reduce((s, l) => s + toDurationMinutes(l.flightTime), 0);
     const blockMinutes = legs.reduce((s, l) => s + (clockDiffMinutes(l.engineStart, l.engineCut) ?? 0), 0);
-    const flightDate = meta.header?.date ?? null;
+    const flightDate = meta.header?.flightDate ?? meta.header?.date ?? null;
     const startTime = legs.find((leg) => String(leg.engineStart || "").trim())?.engineStart ?? meta.header?.startTime ?? null;
 
     return {
+      ...base,
       ...(fromTo ? { from_to: fromTo } : {}),
       ...(landings > 0 ? { landings } : {}),
       ...(totalFlightMinutes > 0 ? { total_flight_minutes: totalFlightMinutes } : {}),
       ...(blockMinutes > 0 ? { block_time_minutes: blockMinutes } : {}),
       ...(flightDate ? { flight_date: flightDate } : {}),
       ...(startTime ? { start_time: startTime } : {}),
-      weight_balance_complete: isWeightBalanceComplete(meta.weightBalance),
     };
   } catch {
     return {};
@@ -66,6 +81,10 @@ function decodeMeta(csvText) {
   return JSON.parse(decoded);
 }
 
+function encodeMeta(meta) {
+  return `${META_PREFIX}${Buffer.from(JSON.stringify(meta), "utf8").toString("base64")}\n`;
+}
+
 function isWeightBalanceComplete(weightBalance) {
   return Boolean(
     weightBalance &&
@@ -76,6 +95,27 @@ function isWeightBalanceComplete(weightBalance) {
       weightBalance.inputs?.tripFuel?.value != null &&
       weightBalance.results?.isComplete,
   );
+}
+
+function injectStudentWeightBalance(csvText, weightBalance) {
+  const meta = decodeMeta(csvText);
+  if (!meta) return null;
+  return encodeMeta({
+    ...meta,
+    weightBalance,
+  });
+}
+
+function injectStudentSuggestion(csvText, suggestionMd) {
+  const meta = decodeMeta(csvText);
+  if (!meta) return null;
+  return encodeMeta({
+    ...meta,
+    preFlight: {
+      ...(meta.preFlight || {}),
+      studentSuggestionMd: String(suggestionMd || "").trim(),
+    },
+  });
 }
 
 export default async ({ req, res, log, error }) => {
@@ -104,7 +144,11 @@ export default async ({ req, res, log, error }) => {
       weightBalance,
     } = body;
 
-    if (action !== "patchFlightAsInstructor" && action !== "patchWeightBalanceAsStudent") {
+    if (
+      action !== "patchFlightAsInstructor" &&
+      action !== "patchWeightBalanceAsStudent" &&
+      action !== "patchStudentSuggestionAsStudent"
+    ) {
       return res.json({ ok: false, message: "Unknown action." }, 400);
     }
     if (!flightId) {
@@ -125,21 +169,41 @@ export default async ({ req, res, log, error }) => {
       if (flight.instructor_signed) {
         return res.json({ ok: false, message: "Flight is locked (already signed by instructor)." }, 403);
       }
-      if (!csvText || !weightBalance) {
-        return res.json({ ok: false, message: "csvText and weightBalance required." }, 400);
+      if (!weightBalance) {
+        return res.json({ ok: false, message: "weightBalance required." }, 400);
       }
-      const meta = decodeMeta(csvText);
-      if (!meta) {
-        return res.json({ ok: false, message: "Flight record metadata missing." }, 400);
-      }
-      const materialized = extractMaterializedFields(csvText);
+      const sourceCsv = String(csvText || flight.csv_text || "");
+      const nextCsvText = injectStudentWeightBalance(sourceCsv, weightBalance);
+      if (!nextCsvText) return res.json({ ok: false, message: "Flight record metadata missing." }, 400);
+      const materialized = extractMaterializedFields(nextCsvText);
       await databases.updateDocument(DB_ID, FLIGHTS_COL_ID, flightId, {
-        csv_text: csvText,
+        csv_text: nextCsvText,
         csv_file_id: null,
         ...materialized,
       });
 
       log(`studentWeightBalancePatch: updated ${flightId} by ${callerUserId}`);
+      return res.json({ ok: true });
+    }
+
+    if (action === "patchStudentSuggestionAsStudent") {
+      if (flight.student_user_id !== callerUserId && flight.user_id !== callerUserId) {
+        return res.json({ ok: false, message: "Only the assigned student can update this suggestion." }, 403);
+      }
+      if (flight.instructor_signed) {
+        return res.json({ ok: false, message: "Flight is locked (already signed by instructor)." }, 403);
+      }
+      const sourceCsv = String(csvText || flight.csv_text || "");
+      const nextCsvText = injectStudentSuggestion(sourceCsv, body.suggestionMd);
+      if (!nextCsvText) return res.json({ ok: false, message: "Flight record metadata missing." }, 400);
+      const materialized = extractMaterializedFields(nextCsvText);
+      await databases.updateDocument(DB_ID, FLIGHTS_COL_ID, flightId, {
+        csv_text: nextCsvText,
+        csv_file_id: null,
+        ...materialized,
+      });
+
+      log(`studentSuggestionPatch: updated ${flightId} by ${callerUserId}`);
       return res.json({ ok: true });
     }
 

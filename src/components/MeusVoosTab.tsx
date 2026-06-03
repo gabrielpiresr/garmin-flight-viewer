@@ -1538,10 +1538,8 @@ function FlightTableSection({
                         <td className="px-3 py-2">
                           <div className="flex flex-col gap-1">
                             <FlightStatusBadge status={item.flight_status} />
-                          {!isFuture ? (
-                            <span className={info?.telemetryOk ? "text-emerald-300" : "text-amber-300"}>
-                              {info?.telemetryOk ? "Telemetria ok" : "Sem telemetria"}
-                            </span>
+                          {!isFuture && info?.telemetryOk ? (
+                            <span className="text-emerald-300">Telemetria ok</span>
                           ) : null}
                           </div>
                         </td>

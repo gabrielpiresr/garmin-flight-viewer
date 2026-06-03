@@ -260,6 +260,7 @@ export async function upsertLeadByEmail(
     if (input.birthDate !== undefined) qualPayload.birth_date = input.birthDate;
     if (input.cpf !== undefined) qualPayload.cpf = input.cpf;
     if (input.theoreticalExamDone !== undefined) qualPayload.theoretical_exam_done = input.theoreticalExamDone;
+    if (input.notes !== undefined) qualPayload.notes = input.notes;
     qualPayload.qual_filled_at = new Date().toISOString();
     const safeReferrer = input.referrerUserId?.trim() || null;
     if (safeReferrer) qualPayload.referrer_user_id = safeReferrer;

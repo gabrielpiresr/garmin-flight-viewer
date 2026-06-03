@@ -62,7 +62,7 @@ export async function instructorPatchFlight(
 export async function studentPatchFlightWeightBalance(payload: {
   flightId: string;
   studentUserId: string;
-  csvText: string;
+  csvText?: string;
   weightBalance: FlightWeightBalanceMeta;
 }): Promise<{ error: Error | null }> {
   if (!functions || !INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID) {
@@ -92,6 +92,47 @@ export async function studentPatchFlightWeightBalance(payload: {
 
     if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
       return { error: new Error(response.message || "Falha ao salvar peso e balanceamento.") };
+    }
+
+    return { error: null };
+  } catch (e) {
+    return { error: e as Error };
+  }
+}
+
+export async function studentPatchFlightSuggestion(payload: {
+  flightId: string;
+  studentUserId: string;
+  suggestionMd: string;
+  csvText?: string;
+}): Promise<{ error: Error | null }> {
+  if (!functions || !INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID) {
+    return { error: new Error("Função de atualização não configurada.") };
+  }
+
+  try {
+    const execution = await functions.createExecution(
+      INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID,
+      JSON.stringify({
+        action: "patchStudentSuggestionAsStudent",
+        flightId: payload.flightId,
+        studentUserId: payload.studentUserId,
+        suggestionMd: payload.suggestionMd,
+        csvText: payload.csvText,
+      }),
+      false,
+    );
+
+    const response = (() => {
+      try {
+        return JSON.parse(execution.responseBody || "{}") as { ok?: boolean; message?: string };
+      } catch {
+        return { ok: false, message: "Resposta inválida da função." };
+      }
+    })();
+
+    if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+      return { error: new Error(response.message || "Falha ao salvar sugestão do aluno.") };
     }
 
     return { error: null };

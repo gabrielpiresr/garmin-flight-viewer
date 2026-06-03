@@ -37,7 +37,9 @@ import {
   fetchSagaUsers,
   getSagaImportSettings,
   importSagaData,
+  saveSagaImportMapping,
   type SagaImportCatalogs,
+  type SagaImportMapping,
   type SagaImportProgress,
 } from "../../lib/sagaImportDb";
 import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
@@ -265,7 +267,7 @@ function ProfileDocumentsCard({ documents }: { documents: AdminUserDetail["profi
       <div className="grid gap-3 md:grid-cols-2">
         {PROFILE_DOCUMENT_LABELS.map((item) => {
           const attachment = docs[item.type];
-          const url = attachment ? getProfileDocumentUrl(attachment.fileId, "download") : "";
+          const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
           return (
             <div key={item.type} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
               <p className="text-sm font-medium text-slate-200">{item.label}</p>
@@ -385,6 +387,7 @@ export function AdminUsersTab() {
     aircraftModels: [],
     trainingTracks: [],
   });
+  const [sagaImportMapping, setSagaImportMapping] = useState<SagaImportMapping | null>(null);
   const {
     pendingMission,
     awaitingMission,
@@ -411,6 +414,27 @@ export function AdminUsersTab() {
   }, [sagaUserImporting]);
 
   const displayPendingMission = pendingMission ?? sagaUserImportProgress?.pendingMission ?? null;
+
+  function handleSagaMissionBySagaChange(lookupKey: string, missionId: string) {
+    if (!lookupKey || !missionId) return;
+    setSagaImportMapping((current) =>
+      current
+        ? { ...current, missionBySaga: { ...(current.missionBySaga ?? {}), [lookupKey]: missionId } }
+        : current,
+    );
+  }
+
+  function handleConfirmSagaMission(missionId: string) {
+    const lookupKey = displayPendingMission?.lookupKey;
+    if (lookupKey && missionId) {
+      setSagaImportMapping((current) =>
+        current
+          ? { ...current, missionBySaga: { ...(current.missionBySaga ?? {}), [lookupKey]: missionId } }
+          : current,
+      );
+    }
+    confirmMissionMapping(missionId);
+  }
 
   const selectedSummary = useMemo(
     () => users.find((row) => row.userId === selectedId) ?? users[0] ?? null,
@@ -761,6 +785,7 @@ export function AdminUsersTab() {
     try {
       const settings = await getSagaImportSettings();
       setSagaImportCatalogs(settings.catalogs);
+      setSagaImportMapping(settings.mapping);
       const cleanEmail = String(settings.credentials.email || "").trim();
       const cleanPassword = String(settings.credentials.password || "");
       if (!cleanEmail || !cleanPassword) {
@@ -775,7 +800,7 @@ export function AdminUsersTab() {
         users: sagaData.users,
         flights: sagaData.flights,
         financialEntries: sagaData.financialEntries,
-        mapping: settings.mapping,
+        mapping: sagaImportMapping ?? settings.mapping,
         scope: {
           users: true,
           pastFlights: sagaUserImportScope.pastFlights,
@@ -794,10 +819,29 @@ export function AdminUsersTab() {
       setSagaUserImportSummary(
         `${summary.flightsCreated + summary.flightsUpdated} voo(s), ${summary.scheduledFlightsCreated + summary.scheduledFlightsUpdated} agendamento(s) e ${summary.creditsCreated + summary.creditsUpdated + (summary.financialCreditsCreated ?? 0) + (summary.financialCreditsUpdated ?? 0)} crédito(s) processados.`,
       );
+      if (sagaImportMapping) {
+        const savedMapping = await saveSagaImportMapping(sagaImportMapping).catch(() => sagaImportMapping);
+        setSagaImportMapping(savedMapping);
+      }
       const refreshed = await getAdminUserDetail(selectedDetail.userId);
       setSelectedDetail(refreshed);
       replaceSummary(refreshed);
-      setSuccess(`Import SAGA concluído para ${displayName(refreshed)}.`);
+      if (refreshed.role === "aluno") {
+        const status = await getApprovalStatus(refreshed.userId);
+        if (status !== "approved") {
+          const { error: approveError } = await approveStudentAccess(refreshed.userId);
+          if (approveError) {
+            setError(`Import concluido, mas nao foi possivel liberar o acesso: ${approveError.message}`);
+          } else {
+            setApprovalStatus("approved");
+            setSuccess(`Import SAGA concluido e acesso liberado para ${displayName(refreshed)}.`);
+          }
+        } else {
+          setSuccess(`Import SAGA concluído para ${displayName(refreshed)}.`);
+        }
+      } else {
+        setSuccess(`Import SAGA concluído para ${displayName(refreshed)}.`);
+      }
     } catch (e) {
       const remoteProgress = await fetchSagaImportProgress(importRunId).catch(() => null);
       if (remoteProgress) setSagaUserImportProgress(remoteProgress);
@@ -830,8 +874,10 @@ export function AdminUsersTab() {
         importStartedAt={sagaUserImportStartedAt}
         progressTick={sagaUserImportProgressTick}
         catalogs={sagaImportCatalogs}
+        missionBySaga={sagaImportMapping?.missionBySaga ?? {}}
+        onMissionBySagaChange={handleSagaMissionBySagaChange}
         pendingMission={displayPendingMission}
-        onConfirmMission={confirmMissionMapping}
+        onConfirmMission={handleConfirmSagaMission}
       />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -878,7 +924,7 @@ export function AdminUsersTab() {
               Recarregar
             </button>
           </div>
-          {loadingList ? (
+          {loadingList && users.length === 0 ? (
             <div className="space-y-2">
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="rounded-lg border border-slate-700/60 bg-slate-800/30 px-3 py-2">
@@ -895,7 +941,7 @@ export function AdminUsersTab() {
             </div>
           ) : (
             <>
-              <div className="max-h-[650px] space-y-2 overflow-y-auto pr-1">
+              <div className={`max-h-[650px] space-y-2 overflow-y-auto pr-1 transition-opacity duration-200 ${loadingList ? "pointer-events-none opacity-40" : "opacity-100"}`}>
                 {users.map((user) => {
                   const active = user.userId === selectedSummary?.userId;
                   return (
@@ -941,7 +987,7 @@ export function AdminUsersTab() {
                 <button
                   type="button"
                   onClick={() => void loadPage(Math.max(0, offset - PAGE_SIZE), search)}
-                  disabled={!canGoBack}
+                  disabled={!canGoBack || loadingList}
                   className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                 >
                   Anterior
@@ -950,7 +996,7 @@ export function AdminUsersTab() {
                 <button
                   type="button"
                   onClick={() => void loadPage(offset + PAGE_SIZE, search)}
-                  disabled={!canGoNext}
+                  disabled={!canGoNext || loadingList}
                   className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                 >
                   Proxima

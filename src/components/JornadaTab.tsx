@@ -459,7 +459,10 @@ function FormationJourney({ state }: { state: FormationState }) {
   );
   const approvedMissionIds = state.approvedMissionIds;
   const missionRows = useMemo(() => (track ? flattenTrackMissions(track) : []), [track]);
-  const firstOpenIndex = missionRows.findIndex((row) => !approvedMissionIds.has(row.mission.id));
+  const lastApprovedIndex = missionRows.reduce((lastIdx, row, idx) => (approvedMissionIds.has(row.mission.id) ? idx : lastIdx), -1);
+  const firstOpenIndex = lastApprovedIndex >= 0
+    ? missionRows.findIndex((row, i) => i > lastApprovedIndex && !approvedMissionIds.has(row.mission.id))
+    : missionRows.findIndex((row) => !approvedMissionIds.has(row.mission.id));
   const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
   const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
     ...row,
