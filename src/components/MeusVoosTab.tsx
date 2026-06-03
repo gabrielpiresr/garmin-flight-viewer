@@ -7,6 +7,7 @@ import {
   getDateBase,
   getFlightDateTimeMs,
   isFutureFlight,
+  shortName,
   type FlightDisplayInfo,
 } from "../lib/flightDisplay";
 import {
@@ -876,7 +877,7 @@ export function MeusVoosTab() {
                                 <span className="text-xs text-slate-400">
                                   {info.startTime || "—"}{info.endTime ? ` – ${info.endTime}` : ""}
                                 </span>
-                                <span className="text-xs text-slate-500">· {info.instructorName || "—"}</span>
+                                <span className="text-xs text-slate-500">· {shortName(info.instructorName) || "—"}</span>
                               </div>
                             )}
                             <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
@@ -951,8 +952,8 @@ export function MeusVoosTab() {
                             </div>
                           ) : (
                             <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-slate-500">
-                              <p className="truncate">Aluno: <span className="text-slate-300">{info.studentName ?? "—"}</span></p>
-                              <p className="truncate">Instrutor: <span className="text-slate-300">{info.instructorName ?? "—"}</span></p>
+                              <p className="truncate">Aluno: <span className="text-slate-300">{shortName(info.studentName)}</span></p>
+                              <p className="truncate">Instrutor: <span className="text-slate-300">{shortName(info.instructorName)}</span></p>
                               {info.fromTo ? <p className="col-span-2 truncate">Rota: <span className="text-slate-300">{info.fromTo}</span></p> : null}
                               {info.landings != null ? <p>Pousos: <span className="text-slate-300">{info.landings}</span></p> : null}
                               {info.totalFlight ? <p>Duração: <span className="text-slate-300">{info.totalFlight}</span></p> : null}
@@ -1094,7 +1095,7 @@ export function MeusVoosTab() {
                                   {info?.landings != null ? <p>Pousos: <span className="text-slate-300">{info.landings}</span></p> : null}
                                   {pastTotal ? <p>Duração: <span className="text-slate-300">{pastTotal}</span></p> : null}
                                   {info?.totalMiles ? <p>Milhas: <span className="text-slate-300">{info.totalMiles}</span></p> : null}
-                                  {info?.instructorName ? <p className="col-span-2 truncate">Instrutor: <span className="text-slate-300">{info.instructorName}</span></p> : null}
+                                  {info?.instructorName ? <p className="col-span-2 truncate">Instrutor: <span className="text-slate-300">{shortName(info.instructorName, info.instructorName)}</span></p> : null}
                                   {info?.instructorAnac ? <p className="col-span-2 truncate">ANAC instrutor: <span className="text-slate-300">{info.instructorAnac}</span></p> : null}
                                 </div>
                               </div>
@@ -1247,7 +1248,7 @@ export function MeusVoosTab() {
               <p>Matrícula: <span className="text-slate-300">{studentSuggestionInfo?.aircraft ?? studentSuggestionFlight.aircraft_ident ?? "—"}</span></p>
               <p>Início: <span className="text-slate-300">{studentSuggestionInfo?.startTime || "—"}</span></p>
               <p>Fim: <span className="text-slate-300">{studentSuggestionInfo?.endTime || "—"}</span></p>
-              <p className="sm:col-span-2">Instrutor: <span className="text-slate-300">{studentSuggestionInfo?.instructorName || "—"}</span></p>
+              <p className="sm:col-span-2">Instrutor: <span className="text-slate-300">{shortName(studentSuggestionInfo?.instructorName) || "—"}</span></p>
             </div>
 
             <div className="mb-4 rounded-xl border border-slate-700/60 bg-slate-950/25 p-3">
@@ -1490,8 +1491,8 @@ function FlightTableSection({
                       >
                         <td className="px-3 py-2 text-slate-200">{dateLabel}</td>
                         <td className="px-3 py-2">{info?.startTime || "—"}</td>
-                        <td className="px-3 py-2">{info?.studentName ?? "—"}</td>
-                        <td className="px-3 py-2">{info?.instructorName || "—"}</td>
+                        <td className="px-3 py-2">{shortName(info?.studentName)}</td>
+                        <td className="px-3 py-2">{shortName(info?.instructorName) || "—"}</td>
                         <td className="px-3 py-2">
                           <span className={`rounded border px-1.5 py-0.5 ${aircraftColor(info?.aircraft ?? item.aircraft_ident ?? "")}`}>
                             {info?.aircraft ?? item.aircraft_ident ?? "—"}

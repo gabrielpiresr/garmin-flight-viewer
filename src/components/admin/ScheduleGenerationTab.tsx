@@ -8,6 +8,7 @@ import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSync
 import { getScheduleWeekData, getScheduleWeekOptions, AUTO_SOURCE_PREFIX } from "../../lib/scheduleGenerationDb";
 import { assignInstructorsToSuggestions, generateSchedulePreview } from "../../lib/scheduleGenerator";
 import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
+import { shortName } from "../../lib/flightDisplay";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
 import {
   buildScheduleHourOptions,
@@ -800,7 +801,8 @@ function eventStyleClasses(color: string, instructorBorder: string | null, unass
 /** Título no calendário: *Aluno 01 para voos fora do gerador / overlay. */
 function calendarStudentTitle(item: ScheduledFlightSuggestion, isOverlay: boolean): string {
   const markOutside = isOverlay || item.isOutsideGenerator === true || item.source === "external";
-  return markOutside ? `*${item.studentLabel}` : item.studentLabel;
+  const short = item.studentLabel.trim().split(/\s+/).slice(0, 2).join(" ");
+  return markOutside ? `*${short}` : short;
 }
 
 type CalendarProps = {
@@ -1115,7 +1117,7 @@ function CalendarGrid({
                               {calendarStudentTitle(item, overlay)}
                             </p>
                             <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
-                            <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                            <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
                             <p className="truncate opacity-80">Peso: {totalWeightByDemand.get(item.demandId) ?? "—"}</p>
                           </div>
                         );
@@ -1144,7 +1146,7 @@ function CalendarGrid({
                               width: `calc(${widthPercent}% - 8px)`,
                             }}
                           >
-                            <p className="truncate font-semibold">{item.studentLabel}</p>
+                            <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
                             <p className="truncate opacity-80">Solte para confirmar</p>
                           </div>
                         );
@@ -1211,13 +1213,13 @@ function CalendarGrid({
                                 <p className="truncate font-semibold text-white" title={overlay ? "Voo agendado fora do gerador" : undefined}>
                                   {calendarStudentTitle(item, overlay)}
                                 </p>
-                                <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                                <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
                               </div>
                             );
                           })}
                           {dragState && dragState.preview.dayOfWeek === day && dragState.preview.isNight ? (
                             <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
-                              <p className="truncate font-semibold">{dragState.item.studentLabel}</p>
+                              <p className="truncate font-semibold">{shortName(dragState.item.studentLabel, dragState.item.studentLabel)}</p>
                               <p className="truncate opacity-80">Solte para confirmar</p>
                             </div>
                           ) : null}
@@ -2508,7 +2510,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               {instructorSummary.map((row) => (
                 <article key={row.instructor.userId} className={`rounded-xl border bg-slate-800/30 p-3 ${borderByInstructor.get(row.instructor.userId) ?? "border-slate-700"}`}>
-                  <p className="truncate text-sm font-semibold text-slate-100">{row.instructor.label}</p>
+                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(row.instructor.label, row.instructor.label)}</p>
                   <p className="mt-1 text-xs text-slate-400">{row.hours.toFixed(1)}h previstas</p>
                   <p className="text-xs text-slate-500">{row.flights} voos</p>
                 </article>
@@ -2526,7 +2528,13 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Filtros</p>
             <div className="space-y-4">
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Aeronaves</p>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Aeronaves</p>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => setVisibleAircraft([...new Set((weekData?.supplies ?? []).map((s) => s.aircraftRegistration))])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
+                    <button type="button" onClick={() => setVisibleAircraft([])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Nenhum</button>
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {weekData?.supplies.map((supply) => {
                     const checked = visibleAircraft.includes(supply.aircraftRegistration);
@@ -2555,7 +2563,13 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                 </div>
               </div>
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Instrutores</p>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Instrutores</p>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => setVisibleInstructors(["__none__", ...(weekData?.instructors ?? []).map((i) => i.userId)])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
+                    <button type="button" onClick={() => setVisibleInstructors([])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Nenhum</button>
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200">
                     <input
@@ -2590,7 +2604,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                           }}
                         />
                         <span className={`h-3 w-3 rounded border-2 ${border} bg-slate-800`} />
-                        {instructor.label}
+                        {shortName(instructor.label, instructor.label)}
                       </label>
                     );
                   })}
@@ -2638,7 +2652,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                       onClick={() => setSelectedStudentId(row.studentId)}
                       className="w-full rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-left text-sm hover:bg-slate-800/60"
                     >
-                      <p className="font-medium text-slate-200">{row.studentLabel}</p>
+                      <p className="font-medium text-slate-200">{shortName(row.studentLabel, row.studentLabel)}</p>
                       <p className="text-xs text-slate-500">
                         {row.allocatedFlights}/{row.requestedFlights} voos · {row.allocatedHours.toFixed(1)}/{row.requestedHours.toFixed(1)}h
                       </p>
@@ -2662,7 +2676,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                       onClick={() => setSelectedStudentId(row.studentId)}
                       className="w-full rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-left text-sm hover:bg-red-500/10"
                     >
-                      <p className="font-medium text-slate-200">{row.studentLabel}</p>
+                      <p className="font-medium text-slate-200">{shortName(row.studentLabel, row.studentLabel)}</p>
                       <p className="text-xs text-red-300">
                         {row.allocatedFlights}/{row.requestedFlights} voos · {row.allocatedHours.toFixed(1)}/{row.requestedHours.toFixed(1)}h
                       </p>
@@ -2725,7 +2739,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
               {requestsByStudent.map(({ student, demands }) => (
                 <section key={student.userId} className="rounded-lg border border-slate-700/60 bg-slate-800/30 p-3">
                   <p className="text-sm font-semibold text-slate-100">
-                    {student.label} / {student.anacCode || "—"} / {student.weightKg ?? "—"}kg / {student.heightCm ?? "—"}cm
+                    {shortName(student.label, student.label)} / {student.anacCode || "—"} / {student.weightKg ?? "—"}kg / {student.heightCm ?? "—"}cm
                   </p>
                   <div className="mt-2 overflow-x-auto">
                     <table className="w-full min-w-[680px] border-collapse text-xs">
@@ -2767,7 +2781,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
           <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <div>
-                <p className="text-sm font-semibold text-slate-100">{selectedStudentRequests.student.label}</p>
+                <p className="text-sm font-semibold text-slate-100">{shortName(selectedStudentRequests.student.label, selectedStudentRequests.student.label)}</p>
                 <p className="text-xs text-slate-500">
                   {selectedStudentRequests.student.email || "Sem email"} · ANAC {selectedStudentRequests.student.anacCode || "—"}
                 </p>
@@ -2869,7 +2883,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                             <td className="px-2 py-1.5 text-slate-300">{suggestion.startTime}</td>
                             <td className="px-2 py-1.5 text-slate-300">{suggestion.durationHours.toFixed(1)}h</td>
                             <td className="px-2 py-1.5 text-slate-300">{suggestion.aircraftRegistration}</td>
-                            <td className="px-2 py-1.5 text-slate-300">{suggestion.instructorLabel ?? "Sem instrutor"}</td>
+                            <td className="px-2 py-1.5 text-slate-300">{shortName(suggestion.instructorLabel) || "Sem instrutor"}</td>
                             <td className="px-2 py-1.5 text-slate-300">{totalWeightByDemand.get(suggestion.demandId) ?? "—"}</td>
                           </tr>
                         ))}
@@ -2957,7 +2971,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                   <option value="">Sem instrutor</option>
                   {weekData.instructors.map((instructor) => (
                     <option key={instructor.userId} value={instructor.userId}>
-                      {instructor.label}
+                      {shortName(instructor.label, instructor.label)}
                     </option>
                   ))}
                 </select>

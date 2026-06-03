@@ -5,7 +5,7 @@ import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb
 import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
 import { flightAircraftHours } from "../../lib/flightHours";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
-import type { Aircraft, AircraftModel, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
+import type { Aircraft, AircraftModel, AircraftType, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -13,6 +13,7 @@ import { useToast } from "../ui/ToastProvider";
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
 const emptyForm = {
+  type: "aviao" as AircraftType,
   model_id: "",
   registration: "",
   nickname: "",
@@ -50,6 +51,18 @@ const emptyForm = {
 };
 
 type FilterState = "all" | "active" | "inactive";
+
+const TYPE_LABELS: Record<AircraftType, string> = {
+  aviao: "Aviões",
+  simulador: "Simuladores",
+  ground: "Ground",
+};
+
+const TYPE_BADGE: Record<AircraftType, string> = {
+  aviao: "border-sky-700/60 bg-sky-500/10 text-sky-300",
+  simulador: "border-violet-700/60 bg-violet-500/10 text-violet-300",
+  ground: "border-amber-700/60 bg-amber-500/10 text-amber-300",
+};
 type AircraftForm = typeof emptyForm;
 type RecurrenceRules = { hours: number | null; days: number | null };
 type UpcomingMaintenance = {
@@ -332,6 +345,7 @@ export function FleetTab() {
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [typeTab, setTypeTab] = useState<AircraftType>("aviao");
   const [filter, setFilter] = useState<FilterState>("all");
 
   useEffect(() => {
@@ -377,7 +391,7 @@ export function FleetTab() {
   useEffect(() => { void load(); }, [load]);
 
   function openCreate() {
-    setForm({ ...emptyForm, model_id: models[0]?.id ?? "" });
+    setForm({ ...emptyForm, type: typeTab, model_id: models[0]?.id ?? "" });
     setPhotoFile(null);
     setEditingId(null);
     setShowForm(true);
@@ -385,6 +399,7 @@ export function FleetTab() {
 
   function openEdit(ac: Aircraft) {
     setForm({
+      type: ac.type,
       model_id: ac.model_id,
       registration: ac.registration,
       nickname: ac.nickname ?? "",
@@ -426,12 +441,14 @@ export function FleetTab() {
   }
 
   async function handleSave() {
-    if (!form.registration.trim() || !form.model_id) return;
+    const modelRequired = form.type === "aviao";
+    if (!form.registration.trim() || (modelRequired && !form.model_id)) return;
     setSaving(true);
     try {
       const imageUrl = photoFile ? await uploadAircraftPhoto(photoFile) : form.image_url.trim() || null;
       if (editingId) {
         const updated = await updateAircraft(editingId, {
+          type: form.type,
           model_id: form.model_id,
           registration: form.registration.trim(),
           nickname: form.nickname.trim() || null,
@@ -447,6 +464,7 @@ export function FleetTab() {
       } else {
         const created = await createAircraft({
           school_id: schoolId,
+          type: form.type,
           model_id: form.model_id,
           registration: form.registration.trim(),
           nickname: form.nickname.trim() || undefined,
@@ -498,27 +516,60 @@ export function FleetTab() {
   }, [flights]);
   const emptyMetaByFlightId = useMemo(() => new Map<string, FlightRecordMeta | null>(), []);
 
-  const visible = aircrafts.filter((a) => {
+  const byType = aircrafts.filter((a) => a.type === typeTab);
+  const visible = byType.filter((a) => {
     if (filter === "active") return a.active;
     if (filter === "inactive") return !a.active;
     return true;
   });
 
-  const activeCount = aircrafts.filter((a) => a.active).length;
-  const inactiveCount = aircrafts.filter((a) => !a.active).length;
+  const activeCount = byType.filter((a) => a.active).length;
+  const inactiveCount = byType.filter((a) => !a.active).length;
 
   return (
     <div className="w-full space-y-4">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Frota Operacional</h2>
-          <p className="text-xs text-slate-500">
-            {activeCount} ativa{activeCount !== 1 ? "s" : ""} · {inactiveCount} inativa{inactiveCount !== 1 ? "s" : ""}
-          </p>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Frota Operacional</h2>
+            <p className="text-xs text-slate-500">
+              {activeCount} ativo{activeCount !== 1 ? "s" : ""} · {inactiveCount} inativo{inactiveCount !== 1 ? "s" : ""}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-500 active:scale-95"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+            </svg>
+            {typeTab === "aviao" ? "Nova aeronave" : typeTab === "simulador" ? "Novo simulador" : "Novo equipamento"}
+          </button>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          {/* Filter pills */}
+        {/* Type tabs */}
+        <div className="flex gap-1 border-b border-slate-800">
+          {(["aviao", "simulador", "ground"] as AircraftType[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => { setTypeTab(t); setFilter("all"); setShowForm(false); }}
+              className={`px-4 py-2 text-sm font-medium transition border-b-2 -mb-px ${
+                typeTab === t
+                  ? "border-sky-500 text-sky-300"
+                  : "border-transparent text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {TYPE_LABELS[t]}
+              <span className="ml-2 rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                {aircrafts.filter((a) => a.type === t).length}
+              </span>
+            </button>
+          ))}
+        </div>
+        {/* Active/inactive filter */}
+        <div className="flex flex-wrap gap-2">
           {(["all", "active", "inactive"] as FilterState[]).map((f) => (
             <button
               key={f}
@@ -530,37 +581,36 @@ export function FleetTab() {
                   : "border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-300"
               }`}
             >
-              {f === "all" ? "Todas" : f === "active" ? "Ativas" : "Inativas"}
+              {f === "all" ? "Todos" : f === "active" ? "Ativos" : "Inativos"}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={openCreate}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-500 active:scale-95 sm:w-auto"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-            </svg>
-            Nova aeronave
-          </button>
         </div>
       </div>
 
       {/* Form */}
       {showForm && (
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-200">
-            {editingId ? "Editar aeronave" : "Nova aeronave"}
-          </h3>
+          <div className="mb-4 flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-slate-200">
+              {editingId
+                ? form.type === "simulador" ? "Editar simulador" : form.type === "ground" ? "Editar equipamento ground" : "Editar aeronave"
+                : form.type === "simulador" ? "Novo simulador" : form.type === "ground" ? "Novo equipamento ground" : "Nova aeronave"}
+            </h3>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${TYPE_BADGE[form.type]}`}>
+              {TYPE_LABELS[form.type]}
+            </span>
+          </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Matrícula *</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">
+                {form.type === "aviao" ? "Matrícula *" : "Identificador *"}
+              </label>
               <input
                 type="text"
                 value={form.registration}
                 onChange={(e) => setForm((f) => ({ ...f, registration: e.target.value.toUpperCase() }))}
-                placeholder="ex: PT-XYZ"
-                maxLength={8}
+                placeholder={form.type === "aviao" ? "ex: PT-XYZ" : form.type === "simulador" ? "ex: SIM-01" : "ex: GND-01"}
+                maxLength={12}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
               />
             </div>
@@ -570,21 +620,23 @@ export function FleetTab() {
                 type="text"
                 value={form.nickname}
                 onChange={(e) => setForm((f) => ({ ...f, nickname: e.target.value }))}
-                placeholder="ex: Cessna Branco"
+                placeholder={form.type === "aviao" ? "ex: Cessna Branco" : form.type === "simulador" ? "ex: FNPT II Garmin" : "ex: Estação Briefing"}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
               />
             </div>
+            {form.type === "aviao" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-400">Número de série</label>
+                <input
+                  type="text"
+                  value={form.serial_number}
+                  onChange={(e) => setForm((f) => ({ ...f, serial_number: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+                />
+              </div>
+            )}
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Número de série</label>
-              <input
-                type="text"
-                value={form.serial_number}
-                onChange={(e) => setForm((f) => ({ ...f, serial_number: e.target.value }))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Modelo *</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">{form.type === "aviao" ? "Modelo *" : "Modelo"}</label>
               <select
                 value={form.model_id}
                 onChange={(e) => setForm((f) => ({ ...f, model_id: e.target.value }))}
@@ -596,35 +648,39 @@ export function FleetTab() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Proprietário</label>
-              <input
-                type="text"
-                value={form.owner_name}
-                onChange={(e) => setForm((f) => ({ ...f, owner_name: e.target.value }))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Operador</label>
-              <input
-                type="text"
-                value={form.operator_name}
-                onChange={(e) => setForm((f) => ({ ...f, operator_name: e.target.value }))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Nº diário de bordo</label>
-              <input
-                type="text"
-                value={form.logbook_sequence_number}
-                onChange={(e) => setForm((f) => ({ ...f, logbook_sequence_number: e.target.value }))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
-              />
-            </div>
+            {form.type === "aviao" && (
+              <>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">Proprietário</label>
+                  <input
+                    type="text"
+                    value={form.owner_name}
+                    onChange={(e) => setForm((f) => ({ ...f, owner_name: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">Operador</label>
+                  <input
+                    type="text"
+                    value={form.operator_name}
+                    onChange={(e) => setForm((f) => ({ ...f, operator_name: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">Nº diário de bordo</label>
+                  <input
+                    type="text"
+                    value={form.logbook_sequence_number}
+                    onChange={(e) => setForm((f) => ({ ...f, logbook_sequence_number: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </>
+            )}
             <div className="sm:col-span-2">
-              <label className="mb-1.5 block text-xs font-medium text-slate-400">Foto do avião</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Foto</label>
               <input
                 type="file"
                 accept="image/*"
@@ -642,7 +698,7 @@ export function FleetTab() {
             </div>
             <div className="flex items-end">
               <div className="flex items-center gap-3">
-                <span className="text-xs font-medium text-slate-400">Ativa</span>
+                <span className="text-xs font-medium text-slate-400">Ativo</span>
                 <button
                   type="button"
                   role="switch"
@@ -656,127 +712,52 @@ export function FleetTab() {
                 </button>
               </div>
             </div>
-            <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
-              <div>
-                <h4 className="text-sm font-semibold text-slate-200">Peso e balanceamento</h4>
-                <p className="mt-1 text-xs text-slate-500">
-                  Informe pesos em kg e braços em mm. O fator de combustível converte litros para kg.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <WbNumberField
-                  label="Peso vazio (kg)"
-                  value={form.wb_empty_weight_kg}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_empty_weight_kg: value }))}
-                />
-                <WbNumberField
-                  label="Braço vazio (mm)"
-                  value={form.wb_empty_arm_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_empty_arm_mm: value }))}
-                />
-                <WbNumberField
-                  label="Braço ocupantes (mm)"
-                  value={form.wb_occupants_arm_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_occupants_arm_mm: value }))}
-                />
-                <WbNumberField
-                  label="Peso máx. ocupantes (kg)"
-                  value={form.wb_occupants_max_kg}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_occupants_max_kg: value }))}
-                />
-                <WbNumberField
-                  label="Braço bagagem (mm)"
-                  value={form.wb_baggage_arm_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_baggage_arm_mm: value }))}
-                />
-                <WbNumberField
-                  label="Peso máx. bagagem (kg)"
-                  value={form.wb_baggage_max_kg}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_baggage_max_kg: value }))}
-                />
-                <WbNumberField
-                  label="Braço combustível (mm)"
-                  value={form.wb_fuel_arm_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_arm_mm: value }))}
-                />
-                <WbNumberField
-                  label="Peso máx. combustível (kg)"
-                  value={form.wb_fuel_max_kg}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_max_kg: value }))}
-                />
-                <WbNumberField
-                  label="Combustível (kg/L)"
-                  value={form.wb_fuel_density_kg_l}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_fuel_density_kg_l: value }))}
-                  placeholder="0.72"
-                />
-                <WbNumberField
-                  label="Peso máximo avião (kg)"
-                  value={form.wb_max_weight_kg}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_max_weight_kg: value }))}
-                />
-                <WbNumberField
-                  label="Braço mínimo (mm)"
-                  value={form.wb_arm_min_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_arm_min_mm: value }))}
-                />
-                <WbNumberField
-                  label="Braço máximo (mm)"
-                  value={form.wb_arm_max_mm}
-                  onChange={(value) => setForm((f) => ({ ...f, wb_arm_max_mm: value }))}
-                />
-              </div>
-            </div>
-            <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
-              <div>
-                <h4 className="text-sm font-semibold text-slate-200">Abertura do diário de bordo</h4>
-                <p className="mt-1 text-xs text-slate-500">
-                  Horas e contadores no momento da abertura do diário. Servem de base para cálculo de horas totais.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {form.type === "aviao" && (
+              <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-slate-400">Data de abertura</label>
-                  <input
-                    type="date"
-                    value={form.logbook_opening_date}
-                    onChange={(e) => setForm((f) => ({ ...f, logbook_opening_date: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
-                  />
+                  <h4 className="text-sm font-semibold text-slate-200">Peso e balanceamento</h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Informe pesos em kg e braços em mm. O fator de combustível converte litros para kg.
+                  </p>
                 </div>
-                <WbNumberField
-                  label="TTAF (h)"
-                  value={form.logbook_ttaf}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_ttaf: value }))}
-                  placeholder="ex: 1250.5"
-                />
-                <WbNumberField
-                  label="Pousos totais"
-                  value={form.logbook_landings}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_landings: value }))}
-                />
-                <WbNumberField
-                  label="Horas motor (h)"
-                  value={form.logbook_engine_hours}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_engine_hours: value }))}
-                />
-                <WbNumberField
-                  label="Horas hélice (h)"
-                  value={form.logbook_propeller_hours}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_propeller_hours: value }))}
-                />
-                <WbNumberField
-                  label="Horas tacômetro (h)"
-                  value={form.logbook_tach_hours}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_tach_hours: value }))}
-                />
-                <WbNumberField
-                  label="Ciclos"
-                  value={form.logbook_cycles}
-                  onChange={(value) => setForm((f) => ({ ...f, logbook_cycles: value }))}
-                />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <WbNumberField label="Peso vazio (kg)" value={form.wb_empty_weight_kg} onChange={(value) => setForm((f) => ({ ...f, wb_empty_weight_kg: value }))} />
+                  <WbNumberField label="Braço vazio (mm)" value={form.wb_empty_arm_mm} onChange={(value) => setForm((f) => ({ ...f, wb_empty_arm_mm: value }))} />
+                  <WbNumberField label="Braço ocupantes (mm)" value={form.wb_occupants_arm_mm} onChange={(value) => setForm((f) => ({ ...f, wb_occupants_arm_mm: value }))} />
+                  <WbNumberField label="Peso máx. ocupantes (kg)" value={form.wb_occupants_max_kg} onChange={(value) => setForm((f) => ({ ...f, wb_occupants_max_kg: value }))} />
+                  <WbNumberField label="Braço bagagem (mm)" value={form.wb_baggage_arm_mm} onChange={(value) => setForm((f) => ({ ...f, wb_baggage_arm_mm: value }))} />
+                  <WbNumberField label="Peso máx. bagagem (kg)" value={form.wb_baggage_max_kg} onChange={(value) => setForm((f) => ({ ...f, wb_baggage_max_kg: value }))} />
+                  <WbNumberField label="Braço combustível (mm)" value={form.wb_fuel_arm_mm} onChange={(value) => setForm((f) => ({ ...f, wb_fuel_arm_mm: value }))} />
+                  <WbNumberField label="Peso máx. combustível (kg)" value={form.wb_fuel_max_kg} onChange={(value) => setForm((f) => ({ ...f, wb_fuel_max_kg: value }))} />
+                  <WbNumberField label="Combustível (kg/L)" value={form.wb_fuel_density_kg_l} onChange={(value) => setForm((f) => ({ ...f, wb_fuel_density_kg_l: value }))} placeholder="0.72" />
+                  <WbNumberField label="Peso máximo avião (kg)" value={form.wb_max_weight_kg} onChange={(value) => setForm((f) => ({ ...f, wb_max_weight_kg: value }))} />
+                  <WbNumberField label="Braço mínimo (mm)" value={form.wb_arm_min_mm} onChange={(value) => setForm((f) => ({ ...f, wb_arm_min_mm: value }))} />
+                  <WbNumberField label="Braço máximo (mm)" value={form.wb_arm_max_mm} onChange={(value) => setForm((f) => ({ ...f, wb_arm_max_mm: value }))} />
+                </div>
               </div>
-            </div>
+            )}
+            {form.type === "aviao" && (
+              <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-200">Abertura do diário de bordo</h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Horas e contadores no momento da abertura do diário. Servem de base para cálculo de horas totais.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-400">Data de abertura</label>
+                    <input type="date" value={form.logbook_opening_date} onChange={(e) => setForm((f) => ({ ...f, logbook_opening_date: e.target.value }))} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
+                  </div>
+                  <WbNumberField label="TTAF (h)" value={form.logbook_ttaf} onChange={(value) => setForm((f) => ({ ...f, logbook_ttaf: value }))} placeholder="ex: 1250.5" />
+                  <WbNumberField label="Pousos totais" value={form.logbook_landings} onChange={(value) => setForm((f) => ({ ...f, logbook_landings: value }))} />
+                  <WbNumberField label="Horas motor (h)" value={form.logbook_engine_hours} onChange={(value) => setForm((f) => ({ ...f, logbook_engine_hours: value }))} />
+                  <WbNumberField label="Horas hélice (h)" value={form.logbook_propeller_hours} onChange={(value) => setForm((f) => ({ ...f, logbook_propeller_hours: value }))} />
+                  <WbNumberField label="Horas tacômetro (h)" value={form.logbook_tach_hours} onChange={(value) => setForm((f) => ({ ...f, logbook_tach_hours: value }))} />
+                  <WbNumberField label="Ciclos" value={form.logbook_cycles} onChange={(value) => setForm((f) => ({ ...f, logbook_cycles: value }))} />
+                </div>
+              </div>
+            )}
           </div>
           <div className="space-y-4 rounded-xl border border-slate-700/70 bg-slate-950/30 p-4 sm:col-span-2 lg:col-span-3">
             <div>
@@ -817,10 +798,10 @@ export function FleetTab() {
             <button
               type="button"
               onClick={() => void handleSave()}
-              disabled={saving || !form.registration.trim() || !form.model_id}
+              disabled={saving || !form.registration.trim() || (form.type === "aviao" && !form.model_id)}
               className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50 sm:w-auto"
             >
-              {saving ? "Salvando…" : editingId ? "Salvar alterações" : "Cadastrar aeronave"}
+              {saving ? "Salvando…" : editingId ? "Salvar alterações" : form.type === "simulador" ? "Cadastrar simulador" : form.type === "ground" ? "Cadastrar equipamento" : "Cadastrar aeronave"}
             </button>
             <button
               type="button"
@@ -862,11 +843,13 @@ export function FleetTab() {
       ) : visible.length === 0 ? (
         <div className="rounded-xl border border-slate-700/40 bg-slate-900/30 py-16 text-center">
           <p className="text-sm text-slate-500">
-            {aircrafts.length === 0 ? "Nenhuma aeronave cadastrada." : "Nenhuma aeronave com esse filtro."}
+            {byType.length === 0
+              ? typeTab === "simulador" ? "Nenhum simulador cadastrado." : typeTab === "ground" ? "Nenhum equipamento ground cadastrado." : "Nenhuma aeronave cadastrada."
+              : "Nenhum item com esse filtro."}
           </p>
-          {aircrafts.length === 0 && (
+          {byType.length === 0 && (
             <button type="button" onClick={openCreate} className="mt-3 text-sm text-emerald-400 hover:underline">
-              Cadastrar primeira aeronave →
+              {typeTab === "simulador" ? "Cadastrar primeiro simulador →" : typeTab === "ground" ? "Cadastrar primeiro equipamento →" : "Cadastrar primeira aeronave →"}
             </button>
           )}
         </div>
@@ -917,8 +900,13 @@ export function FleetTab() {
                   <div className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
                     ac.active ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-700/80 text-slate-400"
                   }`}>
-                    {ac.active ? "Ativa" : "Inativa"}
+                    {ac.active ? "Ativo" : "Inativo"}
                   </div>
+                  {ac.type !== "aviao" && (
+                    <div className={`absolute left-2 top-2 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${TYPE_BADGE[ac.type]}`}>
+                      {ac.type === "simulador" ? "Simulador" : "Ground"}
+                    </div>
+                  )}
                 </div>
 
                 {/* Info */}
@@ -936,48 +924,54 @@ export function FleetTab() {
                       </span>
                     ) : null}
                   </div>
-                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Horas da aeronave</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-200">
-                      {currentHours == null ? "Sem abertura" : `${formatHours(currentHours)} totais`}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Ciclos {totals.cycles ?? "-"} · Pousos {totals.landings ?? "-"}
-                    </p>
-                  </div>
-                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Próximas manutenções</p>
-                      <span className="text-[11px] text-slate-500">{upcoming.length} item{upcoming.length === 1 ? "" : "s"}</span>
+                  {ac.type === "aviao" && (
+                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Horas da aeronave</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-200">
+                        {currentHours == null ? "Sem abertura" : `${formatHours(currentHours)} totais`}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Ciclos {totals.cycles ?? "-"} · Pousos {totals.landings ?? "-"}
+                      </p>
                     </div>
-                    {upcoming.length === 0 ? (
-                      <p className="mt-2 text-xs text-slate-500">Nenhum programa cadastrado para este modelo.</p>
-                    ) : (
-                      <div className="mt-2 space-y-2">
-                        {upcoming.map((item) => (
-                          <div key={item.id} className={`rounded-md border px-2.5 py-2 ${maintenanceTone(item)}`}>
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="min-w-0 text-xs font-medium">
-                                <span className="font-mono">{item.code}</span> · {item.title}
-                              </p>
-                              <p className="text-xs font-semibold">
-                                {formatHours(item.remainingHours)} / {formatDays(item.remainingDays)}
-                              </p>
-                            </div>
-                            <p className="mt-1 text-[11px] opacity-80">{item.forecast}</p>
-                          </div>
-                        ))}
+                  )}
+                  {ac.type === "aviao" && (
+                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Próximas manutenções</p>
+                        <span className="text-[11px] text-slate-500">{upcoming.length} item{upcoming.length === 1 ? "" : "s"}</span>
                       </div>
-                    )}
-                  </div>
-                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Peso e balanceamento</p>
-                    <p className="mt-1 text-xs text-slate-300">
-                      {ac.wb_empty_weight_kg && ac.wb_max_weight_kg && ac.wb_arm_min_mm && ac.wb_arm_max_mm
-                        ? `${ac.wb_empty_weight_kg} kg vazio · MTOW ${ac.wb_max_weight_kg} kg`
-                        : "Configuração pendente"}
-                    </p>
-                  </div>
+                      {upcoming.length === 0 ? (
+                        <p className="mt-2 text-xs text-slate-500">Nenhum programa cadastrado para este modelo.</p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {upcoming.map((item) => (
+                            <div key={item.id} className={`rounded-md border px-2.5 py-2 ${maintenanceTone(item)}`}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="min-w-0 text-xs font-medium">
+                                  <span className="font-mono">{item.code}</span> · {item.title}
+                                </p>
+                                <p className="text-xs font-semibold">
+                                  {formatHours(item.remainingHours)} / {formatDays(item.remainingDays)}
+                                </p>
+                              </div>
+                              <p className="mt-1 text-[11px] opacity-80">{item.forecast}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {ac.type === "aviao" && (
+                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Peso e balanceamento</p>
+                      <p className="mt-1 text-xs text-slate-300">
+                        {ac.wb_empty_weight_kg && ac.wb_max_weight_kg && ac.wb_arm_min_mm && ac.wb_arm_max_mm
+                          ? `${ac.wb_empty_weight_kg} kg vazio · MTOW ${ac.wb_max_weight_kg} kg`
+                          : "Configuração pendente"}
+                      </p>
+                    </div>
+                  )}
                   <div className="mt-3 flex items-center gap-2">
                     <button
                       type="button"

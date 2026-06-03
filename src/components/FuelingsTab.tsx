@@ -197,7 +197,7 @@ export function FuelingsTab() {
         listFuelingStudents(user.id, user.role),
       ]);
       setFuelings(fuelingRows);
-      setAircraft(aircraftRows);
+      setAircraft(aircraftRows.filter((a) => a.type === "aviao"));
       setResponsibles(responsibleRows);
       setStudents(studentRows);
       setForm((current) => {

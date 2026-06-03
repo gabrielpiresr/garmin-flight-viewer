@@ -191,3 +191,8 @@ export function buildFlightDisplayInfo(
     ),
   };
 }
+
+export function shortName(name: string | null | undefined, fallback = "—"): string {
+  if (!name) return fallback;
+  return name.trim().split(/\s+/).slice(0, 2).join(" ");
+}

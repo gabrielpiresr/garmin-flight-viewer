@@ -32,6 +32,23 @@ import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
+import {
+  fetchSagaImportProgress,
+  fetchSagaUsers,
+  getSagaImportSettings,
+  importSagaData,
+  type SagaImportCatalogs,
+  type SagaImportProgress,
+} from "../../lib/sagaImportDb";
+import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
+import { useSagaImportMissionPrompt } from "../../hooks/useSagaImportMissionPrompt";
+
+function newSagaUserImportRunId(userId: string) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `admin-user-${userId}-${crypto.randomUUID()}`;
+  }
+  return `admin-user-${userId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 const PAGE_SIZE = 25;
 
@@ -42,12 +59,13 @@ const ROLE_LABEL: Record<UserRole, string> = {
 };
 
 const ROLE_OPTIONS: UserRole[] = ["aluno", "instrutor", "admin"];
-type UserSubTab = "profile" | "flights" | "finance" | "observations";
+type UserSubTab = "profile" | "flights" | "finance" | "observations" | "import";
 const USER_SUB_TABS: Array<{ id: UserSubTab; label: string }> = [
   { id: "profile", label: "Perfil" },
   { id: "flights", label: "Voos" },
   { id: "finance", label: "Financeiro" },
   { id: "observations", label: "Observacoes" },
+  { id: "import", label: "Import" },
 ];
 const INSTRUCTOR_DAYS = [1, 2, 3, 4, 5, 6] as const;
 const DAY_LABEL: Record<number, string> = { 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sab" };
@@ -135,6 +153,7 @@ function detailToSummary(detail: AdminUserDetail): AdminUserSummary {
       docId: detail.profile.docId,
       isActive: detail.profile.isActive,
       fullName: detail.profile.fullName,
+      nickname: detail.profile.nickname,
       cpf: detail.profile.cpf,
       phone: detail.profile.phone,
       anacCode: detail.profile.anacCode,
@@ -351,6 +370,29 @@ export function AdminUsersTab() {
   const [instructorAvailabilityDraft, setInstructorAvailabilityDraft] = useState<Record<string, AvailabilityType>>({});
   const [activeFlightId, setActiveFlightId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sagaUserImporting, setSagaUserImporting] = useState(false);
+  const [sagaUserImportProgress, setSagaUserImportProgress] = useState<SagaImportProgress | null>(null);
+  const [sagaUserImportStartedAt, setSagaUserImportStartedAt] = useState<number | null>(null);
+  const [sagaUserImportProgressTick, setSagaUserImportProgressTick] = useState(0);
+  const [sagaUserImportScope, setSagaUserImportScope] = useState({
+    pastFlights: true,
+    schedule: true,
+    credits: true,
+  });
+  const [sagaUserImportSummary, setSagaUserImportSummary] = useState<string | null>(null);
+  const [sagaImportCatalogs, setSagaImportCatalogs] = useState<SagaImportCatalogs>({
+    aircrafts: [],
+    aircraftModels: [],
+    trainingTracks: [],
+  });
+  const {
+    pendingMission,
+    awaitingMission,
+    onAwaitingMissionMapping,
+    confirmMissionMapping,
+    clearMissionPrompt,
+    armMissionPromptFromProgress,
+  } = useSagaImportMissionPrompt();
 
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -361,6 +403,14 @@ export function AdminUsersTab() {
   useEffect(() => {
     if (success) showToast({ variant: "success", message: success });
   }, [showToast, success]);
+
+  useEffect(() => {
+    if (!sagaUserImporting) return;
+    const timer = window.setInterval(() => setSagaUserImportProgressTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [sagaUserImporting]);
+
+  const displayPendingMission = pendingMission ?? sagaUserImportProgress?.pendingMission ?? null;
 
   const selectedSummary = useMemo(
     () => users.find((row) => row.userId === selectedId) ?? users[0] ?? null,
@@ -682,6 +732,89 @@ export function AdminUsersTab() {
     }
   }
 
+  async function handleImportSelectedUserFromSaga() {
+    if (!selectedDetail) return;
+    const sagaUserId = String(selectedDetail.profile.sagaUserId || "").trim();
+    if (!sagaUserId) {
+      setError("Este usuário não possui ID SAGA vinculado no perfil.");
+      return;
+    }
+    if (!sagaUserImportScope.pastFlights && !sagaUserImportScope.schedule && !sagaUserImportScope.credits) {
+      setError("Selecione ao menos um escopo para importar (Voos, Escala ou Créditos).");
+      return;
+    }
+    const importRunId = newSagaUserImportRunId(selectedDetail.userId);
+    setSagaUserImporting(true);
+    setError(null);
+    setSuccess(null);
+    setSagaUserImportSummary(null);
+    setSagaUserImportStartedAt(Date.now());
+    setSagaUserImportProgress({
+      runId: importRunId,
+      status: "running",
+      stage: "Enfileirando import",
+      message: "Criando execucao no Appwrite.",
+      current: 0,
+      total: 1,
+      logs: [],
+    });
+    try {
+      const settings = await getSagaImportSettings();
+      setSagaImportCatalogs(settings.catalogs);
+      const cleanEmail = String(settings.credentials.email || "").trim();
+      const cleanPassword = String(settings.credentials.password || "");
+      if (!cleanEmail || !cleanPassword) {
+        throw new Error("Credenciais do SAGA ausentes em Admin > Import.");
+      }
+      const sagaData = await fetchSagaUsers({
+        email: cleanEmail,
+        password: cleanPassword,
+        sendFlightsToSaga: settings.mapping.sendFlightsToSaga === true,
+      });
+      const summary = await importSagaData({
+        users: sagaData.users,
+        flights: sagaData.flights,
+        financialEntries: sagaData.financialEntries,
+        mapping: settings.mapping,
+        scope: {
+          users: true,
+          pastFlights: sagaUserImportScope.pastFlights,
+          schedule: sagaUserImportScope.schedule,
+          credits: sagaUserImportScope.credits,
+        },
+        testMode: false,
+        email: cleanEmail,
+        password: cleanPassword,
+        selectedSagaUserIds: [sagaUserId],
+        useEmailAlias: false,
+        importRunId,
+        onProgress: setSagaUserImportProgress,
+        onAwaitingMissionMapping,
+      });
+      setSagaUserImportSummary(
+        `${summary.flightsCreated + summary.flightsUpdated} voo(s), ${summary.scheduledFlightsCreated + summary.scheduledFlightsUpdated} agendamento(s) e ${summary.creditsCreated + summary.creditsUpdated + (summary.financialCreditsCreated ?? 0) + (summary.financialCreditsUpdated ?? 0)} crédito(s) processados.`,
+      );
+      const refreshed = await getAdminUserDetail(selectedDetail.userId);
+      setSelectedDetail(refreshed);
+      replaceSummary(refreshed);
+      setSuccess(`Import SAGA concluído para ${displayName(refreshed)}.`);
+    } catch (e) {
+      const remoteProgress = await fetchSagaImportProgress(importRunId).catch(() => null);
+      if (remoteProgress) setSagaUserImportProgress(remoteProgress);
+      const progressPending = remoteProgress?.pendingMission ?? sagaUserImportProgress?.pendingMission;
+      if (armMissionPromptFromProgress(progressPending)) {
+        setError("Selecione a missao local no modal para continuar o import.");
+      } else {
+        const progressMsg = remoteProgress?.status === "failed" ? remoteProgress.message : null;
+        setError(progressMsg || (e as Error).message);
+      }
+    } finally {
+      setSagaUserImporting(false);
+      setSagaUserImportStartedAt(null);
+      clearMissionPrompt();
+    }
+  }
+
   const pageStart = total === 0 ? 0 : offset + 1;
   const pageEnd = Math.min(offset + users.length, total);
   const canGoBack = offset > 0;
@@ -689,6 +822,17 @@ export function AdminUsersTab() {
 
   return (
     <div className="w-full space-y-5">
+      <SagaImportProgressOverlay
+        active={sagaUserImporting || awaitingMission || sagaUserImportProgress?.status === "failed"}
+        awaitingMission={awaitingMission}
+        modeLabel="Usuario"
+        importProgress={sagaUserImportProgress}
+        importStartedAt={sagaUserImportStartedAt}
+        progressTick={sagaUserImportProgressTick}
+        catalogs={sagaImportCatalogs}
+        pendingMission={displayPendingMission}
+        onConfirmMission={confirmMissionMapping}
+      />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Usuários</h2>
@@ -705,7 +849,7 @@ export function AdminUsersTab() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Pesquisar nome, email, CPF ou ANAC"
+            placeholder="Pesquisar nome, nickname, email, CPF ou ANAC"
             className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500 sm:w-80"
           />
           <button
@@ -771,6 +915,9 @@ export function AdminUsersTab() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold text-slate-100">{displayName(user)}</p>
+                          {user.profile.nickname ? (
+                            <p className="truncate text-xs text-cyan-400/90">@{user.profile.nickname}</p>
+                          ) : null}
                           <p className="truncate text-xs text-slate-500">{user.email}</p>
                         </div>
                         <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
@@ -976,6 +1123,7 @@ export function AdminUsersTab() {
 
                   <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
                     <div><dt className="text-xs text-slate-500">Código ANAC</dt><dd className="text-slate-200">{selectedDetail.profile.anacCode || "-"}</dd></div>
+                    <div><dt className="text-xs text-slate-500">Nickname</dt><dd className="text-slate-200">{selectedDetail.profile.nickname || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">ID SAGA</dt><dd className="font-mono text-slate-200">{selectedDetail.profile.sagaUserId || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">CPF</dt><dd className="text-slate-200">{selectedDetail.profile.cpf || "-"}</dd></div>
                     <div><dt className="text-xs text-slate-500">Telefone</dt><dd className="text-slate-200">{selectedDetail.profile.phone || "-"}</dd></div>
@@ -1245,6 +1393,61 @@ export function AdminUsersTab() {
                 <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
                   <UserSalesSection userId={selectedDetail.userId} />
                 </div>
+
+                <section className={`rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 transition-opacity duration-200 ${activeSubTab === "import" ? "opacity-100" : "hidden opacity-0"}`}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Import do SAGA (usuário)</p>
+                      <p className="text-xs text-slate-600">
+                        Executa o mesmo fluxo do import por seleção para este usuário (ID SAGA: {selectedDetail.profile.sagaUserId || "não vinculado"}).
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleImportSelectedUserFromSaga()}
+                      disabled={sagaUserImporting || !selectedDetail.profile.sagaUserId}
+                      className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+                    >
+                      {sagaUserImporting ? "Importando..." : "Importar agora"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-4 text-sm text-slate-300">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={sagaUserImportScope.pastFlights}
+                        onChange={(event) => setSagaUserImportScope((current) => ({ ...current, pastFlights: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500"
+                      />
+                      Voos passados
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={sagaUserImportScope.schedule}
+                        onChange={(event) => setSagaUserImportScope((current) => ({ ...current, schedule: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500"
+                      />
+                      Escala
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={sagaUserImportScope.credits}
+                        onChange={(event) => setSagaUserImportScope((current) => ({ ...current, credits: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500"
+                      />
+                      Créditos
+                    </label>
+                  </div>
+
+                  {sagaUserImportSummary ? (
+                    <p className="mt-3 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-300">
+                      {sagaUserImportSummary}
+                    </p>
+                  ) : null}
+                </section>
 
                 <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 xl:grid-cols-3 ${activeSubTab === "flights" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">

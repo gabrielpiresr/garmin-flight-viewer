@@ -63,6 +63,7 @@ export type AdminUserProfileSummary = {
   docId: string | null;
   isActive: boolean;
   fullName: string;
+  nickname: string;
   cpf: string;
   phone: string;
   anacCode: string;

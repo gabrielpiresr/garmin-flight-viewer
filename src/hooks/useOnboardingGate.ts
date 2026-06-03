@@ -16,7 +16,7 @@ type OnboardingGateState = {
 };
 
 export function useOnboardingGate(): OnboardingGateState {
-  const { user } = useAuth();
+  const { user, isRoot } = useAuth();
   const [loading, setLoading] = useState(true);
   const [shouldShow, setShouldShow] = useState(false);
   const [steps, setSteps] = useState<OnboardingStep[]>([]);
@@ -25,7 +25,7 @@ export function useOnboardingGate(): OnboardingGateState {
     let cancelled = false;
 
     async function load() {
-      if (!user || user.role !== "aluno" || user.approvalStatus === "pending") {
+      if (!user || user.role !== "aluno" || user.approvalStatus === "pending" || isRoot) {
         if (!cancelled) {
           setShouldShow(false);
           setSteps([]);
@@ -61,7 +61,7 @@ export function useOnboardingGate(): OnboardingGateState {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, user?.role, user?.approvalStatus]);
+  }, [user?.id, user?.role, user?.approvalStatus, isRoot]);
 
   const complete = useCallback(async () => {
     if (!user) return;

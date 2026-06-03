@@ -98,6 +98,9 @@ const COLS = {
   maintenance_work_orders:        process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID              || "6a0c863a0021e8c8d337",
   maintenance_program_items:      process.env.APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID            || "6a0c86220009751f48f3",
 
+  // ── Trilhas de treinamento (templates) ───────────────────────────────────────
+  training_tracks:                process.env.APPWRITE_TRAINING_TRACKS_COL_ID                      || "training_tracks",
+
   // ── Auditoria ────────────────────────────────────────────────────────────────
   audit_events:                   process.env.APPWRITE_AUDIT_EVENTS_COL_ID                         || "audit_events",
 };
@@ -220,6 +223,8 @@ async function main() {
     "maintenance_attachments",
     "maintenance_work_orders",
     "maintenance_program_items",
+    // Trilhas de treinamento
+    "training_tracks",
     // Auditoria
     "audit_events",
   ];

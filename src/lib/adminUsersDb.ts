@@ -242,6 +242,7 @@ export async function getAdminStudentsProgress(params: AdminStudentsProgressPara
 
 export type AdminUserProfileUpdateInput = {
   fullName?: string;
+  nickname?: string;
   email?: string;
   cpf?: string;
   phone?: string;

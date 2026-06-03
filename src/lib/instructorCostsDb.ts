@@ -70,12 +70,13 @@ export async function saveInstructorCosts(
     updated_by: actorUserId,
   };
   const existing = await getInstructorCosts(instructorUserId);
-  // Allow admin full control + the specific instructor to read their own cost document.
-  // The instructor needs read access so saveInstructorPaymentSnapshot (running client-side
-  // with the instructor's session) can call getInstructorCosts() when signing a flight.
+  // Client sessions can only assign ACL targets allowed by the authenticated user context.
+  // In admin UI, assigning Role.user(otherUserId) is rejected by Appwrite (401 user_unauthorized).
+  // We keep admin full control and grant read access to authenticated users so instructors can
+  // read their own row through query filter (instructor_user_id) during payment snapshot flow.
   const permissions = [
     Permission.read(Role.label("admin")),
-    Permission.read(Role.user(instructorUserId)),
+    Permission.read(Role.users()),
     Permission.update(Role.label("admin")),
     Permission.delete(Role.label("admin")),
   ];

@@ -520,7 +520,7 @@ export function MaintenanceTab() {
         listModels(),
       ]);
       setOrders(orderRows);
-      setAircrafts(aircraftRows);
+      setAircrafts(aircraftRows.filter((a) => a.type === "aviao"));
       setModels(modelRows);
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });

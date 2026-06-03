@@ -24,6 +24,7 @@ const ENDPOINT = process.env.APPWRITE_ENDPOINT || "https://sfo.cloud.appwrite.io
 const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "6a01ac8a0009fbf94f05";
 const API_KEY = process.env.APPWRITE_API_KEY;
 const FUNCTION_ID = "admin-users";
+const FUNCTION_TIMEOUT_SECONDS = Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300);
 
 if (!API_KEY) {
   console.error("❌  APPWRITE_API_KEY is required.");
@@ -134,4 +135,41 @@ const deployment = await functions.createDeployment({
 console.log(`✅  Deployment created!`);
 console.log(`    ID:     ${deployment.$id}`);
 console.log(`    Status: ${deployment.status}`);
-console.log(`    Build running on Appwrite — watch progress in the console.`);
+console.log(`    Build running on Appwrite — waiting for ready status...`);
+
+async function waitForDeploymentReady(functionId, deploymentId, maxAttempts = 90, delayMs = 2000) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const current = await functions.getDeployment({ functionId, deploymentId });
+    const status = String(current?.status || "").toLowerCase();
+    if (status === "ready" || status === "failed") return current;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return functions.getDeployment({ functionId, deploymentId });
+}
+
+const deployed = await waitForDeploymentReady(FUNCTION_ID, deployment.$id);
+if (String(deployed?.status || "").toLowerCase() !== "ready") {
+  console.error(`❌  Deployment final status: ${deployed?.status || "unknown"}`);
+  process.exit(1);
+}
+
+// Keep function timeout high enough for SAGA scraping/import calls.
+const functionInfo = await functions.get({ functionId: FUNCTION_ID });
+const updated = await functions.update({
+  functionId: FUNCTION_ID,
+  name: functionInfo.name || "Admin Users",
+  runtime: functionInfo.runtime || "node-22",
+  execute: Array.isArray(functionInfo.execute) && functionInfo.execute.length ? functionInfo.execute : ["any"],
+  events: Array.isArray(functionInfo.events) ? functionInfo.events : [],
+  schedule: typeof functionInfo.schedule === "string" ? functionInfo.schedule : "",
+  timeout: FUNCTION_TIMEOUT_SECONDS,
+  enabled: functionInfo.enabled !== false,
+  logging: functionInfo.logging !== false,
+  entrypoint: functionInfo.entrypoint || "src/main.js",
+  commands: functionInfo.commands || "npm install",
+  scopes: Array.isArray(functionInfo.scopes) ? functionInfo.scopes : [],
+  deployment: deployment.$id,
+});
+
+console.log(`✅  Active deployment: ${updated.deploymentId || deployment.$id}`);
+console.log(`✅  Function timeout set to ${updated.timeout || FUNCTION_TIMEOUT_SECONDS}s`);

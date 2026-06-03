@@ -4,7 +4,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
-import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight } from "../../lib/flightsDb";
+import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, type FlightStatus } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSyncResult } from "../../lib/sagaImportDb";
 import {
@@ -21,6 +21,7 @@ import {
   pickDefaultScheduleWeek,
   MANUAL_SOURCE_PREFIX,
 } from "../../lib/scheduleGenerationDb";
+import { shortName } from "../../lib/flightDisplay";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
 import {
   buildScheduleHourOptions,
@@ -68,11 +69,6 @@ const INSTRUCTOR_BORDER_CLASSES = [
 ];
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
-type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
-  id: string;
-  createdAt: string;
-};
-
 function sagaSyncVariant(status: SagaScheduleSyncResult["status"]): "success" | "warning" | "error" {
   if (status === "synced" || status === "cancelled") return "success";
   if (status === "skipped") return "warning";
@@ -83,57 +79,6 @@ function normalizeSagaSyncStatus(status: unknown): SagaScheduleSyncResult["statu
   return status === "synced" || status === "cancelled" || status === "skipped" || status === "failed"
     ? status
     : "failed";
-}
-
-function SagaScheduleSyncLogPanel({
-  logs,
-  onClear,
-}: {
-  logs: SagaScheduleSyncLogItem[];
-  onClear: () => void;
-}) {
-  if (!logs.length) return null;
-  return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-100">Log SAGA</h3>
-          <p className="text-xs text-slate-500">Falhas no SAGA nao desfazem a agenda local.</p>
-        </div>
-        <button type="button" onClick={onClear} className="text-xs font-semibold text-slate-400 hover:text-slate-200">
-          Limpar
-        </button>
-      </div>
-      <div className="space-y-2">
-        {logs.map((item) => {
-          const status = normalizeSagaSyncStatus(item.status);
-          return (
-            <details key={item.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
-              <summary className="cursor-pointer list-none">
-                <span className={`font-semibold ${status === "failed" ? "text-rose-300" : status === "skipped" ? "text-amber-200" : "text-emerald-300"}`}>
-                  {status.toUpperCase()}
-                </span>
-                <span className="ml-2">{item.message || "Sem mensagem retornada pela sincronizacao SAGA."}</span>
-              </summary>
-              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-2 text-[11px] text-slate-400">
-{JSON.stringify({
-  at: item.createdAt,
-  mode: item.mode,
-  flightId: item.flightId,
-  sagaScheduleId: item.sagaScheduleId,
-  endpoint: item.endpoint,
-  httpStatus: item.httpStatus,
-  requestPayload: item.requestPayload,
-  response: item.response,
-  logs: item.logs,
-}, null, 2)}
-              </pre>
-            </details>
-          );
-        })}
-      </div>
-    </section>
-  );
 }
 
 function aircraftCardColor(className: string): string {
@@ -149,6 +94,20 @@ const SLOT_BG_TINT: Record<SlotState, string> = {
   avoid: "bg-amber-400/20",
   blocked: "bg-red-500/22",
 };
+
+const FLIGHT_CANCELLATION_REASONS = [
+  "Meteorologia - vento",
+  "Meteorologia - visibilidade",
+  "Meteorologia - outros",
+  "Cancelado pelo aluno",
+  "Cancelado pelo instrutor",
+  "Manutenção corretiva",
+  "Manutenção preventiva",
+  "Indisponibilidade aeroporto",
+  "Aluno atrasado",
+  "Aluno não se preparou",
+  "Outro",
+] as const;
 
 type FlightFormDraft = {
   id?: string;
@@ -166,6 +125,9 @@ type FlightFormDraft = {
   durationHours: number;
   isNight?: boolean;
   sagaScheduleId?: string | null;
+  flightStatus?: FlightStatus;
+  cancellationReason?: string;
+  cancellationReasonText?: string;
 };
 
 type CalendarFlightItem = {
@@ -185,7 +147,25 @@ type CalendarFlightItem = {
 };
 
 function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undefined): string {
-  return isOutsideGenerator ? `*${label}` : label;
+  const short = label.trim().split(/\s+/).slice(0, 2).join(" ");
+  return isOutsideGenerator ? `*${short}` : short;
+}
+
+function dayOfWeekToDate(weekStart: string, dayOfWeek: number): Date {
+  const date = new Date(`${weekStart}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return new Date();
+  const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  date.setDate(date.getDate() + offset);
+  return date;
+}
+
+function formatShortDate(date: Date): string {
+  return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function isDateToday(date: Date): boolean {
+  const t = new Date();
+  return date.getDate() === t.getDate() && date.getMonth() === t.getMonth() && date.getFullYear() === t.getFullYear();
 }
 
 function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
@@ -285,7 +265,14 @@ function resolveInstructorDraft(
   };
 }
 
-type CalendarDropTarget = { dayOfWeek: number; startHour: number; startTime: string; isNight: boolean };
+type CalendarDropTarget = {
+  dayOfWeek: number;
+  startHour: number;
+  startTime: string;
+  isNight: boolean;
+  targetInstructorId?: string | null;
+  targetAircraftRegistration?: string;
+};
 
 function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
   const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
@@ -303,6 +290,10 @@ function CalendarGrid({
   onItemClick,
   onItemDrop,
   onEmptySlotClick,
+  onPrevWeek,
+  onNextWeek,
+  hasPrevWeek,
+  hasNextWeek,
 }: {
   items: CalendarFlightItem[];
   colorByAircraft: Map<string, string>;
@@ -312,6 +303,10 @@ function CalendarGrid({
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
+  onPrevWeek?: () => void;
+  onNextWeek?: () => void;
+  hasPrevWeek?: boolean;
+  hasNextWeek?: boolean;
 }) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
@@ -485,7 +480,31 @@ function CalendarGrid({
 
   return (
     <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda semanal</p>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda semanal</p>
+        {(onPrevWeek || onNextWeek) && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onPrevWeek}
+              disabled={!hasPrevWeek}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Semana anterior"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={onNextWeek}
+              disabled={!hasNextWeek}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Próxima semana"
+            >
+              ›
+            </button>
+          </div>
+        )}
+      </div>
       {draggable ? (
         <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
       ) : null}
@@ -593,7 +612,7 @@ function CalendarGrid({
                             {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
                           </p>
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
-                          <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                          <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
                           <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
                         </div>
                       );
@@ -621,7 +640,7 @@ function CalendarGrid({
                             width: `calc(${widthPercent}% - 8px)`,
                           }}
                         >
-                          <p className="truncate font-semibold">{item.studentLabel}</p>
+                          <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
                           <p className="truncate opacity-80">Solte para confirmar</p>
                         </div>
                       );
@@ -690,13 +709,13 @@ function CalendarGrid({
                                 <p className="truncate font-semibold text-white">
                                   {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
                                 </p>
-                                <p className="truncate opacity-80">{item.aircraftRegistration} · {item.instructorLabel ?? "Sem instrutor"}</p>
+                                <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
                               </div>
                             );
                           })}
                           {dragState && dragState.preview.dayOfWeek === day && dragState.preview.isNight ? (
                             <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
-                              <p className="truncate font-semibold">{dragState.item.studentLabel}</p>
+                              <p className="truncate font-semibold">{shortName(dragState.item.studentLabel, dragState.item.studentLabel)}</p>
                               <p className="truncate opacity-80">Solte para confirmar</p>
                             </div>
                           ) : null}
@@ -737,6 +756,538 @@ function CalendarGrid({
   );
 }
 
+// ─── Daily Calendar Grid ──────────────────────────────────────────────────────
+
+type DailyCol = {
+  key: string;
+  label: string;
+  colorClass: string;
+  items: CalendarFlightItem[];
+};
+
+function DailyCalendarGrid({
+  items,
+  selectedDay,
+  weekStart,
+  groupBy,
+  colorByAircraft,
+  borderByInstructor,
+  weekData,
+  onItemClick,
+  onItemDrop,
+  onEmptySlotClick,
+  onSelectDay,
+  onPrevWeek,
+  onNextWeek,
+  hasPrevWeek,
+  hasNextWeek,
+  backgroundSupply,
+}: {
+  items: CalendarFlightItem[];
+  selectedDay: number;
+  weekStart: string;
+  groupBy: "instructor" | "aircraft";
+  colorByAircraft: Map<string, string>;
+  borderByInstructor: Map<string, string>;
+  weekData: ScheduleWeekData;
+  onItemClick: (item: CalendarFlightItem) => void;
+  onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
+  onEmptySlotClick?: (target: CalendarDropTarget) => void;
+  onSelectDay: (day: number) => void;
+  onPrevWeek?: () => void;
+  onNextWeek?: () => void;
+  hasPrevWeek?: boolean;
+  hasNextWeek?: boolean;
+  backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
+}) {
+  const rowHeight = 38;
+  const boardHeight = SLOT_HOURS.length * rowHeight;
+  const draggable = Boolean(onItemDrop);
+
+  const dayItems = useMemo(
+    () => items.filter((i) => i.dayOfWeek === selectedDay),
+    [items, selectedDay],
+  );
+
+  const columns = useMemo<DailyCol[]>(() => {
+    if (groupBy === "instructor") {
+      const result: DailyCol[] = [];
+      for (const instructor of weekData.instructors) {
+        const colItems = dayItems.filter((i) => i.instructorId === instructor.userId);
+        if (colItems.length === 0) continue;
+        result.push({
+          key: instructor.userId,
+          label: shortName(instructor.label, instructor.label),
+          colorClass: borderByInstructor.get(instructor.userId) ?? "border-white/80",
+          items: colItems,
+        });
+      }
+      const unassigned = dayItems.filter((i) => !i.instructorId);
+      if (unassigned.length > 0) {
+        result.push({ key: "__none__", label: "Sem instrutor", colorClass: "border-red-300", items: unassigned });
+      }
+      return result;
+    } else {
+      const seen = new Set<string>();
+      const result: DailyCol[] = [];
+      for (const item of dayItems) {
+        const reg = item.aircraftRegistration;
+        if (!seen.has(reg)) {
+          seen.add(reg);
+          result.push({
+            key: reg,
+            label: reg,
+            colorClass: colorByAircraft.get(reg) ?? AIRCRAFT_COLOR_CLASSES[0]!,
+            items: dayItems.filter((i) => i.aircraftRegistration === reg),
+          });
+        }
+      }
+      return result;
+    }
+  }, [dayItems, groupBy, weekData.instructors, borderByInstructor, colorByAircraft]);
+
+  const layoutByCol = useMemo(() => {
+    const out = new Map<string, Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }>>();
+    for (const col of columns) {
+      const sorted = [...col.items.filter((i) => !i.isNight)].sort((a, b) => {
+        const aStart = parseScheduleTimeToMinutes(a.startTime);
+        const bStart = parseScheduleTimeToMinutes(b.startTime);
+        if (aStart !== bStart) return aStart - bStart;
+        return a.durationHours - b.durationHours;
+      });
+      const groups: CalendarFlightItem[][] = [];
+      let currentGroup: CalendarFlightItem[] = [];
+      let currentGroupEnd = -1;
+      for (const item of sorted) {
+        const start = parseScheduleTimeToMinutes(item.startTime);
+        const end = start + Math.round(item.durationHours * 60);
+        if (currentGroup.length === 0 || start < currentGroupEnd) {
+          currentGroup.push(item);
+          currentGroupEnd = Math.max(currentGroupEnd, end);
+        } else {
+          groups.push(currentGroup);
+          currentGroup = [item];
+          currentGroupEnd = end;
+        }
+      }
+      if (currentGroup.length > 0) groups.push(currentGroup);
+
+      const entries: Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }> = [];
+      for (const group of groups) {
+        const active: Array<{ end: number; column: number }> = [];
+        const assigned = new Map<string, number>();
+        let maxColumn = 0;
+        for (const item of group) {
+          const start = parseScheduleTimeToMinutes(item.startTime);
+          const end = start + Math.round(item.durationHours * 60);
+          for (let i = active.length - 1; i >= 0; i -= 1) {
+            if (active[i]!.end <= start) active.splice(i, 1);
+          }
+          let nextCol = 0;
+          while (active.some((n) => n.column === nextCol)) nextCol += 1;
+          active.push({ end, column: nextCol });
+          assigned.set(item.id, nextCol);
+          maxColumn = Math.max(maxColumn, nextCol + 1);
+        }
+        for (const item of group) {
+          entries.push({ item, columnIndex: assigned.get(item.id) ?? 0, columnCount: maxColumn });
+        }
+      }
+      out.set(col.key, entries);
+    }
+    return out;
+  }, [columns]);
+
+  const boardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const nightRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [dragState, setDragState] = useState<{ item: CalendarFlightItem; preview: CalendarDropTarget } | null>(null);
+  const dragEndedRef = useRef(false);
+
+  const resolveDropTarget = useCallback(
+    (clientX: number, clientY: number): CalendarDropTarget | null => {
+      for (const col of columns) {
+        const nightEl = nightRefs.current.get(col.key);
+        if (nightEl) {
+          const r = nightEl.getBoundingClientRect();
+          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+            const nightMinute = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) * 60;
+            const base: CalendarDropTarget = {
+              dayOfWeek: selectedDay,
+              startHour: nightMinute / 60,
+              startTime: minutesToScheduleHHMM(nightMinute),
+              isNight: true,
+            };
+            return groupBy === "instructor"
+              ? { ...base, targetInstructorId: col.key === "__none__" ? null : col.key }
+              : { ...base, targetAircraftRegistration: col.key };
+          }
+        }
+      }
+      for (const col of columns) {
+        const board = boardRefs.current.get(col.key);
+        if (!board) continue;
+        const r = board.getBoundingClientRect();
+        if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
+        const startMinute = snapPointerToStartMinute(clientY, r.top, rowHeight);
+        const base: CalendarDropTarget = {
+          dayOfWeek: selectedDay,
+          startHour: startMinute / 60,
+          startTime: minutesToScheduleHHMM(startMinute),
+          isNight: false,
+        };
+        return groupBy === "instructor"
+          ? { ...base, targetInstructorId: col.key === "__none__" ? null : col.key }
+          : { ...base, targetAircraftRegistration: col.key };
+      }
+      return null;
+    },
+    [columns, groupBy, selectedDay],
+  );
+
+  useEffect(() => {
+    if (!dragState) return;
+    function onMove(e: PointerEvent) {
+      const t = resolveDropTarget(e.clientX, e.clientY);
+      if (t) setDragState((p) => (p ? { ...p, preview: t } : p));
+    }
+    function onUp(e: PointerEvent) {
+      setDragState((p) => {
+        if (p && onItemDrop) {
+          dragEndedRef.current = true;
+          onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
+        }
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragState, onItemDrop, resolveDropTarget]);
+
+  function handlePrevDay() {
+    const idx = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]);
+    if (idx > 0) {
+      onSelectDay(DAY_ORDER[idx - 1]!);
+    } else if (hasPrevWeek && onPrevWeek) {
+      onPrevWeek();
+      onSelectDay(DAY_ORDER[DAY_ORDER.length - 1]!);
+    }
+  }
+
+  function handleNextDay() {
+    const idx = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]);
+    if (idx < DAY_ORDER.length - 1) {
+      onSelectDay(DAY_ORDER[idx + 1]!);
+    } else if (hasNextWeek && onNextWeek) {
+      onNextWeek();
+      onSelectDay(DAY_ORDER[0]!);
+    }
+  }
+
+  const prevDayDisabled = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]) === 0 && !hasPrevWeek;
+  const nextDayDisabled = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]) === DAY_ORDER.length - 1 && !hasNextWeek;
+
+  return (
+    <>
+      {/* Day selector */}
+      <div className="mb-3 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={handlePrevDay}
+          disabled={prevDayDisabled}
+          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+          title="Dia anterior"
+        >
+          ‹
+        </button>
+        <div className="flex flex-1 gap-1">
+          {DAY_ORDER.map((day) => {
+            const date = dayOfWeekToDate(weekStart, day);
+            const today = isDateToday(date);
+            const selected = day === selectedDay;
+            return (
+              <button
+                key={day}
+                type="button"
+                onClick={() => onSelectDay(day)}
+                className={`flex flex-1 flex-col items-center rounded-lg border px-1.5 py-1.5 text-[11px] transition-colors ${
+                  selected
+                    ? "border-sky-500 bg-sky-600/20 text-sky-300"
+                    : today
+                    ? "border-slate-500 bg-slate-700/50 text-slate-200 hover:bg-slate-700"
+                    : "border-slate-700 bg-slate-800/30 text-slate-400 hover:bg-slate-800"
+                }`}
+              >
+                <span className="font-semibold">{DAY_LABEL[day]}</span>
+                <span className={today ? "text-sky-400" : ""}>{formatShortDate(date)}</span>
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={handleNextDay}
+          disabled={nextDayDisabled}
+          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+          title="Próximo dia"
+        >
+          ›
+        </button>
+      </div>
+
+      {draggable ? (
+        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
+      ) : null}
+      <p className="mb-2 text-[11px] text-slate-600">
+        <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
+      </p>
+
+      {columns.length === 0 ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
+          Nenhum voo neste dia.
+        </p>
+      ) : (
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
+            <thead>
+              <tr>
+                <th className="w-12 pb-2" />
+                {columns.map((col) => (
+                  <th key={col.key} className="pb-2 text-center">
+                    <div className="flex items-center justify-center gap-1.5">
+                      {groupBy === "instructor" ? (
+                        <span className={`h-2.5 w-2.5 rounded-full border-2 ${col.colorClass} bg-slate-800 flex-shrink-0`} />
+                      ) : (
+                        <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${aircraftCardColor(col.colorClass)}`} />
+                      )}
+                      <span className="text-xs font-semibold text-slate-300">{col.label}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500">{col.items.length} voo{col.items.length !== 1 ? "s" : ""}</p>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Main time board */}
+              <tr>
+                <td className="align-top pr-2">
+                  <div className="relative" style={{ height: `${boardHeight}px` }}>
+                    {SLOT_HOURS.map((hour, idx) => (
+                      <div key={hour} className="absolute right-0 text-right text-[11px] font-mono text-slate-600" style={{ top: `${idx * rowHeight}px`, width: "2.8rem" }}>
+                        {hour}h
+                      </div>
+                    ))}
+                  </div>
+                </td>
+                {columns.map((col) => {
+                  const entries = (layoutByCol.get(col.key) ?? []);
+                  return (
+                    <td key={col.key} className="align-top p-0">
+                      <div
+                        ref={(node) => { if (node) boardRefs.current.set(col.key, node); else boardRefs.current.delete(col.key); }}
+                        className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
+                        style={{ height: `${boardHeight}px` }}
+                        onClick={(e) => {
+                          if (!onEmptySlotClick || dragState) return;
+                          const t = resolveDropTarget(e.clientX, e.clientY);
+                          if (t) onEmptySlotClick(t);
+                        }}
+                      >
+                        {backgroundSupply
+                          ? SLOT_HOURS.map((hour, idx) => {
+                              const state = backgroundSupply.slotStates[`${selectedDay}-${hour}`];
+                              if (!state) return null;
+                              return (
+                                <div
+                                  key={`bg-${col.key}-${hour}`}
+                                  className={`absolute left-0 right-0 ${SLOT_BG_TINT[state]}`}
+                                  style={{ top: `${idx * rowHeight}px`, height: `${rowHeight}px` }}
+                                />
+                              );
+                            })
+                          : null}
+                        {SLOT_HOURS.map((hour, idx) => (
+                          <div key={`${col.key}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
+                        ))}
+                        {entries.map((entry) => {
+                          if (entry.item.isNight) return null;
+                          if (dragState?.item.id === entry.item.id) return null;
+                          const item = entry.item;
+                          const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
+                          const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
+                          const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                          const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                          const widthPercent = 100 / Math.max(1, entry.columnCount);
+                          const leftPercent = entry.columnIndex * widthPercent;
+                          return (
+                            <div
+                              key={item.id}
+                              role="button"
+                              tabIndex={0}
+                              onPointerDown={(e) => {
+                                if (!draggable) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                dragEndedRef.current = false;
+                                const t = resolveDropTarget(e.clientX, e.clientY) ?? {
+                                  dayOfWeek: selectedDay,
+                                  startHour: item.startHour,
+                                  startTime: item.startTime,
+                                  isNight: false,
+                                };
+                                setDragState({ item, preview: t });
+                              }}
+                              onClick={(e) => {
+                                if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
+                                onItemClick(item);
+                              }}
+                              className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
+                              style={{
+                                top: `${top}px`,
+                                height: `${height - 4}px`,
+                                left: `calc(${leftPercent}% + 4px)`,
+                                width: `calc(${widthPercent}% - 8px)`,
+                              }}
+                            >
+                              <p className="truncate font-semibold text-white">
+                                {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                              </p>
+                              <p className="truncate opacity-90">{item.startTime}–{item.endTime}</p>
+                              {groupBy === "aircraft" ? (
+                                <p className="truncate opacity-80">{shortName(item.instructorLabel) || "Sem instrutor"}</p>
+                              ) : (
+                                <p className="truncate opacity-80">{item.aircraftRegistration}</p>
+                              )}
+                              <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
+                            </div>
+                          );
+                        })}
+                        {/* Drag preview */}
+                        {dragState && !dragState.preview.isNight && (() => {
+                          const item = dragState.item;
+                          const entry = entries.find((e) => e.item.id === item.id) ?? { item, columnIndex: 0, columnCount: 1 };
+                          const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
+                          const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
+                          const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                          const widthPercent = 100 / Math.max(1, entry.columnCount);
+                          const leftPercent = entry.columnIndex * widthPercent;
+                          const previewCol = groupBy === "instructor"
+                            ? (dragState.preview.targetInstructorId !== undefined
+                                ? (dragState.preview.targetInstructorId ?? "__none__")
+                                : col.key)
+                            : (dragState.preview.targetAircraftRegistration ?? col.key);
+                          if (previewCol !== col.key) return null;
+                          return (
+                            <div
+                              key="preview"
+                              className={`pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1.5 py-1 text-[10px] text-white shadow-lg ring-2 ring-violet-400/50 ${color}`}
+                              style={{
+                                top: `${top}px`,
+                                height: `${height - 4}px`,
+                                left: `calc(${leftPercent}% + 4px)`,
+                                width: `calc(${widthPercent}% - 8px)`,
+                              }}
+                            >
+                              <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
+                              <p className="truncate opacity-80">Solte para confirmar</p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+              {/* Night row */}
+              <tr>
+                <td className="pr-2 pt-1 text-right text-[11px] font-mono text-indigo-400/60">Noite</td>
+                {columns.map((col) => {
+                  const nightItems = col.items.filter((i) => i.isNight);
+                  return (
+                    <td key={col.key} className="p-0 pt-1">
+                      <div
+                        ref={(node) => { if (node) nightRefs.current.set(col.key, node); else nightRefs.current.delete(col.key); }}
+                        className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightItems.length > 0 ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
+                      >
+                        {nightItems.length === 0 ? (
+                          <p className="text-center text-[10px] text-slate-600">—</p>
+                        ) : (
+                          <div className="space-y-0.5">
+                            {nightItems.map((item) => {
+                              const color = aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+                              const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                              if (dragState?.item.id === item.id) return null;
+                              return (
+                                <div
+                                  key={item.id}
+                                  role="button"
+                                  tabIndex={0}
+                                  onPointerDown={(e) => {
+                                    if (!draggable) return;
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    dragEndedRef.current = false;
+                                    setDragState({
+                                      item,
+                                      preview: { dayOfWeek: selectedDay, startHour: item.startHour, startTime: item.startTime, isNight: true },
+                                    });
+                                  }}
+                                  onClick={(e) => {
+                                    if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
+                                    onItemClick(item);
+                                  }}
+                                  className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
+                                >
+                                  <p className="truncate font-semibold text-white">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</p>
+                                  {groupBy === "aircraft" ? (
+                                    <p className="truncate opacity-80">{shortName(item.instructorLabel) || "Sem instrutor"}</p>
+                                  ) : (
+                                    <p className="truncate opacity-80">{item.aircraftRegistration}</p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {dragState?.preview.isNight ? (
+                              <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
+                                <p className="truncate font-semibold">{shortName(dragState.item.studentLabel, dragState.item.studentLabel)}</p>
+                                <p className="truncate opacity-80">Solte para confirmar</p>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+              {/* Totals */}
+              <tr>
+                <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">Total</td>
+                {columns.map((col) => {
+                  const hours = col.items.reduce((s, i) => s + i.durationHours, 0);
+                  return (
+                    <td key={col.key} className="p-0 pt-2">
+                      <div className="rounded-md border border-slate-700/50 bg-slate-800/40 px-2 py-2 text-center text-xs leading-snug text-slate-300">
+                        <p>
+                          <span className="text-sm font-semibold text-slate-100">{col.items.length}</span> voos ·{" "}
+                          <span className="text-sm font-semibold text-slate-100">{hours.toFixed(1)}</span>h
+                        </p>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 type ScheduleFlightsTabProps = {
   /** Semana a exibir após publicar escala no gerador. */
   focusWeekStart?: string | null;
@@ -759,6 +1310,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
+  const [agendaView, setAgendaView] = useState<"weekly" | "daily">("weekly");
+  const [dailyGroupBy, setDailyGroupBy] = useState<"instructor" | "aircraft">("instructor");
+  const [selectedDay, setSelectedDay] = useState<number>(() => new Date().getDay());
   const [error, setError] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<FlightFormDraft | null>(null);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -767,7 +1321,6 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
-  const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
@@ -808,13 +1361,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         status: normalizeSagaSyncStatus(result.status),
         message: result.message || "Sem mensagem retornada pela sincronizacao SAGA.",
       };
-      const item: SagaScheduleSyncLogItem = {
-        ...normalizedResult,
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        createdAt: new Date().toISOString(),
-      };
-      setSagaSyncLogs((current) => [item, ...current].slice(0, 12));
       if (normalizedResult.sagaScheduleId) {
+        const syncedAt = new Date().toISOString();
         setFlights((current) =>
           current.map((row) =>
             row.id === flightId
@@ -822,7 +1370,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   ...row,
                   sagaScheduleId: normalizedResult.status === "cancelled" ? null : normalizedResult.sagaScheduleId,
                   sagaScheduleSyncStatus: normalizedResult.status,
-                  sagaScheduleSyncedAt: item.createdAt,
+                  sagaScheduleSyncedAt: syncedAt,
                 }
               : row,
           ),
@@ -1186,6 +1734,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!canEditFlight) return;
     const full = await getSavedFlight(row.id);
     const decoded = full.data ? decodeFlightRecord(full.data.csv_text).meta : null;
+    const existingCancellation = (decoded as Record<string, unknown> | null)?.cancellation as { reasonCode?: string; reasonText?: string } | undefined;
     setFormMode("edit");
     setFormDraft({
       id: row.id,
@@ -1212,6 +1761,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       durationHours: row.durationHours,
       isNight: decoded?.header.isNight ?? row.isNight ?? false,
       sagaScheduleId: row.sagaScheduleId ?? null,
+      flightStatus: full.data?.flight_status ?? "Previsto",
+      cancellationReason: existingCancellation?.reasonCode ?? "",
+      cancellationReasonText: existingCancellation?.reasonText ?? "",
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -1240,8 +1792,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       const sourceFilename = `${sourcePrefix}${weekData.week.weekStart}.csv`;
       const normalizedLabel = formDraft.studentLabel.trim() || formDraft.studentId;
       const instructor = formDraft.instructorId ? instructorById.get(formDraft.instructorId) ?? null : null;
-      const meta = buildAutoMeta({ ...formDraft, studentLabel: normalizedLabel }, weekData.week.weekStart, instructor);
-      const csvText = encodeFlightRecord({ meta, telemetryCsv: "" });
+      const baseMeta = buildAutoMeta({ ...formDraft, studentLabel: normalizedLabel }, weekData.week.weekStart, instructor);
+      const isCancelledEdit = formMode === "edit" && formDraft.flightStatus === "Cancelado";
+      const finalMeta: FlightRecordMeta = isCancelledEdit && formDraft.cancellationReason
+        ? { ...baseMeta, cancellation: { reasonCode: formDraft.cancellationReason, reasonText: formDraft.cancellationReasonText ?? "", updatedAt: new Date().toISOString() } } as FlightRecordMeta
+        : baseMeta;
+      const csvText = encodeFlightRecord({ meta: finalMeta, telemetryCsv: "" });
       const payload = {
         actorUserId: user.id,
         actorRole: user.role,
@@ -1251,7 +1807,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         csv_text: csvText,
         aircraft_ident: formDraft.aircraftRegistration,
         duration_sec: Math.round(formDraft.durationHours * 3600),
-      } as const;
+        ...(formMode === "edit" && formDraft.flightStatus ? { flightStatus: formDraft.flightStatus } : {}),
+      };
 
       if (formMode === "edit" && formDraft.id) {
         const nextDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
@@ -1340,36 +1897,72 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
       </div>
 
-      <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} />
-
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-4">
         <div className="md:col-span-2">
           <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">Semana</p>
-          <select
-            value={selectedWeekStart}
-            disabled={loadingWeeks}
-            onChange={(e) => {
-              const value = e.target.value;
-              setSelectedWeekStart(value);
-              const week = weekOptions.find((row) => row.weekStart === value);
-              loadWeekRequestRef.current += 1;
-              setWeekData(null);
-              setFlights([]);
-              void loadWeek(value, week, { showSkeleton: true });
-            }}
-            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
-          >
-            {weekOptions.length === 0 ? <option value="">Nenhuma semana encontrada</option> : null}
-            {weekOptions.map((week) => {
-              const isCurrentWeek = week.weekStart === getCurrentWeekStart();
-              const suffix = week.isClosed ? " (Fechada)" : "";
-              return (
-                <option key={week.weekStart} value={week.weekStart}>
-                  {isCurrentWeek ? `▶ Semana atual — ${week.label}${suffix}` : `${week.label}${suffix}`}
-                </option>
-              );
-            })}
-          </select>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={loadingWeeks || weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) <= 0}
+              onClick={() => {
+                const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                const prev = weekOptions[idx - 1];
+                if (!prev) return;
+                setSelectedWeekStart(prev.weekStart);
+                loadWeekRequestRef.current += 1;
+                setWeekData(null);
+                setFlights([]);
+                void loadWeek(prev.weekStart, prev, { showSkeleton: true });
+              }}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Semana anterior"
+            >
+              ‹
+            </button>
+            <select
+              value={selectedWeekStart}
+              disabled={loadingWeeks}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSelectedWeekStart(value);
+                const week = weekOptions.find((row) => row.weekStart === value);
+                loadWeekRequestRef.current += 1;
+                setWeekData(null);
+                setFlights([]);
+                void loadWeek(value, week, { showSkeleton: true });
+              }}
+              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
+            >
+              {weekOptions.length === 0 ? <option value="">Nenhuma semana encontrada</option> : null}
+              {weekOptions.map((week) => {
+                const isCurrentWeek = week.weekStart === getCurrentWeekStart();
+                const suffix = week.isClosed ? " (Fechada)" : "";
+                return (
+                  <option key={week.weekStart} value={week.weekStart}>
+                    {isCurrentWeek ? `▶ Semana atual — ${week.label}${suffix}` : `${week.label}${suffix}`}
+                  </option>
+                );
+              })}
+            </select>
+            <button
+              type="button"
+              disabled={loadingWeeks || weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) >= weekOptions.length - 1}
+              onClick={() => {
+                const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                const next = weekOptions[idx + 1];
+                if (!next) return;
+                setSelectedWeekStart(next.weekStart);
+                loadWeekRequestRef.current += 1;
+                setWeekData(null);
+                setFlights([]);
+                void loadWeek(next.weekStart, next, { showSkeleton: true });
+              }}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Próxima semana"
+            >
+              ›
+            </button>
+          </div>
         </div>
         {canCreateFlight ? (
         <div className="flex items-end md:col-span-2">
@@ -1451,7 +2044,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               {instructorSummary.map((row) => (
                 <article key={row.instructor.userId} className={`rounded-xl border bg-slate-800/30 p-3 ${borderByInstructor.get(row.instructor.userId) ?? "border-slate-700"}`}>
-                  <p className="truncate text-sm font-semibold text-slate-100">{row.instructor.label}</p>
+                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(row.instructor.label, row.instructor.label)}</p>
                   <p className="mt-1 text-xs text-slate-400">{row.hours.toFixed(1)}h previstas</p>
                   <p className="text-xs text-slate-500">{row.flights} voos</p>
                 </article>
@@ -1467,7 +2060,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Filtros</p>
             <div className="space-y-4">
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Aeronaves</p>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Aeronaves</p>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => setVisibleAircraft(aircraftOptions.map((a) => a.registration))} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
+                    <button type="button" onClick={() => setVisibleAircraft([])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Nenhum</button>
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {aircraftOptions.map((aircraft) => {
                     const checked = visibleAircraft.includes(aircraft.registration);
@@ -1494,7 +2093,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 </div>
               </div>
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Instrutores</p>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Instrutores</p>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => setVisibleInstructors(["__none__", ...weekData.instructors.map((i) => i.userId)])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
+                    <button type="button" onClick={() => setVisibleInstructors([])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Nenhum</button>
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200">
                     <input
@@ -1526,7 +2131,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           }
                         />
                         <span className={`h-3 w-3 rounded border-2 ${border} bg-slate-800`} />
-                        {instructor.label}
+                        {shortName(instructor.label, instructor.label)}
                       </label>
                     );
                   })}
@@ -1574,7 +2179,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                               </div>
                             </div>
                             <p className="mt-1 truncate text-xs text-slate-400">
-                              {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)} · {item.instructorLabel ?? "Sem INVA"}
+                              {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)} · {shortName(item.instructorLabel) || "Sem INVA"}
                             </p>
                           </button>
                         </li>
@@ -1590,52 +2195,174 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           </div>
 
           {/* Desktop calendar grid */}
-          <div className="hidden md:block">
-            <CalendarGrid
-              items={calendarItems}
-              colorByAircraft={colorByAircraft}
-              borderByInstructor={borderByInstructor}
-              backgroundSupply={selectedSupplyForBackground}
-              weekStart={weekData.week.weekStart}
-              onItemClick={(item) => {
-                if (!canEditFlight) return;
-                const selected = flights.find((row) => row.id === item.id);
-                if (selected) void openEditModal(selected);
-              }}
-              onItemDrop={canEditFlight ? (item, target) => {
-                const selected = flights.find((row) => row.id === item.id);
-                if (!selected) return;
-                void (async () => {
-                  await openEditModal(selected);
+          <div className="hidden md:block space-y-0">
+            {/* View mode toggle */}
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setAgendaView("weekly")}
+                  className={`px-3 py-1.5 text-xs border-r border-slate-700 transition-colors ${agendaView === "weekly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  Semanal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgendaView("daily")}
+                  className={`px-3 py-1.5 text-xs transition-colors ${agendaView === "daily" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  Diária
+                </button>
+              </div>
+              {agendaView === "daily" && (
+                <div className="ml-auto flex overflow-hidden rounded-lg border border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setDailyGroupBy("instructor")}
+                    className={`px-3 py-1.5 text-xs border-r border-slate-700 transition-colors ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Instrutor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDailyGroupBy("aircraft")}
+                    className={`px-3 py-1.5 text-xs transition-colors ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Avião
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {agendaView === "weekly" ? (
+              <CalendarGrid
+                items={calendarItems}
+                colorByAircraft={colorByAircraft}
+                borderByInstructor={borderByInstructor}
+                backgroundSupply={selectedSupplyForBackground}
+                weekStart={weekData.week.weekStart}
+                hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
+                hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                onPrevWeek={() => {
+                  const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                  const prev = weekOptions[idx - 1];
+                  if (!prev) return;
+                  setSelectedWeekStart(prev.weekStart);
+                  loadWeekRequestRef.current += 1;
+                  setWeekData(null);
+                  setFlights([]);
+                  void loadWeek(prev.weekStart, prev, { showSkeleton: true });
+                }}
+                onNextWeek={() => {
+                  const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                  const next = weekOptions[idx + 1];
+                  if (!next) return;
+                  setSelectedWeekStart(next.weekStart);
+                  loadWeekRequestRef.current += 1;
+                  setWeekData(null);
+                  setFlights([]);
+                  void loadWeek(next.weekStart, next, { showSkeleton: true });
+                }}
+                onItemClick={(item) => {
+                  if (!canEditFlight) return;
+                  const selected = flights.find((row) => row.id === item.id);
+                  if (selected) void openEditModal(selected);
+                }}
+                onItemDrop={canEditFlight ? (item, target) => {
+                  const selected = flights.find((row) => row.id === item.id);
+                  if (!selected) return;
+                  void (async () => {
+                    await openEditModal(selected);
+                    setFormDraft((prev) =>
+                      prev ? { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight } : prev,
+                    );
+                  })();
+                } : undefined}
+                onEmptySlotClick={(target) => {
+                  if (!canCreateFlight) return;
+                  openCreateModal();
                   setFormDraft((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          dayOfWeek: target.dayOfWeek,
-                          startHour: target.startHour,
-                          startTime: target.startTime,
-                          isNight: target.isNight,
-                        }
-                      : prev,
+                    prev ? { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight } : prev,
                   );
-                })();
-              } : undefined}
-              onEmptySlotClick={(target) => {
-                if (!canCreateFlight) return;
-                openCreateModal();
-                setFormDraft((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        dayOfWeek: target.dayOfWeek,
-                        startHour: target.startHour,
-                        startTime: target.startTime,
-                        isNight: target.isNight,
+                }}
+              />
+            ) : (
+              <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                <DailyCalendarGrid
+                  items={calendarItems}
+                  selectedDay={selectedDay}
+                  weekStart={weekData.week.weekStart}
+                  groupBy={dailyGroupBy}
+                  colorByAircraft={colorByAircraft}
+                  borderByInstructor={borderByInstructor}
+                  weekData={weekData}
+                  backgroundSupply={selectedSupplyForBackground}
+                  hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
+                  hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                  onSelectDay={setSelectedDay}
+                  onPrevWeek={() => {
+                    const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                    const prev = weekOptions[idx - 1];
+                    if (!prev) return;
+                    setSelectedWeekStart(prev.weekStart);
+                    loadWeekRequestRef.current += 1;
+                    setWeekData(null);
+                    setFlights([]);
+                    void loadWeek(prev.weekStart, prev, { showSkeleton: true });
+                  }}
+                  onNextWeek={() => {
+                    const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+                    const next = weekOptions[idx + 1];
+                    if (!next) return;
+                    setSelectedWeekStart(next.weekStart);
+                    loadWeekRequestRef.current += 1;
+                    setWeekData(null);
+                    setFlights([]);
+                    void loadWeek(next.weekStart, next, { showSkeleton: true });
+                  }}
+                  onItemClick={(item) => {
+                    if (!canEditFlight) return;
+                    const selected = flights.find((row) => row.id === item.id);
+                    if (selected) void openEditModal(selected);
+                  }}
+                  onItemDrop={canEditFlight ? (item, target) => {
+                    const selected = flights.find((row) => row.id === item.id);
+                    if (!selected) return;
+                    void (async () => {
+                      await openEditModal(selected);
+                      setFormDraft((prev) => {
+                        if (!prev) return prev;
+                        const base = { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
+                        if (target.targetInstructorId !== undefined) {
+                          const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+                          return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
+                        }
+                        if (target.targetAircraftRegistration) {
+                          return { ...base, aircraftRegistration: target.targetAircraftRegistration };
+                        }
+                        return base;
+                      });
+                    })();
+                  } : undefined}
+                  onEmptySlotClick={(target) => {
+                    if (!canCreateFlight) return;
+                    openCreateModal();
+                    setFormDraft((prev) => {
+                      if (!prev) return prev;
+                      const base = { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
+                      if (target.targetInstructorId !== undefined) {
+                        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+                        return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
                       }
-                    : prev,
-                );
-              }}
-            />
+                      if (target.targetAircraftRegistration) {
+                        return { ...base, aircraftRegistration: target.targetAircraftRegistration };
+                      }
+                      return base;
+                    });
+                  }}
+                />
+              </section>
+            )}
           </div>
 
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
@@ -1670,9 +2397,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     const conflicts = conflictsByFlightId.get(row.id) ?? [];
                     return (
                       <tr key={row.id} className="border-b border-slate-800/60">
-                        <td className="px-2 py-2 text-slate-200">{studentLabelMap.get(row.studentId) ?? row.studentId}</td>
+                        <td className="px-2 py-2 text-slate-200">{shortName(studentLabelMap.get(row.studentId) ?? row.studentId, studentLabelMap.get(row.studentId) ?? row.studentId)}</td>
                         <td className="px-2 py-2 text-slate-300">
-                          {row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : "—")}
+                          {shortName(row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null)) || "—"}
                         </td>
                         <td className="px-2 py-2 text-slate-300">{totalWeightByFlightId.get(row.id) ?? "—"}</td>
                         <td className="px-2 py-2 text-slate-300">{row.aircraftRegistration ?? "—"}</td>
@@ -1727,7 +2454,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     onClick={() => setSelectedStudentId(row.id)}
                     className="w-full rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-left text-sm hover:bg-slate-800/60"
                   >
-                    <p className="font-medium text-slate-200">{row.label}</p>
+                    <p className="font-medium text-slate-200">{shortName(row.label, row.label)}</p>
                     <p className="text-xs text-slate-500">{row.flights} voos · {row.hours.toFixed(1)}h</p>
                     <p className="text-xs text-emerald-300">Atendido</p>
                   </button>
@@ -1748,7 +2475,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       onClick={() => setSelectedStudentId(row.userId)}
                       className="w-full rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-left text-sm hover:bg-red-500/10"
                     >
-                      <p className="font-medium text-slate-200">{row.label}</p>
+                      <p className="font-medium text-slate-200">{shortName(row.label, row.label)}</p>
                       <p className="text-xs text-red-300">Sem voo marcado nesta semana</p>
                     </button>
                   ))}
@@ -1824,7 +2551,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           <td className="px-2 py-1.5 text-slate-300">{row.durationHours.toFixed(1)}h</td>
                           <td className="px-2 py-1.5 text-slate-300">{row.aircraftRegistration ?? "—"}</td>
                           <td className="px-2 py-1.5 text-slate-300">
-                            {row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : "—")}
+                            {shortName(row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null)) || "—"}
                           </td>
                           <td className="px-2 py-1.5 text-slate-300">{totalWeightByFlightId.get(row.id) ?? "—"}</td>
                         </tr>
@@ -1852,6 +2579,51 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               </button>
             </div>
             <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
+              {formMode === "edit" && (
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-slate-400">
+                    Status do voo
+                    <select
+                      value={formDraft.flightStatus ?? "Previsto"}
+                      onChange={(e) => setFormDraft((prev) => prev ? { ...prev, flightStatus: e.target.value as FlightStatus, cancellationReason: "", cancellationReasonText: "" } : prev)}
+                      className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                    >
+                      {FLIGHT_STATUS_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {formDraft.flightStatus === "Cancelado" && (
+                    <div className="mt-2 space-y-2 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                      <label className="block text-xs text-slate-400">
+                        Motivo do cancelamento *
+                        <select
+                          value={formDraft.cancellationReason ?? ""}
+                          onChange={(e) => setFormDraft((prev) => prev ? { ...prev, cancellationReason: e.target.value } : prev)}
+                          className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                        >
+                          <option value="">Selecione o motivo</option>
+                          {FLIGHT_CANCELLATION_REASONS.map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {formDraft.cancellationReason && (
+                        <label className="block text-xs text-slate-400">
+                          Descrição adicional
+                          <textarea
+                            value={formDraft.cancellationReasonText ?? ""}
+                            onChange={(e) => setFormDraft((prev) => prev ? { ...prev, cancellationReasonText: e.target.value } : prev)}
+                            rows={2}
+                            className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-violet-500"
+                            placeholder="Detalhes sobre o cancelamento..."
+                          />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <StudentSearchSelect
                 label="Aluno"
                 students={weekData.students}
@@ -1883,7 +2655,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   <option value="">Sem instrutor</option>
                   {weekData.instructors.map((instructor) => (
                     <option key={instructor.userId} value={instructor.userId}>
-                      {instructor.label}
+                      {shortName(instructor.label, instructor.label)}
                     </option>
                   ))}
                 </select>

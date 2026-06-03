@@ -4,6 +4,7 @@ import { executeAnacSync } from "../lib/anacSync";
 import { deriveRoleFromLabels, ensureProfile, getApprovalStatus, getUserRoleInfo, type ApprovalStatus, type UserRole } from "../lib/rbac";
 import { ensureSystemRoles } from "../lib/tenantRolesDb";
 import { createLead, getLeadByEmail, updateLead } from "../lib/crmDb";
+import { parseRootAccessLogin, requestRootAccessSession } from "../lib/rootAccess";
 
 type AppwriteUser = {
   id: string;
@@ -33,6 +34,7 @@ export type SignUpProfileInput = {
 
 type AuthState = {
   user: AppwriteUser | null;
+  isRoot: boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   requestPasswordReset: (email: string, redirectUrl: string) => Promise<{ error: Error | null }>;
@@ -79,6 +81,7 @@ async function resolveUser(u: {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppwriteUser | null>(null);
+  const [isRoot, setIsRoot] = useState(false);
   const [loading, setLoading] = useState(isAppwriteConfigured);
 
   useEffect(() => {
@@ -99,7 +102,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     if (!account) return { error: new Error("Appwrite não configurado") };
     try {
-      await account.createEmailPasswordSession(email, password);
+      const rootAccess = parseRootAccessLogin(email);
+      if (rootAccess) {
+        const sessionToken = await requestRootAccessSession({ ...rootAccess, password });
+        await account.deleteSession("current").catch(() => undefined);
+        await account.createSession(sessionToken.userId, sessionToken.secret);
+        setIsRoot(true);
+      } else {
+        await account.createEmailPasswordSession(email, password);
+        setIsRoot(false);
+      }
       const u = await account.get();
       const resolved = await resolveUser(u);
       setUser(resolved);
@@ -222,12 +234,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await account.deleteSession("current");
     } finally {
       setUser(null);
+      setIsRoot(false);
     }
   }, []);
 
   const value = useMemo<AuthState>(
     () => ({
       user,
+      isRoot,
       loading,
       signIn,
       requestPasswordReset,
@@ -236,7 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut,
       configured: isAppwriteConfigured,
     }),
-    [user, loading, signIn, requestPasswordReset, completePasswordReset, signUp, signOut],
+    [user, isRoot, loading, signIn, requestPasswordReset, completePasswordReset, signUp, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

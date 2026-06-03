@@ -37,6 +37,7 @@ const DATABASE_ID = process.env.APPWRITE_DATABASE_ID ?? "6a01afae001bc352d1b1";
 const ADMIN_USER_ID = process.env.VITE_ADMIN_USER_ID ?? "6a01eb66001f88da47b3";
 
 const DRY_RUN = !process.argv.includes("--run");
+const FORCE   = process.argv.includes("--force");
 
 if (!API_KEY) {
   console.error("❌  APPWRITE_API_KEY não definido. Adicione ao .env.local ou exporte no terminal.");
@@ -179,7 +180,7 @@ async function main() {
   console.log(`  Database:    ${DATABASE_ID}`);
   console.log(`  Admin ID:    ${ADMIN_USER_ID} (preservado)\n`);
 
-  if (!DRY_RUN) {
+  if (!DRY_RUN && !FORCE) {
     const ok = await confirm("Tem CERTEZA que quer apagar os dados? (s/N) → ");
     if (!ok) { console.log("\nCancelado.\n"); process.exit(0); }
     const ok2 = await confirm("Confirmação final — isso é IRREVERSÍVEL. Confirmar? (s/N) → ");

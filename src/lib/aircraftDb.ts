@@ -1,6 +1,6 @@
 import { Query } from "appwrite";
 import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, AIRCRAFTS_COL_ID, ADMIN_USER_ID, storage } from "./appwrite";
-import type { Aircraft } from "../types/admin";
+import type { Aircraft, AircraftType } from "../types/admin";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -10,9 +10,6 @@ function isReady(): boolean {
 
 function adminScopedPermissions(): string[] {
   const permissions = [
-    Permission.read(Role.label("admin")),
-    Permission.read(Role.label("instrutor")),
-    Permission.read(Role.label("aluno")),
     Permission.read(Role.users()),
     Permission.update(Role.label("admin")),
     Permission.delete(Role.label("admin")),
@@ -43,9 +40,12 @@ function aircraftPhotoPermissions(): string[] {
 }
 
 function toAircraft(doc: Record<string, unknown>): Aircraft {
+  const rawType = doc.type as string | undefined;
+  const type: AircraftType = rawType === "simulador" ? "simulador" : rawType === "ground" ? "ground" : "aviao";
   return {
     id: doc.$id as string,
     school_id: (doc.school_id as string) ?? "",
+    type,
     model_id: (doc.model_id as string) ?? "",
     registration: (doc.registration as string) ?? "",
     nickname: (doc.nickname as string | null) ?? null,
@@ -140,6 +140,7 @@ export async function getAircraftByRegistration(registration: string, schoolId: 
 
 export async function createAircraft(data: {
   school_id: string;
+  type?: AircraftType;
   model_id: string;
   registration: string;
   nickname?: string;
@@ -157,6 +158,7 @@ export async function createAircraft(data: {
     ID.unique(),
     {
       school_id: data.school_id,
+      type: data.type ?? "aviao",
       model_id: data.model_id,
       registration: data.registration.toUpperCase(),
       nickname: data.nickname ?? null,
@@ -201,6 +203,7 @@ export async function createAircraft(data: {
 export async function updateAircraft(
   id: string,
   data: Partial<{
+    type: AircraftType;
     model_id: string;
     registration: string;
     nickname: string | null;

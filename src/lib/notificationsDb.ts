@@ -179,6 +179,28 @@ export async function testGoogleCalendarConnection(): Promise<GoogleCalendarSett
   return response.googleCalendarSettings;
 }
 
+export async function getGoogleCalendarOAuthUrl(redirectUri: string): Promise<string> {
+  const response = await executeNotifications({ action: "getGoogleCalendarOAuthUrl", redirectUri });
+  const url = (response as Record<string, unknown>).authUrl;
+  if (!url || typeof url !== "string") throw new Error("URL de autorizacao nao retornada.");
+  return url;
+}
+
+export async function exchangeGoogleCalendarOAuthCode(
+  code: string,
+  redirectUri: string,
+): Promise<GoogleCalendarSettings> {
+  const response = await executeNotifications({ action: "exchangeGoogleCalendarOAuthCode", code, redirectUri });
+  if (!response.googleCalendarSettings) throw new Error(response.message || "Falha ao trocar codigo OAuth.");
+  return response.googleCalendarSettings;
+}
+
+export async function disconnectGoogleCalendarOAuth(): Promise<GoogleCalendarSettings> {
+  const response = await executeNotifications({ action: "disconnectGoogleCalendarOAuth" });
+  if (!response.googleCalendarSettings) throw new Error(response.message || "Falha ao desconectar OAuth.");
+  return response.googleCalendarSettings;
+}
+
 export async function syncFlightCalendarEvent(
   flightId: string,
   mode: "upsert" | "cancel",

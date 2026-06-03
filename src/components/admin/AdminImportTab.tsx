@@ -1,19 +1,27 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
+  fetchSagaImportProgress,
   fetchSagaUsers,
+  getSagaImportSettings,
   importSagaData,
   normalizeSagaCreditColumnMap,
+  runSagaScheduleSyncNow,
   saveSagaImportMapping,
+  type SagaImportScope,
   type SagaFinancialEntry,
   type SagaFlight,
   type SagaCredit,
+  type SagaImportCatalogs,
   type SagaImportMapping,
+  type SagaImportProgress,
   type SagaImportResult,
   type SagaImportSummary,
   type SagaUser,
 } from "../../lib/sagaImportDb";
+import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
+import { useSagaImportMissionPrompt } from "../../hooks/useSagaImportMissionPrompt";
 
 type TableColumn<T> = { key: keyof T; label: string; className?: string };
 
@@ -61,12 +69,67 @@ const EMPTY_MAPPING: SagaImportMapping = {
   aircraftBySaga: {},
   aircraftIdByRegistration: {},
   courseBySaga: {},
+  missionBySaga: {},
   creditAircraftBySaga: {},
   flightColumnMap: DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
   creditColumnMap: DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   sendFlightsToSaga: false,
+  syncScheduleFromSaga: false,
   updatedAt: null,
 };
+
+const DEFAULT_IMPORT_SCOPE: SagaImportScope = {
+  users: true,
+  pastFlights: true,
+  schedule: true,
+  credits: true,
+};
+
+const EMPTY_CATALOGS: SagaImportCatalogs = {
+  aircrafts: [],
+  aircraftModels: [],
+  trainingTracks: [],
+};
+
+function emptySagaImportResult(catalogs: SagaImportCatalogs): SagaImportResult {
+  return {
+    ok: false,
+    users: [],
+    flights: [],
+    flightHeaders: [],
+    flightColumnDefs: Object.entries(DEFAULT_SAGA_FLIGHT_COLUMN_MAP).map(([key, defaultIndex]) => ({
+      key: key as keyof SagaFlight,
+      label: key,
+      defaultIndex,
+    })),
+    financialEntries: [],
+    financialHeaders: [],
+    credits: [],
+    creditHeaders: [],
+    creditColumnDefs: Object.entries(DEFAULT_SAGA_CREDIT_COLUMN_MAP).map(([key, defaultIndex]) => ({
+      key: key as keyof SagaCredit,
+      label: key,
+      defaultIndex,
+    })),
+    creditPreviewSampledUserIds: [],
+    usersJson: null,
+    usersHtml: "",
+    loginHtmlSnippet: "",
+    usersHtmlSnippet: "",
+    mapping: EMPTY_MAPPING,
+    proposedMapping: {
+      ...EMPTY_MAPPING,
+      missingAircrafts: [],
+      missingCourses: [],
+      missingCreditAircrafts: [],
+    },
+    catalogs,
+    statuses: {},
+    locations: {},
+    htmlLengths: {},
+    logs: [],
+  };
+}
 
 function applyColumnMapToFlight(flight: SagaFlight, columnMap: Record<string, number>): SagaFlight {
   const rawCells = flight.rawCells ?? [];
@@ -111,6 +174,11 @@ function statusLabel(result: SagaImportResult | null): string {
     statuses.cashier ? `financeiro ${statuses.cashier}` : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" | ") : "Sem status";
+}
+
+function newImportRunId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `saga-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function cellValue<T>(row: T, key: keyof T): string {
@@ -360,9 +428,9 @@ function MappingPanel({
   const mappedFlights = applyColumnMapToFlights(result.flights, mapping.flightColumnMap);
   const creditColumnMap = normalizeSagaCreditColumnMap(mapping.creditColumnMap);
   const mappedCredits = applyColumnMapToCredits(result.credits, creditColumnMap);
-  const aircraftValues = unique(mappedFlights.map((flight) => flight.aeronave));
-  const courseValues = unique(mappedFlights.map((flight) => flight.curso));
-  const creditAircraftValues = unique(mappedCredits.map((credit) => credit.model));
+  const aircraftValues = unique([...mappedFlights.map((flight) => flight.aeronave), ...Object.keys(mapping.aircraftBySaga)]);
+  const courseValues = unique([...mappedFlights.map((flight) => flight.curso), ...Object.keys(mapping.courseBySaga)]);
+  const creditAircraftValues = unique([...mappedCredits.map((credit) => credit.model), ...Object.keys(mapping.creditAircraftBySaga)]);
   const aircraftOptions = result.catalogs.aircrafts.map((aircraft) => ({
     value: aircraft.registration,
     label: [aircraft.registration, aircraft.nickname].filter(Boolean).join(" | "),
@@ -697,6 +765,21 @@ export function AdminImportTab() {
   const [importing, setImporting] = useState<"test" | "selection" | "full" | null>(null);
   const [selectedSagaUserIds, setSelectedSagaUserIds] = useState<string[]>([]);
   const [useEmailAlias, setUseEmailAlias] = useState(true);
+  const [catalogs, setCatalogs] = useState<SagaImportCatalogs>(EMPTY_CATALOGS);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [importProgress, setImportProgress] = useState<SagaImportProgress | null>(null);
+  const [importStartedAt, setImportStartedAt] = useState<number | null>(null);
+  const [progressTick, setProgressTick] = useState(0);
+  const [importScope, setImportScope] = useState<SagaImportScope>(DEFAULT_IMPORT_SCOPE);
+  const [syncingScheduleNow, setSyncingScheduleNow] = useState(false);
+  const {
+    pendingMission,
+    awaitingMission,
+    onAwaitingMissionMapping,
+    confirmMissionMapping,
+    clearMissionPrompt,
+    armMissionPromptFromProgress,
+  } = useSagaImportMissionPrompt();
 
   const users = result?.users ?? [];
   const flights = useMemo(
@@ -709,6 +792,48 @@ export function AdminImportTab() {
   );
   const financialEntries = result?.financialEntries ?? [];
   const logs = result?.logs ?? [];
+  const mappingPanelResult = result ?? emptySagaImportResult(catalogs);
+  const importModeLabel = importing === "selection" ? "Selecao" : importing === "test" ? "Teste" : "Completo";
+  const displayPendingMission = pendingMission ?? importProgress?.pendingMission ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setSettingsLoading(true);
+    getSagaImportSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setCatalogs(settings.catalogs);
+        setMappingDraft({
+          aircraftBySaga: settings.mapping.aircraftBySaga,
+          aircraftIdByRegistration: settings.mapping.aircraftIdByRegistration ?? {},
+          courseBySaga: settings.mapping.courseBySaga,
+          missionBySaga: settings.mapping.missionBySaga ?? {},
+          creditAircraftBySaga: settings.mapping.creditAircraftBySaga,
+          flightColumnMap: settings.mapping.flightColumnMap,
+          creditColumnMap: normalizeSagaCreditColumnMap(settings.mapping.creditColumnMap),
+          sendFlightsToSaga: settings.mapping.sendFlightsToSaga === true,
+          syncScheduleFromSaga: settings.mapping.syncScheduleFromSaga === true,
+          updatedAt: settings.mapping.updatedAt,
+        });
+        setEmail(settings.credentials.email ?? "");
+        setPassword(settings.credentials.password ?? "");
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Falha ao carregar configuracoes do import SAGA.");
+      })
+      .finally(() => {
+        if (!cancelled) setSettingsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!importing) return;
+    const timer = window.setInterval(() => setProgressTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [importing]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -724,16 +849,19 @@ export function AdminImportTab() {
     setImportSummary(null);
     setSelectedSagaUserIds([]);
     try {
-      const next = await fetchSagaUsers({ email: cleanEmail, password });
+      const next = await fetchSagaUsers({ email: cleanEmail, password, sendFlightsToSaga: mappingDraft.sendFlightsToSaga === true });
       setResult(next);
+      setCatalogs(next.catalogs);
       setMappingDraft({
         aircraftBySaga: next.proposedMapping.aircraftBySaga,
         aircraftIdByRegistration: next.proposedMapping.aircraftIdByRegistration ?? {},
         courseBySaga: next.proposedMapping.courseBySaga,
+        missionBySaga: mappingDraft.missionBySaga ?? {},
         creditAircraftBySaga: next.proposedMapping.creditAircraftBySaga,
         flightColumnMap: next.proposedMapping.flightColumnMap,
         creditColumnMap: normalizeSagaCreditColumnMap(next.proposedMapping.creditColumnMap),
         sendFlightsToSaga: next.proposedMapping.sendFlightsToSaga === true,
+        syncScheduleFromSaga: next.proposedMapping.syncScheduleFromSaga === true,
         updatedAt: next.mapping.updatedAt,
       });
     } catch (err) {
@@ -763,9 +891,20 @@ export function AdminImportTab() {
 
   async function handleImport(testMode: boolean, selectionOnly = false) {
     if (!result) return;
+    const importRunId = newImportRunId();
     setImporting(testMode ? "test" : selectionOnly ? "selection" : "full");
     setError(null);
     setImportSummary(null);
+    setImportStartedAt(Date.now());
+    setImportProgress({
+      runId: importRunId,
+      status: "running",
+      stage: "Enfileirando import",
+      message: "Criando execucao no Appwrite.",
+      current: 0,
+      total: 1,
+      logs: [],
+    });
     try {
       const saved = await saveSagaImportMapping({
         ...mappingDraft,
@@ -777,37 +916,67 @@ export function AdminImportTab() {
         flights,
         financialEntries,
         mapping: saved,
+        scope: importScope,
         testMode,
         email: email.trim(),
         password,
         selectedSagaUserIds: selectionOnly || selectedSagaUserIds.length ? selectedSagaUserIds : [],
         useEmailAlias,
+        importRunId,
+        onProgress: setImportProgress,
+        onAwaitingMissionMapping,
       });
       setImportSummary(summary);
+      setMappingDraft((current) => ({ ...current, missionBySaga: saved.missionBySaga ?? current.missionBySaga }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao importar dados.");
+      const remoteProgress = await fetchSagaImportProgress(importRunId).catch(() => null);
+      if (remoteProgress) setImportProgress(remoteProgress);
+      const progressPending = remoteProgress?.pendingMission ?? importProgress?.pendingMission;
+      if (armMissionPromptFromProgress(progressPending)) {
+        setError("Selecione a missao local no modal para continuar o import.");
+      } else {
+        const progressMsg = remoteProgress?.status === "failed" ? remoteProgress.message : null;
+        setError(progressMsg || (err instanceof Error ? err.message : "Falha ao importar dados."));
+      }
     } finally {
       setImporting(null);
+      setImportStartedAt(null);
+      clearMissionPrompt();
+    }
+  }
+
+  async function handleSyncScheduleNow() {
+    setSyncingScheduleNow(true);
+    setError(null);
+    try {
+      const result = await runSagaScheduleSyncNow(true);
+      const imported = Number(result.imported || 0);
+      const updated = Number(result.updated || 0);
+      const students = Number(result.importedUsers?.students || 0);
+      const instructors = Number(result.importedUsers?.instructors || 0);
+      setError(
+        `Sincronizacao manual concluida: ${imported} criados, ${updated} atualizados, ${students} alunos autoimportados, ${instructors} instrutores autoimportados.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao sincronizar escala do SAGA agora.");
+    } finally {
+      setSyncingScheduleNow(false);
     }
   }
 
   return (
     <div className="space-y-4">
-      {importing === "full" || importing === "selection" ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-slate-900 p-5 shadow-2xl shadow-slate-950">
-            <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full w-2/3 animate-pulse rounded-full bg-emerald-400" />
-            </div>
-            <h3 className="mt-4 text-lg font-semibold text-slate-100">
-              {importing === "selection" ? "Importacao da selecao em andamento" : "Importacao completa em andamento"}
-            </h3>
-            <p className="mt-2 text-sm text-slate-400">
-              Usuarios, ANAC, creditos e voos estao sendo processados em fila. Mantenha esta aba aberta ate finalizar.
-            </p>
-          </div>
-        </div>
-      ) : null}
+      <SagaImportProgressOverlay
+        active={Boolean(importing) || awaitingMission || importProgress?.status === "failed"}
+        awaitingMission={awaitingMission}
+        modeLabel={importModeLabel}
+        importProgress={importProgress}
+        importStartedAt={importStartedAt}
+        progressTick={progressTick}
+        catalogs={catalogs}
+        pendingMission={displayPendingMission}
+        onConfirmMission={confirmMissionMapping}
+      />
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
@@ -830,6 +999,36 @@ export function AdminImportTab() {
                 </span>
               </span>
             </label>
+            <label className="mt-3 flex max-w-3xl cursor-pointer items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <input
+                type="checkbox"
+                checked={mappingDraft.syncScheduleFromSaga === true}
+                onChange={(event) => setMappingDraft((current) => ({ ...current, syncScheduleFromSaga: event.target.checked }))}
+                className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-slate-100">Sincronizar escala com o SAGA (job)</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Quando ligado, o backend executa sincronizacao periodica e importa eventos de hoje/futuro sem duplicar voos.
+                </span>
+              </span>
+            </label>
+            <div className="mt-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <div>
+                <span className="block text-sm font-semibold text-slate-100">Forcar sincronizacao da escala agora</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Executa sincronizacao imediata (independente do cron) e autoimporta aluno/instrutor ausente ao encontrar evento novo.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleSyncScheduleNow}
+                disabled={syncingScheduleNow || loading || settingsLoading}
+                className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {syncingScheduleNow ? "Sincronizando..." : "Sincronizar agora"}
+              </button>
+            </div>
           </div>
           <form onSubmit={handleSubmit} className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_minmax(12rem,1fr)_auto]">
             <label className="sr-only" htmlFor="saga-email">Email SAGA</label>
@@ -854,10 +1053,10 @@ export function AdminImportTab() {
             />
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || settingsLoading}
               className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? "Buscando..." : "Buscar dados"}
+              {settingsLoading ? "Carregando..." : loading ? "Buscando..." : "Buscar dados"}
             </button>
           </form>
         </div>
@@ -882,20 +1081,20 @@ export function AdminImportTab() {
         </div>
       </section>
 
+      <MappingPanel
+        result={mappingPanelResult}
+        mapping={mappingDraft}
+        onMappingChange={setMappingDraft}
+        onSave={handleSaveMapping}
+        saving={savingMapping}
+      />
+
       {result ? (
         <>
           <SagaStudentSelectionPanel
             users={users}
             selectedIds={selectedSagaUserIds}
             onChange={setSelectedSagaUserIds}
-          />
-
-          <MappingPanel
-            result={result}
-            mapping={mappingDraft}
-            onMappingChange={setMappingDraft}
-            onSave={handleSaveMapping}
-            saving={savingMapping}
           />
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
@@ -905,6 +1104,44 @@ export function AdminImportTab() {
                 <p className="mt-1 text-sm text-slate-500">
                   Modo teste importa os 5 primeiros voos realizados, 5 voos agendados futuros e apenas os alunos/instrutores relacionados a eles.
                 </p>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-300">
+                  <label className="inline-flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={importScope.users}
+                      onChange={(event) => setImportScope((current) => ({ ...current, users: event.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                    />
+                    Usuarios
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={importScope.pastFlights}
+                      onChange={(event) => setImportScope((current) => ({ ...current, pastFlights: event.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                    />
+                    Voos passados
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={importScope.schedule}
+                      onChange={(event) => setImportScope((current) => ({ ...current, schedule: event.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                    />
+                    Escala
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={importScope.credits}
+                      onChange={(event) => setImportScope((current) => ({ ...current, credits: event.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+                    />
+                    Creditos
+                  </label>
+                </div>
                 <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-300">
                   <input
                     type="checkbox"
@@ -919,7 +1156,7 @@ export function AdminImportTab() {
                 <button
                   type="button"
                   onClick={() => handleImport(true)}
-                  disabled={Boolean(importing) || !flights.length}
+                  disabled={Boolean(importing) || !flights.length || !Object.values(importScope).some(Boolean)}
                   className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {importing === "test" ? "Importando..." : "Importar teste"}
@@ -927,7 +1164,7 @@ export function AdminImportTab() {
                 <button
                   type="button"
                   onClick={() => handleImport(false, true)}
-                  disabled={Boolean(importing) || !flights.length || !selectedSagaUserIds.length}
+                  disabled={Boolean(importing) || !flights.length || !selectedSagaUserIds.length || !Object.values(importScope).some(Boolean)}
                   className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {importing === "selection" ? "Importando..." : "Importar seleção"}
@@ -935,7 +1172,7 @@ export function AdminImportTab() {
                 <button
                   type="button"
                   onClick={() => handleImport(false)}
-                  disabled={Boolean(importing) || !flights.length}
+                  disabled={Boolean(importing) || !flights.length || !Object.values(importScope).some(Boolean)}
                   className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {importing === "full" ? "Importando..." : "Importar tudo"}

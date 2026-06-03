@@ -4,6 +4,7 @@ import type { AdminUserProfileUpdateInput } from "../../lib/adminUsersDb";
 
 type ProfileDraft = {
   fullName: string;
+  nickname: string;
   email: string;
   cpf: string;
   phone: string;
@@ -17,6 +18,7 @@ type ProfileDraft = {
 function detailToDraft(detail: AdminUserDetail): ProfileDraft {
   return {
     fullName: detail.profile.fullName || detail.name || "",
+    nickname: detail.profile.nickname || "",
     email: detail.email || "",
     cpf: detail.profile.cpf || "",
     phone: detail.profile.phone || "",
@@ -33,6 +35,7 @@ function draftToPayload(draft: ProfileDraft): AdminUserProfileUpdateInput {
   const height = draft.heightCm.trim() ? Number(draft.heightCm) : null;
   return {
     fullName: draft.fullName.trim(),
+    nickname: draft.nickname.trim(),
     email: draft.email.trim(),
     cpf: draft.cpf.trim(),
     phone: draft.phone.trim(),
@@ -47,6 +50,7 @@ function draftToPayload(draft: ProfileDraft): AdminUserProfileUpdateInput {
 function draftsEqual(a: ProfileDraft, b: ProfileDraft): boolean {
   return (
     a.fullName === b.fullName &&
+    a.nickname === b.nickname &&
     a.email === b.email &&
     a.cpf === b.cpf &&
     a.phone === b.phone &&
@@ -77,7 +81,7 @@ export function AdminUserProfileEditSection({ detail, saving, onSave }: Props) {
     setDraft(next);
     setBaseline(next);
     setEditing(false);
-  }, [detail.userId, detail.profile.docId, detail.profile.sagaUserId, detail.profile.anacCode]);
+  }, [detail.userId, detail.profile.docId, detail.profile.sagaUserId, detail.profile.anacCode, detail.profile.nickname]);
 
   const dirty = !draftsEqual(draft, baseline);
 
@@ -136,6 +140,16 @@ export function AdminUserProfileEditSection({ detail, saving, onSave }: Props) {
         <label className="block text-xs text-slate-500">
           Nome completo
           <input type="text" value={draft.fullName} onChange={(e) => setField("fullName", e.target.value)} className={inputCls} />
+        </label>
+        <label className="block text-xs text-slate-500">
+          Nickname (SAGA)
+          <input
+            type="text"
+            value={draft.nickname}
+            onChange={(e) => setField("nickname", e.target.value)}
+            placeholder="Apelido no SAGA"
+            className={inputCls}
+          />
         </label>
         <label className="block text-xs text-slate-500">
           E-mail (login)

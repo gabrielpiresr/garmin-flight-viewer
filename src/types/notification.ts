@@ -82,6 +82,10 @@ export type GoogleCalendarSettings = {
   enabled: boolean;
   serviceAccountEmail: string;
   serviceAccountConfigured: boolean;
+  oauthClientConfigured: boolean;
+  oauthConnected: boolean;
+  oauthEmail: string | null;
+  delegatedEmail: string | null;
   aircraftCalendars: Array<{
     aircraftIdent: string;
     calendarId: string;
@@ -93,6 +97,7 @@ export type GoogleCalendarSettings = {
 
 export type GoogleCalendarSettingsInput = {
   enabled: boolean;
+  delegatedEmail: string;
   aircraftCalendars: Array<{
     aircraftIdent: string;
     calendarId: string;

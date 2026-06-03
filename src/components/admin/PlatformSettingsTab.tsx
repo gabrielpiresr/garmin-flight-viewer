@@ -1,5 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  disconnectGoogleCalendarOAuth,
+  exchangeGoogleCalendarOAuthCode,
+  getGoogleCalendarOAuthUrl,
   getEmailSettings,
   getGoogleCalendarSettings,
   saveEmailSettings,
@@ -162,12 +165,14 @@ const emptyForm: EmailSettingsInput = {
 
 const emptyGoogleCalendarForm: GoogleCalendarSettingsInput = {
   enabled: false,
+  delegatedEmail: "",
   aircraftCalendars: [],
 };
 
 function toGoogleCalendarForm(settings: GoogleCalendarSettings): GoogleCalendarSettingsInput {
   return {
     enabled: settings.enabled,
+    delegatedEmail: settings.delegatedEmail ?? "",
     aircraftCalendars: settings.aircraftCalendars.map((row) => ({ ...row })),
   };
 }
@@ -419,6 +424,8 @@ function GoogleCalendarSettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -453,9 +460,54 @@ function GoogleCalendarSettingsPanel() {
     void load();
   }, [load]);
 
+  // Handle OAuth redirect: detect ?code=xxx in URL after Google authorization
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+    const cleanUrl = window.location.origin + window.location.pathname;
+    window.history.replaceState({}, "", cleanUrl);
+    setConnecting(true);
+    void exchangeGoogleCalendarOAuthCode(code, cleanUrl)
+      .then((saved) => {
+        setSettings(saved);
+        showToast({ variant: "success", message: `Google Calendar conectado como ${saved.oauthEmail ?? "conta Google"}.` });
+      })
+      .catch((e: unknown) => setError((e as Error).message))
+      .finally(() => setConnecting(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
   }, [error, showToast]);
+
+  async function handleConnectOAuth() {
+    setConnecting(true);
+    setError(null);
+    try {
+      const redirectUri = window.location.origin + window.location.pathname;
+      const url = await getGoogleCalendarOAuthUrl(redirectUri);
+      window.location.href = url;
+    } catch (e) {
+      setError((e as Error).message);
+      setConnecting(false);
+    }
+  }
+
+  async function handleDisconnectOAuth() {
+    setDisconnecting(true);
+    setError(null);
+    try {
+      const updated = await disconnectGoogleCalendarOAuth();
+      setSettings(updated);
+      showToast({ variant: "success", message: "Conta Google desconectada." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDisconnecting(false);
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -463,6 +515,7 @@ function GoogleCalendarSettingsPanel() {
     try {
       const saved = await saveGoogleCalendarSettings({
         enabled: form.enabled,
+        delegatedEmail: form.delegatedEmail.trim(),
         aircraftCalendars: form.aircraftCalendars
           .map((row) => ({
             aircraftIdent: normalizeAircraftIdent(row.aircraftIdent),
@@ -474,6 +527,7 @@ function GoogleCalendarSettingsPanel() {
       const savedForm = toGoogleCalendarForm(saved);
       setForm({
         enabled: savedForm.enabled,
+        delegatedEmail: savedForm.delegatedEmail,
         aircraftCalendars: aircrafts.map((aircraft) => {
           const current = savedForm.aircraftCalendars.find(
             (row) => normalizeAircraftIdent(row.aircraftIdent) === normalizeAircraftIdent(aircraft.registration),
@@ -498,6 +552,7 @@ function GoogleCalendarSettingsPanel() {
       const testedForm = toGoogleCalendarForm(tested);
       setForm({
         enabled: testedForm.enabled,
+        delegatedEmail: testedForm.delegatedEmail,
         aircraftCalendars: aircrafts.map((aircraft) => {
           const current = testedForm.aircraftCalendars.find(
             (row) => normalizeAircraftIdent(row.aircraftIdent) === normalizeAircraftIdent(aircraft.registration),
@@ -561,19 +616,18 @@ function GoogleCalendarSettingsPanel() {
       </div>
 
       <div className="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/10 p-4 text-xs text-sky-100">
-        <p className="font-semibold text-sky-50">Como configurar no Google Calendar</p>
+        <p className="font-semibold text-sky-50">Como configurar</p>
         <ol className="mt-2 list-decimal space-y-1 pl-4 text-sky-100/85">
-          <li>Crie uma agenda para cada aeronave no Google Calendar, por exemplo "PS-ABC".</li>
+          <li>Crie uma agenda para cada aeronave no Google Calendar (ex: "PS-ABC").</li>
+          <li>Em Configuracoes da agenda &gt; Compartilhar, adicione o email tecnico abaixo com permissao "Fazer alteracoes nos eventos".</li>
+          <li>Copie o "ID da agenda" (termina com @group.calendar.google.com) e cole na linha da aeronave abaixo.</li>
           <li>
-            Em Configuracoes da agenda &gt; Compartilhar com pessoas especificas, adicione o email tecnico abaixo com
-            permissao "Fazer alteracoes nos eventos".
+            <strong>Para enviar convites:</strong> No Google Cloud Console, crie credenciais OAuth 2.0 (tipo "Web application"), adicione a URL deste painel em "Authorized redirect URIs" e configure as variaveis de ambiente <code>GOOGLE_CALENDAR_OAUTH_CLIENT_ID</code> e <code>GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET</code> na funcao Appwrite. Depois clique em "Conectar conta Google".
           </li>
-          <li>Na mesma tela, copie o campo "ID da agenda". Ele costuma terminar com @group.calendar.google.com.</li>
-          <li>Cole o ID da agenda na linha da aeronave correspondente e salve.</li>
         </ol>
         <div className="mt-3 rounded-lg border border-sky-300/30 bg-slate-950/30 px-3 py-2">
-          <span className="block text-[11px] uppercase tracking-wider text-sky-200/70">Email tecnico para compartilhar</span>
-          <span className="font-mono text-sky-50">{settings?.serviceAccountEmail || "Service account ainda nao configurado na funcao Appwrite"}</span>
+          <span className="block text-[11px] uppercase tracking-wider text-sky-200/70">Email tecnico para compartilhar as agendas</span>
+          <span className="font-mono text-sky-50">{settings?.serviceAccountEmail || "Service account ainda nao configurada na funcao Appwrite"}</span>
         </div>
       </div>
 
@@ -596,6 +650,50 @@ function GoogleCalendarSettingsPanel() {
           />
           Habilitar criacao e sincronizacao de eventos de voo
         </label>
+
+        <div className="md:col-span-2 rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">Conta Google (para invites)</p>
+          <p className="mb-3 text-[11px] text-slate-500">
+            Conecte uma conta Google com acesso às agendas das aeronaves. Os convites de voo serão enviados como essa conta e aluno/instrutor receberão o invite no Google Calendar deles.
+          </p>
+          {connecting ? (
+            <p className="text-xs text-slate-400">Conectando...</p>
+          ) : settings?.oauthConnected ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Conectado como <span className="font-semibold">{settings.oauthEmail ?? "conta Google"}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDisconnectOAuth()}
+                disabled={disconnecting}
+                className="rounded border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {disconnecting ? "Desconectando..." : "Desconectar"}
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/30 px-3 py-2 text-xs text-slate-400">
+                <span className="h-2 w-2 rounded-full bg-slate-600" />
+                Nenhuma conta conectada — invites nao serao enviados
+              </div>
+              {settings?.oauthClientConfigured ? (
+                <button
+                  type="button"
+                  onClick={() => void handleConnectOAuth()}
+                  disabled={connecting}
+                  className="rounded-lg border border-cyan-500/50 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50"
+                >
+                  Conectar conta Google
+                </button>
+              ) : (
+                <p className="text-[11px] text-amber-300">Configure GOOGLE_CALENDAR_OAUTH_CLIENT_ID e GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET na funcao Appwrite para habilitar.</p>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="md:col-span-2">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Agendas por aeronave</p>

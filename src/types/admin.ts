@@ -1,5 +1,6 @@
 export type AircraftCategory = "PPL" | "IFR" | "Multi-Engine" | "Helicopter" | "Outro";
 export type TemperatureUnit = "C" | "F";
+export type AircraftType = "aviao" | "simulador" | "ground";
 
 export type AircraftModel = {
   id: string;
@@ -47,6 +48,7 @@ export type AircraftModel = {
 export type Aircraft = {
   id: string;
   school_id: string;
+  type: AircraftType;
   model_id: string;
   registration: string;
   nickname: string | null;

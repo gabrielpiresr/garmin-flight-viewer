@@ -180,7 +180,7 @@ export function DiarioDeBordoTab() {
   const [allAircraftMetaByFlightId, setAllAircraftMetaByFlightId] = useState<Map<string, FlightRecordMeta | null>>(new Map());
 
   useEffect(() => {
-    void listAircrafts(schoolId).then(setAircrafts).catch(() => setAircrafts([]));
+    void listAircrafts(schoolId).then((rows) => setAircrafts(rows.filter((a) => a.type === "aviao"))).catch(() => setAircrafts([]));
   }, []);
 
   const selectedAircraft = useMemo(

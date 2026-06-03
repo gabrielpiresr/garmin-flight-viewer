@@ -63,9 +63,10 @@ export function OfflineLogbookAdminPanel() {
     Promise.all([listAircrafts(schoolId), listOfflineAircraftPackages()])
       .then(([aircraftList, packageList]) => {
         if (cancelled) return;
-        setAircrafts(aircraftList);
+        const avioes = aircraftList.filter((a) => a.type === "aviao");
+        setAircrafts(avioes);
         setPackages(packageList);
-        setSelectedIdent((current) => current || (aircraftList[0]?.registration ?? ""));
+        setSelectedIdent((current) => current || (avioes[0]?.registration ?? ""));
       })
       .catch((err) => {
         if (!cancelled) showToast({ variant: "error", message: err instanceof Error ? err.message : "Falha ao carregar offline." });

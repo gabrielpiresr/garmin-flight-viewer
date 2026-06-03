@@ -7,6 +7,8 @@ import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { createLead, deleteLead, generateCadastroToken, listLeads, updateLead } from "../../lib/crmDb";
+import { getStudentCreditStatement } from "../../lib/creditsDb";
+import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import {
   approveStudentAccess,
   getProfile,
@@ -1557,6 +1559,7 @@ export function CrmTab() {
   const [editModal, setEditModal] = useState<{ lead: CrmLead | null; initialStatus: CrmStatus } | null>(null);
   const [cadastroModal, setCadastroModal] = useState<CrmLead | null>(null);
   const [enrollmentModal, setEnrollmentModal] = useState<{ lead: CrmLead; templates: ContractTemplate[] } | null>(null);
+  const [creditModal, setCreditModal] = useState<{ lead: CrmLead } | null>(null);
   const [cardSettingsOpen, setCardSettingsOpen] = useState(false);
   const { visibleFields, toggle: toggleField } = useCardFieldSettings();
 
@@ -1587,6 +1590,28 @@ export function CrmTab() {
       }
       return;
     }
+    if (targetStatus === "aluno_pronto" && draggedLead.userId) {
+      const lead = draggedLead;
+      setDraggedLead(null);
+      try {
+        const statement = await getStudentCreditStatement({
+          viewer: { userId: user?.id ?? "", role: (user?.role ?? "admin") as "admin" },
+          studentUserId: lead.userId!,
+        });
+        if (statement.purchases.length === 0) {
+          setCreditModal({ lead });
+          return;
+        }
+      } catch { /* se falhar a consulta, prossegue normalmente */ }
+      const prev = lead.crmStatus;
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: targetStatus } : l));
+      const { error } = await updateLead(lead.id, { crmStatus: targetStatus });
+      if (error) {
+        setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
+        showToast("Erro ao mover lead.", "error");
+      }
+      return;
+    }
     const prev = draggedLead.crmStatus;
     setLeads((ls) => ls.map((l) => l.id === draggedLead.id ? { ...l, crmStatus: targetStatus } : l));
     const { error } = await updateLead(draggedLead.id, { crmStatus: targetStatus });
@@ -1595,6 +1620,17 @@ export function CrmTab() {
       showToast("Erro ao mover lead.", "error");
     }
     setDraggedLead(null);
+  }
+
+  async function confirmMoveToReady(lead: CrmLead) {
+    setCreditModal(null);
+    const prev = lead.crmStatus;
+    setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: "aluno_pronto" } : l));
+    const { error } = await updateLead(lead.id, { crmStatus: "aluno_pronto" });
+    if (error) {
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
+      showToast("Erro ao mover lead.", "error");
+    }
   }
 
   async function executeEnrollmentAutomation(
@@ -1806,6 +1842,49 @@ export function CrmTab() {
           onToggle={toggleField}
           onClose={() => setCardSettingsOpen(false)}
         />
+      )}
+
+      {creditModal && creditModal.lead.userId && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-emerald-700/40 bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">Adicionar créditos — {creditModal.lead.name}</p>
+                <p className="text-xs text-slate-500">Este aluno ainda não tem créditos. Adicione antes de mover para Pronto para Voar.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCreditModal(null)}
+                className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Fechar
+              </button>
+            </div>
+            <div className="p-4">
+              <AdminUserCreditsSection
+                studentUserId={creditModal.lead.userId}
+                studentName={creditModal.lead.name}
+                anacCode={creditModal.lead.anacCode ?? undefined}
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setCreditModal(null)}
+                className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmMoveToReady(creditModal.lead)}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              >
+                Confirmar e mover para Pronto para Voar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

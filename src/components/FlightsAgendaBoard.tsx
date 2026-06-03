@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { parseDurationToMinutes } from "../lib/flightDisplay";
+import { parseDurationToMinutes, shortName } from "../lib/flightDisplay";
 import type { SavedFlightListItem } from "../lib/flightsDb";
 import { SLOT_HOURS } from "../types/admin";
 
@@ -223,11 +223,11 @@ export function FlightsAgendaBoard({
                             left: widthOffset,
                             right: widthOffset,
                           }}
-                          title={`${info?.studentName ?? "Voo"} • ${info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} • ${agendaItem.startTime}-${agendaItem.endTime}`}
+                          title={`${shortName(info?.studentName, "Voo")} • ${info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} • ${agendaItem.startTime}-${agendaItem.endTime}`}
                         >
-                          <p className="truncate font-semibold">{info?.studentName ?? "Voo"}</p>
+                          <p className="truncate font-semibold">{shortName(info?.studentName, "Voo")}</p>
                           <p className="truncate opacity-90">{agendaItem.startTime}-{agendaItem.endTime}</p>
-                          <p className="truncate opacity-80">{info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} · {info?.instructorName || "Sem instrutor"}</p>
+                          <p className="truncate opacity-80">{info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} · {shortName(info?.instructorName) || "Sem instrutor"}</p>
                         </button>
                       );
                     })}

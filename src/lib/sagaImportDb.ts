@@ -86,17 +86,38 @@ export type SagaImportMapping = {
   aircraftBySaga: Record<string, string>;
   aircraftIdByRegistration?: Record<string, string>;
   courseBySaga: Record<string, string>;
+  missionBySaga?: Record<string, string>;
   creditAircraftBySaga: Record<string, string>;
   flightColumnMap: Record<string, number>;
   creditColumnMap: Record<string, number>;
   sendFlightsToSaga?: boolean;
+  syncScheduleFromSaga?: boolean;
   updatedAt?: string | null;
+};
+
+export type SagaImportScope = {
+  users: boolean;
+  pastFlights: boolean;
+  schedule: boolean;
+  credits: boolean;
 };
 
 export type SagaImportCatalogs = {
   aircrafts: Array<{ id: string; registration: string; nickname: string; active: boolean; modelId?: string; modelName?: string }>;
   aircraftModels: Array<{ id: string; name: string; manufacturer: string }>;
-  trainingTracks: Array<{ id: string; name: string; active: boolean }>;
+  trainingTracks: Array<{ id: string; name: string; active: boolean; stages?: unknown[] }>;
+};
+
+export type SagaImportCredentials = {
+  email: string;
+  password: string;
+  updatedAt?: string | null;
+};
+
+export type SagaImportSettings = {
+  mapping: SagaImportMapping;
+  catalogs: SagaImportCatalogs;
+  credentials: SagaImportCredentials;
 };
 
 export type SagaProposedMapping = SagaImportMapping & {
@@ -106,6 +127,7 @@ export type SagaProposedMapping = SagaImportMapping & {
 };
 
 export type SagaImportSummary = {
+  importRunId?: string;
   testMode: boolean;
   useEmailAlias?: boolean;
   selectedSagaUsers?: number;
@@ -158,6 +180,30 @@ export type SagaImportSummary = {
     creditAircrafts: string[];
   };
   logs: string[];
+};
+
+export type SagaImportPendingMission = {
+  lookupKey: string;
+  rawMission: string;
+  missionCode: string;
+  trainingTrackId: string;
+  trackName: string;
+  sagaFlightId: string;
+  studentName: string;
+  flightDate: string;
+  course: string;
+};
+
+export type SagaImportProgress = {
+  runId: string;
+  status: "running" | "completed" | "failed" | "awaiting_mission_mapping" | string;
+  stage: string;
+  message: string;
+  current: number;
+  total: number;
+  updatedAt?: string | null;
+  logs: string[];
+  pendingMission?: SagaImportPendingMission | null;
 };
 
 export type SagaImportResult = {
@@ -349,10 +395,12 @@ const EMPTY_MAPPING: SagaImportMapping = {
   aircraftBySaga: {},
   aircraftIdByRegistration: {},
   courseBySaga: {},
+  missionBySaga: {},
   creditAircraftBySaga: {},
   flightColumnMap: DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
   creditColumnMap: DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   sendFlightsToSaga: false,
+  syncScheduleFromSaga: false,
   updatedAt: null,
 };
 
@@ -361,10 +409,12 @@ function normalizeSagaImportResult(value: Partial<SagaImportResult> | null | und
     aircraftBySaga: value?.mapping?.aircraftBySaga ?? {},
     aircraftIdByRegistration: value?.mapping?.aircraftIdByRegistration ?? {},
     courseBySaga: value?.mapping?.courseBySaga ?? {},
+    missionBySaga: value?.mapping?.missionBySaga ?? {},
     creditAircraftBySaga: value?.mapping?.creditAircraftBySaga ?? {},
     flightColumnMap: value?.mapping?.flightColumnMap ?? DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
     creditColumnMap: normalizeSagaCreditColumnMap(value?.mapping?.creditColumnMap),
     sendFlightsToSaga: value?.mapping?.sendFlightsToSaga === true,
+    syncScheduleFromSaga: value?.mapping?.syncScheduleFromSaga === true,
     updatedAt: value?.mapping?.updatedAt ?? null,
   };
   return {
@@ -392,6 +442,7 @@ function normalizeSagaImportResult(value: Partial<SagaImportResult> | null | und
       flightColumnMap: value?.proposedMapping?.flightColumnMap ?? mapping.flightColumnMap,
       creditColumnMap: normalizeSagaCreditColumnMap(value?.proposedMapping?.creditColumnMap ?? mapping.creditColumnMap),
       sendFlightsToSaga: value?.proposedMapping?.sendFlightsToSaga === true || mapping.sendFlightsToSaga === true,
+      syncScheduleFromSaga: value?.proposedMapping?.syncScheduleFromSaga === true || mapping.syncScheduleFromSaga === true,
       missingAircrafts: Array.isArray(value?.proposedMapping?.missingAircrafts) ? value.proposedMapping.missingAircrafts : [],
       missingCourses: Array.isArray(value?.proposedMapping?.missingCourses) ? value.proposedMapping.missingCourses : [],
       missingCreditAircrafts: Array.isArray(value?.proposedMapping?.missingCreditAircrafts) ? value.proposedMapping.missingCreditAircrafts : [],
@@ -423,7 +474,24 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function waitForFunctionExecution(functionId: string, executionId: string, timeoutMs = 90000) {
+export async function fetchSagaImportProgress(runId: string): Promise<SagaImportProgress | null> {
+  if (!runId) return null;
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaGetImportProgress", runId }),
+    false,
+  );
+  const response = parseJsonBody<{ progress?: SagaImportProgress | null }>(execution.responseBody, {});
+  return response.progress ?? null;
+}
+
+async function waitForFunctionExecution(
+  functionId: string,
+  executionId: string,
+  timeoutMs = 90000,
+  options: { progressRunId?: string; onProgress?: (progress: SagaImportProgress) => void } = {},
+) {
   const { functions: fn } = getAdminFunctionClient();
   const startedAt = Date.now();
   let lastExecution = await fn.getExecution(functionId, executionId);
@@ -433,9 +501,18 @@ async function waitForFunctionExecution(functionId: string, executionId: string,
       throw new Error("A importacao ainda esta em andamento no Appwrite. Aguarde um pouco e confira as execucoes da Function.");
     }
     await sleep(2000);
-    lastExecution = await fn.getExecution(functionId, executionId);
+    const [nextExecution, progress] = await Promise.all([
+      fn.getExecution(functionId, executionId),
+      options.progressRunId ? fetchSagaImportProgress(options.progressRunId).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (progress && options.onProgress) options.onProgress(progress);
+    lastExecution = nextExecution;
   }
 
+  if (options.progressRunId && options.onProgress) {
+    const progress = await fetchSagaImportProgress(options.progressRunId).catch(() => null);
+    if (progress) options.onProgress(progress);
+  }
   return lastExecution;
 }
 
@@ -471,12 +548,12 @@ function getAdminFunctionClient() {
   return { functions, functionId: ADMIN_USERS_FUNCTION_ID };
 }
 
-export async function fetchSagaUsers(params: { email: string; password: string }): Promise<SagaImportResult> {
+export async function fetchSagaUsers(params: { email: string; password: string; sendFlightsToSaga?: boolean }): Promise<SagaImportResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
 
   const execution = await fn.createExecution(
     functionId,
-    JSON.stringify({ action: "sagaFetchUsers", email: params.email, password: params.password }),
+    JSON.stringify({ action: "sagaFetchUsers", email: params.email, password: params.password, sendFlightsToSaga: params.sendFlightsToSaga === true }),
     false,
   );
   const response = parseResponse(execution.responseBody);
@@ -488,6 +565,47 @@ export async function fetchSagaUsers(params: { email: string; password: string }
     throw error;
   }
   return response;
+}
+
+export async function getSagaImportSettings(): Promise<SagaImportSettings> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaGetImportSettings" }),
+    false,
+  );
+  const response = parseJsonBody<{ ok?: boolean; mapping?: SagaImportMapping; catalogs?: SagaImportCatalogs; credentials?: SagaImportCredentials; message?: string }>(
+    execution.responseBody,
+    {},
+  );
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.mapping) {
+    throw new Error(response.message || "Falha ao carregar configuracoes do import SAGA.");
+  }
+  return {
+    mapping: {
+      aircraftBySaga: response.mapping.aircraftBySaga ?? {},
+      aircraftIdByRegistration: response.mapping.aircraftIdByRegistration ?? {},
+      courseBySaga: response.mapping.courseBySaga ?? {},
+      missionBySaga: response.mapping.missionBySaga ?? {},
+      creditAircraftBySaga: response.mapping.creditAircraftBySaga ?? {},
+      flightColumnMap: response.mapping.flightColumnMap ?? DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
+      creditColumnMap: normalizeSagaCreditColumnMap(response.mapping.creditColumnMap),
+      sendFlightsToSaga: response.mapping.sendFlightsToSaga === true,
+      syncScheduleFromSaga: response.mapping.syncScheduleFromSaga === true,
+      updatedAt: response.mapping.updatedAt ?? null,
+    },
+    catalogs: {
+      aircrafts: Array.isArray(response.catalogs?.aircrafts) ? response.catalogs.aircrafts : [],
+      aircraftModels: Array.isArray(response.catalogs?.aircraftModels) ? response.catalogs.aircraftModels : [],
+      trainingTracks: Array.isArray(response.catalogs?.trainingTracks) ? response.catalogs.trainingTracks : [],
+    },
+    credentials: {
+      email: response.credentials?.email ?? "",
+      password: response.credentials?.password ?? "",
+      updatedAt: response.credentials?.updatedAt ?? null,
+    },
+  };
 }
 
 export async function saveSagaImportMapping(mapping: SagaImportMapping): Promise<SagaImportMapping> {
@@ -562,46 +680,286 @@ export async function syncSagaScheduleEvent(
   return response;
 }
 
-export async function importSagaData(params: {
+export type SagaScheduleJobResult = {
+  ok: boolean;
+  skipped?: boolean;
+  forced?: boolean;
+  message?: string;
+  imported?: number;
+  updated?: number;
+  importedUsers?: {
+    students?: number;
+    instructors?: number;
+  };
+  logs?: string[];
+};
+
+export async function runSagaScheduleSyncNow(force = false): Promise<SagaScheduleJobResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaSyncScheduleJob", force }),
+    true,
+  );
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000);
+  const response = parseJsonBody<SagaScheduleJobResult>(execution.responseBody, {
+    ok: false,
+    message: "Resposta da sincronizacao de escala nao estava em JSON valido.",
+    logs: [],
+  });
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao executar sincronizacao manual da escala SAGA.");
+  }
+  return response;
+}
+
+type SagaImportExecutionResult = {
+  ok?: boolean;
+  paused?: boolean;
+  summary?: SagaImportSummary;
+  pendingMission?: SagaImportPendingMission;
+  resumeFlightIndex?: number;
+  message?: string;
+};
+
+async function resolvePausedImportResponse(
+  response: SagaImportExecutionResult,
+  importRunId?: string,
+): Promise<SagaImportExecutionResult> {
+  if (response.paused && response.pendingMission?.lookupKey) return response;
+  if (!importRunId) return response;
+  const progress = await fetchSagaImportProgress(importRunId).catch(() => null);
+  if (progress?.status === "awaiting_mission_mapping" && progress.pendingMission?.lookupKey) {
+    return {
+      ok: true,
+      paused: true,
+      pendingMission: progress.pendingMission,
+      summary: response.summary,
+      resumeFlightIndex: response.resumeFlightIndex,
+    };
+  }
+  return response;
+}
+
+async function enrichSagaImportExecutionResult(
+  response: SagaImportExecutionResult,
+  execution: { status?: string; responseStatusCode?: number; responseBody?: string },
+  importRunId?: string,
+): Promise<SagaImportExecutionResult> {
+  let enriched = { ...response };
+  if (enriched.summary || enriched.paused) return enriched;
+
+  const progress = importRunId ? await fetchSagaImportProgress(importRunId).catch(() => null) : null;
+  if (progress?.status === "awaiting_mission_mapping" && progress.pendingMission?.lookupKey) {
+    return {
+      ok: true,
+      paused: true,
+      pendingMission: progress.pendingMission,
+      summary: enriched.summary,
+      resumeFlightIndex: enriched.resumeFlightIndex,
+      message: progress.message,
+    };
+  }
+
+  const lastSummary = await fetchLastSagaImportSummary().catch(() => null);
+  if (lastSummary) {
+    enriched = { ...enriched, ok: true, summary: lastSummary };
+  }
+
+  const detail =
+    enriched.message ||
+    progress?.message ||
+    (execution.responseBody && execution.responseBody.length < 800
+      ? execution.responseBody
+      : "") ||
+    (execution.status === "failed"
+      ? `A function admin-users encerrou com status "${execution.status}" (HTTP ${execution.responseStatusCode ?? "?"}). Verifique Execucoes no Appwrite.`
+      : "");
+  if (detail) enriched.message = detail;
+
+  return enriched;
+}
+
+function sagaImportErrorMessage(response: SagaImportExecutionResult, execution: { status?: string; responseStatusCode?: number }) {
+  if (response.message) return response.message;
+  if (execution.status === "failed") {
+    return `Import SAGA interrompido na function (HTTP ${execution.responseStatusCode ?? "?"}). Confira Execucoes > admin-users.`;
+  }
+  return "Falha ao importar dados do SAGA.";
+}
+
+async function executeSagaImportAction(
+  action: "sagaImportData" | "sagaResumeImportData",
+  body: Record<string, unknown>,
+  options: { importRunId?: string; onProgress?: (progress: SagaImportProgress) => void } = {},
+): Promise<SagaImportExecutionResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const createdExecution = await fn.createExecution(functionId, JSON.stringify({ action, ...body }), true);
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000, {
+    progressRunId: options.importRunId,
+    onProgress: options.onProgress,
+  });
+  let response = parseJsonBody<SagaImportExecutionResult>(execution.responseBody, {});
+  response = await resolvePausedImportResponse(response, options.importRunId);
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
+    response = await enrichSagaImportExecutionResult(response, execution, options.importRunId);
+    response = await resolvePausedImportResponse(response, options.importRunId);
+    if (!response.paused) {
+      throw new Error(sagaImportErrorMessage(response, execution));
+    }
+  }
+  if (!response.summary) {
+    response = await enrichSagaImportExecutionResult(response, execution, options.importRunId);
+    response = await resolvePausedImportResponse(response, options.importRunId);
+  }
+  if (!response.summary && !response.paused) {
+    throw new Error(sagaImportErrorMessage(response, execution));
+  }
+  return response;
+}
+
+export async function resumeSagaImportMissionMapping(params: {
+  runId: string;
+  lookupKey: string;
+  missionId: string;
+  resumeFlightIndex?: number;
   users: SagaUser[];
   flights: SagaFlight[];
   financialEntries?: SagaFinancialEntry[];
   mapping: SagaImportMapping;
+  scope?: SagaImportScope;
   testMode: boolean;
   email: string;
   password: string;
   selectedSagaUserIds?: string[];
   useEmailAlias?: boolean;
-}): Promise<SagaImportSummary> {
-  const { functions: fn, functionId } = getAdminFunctionClient();
-
-  const createdExecution = await fn.createExecution(
-    functionId,
-    JSON.stringify({
-      action: "sagaImportData",
+  onProgress?: (progress: SagaImportProgress) => void;
+}): Promise<SagaImportExecutionResult> {
+  return executeSagaImportAction(
+    "sagaResumeImportData",
+    {
+      runId: params.runId,
+      lookupKey: params.lookupKey,
+      missionId: params.missionId,
+      resumeFlightIndex: params.resumeFlightIndex,
       users: params.users,
       flights: params.flights,
       financialEntries: params.financialEntries ?? [],
       mapping: params.mapping,
+      scope: params.scope ?? undefined,
       testMode: params.testMode,
       email: params.email,
       password: params.password,
       selectedSagaUserIds: params.selectedSagaUserIds ?? [],
       useEmailAlias: params.useEmailAlias === true,
-    }),
-    true,
+      importRunId: params.runId,
+    },
+    { importRunId: params.runId, onProgress: params.onProgress },
   );
-  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000);
-  let response = parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {});
-  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
-    throw new Error(response.message || "Falha ao importar dados do SAGA.");
+}
+
+export async function importSagaData(params: {
+  users: SagaUser[];
+  flights: SagaFlight[];
+  financialEntries?: SagaFinancialEntry[];
+  mapping: SagaImportMapping;
+  scope?: SagaImportScope;
+  testMode: boolean;
+  email: string;
+  password: string;
+  selectedSagaUserIds?: string[];
+  useEmailAlias?: boolean;
+  importRunId?: string;
+  onProgress?: (progress: SagaImportProgress) => void;
+  onAwaitingMissionMapping?: (pending: SagaImportPendingMission) => Promise<string>;
+}): Promise<SagaImportSummary> {
+  let mapping = params.mapping;
+  let response = await resolvePausedImportResponse(
+    await executeSagaImportAction(
+      "sagaImportData",
+      {
+        users: params.users,
+        flights: params.flights,
+        financialEntries: params.financialEntries ?? [],
+        mapping,
+        scope: params.scope ?? undefined,
+        testMode: params.testMode,
+        email: params.email,
+        password: params.password,
+        selectedSagaUserIds: params.selectedSagaUserIds ?? [],
+        useEmailAlias: params.useEmailAlias === true,
+        importRunId: params.importRunId,
+      },
+      { importRunId: params.importRunId, onProgress: params.onProgress },
+    ),
+    params.importRunId,
+  );
+
+  while (true) {
+    if (!response.paused) {
+      if (!response.summary && params.importRunId) {
+        const progress = await fetchSagaImportProgress(params.importRunId).catch(() => null);
+        if (progress?.status === "awaiting_mission_mapping" && progress.pendingMission?.lookupKey) {
+          response = {
+            ok: true,
+            paused: true,
+            pendingMission: progress.pendingMission,
+            summary: response.summary,
+            resumeFlightIndex: response.resumeFlightIndex,
+          };
+          continue;
+        }
+      }
+      break;
+    }
+
+    const pending =
+      response.pendingMission ||
+      (params.importRunId ? (await fetchSagaImportProgress(params.importRunId))?.pendingMission : null) ||
+      null;
+    if (!pending?.lookupKey) {
+      throw new Error("Import pausado aguardando de-para de missao, mas os dados da ficha nao foram retornados.");
+    }
+    if (!params.onAwaitingMissionMapping) {
+      throw new Error(`Missao SAGA sem correspondencia: ${pending.rawMission || pending.lookupKey}. Configure o de-para e tente novamente.`);
+    }
+    const missionId = await params.onAwaitingMissionMapping(pending);
+    if (!missionId) throw new Error("Selecione uma missao local para continuar o import.");
+    mapping = {
+      ...mapping,
+      missionBySaga: { ...(mapping.missionBySaga ?? {}), [pending.lookupKey]: missionId },
+    };
+    await saveSagaImportMapping(mapping).catch(() => null);
+    response = await resolvePausedImportResponse(
+      await resumeSagaImportMissionMapping({
+        runId: params.importRunId || response.summary?.importRunId || "",
+        lookupKey: pending.lookupKey,
+        missionId,
+        resumeFlightIndex: response.resumeFlightIndex,
+        users: params.users,
+        flights: params.flights,
+        financialEntries: params.financialEntries,
+        mapping,
+        scope: params.scope,
+        testMode: params.testMode,
+        email: params.email,
+        password: params.password,
+        selectedSagaUserIds: params.selectedSagaUserIds,
+        useEmailAlias: params.useEmailAlias,
+        onProgress: params.onProgress,
+      }),
+      params.importRunId,
+    );
   }
+
   if (!response.summary) {
-    const fallback = await fetchLastSagaImportSummary();
-    if (fallback) response = { ok: true, summary: fallback };
-  }
-  if (!response.summary) {
-    throw new Error(response.message || "Falha ao importar dados do SAGA.");
+    const progress = params.importRunId ? await fetchSagaImportProgress(params.importRunId).catch(() => null) : null;
+    const lastSummary = await fetchLastSagaImportSummary().catch(() => null);
+    const detail = response.message || progress?.message;
+    if (lastSummary && (lastSummary.flightsCreated > 0 || lastSummary.flightsUpdated > 0 || lastSummary.creditsCreated > 0)) {
+      return lastSummary;
+    }
+    throw new Error(detail || "Falha ao importar dados do SAGA.");
   }
   return response.summary;
 }
