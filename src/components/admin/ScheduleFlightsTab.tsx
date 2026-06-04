@@ -491,6 +491,7 @@ function CalendarGrid({
     hasMoved: boolean;
   } | null>(null);
   const dragEndedRef = useRef(false);
+  const pointerClickHandledRef = useRef(false);
   const draggable = Boolean(onItemDrop);
   const dragThresholdPx = 5;
 
@@ -544,6 +545,9 @@ function CalendarGrid({
         if (p?.hasMoved && onItemDrop) {
           dragEndedRef.current = true;
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
+        } else if (p) {
+          pointerClickHandledRef.current = true;
+          onItemClick(p.item);
         }
         return null;
       });
@@ -554,7 +558,7 @@ function CalendarGrid({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragState, onItemDrop, resolveDropTarget]);
+  }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
 
   return (
     <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
@@ -662,6 +666,7 @@ function CalendarGrid({
                             e.preventDefault();
                             e.stopPropagation();
                             dragEndedRef.current = false;
+                            pointerClickHandledRef.current = false;
                             const target = resolveDropTarget(e.clientX, e.clientY) ?? {
                               dayOfWeek: item.dayOfWeek,
                               startHour: item.startHour,
@@ -674,6 +679,11 @@ function CalendarGrid({
                             e.stopPropagation();
                             if (dragEndedRef.current) {
                               dragEndedRef.current = false;
+                              e.preventDefault();
+                              return;
+                            }
+                            if (pointerClickHandledRef.current) {
+                              pointerClickHandledRef.current = false;
                               e.preventDefault();
                               return;
                             }
@@ -766,6 +776,7 @@ function CalendarGrid({
                                   e.preventDefault();
                                   e.stopPropagation();
                                   dragEndedRef.current = false;
+                                  pointerClickHandledRef.current = false;
                                   setDragState({
                                     item,
                                     preview: {
@@ -783,6 +794,11 @@ function CalendarGrid({
                                   e.stopPropagation();
                                   if (dragEndedRef.current) {
                                     dragEndedRef.current = false;
+                                    e.preventDefault();
+                                    return;
+                                  }
+                                  if (pointerClickHandledRef.current) {
+                                    pointerClickHandledRef.current = false;
                                     e.preventDefault();
                                     return;
                                   }
@@ -995,6 +1011,7 @@ function DailyCalendarGrid({
     hasMoved: boolean;
   } | null>(null);
   const dragEndedRef = useRef(false);
+  const pointerClickHandledRef = useRef(false);
   const dragThresholdPx = 5;
 
   const resolveDropTarget = useCallback(
@@ -1053,6 +1070,9 @@ function DailyCalendarGrid({
         if (p?.hasMoved && onItemDrop) {
           dragEndedRef.current = true;
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
+        } else if (p) {
+          pointerClickHandledRef.current = true;
+          onItemClick(p.item);
         }
         return null;
       });
@@ -1063,7 +1083,7 @@ function DailyCalendarGrid({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragState, onItemDrop, resolveDropTarget]);
+  }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
 
   function handlePrevDay() {
     const idx = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]);
@@ -1230,6 +1250,7 @@ function DailyCalendarGrid({
                                 e.preventDefault();
                                 e.stopPropagation();
                                 dragEndedRef.current = false;
+                                pointerClickHandledRef.current = false;
                                 const t = resolveDropTarget(e.clientX, e.clientY) ?? {
                                   dayOfWeek: selectedDay,
                                   startHour: item.startHour,
@@ -1241,6 +1262,7 @@ function DailyCalendarGrid({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
+                                if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                 onItemClick(item);
                               }}
                               className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
@@ -1330,6 +1352,7 @@ function DailyCalendarGrid({
                                     e.preventDefault();
                                     e.stopPropagation();
                                     dragEndedRef.current = false;
+                                    pointerClickHandledRef.current = false;
                                     setDragState({
                                       item,
                                       preview: { dayOfWeek: selectedDay, startHour: item.startHour, startTime: item.startTime, isNight: true },
@@ -1341,6 +1364,7 @@ function DailyCalendarGrid({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
+                                    if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                     onItemClick(item);
                                   }}
                                   className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
