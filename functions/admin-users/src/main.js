@@ -12714,11 +12714,35 @@ async function sagaScheduleRequest(path, options, cookieJar) {
   return { httpStatus: result.response.status, data, endpoint: `${SAGA_BASE_URL}${path}` };
 }
 
+function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
+  const normalizedIdent = normalizeAircraftIdent(aircraftIdent);
+  const rawIdent = cleanString(aircraftIdent);
+  const direct =
+    cleanString(mapping.aircraftIdByRegistration?.[normalizedIdent]) ||
+    cleanString(mapping.aircraftIdByRegistration?.[rawIdent]) ||
+    cleanString(mapping.aircraftIdByRegistration?.[rawIdent.toLowerCase()]) ||
+    cleanString(mapping.aircraftIdByRegistration?.[rawIdent.toUpperCase()]);
+  if (direct) return direct;
+
+  for (const [sagaAircraftKey, localAircraftIdent] of Object.entries(mapping.aircraftBySaga || {})) {
+    if (normalizeAircraftIdent(localAircraftIdent) !== normalizedIdent) continue;
+    const cleanSagaKey = cleanString(sagaAircraftKey);
+    if (/^\d+$/.test(cleanSagaKey)) return cleanSagaKey;
+  }
+  return "";
+}
+
 function sagaScheduleSummaryPayload(ctx, mapping) {
   const { flight, studentUser, instructorUser, studentProfile, instructorProfile } = ctx;
   const aircraftIdent = normalizeAircraftIdent(flight.aircraft_ident);
-  const aircraftId = cleanString(mapping.aircraftIdByRegistration?.[aircraftIdent]);
+  const aircraftId = resolveSagaScheduleAircraftId(flight.aircraft_ident, mapping);
   if (!aircraftId) throw Object.assign(new Error(`ID SAGA da aeronave ${aircraftIdent || "do voo"} nao encontrado no de-para.`), { status: 422 });
+  const studentSagaId = cleanString(studentProfile?.saga_user_id);
+  const instructorSagaId = cleanString(instructorProfile?.saga_user_id);
+  if (!studentSagaId) throw Object.assign(new Error(`ID SAGA do aluno ${cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || cleanString(flight.student_user_id) || "do voo"} nao encontrado no perfil.`), { status: 422 });
+  if (cleanString(flight.instructor_user_id) && !instructorSagaId) {
+    throw Object.assign(new Error(`ID SAGA do instrutor ${cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name) || cleanString(flight.instructor_user_id)} nao encontrado no perfil.`), { status: 422 });
+  }
   const { startAt, endAt } = sagaScheduleDateTimes(flight);
   const studentName = cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || "Aluno";
   const instructorName = cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name);
@@ -12732,8 +12756,8 @@ function sagaScheduleSummaryPayload(ctx, mapping) {
   ].filter(Boolean).join(" | ");
   return {
     aircraft_id: aircraftId,
-    student_id: "0",
-    instructor_id: "0",
+    student_id: studentSagaId,
+    instructor_id: instructorSagaId || studentSagaId,
     start_at: startAt,
     end_at: endAt,
     status: "PLANNED",
@@ -12860,6 +12884,7 @@ async function syncSagaScheduleEvent(actorUserId, payload = {}) {
       sagaScheduleId: nextSagaScheduleId,
       httpStatus: sagaResult.httpStatus,
       endpoint: sagaResult.endpoint,
+      requestPayload: bodyPayload || null,
       response: sagaResult.data,
     };
   } catch (err) {
@@ -12887,6 +12912,7 @@ async function syncSagaScheduleEvent(actorUserId, payload = {}) {
       message,
       httpStatus: err?.status || null,
       endpoint: err?.endpoint || null,
+      requestPayload: baseResult.requestPayload,
       response: err?.sagaResponse || null,
     };
   }

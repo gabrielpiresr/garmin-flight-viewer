@@ -45,6 +45,7 @@ export type AdminTabKey =
   | "settings.onboarding"
   | "settings.indique-ganhe"
   | "settings.roles"
+  | "settings.propostas"
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
@@ -194,6 +195,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.onboarding": "Configurações › Onboarding",
   "settings.indique-ganhe": "Configurações › Indique e ganhe",
   "settings.roles": "Configurações › Roles",
+  "settings.propostas": "Configurações › Propostas",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",

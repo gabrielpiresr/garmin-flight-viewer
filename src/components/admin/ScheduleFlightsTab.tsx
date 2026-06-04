@@ -69,6 +69,11 @@ const INSTRUCTOR_BORDER_CLASSES = [
 ];
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
+type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
+  id: string;
+  createdAt: string;
+};
+
 function sagaSyncVariant(status: SagaScheduleSyncResult["status"]): "success" | "warning" | "error" {
   if (status === "synced" || status === "cancelled") return "success";
   if (status === "skipped") return "warning";
@@ -79,6 +84,57 @@ function normalizeSagaSyncStatus(status: unknown): SagaScheduleSyncResult["statu
   return status === "synced" || status === "cancelled" || status === "skipped" || status === "failed"
     ? status
     : "failed";
+}
+
+function SagaScheduleSyncLogPanel({
+  logs,
+  onClear,
+}: {
+  logs: SagaScheduleSyncLogItem[];
+  onClear: () => void;
+}) {
+  if (!logs.length) return null;
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100">Log SAGA</h3>
+          <p className="text-xs text-slate-500">Falhas no SAGA nao desfazem a agenda local.</p>
+        </div>
+        <button type="button" onClick={onClear} className="text-xs font-semibold text-slate-400 hover:text-slate-200">
+          Limpar
+        </button>
+      </div>
+      <div className="space-y-2">
+        {logs.map((item) => {
+          const status = normalizeSagaSyncStatus(item.status);
+          return (
+            <details key={item.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+              <summary className="cursor-pointer list-none">
+                <span className={`font-semibold ${status === "failed" ? "text-rose-300" : status === "skipped" ? "text-amber-200" : "text-emerald-300"}`}>
+                  {status.toUpperCase()}
+                </span>
+                <span className="ml-2">{item.message || "Sem mensagem retornada pela sincronizacao SAGA."}</span>
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-2 text-[11px] text-slate-400">
+{JSON.stringify({
+  at: item.createdAt,
+  mode: item.mode,
+  flightId: item.flightId,
+  sagaScheduleId: item.sagaScheduleId,
+  endpoint: item.endpoint,
+  httpStatus: item.httpStatus,
+  requestPayload: item.requestPayload,
+  response: item.response,
+  logs: item.logs,
+}, null, 2)}
+              </pre>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function aircraftCardColor(className: string): string {
@@ -1327,6 +1383,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
+  const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
@@ -1367,6 +1424,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         status: normalizeSagaSyncStatus(result.status),
         message: result.message || "Sem mensagem retornada pela sincronizacao SAGA.",
       };
+      const item: SagaScheduleSyncLogItem = {
+        ...normalizedResult,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        createdAt: new Date().toISOString(),
+      };
+      setSagaSyncLogs((current) => [item, ...current].slice(0, 20));
       if (normalizedResult.sagaScheduleId) {
         const syncedAt = new Date().toISOString();
         setFlights((current) =>
@@ -1908,6 +1971,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala</h2>
         <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
       </div>
+
+      <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} />
 
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-4">
         <div className="md:col-span-2">

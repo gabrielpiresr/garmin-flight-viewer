@@ -38,12 +38,13 @@ import {
 } from "./PlatformSettingsExtraPanels";
 import { OnboardingSettingsPanel } from "./OnboardingSettingsPanel";
 import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
+import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 
 const RolesSettingsTab = lazy(() =>
   import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
 );
 
-export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "financeiro" | "onboarding" | "indique-ganhe" | "roles";
+export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "financeiro" | "onboarding" | "indique-ganhe" | "roles" | "propostas";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -128,6 +129,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
       </svg>
     ),
   },
+  {
+    id: "propostas" as SettingsSubTab,
+    label: "Propostas",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 /** Mapeamento de sub-aba de configurações → AdminTabKey para controle de permissões */
@@ -141,6 +151,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   onboarding:  "settings.onboarding",
   "indique-ganhe": "settings.indique-ganhe",
   roles:       "settings.roles",
+  propostas:   "settings.propostas",
 };
 
 const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
@@ -832,6 +843,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
           <Suspense fallback={<div className="h-40 animate-pulse rounded-xl bg-slate-800/50" />}>
             <RolesSettingsTab />
           </Suspense>
+        </div>
+      ) : null}
+      {openedSubTabs.has("propostas") ? (
+        <div hidden={activeSubTab !== "propostas"}>
+          <ProposalSettingsPanel />
         </div>
       ) : null}
     </div>

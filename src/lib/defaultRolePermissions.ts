@@ -23,7 +23,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "dre",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
-  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles",
+  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas",
 ];
 
 const ALL_ACTIONS: ActionKey[] = [

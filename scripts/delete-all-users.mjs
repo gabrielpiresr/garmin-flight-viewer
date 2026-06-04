@@ -178,6 +178,34 @@ async function main() {
   }
 
   process.stdout.write(`\r  ✓ Usuários deletados: ${deletedUsers}/${toDelete.length}${errors ? `, ${errors} erros` : ""}      \n`);
+
+  // 3. Limpeza total das coleções de perfil (remove órfãos de rodadas anteriores)
+  console.log("\n🧹  Limpando perfis órfãos...\n");
+  for (const [colName, colId] of Object.entries(PROFILE_COLS)) {
+    // Coleta todos os IDs primeiro para não invalidar o cursor ao deletar
+    const ids = [];
+    let cursor = null;
+    while (true) {
+      const q = [Query.limit(100), Query.select(["$id"])];
+      if (cursor) q.push(Query.cursorAfter(cursor));
+      let res;
+      try { res = await db.listDocuments(DB_ID, colId, q); }
+      catch (e) { if (e?.code === 404) break; throw e; }
+      for (const doc of res.documents) {
+        if (doc.$id !== ADMIN_ID) ids.push(doc.$id);
+      }
+      if (res.documents.length < 100) break;
+      cursor = res.documents.at(-1).$id;
+    }
+    let wiped = 0;
+    for (const id of ids) {
+      try { await db.deleteDocument(DB_ID, colId, id); wiped++; }
+      catch { /* ignora */ }
+    }
+    if (wiped > 0) console.log(`  ✓ ${colName}: ${wiped} órfãos removidos`);
+    else console.log(`  ✓ ${colName}: limpo`);
+  }
+
   console.log(`\n✅  Concluído! ${deletedUsers} usuários deletados.`);
   if (ADMIN_ID) console.log(`   Admin ${ADMIN_ID} preservado.`);
 }

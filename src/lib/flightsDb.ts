@@ -628,6 +628,35 @@ export async function listScheduledFlightsForWeek(weekStart: string): Promise<{
   }
 }
 
+/** Retorna true se o aluno tem ao menos 1 voo na escala (qualquer status). */
+export async function hasStudentScheduledFlights(studentUserId: string): Promise<boolean> {
+  if (!isAppwriteConfigured || !databases) return false;
+  try {
+    const res = await databases.listDocuments(DB_ID, COL_ID, [
+      Query.equal("student_user_id", [studentUserId]),
+      Query.limit(1),
+    ]);
+    return res.total > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Retorna true se o aluno tem ao menos 1 voo com status "Realizado". */
+export async function hasStudentRealizedFlights(studentUserId: string): Promise<boolean> {
+  if (!isAppwriteConfigured || !databases) return false;
+  try {
+    const res = await databases.listDocuments(DB_ID, COL_ID, [
+      Query.equal("student_user_id", [studentUserId]),
+      Query.equal("flight_status", ["Realizado"]),
+      Query.limit(1),
+    ]);
+    return res.total > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function listSavedFlights(
   viewer: { userId: string; role: UserRole },
   options: { limit?: number; cursor?: string | null } = {},

@@ -88,6 +88,8 @@ type DocFiles = {
   proofOfResidence: File | null;
   militaryCertificate: File | null;
   enrollmentForm: File | null;
+  schoolCertificate: File | null;
+  transferDocument: File | null;
 };
 
 // ─── Definições de documentos ────────────────────────────────────────────────
@@ -126,6 +128,13 @@ const DOC_DEFS: {
     required: false,
     description: "Certificado de Dispensa de Incorporação (CDI) ou Certificado de Reservista",
     hint: "Obrigatório para cidadãos do sexo masculino nascidos após 1980. Caso não se aplique a você, pode pular este documento. PDF, JPG ou PNG.",
+  },
+  {
+    type: "schoolCertificate",
+    label: "Comprovante de Escolaridade",
+    required: true,
+    description: "Histórico escolar, diploma ou declaração de matrícula",
+    hint: "Envie o documento que comprova sua escolaridade (histórico escolar, diploma de ensino médio/superior ou declaração de conclusão). PDF, JPG ou PNG.",
   },
 ];
 
@@ -263,7 +272,7 @@ export function CadastroPage() {
     emergenciaEndereco: "",
     emergenciaTelefone: "",
   });
-  const [docs, setDocs] = useState<DocFiles>({ identification: null, voterTitle: null, proofOfResidence: null, militaryCertificate: null, enrollmentForm: null });
+  const [docs, setDocs] = useState<DocFiles>({ identification: null, voterTitle: null, proofOfResidence: null, militaryCertificate: null, enrollmentForm: null, schoolCertificate: null, transferDocument: null });
 
   useEffect(() => {
     if (!token) { setNotFound(true); setLoading(false); return; }

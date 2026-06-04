@@ -30,6 +30,9 @@ const QualificacaoPage = lazy(() =>
 const CadastroPage = lazy(() =>
   import("./pages/CadastroPage").then((module) => ({ default: module.CadastroPage })),
 );
+const PublicProposalPage = lazy(() =>
+  import("./pages/PublicProposalPage").then((module) => ({ default: module.PublicProposalPage })),
+);
 
 function AppLoading() {
   return (
@@ -48,6 +51,7 @@ export default function App() {
   const isFlightReviewClubRoute = window.location.pathname === "/flight-review-club";
   const isQualificacaoRoute = window.location.pathname === "/qualificacao";
   const isCadastroRoute = window.location.pathname === "/cadastro";
+  const isProposalRoute = window.location.pathname.startsWith("/proposta/");
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -98,6 +102,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <CadastroPage />
+      </Suspense>
+    );
+  }
+
+  if (isProposalRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <PublicProposalPage />
       </Suspense>
     );
   }

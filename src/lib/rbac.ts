@@ -38,7 +38,9 @@ export type ProfileDocumentType =
   | "voterTitle"
   | "proofOfResidence"
   | "militaryCertificate"
-  | "enrollmentForm";
+  | "enrollmentForm"
+  | "schoolCertificate"
+  | "transferDocument";
 export type ProfileDocumentAttachment = {
   fileId: string;
   fileName: string;
@@ -267,7 +269,7 @@ function parseJsonObject<T>(value: unknown, fallback: T): T {
 function parseProfileDocuments(value: unknown): ProfileDocumentAttachments {
   const parsed = parseJsonObject<ProfileDocumentAttachments>(value, {});
   const documents: ProfileDocumentAttachments = {};
-  for (const key of ["identification", "voterTitle", "proofOfResidence", "militaryCertificate", "enrollmentForm"] as const) {
+  for (const key of ["identification", "voterTitle", "proofOfResidence", "militaryCertificate", "enrollmentForm", "schoolCertificate", "transferDocument"] as const) {
     const item = parsed[key];
     if (!item?.fileId) continue;
     documents[key] = {
@@ -290,7 +292,9 @@ function toProfileDocuments(docs: ProfileDocumentDoc[]): ProfileDocumentAttachme
       type !== "voterTitle" &&
       type !== "proofOfResidence" &&
       type !== "militaryCertificate" &&
-      type !== "enrollmentForm"
+      type !== "enrollmentForm" &&
+      type !== "schoolCertificate" &&
+      type !== "transferDocument"
     ) {
       continue;
     }

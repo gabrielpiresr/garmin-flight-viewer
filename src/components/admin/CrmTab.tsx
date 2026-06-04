@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { ProposalGeneratorModal } from "./ProposalGeneratorModal";
 import { useAuth } from "../../contexts/AuthContext";
 import { deleteSagaUser, getAdminUserDetail, lookupSagaAnacPersonAdmin, runEnrollmentAutomation } from "../../lib/adminUsersDb";
 import { buildSagaAnacPostFields, hasSagaAnacPerson, parseSagaAnacPerson, sagaAnacMissingEnrollmentFields } from "../../lib/sagaAnacSync";
 import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
-import { createLead, deleteLead, generateCadastroToken, listLeads, updateLead } from "../../lib/crmDb";
+import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
+import { hasStudentScheduledFlights, hasStudentRealizedFlights } from "../../lib/flightsDb";
+import { getProposalsByLead } from "../../lib/crmProposalsDb";
+import { createLeadComment, deleteLeadComment, listLeadComments, type CrmLeadComment } from "../../lib/crmCommentsDb";
+import type { CrmProposal } from "../../types/proposal";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
+import { listProductSalesForUser } from "../../lib/productSalesDb";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import {
   approveStudentAccess,
@@ -26,12 +32,23 @@ import {
   CRM_STATUS_PILL,
   AVAILABLE_DAY_LABELS,
 } from "../../types/crm";
-import type { CrmLead, CrmStatus } from "../../types/crm";
+import type { CrmLead, CrmLeadFollowup, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
 import type { AvailableDay, AvailablePeriod } from "../../types/crm";
 
 // ─── Card field settings ──────────────────────────────────────────────────────
 
-type CardFieldKey = "email" | "phone" | "qualBadge" | "accountBadge" | "course" | "anacCode";
+type CardFieldKey =
+  | "email"
+  | "phone"
+  | "qualBadge"
+  | "accountBadge"
+  | "course"
+  | "anacCode"
+  | "openFollowups"
+  | "expired"
+  | "expirationDays"
+  | "funnelEnteredAt"
+  | "statusEnteredAt";
 
 const CARD_FIELD_DEFS: { key: CardFieldKey; label: string }[] = [
   { key: "email",        label: "E-mail" },
@@ -41,6 +58,14 @@ const CARD_FIELD_DEFS: { key: CardFieldKey; label: string }[] = [
   { key: "course",       label: "Curso desejado" },
   { key: "anacCode",     label: "Código ANAC" },
 ];
+
+CARD_FIELD_DEFS.push(
+  { key: "openFollowups", label: "FUPs em aberto" },
+  { key: "expired", label: "Aviso expirado" },
+  { key: "expirationDays", label: "Dias ate expiracao" },
+  { key: "funnelEnteredAt", label: "Entrada no funil" },
+  { key: "statusEnteredAt", label: "Entrada no status" },
+);
 
 const DEFAULT_CARD_FIELDS = new Set<CardFieldKey>(["email", "qualBadge", "accountBadge", "course"]);
 const LS_KEY = "crm_card_visible_fields";
@@ -126,11 +151,54 @@ function useToast() {
   return { toast, show };
 }
 
+function formatDateShort(value: string | null | undefined): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleDateString("pt-BR");
+}
+
+function addDaysIso(value: string, days: number): string {
+  const date = new Date(value);
+  date.setDate(date.getDate() + Math.max(0, Math.round(days)));
+  return date.toISOString();
+}
+
+function daysUntil(value: string): number {
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  return Math.ceil((target.getTime() - today.getTime()) / 86400000);
+}
+
+function getStatusSetting(settings: CrmStatusSetting[], status: CrmStatus): CrmStatusSetting {
+  return settings.find((item) => item.status === status) ?? { id: "", status, followups: [], expirationDays: null };
+}
+
+function getExpirationAt(lead: CrmLead, settings: CrmStatusSetting[]): string | null {
+  const setting = getStatusSetting(settings, lead.crmStatus);
+  if (!lead.statusEnteredAt || !setting.expirationDays) return null;
+  return addDaysIso(lead.statusEnteredAt, setting.expirationDays);
+}
+
+function buildFollowupsForStatus(status: CrmStatus, enteredAt: string, templates: CrmStatusFollowupTemplate[]): CrmLeadFollowup[] {
+  return templates.map((template) => ({
+    id: crypto.randomUUID(),
+    status,
+    title: template.title,
+    triggeredAt: addDaysIso(enteredAt, template.days),
+    completedAt: null,
+  }));
+}
+
 // ─── Lead Card (Notion-style) ─────────────────────────────────────────────────
 
 function LeadCard({
   lead,
   visibleFields,
+  statusSettings,
   onDragStart,
   onClick,
   onEdit,
@@ -141,6 +209,7 @@ function LeadCard({
 }: {
   lead: CrmLead;
   visibleFields: Set<CardFieldKey>;
+  statusSettings: CrmStatusSetting[];
   onDragStart: (lead: CrmLead) => void;
   onClick: (lead: CrmLead) => void;
   onEdit: (lead: CrmLead) => void;
@@ -159,6 +228,11 @@ function LeadCard({
     if (menuOpen) document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
+
+  const openFollowups = lead.followups.filter((item) => !item.completedAt && new Date(item.triggeredAt).getTime() <= Date.now()).length;
+  const expirationAt = getExpirationAt(lead, statusSettings);
+  const expirationDaysLeft = expirationAt ? daysUntil(expirationAt) : null;
+  const expired = expirationDaysLeft != null && expirationDaysLeft < 0;
 
   return (
     <div
@@ -208,6 +282,41 @@ function LeadCard({
                 ANAC {lead.anacCode}
               </span>
             )}
+            {lead.acceptedProposalId && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] bg-emerald-900/50 text-emerald-400">
+                ✓ Proposta aceita
+              </span>
+            )}
+            {visibleFields.has("openFollowups") && openFollowups > 0 && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-amber-900/60 text-amber-300">
+                {openFollowups} FUP aberto{openFollowups > 1 ? "s" : ""}
+              </span>
+            )}
+            {lead.payInPerson && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-cyan-900/60 text-cyan-300">
+                Pagara presencialmente
+              </span>
+            )}
+            {visibleFields.has("expired") && expired && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-red-900/70 text-red-300">
+                Expirado
+              </span>
+            )}
+            {visibleFields.has("expirationDays") && expirationDaysLeft != null && !expired && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-slate-800 text-slate-400">
+                Expira em {expirationDaysLeft}d
+              </span>
+            )}
+            {visibleFields.has("funnelEnteredAt") && lead.funnelEnteredAt && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-slate-800 text-slate-400">
+                Funil {formatDateShort(lead.funnelEnteredAt)}
+              </span>
+            )}
+            {visibleFields.has("statusEnteredAt") && lead.statusEnteredAt && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-slate-800 text-slate-400">
+                Status {formatDateShort(lead.statusEnteredAt)}
+              </span>
+            )}
           </div>
         </button>
 
@@ -252,12 +361,13 @@ function LeadCard({
 // ─── Kanban Column (Notion-style) ─────────────────────────────────────────────
 
 function KanbanColumn({
-  status, leads, visibleFields, onDrop, onDragStart, onClick, onEdit, onDelete,
-  onCopyQualLink, onSendCadastro, onApprove, onQuickAdd,
+  status, leads, visibleFields, statusSettings, onDrop, onDragStart, onClick, onEdit, onDelete,
+  onCopyQualLink, onSendCadastro, onApprove, onQuickAdd, onConfigureStatus,
 }: {
   status: CrmStatus;
   leads: CrmLead[];
   visibleFields: Set<CardFieldKey>;
+  statusSettings: CrmStatusSetting[];
   onDrop: (status: CrmStatus) => void;
   onDragStart: (lead: CrmLead) => void;
   onClick: (lead: CrmLead) => void;
@@ -267,6 +377,7 @@ function KanbanColumn({
   onSendCadastro: (lead: CrmLead) => void;
   onApprove: (lead: CrmLead) => void;
   onQuickAdd: (status: CrmStatus) => void;
+  onConfigureStatus: (status: CrmStatus) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const pill = CRM_STATUS_PILL[status];
@@ -284,6 +395,16 @@ function KanbanColumn({
         <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${pill.bg} ${pill.text}`}>
           {CRM_STATUS_LABELS[status]}
         </span>
+        <button
+          type="button"
+          onClick={() => onConfigureStatus(status)}
+          title="Configurar follow-ups e expiracao"
+          className="rounded p-0.5 text-slate-600 hover:bg-slate-800 hover:text-slate-300"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+            <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+          </svg>
+        </button>
         <span className="text-xs text-slate-600 font-medium">{leads.length}</span>
       </div>
 
@@ -297,6 +418,7 @@ function KanbanColumn({
             key={lead.id}
             lead={lead}
             visibleFields={visibleFields}
+            statusSettings={statusSettings}
             onDragStart={onDragStart}
             onClick={onClick}
             onEdit={onEdit}
@@ -324,6 +446,87 @@ function KanbanColumn({
 }
 
 // ─── Modal Criar/Editar ───────────────────────────────────────────────────────
+
+function StatusSettingsModal({
+  status,
+  setting,
+  saving,
+  onClose,
+  onSave,
+}: {
+  status: CrmStatus;
+  setting: CrmStatusSetting;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (setting: Pick<CrmStatusSetting, "status" | "followups" | "expirationDays">) => void;
+}) {
+  const [expirationDays, setExpirationDays] = useState(setting.expirationDays?.toString() ?? "");
+  const [followups, setFollowups] = useState<CrmStatusFollowupTemplate[]>(setting.followups);
+  const inputCls = "w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
+
+  function updateFollowup(id: string, patch: Partial<CrmStatusFollowupTemplate>) {
+    setFollowups((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function addFollowup() {
+    setFollowups((prev) => [...prev, { id: crypto.randomUUID(), title: "", days: 1 }]);
+  }
+
+  function submit() {
+    const cleaned = followups
+      .map((item) => ({ ...item, title: item.title.trim(), days: Math.max(0, Math.round(Number(item.days) || 0)) }))
+      .filter((item) => item.title);
+    const exp = expirationDays.trim() ? Math.max(0, Math.round(Number(expirationDays) || 0)) : null;
+    onSave({ status, followups: cleaned, expirationDays: exp && exp > 0 ? exp : null });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl">
+        <div className="flex items-start justify-between border-b border-slate-800 px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">Configurar status</h2>
+            <p className="mt-1 text-xs text-slate-500">{CRM_STATUS_LABELS[status]}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+        <div className="space-y-5 p-5">
+          <label className="block text-xs text-slate-500">
+            Expiracao em dias
+            <input inputMode="numeric" value={expirationDays} onChange={(e) => setExpirationDays(e.target.value)} placeholder="Sem expiracao" className={`${inputCls} mt-1`} />
+          </label>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups</p>
+              <button type="button" onClick={addFollowup} className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">Adicionar FUP</button>
+            </div>
+            {followups.length === 0 ? (
+              <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Nenhum follow-up configurado.</p>
+            ) : (
+              <div className="space-y-2">
+                {followups.map((item) => (
+                  <div key={item.id} className="grid grid-cols-[1fr_90px_auto] gap-2 rounded-lg border border-slate-800 bg-[var(--bg)] p-2">
+                    <input value={item.title} onChange={(e) => updateFollowup(item.id, { title: e.target.value })} placeholder="Titulo do FUP" className={inputCls} />
+                    <input inputMode="numeric" value={String(item.days)} onChange={(e) => updateFollowup(item.id, { days: Number(e.target.value) })} className={inputCls} />
+                    <button type="button" onClick={() => setFollowups((prev) => prev.filter((fup) => fup.id !== item.id))} className="rounded-lg border border-red-900/50 px-2 text-xs text-red-300 hover:bg-red-950/30">Remover</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800">Cancelar</button>
+          <button type="button" disabled={saving} onClick={submit} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50">{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LeadModal({
   lead, initialStatus, onClose, onSaved,
@@ -501,6 +704,7 @@ function LeadDetailModal({
   onCopyQualLink: (lead: CrmLead) => void;
   onApprove: (lead: CrmLead) => void;
 }) {
+  const [showProposalModal, setShowProposalModal] = useState(false);
   const pill = CRM_STATUS_PILL[lead.crmStatus];
 
   function row(label: string, value: string | null | undefined) {
@@ -519,6 +723,7 @@ function LeadDetailModal({
   const periodLabel = lead.availablePeriod === "manha" ? "Manhã" : lead.availablePeriod === "tarde" ? "Tarde" : lead.availablePeriod === "ambos" ? "Manhã e tarde" : null;
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
       <div className="flex w-full max-w-md flex-col rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl max-h-[88vh]">
         {/* Header */}
@@ -595,6 +800,10 @@ function LeadDetailModal({
             className="rounded-lg border border-sky-700/50 bg-sky-600/10 px-3 py-1.5 text-xs text-sky-400 hover:bg-sky-600/20 transition">
             Link cadastro
           </button>
+          <button type="button" onClick={() => setShowProposalModal(true)}
+            className="rounded-lg border border-violet-700/50 bg-violet-600/10 px-3 py-1.5 text-xs text-violet-400 hover:bg-violet-600/20 transition">
+            Gerar proposta
+          </button>
           {lead.userId && (
             <button type="button" onClick={() => { onApprove(lead); onClose(); }}
               className="rounded-lg border border-emerald-700/50 bg-emerald-600/10 px-3 py-1.5 text-xs text-emerald-400 hover:bg-emerald-600/20 transition">
@@ -604,6 +813,14 @@ function LeadDetailModal({
         </div>
       </div>
     </div>
+
+    {showProposalModal && (
+      <ProposalGeneratorModal
+        lead={lead}
+        onClose={() => setShowProposalModal(false)}
+      />
+    )}
+    </>
   );
 }
 
@@ -611,12 +828,17 @@ function LeadDetailModal({
 
 void LeadDetailModal;
 
-const CRM_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string }> = [
-  { type: "identification", label: "Identificacao" },
-  { type: "voterTitle", label: "Titulo de eleitor" },
-  { type: "proofOfResidence", label: "Comprovante de residencia" },
+const CRM_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string; required?: boolean }> = [
+  { type: "identification", label: "Identificação" },
+  { type: "voterTitle", label: "Título de eleitor" },
+  { type: "proofOfResidence", label: "Comprovante de residência" },
   { type: "militaryCertificate", label: "Certificado militar" },
-  { type: "enrollmentForm", label: "Ficha de matricula" },
+  { type: "schoolCertificate", label: "Comprovante de escolaridade", required: true },
+  { type: "enrollmentForm", label: "Ficha de matrícula" },
+];
+
+const CRM_TRANSFER_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string }> = [
+  { type: "transferDocument", label: "Documentos de transferência" },
 ];
 
 const drawerFieldCls = "mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
@@ -809,19 +1031,23 @@ function DrawerField({ label, children }: { label: string; children: ReactNode }
 
 function LeadDetailDrawer({
   lead,
+  currentUserName,
   onClose,
   onLeadPatched,
   onSendCadastro,
   onCopyQualLink,
   onApprove,
+  onStatusChangeRequest,
   showToast,
 }: {
   lead: CrmLead;
+  currentUserName: string;
   onClose: () => void;
   onLeadPatched: (lead: CrmLead) => void;
   onSendCadastro: (lead: CrmLead) => void;
   onCopyQualLink: (lead: CrmLead) => void;
   onApprove: (lead: CrmLead) => void;
+  onStatusChangeRequest: (lead: CrmLead, status: CrmStatus) => Promise<CrmLead | null>;
   showToast: (message: string, variant?: "success" | "error") => void;
 }) {
   const fileInputs = useRef<Partial<Record<ProfileDocumentType, HTMLInputElement | null>>>({});
@@ -853,11 +1079,22 @@ function LeadDetailDrawer({
   const [profileSaveState, setProfileSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [busyDocument, setBusyDocument] = useState<ProfileDocumentType | null>(null);
   const [open, setOpen] = useState(false);
+  const [showProposalModal, setShowProposalModal] = useState(false);
   const [sagaUserId, setSagaUserId] = useState("");
   const [sagaAnacJson, setSagaAnacJson] = useState(lead.sagaAnacJson);
   const [sagaAnacLoading, setSagaAnacLoading] = useState(false);
   const [sagaDeleteOpen, setSagaDeleteOpen] = useState(false);
   const [sagaDeleteLoading, setSagaDeleteLoading] = useState(false);
+
+  // Propostas
+  const [proposals, setProposals] = useState<CrmProposal[]>([]);
+  const [proposalsLoading, setProposalsLoading] = useState(false);
+
+  // Comentários
+  const [comments, setComments] = useState<CrmLeadComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentText, setCommentText] = useState("");
+  const [commentSaving, setCommentSaving] = useState(false);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => setOpen(true));
@@ -912,6 +1149,22 @@ function LeadDetailDrawer({
   useEffect(() => {
     setSagaAnacJson(lead.sagaAnacJson);
   }, [lead.id, lead.sagaAnacJson]);
+
+  useEffect(() => {
+    setProposalsLoading(true);
+    void getProposalsByLead(lead.id).then((data) => {
+      setProposals(data);
+      setProposalsLoading(false);
+    });
+  }, [lead.id]);
+
+  useEffect(() => {
+    setCommentsLoading(true);
+    void listLeadComments(lead.id).then(({ data }) => {
+      setComments(data);
+      setCommentsLoading(false);
+    });
+  }, [lead.id]);
 
   useEffect(() => {
     if (!lead.userId) {
@@ -1020,6 +1273,18 @@ function LeadDetailDrawer({
   }, [lead.userId, profileForm]);
 
   function setLeadField<K extends keyof typeof leadForm>(key: K, value: (typeof leadForm)[K]) {
+    if (key === "crmStatus") {
+      const nextStatus = value as CrmStatus;
+      if (nextStatus === lead.crmStatus) return;
+      void onStatusChangeRequest(lead, nextStatus).then((nextLead) => {
+        if (nextLead) {
+          setLeadForm((prev) => ({ ...prev, crmStatus: nextLead.crmStatus }));
+        } else {
+          setLeadForm((prev) => ({ ...prev, crmStatus: lead.crmStatus }));
+        }
+      });
+      return;
+    }
     setLeadForm((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -1042,6 +1307,46 @@ function LeadDetailDrawer({
     if (input) input.value = "";
   }
 
+  async function handlePostComment() {
+    if (!commentText.trim()) return;
+    setCommentSaving(true);
+    const { data, error } = await createLeadComment({
+      leadId: lead.id,
+      authorName: currentUserName,
+      text: commentText.trim(),
+    });
+    setCommentSaving(false);
+    if (error || !data) {
+      showToast("Erro ao salvar comentário.", "error");
+      return;
+    }
+    setComments((prev) => [...prev, data]);
+    setCommentText("");
+  }
+
+  async function handleDeleteComment(commentId: string) {
+    const { error } = await deleteLeadComment(commentId);
+    if (error) { showToast("Erro ao excluir comentário.", "error"); return; }
+    setComments((prev) => prev.filter((c) => c.id !== commentId));
+  }
+
+  async function handleToggleFollowup(followupId: string) {
+    const nextFollowups = lead.followups.map((item) =>
+      item.id === followupId ? { ...item, completedAt: item.completedAt ? null : new Date().toISOString() } : item,
+    );
+    const nextLead = { ...lead, followups: nextFollowups };
+    onLeadPatched(nextLead);
+    const { error } = await updateLead(lead.id, { followups: nextFollowups });
+    if (error) showToast("Erro ao atualizar follow-up.", "error");
+  }
+
+  async function handleTogglePayInPerson(checked: boolean) {
+    const nextLead = { ...lead, payInPerson: checked };
+    onLeadPatched(nextLead);
+    const { error } = await updateLead(lead.id, { payInPerson: checked });
+    if (error) showToast("Erro ao atualizar pagamento presencial.", "error");
+  }
+
   const pill = CRM_STATUS_PILL[leadForm.crmStatus as CrmStatus];
   const saving = leadSaveState === "saving" || profileSaveState === "saving";
   const errored = leadSaveState === "error" || profileSaveState === "error";
@@ -1049,6 +1354,7 @@ function LeadDetailDrawer({
   const saveText = saving ? "Salvando..." : errored ? "Erro ao salvar" : saved ? "Salvo" : "Autosave";
 
   return (
+    <>
     <div
       className={`fixed inset-0 z-50 flex justify-end backdrop-blur-sm transition-opacity duration-300 ${open ? "opacity-100" : "opacity-0"} bg-black/60`}
       onMouseDown={close}
@@ -1272,14 +1578,17 @@ function LeadDetailDrawer({
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos</p>
             {profile ? (
               <div className="space-y-2">
-                {CRM_DOCUMENT_TYPES.map(({ type, label }) => {
+                {CRM_DOCUMENT_TYPES.map(({ type, label, required }) => {
                   const attachment = profile.documents[type];
                   const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
                   return (
-                    <div key={type} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                    <div key={type} className={`flex items-center justify-between gap-3 rounded-lg border bg-[var(--bg)] px-3 py-2 ${required && !attachment ? "border-amber-700/50" : "border-slate-800"}`}>
                       <div className="min-w-0">
-                        <p className="text-xs font-medium text-slate-200">{label}</p>
-                        <p className={`truncate text-[11px] ${attachment ? "text-slate-500" : "text-slate-700"}`}>{attachment ? attachment.fileName : "Nao anexado"}</p>
+                        <p className="text-xs font-medium text-slate-200">
+                          {label}
+                          {required && <span className="ml-1 text-amber-400">*</span>}
+                        </p>
+                        <p className={`truncate text-[11px] ${attachment ? "text-slate-500" : required ? "text-amber-600" : "text-slate-700"}`}>{attachment ? attachment.fileName : required ? "Obrigatório — não anexado" : "Não anexado"}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         {url && <a href={url} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">Ver</a>}
@@ -1295,6 +1604,71 @@ function LeadDetailDrawer({
             )}
           </section>
 
+          {(leadForm.crmStatus === "aguardando_transferencia" || leadForm.crmStatus === "matricula_enviada" || leadForm.crmStatus === "aguardando_assinatura_pagamento" || leadForm.crmStatus === "ground_agendado" || leadForm.crmStatus === "cadastro_anac" || leadForm.crmStatus === "aluno_pronto") && (
+            <section className="mt-6 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos de Transferência</p>
+              {profile ? (
+                <div className="space-y-2">
+                  {CRM_TRANSFER_DOCUMENT_TYPES.map(({ type, label }) => {
+                    const attachment = profile.documents[type];
+                    const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
+                    return (
+                      <div key={type} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-slate-200">{label}</p>
+                          <p className={`truncate text-[11px] ${attachment ? "text-slate-500" : "text-slate-700"}`}>{attachment ? attachment.fileName : "Não anexado"}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {url && <a href={url} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">Ver</a>}
+                          <input ref={(node) => { fileInputs.current[type] = node; }} type="file" className="hidden" onChange={(e) => void handleUpload(type, e.target.files?.[0])} />
+                          <button type="button" disabled={busyDocument === type} onClick={() => fileInputs.current[type]?.click()} className="rounded-lg border border-sky-700/60 bg-sky-600/10 px-2 py-1 text-xs text-sky-300 hover:bg-sky-600/20 disabled:opacity-50">{busyDocument === type ? "Subindo..." : attachment ? "Trocar" : "Anexar"}</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Os documentos aparecem quando o lead tem perfil vinculado.</p>
+              )}
+            </section>
+          )}
+
+          <section className="mt-6 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups</p>
+              <label className="flex items-center gap-2 text-xs text-cyan-300">
+                <input
+                  type="checkbox"
+                  checked={lead.payInPerson}
+                  onChange={(e) => void handleTogglePayInPerson(e.target.checked)}
+                  className="rounded border-slate-600 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
+                />
+                Aluno pagara presencialmente
+              </label>
+            </div>
+            {lead.followups.length === 0 ? (
+              <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Nenhum follow-up engatilhado para este status.</p>
+            ) : (
+              <div className="space-y-2">
+                {lead.followups.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-slate-200">{item.title}</p>
+                      <p className="text-[11px] text-slate-500">Engatilhado em {formatDateShort(item.triggeredAt)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleFollowup(item.id)}
+                      className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs ${item.completedAt ? "border-emerald-800 bg-emerald-950/30 text-emerald-300" : "border-slate-700 text-slate-300 hover:bg-slate-800"}`}
+                    >
+                      {item.completedAt ? "Realizado" : "Marcar realizado"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <section className="mt-6 space-y-2 pb-4">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Controle</p>
             <div className="grid grid-cols-1 gap-2 text-xs text-slate-500 lg:grid-cols-2">
@@ -1304,14 +1678,118 @@ function LeadDetailDrawer({
               <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">User ID: {lead.userId || "-"}</div>
             </div>
           </section>
+
+          {/* Propostas */}
+          <section className="mt-6 space-y-3 pb-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Propostas</p>
+            {proposalsLoading ? (
+              <p className="text-xs text-slate-500">Carregando propostas...</p>
+            ) : proposals.length === 0 ? (
+              <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Nenhuma proposta gerada para este lead.</p>
+            ) : (
+              <div className="space-y-2">
+                {proposals.map((p) => {
+                  const isAccepted = lead.acceptedProposalId === p.id;
+                  return (
+                    <div key={p.id} className={`rounded-lg border px-3 py-2 ${isAccepted ? "border-emerald-700/60 bg-emerald-900/10" : "border-slate-800 bg-[var(--bg)]"}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-medium text-slate-200">
+                              {p.hours}h · {p.totalValue.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                            </p>
+                            {isAccepted && (
+                              <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-700/60 text-emerald-300">Aceita</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-500">{new Date(p.createdAt).toLocaleDateString("pt-BR")} · {p.status === "sent" ? "Enviada" : "Rascunho"}</p>
+                        </div>
+                        <a
+                          href={`/proposta/${p.publicToken}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="shrink-0 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                        >
+                          Ver
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Comentários */}
+          <section className="mt-6 space-y-3 pb-6">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Comentários</p>
+            {commentsLoading ? (
+              <p className="text-xs text-slate-500">Carregando comentários...</p>
+            ) : comments.length === 0 ? (
+              <p className="text-xs text-slate-600">Nenhum comentário ainda.</p>
+            ) : (
+              <div className="space-y-2">
+                {comments.map((c) => (
+                  <div key={c.id} className="group rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-semibold text-slate-300">{c.authorName}</span>
+                          <span className="text-[10px] text-slate-600">{new Date(c.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-slate-400">{c.text}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteComment(c.id)}
+                        className="shrink-0 rounded p-0.5 text-slate-700 opacity-0 group-hover:opacity-100 hover:text-red-400 transition"
+                        title="Excluir comentário"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                          <path fillRule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5a.75.75 0 0 1 .786-.712Z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Novo comentário */}
+            <div className="rounded-lg border border-slate-800 bg-[var(--bg)] p-3 space-y-2">
+              <p className="text-[11px] text-slate-600">Como <span className="text-slate-400 font-medium">{currentUserName}</span></p>
+              <textarea
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                className={`${drawerFieldCls} min-h-16 resize-y`}
+                placeholder="Escreva um comentário sobre este lead..."
+              />
+              <button
+                type="button"
+                disabled={commentSaving || !commentText.trim()}
+                onClick={() => void handlePostComment()}
+                className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50 transition"
+              >
+                {commentSaving ? "Salvando..." : "Adicionar comentário"}
+              </button>
+            </div>
+          </section>
         </div>
         <div className="flex flex-wrap gap-2 border-t border-slate-800 px-5 py-3">
           <button type="button" onClick={() => { onCopyQualLink(lead); close(); }} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 transition">Link qual.</button>
           <button type="button" onClick={() => { onSendCadastro(lead); close(); }} className="rounded-lg border border-sky-700/50 bg-sky-600/10 px-3 py-1.5 text-xs text-sky-400 hover:bg-sky-600/20 transition">Link cadastro</button>
+          <button type="button" onClick={() => setShowProposalModal(true)} className="rounded-lg border border-violet-700/50 bg-violet-600/10 px-3 py-1.5 text-xs text-violet-400 hover:bg-violet-600/20 transition">Gerar proposta</button>
           {lead.userId && <button type="button" onClick={() => { onApprove(lead); close(); }} className="rounded-lg border border-emerald-700/50 bg-emerald-600/10 px-3 py-1.5 text-xs text-emerald-400 hover:bg-emerald-600/20 transition">Liberar acesso</button>}
         </div>
       </aside>
     </div>
+
+    {showProposalModal && (
+      <ProposalGeneratorModal
+        lead={lead}
+        onClose={() => setShowProposalModal(false)}
+      />
+    )}
+    </>
   );
 }
 
@@ -1538,6 +2016,130 @@ function EnrollmentAutomationModal({
   );
 }
 
+function ProposalAcceptModal({
+  lead,
+  proposals,
+  onClose,
+  onConfirm,
+}: {
+  lead: CrmLead;
+  proposals: CrmProposal[];
+  onClose: () => void;
+  onConfirm: (proposalId: string | null) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">Proposta aceita</h2>
+            <p className="mt-0.5 text-xs text-slate-500">{lead.name}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-xs text-slate-400">Selecione a proposta que foi aceita por este lead. <span className="text-slate-600">(opcional)</span></p>
+          {proposals.length === 0 ? (
+            <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Nenhuma proposta gerada para este lead.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {proposals.map((p) => (
+                <label key={p.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition ${selectedId === p.id ? "border-sky-600 bg-sky-600/10" : "border-slate-800 bg-[var(--bg)] hover:border-slate-700"}`}>
+                  <input
+                    type="radio"
+                    name="proposal"
+                    checked={selectedId === p.id}
+                    onChange={() => setSelectedId(p.id)}
+                    className="mt-0.5 accent-sky-500"
+                  />
+                  <div>
+                    <p className="text-xs font-medium text-slate-200">
+                      {p.hours}h · {p.totalValue.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                    </p>
+                    <p className="text-[11px] text-slate-500">{new Date(p.createdAt).toLocaleDateString("pt-BR")}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
+          <button type="button" onClick={() => onConfirm(null)}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 transition">
+            Pular
+          </button>
+          <button type="button" onClick={() => onConfirm(selectedId)}
+            disabled={!selectedId}
+            className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50 transition">
+            Confirmar proposta aceita
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LostReasonModal({
+  lead,
+  onClose,
+  onConfirm,
+}: {
+  lead: CrmLead;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <h2 className="text-sm font-semibold text-slate-100">Motivo de perda</h2>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-xs text-slate-400">
+            Informe o motivo pelo qual <span className="font-medium text-slate-200">{lead.name}</span> está sendo marcado como perdido.
+          </p>
+          <label className="block text-xs text-slate-500">
+            Motivo *
+            <textarea
+              autoFocus
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Ex: Não retornou contato, optou por outra escola..."
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none min-h-20 resize-y"
+            />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
+          <button type="button" onClick={onClose}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 transition">
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!reason.trim()}
+            onClick={() => onConfirm(reason.trim())}
+            className="rounded-lg bg-zinc-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-500 disabled:opacity-50 transition"
+          >
+            Confirmar como perdido
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function uniqueCustomVariables(templates: ContractTemplate[]): CustomVariable[] {
   const map = new Map<string, CustomVariable>();
   for (const template of templates) {
@@ -1554,42 +2156,192 @@ export function CrmTab() {
   const [loading, setLoading] = useState(true);
   const [draggedLead, setDraggedLead] = useState<CrmLead | null>(null);
   const [automationRunning, setAutomationRunning] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [detailModal, setDetailModal] = useState<CrmLead | null>(null);
   const [editModal, setEditModal] = useState<{ lead: CrmLead | null; initialStatus: CrmStatus } | null>(null);
   const [cadastroModal, setCadastroModal] = useState<CrmLead | null>(null);
   const [enrollmentModal, setEnrollmentModal] = useState<{ lead: CrmLead; templates: ContractTemplate[] } | null>(null);
-  const [creditModal, setCreditModal] = useState<{ lead: CrmLead } | null>(null);
+  const [creditModal, setCreditModal] = useState<{ lead: CrmLead; targetStatus: "aluno_pronto" | "ground_agendado" } | null>(null);
+  const [lostReasonModal, setLostReasonModal] = useState<{ lead: CrmLead } | null>(null);
+  const [proposalAcceptModal, setProposalAcceptModal] = useState<{ lead: CrmLead; proposals: CrmProposal[] } | null>(null);
   const [cardSettingsOpen, setCardSettingsOpen] = useState(false);
+  const [statusSettings, setStatusSettings] = useState<CrmStatusSetting[]>([]);
+  const [statusSettingsModal, setStatusSettingsModal] = useState<CrmStatus | null>(null);
+  const [statusSettingsSaving, setStatusSettingsSaving] = useState(false);
+  const [groundPaymentModal, setGroundPaymentModal] = useState<{ lead: CrmLead } | null>(null);
   const { visibleFields, toggle: toggleField } = useCardFieldSettings();
 
   const { toast, show: showToast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
 
+  async function autoPromoteToAnac(currentLeads: CrmLead[], settingsForMove = statusSettings): Promise<CrmLead[]> {
+    const candidates = currentLeads.filter((l) => l.crmStatus === "ground_agendado" && l.userId);
+    if (candidates.length === 0) return currentLeads;
+    const results = await Promise.all(
+      candidates.map(async (l) => ({ lead: l, realized: await hasStudentRealizedFlights(l.userId!) }))
+    );
+    const toPromote = results.filter((r) => r.realized).map((r) => r.lead);
+    if (toPromote.length === 0) return currentLeads;
+    const moved = toPromote.map((lead) => buildStatusMove(lead, "cadastro_anac", settingsForMove));
+    await Promise.all(moved.map((lead) => updateLead(lead.id, {
+      crmStatus: "cadastro_anac",
+      statusEnteredAt: lead.statusEnteredAt,
+      funnelEnteredAt: lead.funnelEnteredAt,
+      followups: lead.followups,
+    })));
+    const promoted = new Map(moved.map((l) => [l.id, l]));
+    return currentLeads.map((l) => promoted.get(l.id) ?? l);
+  }
+
   async function reloadLeads() {
     setRefreshing(true);
     const { data, error } = await listLeads();
-    if (!error && data) setLeads(data);
+    if (!error && data) {
+      const promoted = await autoPromoteToAnac(data);
+      setLeads(promoted);
+    }
     setRefreshing(false);
   }
 
   useEffect(() => {
     void (async () => {
-      const { data, error } = await listLeads();
-      if (!error && data) setLeads(data);
+      const [leadsResult, settingsResult] = await Promise.all([listLeads(), listCrmStatusSettings()]);
+      const { data, error } = leadsResult;
+      if (!settingsResult.error) setStatusSettings(settingsResult.data);
+      if (!error && data) {
+        const promoted = await autoPromoteToAnac(data, settingsResult.data);
+        setLeads(promoted);
+      }
       setLoading(false);
     })();
   }, []);
 
   function leadsByStatus(status: CrmStatus) {
-    return leads.filter((l) => l.crmStatus === status);
+    const q = searchQuery.trim().toLowerCase();
+    return leads.filter((l) => {
+      if (l.crmStatus !== status) return false;
+      if (!q) return true;
+      return (
+        l.name.toLowerCase().includes(q) ||
+        l.email.toLowerCase().includes(q) ||
+        (l.phone && l.phone.toLowerCase().includes(q))
+      );
+    });
+  }
+
+  function buildStatusMove(lead: CrmLead, targetStatus: CrmStatus, settingsForMove = statusSettings): CrmLead {
+    const enteredAt = new Date().toISOString();
+    const setting = getStatusSetting(settingsForMove, targetStatus);
+    return {
+      ...lead,
+      crmStatus: targetStatus,
+      statusEnteredAt: enteredAt,
+      funnelEnteredAt: lead.funnelEnteredAt || enteredAt,
+      followups: buildFollowupsForStatus(targetStatus, enteredAt, setting.followups),
+    };
+  }
+
+  async function persistStatusMove(lead: CrmLead, targetStatus: CrmStatus): Promise<boolean> {
+    const nextLead = buildStatusMove(lead, targetStatus);
+    setLeads((ls) => ls.map((item) => item.id === lead.id ? nextLead : item));
+    if (detailModal?.id === lead.id) setDetailModal(nextLead);
+    const { error } = await updateLead(lead.id, {
+      crmStatus: targetStatus,
+      statusEnteredAt: nextLead.statusEnteredAt,
+      funnelEnteredAt: nextLead.funnelEnteredAt,
+      followups: nextLead.followups,
+    });
+    if (error) {
+      setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));
+      if (detailModal?.id === lead.id) setDetailModal(lead);
+      showToast("Erro ao mover lead.", "error");
+      return false;
+    }
+    return true;
+  }
+
+  async function requestStatusChangeFromDrawer(lead: CrmLead, targetStatus: CrmStatus): Promise<CrmLead | null> {
+    if (lead.crmStatus === targetStatus) return lead;
+    if (targetStatus === "lead_perdido") {
+      setLostReasonModal({ lead });
+      return null;
+    }
+    if (targetStatus === "matricula_enviada") {
+      try {
+        const templates = await listStandardContractTemplates(user?.schoolId ?? DEFAULT_SCHOOL_ID, "matricula");
+        setEnrollmentModal({ lead, templates });
+      } catch (e) {
+        showToast((e as Error).message || "Erro ao preparar automacao de matricula.", "error");
+      }
+      return null;
+    }
+    if (targetStatus === "ground_agendado") {
+      if (!lead.userId) {
+        showToast("Este lead nao tem conta vinculada. Nao e possivel verificar a escala.", "error");
+        return null;
+      }
+      const hasFlights = await hasStudentScheduledFlights(lead.userId);
+      if (!hasFlights) {
+        showToast("Nao e possivel mover para Ground Agendado: o aluno nao possui nenhum voo agendado na escala.", "error");
+        return null;
+      }
+      if (!lead.payInPerson && !(await hasPaymentSignal(lead))) {
+        showToast("Nao ha credito inserido para aquele aluno.", "error");
+        setGroundPaymentModal({ lead });
+        return null;
+      }
+    }
+    const nextLead = buildStatusMove(lead, targetStatus);
+    const ok = await persistStatusMove(lead, targetStatus);
+    return ok ? nextLead : null;
+  }
+
+  async function hasPaymentSignal(lead: CrmLead): Promise<boolean> {
+    if (!lead.userId) return false;
+    const [statement, sales] = await Promise.all([
+      getStudentCreditStatement({
+        viewer: { userId: user?.id ?? "", role: (user?.role ?? "admin") as "admin" },
+        studentUserId: lead.userId,
+      }).catch(() => null),
+      listProductSalesForUser(lead.userId).catch(() => []),
+    ]);
+    return Boolean((statement && statement.purchases.length > 0) || sales.length > 0);
   }
 
   async function handleDrop(targetStatus: CrmStatus) {
     if (!draggedLead || draggedLead.crmStatus === targetStatus) return;
+    const lead = draggedLead;
+    setDraggedLead(null);
+
+    if (targetStatus === "lead_perdido") {
+      setLostReasonModal({ lead });
+      return;
+    }
+
+    if (targetStatus === "ground_agendado") {
+      if (!lead.userId) {
+        showToast("Este lead não tem conta vinculada. Não é possível verificar a escala.", "error");
+        return;
+      }
+      const hasFlights = await hasStudentScheduledFlights(lead.userId);
+      if (!hasFlights) {
+        showToast("Não é possível mover para Ground Agendado: o aluno não possui nenhum voo agendado na escala.", "error");
+        return;
+      }
+      if (!lead.payInPerson) {
+        const hasPayment = await hasPaymentSignal(lead);
+        if (!hasPayment) {
+          showToast("Nao ha credito inserido para aquele aluno.", "error");
+          setGroundPaymentModal({ lead });
+          return;
+        }
+      }
+      await persistStatusMove(lead, targetStatus);
+      return;
+    }
+
     if (targetStatus === "matricula_enviada") {
-      const lead = draggedLead;
-      setDraggedLead(null);
       try {
         const templates = await listStandardContractTemplates(user?.schoolId ?? DEFAULT_SCHOOL_ID, "matricula");
         setEnrollmentModal({ lead, templates });
@@ -1599,60 +2351,95 @@ export function CrmTab() {
       return;
     }
     if (targetStatus === "registro_enviado") {
-      const lead = draggedLead;
-      setDraggedLead(null);
-      const prev = lead.crmStatus;
-      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: targetStatus } : l));
-      const { error } = await updateLead(lead.id, { crmStatus: targetStatus });
-      if (error) {
-        setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
-        showToast("Erro ao mover lead.", "error");
-        return;
-      }
-      setCadastroModal({ ...lead, crmStatus: targetStatus });
+      const ok = await persistStatusMove(lead, targetStatus);
+      if (!ok) return;
+      // Buscar propostas para perguntar qual foi aceita
+      const leadWithStatus = buildStatusMove(lead, targetStatus);
+      const props = await getProposalsByLead(lead.id).catch(() => [] as CrmProposal[]);
+      setProposalAcceptModal({ lead: leadWithStatus, proposals: props });
       return;
     }
-    if (targetStatus === "aluno_pronto" && draggedLead.userId) {
-      const lead = draggedLead;
-      setDraggedLead(null);
+    if (targetStatus === "aluno_pronto" && lead.userId) {
       try {
         const statement = await getStudentCreditStatement({
           viewer: { userId: user?.id ?? "", role: (user?.role ?? "admin") as "admin" },
           studentUserId: lead.userId!,
         });
         if (statement.purchases.length === 0) {
-          setCreditModal({ lead });
+          setCreditModal({ lead, targetStatus: "aluno_pronto" });
           return;
         }
       } catch { /* se falhar a consulta, prossegue normalmente */ }
-      const prev = lead.crmStatus;
-      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: targetStatus } : l));
-      const { error } = await updateLead(lead.id, { crmStatus: targetStatus });
-      if (error) {
-        setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
-        showToast("Erro ao mover lead.", "error");
-      }
+      await persistStatusMove(lead, targetStatus);
       return;
     }
-    const prev = draggedLead.crmStatus;
-    setLeads((ls) => ls.map((l) => l.id === draggedLead.id ? { ...l, crmStatus: targetStatus } : l));
-    const { error } = await updateLead(draggedLead.id, { crmStatus: targetStatus });
-    if (error) {
-      setLeads((ls) => ls.map((l) => l.id === draggedLead.id ? { ...l, crmStatus: prev } : l));
-      showToast("Erro ao mover lead.", "error");
-    }
-    setDraggedLead(null);
+    await persistStatusMove(lead, targetStatus);
   }
 
-  async function confirmMoveToReady(lead: CrmLead) {
-    setCreditModal(null);
-    const prev = lead.crmStatus;
-    setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: "aluno_pronto" } : l));
-    const { error } = await updateLead(lead.id, { crmStatus: "aluno_pronto" });
+  async function confirmProposalAccepted(lead: CrmLead, proposalId: string | null) {
+    setProposalAcceptModal(null);
+    if (proposalId) {
+      await updateLead(lead.id, { acceptedProposalId: proposalId });
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, acceptedProposalId: proposalId } : l));
+    }
+    setCadastroModal(lead);
+  }
+
+  async function confirmMoveLost(lead: CrmLead, reason: string) {
+    setLostReasonModal(null);
+    const existingNotes = lead.notes ? lead.notes.trim() : "";
+    const notes = `Motivo de perda: ${reason}${existingNotes ? `\n\n---\n${existingNotes}` : ""}`;
+    const nextLead = { ...buildStatusMove(lead, "lead_perdido"), notes };
+    setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
+    const { error } = await updateLead(lead.id, {
+      crmStatus: "lead_perdido",
+      notes,
+      statusEnteredAt: nextLead.statusEnteredAt,
+      funnelEnteredAt: nextLead.funnelEnteredAt,
+      followups: nextLead.followups,
+    });
     if (error) {
-      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: prev } : l));
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? lead : l));
       showToast("Erro ao mover lead.", "error");
     }
+  }
+
+  async function confirmMoveAfterCredit(lead: CrmLead, targetStatus: "aluno_pronto" | "ground_agendado") {
+    setCreditModal(null);
+    await persistStatusMove(lead, targetStatus);
+  }
+
+  async function confirmGroundPayInPerson(lead: CrmLead) {
+    const nextLead = { ...lead, payInPerson: true };
+    setGroundPaymentModal(null);
+    setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
+    const { error } = await updateLead(lead.id, { payInPerson: true });
+    if (error) {
+      showToast("Erro ao marcar pagamento presencial.", "error");
+      return;
+    }
+    await persistStatusMove(nextLead, "ground_agendado");
+  }
+
+  function addGroundCredit(lead: CrmLead) {
+    setGroundPaymentModal(null);
+    setCreditModal({ lead, targetStatus: "ground_agendado" });
+  }
+
+  async function handleSaveStatusSetting(setting: Pick<CrmStatusSetting, "status" | "followups" | "expirationDays">) {
+    setStatusSettingsSaving(true);
+    const { data, error } = await saveCrmStatusSetting(setting);
+    setStatusSettingsSaving(false);
+    if (error || !data) {
+      showToast(error?.message || "Erro ao salvar configuracao do status.", "error");
+      return;
+    }
+    setStatusSettings((prev) => {
+      const exists = prev.some((item) => item.status === data.status);
+      return exists ? prev.map((item) => item.status === data.status ? data : item) : [...prev, data];
+    });
+    setStatusSettingsModal(null);
+    showToast("Configuracao do status salva.");
   }
 
   async function executeEnrollmentAutomation(
@@ -1756,8 +2543,27 @@ export function CrmTab() {
       )}
 
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-xs text-slate-600">{leads.length} lead{leads.length !== 1 ? "s" : ""}</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-slate-600 shrink-0">{leads.length} lead{leads.length !== 1 ? "s" : ""}</p>
+          <div className="relative">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
+              <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar lead ou aluno..."
+              className="w-52 rounded-lg border border-slate-700 bg-[var(--bg)] py-1.5 pl-8 pr-3 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+            />
+            {searchQuery && (
+              <button type="button" onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" /></svg>
+              </button>
+            )}
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1815,6 +2621,7 @@ export function CrmTab() {
             status={status}
             leads={leadsByStatus(status)}
             visibleFields={visibleFields}
+            statusSettings={statusSettings}
             onDrop={handleDrop}
             onDragStart={setDraggedLead}
             onClick={(lead) => setDetailModal(lead)}
@@ -1824,6 +2631,7 @@ export function CrmTab() {
             onSendCadastro={(lead) => setCadastroModal(lead)}
             onApprove={handleApprove}
             onQuickAdd={(s) => setEditModal({ lead: null, initialStatus: s })}
+            onConfigureStatus={setStatusSettingsModal}
           />
         ))}
       </div>
@@ -1832,6 +2640,7 @@ export function CrmTab() {
       {detailModal && (
         <LeadDetailDrawer
           lead={detailModal}
+          currentUserName={user?.name ?? user?.email ?? "Admin"}
           onClose={() => setDetailModal(null)}
           onLeadPatched={(lead) => {
             setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));
@@ -1840,6 +2649,7 @@ export function CrmTab() {
           onSendCadastro={(lead) => { setDetailModal(null); setCadastroModal(lead); }}
           onCopyQualLink={(lead) => { setDetailModal(null); handleCopyQualLink(lead); }}
           onApprove={(lead) => { setDetailModal(null); void handleApprove(lead); }}
+          onStatusChangeRequest={requestStatusChangeFromDrawer}
           showToast={showToast}
         />
       )}
@@ -1877,13 +2687,64 @@ export function CrmTab() {
         />
       )}
 
+      {statusSettingsModal && (
+        <StatusSettingsModal
+          status={statusSettingsModal}
+          setting={getStatusSetting(statusSettings, statusSettingsModal)}
+          saving={statusSettingsSaving}
+          onClose={() => setStatusSettingsModal(null)}
+          onSave={(setting) => void handleSaveStatusSetting(setting)}
+        />
+      )}
+
+      {lostReasonModal && (
+        <LostReasonModal
+          lead={lostReasonModal.lead}
+          onClose={() => setLostReasonModal(null)}
+          onConfirm={(reason) => void confirmMoveLost(lostReasonModal.lead, reason)}
+        />
+      )}
+
+      {proposalAcceptModal && (
+        <ProposalAcceptModal
+          lead={proposalAcceptModal.lead}
+          proposals={proposalAcceptModal.proposals}
+          onClose={() => { setProposalAcceptModal(null); setCadastroModal(proposalAcceptModal.lead); }}
+          onConfirm={(pid) => void confirmProposalAccepted(proposalAcceptModal.lead, pid)}
+        />
+      )}
+
+      {groundPaymentModal && groundPaymentModal.lead.userId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+          <div className="w-full max-w-md rounded-xl border border-amber-700/40 bg-slate-900 shadow-2xl">
+            <div className="border-b border-slate-800 px-5 py-4">
+              <p className="text-sm font-semibold text-slate-100">Credito necessario</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Nao ha credito inserido para aquele aluno. Insira credito ou marque que o aluno pagara presencialmente.
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
+              <button type="button" onClick={() => setGroundPaymentModal(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+                Cancelar
+              </button>
+              <button type="button" onClick={() => addGroundCredit(groundPaymentModal.lead)} className="rounded-lg border border-emerald-700/60 bg-emerald-600/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-600/20">
+                Inserir credito
+              </button>
+              <button type="button" onClick={() => void confirmGroundPayInPerson(groundPaymentModal.lead)} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500">
+                Pagara presencialmente
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {creditModal && creditModal.lead.userId && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-emerald-700/40 bg-slate-900 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-slate-100">Adicionar créditos — {creditModal.lead.name}</p>
-                <p className="text-xs text-slate-500">Este aluno ainda não tem créditos. Adicione antes de mover para Pronto para Voar.</p>
+                <p className="text-xs text-slate-500">Este aluno ainda não tem créditos. Adicione antes de mover para Em Curso.</p>
               </div>
               <button
                 type="button"
@@ -1910,10 +2771,10 @@ export function CrmTab() {
               </button>
               <button
                 type="button"
-                onClick={() => void confirmMoveToReady(creditModal.lead)}
+                onClick={() => void confirmMoveAfterCredit(creditModal.lead, creditModal.targetStatus)}
                 className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
               >
-                Confirmar e mover para Pronto para Voar
+                Confirmar e mover para {creditModal.targetStatus === "ground_agendado" ? "Ground Agendado" : "Em Curso"}
               </button>
             </div>
           </div>

@@ -1,11 +1,25 @@
 import { Query } from "appwrite";
-import { CRM_LEADS_COL_ID, databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
-import type { CrmLead, CrmLeadInput, CrmLeadQualInput, CrmStatus, AvailableDay, AvailablePeriod } from "../types/crm";
+import { CRM_LEADS_COL_ID, CRM_STATUS_SETTINGS_COL_ID, databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+import type {
+  CrmLead,
+  CrmLeadFollowup,
+  CrmLeadInput,
+  CrmLeadQualInput,
+  CrmStatus,
+  CrmStatusFollowupTemplate,
+  CrmStatusSetting,
+  AvailableDay,
+  AvailablePeriod,
+} from "../types/crm";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
 function configured(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && CRM_LEADS_COL_ID);
+}
+
+function settingsConfigured(): boolean {
+  return Boolean(isAppwriteConfigured && databases && DB_ID && CRM_STATUS_SETTINGS_COL_ID);
 }
 
 type CrmLeadDoc = {
@@ -32,8 +46,20 @@ type CrmLeadDoc = {
   qual_token?: string | null;
   qual_filled_at?: string | null;
   referrer_user_id?: string | null;
+  accepted_proposal_id?: string | null;
+  status_entered_at?: string | null;
+  funnel_entered_at?: string | null;
+  followups_json?: string | null;
+  pay_in_person?: boolean | null;
   $createdAt?: string;
   $updatedAt?: string;
+};
+
+type CrmStatusSettingDoc = {
+  $id: string;
+  status?: string | null;
+  followups_json?: string | null;
+  expiration_days?: number | null;
 };
 
 function normalizeCrmStatus(value: string | undefined | null): CrmStatus {
@@ -44,8 +70,11 @@ function normalizeCrmStatus(value: string | undefined | null): CrmStatus {
     "proposta_enviada",
     "registro_enviado",
     "registro_preenchido",
+    "aguardando_transferencia",
     "matricula_enviada",
     "aguardando_assinatura_pagamento",
+    "ground_agendado",
+    "cadastro_anac",
     "aluno_pronto",
     "lead_perdido",
   ];
@@ -79,6 +108,55 @@ function normalizeAvailablePeriod(value: string | null | undefined): AvailablePe
   return null;
 }
 
+function parseLeadFollowups(value: string | null | undefined): CrmLeadFollowup[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item): CrmLeadFollowup | null => {
+        const id = String(item?.id || "").trim();
+        const status = normalizeCrmStatus(item?.status);
+        const title = String(item?.title || "").trim();
+        const triggeredAt = String(item?.triggeredAt || "").trim();
+        const completedAt = item?.completedAt ? String(item.completedAt) : null;
+        if (!id || !title || !triggeredAt) return null;
+        return { id, status, title, triggeredAt, completedAt };
+      })
+      .filter((item): item is CrmLeadFollowup => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+function parseStatusFollowups(value: string | null | undefined): CrmStatusFollowupTemplate[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item): CrmStatusFollowupTemplate | null => {
+        const id = String(item?.id || "").trim() || crypto.randomUUID();
+        const title = String(item?.title || "").trim();
+        const days = Math.max(0, Math.round(Number(item?.days) || 0));
+        if (!title) return null;
+        return { id, title, days };
+      })
+      .filter((item): item is CrmStatusFollowupTemplate => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+function toStatusSettingFromDoc(doc: CrmStatusSettingDoc): CrmStatusSetting {
+  return {
+    id: doc.$id,
+    status: normalizeCrmStatus(doc.status),
+    followups: parseStatusFollowups(doc.followups_json),
+    expirationDays: typeof doc.expiration_days === "number" && doc.expiration_days > 0 ? Math.round(doc.expiration_days) : null,
+  };
+}
+
 function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
   return {
     id: doc.$id,
@@ -102,8 +180,13 @@ function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
     cpf: doc.cpf ?? null,
     sagaAnacJson: doc.saga_anac_json ?? null,
     theoreticalExamDone: typeof doc.theoretical_exam_done === "boolean" ? doc.theoretical_exam_done : null,
+    acceptedProposalId: doc.accepted_proposal_id ?? null,
     qualToken: doc.qual_token ?? null,
     qualFilledAt: doc.qual_filled_at ?? null,
+    statusEnteredAt: doc.status_entered_at ?? null,
+    funnelEnteredAt: doc.funnel_entered_at ?? null,
+    followups: parseLeadFollowups(doc.followups_json),
+    payInPerson: Boolean(doc.pay_in_person),
     createdAt: doc.$createdAt ?? "",
     updatedAt: doc.$updatedAt ?? "",
   };
@@ -169,6 +252,7 @@ export async function getLeadByToken(token: string): Promise<{ data: CrmLead | n
 export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead | null; error: Error | null }> {
   if (!configured()) return { data: null, error: new Error("CRM não configurado.") };
   try {
+    const now = new Date().toISOString();
     const doc = await databases!.createDocument(
       DB_ID!,
       CRM_LEADS_COL_ID!,
@@ -179,6 +263,10 @@ export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead |
         email: input.email,
         phone: input.phone,
         crm_status: input.crmStatus ?? "qualificacao",
+        status_entered_at: now,
+        funnel_entered_at: now,
+        followups_json: "[]",
+        pay_in_person: false,
       },
       publicLeadDocumentPermissions(),
     );
@@ -199,6 +287,11 @@ export async function updateLead(
     qualToken: string | null;
     qualFilledAt: string | null;
     referrerUserId: string | null;
+    acceptedProposalId: string | null;
+    statusEnteredAt: string | null;
+    funnelEnteredAt: string | null;
+    followups: CrmLeadFollowup[];
+    payInPerson: boolean;
   }> & CrmLeadQualInput,
 ): Promise<{ error: Error | null }> {
   if (!configured()) return { error: new Error("CRM não configurado.") };
@@ -225,6 +318,11 @@ export async function updateLead(
     if (updates.anacCode !== undefined) payload.anac_code = updates.anacCode;
     if (updates.birthDate !== undefined) payload.birth_date = updates.birthDate;
     if (updates.theoreticalExamDone !== undefined) payload.theoretical_exam_done = updates.theoreticalExamDone;
+    if (updates.acceptedProposalId !== undefined) payload.accepted_proposal_id = updates.acceptedProposalId;
+    if (updates.statusEnteredAt !== undefined) payload.status_entered_at = updates.statusEnteredAt;
+    if (updates.funnelEnteredAt !== undefined) payload.funnel_entered_at = updates.funnelEnteredAt;
+    if (updates.followups !== undefined) payload.followups_json = JSON.stringify(updates.followups);
+    if (updates.payInPerson !== undefined) payload.pay_in_person = updates.payInPerson;
 
     await databases!.updateDocument(DB_ID!, CRM_LEADS_COL_ID!, id, payload);
     return { error: null };
@@ -293,6 +391,46 @@ export async function upsertLeadByEmail(
       );
     }
     return { data: toLeadFromDoc(doc as unknown as CrmLeadDoc), error: null };
+  } catch (e) {
+    return { data: null, error: e as Error };
+  }
+}
+
+export async function listCrmStatusSettings(): Promise<{ data: CrmStatusSetting[]; error: Error | null }> {
+  if (!settingsConfigured()) return { data: [], error: new Error("ConfiguraÃ§Ãµes do CRM nÃ£o configuradas.") };
+  try {
+    const res = await databases!.listDocuments(DB_ID!, CRM_STATUS_SETTINGS_COL_ID!, [
+      Query.limit(100),
+    ]);
+    return { data: (res.documents as unknown as CrmStatusSettingDoc[]).map(toStatusSettingFromDoc), error: null };
+  } catch (e) {
+    return { data: [], error: e as Error };
+  }
+}
+
+export async function saveCrmStatusSetting(
+  setting: Pick<CrmStatusSetting, "status" | "followups" | "expirationDays">,
+): Promise<{ data: CrmStatusSetting | null; error: Error | null }> {
+  if (!settingsConfigured()) return { data: null, error: new Error("ConfiguraÃ§Ãµes do CRM nÃ£o configuradas.") };
+  try {
+    const payload = {
+      status: setting.status,
+      followups_json: JSON.stringify(setting.followups),
+      expiration_days: setting.expirationDays ?? null,
+    };
+    const existing = await databases!.listDocuments(DB_ID!, CRM_STATUS_SETTINGS_COL_ID!, [
+      Query.equal("status", [setting.status]),
+      Query.limit(1),
+    ]);
+    const doc = existing.total > 0 && existing.documents[0]
+      ? await databases!.updateDocument(DB_ID!, CRM_STATUS_SETTINGS_COL_ID!, existing.documents[0].$id, payload)
+      : await databases!.createDocument(
+          DB_ID!,
+          CRM_STATUS_SETTINGS_COL_ID!,
+          ID.unique(),
+          payload,
+        );
+    return { data: toStatusSettingFromDoc(doc as unknown as CrmStatusSettingDoc), error: null };
   } catch (e) {
     return { data: null, error: e as Error };
   }

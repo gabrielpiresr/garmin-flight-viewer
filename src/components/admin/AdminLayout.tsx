@@ -466,6 +466,7 @@ const SETTINGS_ROUTES = [
   { id: "onboarding", path: "/admin/configuracoes/onboarding" },
   { id: "indique-ganhe", path: "/admin/configuracoes/indique-ganhe" },
   { id: "roles", path: "/admin/configuracoes/roles" },
+  { id: "propostas", path: "/admin/configuracoes/propostas" },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
 const ADMIN_ROUTES = [
@@ -503,6 +504,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   onboarding: "Onboarding",
   "indique-ganhe": "Indique e ganhe",
   roles: "Roles",
+  propostas: "Propostas",
 };
 
 // Mapeamento de sub-tabs locais para chaves de AdminTabKey (para permissionamento)
