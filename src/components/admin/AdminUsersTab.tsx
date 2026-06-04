@@ -14,7 +14,7 @@ import {
 } from "../../lib/adminUsersDb";
 import { AdminUserProfileEditSection } from "./AdminUserProfileEditSection";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
-import { listTrainingTracks } from "../../lib/trainingTracksDb";
+import { listTrainingTracks, setFlightReviewClubMembership } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
 import { approveStudentAccess, getApprovalStatus, getProfileDocumentUrl, type ApprovalStatus, type ProfileDocumentType, type UserRole } from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
@@ -27,6 +27,7 @@ import { StudentObservationsSection } from "./StudentObservationsSection";
 import { InstructorCostsSection } from "./InstructorCostsSection";
 import { UserSalesSection } from "./UserSalesSection";
 import { FlightDetailView } from "../FlightDetailView";
+import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { Skeleton } from "../ui/Skeleton";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
@@ -110,6 +111,10 @@ function formatDuration(seconds: number | null): string {
 
 function displayName(user: AdminUserSummary | AdminUserDetail): string {
   return user.profile.fullName || user.name || user.email || user.userId;
+}
+
+function userHasFlightReviewClub(user: AdminUserSummary | AdminUserDetail): boolean {
+  return user.role === "aluno" && hasActiveFlightReviewClubTrack(user.trainingTracks);
 }
 
 function availKey(dayOfWeek: number, period: SchedulePeriod): string {
@@ -692,7 +697,18 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const updated = await setAdminUserFlightReviewClubMembership(selectedDetail.userId, assignmentId, isMember);
+      let updated = await setAdminUserFlightReviewClubMembership(selectedDetail.userId, assignmentId, isMember);
+      const reflected = (updated.trainingTracks ?? []).some((row) => row.id === assignmentId && row.isFlightReviewClubMember === isMember);
+      if (!reflected) {
+        const fallback = await setFlightReviewClubMembership(assignmentId, isMember);
+        if (fallback.error) throw fallback.error;
+        updated = {
+          ...updated,
+          trainingTracks: (updated.trainingTracks ?? selectedDetail.trainingTracks ?? []).map((row) =>
+            row.id === assignmentId ? { ...row, isFlightReviewClubMember: isMember } : row,
+          ),
+        };
+      }
       setSelectedDetail(updated);
       replaceSummary(updated);
       setSuccess(isMember ? "Aluno adicionado ao Flight Review Club." : "Aluno removido do Flight Review Club.");
@@ -960,7 +976,10 @@ export function AdminUsersTab() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-slate-100">{displayName(user)}</p>
+                          <p className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-100">
+                            <span className="truncate">{displayName(user)}</span>
+                            {userHasFlightReviewClub(user) ? <FlightReviewClubBadge /> : null}
+                          </p>
                           {user.profile.nickname ? (
                             <p className="truncate text-xs text-cyan-400/90">@{user.profile.nickname}</p>
                           ) : null}
@@ -1042,7 +1061,10 @@ export function AdminUsersTab() {
                       </div>
                       <div className="min-w-0">
                         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dados do usuário</p>
-                        <h3 className="mt-1 break-words text-lg font-semibold text-slate-100 [overflow-wrap:anywhere]">{displayName(selectedDetail)}</h3>
+                        <h3 className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-lg font-semibold text-slate-100">
+                          <span className="break-words [overflow-wrap:anywhere]">{displayName(selectedDetail)}</span>
+                          {userHasFlightReviewClub(selectedDetail) ? <FlightReviewClubBadge /> : null}
+                        </h3>
                         <p className="break-words text-sm text-slate-400 [overflow-wrap:anywhere]">{selectedDetail.email}</p>
                         <p className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                           selectedDetail.profile.isActive

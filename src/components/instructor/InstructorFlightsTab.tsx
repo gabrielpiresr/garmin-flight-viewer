@@ -28,7 +28,9 @@ import {
   loadLightFlightListDisplayInfos,
 } from "../../lib/flightListDisplayCache";
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
+import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import { FlightDetailView } from "../FlightDetailView";
+import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
 import { PreencherFichaFlow } from "./PreencherFichaFlow";
@@ -202,6 +204,7 @@ function FlightCard({
   sigs,
   onSign,
   canSignAsInstructor,
+  studentClubMember,
 }: {
   item: SavedFlightListItem;
   info?: FlightDisplayInfo;
@@ -216,6 +219,7 @@ function FlightCard({
   sigs?: FlightSignaturesForFlight | null;
   onSign?: () => void;
   canSignAsInstructor?: boolean;
+  studentClubMember?: boolean;
 }) {
   const d = getDateBase(item, info);
   const day = d.getDate();
@@ -251,7 +255,13 @@ function FlightCard({
           <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4 [&>p]:min-w-0 [&_span]:break-words [&_span]:[overflow-wrap:anywhere]">
             <p>Data: <span className="text-slate-300">{formatDate(item, info)}</span></p>
             <p>Início: <span className="text-slate-300">{info?.startTime || "—"}</span></p>
-            <p>Aluno: <span className="text-slate-300">{info?.studentName ?? "—"}</span></p>
+            <p>
+              Aluno:{" "}
+              <span className="inline-flex min-w-0 items-center gap-1 text-slate-300">
+                <span className="truncate">{info?.studentName ?? "—"}</span>
+                {studentClubMember ? <FlightReviewClubBadge /> : null}
+              </span>
+            </p>
             <p>ANAC aluno: <span className="text-slate-300">{info?.studentAnac ?? "—"}</span></p>
             <p>Matrícula: <span className="text-slate-300">{info?.aircraft ?? "—"}</span></p>
             <p>Total voo: <span className="text-slate-300">{info?.totalFlight ?? "00:00"}</span></p>
@@ -366,6 +376,7 @@ export function InstructorFlightsTab() {
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [infoById, setInfoById] = useState<Record<string, FlightDisplayInfo>>({});
   const [videoFlagsById, setVideoFlagsById] = useState<Record<string, boolean>>({});
+  const [clubMemberByStudentId, setClubMemberByStudentId] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -485,6 +496,26 @@ export function InstructorFlightsTab() {
     }
     void listFlightVideoFlags(ids).then((flags) => {
       if (!cancelled) setVideoFlagsById(flags);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const studentIds = Array.from(new Set(items.map((item) => item.student_user_id).filter((id): id is string => Boolean(id))));
+    if (studentIds.length === 0) {
+      setClubMemberByStudentId({});
+      return;
+    }
+    void Promise.all(studentIds.map((studentId) => listStudentTrainingTracks(studentId))).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, boolean> = {};
+      studentIds.forEach((studentId, index) => {
+        map[studentId] = hasActiveFlightReviewClubTrack(results[index]?.data);
+      });
+      setClubMemberByStudentId(map);
     });
     return () => {
       cancelled = true;
@@ -842,7 +873,12 @@ export function InstructorFlightsTab() {
         </div>
       ) : displayMode === "calendar" ? (
         <div className="space-y-4">
-          <FlightsAgendaBoard items={filteredItems} infoById={infoById} onOpen={openFlight} />
+          <FlightsAgendaBoard
+            items={filteredItems}
+            infoById={infoById}
+            clubMemberByStudentId={clubMemberByStudentId}
+            onOpen={openFlight}
+          />
           <FlightListPagingActions
             hasMore={Boolean(nextCursor)}
             loadingMore={loadingMore}
@@ -868,6 +904,7 @@ export function InstructorFlightsTab() {
               setSelectedFlightId(id);
               setView("preencher-ficha");
             }}
+            clubMemberByStudentId={clubMemberByStudentId}
           />
           <FlightTableSection
             title="Voos antigos"
@@ -888,6 +925,7 @@ export function InstructorFlightsTab() {
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
             signaturesByFlightId={signaturesByFlightId}
+            clubMemberByStudentId={clubMemberByStudentId}
             onSign={(id) => void openSignModal(id)}
             canSignAsInstructor={(item) =>
               user?.role === "instrutor" && item.instructor_user_id === user.id
@@ -928,6 +966,7 @@ export function InstructorFlightsTab() {
                             ? () => { setSelectedFlightId(item.id); setView("preencher-ficha"); }
                             : undefined
                         }
+                        studentClubMember={item.student_user_id ? clubMemberByStudentId[item.student_user_id] : false}
                       />
                     ))}
                   </ul>
@@ -971,6 +1010,7 @@ export function InstructorFlightsTab() {
                         canSignAsInstructor={
                           user?.role === "instrutor" && item.instructor_user_id === user.id
                         }
+                        studentClubMember={item.student_user_id ? clubMemberByStudentId[item.student_user_id] : false}
                       />
                     ))}
                   </ul>
@@ -1262,6 +1302,7 @@ function FlightTableSection({
   onExportFicha,
   exportingFichaId,
   signaturesByFlightId,
+  clubMemberByStudentId,
   onSign,
   canSignAsInstructor,
 }: {
@@ -1278,6 +1319,7 @@ function FlightTableSection({
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
   signaturesByFlightId?: Record<string, FlightSignaturesForFlight>;
+  clubMemberByStudentId?: Record<string, boolean>;
   onSign?: (id: string) => void;
   canSignAsInstructor?: (item: SavedFlightListItem) => boolean;
 }) {
@@ -1341,7 +1383,12 @@ function FlightTableSection({
                       >
                         <td className="px-3 py-2 text-slate-200">{formatDate(item, info)}</td>
                         <td className="px-3 py-2">{info?.startTime || "—"}</td>
-                        <td className="px-3 py-2">{info?.studentName ?? "—"}</td>
+                        <td className="px-3 py-2">
+                          <span className="inline-flex min-w-0 items-center gap-1">
+                            <span className="truncate">{info?.studentName ?? "—"}</span>
+                            {item.student_user_id && clubMemberByStudentId?.[item.student_user_id] ? <FlightReviewClubBadge /> : null}
+                          </span>
+                        </td>
                         <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
                         <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
                         <td className="px-3 py-2"><FlightStatusBadge status={item.flight_status} /></td>

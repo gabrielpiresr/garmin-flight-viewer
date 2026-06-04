@@ -23,6 +23,7 @@ import {
 } from "../../lib/scheduleGenerationDb";
 import { shortName } from "../../lib/flightDisplay";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
+import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
   buildScheduleHourOptions,
   hourSelectValue,
@@ -46,6 +47,7 @@ import type { Aircraft } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
+import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -188,6 +190,7 @@ type FlightFormDraft = {
 
 type CalendarFlightItem = {
   id: string;
+  studentId: string;
   studentLabel: string;
   instructorId: string | null;
   instructorLabel: string | null;
@@ -348,6 +351,7 @@ function CalendarGrid({
   colorByAircraft,
   borderByInstructor,
   backgroundSupply,
+  clubMemberByStudentId,
   weekStart,
   onItemClick,
   onItemDrop,
@@ -361,6 +365,7 @@ function CalendarGrid({
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
+  clubMemberByStudentId?: Record<string, boolean>;
   weekStart: string;
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
@@ -478,9 +483,16 @@ function CalendarGrid({
 
   const dayBoardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const nightRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const [dragState, setDragState] = useState<{ item: CalendarFlightItem; preview: CalendarDropTarget } | null>(null);
+  const [dragState, setDragState] = useState<{
+    item: CalendarFlightItem;
+    preview: CalendarDropTarget;
+    startX: number;
+    startY: number;
+    hasMoved: boolean;
+  } | null>(null);
   const dragEndedRef = useRef(false);
   const draggable = Boolean(onItemDrop);
+  const dragThresholdPx = 5;
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -520,12 +532,16 @@ function CalendarGrid({
   useEffect(() => {
     if (!dragState) return;
     function onMove(e: PointerEvent) {
-      const t = resolveDropTarget(e.clientX, e.clientY);
-      if (t) setDragState((p) => (p ? { ...p, preview: t } : p));
+      setDragState((p) => {
+        if (!p) return p;
+        const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
+        const t = moved ? resolveDropTarget(e.clientX, e.clientY) : null;
+        return { ...p, hasMoved: moved, preview: t ?? p.preview };
+      });
     }
     function onUp(e: PointerEvent) {
       setDragState((p) => {
-        if (p && onItemDrop) {
+        if (p?.hasMoved && onItemDrop) {
           dragEndedRef.current = true;
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
         }
@@ -652,9 +668,10 @@ function CalendarGrid({
                               startTime: item.startTime,
                               isNight: false,
                             };
-                            setDragState({ item, preview: target });
+                            setDragState({ item, preview: target, startX: e.clientX, startY: e.clientY, hasMoved: false });
                           }}
                           onClick={(e) => {
+                            e.stopPropagation();
                             if (dragEndedRef.current) {
                               dragEndedRef.current = false;
                               e.preventDefault();
@@ -670,8 +687,9 @@ function CalendarGrid({
                             width: `calc(${widthPercent}% - 8px)`,
                           }}
                         >
-                          <p className="truncate font-semibold text-white">
-                            {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                          <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                            <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
+                            {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                           </p>
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                           <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
@@ -756,9 +774,13 @@ function CalendarGrid({
                                       startTime: item.startTime,
                                       isNight: true,
                                     },
+                                    startX: e.clientX,
+                                    startY: e.clientY,
+                                    hasMoved: false,
                                   });
                                 }}
                                 onClick={(e) => {
+                                  e.stopPropagation();
                                   if (dragEndedRef.current) {
                                     dragEndedRef.current = false;
                                     e.preventDefault();
@@ -768,8 +790,9 @@ function CalendarGrid({
                                 }}
                                 className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
                               >
-                                <p className="truncate font-semibold text-white">
-                                  {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                                <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                                  <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
+                                  {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                                 </p>
                                 <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
                               </div>
@@ -844,6 +867,7 @@ function DailyCalendarGrid({
   hasPrevWeek,
   hasNextWeek,
   backgroundSupply,
+  clubMemberByStudentId,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
@@ -861,6 +885,7 @@ function DailyCalendarGrid({
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
+  clubMemberByStudentId?: Record<string, boolean>;
 }) {
   const rowHeight = 38;
   const boardHeight = SLOT_HOURS.length * rowHeight;
@@ -962,8 +987,15 @@ function DailyCalendarGrid({
 
   const boardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const nightRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [dragState, setDragState] = useState<{ item: CalendarFlightItem; preview: CalendarDropTarget } | null>(null);
+  const [dragState, setDragState] = useState<{
+    item: CalendarFlightItem;
+    preview: CalendarDropTarget;
+    startX: number;
+    startY: number;
+    hasMoved: boolean;
+  } | null>(null);
   const dragEndedRef = useRef(false);
+  const dragThresholdPx = 5;
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -1009,12 +1041,16 @@ function DailyCalendarGrid({
   useEffect(() => {
     if (!dragState) return;
     function onMove(e: PointerEvent) {
-      const t = resolveDropTarget(e.clientX, e.clientY);
-      if (t) setDragState((p) => (p ? { ...p, preview: t } : p));
+      setDragState((p) => {
+        if (!p) return p;
+        const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
+        const t = moved ? resolveDropTarget(e.clientX, e.clientY) : null;
+        return { ...p, hasMoved: moved, preview: t ?? p.preview };
+      });
     }
     function onUp(e: PointerEvent) {
       setDragState((p) => {
-        if (p && onItemDrop) {
+        if (p?.hasMoved && onItemDrop) {
           dragEndedRef.current = true;
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
         }
@@ -1200,9 +1236,10 @@ function DailyCalendarGrid({
                                   startTime: item.startTime,
                                   isNight: false,
                                 };
-                                setDragState({ item, preview: t });
+                                setDragState({ item, preview: t, startX: e.clientX, startY: e.clientY, hasMoved: false });
                               }}
                               onClick={(e) => {
+                                e.stopPropagation();
                                 if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
                                 onItemClick(item);
                               }}
@@ -1214,8 +1251,9 @@ function DailyCalendarGrid({
                                 width: `calc(${widthPercent}% - 8px)`,
                               }}
                             >
-                              <p className="truncate font-semibold text-white">
-                                {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                              <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                                <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
+                                {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                               </p>
                               <p className="truncate opacity-90">{item.startTime}–{item.endTime}</p>
                               {groupBy === "aircraft" ? (
@@ -1295,15 +1333,22 @@ function DailyCalendarGrid({
                                     setDragState({
                                       item,
                                       preview: { dayOfWeek: selectedDay, startHour: item.startHour, startTime: item.startTime, isNight: true },
+                                      startX: e.clientX,
+                                      startY: e.clientY,
+                                      hasMoved: false,
                                     });
                                   }}
                                   onClick={(e) => {
+                                    e.stopPropagation();
                                     if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
                                     onItemClick(item);
                                   }}
                                   className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
                                 >
-                                  <p className="truncate font-semibold text-white">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</p>
+                                  <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                                    <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
+                                    {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
+                                  </p>
                                   {groupBy === "aircraft" ? (
                                     <p className="truncate opacity-80">{shortName(item.instructorLabel) || "Sem instrutor"}</p>
                                   ) : (
@@ -1382,6 +1427,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [formConflicts, setFormConflicts] = useState<DetectedFlightConflict[]>([]);
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [clubMemberByStudentId, setClubMemberByStudentId] = useState<Record<string, boolean>>({});
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
@@ -1656,6 +1702,26 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [flights, instructorById, weekData]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const studentIds = Array.from(new Set((weekData?.students ?? []).map((student) => student.userId).filter(Boolean)));
+    if (studentIds.length === 0) {
+      setClubMemberByStudentId({});
+      return;
+    }
+    void Promise.all(studentIds.map((studentId) => listStudentTrainingTracks(studentId))).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, boolean> = {};
+      studentIds.forEach((studentId, index) => {
+        map[studentId] = hasActiveFlightReviewClubTrack(results[index]?.data);
+      });
+      setClubMemberByStudentId(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [weekData?.students]);
+
   const calendarItems = useMemo<CalendarFlightItem[]>(
     () =>
       flights
@@ -1669,6 +1735,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           const startHour = parseStartHour(row.startTime);
           return {
             id: row.id,
+            studentId: row.studentId,
             studentLabel: studentLabelMap.get(row.studentId) ?? row.studentId,
             instructorId: row.instructorId,
             instructorLabel:
@@ -2317,6 +2384,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
                 backgroundSupply={selectedSupplyForBackground}
+                clubMemberByStudentId={clubMemberByStudentId}
                 weekStart={weekData.week.weekStart}
                 hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
                 hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
@@ -2374,6 +2442,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   borderByInstructor={borderByInstructor}
                   weekData={weekData}
                   backgroundSupply={selectedSupplyForBackground}
+                  clubMemberByStudentId={clubMemberByStudentId}
                   hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
                   hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
                   onSelectDay={setSelectedDay}

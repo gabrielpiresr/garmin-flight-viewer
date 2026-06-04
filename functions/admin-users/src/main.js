@@ -351,6 +351,7 @@ const STUDENT_TRACK_SELECT = [
   "track_id",
   "status",
   "is_primary",
+  "is_flight_review_club_member",
   "assigned_at",
   "updated_at",
 ];
@@ -373,7 +374,12 @@ function jsonResponse(res, status, payload) {
 }
 
 function parseFunctionPayload(req) {
-  if (req?.bodyJson && typeof req.bodyJson === "object") return req.bodyJson;
+  try {
+    if (req?.bodyJson && typeof req.bodyJson === "object") return req.bodyJson;
+  } catch {
+    // Scheduled executions arrive with an empty body; Appwrite's bodyJson getter
+    // throws while parsing "", so fall through to the raw-body candidates.
+  }
   const rawCandidates = [req?.body, req?.bodyRaw, req?.payload];
   for (const raw of rawCandidates) {
     if (!raw) continue;
@@ -1211,6 +1217,27 @@ function normalizeSagaScheduleStatus(value) {
   return cleanString(value).toUpperCase();
 }
 
+function sagaScheduleIsCancelledStatus(status) {
+  const normalized = normalizeSagaScheduleStatus(status);
+  return ["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(normalized);
+}
+
+function sagaScheduleNotes(schedule) {
+  const values = [
+    schedule?.notes,
+    schedule?.observation,
+    schedule?.observations,
+    schedule?.observacao,
+    schedule?.observacoes,
+    schedule?.remarks,
+    schedule?.reason,
+    schedule?.cancel_reason,
+    schedule?.cancellation_reason,
+    schedule?.cancellation_notes,
+  ];
+  return values.map(cleanString).filter(Boolean).join(" | ");
+}
+
 function translateSagaScheduleItem(item) {
   const schedule = item && typeof item === "object" ? item : {};
   const student = schedule.student && typeof schedule.student === "object" ? schedule.student : {};
@@ -1236,7 +1263,7 @@ function translateSagaScheduleItem(item) {
     aircraftModel: cleanString(aircraft.model || schedule.aircraft_model),
     studentName: cleanString(student.name || student.nickname || schedule.student_name || schedule.student),
     instructorName: cleanString(instructor.name || instructor.nickname || schedule.instructor_name || schedule.instructor),
-    notes: cleanString(schedule.notes),
+    notes: sagaScheduleNotes(schedule),
     status: normalizeSagaScheduleStatus(schedule.status),
     active: schedule.active !== false && schedule.active !== 0,
     raw: schedule,
@@ -1273,7 +1300,7 @@ async function fetchSagaScheduledFlights(cookieJar, logs = []) {
     const schedules = Array.isArray(parsed?.schedules) ? parsed.schedules : [];
     const translated = schedules
       .map(translateSagaScheduleItem)
-      .filter((schedule) => schedule.id && schedule.active && schedule.status !== "CANCELED" && sagaScheduleIsTodayOrFuture(schedule.raw));
+      .filter((schedule) => schedule.id && (schedule.active || sagaScheduleIsCancelledStatus(schedule.status)) && sagaScheduleIsTodayOrFuture(schedule.raw));
     rows.push(...translated);
     localLogs.push(`GET ${path}: status ${result.response.status}, ${translated.length}/${schedules.length} voos agendados de hoje em diante.`);
     return { rows, logs: localLogs };
@@ -2443,7 +2470,7 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
     return { skipped: true, reason: "missing_email_or_id", userId: null };
   }
 
-  const cpfPassword = role === "aluno" ? cleanString(sagaUser.cpf).replace(/\D/g, "") : "";
+  const cpfPassword = cleanString(sagaUser.cpf).replace(/\D/g, "");
   const shouldUseCpfPassword = cpfPassword.length === 11;
   const deterministicId = sagaDocId(testMode ? "saga_test" : useEmailAlias ? "saga_alias" : "saga", sagaId);
   let authUser = null;
@@ -4429,17 +4456,31 @@ function sagaScheduleDurationMinutes(schedule) {
 function buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, instructorUserId) {
   const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
   const end = sagaLocalDateTimeParts(schedule.endAtRaw || schedule.endAt);
+  const usedInstructorAsStudent = Boolean(instructorUserId) && cleanString(studentUserId) === cleanString(instructorUserId);
+  const studentLabel = usedInstructorAsStudent
+    ? cleanString(schedule.instructorName) || cleanString(schedule.studentName)
+    : cleanString(schedule.studentName);
+  const cancellationReasonText = cleanString(materialized.from_to) || cleanString(schedule.notes);
   const meta = {
     source: "saga_schedule",
     sourceVersion: 1,
     scheduleId: cleanString(schedule.id),
     importedAt: nowIso(),
+    ...(materialized.flight_status === "Cancelado"
+      ? {
+          cancellation: {
+            reasonCode: "Cancelado no SAGA",
+            reasonText: cancellationReasonText,
+            updatedAt: nowIso(),
+          },
+        }
+      : {}),
     header: {
       flightDate: materialized.flight_date || start.date || "",
       studentUserId,
       instructorUserId: instructorUserId || null,
-      studentLabel: cleanString(schedule.studentName),
-      studentName: cleanString(schedule.studentName),
+      studentLabel,
+      studentName: studentLabel,
       instructorName: cleanString(schedule.instructorName) || null,
       aircraft: materialized.aircraft_ident || "",
       startTime: materialized.start_time || start.time || null,
@@ -4447,6 +4488,7 @@ function buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, 
       engineCutoffTimeUtc: end.time || null,
       isNight: false,
       notes: cleanString(schedule.notes),
+      ...(usedInstructorAsStudent ? { sagaStudentFallback: "instructor" } : {}),
     },
     preFlight: {
       objectiveMd: cleanString(schedule.notes),
@@ -4467,16 +4509,28 @@ function buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, 
   return `${META_PREFIX}${Buffer.from(JSON.stringify(meta), "utf8").toString("base64")}\n`;
 }
 
-async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode = false } = {}) {
+async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode = false, existingDocId = "" } = {}) {
   const aircraftIdent = resolveSagaScheduleAircraft(schedule, mapping, catalogs);
-  const studentUserId = usersBySagaId.get(cleanString(schedule.studentSagaId)) || null;
+  const sagaStudentUserId = usersBySagaId.get(cleanString(schedule.studentSagaId)) || null;
   const instructorUserId = usersBySagaId.get(cleanString(schedule.instructorSagaId)) || null;
+  const studentUserId = sagaStudentUserId || instructorUserId || null;
+  const usedInstructorAsStudent = !sagaStudentUserId && Boolean(instructorUserId);
+  const studentLabel = usedInstructorAsStudent
+    ? cleanString(schedule.instructorName) || cleanString(schedule.studentName) || "Instrutor"
+    : cleanString(schedule.studentName);
+  const cancelled = sagaScheduleIsCancelledStatus(schedule.status);
+  const scheduleNotes = cleanString(schedule.notes);
+  const cancellationReasonText = [
+    scheduleNotes,
+    cleanString(schedule.status) ? `Status SAGA: ${cleanString(schedule.status)}` : "",
+    usedInstructorAsStudent ? "SAGA sem aluno; instrutor usado como aluno no import." : "",
+  ].filter(Boolean).join(" | ");
   const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
   const end = sagaLocalDateTimeParts(schedule.endAtRaw || schedule.endAt);
   const baseFailure = {
     id: schedule.id,
     date: start.date,
-    student: cleanString(schedule.studentName),
+    student: studentLabel,
     aircraft: cleanString(schedule.aircraft),
     course: "",
   };
@@ -4491,7 +4545,10 @@ async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySag
         sdk.Query.limit(1),
       ]).catch(() => ({ documents: [] }))
     : { documents: [] };
-  const existingDocBySchedule = existingBySagaScheduleId.documents?.[0] || null;
+  const forcedExistingDoc = cleanString(existingDocId)
+    ? await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, cleanString(existingDocId)).catch(() => null)
+    : null;
+  const existingDocBySchedule = existingBySagaScheduleId.documents?.[0] || forcedExistingDoc || null;
   const docId = cleanString(existingDocBySchedule?.$id) || sagaDocId(testMode ? "saga_test_schedule" : "saga_schedule", schedule.id);
   const existingDoc = existingDocBySchedule || await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
   const durationMinutes = sagaScheduleDurationMinutes(schedule);
@@ -4501,7 +4558,7 @@ async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySag
     student_user_id: studentUserId,
     instructor_user_id: instructorUserId,
     created_by_role: "admin",
-    name: `SAGA Agendado ${schedule.id} - ${cleanString(schedule.studentName) || "Voo"}`.slice(0, 255),
+    name: `SAGA Agendado ${schedule.id} - ${studentLabel || "Voo"}`.slice(0, 255),
     source_filename: `${testMode ? "saga-test-schedule" : "saga-schedule"}-${schedule.id}`,
     csv_text: "",
     csv_file_id: null,
@@ -4509,7 +4566,7 @@ async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySag
     duration_sec: durationMinutes > 0 ? durationMinutes * 60 : null,
     flight_date: start.date,
     start_time: start.time || null,
-    from_to: cleanString(schedule.notes).slice(0, 255) || null,
+    from_to: (cancelled ? cancellationReasonText : scheduleNotes).slice(0, 255) || null,
     landings: 0,
     block_time_minutes: durationMinutes || null,
     total_flight_minutes: durationMinutes || null,
@@ -4519,8 +4576,13 @@ async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySag
     training_track_id: null,
     training_stage_id: null,
     training_mission_id: null,
-    training_snapshot_json: JSON.stringify({ source: "saga_schedule", notes: cleanString(schedule.notes) || null }),
-    flight_status: "Previsto",
+    training_snapshot_json: JSON.stringify({
+      source: "saga_schedule",
+      notes: scheduleNotes || null,
+      status: cleanString(schedule.status) || null,
+      usedInstructorAsStudent,
+    }),
+    flight_status: cancelled ? "Cancelado" : "Previsto",
   };
   materialized.csv_text = buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, instructorUserId);
   const optionalFields = {
@@ -8379,6 +8441,7 @@ async function getTrainingAssignmentsByUserIds(userIds = []) {
       trackId: doc.track_id || "",
       status: ["active", "completed", "paused"].includes(doc.status) ? doc.status : "active",
       isPrimary: Boolean(doc.is_primary),
+      isFlightReviewClubMember: Boolean(doc.is_flight_review_club_member),
       assignedAt: doc.assigned_at || doc.$createdAt || "",
       updatedAt: doc.updated_at || doc.$updatedAt || "",
       track: tracksById.get(doc.track_id) || null,
@@ -12919,7 +12982,10 @@ async function syncSagaScheduleEvent(actorUserId, payload = {}) {
 }
 
 function sagaScheduleFingerprint(schedule, usersBySagaId, mapping, catalogs) {
-  const studentUserId = usersBySagaId.get(cleanString(schedule.studentSagaId)) || "";
+  const studentUserId =
+    usersBySagaId.get(cleanString(schedule.studentSagaId)) ||
+    usersBySagaId.get(cleanString(schedule.instructorSagaId)) ||
+    "";
   const aircraftIdent = resolveSagaScheduleAircraft(schedule, mapping, catalogs) || "";
   const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
   return `${studentUserId}|${start.date}|${start.time}|${normalizeAircraftIdent(aircraftIdent)}`;
@@ -13012,8 +13078,13 @@ async function syncSagaScheduleFromImportSettings(actorUserId = "system", option
       continue;
     }
     if (fingerprint) {
-      const duplicated = (sameDayFlights.documents || []).some((doc) => flightScheduleFingerprint(doc) === fingerprint);
-      if (duplicated) continue;
+      const duplicatedDoc = (sameDayFlights.documents || []).find((doc) => flightScheduleFingerprint(doc) === fingerprint);
+      if (duplicatedDoc) {
+        if (!sagaScheduleIsCancelledStatus(schedule.status)) continue;
+        const result = await importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode: false, existingDocId: duplicatedDoc.$id });
+        createdOrUpdated.push(result);
+        continue;
+      }
     }
     const result = await importSagaScheduledFlight(schedule, mapping, catalogs, usersBySagaId, { testMode: false });
     createdOrUpdated.push(result);

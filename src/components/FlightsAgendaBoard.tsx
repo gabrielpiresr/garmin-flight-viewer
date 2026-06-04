@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { parseDurationToMinutes, shortName } from "../lib/flightDisplay";
 import type { SavedFlightListItem } from "../lib/flightsDb";
 import { SLOT_HOURS } from "../types/admin";
+import { FlightReviewClubBadge } from "./FlightReviewClubBadge";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -114,10 +115,12 @@ function buildAgendaItem(flight: SavedFlightListItem, info?: AgendaFlightInfo): 
 export function FlightsAgendaBoard({
   items,
   infoById,
+  clubMemberByStudentId,
   onOpen,
 }: {
   items: SavedFlightListItem[];
   infoById: Record<string, AgendaFlightInfo | undefined>;
+  clubMemberByStudentId?: Record<string, boolean>;
   onOpen: (id: string) => void;
 }) {
   const rowHeight = 38;
@@ -225,7 +228,10 @@ export function FlightsAgendaBoard({
                           }}
                           title={`${shortName(info?.studentName, "Voo")} • ${info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} • ${agendaItem.startTime}-${agendaItem.endTime}`}
                         >
-                          <p className="truncate font-semibold">{shortName(info?.studentName, "Voo")}</p>
+                          <p className="flex min-w-0 items-center gap-1 font-semibold">
+                            <span className="truncate">{shortName(info?.studentName, "Voo")}</span>
+                            {agendaItem.flight.student_user_id && clubMemberByStudentId?.[agendaItem.flight.student_user_id] ? <FlightReviewClubBadge /> : null}
+                          </p>
                           <p className="truncate opacity-90">{agendaItem.startTime}-{agendaItem.endTime}</p>
                           <p className="truncate opacity-80">{info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "—"} · {shortName(info?.instructorName) || "Sem instrutor"}</p>
                         </button>

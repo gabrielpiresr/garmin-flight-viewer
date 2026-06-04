@@ -15,12 +15,14 @@ import { getSavedFlight, listStudentFlightHistory, type SavedFlightListItem } fr
 import { loadFullFlightListDisplayInfos } from "../../lib/flightListDisplayCache";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { getProfile, type PilotProfile } from "../../lib/rbac";
+import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import { formatNumber } from "../../lib/weightBalance";
 import type { StudentCreditStatement } from "../../types/credits";
 import { StudentObservationsSection } from "../admin/StudentObservationsSection";
 import { CreditStatementView } from "../CreditStatementView";
 import { TelemetriaTab } from "../TelemetriaTab";
 import { VideosTab } from "../VideosTab";
+import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { Tabs } from "../ui/Tabs";
 
 type HistoryDetailTab = "ficha" | "telemetria" | "videos";
@@ -290,6 +292,7 @@ export function StudentFlightContextPanel({
   const [creditError, setCreditError] = useState<string | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [selectedHistoryTab, setSelectedHistoryTab] = useState<HistoryDetailTab>("ficha");
+  const [isFlightReviewClubMember, setIsFlightReviewClubMember] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -300,13 +303,15 @@ export function StudentFlightContextPanel({
     setCreditError(null);
     setHistoryInfoById({});
     setSelectedHistoryId(null);
-    const [profileRes, historyRes, creditsRes] = await Promise.all([
+    const [profileRes, historyRes, creditsRes, tracksRes] = await Promise.all([
       getProfile(studentUserId),
       listStudentFlightHistory({ actorUserId: user.id, actorRole: user.role, studentUserId }),
       getStudentCreditStatement({ viewer: { userId: user.id, role: user.role }, studentUserId })
         .then((data) => ({ data, error: null }))
         .catch((loadError) => ({ data: null, error: loadError as Error })),
+      listStudentTrainingTracks(studentUserId),
     ]);
+    setIsFlightReviewClubMember(hasActiveFlightReviewClubTrack(tracksRes.data));
     if (profileRes.error || historyRes.error) {
       setError(profileRes.error?.message ?? historyRes.error?.message ?? "Falha ao carregar aluno.");
       setProfile(null);
@@ -421,7 +426,10 @@ export function StudentFlightContextPanel({
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Aluno do voo</p>
-            <h3 className="text-lg font-semibold text-white">{profile.fullName || profile.email}</h3>
+            <h3 className="flex min-w-0 flex-wrap items-center gap-2 text-lg font-semibold text-white">
+              <span className="break-words [overflow-wrap:anywhere]">{profile.fullName || profile.email}</span>
+              {isFlightReviewClubMember ? <FlightReviewClubBadge /> : null}
+            </h3>
             <p className="mt-1 text-sm text-slate-500">Ficha consolidada do aluno, independente do voo aberto.</p>
             <div className="mt-4 grid gap-3 md:grid-cols-5">
               {field("Voos no histórico", contextFlights.length)}
