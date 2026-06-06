@@ -67,13 +67,27 @@ const HELPER_SETUP_PATH = "/video-helper";
 
 type HelperStatus = "checking" | "online" | "offline";
 type SelectedFile = { name: string; path: string; size: number };
+type ProcessingMode = "original" | "compatible" | "compressed";
+type ProcessingStrategy = "direct" | "remux" | "concat-copy" | "transcode";
 
-type ProcessStage = "telemetry-detect" | "concat" | "watermark" | "compress" | "upload" | "done" | "error";
+type ProcessStage =
+  | "telemetry-detect"
+  | "direct"
+  | "remux"
+  | "concat-copy"
+  | "transcode"
+  | "concat"
+  | "watermark"
+  | "compress"
+  | "upload"
+  | "done"
+  | "error";
 
 type ProgressPayload = {
   stage: ProcessStage;
   percent: number;
   message?: string;
+  strategy?: ProcessingStrategy;
   file_url?: string;
   file_size?: number;
   duration_sec?: number;
@@ -81,6 +95,19 @@ type ProgressPayload = {
   telemetry_source?: string;
   available_widgets?: string[];
   telemetry_json?: string;
+};
+
+type FileAnalysis = {
+  strategy: ProcessingStrategy;
+  requiresTranscode: boolean;
+  encoder: string;
+  hardwareAccelerated: boolean;
+  reason: string;
+  outputExtension: string;
+  playbackRisk: "low" | "medium" | "high";
+  playbackWarning: string;
+  estimatedSeconds: number | null;
+  totalDurationSec: number;
 };
 
 
@@ -241,6 +268,9 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const [processingError, setProcessingError] = useState<string | null>(null);
   const [isDone, setIsDone] = useState(false);
   const [applyLogo, setApplyLogo] = useState(false);
+  const [processingMode, setProcessingMode] = useState<ProcessingMode>("original");
+  const [processingStrategy, setProcessingStrategy] = useState<ProcessingStrategy | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const dragIndexRef = useRef<number | null>(null);
   const evtSourceRef = useRef<EventSource | null>(null);
 
@@ -307,12 +337,13 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         const response = await fetch(`${HELPER_URL}/jobs/${candidate.id}`);
         if (!response.ok || cancelled) return;
         const body = await response.json() as {
-          job?: { stage?: ProcessStage; percent?: number; message?: string };
+          job?: { stage?: ProcessStage; percent?: number; message?: string; strategy?: ProcessingStrategy };
         };
         if (!body.job || cancelled) return;
         setProcessingJobId(candidate.id);
         setProgressStage(body.job.stage ?? "concat");
         setProgress(body.job.percent ?? 0);
+        setProcessingStrategy(body.job.strategy ?? null);
         if (body.job.stage === "done") {
           setIsDone(true);
           void loadVideos();
@@ -342,6 +373,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       const payload = JSON.parse(event.data) as ProgressPayload;
       setProgressStage(payload.stage);
       setProgress(payload.percent);
+      if (payload.strategy) setProcessingStrategy(payload.strategy);
       if (payload.stage === "done") {
         source.close();
         evtSourceRef.current = null;
@@ -371,6 +403,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       setIsDone(false);
       setProcessingError(null);
       setProcessingJobId(null);
+      setProcessingStrategy(null);
     } catch (error) {
       setProcessingError((error as Error).message);
     }
@@ -409,10 +442,60 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     }
 
     setProcessingError(null);
+    setIsAnalyzing(true);
+    let analysis: FileAnalysis;
+    try {
+      const response = await fetch(`${HELPER_URL}/analyze-files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoPaths: selectedFiles.map((file) => file.path),
+          applyLogo,
+          processingMode,
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as FileAnalysis & { error?: string };
+      if (!response.ok) throw new Error(body.error || `Nao foi possivel analisar os arquivos (${response.status}).`);
+      analysis = body;
+    } catch (error) {
+      setProcessingError((error as Error).message);
+      return;
+    } finally {
+      setIsAnalyzing(false);
+    }
+
+    setProcessingStrategy(analysis.strategy);
+    if (!analysis.requiresTranscode && analysis.playbackRisk !== "low" && analysis.playbackWarning) {
+      const confirmed = window.confirm(
+        `${analysis.reason}\n\nAviso de compatibilidade: ${analysis.playbackWarning}\n\nDeseja enviar o arquivo original mesmo assim?`,
+      );
+      if (!confirmed) return;
+    } else if (analysis.requiresTranscode) {
+      const slowCpu = !analysis.hardwareAccelerated;
+      const incompatibleOriginalMerge = processingMode === "original" && !applyLogo;
+      if (slowCpu || incompatibleOriginalMerge) {
+        const estimate = analysis.estimatedSeconds
+          ? `\n\nTempo estimado nesta maquina: aproximadamente ${formatDurationSec(analysis.estimatedSeconds)}.`
+          : "";
+        const guidance = applyLogo
+          ? "\n\nPara evitar a recodificacao, cancele e desmarque a logo."
+          : incompatibleOriginalMerge
+            ? "\n\nPara evitar a recodificacao, envie os arquivos separadamente."
+            : "\n\nPara ganhar velocidade, cancele e escolha Preservar arquivo original.";
+        const confirmed = window.confirm(
+          `${analysis.reason}\n\nEncoder: ${analysis.hardwareAccelerated ? analysis.encoder : "CPU (libx264)"}.${estimate}${guidance}\n\nDeseja continuar?`,
+        );
+        if (!confirmed) return;
+      }
+    }
+
     setProgress(0);
     setProgressStage("telemetry-detect");
 
-    const videoKey = `flight-${flightId}-${Date.now()}.mp4`;
+    const safeExtension = /^\.[a-z0-9]{1,8}$/i.test(analysis.outputExtension)
+      ? analysis.outputExtension.toLowerCase()
+      : ".mp4";
+    const videoKey = `flight-${flightId}-${Date.now()}${safeExtension}`;
     const { id: docId, error: docError } = await createFlightVideoDoc({
       flightId,
       uploadedBy: user.id,
@@ -476,6 +559,8 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
           flightVideoDocId: docId,
           applyLogo,
           logoUrl: applyLogo ? getCachedVideoBrand().logoUrl : "",
+          processingMode,
+          confirmTranscode: analysis.requiresTranscode,
         }),
       });
       const body = await res.json().catch(() => ({})) as { error?: string };
@@ -497,6 +582,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       const payload = JSON.parse(e.data) as ProgressPayload;
       setProgressStage(payload.stage);
       setProgress(payload.percent);
+      if (payload.strategy) setProcessingStrategy(payload.strategy);
 
       if (payload.stage === "done") {
         evtSource.close();
@@ -537,6 +623,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     }
     await updateFlightVideoFailed(processingJobId, "Cancelado pelo usuario");
     setProcessingJobId(null);
+    setProcessingStrategy(null);
     setProgress(0);
     setProgressStage(null);
   };
@@ -608,6 +695,9 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               onAddMore={handleOpenFilePicker}
               applyLogo={applyLogo}
               onApplyLogoChange={setApplyLogo}
+              processingMode={processingMode}
+              onProcessingModeChange={setProcessingMode}
+              isAnalyzing={isAnalyzing}
             />
           )}
 
@@ -616,6 +706,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
             <UploadProgress
               stage={progressStage}
               percent={progress}
+              strategy={processingStrategy}
               onCancel={() => void handleCancel()}
             />
           )}
@@ -813,6 +904,9 @@ function FileSelectionList({
   onAddMore,
   applyLogo,
   onApplyLogoChange,
+  processingMode,
+  onProcessingModeChange,
+  isAnalyzing,
 }: {
   files: SelectedFile[];
   onRemove: (i: number) => void;
@@ -823,6 +917,9 @@ function FileSelectionList({
   onAddMore: () => void;
   applyLogo: boolean;
   onApplyLogoChange: (value: boolean) => void;
+  processingMode: ProcessingMode;
+  onProcessingModeChange: (value: ProcessingMode) => void;
+  isAnalyzing: boolean;
 }) {
   return (
     <div className="mt-4 space-y-3">
@@ -850,6 +947,66 @@ function FileSelectionList({
         ))}
       </ul>
 
+      <div className="grid gap-2 lg:grid-cols-3">
+        <label className={`cursor-pointer rounded-lg border px-3 py-2.5 text-xs ${
+          processingMode === "original"
+            ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+            : "border-slate-700/60 bg-slate-900/50 text-slate-300"
+        }`}>
+          <span className="flex items-center gap-2 font-medium">
+            <input
+              type="radio"
+              name="video-processing-mode"
+              checked={processingMode === "original"}
+              onChange={() => onProcessingModeChange("original")}
+              className="accent-sky-500"
+            />
+            Preservar arquivo original
+          </span>
+          <span className="mt-1 block pl-5 text-[10px] leading-4 text-slate-400">
+            Mais rápido. Aceita HEVC e outros codecs, com possível limitação de reprodução.
+          </span>
+        </label>
+        <label className={`cursor-pointer rounded-lg border px-3 py-2.5 text-xs ${
+          processingMode === "compatible"
+            ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+            : "border-slate-700/60 bg-slate-900/50 text-slate-300"
+        }`}>
+          <span className="flex items-center gap-2 font-medium">
+            <input
+              type="radio"
+              name="video-processing-mode"
+              checked={processingMode === "compatible"}
+              onChange={() => onProcessingModeChange("compatible")}
+              className="accent-sky-500"
+            />
+            Compatibilidade máxima
+          </span>
+          <span className="mt-1 block pl-5 text-[10px] leading-4 text-slate-400">
+            Mantém H.264 compatível ou converte outros codecs quando necessário.
+          </span>
+        </label>
+        <label className={`cursor-pointer rounded-lg border px-3 py-2.5 text-xs ${
+          processingMode === "compressed"
+            ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+            : "border-slate-700/60 bg-slate-900/50 text-slate-300"
+        }`}>
+          <span className="flex items-center gap-2 font-medium">
+            <input
+              type="radio"
+              name="video-processing-mode"
+              checked={processingMode === "compressed"}
+              onChange={() => onProcessingModeChange("compressed")}
+              className="accent-sky-500"
+            />
+            Compactar para economizar espaço
+          </span>
+          <span className="mt-1 block pl-5 text-[10px] leading-4 text-slate-400">
+            Usa GPU ou CPU e pode demorar bastante em computadores fracos.
+          </span>
+        </label>
+      </div>
+
       <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
         <input
           type="checkbox"
@@ -858,16 +1015,17 @@ function FileSelectionList({
           className="size-4 accent-sky-500"
         />
         Aplicar a logo da escola no vídeo
-        <span className="ml-auto text-[10px] text-slate-500">desligado por padrão</span>
+        <span className="ml-auto text-[10px] text-slate-500">exige recodificação</span>
       </label>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
           type="button"
           onClick={onGenerate}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 sm:w-auto"
+          disabled={isAnalyzing}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-wait disabled:opacity-60 sm:w-auto"
         >
-          Gerar vídeo final
+          {isAnalyzing ? "Analisando computador e arquivos..." : "Continuar com o upload"}
         </button>
         <button
           type="button"
@@ -883,20 +1041,22 @@ function FileSelectionList({
 
 type PipelineStep = { key: ProcessStage; label: string };
 
-const UPLOAD_PIPELINE: PipelineStep[] = [
-  { key: "telemetry-detect", label: "Procurando telemetria GPS" },
-  { key: "concat", label: "Concatenando vídeos" },
-  { key: "compress", label: "Compactando" },
-  { key: "upload", label: "Enviando para armazenamento" },
-];
+function strategyStep(strategy: ProcessingStrategy | null): PipelineStep {
+  if (strategy === "direct") return { key: "direct", label: "Preparando envio do arquivo original" };
+  if (strategy === "remux") return { key: "remux", label: "Convertendo rapidamente para MP4" };
+  if (strategy === "concat-copy") return { key: "concat-copy", label: "Unindo vídeos sem compactar" };
+  return { key: "transcode", label: "Recodificando vídeo" };
+}
 
 function UploadProgress({
   stage,
   percent,
+  strategy,
   onCancel,
 }: {
   stage: ProcessStage | null;
   percent: number;
+  strategy: ProcessingStrategy | null;
   onCancel: () => void;
 }) {
   const [elapsed, setElapsed] = useState(0);
@@ -910,8 +1070,18 @@ function UploadProgress({
     return () => clearInterval(id);
   }, []);
 
-  const currentKey: ProcessStage = stage ?? "concat";
-  const currentIdx = UPLOAD_PIPELINE.findIndex((p) => p.key === currentKey);
+  const inferredStrategy: ProcessingStrategy | null = strategy
+    ?? (stage === "direct" || stage === "remux" || stage === "concat-copy" || stage === "transcode" ? stage : null);
+  const processStep = strategyStep(inferredStrategy);
+  const pipeline: PipelineStep[] = [
+    { key: "telemetry-detect", label: "Procurando telemetria GPS" },
+    processStep,
+    { key: "upload", label: "Enviando para armazenamento" },
+  ];
+  const currentKey: ProcessStage = stage === "concat" || stage === "compress" || stage === "watermark"
+    ? "transcode"
+    : stage ?? processStep.key;
+  const currentIdx = pipeline.findIndex((p) => p.key === currentKey);
 
   return (
     <div className="mt-4 space-y-4">
@@ -925,7 +1095,7 @@ function UploadProgress({
 
       {/* Pipeline de etapas */}
       <div className="space-y-2.5">
-        {UPLOAD_PIPELINE.map(({ key, label }, i) => {
+        {pipeline.map(({ key, label }, i) => {
           const isActive = key === currentKey;
           const isPast = i < currentIdx;
           const pct = isPast

@@ -1,7 +1,8 @@
 import { updateFlightVideoReady, type FlightVideo } from "./flightVideosDb";
 import { getWorkerConfig, isVideoStorageConfigured } from "./videoStorage";
 
-const KEY_TS_RE = /-(\d{13})\.mp4$/;
+const VIDEO_EXTENSIONS_RE = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts)$/i;
+const KEY_TS_RE = /-(\d{13})\.(?:mp4|mov|m4v|mkv|webm|avi|mts|m2ts)$/i;
 const MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 export type R2VideoObject = {
@@ -29,7 +30,7 @@ export async function listR2VideosForFlight(flightId: string): Promise<R2VideoOb
     if (!res.ok) return [];
     const data = (await res.json()) as { objects?: Array<{ key: string; size?: number; fileUrl: string }> };
     return (data.objects ?? [])
-      .filter((o) => o.key?.endsWith(".mp4"))
+      .filter((o) => VIDEO_EXTENSIONS_RE.test(o.key ?? ""))
       .map((o) => ({ key: o.key, size: o.size ?? null, fileUrl: o.fileUrl }));
   } catch {
     return [];

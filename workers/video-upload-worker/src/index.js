@@ -31,6 +31,21 @@ function err(request, env, message, status = 400) {
   return json(request, env, { error: message }, status);
 }
 
+function videoContentType(key) {
+  const extension = String(key || "").split(".").pop()?.toLowerCase();
+  const types = {
+    mp4: "video/mp4",
+    m4v: "video/x-m4v",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
+    mts: "video/mp2t",
+    m2ts: "video/mp2t",
+  };
+  return types[extension] || "application/octet-stream";
+}
+
 function base64UrlDecode(value) {
   const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
@@ -121,7 +136,7 @@ async function handleInitiate(request, env) {
 
   const upload = await env.FLIGHT_VIDEOS.createMultipartUpload(key, {
     httpMetadata: {
-      contentType: "video/mp4",
+      contentType: videoContentType(key),
       contentDisposition: "inline",
     },
   });

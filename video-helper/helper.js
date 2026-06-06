@@ -28,6 +28,7 @@ const jobs = new Map(); // jobId → { listeners: res[], buffer: string[], cance
 
 const pickFileRequests = new Map();
 let activeJobId = null;
+let detectedEncoderPromise = null;
 
 function createJob(jobId) {
   const job = {
@@ -39,6 +40,7 @@ function createJob(jobId) {
     percent: 0,
     message: null,
     result: null,
+    strategy: null,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ffmpegPid: null,
@@ -61,6 +63,7 @@ function sendProgress(jobId, data) {
   job.stage = data.stage ?? job.stage;
   job.percent = Number.isFinite(data.percent) ? data.percent : job.percent;
   job.message = data.message ?? null;
+  job.strategy = data.strategy ?? job.strategy;
   job.updatedAt = new Date().toISOString();
   if (data.stage === "done") job.result = data;
   const line = `data: ${JSON.stringify(data)}\n\n`;
@@ -79,6 +82,7 @@ function publicJob(job) {
     percent: job.percent,
     message: job.message,
     result: job.result,
+    strategy: job.strategy,
     cancelled: job.cancelled,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
@@ -132,7 +136,7 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.1.0",
+      version: "1.3.0",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,
@@ -152,6 +156,16 @@ const server = http.createServer(async (req, res) => {
       return json(res, { files });
     } catch (error) {
       return json(res, { error: error.message }, 500);
+    }
+  }
+
+  if (url === "/analyze-files" && req.method === "POST") {
+    let body;
+    try { body = await readJson(req); } catch { return json(res, { error: "JSON invalido" }, 400); }
+    try {
+      return json(res, await analyzeVideoFiles(body, { estimateCpu: true }));
+    } catch (error) {
+      return json(res, { error: error.message }, 400);
     }
   }
 
@@ -200,6 +214,20 @@ const server = http.createServer(async (req, res) => {
     if (activeJobId && !["done", "error"].includes(jobs.get(activeJobId)?.stage)) {
       return json(res, { error: "Ja existe um video sendo processado.", activeJobId }, 409);
     }
+    let analysis;
+    try {
+      analysis = await analyzeVideoFiles(body, { estimateCpu: false });
+    } catch (error) {
+      return json(res, { error: error.message }, 400);
+    }
+    if (analysis.requiresTranscode && body.confirmTranscode !== true) {
+      return json(res, {
+        error: "A recodificacao exige confirmacao explicita.",
+        code: "TRANSCODE_CONFIRMATION_REQUIRED",
+        analysis,
+      }, 409);
+    }
+    body.analysis = analysis;
     const job = createJob(body.jobId);
     activeJobId = body.jobId;
     json(res, { ok: true, jobId: body.jobId });
@@ -323,6 +351,7 @@ async function runPipeline(req, job) {
     jobId, videoPaths, cfWorkerUrl, cfWorkerToken, videoKey,
     appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
     sessionJwt, flightVideoDocId, applyLogo = false, logoUrl = "",
+    processingMode = "original",
   } = req;
 
   const fail = (msg) => {
@@ -332,7 +361,7 @@ async function runPipeline(req, job) {
   };
 
   const progress = (stage, percent, extra = {}) => {
-    sendProgress(jobId, { stage, percent, ...extra });
+    sendProgress(jobId, { stage, percent, strategy: req.analysis?.strategy, ...extra });
     const rounded = Math.max(0, Math.min(100, Math.round(percent || 0)));
     const now = Date.now();
     const shouldPersist = stage !== job.lastAppwriteStage
@@ -352,7 +381,9 @@ async function runPipeline(req, job) {
   const ffprobe = findBin("ffprobe");
   if (!ffmpeg) return fail("ffmpeg não encontrado. Coloque ffmpeg.exe na mesma pasta do helper.js ou instale no PATH.");
 
-  const encoder = await detectEncoder(ffmpeg);
+  const analysis = req.analysis || await analyzeVideoFiles(req, { estimateCpu: false });
+  req.analysis = analysis;
+  const encoder = analysis.encoder;
   console.log(`[${jobId}] Encoder selecionado: ${encoder}`);
 
   const tmpDir = path.join(os.tmpdir(), `flight-${jobId}`);
@@ -369,6 +400,7 @@ async function runPipeline(req, job) {
 
   const joinedPath = path.join(tmpDir, "joined.mp4");
   const finalPath = path.join(tmpDir, "final.mp4");
+  let uploadPath = finalPath;
 
   // Duração total para calcular progresso
   const totalDuration = ffprobe ? await getTotalDuration(ffprobe, videoFiles) : 0;
@@ -383,34 +415,59 @@ async function runPipeline(req, job) {
       available_widgets: telemetry.availableWidgets,
     });
 
-    progress("concat", 0);
     if (job.cancelled) return fail("Cancelado");
-
-    await concatVideos(ffmpeg, ffprobe, encoder, videoFiles, joinedPath, totalDuration, (pct) => {
-      if (!job.cancelled) progress("concat", pct);
+    progress(analysis.strategy, 0, {
+      strategy: analysis.strategy,
+      encoder,
+      message: analysis.reason,
     });
 
-    if (job.cancelled) return fail("Cancelado");
-
     // ── Stage 2: Watermark + Compress (passo único) ─────────────────────────
-    const watermarkPath = applyLogo ? await prepareWatermark(logoUrl, tmpDir) : null;
-    progress("compress", 0);
-    await applyWatermarkAndCompress(ffmpeg, encoder, joinedPath, watermarkPath, finalPath, totalDuration, (pct) => {
-      if (!job.cancelled) progress("compress", pct);
-    }, job);
+    if (analysis.strategy === "direct") {
+      uploadPath = videoFiles[0];
+      progress("direct", 100, { strategy: "direct" });
+    } else if (analysis.strategy === "remux") {
+      await remuxVideo(ffmpeg, videoFiles[0], finalPath, totalDuration, (pct) => {
+        if (!job.cancelled) progress("remux", pct, { strategy: "remux" });
+      }, job);
+    } else if (analysis.strategy === "concat-copy") {
+      await concatVideosCopy(ffmpeg, videoFiles, finalPath, totalDuration, (pct) => {
+        if (!job.cancelled) progress("concat-copy", pct, { strategy: "concat-copy" });
+      }, job);
+    } else {
+      const watermarkPath = applyLogo ? await prepareWatermark(logoUrl, tmpDir) : null;
+      let transcodeInput = videoFiles[0];
+      if (videoFiles.length > 1) {
+        const concatResult = await concatVideos(ffmpeg, ffprobe, encoder, videoFiles, joinedPath, totalDuration, (pct) => {
+          if (!job.cancelled) progress("transcode", Math.round(pct * 0.45), { strategy: "transcode" });
+        }, job);
+        transcodeInput = joinedPath;
+        if (concatResult.transcoded && !applyLogo && ["fast", "original"].includes(processingMode)) {
+          uploadPath = joinedPath;
+          transcodeInput = null;
+        }
+      }
+      if (transcodeInput) {
+        await applyWatermarkAndCompress(ffmpeg, encoder, transcodeInput, watermarkPath, finalPath, totalDuration, (pct) => {
+          if (!job.cancelled) progress("transcode", videoFiles.length > 1 ? 45 + Math.round(pct * 0.55) : pct, {
+            strategy: "transcode",
+          });
+        }, job);
+      }
+    }
 
     if (job.cancelled) return fail("Cancelado");
 
     // ── Stage 4: Upload multipart ────────────────────────────────────────────
     progress("upload", 0);
-    const fileSize = fs.statSync(finalPath).size;
+    const fileSize = fs.statSync(uploadPath).size;
 
-    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, finalPath, (pct) => {
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, uploadPath, (pct) => {
       progress("upload", pct);
     });
 
     // Duração do arquivo final
-    const finalDuration = ffprobe ? (await probeDuration(ffprobe, finalPath)) ?? totalDuration : totalDuration;
+    const finalDuration = ffprobe ? (await probeDuration(ffprobe, uploadPath)) ?? totalDuration : totalDuration;
 
     // Atualizar Appwrite
     const appwriteOk = await updateAppwrite(appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
@@ -430,6 +487,7 @@ async function runPipeline(req, job) {
       telemetry_source: telemetry.source,
       available_widgets: telemetry.availableWidgets,
       telemetry_json: telemetry.telemetryJson,
+      strategy: analysis.strategy,
     });
     console.log(`[${jobId}] Concluído: ${fileUrl}`);
 
@@ -847,19 +905,229 @@ function downsamplePoints(points, maxPoints) {
 
 // ─── Seleção de encoder de vídeo ─────────────────────────────────────────────
 
-async function detectEncoder(ffmpeg) {
-  const candidates = ["h264_nvenc", "h264_qsv", "h264_amf"];
-  for (const enc of candidates) {
-    const ok = await new Promise((resolve) => {
-      const p = spawn(ffmpeg, [
-        "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
-        "-c:v", enc, "-f", "null", "-",
-      ], { stdio: "ignore" });
-      p.on("close", (code) => resolve(code === 0));
-    });
-    if (ok) return enc;
+async function analyzeVideoFiles(req, { estimateCpu = true } = {}) {
+  const selected = Array.isArray(req.videoPaths) ? req.videoPaths.map((item) => path.resolve(String(item))) : [];
+  const videoFiles = selected.filter(isVideoFile);
+  if (videoFiles.length === 0) throw new Error("Selecione pelo menos um arquivo de video.");
+  for (const file of videoFiles) {
+    if (!fs.existsSync(file)) throw new Error(`Arquivo nao encontrado: ${file}`);
   }
-  return "libx264";
+
+  const ffmpeg = findBin("ffmpeg");
+  const ffprobe = findBin("ffprobe");
+  if (!ffmpeg || !ffprobe) throw new Error("FFmpeg/FFprobe nao encontrado no helper.");
+
+  const files = [];
+  for (const file of videoFiles) files.push(await probeMediaInfo(ffprobe, file));
+  const encoder = await detectEncoder(ffmpeg);
+  const processingMode = normalizeProcessingMode(req.processingMode);
+  const applyLogo = req.applyLogo === true;
+  const compatibleStreams = files.every(isFastMp4Compatible);
+  const compatibleConcat = compatibleStreams && files.every((item) => streamSignature(item) === streamSignature(files[0]));
+  const copyCompatibleStreams = files.every(isMp4CopyCompatible);
+  const copyCompatibleConcat = copyCompatibleStreams
+    && files.every((item) => streamSignature(item) === streamSignature(files[0]));
+
+  let strategy;
+  let reason;
+  let outputExtension = ".mp4";
+  if (applyLogo) {
+    strategy = "transcode";
+    reason = "Aplicar a logo exige recodificar o video.";
+  } else if (processingMode === "compressed") {
+    strategy = "transcode";
+    reason = "A compactacao foi solicitada.";
+  } else if (processingMode === "original" && files.length === 1 && files[0].extension === ".mp4") {
+    strategy = "direct";
+    reason = "O arquivo original sera enviado sem recodificacao.";
+  } else if (processingMode === "original" && files.length === 1 && copyCompatibleStreams) {
+    strategy = "remux";
+    reason = "Os codecs originais serao preservados e apenas o conteiner sera ajustado para MP4.";
+  } else if (processingMode === "original" && files.length > 1 && copyCompatibleConcat) {
+    strategy = "concat-copy";
+    reason = "Arquivos equivalentes: uniao rapida preservando os codecs originais.";
+  } else if (processingMode === "compatible" && files.length === 1 && files[0].extension === ".mp4" && compatibleStreams) {
+    strategy = "direct";
+    reason = "MP4 H.264 compativel: envio direto, sem recodificacao.";
+  } else if (processingMode === "compatible" && files.length === 1 && compatibleStreams) {
+    strategy = "remux";
+    reason = "Codec H.264 compativel: apenas troca do conteiner para MP4.";
+  } else if (processingMode === "compatible" && files.length > 1 && compatibleConcat) {
+    strategy = "concat-copy";
+    reason = "Arquivos H.264 compativeis: uniao rapida sem recodificacao.";
+  } else {
+    strategy = "transcode";
+    reason = processingMode === "compatible"
+      ? "A conversao para H.264 foi escolhida para aumentar a compatibilidade de reproducao."
+      : "Os arquivos possuem configuracoes diferentes e nao podem ser unidos sem recodificacao.";
+  }
+
+  const requiresTranscode = strategy === "transcode";
+  const playback = assessPlaybackCompatibility(files, outputExtension, strategy);
+  const totalDuration = files.reduce((sum, item) => sum + item.durationSec, 0);
+  let estimatedSeconds = null;
+  if (requiresTranscode && encoder === "libx264" && estimateCpu) {
+    estimatedSeconds = await estimateCpuTranscodeSeconds(ffmpeg, videoFiles[0], files[0].durationSec, totalDuration);
+  }
+
+  return {
+    strategy,
+    requiresTranscode,
+    encoder,
+    hardwareAccelerated: encoder !== "libx264",
+    reason,
+    outputExtension,
+    playbackRisk: playback.risk,
+    playbackWarning: playback.warning,
+    estimatedSeconds,
+    totalDurationSec: totalDuration,
+    files: files.map((item) => ({
+      name: item.name,
+      extension: item.extension,
+      videoCodec: item.videoCodec,
+      audioCodec: item.audioCodec,
+      width: item.width,
+      height: item.height,
+      durationSec: item.durationSec,
+    })),
+  };
+}
+
+function normalizeProcessingMode(value) {
+  if (value === "compressed") return "compressed";
+  if (value === "compatible") return "compatible";
+  return "original";
+}
+
+function probeMediaInfo(ffprobe, file) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffprobe, [
+      "-v", "error",
+      "-show_entries", "format=duration,format_name:stream=index,codec_type,codec_name,width,height,pix_fmt,r_frame_rate,sample_rate,channel_layout,channels",
+      "-of", "json",
+      file,
+    ], { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`Nao foi possivel analisar ${path.basename(file)}: ${stderr.slice(-300)}`));
+      try {
+        const data = JSON.parse(stdout);
+        const video = (data.streams || []).find((stream) => stream.codec_type === "video") || {};
+        const audio = (data.streams || []).find((stream) => stream.codec_type === "audio") || null;
+        resolve({
+          path: file,
+          name: path.basename(file),
+          extension: path.extname(file).toLowerCase(),
+          formatName: String(data.format?.format_name || ""),
+          durationSec: Number(data.format?.duration || 0),
+          videoCodec: String(video.codec_name || ""),
+          audioCodec: audio ? String(audio.codec_name || "") : "",
+          width: Number(video.width || 0),
+          height: Number(video.height || 0),
+          pixFmt: String(video.pix_fmt || ""),
+          frameRate: String(video.r_frame_rate || ""),
+          sampleRate: audio ? String(audio.sample_rate || "") : "",
+          channelLayout: audio ? String(audio.channel_layout || audio.channels || "") : "",
+        });
+      } catch (error) {
+        reject(new Error(`Resposta invalida do FFprobe para ${path.basename(file)}: ${error.message}`));
+      }
+    });
+  });
+}
+
+function isFastMp4Compatible(info) {
+  return info.videoCodec === "h264" && (!info.audioCodec || info.audioCodec === "aac" || info.audioCodec === "mp3");
+}
+
+function isMp4CopyCompatible(info) {
+  const videoCodecs = new Set(["h264", "hevc", "av1", "mpeg4"]);
+  const audioCodecs = new Set(["", "aac", "mp3", "ac3", "eac3", "alac"]);
+  return videoCodecs.has(info.videoCodec) && audioCodecs.has(info.audioCodec);
+}
+
+function assessPlaybackCompatibility(files, outputExtension, strategy) {
+  if (strategy === "transcode") {
+    return { risk: "low", warning: "O resultado H.264 tem ampla compatibilidade com navegadores e dispositivos." };
+  }
+  const codecs = new Set(files.map((item) => item.videoCodec));
+  const browserAudioCompatible = files.every((item) => !item.audioCodec || item.audioCodec === "aac" || item.audioCodec === "mp3");
+  if (codecs.size === 1 && codecs.has("h264") && outputExtension === ".mp4" && browserAudioCompatible) {
+    return { risk: "low", warning: "" };
+  }
+  if (codecs.size === 1 && codecs.has("hevc") && browserAudioCompatible) {
+    return {
+      risk: "medium",
+      warning: "HEVC/H.265 pode nao reproduzir em alguns computadores Windows, Linux ou navegadores sem suporte ao codec.",
+    };
+  }
+  if (codecs.size === 1 && codecs.has("av1") && browserAudioCompatible) {
+    return {
+      risk: "medium",
+      warning: "AV1 pode exigir navegador e hardware recentes para reproducao fluida.",
+    };
+  }
+  return {
+    risk: "high",
+    warning: "O formato original pode nao ser reproduzido diretamente por alguns navegadores. O download do arquivo continuara disponivel.",
+  };
+}
+
+function streamSignature(info) {
+  return [
+    info.videoCodec,
+    info.audioCodec,
+    info.width,
+    info.height,
+    info.pixFmt,
+    info.frameRate,
+    info.sampleRate,
+    info.channelLayout,
+  ].join("|");
+}
+
+async function estimateCpuTranscodeSeconds(ffmpeg, file, fileDuration, totalDuration) {
+  const sampleSeconds = Math.max(1, Math.min(8, Number(fileDuration) || 8));
+  const startedAt = Date.now();
+  const code = await new Promise((resolve) => {
+    const child = spawn(ffmpeg, [
+      "-v", "error", "-i", file,
+      "-t", String(sampleSeconds),
+      "-map", "0:v:0", "-an",
+      ...encoderArgs("libx264"),
+      "-threads", String(ffmpegThreadLimit()),
+      "-f", "null", "-",
+    ], { stdio: "ignore", windowsHide: true });
+    child.on("error", () => resolve(-1));
+    child.on("close", resolve);
+  });
+  if (code !== 0) return null;
+  const elapsedSeconds = Math.max(0.1, (Date.now() - startedAt) / 1000);
+  return Math.max(1, Math.round((elapsedSeconds / sampleSeconds) * Math.max(totalDuration, sampleSeconds)));
+}
+
+async function detectEncoder(ffmpeg) {
+  if (!detectedEncoderPromise) {
+    detectedEncoderPromise = (async () => {
+      const candidates = ["h264_nvenc", "h264_qsv", "h264_amf"];
+      for (const enc of candidates) {
+        const ok = await new Promise((resolve) => {
+          const p = spawn(ffmpeg, [
+            "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+            "-c:v", enc, "-f", "null", "-",
+          ], { stdio: "ignore" });
+          p.on("close", (code) => resolve(code === 0));
+        });
+        if (ok) return enc;
+      }
+      return "libx264";
+    })();
+  }
+  return detectedEncoderPromise;
 }
 
 function encoderArgs(encoder) {
@@ -875,7 +1143,30 @@ function encoderArgs(encoder) {
   }
 }
 
-async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDuration, onProgress) {
+async function remuxVideo(ffmpeg, input, output, totalDuration, onProgress, job = null) {
+  await runFfmpeg(ffmpeg, [
+    "-i", input,
+    "-map", "0:v:0", "-map", "0:a?",
+    "-c", "copy",
+    "-movflags", "+faststart",
+    "-y", "-progress", "pipe:2", "-nostats", output,
+  ], totalDuration, onProgress, { mustSucceed: true, job });
+}
+
+async function concatVideosCopy(ffmpeg, files, output, totalDuration, onProgress, job = null) {
+  const tmpList = output.replace(/\.mp4$/i, "_concat_list.txt");
+  const lines = files.map((file) => `file '${file.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n");
+  fs.writeFileSync(tmpList, lines);
+  await runFfmpeg(ffmpeg, [
+    "-f", "concat", "-safe", "0", "-i", tmpList,
+    "-map", "0:v:0", "-map", "0:a?",
+    "-c", "copy",
+    "-movflags", "+faststart",
+    "-y", "-progress", "pipe:2", "-nostats", output,
+  ], totalDuration, onProgress, { mustSucceed: true, job });
+}
+
+async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDuration, onProgress, job = null) {
   const tmpList = output.replace("joined.mp4", "concat_list.txt");
   const lines = files.map((f) => `file '${f.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n");
   fs.writeFileSync(tmpList, lines);
@@ -884,7 +1175,7 @@ async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDurati
   const ok = await runFfmpeg(ffmpeg, [
     "-f", "concat", "-safe", "0", "-i", tmpList,
     "-c", "copy", "-y", "-progress", "pipe:2", "-nostats", output,
-  ], totalDuration, onProgress);
+  ], totalDuration, onProgress, { job });
 
   if (!ok) {
     // Fallback: reencode normalizando resolução
@@ -907,8 +1198,10 @@ async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDurati
       "-movflags", "+faststart",
       "-threads", String(ffmpegThreadLimit()),
       "-y", "-progress", "pipe:2", "-nostats", output,
-    ], totalDuration, onProgress, { mustSucceed: true });
+    ], totalDuration, onProgress, { mustSucceed: true, job });
+    return { transcoded: true };
   }
+  return { transcoded: false };
 }
 
 async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, output, duration, onProgress, job = null) {
