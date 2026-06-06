@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { createProposal, getProposalsByLead } from "../../lib/crmProposalsDb";
+import { getProposalsByLead } from "../../lib/crmProposalsDb";
+import { createProposalWithPayment, retryProposalPayment } from "../../lib/caktoDb";
 import { getProposalConfig } from "../../lib/proposalSettingsDb";
 import { openProposalPdf } from "../../lib/proposalPdf";
 import { updateLead } from "../../lib/crmDb";
@@ -81,7 +82,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
         .filter((p) => selectedProductIds.has(p.id))
         .map((p) => ({ id: p.id, name: p.name, price: p.idealPrice }));
 
-      const { data, error } = await createProposal({
+      const data = await createProposalWithPayment({
         leadId: lead.id,
         leadName: lead.name,
         leadEmail: lead.email,
@@ -90,14 +91,31 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
         products: selectedProducts,
       });
 
-      if (error || !data) throw error ?? new Error("Erro ao criar proposta");
-
       await updateLead(lead.id, { crmStatus: "proposta_enviada" });
 
       setCreatedProposal(data);
       setExistingProposals((prev) => [data, ...prev]);
       onProposalCreated?.();
-      showToast({ variant: "success", message: "Proposta criada! Lead movido para 'Proposta enviada'." });
+      showToast({
+        variant: data.paymentUrl ? "success" : "warning",
+        message: data.paymentUrl
+          ? "Proposta e link de pagamento criados."
+          : "Proposta criada, mas a Cakto não gerou o link. Tente novamente.",
+      });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRetryPayment(proposal: CrmProposal) {
+    setSaving(true);
+    try {
+      const updated = await retryProposalPayment(proposal.id);
+      setCreatedProposal((current) => current?.id === updated.id ? updated : current);
+      setExistingProposals((current) => current.map((item) => item.id === updated.id ? updated : item));
+      showToast({ variant: "success", message: "Link de pagamento criado." });
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
@@ -168,6 +186,28 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
               >
                 Exportar PDF
               </button>
+              {createdProposal.paymentUrl ? (
+                <a
+                  href={createdProposal.paymentUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block w-full rounded-lg bg-emerald-600 py-2 text-center text-sm font-medium text-white hover:bg-emerald-500 transition"
+                >
+                  Abrir link de pagamento
+                </a>
+              ) : (
+                <div className="space-y-2">
+                  {createdProposal.paymentError ? <p className="text-xs text-amber-300">{createdProposal.paymentError}</p> : null}
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void handleRetryPayment(createdProposal)}
+                    className="w-full rounded-lg border border-amber-600/50 py-2 text-sm text-amber-300 hover:bg-amber-900/20 disabled:opacity-50"
+                  >
+                    Gerar link novamente
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -196,6 +236,20 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                     >
                       PDF
                     </button>
+                    {p.paymentUrl ? (
+                      <a href={p.paymentUrl} target="_blank" rel="noreferrer" className="text-xs text-emerald-400 hover:text-emerald-300">
+                        Pagar
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void handleRetryPayment(p)}
+                        className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50"
+                      >
+                        Gerar pagamento
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

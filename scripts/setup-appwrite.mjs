@@ -233,8 +233,21 @@ async function configureFlightVideos(databaseId, collectionId) {
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "telemetry_source", 32, false), "telemetry_source");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "telemetry_json", 1048576, false), "telemetry_json");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "available_widgets", 512, false), "available_widgets");
+  await safeCreateAttribute(() => db.createBooleanAttribute(databaseId, collectionId, "apply_logo", false, false), "apply_logo");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "processing_stage", 32, false), "processing_stage");
+  await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "processing_percent", false, 0, 100), "processing_percent");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "processing_error", 2048, false), "processing_error");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "video_key", 255, false), "video_key");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "processing_updated_at", 64, false), "processing_updated_at");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "created_at", 64, false), "created_at");
   await safeCreateIndex(databaseId, collectionId, "flight_videos_flight_idx", ["flight_id"]);
+  await safeCreateIndex(
+    databaseId,
+    collectionId,
+    "flight_videos_status_updated_idx",
+    ["processing_status", "processing_updated_at"],
+    ["ASC", "DESC"],
+  );
 }
 
 async function configureTelemetrySummaries(databaseId, collectionId) {

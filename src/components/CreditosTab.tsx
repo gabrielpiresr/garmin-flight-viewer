@@ -2,14 +2,30 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { getStudentCreditStatement } from "../lib/creditsDb";
 import type { StudentCreditStatement } from "../types/credits";
+import { ADMIN_USERS_FUNCTION_ID } from "../lib/appwrite";
+import { importSelfCreditsFromSaga } from "../lib/sagaImportDb";
 import { CreditStatementView } from "./CreditStatementView";
 import { Skeleton } from "./ui/Skeleton";
+import { useToast } from "./ui/ToastProvider";
+import {
+  createFlightCreditCheckout,
+  getAvailableFlightCreditPackages,
+} from "../lib/flightCreditSalesDb";
+import type { FlightCreditSalesConfig } from "../types/flightCreditSales";
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
 
 export function CreditosTab() {
   const { user, configured } = useAuth();
+  const { showToast } = useToast();
   const [statement, setStatement] = useState<StudentCreditStatement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sagaImporting, setSagaImporting] = useState(false);
+  const [packageConfig, setPackageConfig] = useState<FlightCreditSalesConfig | null>(null);
+  const [checkoutPackageId, setCheckoutPackageId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user || !configured) {
@@ -20,9 +36,12 @@ export function CreditosTab() {
     setLoading(true);
     setError(null);
     try {
+      const config = await getAvailableFlightCreditPackages().catch(() => null);
+      setPackageConfig(config);
       const next = await getStudentCreditStatement({
         viewer: { userId: user.id, role: user.role },
         studentUserId: user.id,
+        nightHoursDifferentFromDay: config?.nightHoursDifferentFromDay !== false,
       });
       setStatement(next);
     } catch (e) {
@@ -36,6 +55,50 @@ export function CreditosTab() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function handleSagaSync() {
+    if (sagaImporting) return;
+    setSagaImporting(true);
+    try {
+      const summary = await importSelfCreditsFromSaga();
+      const novos = (summary.creditsCreated ?? 0) + (summary.creditsUpdated ?? 0);
+      showToast({
+        message:
+          novos > 0
+            ? `${summary.creditsCreated} crédito(s) novo(s) e ${summary.creditsUpdated} atualizado(s) importados do SAGA.`
+            : "Nenhum crédito novo encontrado no SAGA.",
+        variant: novos > 0 ? "success" : "info",
+      });
+      await load();
+    } catch (e) {
+      showToast({ message: (e as Error).message, variant: "error" });
+    } finally {
+      setSagaImporting(false);
+    }
+  }
+
+  const showSagaButton = !!ADMIN_USERS_FUNCTION_ID && !!user;
+
+  async function handleBuyPackage(packageId: string) {
+    if (checkoutPackageId) return;
+    const checkoutWindow = window.open("about:blank", "_blank");
+    if (checkoutWindow) checkoutWindow.opener = null;
+    setCheckoutPackageId(packageId);
+    try {
+      const checkout = await createFlightCreditCheckout(packageId);
+      if (checkoutWindow) {
+        checkoutWindow.location.href = checkout.paymentUrl;
+      } else {
+        window.open(checkout.paymentUrl, "_blank", "noopener,noreferrer");
+      }
+      showToast({ variant: "success", message: "Checkout criado. Conclua o pagamento na nova aba." });
+    } catch (error) {
+      checkoutWindow?.close();
+      showToast({ variant: "error", message: (error as Error).message });
+    } finally {
+      setCheckoutPackageId(null);
+    }
+  }
 
   if (loading) {
     return (
@@ -68,10 +131,71 @@ export function CreditosTab() {
   }
 
   return (
-    <CreditStatementView
-      statement={statement}
-      showHeading={false}
-      description="Saldo por modelo de avião, compras realizadas e horas consumidas pelos voos executados."
-    />
+    <div className="space-y-4">
+      {packageConfig?.studentPurchasesEnabled && packageConfig.packages.length > 0 ? (
+        <section className="rounded-2xl border border-emerald-700/40 bg-emerald-950/10 p-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400">Comprar horas de voo</p>
+            <p className="mt-1 text-sm text-slate-400">Escolha um pacote. Os creditos serao liberados apos a confirmacao do pagamento.</p>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {packageConfig.packages.map((item) => {
+              const total = item.hours * item.hourPrice;
+              const buying = checkoutPackageId === item.id;
+              return (
+                <article key={item.id} className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">{item.aircraftModelName}</p>
+                  <p className="mt-1 text-2xl font-semibold text-slate-100">{item.hours}h</p>
+                  <p className="mt-2 text-sm text-slate-400">{formatCurrency(item.hourPrice)} por hora</p>
+                  <p className="text-lg font-semibold text-emerald-300">{formatCurrency(total)}</p>
+                  <p className="mt-1 text-xs text-slate-500">Validade: {item.validityDays} dias apos o pagamento</p>
+                  <button
+                    type="button"
+                    onClick={() => void handleBuyPackage(item.id)}
+                    disabled={checkoutPackageId !== null}
+                    className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {buying ? "Criando checkout..." : "Comprar pacote"}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+      {showSagaButton && (
+        <div className="flex justify-end">
+          <button
+            onClick={() => void handleSagaSync()}
+            disabled={sagaImporting}
+            className="flex items-center gap-2 rounded-lg border border-sky-700/50 bg-sky-900/30 px-4 py-2 text-sm font-medium text-sky-300 transition hover:bg-sky-800/40 disabled:opacity-50"
+          >
+            {sagaImporting ? (
+              <>
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Sincronizando…
+              </>
+            ) : (
+              <>
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 12v-2a8 8 0 018-8 8 8 0 017.32 4.74" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M20 12v2a8 8 0 01-8 8 8 8 0 01-7.32-4.74" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M20 4v4h-4M4 20v-4h4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Atualizar do SAGA
+              </>
+            )}
+          </button>
+        </div>
+      )}
+      <CreditStatementView
+        statement={statement}
+        showHeading={false}
+        description="Saldo por modelo de avião, compras realizadas e horas consumidas pelos voos executados."
+      />
+    </div>
   );
 }

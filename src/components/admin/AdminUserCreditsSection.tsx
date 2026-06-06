@@ -16,6 +16,7 @@ function formatExpiration(purchaseDate: string, validityDays: string): string | 
 }
 import { createAdminUserCredit, deleteAdminUserCredit, updateAdminUserCredit } from "../../lib/adminUsersDb";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
+import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import type { AircraftModel } from "../../types/admin";
 import type { StudentCreditInput, StudentCreditPurchase, StudentCreditStatement } from "../../types/credits";
@@ -86,9 +87,11 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
     setLoading(true);
     setError(null);
     try {
+      const creditConfig = await getFlightCreditSalesConfig().catch(() => null);
       const next = await getStudentCreditStatement({
         viewer: { userId: user.id, role: user.role },
         studentUserId,
+        nightHoursDifferentFromDay: creditConfig?.nightHoursDifferentFromDay !== false,
       });
       setStatement(next);
     } catch (e) {

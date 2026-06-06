@@ -1,4 +1,4 @@
-export type AdminFlightReportStatus = "Previsto" | "Cancelado" | "Realizado";
+export type AdminFlightReportStatus = "Pendente" | "Confirmado" | "Previsto" | "Cancelado" | "Realizado";
 
 export type FlightReportGroupKey = "day" | "week" | "month" | "year" | "model" | "aircraft" | "instructor" | "student";
 

@@ -4,7 +4,6 @@
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type CSSProperties,
   type RefObject,
 } from "react";
@@ -67,7 +66,7 @@ const HELPER_URL = "http://127.0.0.1:7842";
 const HELPER_SETUP_PATH = "/video-helper";
 
 type HelperStatus = "checking" | "online" | "offline";
-type SelectedFile = { name: string; file: File };
+type SelectedFile = { name: string; path: string; size: number };
 
 type ProcessStage = "telemetry-detect" | "concat" | "watermark" | "compress" | "upload" | "done" | "error";
 
@@ -216,68 +215,11 @@ function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
   };
 }
 
-function uploadFileToHelper(
-  sessionId: string,
-  index: number,
-  item: SelectedFile,
-  onProgress: (progress: number) => void,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const inactivityMs = 120_000;
-    let settled = false;
-    let inactivityTimer: number | null = null;
-
-    const cleanup = () => {
-      if (inactivityTimer !== null) window.clearTimeout(inactivityTimer);
-      inactivityTimer = null;
-    };
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error);
-      else resolve();
-    };
-
-    const resetInactivityTimer = () => {
-      cleanup();
-      inactivityTimer = window.setTimeout(() => {
-        xhr.abort();
-        finish(new Error("Sem resposta do helper durante o envio. Verifique se o helper do terminal esta recebendo conexoes na porta 7842."));
-      }, inactivityMs);
-    };
-
-    xhr.open("POST", `${HELPER_URL}/receive-file/${sessionId}/${index}`);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    xhr.setRequestHeader("X-Filename", item.name);
-
-    xhr.upload.onloadstart = () => {
-      onProgress(0);
-      resetInactivityTimer();
-    };
-    xhr.upload.onprogress = (event) => {
-      resetInactivityTimer();
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.max(0, Math.min(1, event.loaded / event.total)));
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(1);
-        finish();
-      } else {
-        finish(new Error(`status ${xhr.status}`));
-      }
-    };
-    xhr.onerror = () => finish(new Error("Falha de rede ao conectar com o helper"));
-    xhr.onabort = () => finish(new Error("Envio cancelado"));
-    xhr.ontimeout = () => finish(new Error("Tempo esgotado ao enviar para o helper"));
-
-    resetInactivityTimer();
-    xhr.send(item.file);
-  });
+async function pickFilesFromHelper(): Promise<SelectedFile[]> {
+  const response = await fetch(`${HELPER_URL}/pick-files`, { method: "POST" });
+  const body = await response.json().catch(() => ({})) as { files?: SelectedFile[]; error?: string };
+  if (!response.ok) throw new Error(body.error || "Falha ao abrir o seletor de arquivos.");
+  return Array.isArray(body.files) ? body.files : [];
 }
 
 export function VideosTab({ flightId, publicMode = false, publicVideos }: {
@@ -298,11 +240,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const [progressStage, setProgressStage] = useState<ProcessStage | null>(null);
   const [processingError, setProcessingError] = useState<string | null>(null);
   const [isDone, setIsDone] = useState(false);
-
-  const [isSending, setIsSending] = useState(false);
-  const [sendingIdx, setSendingIdx] = useState(0);
-  const [sendingFileProgress, setSendingFileProgress] = useState(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [applyLogo, setApplyLogo] = useState(false);
   const dragIndexRef = useRef<number | null>(null);
   const evtSourceRef = useRef<EventSource | null>(null);
 
@@ -355,29 +293,87 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadVideos, publicMode]);
 
-  // Impedir fechamento acidental durante envio ou processamento
   useEffect(() => {
-    if (publicMode || ((!processingJobId && !isSending) || isDone)) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
+    if (publicMode || processingJobId || helperStatus !== "online") return;
+    const candidate = videos.find((video) =>
+      (video.processing_status === "processing" || video.processing_status === "uploading") && !video.file_url
+    );
+    if (!candidate) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`${HELPER_URL}/jobs/${candidate.id}`);
+        if (!response.ok || cancelled) return;
+        const body = await response.json() as {
+          job?: { stage?: ProcessStage; percent?: number; message?: string };
+        };
+        if (!body.job || cancelled) return;
+        setProcessingJobId(candidate.id);
+        setProgressStage(body.job.stage ?? "concat");
+        setProgress(body.job.percent ?? 0);
+        if (body.job.stage === "done") {
+          setIsDone(true);
+          void loadVideos();
+          return;
+        }
+        if (body.job.stage === "error") {
+          setProcessingError(body.job.message || candidate.processing_error || "Erro no processamento");
+          return;
+        }
+        timer = window.setTimeout(poll, 2000);
+      } catch {
+        // O helper pode estar iniciando; a reconciliacao com R2 continua independente.
+      }
     };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [processingJobId, isSending, isDone, publicMode]);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [helperStatus, loadVideos, processingJobId, publicMode, videos]);
 
-  const handleOpenFilePicker = () => {
-    fileInputRef.current?.click();
-  };
+  useEffect(() => {
+    if (!processingJobId || evtSourceRef.current) return;
+    const source = new EventSource(`${HELPER_URL}/progress/${processingJobId}`);
+    evtSourceRef.current = source;
+    source.onmessage = (event) => {
+      const payload = JSON.parse(event.data) as ProgressPayload;
+      setProgressStage(payload.stage);
+      setProgress(payload.percent);
+      if (payload.stage === "done") {
+        source.close();
+        evtSourceRef.current = null;
+        setIsDone(true);
+        void loadVideos();
+      } else if (payload.stage === "error") {
+        source.close();
+        evtSourceRef.current = null;
+        setProcessingError(payload.message || "Erro no processamento");
+      }
+    };
+    source.onerror = () => {
+      source.close();
+      evtSourceRef.current = null;
+    };
+    return () => {
+      source.close();
+      if (evtSourceRef.current === source) evtSourceRef.current = null;
+    };
+  }, [loadVideos, processingJobId]);
 
-  const handleFilesSelected = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
-    setSelectedFiles(files.map((f) => ({ name: f.name, file: f })));
-    setIsDone(false);
-    setProcessingError(null);
-    setProcessingJobId(null);
-    e.target.value = "";
+  const handleOpenFilePicker = async () => {
+    try {
+      const files = await pickFilesFromHelper();
+      if (files.length === 0) return;
+      setSelectedFiles(files);
+      setIsDone(false);
+      setProcessingError(null);
+      setProcessingJobId(null);
+    } catch (error) {
+      setProcessingError((error as Error).message);
+    }
   };
 
   const handleRemoveFile = (index: number) => {
@@ -414,24 +410,23 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
 
     setProcessingError(null);
     setProgress(0);
-    setProgressStage("concat");
+    setProgressStage("telemetry-detect");
 
-    // 1. Criar doc no Appwrite com status "processing"
+    const videoKey = `flight-${flightId}-${Date.now()}.mp4`;
     const { id: docId, error: docError } = await createFlightVideoDoc({
       flightId,
       uploadedBy: user.id,
       originalFilesCount: selectedFiles.filter((item) => isVideoUploadFile(item.name)).length,
       actorUserId: user.id,
       actorRole: user.role,
+      applyLogo,
+      videoKey,
     });
     if (docError || !docId) {
       setProcessingError(docError?.message ?? "Erro ao criar registro do vídeo");
       return;
     }
 
-    setProcessingJobId(docId);
-
-    // 2. Obter JWT do Appwrite para que o helper possa atualizar o doc
     let sessionJwt = "";
     try {
       if (account) {
@@ -442,47 +437,23 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       // sem JWT o helper não atualizará o Appwrite, mas continua (frontend reconcilia no R2)
     }
 
-    // 3. Transmitir cada arquivo para o helper via streaming HTTP
-    const sessionId = crypto.randomUUID();
-    setIsSending(true);
-
-    for (let i = 0; i < selectedFiles.length; i++) {
-      setSendingIdx(i);
-      setSendingFileProgress(0);
-      try {
-        await uploadFileToHelper(sessionId, i, selectedFiles[i], setSendingFileProgress);
-      } catch (e) {
-        setIsSending(false);
-        setSendingFileProgress(0);
-        await updateFlightVideoFailed(docId);
-        setProcessingError(`Erro ao enviar "${selectedFiles[i].name}": ${(e as Error).message}`);
-        setProcessingJobId(null);
-        return;
-      }
-    }
-
-    setIsSending(false);
-    setSendingFileProgress(0);
-
-    // 4. Disparar processamento no helper
     const appwriteEndpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string;
     const appwriteProjectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string;
     const appwriteDbId = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
     const videosColId = import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string;
-    const videoKey = `flight-${flightId}-${Date.now()}.mp4`;
-    const fileOrder = selectedFiles.map((f, i) => ({ index: i, name: f.name }));
     let workerConfig: { url: string; token: string } | null = null;
     try {
       workerConfig = await getWorkerConfig({ mode: "upload", flightId, key: videoKey });
     } catch (e) {
-      await updateFlightVideoFailed(docId);
+      await updateFlightVideoFailed(docId, (e as Error).message);
       setProcessingError((e as Error).message);
       setProcessingJobId(null);
       return;
     }
     if (!workerConfig) {
-      await updateFlightVideoFailed(docId);
-      setProcessingError("Storage não configurado. Verifique a Function administrativa e as variáveis CF_WORKER_URL/WORKER_SECRET.");
+      const message = "Storage não configurado. Verifique a Function administrativa e as variáveis CF_WORKER_URL/WORKER_SECRET.";
+      await updateFlightVideoFailed(docId, message);
+      setProcessingError(message);
       setProcessingJobId(null);
       return;
     }
@@ -493,8 +464,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jobId: docId,
-          sessionId,
-          fileOrder,
+          videoPaths: selectedFiles.map((file) => file.path),
           cfWorkerUrl: workerConfig.url,
           cfWorkerToken: workerConfig.token,
           videoKey,
@@ -504,70 +474,34 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
           videosColId,
           sessionJwt,
           flightVideoDocId: docId,
+          applyLogo,
+          logoUrl: applyLogo ? getCachedVideoBrand().logoUrl : "",
         }),
       });
-      if (!res.ok) throw new Error(`Helper retornou ${res.status}`);
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      if (!res.ok) throw new Error(body.error || `Helper retornou ${res.status}`);
     } catch (e) {
-      await updateFlightVideoFailed(docId);
-      setProcessingError(`Erro ao iniciar processamento: ${(e as Error).message}`);
+      const message = `Erro ao iniciar processamento: ${(e as Error).message}`;
+      await updateFlightVideoFailed(docId, message);
+      setProcessingError(message);
       setProcessingJobId(null);
       return;
     }
 
-    // 5. Conectar SSE para acompanhar progresso
     evtSourceRef.current?.close();
     const evtSource = new EventSource(`${HELPER_URL}/progress/${docId}`);
     evtSourceRef.current = evtSource;
+    setProcessingJobId(docId);
 
     evtSource.onmessage = async (e) => {
       const payload = JSON.parse(e.data) as ProgressPayload;
       setProgressStage(payload.stage);
       setProgress(payload.percent);
 
-      if (payload.stage === "telemetry-detect" && payload.percent === 100) {
-        // #region agent log
-        fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
-          body: JSON.stringify({
-            sessionId: "673562",
-            location: "VideosTab.tsx:SSE",
-            message: "telemetry-detect done",
-            data: {
-              telemetry_present: payload.telemetry_present,
-              telemetry_source: payload.telemetry_source,
-              available_widgets: payload.available_widgets,
-            },
-            hypothesisId: "C",
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
-      }
-
       if (payload.stage === "done") {
         evtSource.close();
-        // #region agent log
-        fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
-          body: JSON.stringify({
-            sessionId: "673562",
-            location: "VideosTab.tsx:SSE",
-            message: "process done — frontend update",
-            data: {
-              telemetry_present: payload.telemetry_present,
-              telemetry_source: payload.telemetry_source,
-              hasFileUrl: Boolean(payload.file_url),
-              sessionJwtLen: sessionJwt.length,
-            },
-            hypothesisId: "D",
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         if (payload.file_url) {
-          const readyResult = await updateFlightVideoReady(docId, {
+          await updateFlightVideoReady(docId, {
             fileUrl: payload.file_url,
             fileSize: payload.file_size ?? null,
             durationSec: payload.duration_sec ?? null,
@@ -576,25 +510,6 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
             telemetryJson: payload.telemetry_json,
             availableWidgets: payload.available_widgets,
           });
-          // #region agent log
-          fetch("http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "673562" },
-            body: JSON.stringify({
-              sessionId: "673562",
-              location: "VideosTab.tsx:SSE",
-              message: "updateFlightVideoReady result",
-              data: {
-                ok: !readyResult.error,
-                error: readyResult.error?.message ?? null,
-                telemetryJsonBytes: payload.telemetry_json?.length ?? 0,
-              },
-              hypothesisId: "D",
-              runId: "post-fix",
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-          // #endregion
         }
         setIsDone(true);
         void loadVideos();
@@ -602,7 +517,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         evtSource.close();
         setProcessingError(payload.message ?? "Erro desconhecido no processamento");
         setProcessingJobId(null);
-        void updateFlightVideoFailed(docId);
+        void updateFlightVideoFailed(docId, payload.message ?? "Erro desconhecido no processamento");
       }
     };
 
@@ -620,7 +535,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     } catch {
       // ignorar
     }
-    await updateFlightVideoFailed(processingJobId);
+    await updateFlightVideoFailed(processingJobId, "Cancelado pelo usuario");
     setProcessingJobId(null);
     setProgress(0);
     setProgressStage(null);
@@ -648,10 +563,10 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     );
   }
 
-  const isActive = isSending || (!!processingJobId && !isDone);
+  const isActive = !!processingJobId && !isDone;
   const showPickButton = isInstructor && selectedFiles.length === 0 && !isActive && !isDone;
   const showFileSelection = isInstructor && selectedFiles.length > 0 && !isActive && !isDone;
-  const showProgressUI = isSending || (!!processingJobId && !isDone);
+  const showProgressUI = !!processingJobId && !isDone;
 
   const mainVideosContent = (
     <div className="space-y-6">
@@ -669,16 +584,6 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               Storage não configurado. Verifique a Function administrativa e as variáveis <code>CF_WORKER_URL</code>/<code>WORKER_SECRET</code>.
             </div>
           )}
-
-          {/* Input nativo oculto */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="video/*,.mp4,.mov,.avi,.mkv,.mts,.m2ts,.srt"
-            className="hidden"
-            onChange={handleFilesSelected}
-          />
 
           {/* Botão selecionar arquivos */}
           {showPickButton && helperStatus === "online" && isVideoStorageConfigured() && (
@@ -701,16 +606,14 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               onDragEnd={handleDragEnd}
               onGenerate={() => void handleGenerate()}
               onAddMore={handleOpenFilePicker}
+              applyLogo={applyLogo}
+              onApplyLogoChange={setApplyLogo}
             />
           )}
 
           {/* UI de envio + processamento unificada */}
           {showProgressUI && (
             <UploadProgress
-              isSending={isSending}
-              sendingIdx={sendingIdx}
-              sendingFileProgress={sendingFileProgress}
-              totalFiles={selectedFiles.length}
               stage={progressStage}
               percent={progress}
               onCancel={() => void handleCancel()}
@@ -724,7 +627,12 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               <span>Vídeo processado e enviado com sucesso.</span>
               <button
                 type="button"
-                onClick={() => { setIsDone(false); setSelectedFiles([]); setProcessingJobId(null); }}
+                onClick={() => {
+                  setIsDone(false);
+                  setSelectedFiles([]);
+                  setProcessingJobId(null);
+                  setApplyLogo(false);
+                }}
                 className="ml-auto text-xs text-slate-400 hover:text-slate-200"
               >
                 Processar outro
@@ -903,6 +811,8 @@ function FileSelectionList({
   onDragEnd,
   onGenerate,
   onAddMore,
+  applyLogo,
+  onApplyLogoChange,
 }: {
   files: SelectedFile[];
   onRemove: (i: number) => void;
@@ -911,6 +821,8 @@ function FileSelectionList({
   onDragEnd: () => void;
   onGenerate: () => void;
   onAddMore: () => void;
+  applyLogo: boolean;
+  onApplyLogoChange: (value: boolean) => void;
 }) {
   return (
     <div className="mt-4 space-y-3">
@@ -938,6 +850,17 @@ function FileSelectionList({
         ))}
       </ul>
 
+      <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
+        <input
+          type="checkbox"
+          checked={applyLogo}
+          onChange={(event) => onApplyLogoChange(event.target.checked)}
+          className="size-4 accent-sky-500"
+        />
+        Aplicar a logo da escola no vídeo
+        <span className="ml-auto text-[10px] text-slate-500">desligado por padrão</span>
+      </label>
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
           type="button"
@@ -958,30 +881,20 @@ function FileSelectionList({
   );
 }
 
-type PipelineStep = { key: "sending" | ProcessStage; label: string };
+type PipelineStep = { key: ProcessStage; label: string };
 
 const UPLOAD_PIPELINE: PipelineStep[] = [
-  { key: "sending", label: "Enviando arquivos ao helper" },
   { key: "telemetry-detect", label: "Procurando telemetria GPS" },
   { key: "concat", label: "Concatenando vídeos" },
-  { key: "watermark", label: "Aplicando watermark" },
   { key: "compress", label: "Compactando" },
   { key: "upload", label: "Enviando para armazenamento" },
 ];
 
 function UploadProgress({
-  isSending,
-  sendingIdx,
-  sendingFileProgress,
-  totalFiles,
   stage,
   percent,
   onCancel,
 }: {
-  isSending: boolean;
-  sendingIdx: number;
-  sendingFileProgress: number;
-  totalFiles: number;
   stage: ProcessStage | null;
   percent: number;
   onCancel: () => void;
@@ -997,23 +910,17 @@ function UploadProgress({
     return () => clearInterval(id);
   }, []);
 
-  const currentKey: "sending" | ProcessStage = isSending ? "sending" : (stage ?? "concat");
+  const currentKey: ProcessStage = stage ?? "concat";
   const currentIdx = UPLOAD_PIPELINE.findIndex((p) => p.key === currentKey);
-
-  const canClose = !isSending;
 
   return (
     <div className="mt-4 space-y-4">
       {/* Aviso contextual */}
       <p
-        className={`flex items-center gap-1.5 text-[11px] ${canClose ? "text-slate-400" : "text-amber-400"}`}
+        className="flex items-center gap-1.5 text-[11px] text-slate-400"
       >
-        <span>{canClose ? "ℹ" : "⚠"}</span>
-        <span>
-          {canClose
-            ? "Pode fechar esta aba — o processamento continua em segundo plano no helper"
-            : "Não feche nem recarregue esta aba enquanto os arquivos são enviados"}
-        </span>
+        <span>ℹ</span>
+        <span>Pode fechar esta aba. Mantenha o Flight Video Helper aberto.</span>
       </p>
 
       {/* Pipeline de etapas */}
@@ -1024,9 +931,7 @@ function UploadProgress({
           const pct = isPast
             ? 1
             : isActive
-              ? key === "sending"
-                ? (sendingIdx + sendingFileProgress) / Math.max(totalFiles, 1)
-                : percent / 100
+              ? percent / 100
               : 0;
           const pctLabel = isPast ? "✓" : isActive ? `${Math.round(pct * 100)}%` : "—";
 
@@ -1037,11 +942,6 @@ function UploadProgress({
                   className={`text-xs font-medium ${isActive ? "text-sky-300" : isPast ? "text-emerald-400" : "text-slate-600"}`}
                 >
                   {i + 1}. {label}
-                  {isActive && key === "sending" && totalFiles > 1 && (
-                    <span className="ml-1.5 font-normal text-slate-500">
-                      (arquivo {sendingIdx + 1} de {totalFiles})
-                    </span>
-                  )}
                 </span>
                 <span
                   className={`text-[11px] tabular-nums ${isActive ? "text-sky-400" : isPast ? "text-emerald-500" : "text-slate-700"}`}

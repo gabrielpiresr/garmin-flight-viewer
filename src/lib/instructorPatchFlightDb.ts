@@ -1,4 +1,5 @@
 import { functions, INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID } from "./appwrite";
+import type { FlightStatus } from "./flightsDb";
 import type { FlightWeightBalanceMeta } from "./weightBalance";
 import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
 
@@ -6,7 +7,7 @@ export type InstructorPatchFlightPayload = {
   flightId: string;
   instructorUserId: string;
   csvText?: string;
-  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
+  flightStatus?: FlightStatus;
   trainingTrackId?: string | null;
   trainingStageId?: string | null;
   trainingMissionId?: string | null;

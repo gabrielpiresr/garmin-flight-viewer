@@ -5,10 +5,19 @@
 import { Client, Databases, DatabasesIndexType as IndexType } from "node-appwrite";
 import { readFileSync, writeFileSync } from "fs";
 
-const ENDPOINT   = "https://sfo.cloud.appwrite.io/v1";
-const PROJECT_ID = "6a01ac8a0009fbf94f05";
-const API_KEY    = "standard_c331b1343cf97b580560d1ea341a2609e4100195659849c17a5dcaab8b73c4d82bb840b4edc0209884a51c958fe3bc275a98230f570a51a9e2debe9a929af6ae069a2fa3268917905550c2bdb4a17fa79de223af4a17d7b0a8ec7a9daf0e4a3dd4d7657d269497813807cd6ae835d3e9ee905d45522c42f38188c41311393f6a";
-const DB_ID      = "6a01afae001bc352d1b1";
+const envPath = decodeURIComponent(new URL("../.env.local", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
+const localEnv = Object.fromEntries(readFileSync(envPath, "utf-8").split(/\r?\n/).flatMap((line) => {
+  const index = line.indexOf("=");
+  if (index <= 0 || line.trim().startsWith("#")) return [];
+  return [[line.slice(0, index).trim(), line.slice(index + 1).trim()]];
+}));
+const ENDPOINT = process.env.APPWRITE_ENDPOINT || localEnv.VITE_APPWRITE_ENDPOINT;
+const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || localEnv.VITE_APPWRITE_PROJECT_ID;
+const API_KEY = process.env.APPWRITE_API_KEY || localEnv.APPWRITE_API_KEY;
+const DB_ID = process.env.APPWRITE_DATABASE_ID || localEnv.VITE_APPWRITE_DATABASE_ID;
+if (!ENDPOINT || !PROJECT_ID || !API_KEY || !DB_ID) {
+  throw new Error("Defina APPWRITE_API_KEY e as configurações Appwrite.");
+}
 const COL_ID     = "proposal_config";
 
 const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);

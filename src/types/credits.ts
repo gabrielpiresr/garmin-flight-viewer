@@ -52,6 +52,16 @@ export type StudentCreditStatement = {
   generatedAt: string;
   purchases: StudentCreditPurchase[];
   flightDebits: StudentCreditFlightDebit[];
+  adjustments: Array<{
+    id: string;
+    flightId: string | null;
+    aircraftModelId: string;
+    aircraftIdent: string;
+    hours: number;
+    percentage: number;
+    reason: string;
+    occurredAt: string;
+  }>;
   summaries: StudentCreditModelSummary[];
   totals: {
     purchasedHours: number;

@@ -64,6 +64,9 @@ const ContractsAdminTab = lazy(() =>
   import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
 );
 const CrmTab = lazy(() => import("./CrmTab").then((module) => ({ default: module.CrmTab })));
+const CaktoReceiptsTab = lazy(() =>
+  import("./CaktoReceiptsTab").then((module) => ({ default: module.CaktoReceiptsTab })),
+);
 
 type AdminSection =
   | "home"
@@ -81,7 +84,8 @@ type AdminSection =
   | "dre"
   | "flight-review"
   | "contracts"
-  | "crm";
+  | "crm"
+  | "receipts";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -225,6 +229,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h15.75a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
         <path d="M7.5 15.75a.75.75 0 01-.75-.75v-3a.75.75 0 011.5 0v3a.75.75 0 01-.75.75zM12 15.75a.75.75 0 01-.75-.75V8.25a.75.75 0 011.5 0V15a.75.75 0 01-.75.75zM16.5 15.75a.75.75 0 01-.75-.75v-4.5a.75.75 0 011.5 0V15a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "receipts",
+    label: "Recebimentos",
+    sublabel: "Pagamentos recebidos via Cakto",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M2.25 6.75A2.25 2.25 0 014.5 4.5h15a2.25 2.25 0 012.25 2.25v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75zm3.75 6a.75.75 0 000 1.5h3a.75.75 0 000-1.5H6zm10.5-3a1.5 1.5 0 100 3 1.5 1.5 0 000-3z" />
       </svg>
     ),
   },
@@ -434,6 +448,7 @@ const SCHEDULE_ROUTES = [
   { id: "flights", path: "/admin/escala/voos", aliases: ["/admin/escala", "/admin/schedule"] },
   { id: "weekly", path: "/admin/escala/disponibilidades" },
   { id: "generator", path: "/admin/escala/gerador" },
+  { id: "settings", path: "/admin/escala/configuracoes" },
 ] satisfies readonly TabRoute<ScheduleSubTab>[];
 
 const REPORTS_ROUTES = [
@@ -482,6 +497,7 @@ const ADMIN_ROUTES = [
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
   { id: "dre", path: "/admin/dre" },
+  { id: "receipts", path: "/admin/recebimentos" },
   { id: "flight-review", path: "/admin/flight-review" },
   { id: "contracts", path: "/admin/contratos" },
   { id: "crm", path: "/admin/crm" },
@@ -492,6 +508,7 @@ const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
   flights: "Escala",
   weekly: "Disponibilidades",
   generator: "Gerador",
+  settings: "Configurações",
 };
 
 const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
@@ -874,6 +891,9 @@ export function AdminLayout() {
           )}
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}><LazyTab><AdminDreTab /></LazyTab></div>
+          )}
+          {openedSections.has("receipts") && (
+            <div hidden={section !== "receipts"}><LazyTab><CaktoReceiptsTab /></LazyTab></div>
           )}
           {openedSections.has("flight-review") && (
             <div hidden={section !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>

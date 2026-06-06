@@ -134,11 +134,23 @@ function toStep(doc: Record<string, unknown>): OnboardingStep {
 
   });
 
+  const rawLayout = doc.layout;
+  const layout: import("../types/onboarding").SlideLayout =
+    rawLayout === "split" || rawLayout === "text-only" || rawLayout === "video-focus" || rawLayout === "list"
+      ? rawLayout
+      : "hero";
+
+  const rawPos = doc.media_position ?? doc.mediaPosition;
+  const mediaPosition: import("../types/onboarding").MediaPosition =
+    rawPos === "left" || rawPos === "top" || rawPos === "bottom" ? rawPos : "right";
+
   return {
 
     id: String(doc.id ?? doc.$id ?? ""),
 
     title: String(doc.title ?? ""),
+
+    subtitle: typeof doc.subtitle === "string" && doc.subtitle ? doc.subtitle : null,
 
     description: rich.description,
 
@@ -147,6 +159,12 @@ function toStep(doc: Record<string, unknown>): OnboardingStep {
     descriptionHtml: rich.descriptionHtml,
 
     imageFileId: typeof doc.imageFileId === "string" ? doc.imageFileId : typeof doc.image_file_id === "string" ? doc.image_file_id : null,
+
+    videoUrl: typeof doc.videoUrl === "string" ? doc.videoUrl : typeof doc.video_url === "string" ? doc.video_url : null,
+
+    layout,
+
+    mediaPosition,
 
     sortOrder: Number(doc.sortOrder ?? doc.sort_order ?? 0),
 
@@ -176,6 +194,8 @@ function stepPayload(payload: OnboardingStepInput) {
 
     title: payload.title.trim(),
 
+    subtitle: payload.subtitle?.trim() || null,
+
     description: rich.description,
 
     description_json: JSON.stringify(rich.descriptionJson),
@@ -183,6 +203,12 @@ function stepPayload(payload: OnboardingStepInput) {
     description_html: rich.descriptionHtml,
 
     image_file_id: payload.imageFileId?.trim() || null,
+
+    video_url: payload.videoUrl?.trim() || null,
+
+    layout: payload.layout ?? "hero",
+
+    media_position: payload.mediaPosition ?? "right",
 
     sort_order: payload.sortOrder,
 
@@ -262,6 +288,8 @@ export async function listOnboardingSteps(): Promise<OnboardingStep[]> {
 
       title: doc.title,
 
+      subtitle: doc.subtitle,
+
       description: doc.description,
 
       description_json: doc.description_json,
@@ -269,6 +297,12 @@ export async function listOnboardingSteps(): Promise<OnboardingStep[]> {
       description_html: doc.description_html,
 
       image_file_id: doc.image_file_id,
+
+      video_url: doc.video_url,
+
+      layout: doc.layout,
+
+      media_position: doc.media_position,
 
       sort_order: doc.sort_order,
 
@@ -306,6 +340,8 @@ export async function createOnboardingStep(
 
         title: doc.title,
 
+        subtitle: doc.subtitle,
+
         description: doc.description,
 
         description_json: doc.description_json,
@@ -313,6 +349,10 @@ export async function createOnboardingStep(
         description_html: doc.description_html,
 
         image_file_id: doc.image_file_id,
+
+        video_url: doc.video_url,
+
+        layout: doc.layout,
 
         sort_order: doc.sort_order,
 
@@ -360,6 +400,8 @@ export async function updateOnboardingStep(
 
         title: doc.title,
 
+        subtitle: doc.subtitle,
+
         description: doc.description,
 
         description_json: doc.description_json,
@@ -367,6 +409,10 @@ export async function updateOnboardingStep(
         description_html: doc.description_html,
 
         image_file_id: doc.image_file_id,
+
+        video_url: doc.video_url,
+
+        layout: doc.layout,
 
         sort_order: doc.sort_order,
 
@@ -490,7 +536,7 @@ export async function uploadOnboardingImage(file: File): Promise<{ fileId: strin
 
     const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file, [
 
-      Permission.read(Role.users()),
+      Permission.read(Role.any()),
 
     ]);
 

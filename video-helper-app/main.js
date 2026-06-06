@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, shell } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, dialog } = require("electron");
 const { fork } = require("child_process");
 const path = require("path");
 const http = require("http");
@@ -29,7 +29,7 @@ app.setLoginItemSettings({ openAtLogin: true });
 app.whenReady().then(() => {
   createStatusWindow();
   createTray();
-  updateHelperThenStart();
+  startHelper();
 });
 
 app.on("second-instance", () => {
@@ -88,6 +88,31 @@ function startHelper() {
 
   helperProc.stderr?.on("data", () => {}); // suppress stderr noise
   helperProc.stdout?.on("data", () => {});
+  helperProc.on("message", async (message) => {
+    if (!message || message.type !== "pick-files" || !message.requestId) return;
+    try {
+      const result = await dialog.showOpenDialog({
+        title: "Selecionar gravacoes do voo",
+        properties: ["openFile", "multiSelections"],
+        filters: [{
+          name: "Videos e telemetria",
+          extensions: ["mp4", "mov", "avi", "mkv", "mts", "m2ts", "webm", "srt"],
+        }],
+      });
+      helperProc?.send({
+        type: "pick-files-result",
+        requestId: message.requestId,
+        paths: result.canceled ? [] : result.filePaths,
+      });
+    } catch (error) {
+      helperProc?.send({
+        type: "pick-files-result",
+        requestId: message.requestId,
+        paths: [],
+        error: error?.message || String(error),
+      });
+    }
+  });
 
   helperProc.on("exit", (code) => {
     if (!isQuitting) {

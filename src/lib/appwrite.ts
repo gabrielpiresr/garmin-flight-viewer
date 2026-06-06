@@ -7,6 +7,10 @@ export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | und
 export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
 export const ADMIN_USERS_FUNCTION_ID = import.meta.env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID as string | undefined;
+export const SCHEDULE_BOOKING_FUNCTION_ID =
+  (import.meta.env.VITE_APPWRITE_SCHEDULE_BOOKING_FUNCTION_ID as string | undefined) ?? "schedule-booking";
+export const CREDIT_ADJUSTMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CREDIT_ADJUSTMENTS_COL_ID as string | undefined) ?? "credit_adjustments";
 export const INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID =
   (import.meta.env.VITE_APPWRITE_INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID as string | undefined) ?? "instructor-patch-flight";
 export const SIGN_FLIGHT_FUNCTION_ID =

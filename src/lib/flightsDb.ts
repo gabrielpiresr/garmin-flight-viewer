@@ -15,12 +15,13 @@ import { createAdminAuditEvent } from "./adminUsersDb";
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
 
-export type FlightStatus = "Previsto" | "Cancelado" | "Realizado";
+export type FlightStatus = "Pendente" | "Confirmado" | "Cancelado" | "Realizado" | "Previsto" | "Não confirmado";
 
-export const FLIGHT_STATUS_OPTIONS: FlightStatus[] = ["Previsto", "Cancelado", "Realizado"];
+export const FLIGHT_STATUS_OPTIONS: FlightStatus[] = ["Pendente", "Confirmado", "Cancelado", "Realizado", "Não confirmado"];
 
 export function normalizeFlightStatus(value: unknown): FlightStatus {
-  return FLIGHT_STATUS_OPTIONS.includes(value as FlightStatus) ? (value as FlightStatus) : "Previsto";
+  if (value === "Previsto") return "Confirmado";
+  return FLIGHT_STATUS_OPTIONS.includes(value as FlightStatus) ? (value as FlightStatus) : "Confirmado";
 }
 
 export type SavedFlightListItem = {
@@ -1139,7 +1140,7 @@ export async function insertFlight(payload: {
         training_mission_id: payload.trainingMissionId ?? null,
         training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
         flight_seq_number,
-        flight_status: "Previsto",
+        flight_status: "Confirmado",
       },
       csvText: payload.csv_text,
       trainingMissionId: payload.trainingMissionId,

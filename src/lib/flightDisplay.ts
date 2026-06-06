@@ -84,7 +84,7 @@ export function isFutureFlight(item: SavedFlightListItem, info?: FlightDisplayIn
 export function isCompletedFlight(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
   if (isFutureFlight(item, info)) return false;
   const status = item.flight_status ?? "";
-  if (status === "Previsto") return false;
+  if (["Pendente", "Confirmado", "Previsto"].includes(status)) return false;
   const totalFlightMinutes =
     info?.totalFlightMinutes ??
     (typeof item.duration_sec === "number" && item.duration_sec > 0 ? Math.round(item.duration_sec / 60) : 0);

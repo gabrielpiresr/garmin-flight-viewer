@@ -36,7 +36,7 @@ export type AdminDashboardFinance = {
 
 export type AdminDashboardFlight = {
   id: string;
-  status: "Previsto" | "Cancelado" | "Realizado";
+  status: "Pendente" | "Confirmado" | "Previsto" | "Cancelado" | "Realizado";
   flightDate: string | null;
   startTime: string | null;
   sourceFilename: string;

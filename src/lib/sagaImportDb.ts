@@ -964,6 +964,47 @@ export async function importSagaData(params: {
   return response.summary;
 }
 
+export async function importSelfFlightsFromSaga(
+  options: { onProgress?: (progress: SagaImportProgress) => void } = {},
+): Promise<SagaImportSummary> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const importRunId = crypto.randomUUID();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaImportSelfFlights", importRunId }),
+    true,
+  );
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000, {
+    progressRunId: importRunId,
+    onProgress: options.onProgress,
+  });
+  const response = parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {});
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
+    throw new Error(response.message || "Falha ao sincronizar voos do SAGA.");
+  }
+  // responseBody is always empty for async executions in Appwrite Cloud — fall back to saved summary
+  const summary = response.summary ?? await fetchLastSagaImportSummary().catch(() => null);
+  if (!summary) throw new Error(response.message || "Falha ao sincronizar voos do SAGA: tente novamente.");
+  return summary;
+}
+
+export async function importSelfCreditsFromSaga(): Promise<SagaImportSummary> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaImportSelfCredits" }),
+    true,
+  );
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000);
+  const response = parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {});
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
+    throw new Error(response.message || "Falha ao sincronizar creditos do SAGA.");
+  }
+  const summary = response.summary ?? await fetchLastSagaImportSummary().catch(() => null);
+  if (!summary) throw new Error(response.message || "Falha ao sincronizar creditos do SAGA: tente novamente.");
+  return summary;
+}
+
 export async function lookupSagaFlight(sagaFlightId: string): Promise<SagaLookupFlightResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
 

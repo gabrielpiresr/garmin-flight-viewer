@@ -9,6 +9,7 @@ export type AdminTabKey =
   | "schedule.voos"
   | "schedule.disponibilidades"
   | "schedule.gerador"
+  | "schedule.configuracoes"
   | "students"
   | "reports"
   | "reports.all-flights"
@@ -34,6 +35,7 @@ export type AdminTabKey =
   | "logbook"
   | "fuelings"
   | "dre"
+  | "receipts"
   | "settings"
   | "settings.regras"
   | "settings.email"
@@ -77,6 +79,7 @@ export type StudentTabKey =
   | "jornada"
   | "meus-voos"
   | "agendamento"
+  | "schedule"
   | "creditos"
   | "avisos"
   | "manuais"
@@ -104,7 +107,8 @@ export type ActionKey =
   | "credit.edit"       // Editar crédito
   | "credit.delete"     // Excluir crédito
   | "users.manage"      // Gerenciar usuários (criar, editar, alterar role)
-  | "schedule.generate"; // Gerar escala automática
+  | "schedule.generate" // Gerar escala automática
+  | "onboarding.edit";  // Editar apresentação de onboarding
 
 /** Labels em português para cada ação */
 export const ACTION_LABELS: Record<ActionKey, string> = {
@@ -120,6 +124,7 @@ export const ACTION_LABELS: Record<ActionKey, string> = {
   "credit.delete": "Excluir crédito",
   "users.manage": "Gerenciar usuários",
   "schedule.generate": "Gerar escala automática",
+  "onboarding.edit": "Editar apresentação de onboarding",
 };
 
 /** Conjunto de permissões de um role */
@@ -159,6 +164,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "schedule.voos": "Escala › Voos",
   "schedule.disponibilidades": "Escala › Disponibilidades",
   "schedule.gerador": "Escala › Gerador",
+  "schedule.configuracoes": "Escala › Configurações",
   "students": "Alunos",
   "reports": "Relatórios",
   "reports.all-flights": "Relatórios › Todos os Voos",
@@ -184,6 +190,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "logbook": "Diário de Bordo",
   "fuelings": "Abastecimentos",
   "dre": "DRE",
+  "receipts": "Recebimentos",
   "settings": "Configurações",
   "settings.regras": "Configurações › Regras",
   "settings.email": "Configurações › E-mail",
@@ -229,6 +236,7 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "jornada": "Jornada",
   "meus-voos": "Meus Voos",
   "agendamento": "Agendamento",
+  "schedule": "Escala",
   "creditos": "Créditos",
   "avisos": "Avisos",
   "manuais": "Manuais",

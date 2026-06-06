@@ -56,6 +56,24 @@ export type CrmProposal = {
   products: ProposalProduct[];
   publicToken: string;
   status: "draft" | "sent";
+  caktoOfferId: string;
+  paymentUrl: string;
+  paymentStatus: "pending" | "created" | "paid" | "failed";
+  paymentError: string;
+  paymentUpdatedAt: string | null;
+  proposalType: "commercial" | "student_credit_package";
+  studentUserId: string;
+  creditPackageId: string;
+  creditPackageSnapshot: {
+    packageId: string;
+    hours: number;
+    hourPrice: number;
+    totalValue: number;
+    validityDays: number;
+    aircraftModelId: string;
+    aircraftModelName: string;
+  } | null;
+  creditId: string;
   createdAt: string;
 };
 

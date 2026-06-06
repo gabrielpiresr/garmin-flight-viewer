@@ -39,6 +39,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "schedule.voos", label: "Voos" },
       { key: "schedule.disponibilidades", label: "Disponibilidades" },
       { key: "schedule.gerador", label: "Gerador" },
+      { key: "schedule.configuracoes", label: "Configurações" },
     ],
   },
   { label: "Alunos", parentKey: "students" },

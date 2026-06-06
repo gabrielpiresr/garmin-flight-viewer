@@ -17,6 +17,7 @@ export type StudentPortalTab =
   | "jornada"
   | "meus-voos"
   | "agendamento"
+  | "schedule"
   | "creditos"
   | "avisos"
   | "manuais"
@@ -49,12 +50,32 @@ export type PlatformThemeRules = {
 };
 
 export type FlightScheduleRules = {
+  mode: "booking" | "view" | "closed" | "intentions";
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  slotMinutes: 15 | 30 | 45 | 60;
+  scheduleStartTime: string; // HH:MM — earliest dispatch time
   minRequestHours: number;
   maxRequestHours: number;
+  weekdayMinHours: number;
+  weekdayMaxHours: number;
+  weekendMinHours: number;
+  weekendMaxHours: number;
+  weekdayMaxFlightsPerDay: number | null;
+  weekendMaxFlightsPerDay: number | null;
   allowStudentFlightIntentions: boolean;
   requireCreditsForIntentions: boolean;
+  requireCreditsForBooking: boolean;
   allowNightFlights: boolean;
-  nightFlightStartHour: number;
+  nightFlightStartHour: number; // decimal hours, e.g. 18.5 = 18:30
+  nightBookingWeekdays: number[];
+  cancellationPenalty48hPct: number;
+  cancellationPenalty24hPct: number;
+  cancellationPenalty12hPct: number;
+  cancellationPenalty1hPct: number;
+  autoDebitCancellationPenalty: boolean;
+  minBookingLeadDays: number;
+  maxBookingLeadDays: number;
 };
 
 export type EmailNotificationRule = {
@@ -78,6 +99,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "jornada", label: "Jornada" },
   { id: "meus-voos", label: "Meus voos" },
   { id: "agendamento", label: "Agendamento" },
+  { id: "schedule", label: "Escala" },
   { id: "creditos", label: "Créditos" },
   { id: "avisos", label: "Avisos" },
   { id: "manuais", label: "Manuais" },
@@ -121,12 +143,32 @@ export const DEFAULT_PLATFORM_THEME_RULES: PlatformThemeRules = {
 };
 
 export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
+  mode: "intentions",
+  bufferBeforeMinutes: 30,
+  bufferAfterMinutes: 15,
+  slotMinutes: 30,
+  scheduleStartTime: "06:00",
   minRequestHours: 1,
   maxRequestHours: 4,
+  weekdayMinHours: 1,
+  weekdayMaxHours: 4,
+  weekendMinHours: 1,
+  weekendMaxHours: 4,
+  weekdayMaxFlightsPerDay: null,
+  weekendMaxFlightsPerDay: null,
   allowStudentFlightIntentions: true,
   requireCreditsForIntentions: false,
+  requireCreditsForBooking: false,
   allowNightFlights: false,
   nightFlightStartHour: 18,
+  nightBookingWeekdays: [],
+  cancellationPenalty48hPct: 0,
+  cancellationPenalty24hPct: 0,
+  cancellationPenalty12hPct: 0,
+  cancellationPenalty1hPct: 0,
+  autoDebitCancellationPenalty: false,
+  minBookingLeadDays: 0,
+  maxBookingLeadDays: 365,
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
@@ -165,6 +207,22 @@ function normalizeHours(value: unknown, fallback: number): number {
   return Math.round(parsed * 2) / 2;
 }
 
+function normalizePositiveHours(value: unknown, fallback: number): number {
+  return Math.max(0.25, normalizeHours(value, fallback));
+}
+
+function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function normalizeNullableLimit(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+}
+
 export function normalizeSchoolRules(input: unknown): SchoolRules {
   const raw = input && typeof input === "object" ? (input as Partial<SchoolRules>) : {};
   const minRequestHours = Math.max(
@@ -201,18 +259,47 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       colorMode: raw.theme?.colorMode === "light" ? "light" : "dark",
     },
     schedule: {
+      mode: ["booking", "view", "closed", "intentions"].includes(String(raw.schedule?.mode))
+        ? raw.schedule!.mode
+        : DEFAULT_FLIGHT_SCHEDULE_RULES.mode,
+      bufferBeforeMinutes: normalizeInteger(raw.schedule?.bufferBeforeMinutes, 0, 360, 30),
+      bufferAfterMinutes: normalizeInteger(raw.schedule?.bufferAfterMinutes, 0, 360, 15),
+      slotMinutes: ([15, 30, 45, 60].includes(Number(raw.schedule?.slotMinutes))
+        ? Number(raw.schedule?.slotMinutes)
+        : 30) as 15 | 30 | 45 | 60,
+      scheduleStartTime: /^\d{2}:\d{2}$/.test(String(raw.schedule?.scheduleStartTime ?? ""))
+        ? String(raw.schedule!.scheduleStartTime)
+        : DEFAULT_FLIGHT_SCHEDULE_RULES.scheduleStartTime,
       minRequestHours,
       maxRequestHours,
+      weekdayMinHours: normalizePositiveHours(raw.schedule?.weekdayMinHours, minRequestHours),
+      weekdayMaxHours: normalizePositiveHours(raw.schedule?.weekdayMaxHours, maxRequestHours),
+      weekendMinHours: normalizePositiveHours(raw.schedule?.weekendMinHours, minRequestHours),
+      weekendMaxHours: normalizePositiveHours(raw.schedule?.weekendMaxHours, maxRequestHours),
+      weekdayMaxFlightsPerDay: normalizeNullableLimit(raw.schedule?.weekdayMaxFlightsPerDay),
+      weekendMaxFlightsPerDay: normalizeNullableLimit(raw.schedule?.weekendMaxFlightsPerDay),
       allowStudentFlightIntentions:
         raw.schedule?.allowStudentFlightIntentions ?? DEFAULT_FLIGHT_SCHEDULE_RULES.allowStudentFlightIntentions,
       requireCreditsForIntentions:
         raw.schedule?.requireCreditsForIntentions ?? DEFAULT_FLIGHT_SCHEDULE_RULES.requireCreditsForIntentions,
+      requireCreditsForBooking:
+        raw.schedule?.requireCreditsForBooking ?? raw.schedule?.requireCreditsForIntentions ?? false,
       allowNightFlights:
         raw.schedule?.allowNightFlights ?? DEFAULT_FLIGHT_SCHEDULE_RULES.allowNightFlights,
       nightFlightStartHour: (() => {
         const h = Number(raw.schedule?.nightFlightStartHour);
-        return Number.isFinite(h) && h >= 0 && h <= 23 ? Math.round(h) : DEFAULT_FLIGHT_SCHEDULE_RULES.nightFlightStartHour;
+        return Number.isFinite(h) && h >= 0 && h < 24 ? h : DEFAULT_FLIGHT_SCHEDULE_RULES.nightFlightStartHour;
       })(),
+      nightBookingWeekdays: Array.isArray(raw.schedule?.nightBookingWeekdays)
+        ? [...new Set(raw.schedule.nightBookingWeekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))]
+        : [],
+      cancellationPenalty48hPct: normalizeInteger(raw.schedule?.cancellationPenalty48hPct, 0, 100, 0),
+      cancellationPenalty24hPct: normalizeInteger(raw.schedule?.cancellationPenalty24hPct, 0, 100, 0),
+      cancellationPenalty12hPct: normalizeInteger(raw.schedule?.cancellationPenalty12hPct, 0, 100, 0),
+      cancellationPenalty1hPct: normalizeInteger(raw.schedule?.cancellationPenalty1hPct, 0, 100, 0),
+      autoDebitCancellationPenalty: Boolean(raw.schedule?.autoDebitCancellationPenalty),
+      minBookingLeadDays: normalizeInteger(raw.schedule?.minBookingLeadDays, 0, 3650, 0),
+      maxBookingLeadDays: normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
     },
     emailNotifications: EMAIL_NOTIFICATION_EVENT_OPTIONS.reduce(
       (acc, item) => ({

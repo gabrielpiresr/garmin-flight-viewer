@@ -26,6 +26,7 @@ const MeusVoosTab = lazy(() => import("./MeusVoosTab").then((module) => ({ defau
 const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 const StudentDreTab = lazy(() => import("./StudentDreTab").then((module) => ({ default: module.StudentDreTab })));
 const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ default: module.StudentHome })));
+const StudentScheduleTab = lazy(() => import("./StudentScheduleTab").then((module) => ({ default: module.StudentScheduleTab })));
 const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 
@@ -79,6 +80,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm13.5 9a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "schedule",
+    label: "Escala",
+    sublabel: "Calendário e agendamento",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm-1.5 7.5v9h13.5v-9H5.25z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -195,6 +206,7 @@ const SECTION_ROUTES = [
   { id: "jornada", path: "/aluno/jornada" },
   { id: "meus-voos", path: "/aluno/meus-voos" },
   { id: "agendamento", path: "/aluno/agendamento" },
+  { id: "schedule", path: "/aluno/escala" },
   { id: "creditos", path: "/aluno/creditos" },
   { id: "avisos", path: "/aluno/avisos" },
   { id: "manuais", path: "/aluno/manuais" },
@@ -478,6 +490,13 @@ export function MainLayout() {
             <div hidden={section !== "agendamento"}>
               <LazyTab>
                 <AgendamentoTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("schedule") && (
+            <div hidden={section !== "schedule"}>
+              <LazyTab>
+                <StudentScheduleTab />
               </LazyTab>
             </div>
           )}

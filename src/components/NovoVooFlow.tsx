@@ -743,7 +743,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [studentLabel, setStudentLabel] = useState("");
   const [studentSearch, setStudentSearch] = useState("");
   const [flightDate, setFlightDate] = useState(todayIso());
-  const [flightStatus, setFlightStatus] = useState<FlightStatus>("Previsto");
+  const [flightStatus, setFlightStatus] = useState<FlightStatus>("Confirmado");
   const [cancellationReason, setCancellationReason] = useState("");
   const [cancellationReasonText, setCancellationReasonText] = useState("");
   const [startTime, setStartTime] = useState("");
@@ -1228,7 +1228,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     }
   }, [occurrenceCode, occurrences]);
 
-  const isPrevistoStatus = normalizeFlightStatus(flightStatus) === "Previsto";
+  const isPrevistoStatus = ["Pendente", "Confirmado"].includes(normalizeFlightStatus(flightStatus));
   const isCancelledStatus = normalizeFlightStatus(flightStatus) === "Cancelado";
 
   const computedEventTimes = useMemo(() => {
@@ -1609,7 +1609,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
     const normalizedStatus = normalizeFlightStatus(flightStatus);
     let durationSec = 0;
-    if (normalizedStatus === "Previsto") {
+    if (["Pendente", "Confirmado"].includes(normalizedStatus)) {
       const scheduledMinutes =
         startTime.trim() && engineCutoffTime.trim()
           ? clockDiffMinutes(startTime.trim(), engineCutoffTime.trim())

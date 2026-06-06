@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { mergeAttributes, Node } from "@tiptap/core";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import TextAlign from "@tiptap/extension-text-align";
 import Youtube from "@tiptap/extension-youtube";
 import StarterKit from "@tiptap/starter-kit";
 import { generateHTML } from "@tiptap/html";
@@ -192,6 +193,11 @@ export function getManeuverEditorExtensions(placeholder = "Escreva o artigo...")
     StarterKit.configure({
       heading: { levels: [2, 3, 4] },
     }),
+    TextAlign.configure({
+      types: ["heading", "paragraph"],
+      alignments: ["left", "center", "right", "justify"],
+      defaultAlignment: "left",
+    }),
     Link.configure({
       openOnClick: false,
       autolink: true,
@@ -265,10 +271,13 @@ function renderNode(node: RichNode, key: string): ReactNode {
       const level = node.attrs?.level === 2 || node.attrs?.level === 3 || node.attrs?.level === 4 ? node.attrs.level : 3;
       const className = level === 2 ? "text-xl font-semibold text-white" : level === 3 ? "text-lg font-semibold text-slate-100" : "text-base font-semibold text-slate-100";
       const Tag = `h${level}` as "h2" | "h3" | "h4";
-      return <Tag key={key} className={`${className} mt-5 first:mt-0`}>{renderNodes(node.content, key)}</Tag>;
+      const align = typeof node.attrs?.textAlign === "string" ? node.attrs.textAlign : undefined;
+      return <Tag key={key} className={`${className} mt-5 first:mt-0`} style={align ? { textAlign: align as CSSProperties["textAlign"] } : undefined}>{renderNodes(node.content, key)}</Tag>;
     }
-    case "paragraph":
-      return <p key={key} className="break-words leading-relaxed text-slate-200 [overflow-wrap:anywhere]">{renderNodes(node.content, key)}</p>;
+    case "paragraph": {
+      const align = typeof node.attrs?.textAlign === "string" ? node.attrs.textAlign : undefined;
+      return <p key={key} className="break-words leading-relaxed text-slate-200 [overflow-wrap:anywhere]" style={align ? { textAlign: align as CSSProperties["textAlign"] } : undefined}>{renderNodes(node.content, key)}</p>;
+    }
     case "bulletList":
       return <ul key={key} className="list-disc space-y-1 break-words pl-5 text-slate-200 [overflow-wrap:anywhere]">{renderNodes(node.content, key)}</ul>;
     case "orderedList":

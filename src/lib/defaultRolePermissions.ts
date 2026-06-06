@@ -10,7 +10,7 @@ import type {
 
 const ALL_ADMIN_TABS: AdminTabKey[] = [
   "home",
-  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador",
+  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.configuracoes",
   "students",
   "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
@@ -21,6 +21,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "logbook",
   "fuelings",
   "dre",
+  "receipts",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas",
@@ -29,7 +30,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
 const ALL_ACTIONS: ActionKey[] = [
   "fueling.launch", "fueling.edit", "os.create", "flight.create", "flight.edit", "flight.delete",
   "content.edit", "credit.launch", "credit.edit", "credit.delete",
-  "users.manage", "schedule.generate",
+  "users.manage", "schedule.generate", "onboarding.edit",
 ];
 
 export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
@@ -76,13 +77,13 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  * Abas opcionais (dre, fuelings) estão incluídas mas desativadas por padrão.
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
-  "home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
+  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
   "dre", "fuelings", "contratos", "indique-ganhe",
 ];
 
 /** Abas ativadas por padrão para o aluno */
 const STUDENT_DEFAULT_ON_TABS: Set<StudentTabKey> = new Set([
-  "home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
+  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
 ]);
 
 export const DEFAULT_ALUNO_PERMISSIONS: RolePermissions = {

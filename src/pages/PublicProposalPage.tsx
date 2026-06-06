@@ -247,6 +247,20 @@ export function PublicProposalPage() {
           );
         })()}
 
+        {proposal.paymentUrl && (
+          <section className="text-center">
+            <a
+              href={proposal.paymentUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ backgroundColor: primary }}
+              className="inline-flex rounded-xl px-8 py-4 text-base font-bold text-white shadow-lg transition hover:opacity-90"
+            >
+              Ir para pagamento
+            </a>
+          </section>
+        )}
+
         {/* ── 6. Formas de pagamento ────────────────────────────────────────────── */}
         {paymentHtml && (
           <section>

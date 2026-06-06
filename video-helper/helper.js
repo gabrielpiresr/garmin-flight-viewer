@@ -6,39 +6,51 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { Readable } = require("stream");
 const { spawn, execSync } = require("child_process");
 
-const PORT = 7842;
-const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB por parte no upload multipart
+const PORT = Number(process.env.PORT || 7842);
+const CHUNK_SIZE = 16 * 1024 * 1024;
+const MEMORY_LIMIT_BYTES = Math.floor(os.totalmem() * 0.5);
+const MAX_UPLOAD_RETRIES = 8;
 const HELPER_DIR = process.env.HELPER_RESOURCES
   || path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
 
 // #region agent log
 const AGENT_DEBUG_ENDPOINT = "http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1";
 const AGENT_DEBUG_SESSION = "673562";
-function agentDebugLog(location, message, data, hypothesisId) {
-  fetch(AGENT_DEBUG_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": AGENT_DEBUG_SESSION },
-    body: JSON.stringify({
-      sessionId: AGENT_DEBUG_SESSION,
-      location,
-      message,
-      data,
-      hypothesisId,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-}
+function agentDebugLog() {}
 // #endregion
 
 // ─── Estado dos jobs ───────────────────────────────────────────────────────────
 
 const jobs = new Map(); // jobId → { listeners: res[], buffer: string[], cancelled: bool, cancel: fn }
 
+const pickFileRequests = new Map();
+let activeJobId = null;
+
 function createJob(jobId) {
-  const job = { listeners: [], buffer: [], cancelled: false };
-  job.cancel = () => { job.cancelled = true; };
+  const job = {
+    id: jobId,
+    listeners: [],
+    buffer: [],
+    cancelled: false,
+    stage: "queued",
+    percent: 0,
+    message: null,
+    result: null,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ffmpegPid: null,
+    ffmpegProcess: null,
+    lastAppwriteStage: "",
+    lastAppwritePercent: -1,
+    lastAppwriteAt: 0,
+  };
+  job.cancel = () => {
+    job.cancelled = true;
+    job.ffmpegProcess?.kill("SIGTERM");
+  };
   jobs.set(jobId, job);
   return job;
 }
@@ -46,12 +58,57 @@ function createJob(jobId) {
 function sendProgress(jobId, data) {
   const job = jobs.get(jobId);
   if (!job) return;
+  job.stage = data.stage ?? job.stage;
+  job.percent = Number.isFinite(data.percent) ? data.percent : job.percent;
+  job.message = data.message ?? null;
+  job.updatedAt = new Date().toISOString();
+  if (data.stage === "done") job.result = data;
   const line = `data: ${JSON.stringify(data)}\n\n`;
   job.buffer.push(line);
+  if (job.buffer.length > 200) job.buffer.splice(0, job.buffer.length - 200);
   for (const res of job.listeners) {
     try { res.write(line); } catch {}
   }
 }
+
+function publicJob(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    stage: job.stage,
+    percent: job.percent,
+    message: job.message,
+    result: job.result,
+    cancelled: job.cancelled,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function pickFilesNative() {
+  if (typeof process.send !== "function") {
+    return Promise.reject(new Error("O seletor nativo requer o aplicativo Flight Video Helper."));
+  }
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pickFileRequests.delete(requestId);
+      reject(new Error("O seletor de arquivos nao respondeu."));
+    }, 120000);
+    pickFileRequests.set(requestId, { resolve, reject, timer });
+    process.send({ type: "pick-files", requestId });
+  });
+}
+
+process.on("message", (message) => {
+  if (!message || message.type !== "pick-files-result") return;
+  const pending = pickFileRequests.get(message.requestId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pickFileRequests.delete(message.requestId);
+  if (message.error) pending.reject(new Error(message.error));
+  else pending.resolve(Array.isArray(message.paths) ? message.paths : []);
+});
 
 // ─── Servidor HTTP ─────────────────────────────────────────────────────────────
 
@@ -73,7 +130,29 @@ const server = http.createServer(async (req, res) => {
 
   // GET /health
   if (url === "/health" && req.method === "GET") {
-    return json(res, { ok: true, version: "1.0.0" });
+    return json(res, {
+      ok: true,
+      version: "1.1.0",
+      activeJobId,
+      memoryLimitBytes: MEMORY_LIMIT_BYTES,
+      memoryUsedBytes: process.memoryUsage().rss,
+    });
+  }
+
+  if (url === "/pick-files" && req.method === "POST") {
+    try {
+      const paths = await pickFilesNative();
+      const files = paths
+        .filter((filePath) => fs.existsSync(filePath))
+        .map((filePath) => ({
+          path: filePath,
+          name: path.basename(filePath),
+          size: fs.statSync(filePath).size,
+        }));
+      return json(res, { files });
+    } catch (error) {
+      return json(res, { error: error.message }, 500);
+    }
   }
 
   // POST /receive-file/:sessionId/:index — recebe um arquivo de vídeo via streaming
@@ -118,11 +197,27 @@ const server = http.createServer(async (req, res) => {
     let body;
     try { body = await readJson(req); } catch { return json(res, { error: "JSON inválido" }, 400); }
 
+    if (activeJobId && !["done", "error"].includes(jobs.get(activeJobId)?.stage)) {
+      return json(res, { error: "Ja existe um video sendo processado.", activeJobId }, 409);
+    }
     const job = createJob(body.jobId);
-    json(res, { ok: true });
+    activeJobId = body.jobId;
+    json(res, { ok: true, jobId: body.jobId });
 
-    setImmediate(() => runPipeline(body, job).catch(console.error));
+    setImmediate(() => runPipeline(body, job)
+      .catch((error) => {
+        sendProgress(body.jobId, { stage: "error", percent: 0, message: error.message });
+      })
+      .finally(() => {
+        if (activeJobId === body.jobId) activeJobId = null;
+      }));
     return;
+  }
+
+  const jobMatch = url.match(/^\/jobs\/([^/]+)$/);
+  if (jobMatch && req.method === "GET") {
+    const job = jobs.get(jobMatch[1]);
+    return job ? json(res, { job: publicJob(job) }) : json(res, { error: "Job nao encontrado" }, 404);
   }
 
   // POST /composite-overlay — recebe overlay WebM do browser e faz composite com vídeo fonte
@@ -182,6 +277,10 @@ const server = http.createServer(async (req, res) => {
     const [, jobId] = progressMatch;
     const job = jobs.get(jobId);
 
+    if (!job) {
+      return json(res, { error: "Job nao encontrado" }, 404);
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -221,18 +320,31 @@ const server = http.createServer(async (req, res) => {
 
 async function runPipeline(req, job) {
   const {
-    jobId, sessionId, fileOrder, cfWorkerUrl, cfWorkerToken, videoKey,
+    jobId, videoPaths, cfWorkerUrl, cfWorkerToken, videoKey,
     appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
-    sessionJwt, flightVideoDocId,
+    sessionJwt, flightVideoDocId, applyLogo = false, logoUrl = "",
   } = req;
 
   const fail = (msg) => {
     console.error(`[${jobId}] ERRO: ${msg}`);
     sendProgress(jobId, { stage: "error", percent: 0, message: msg });
+    void patchAppwriteProgress(req, "error", 0, msg).catch(() => {});
   };
 
   const progress = (stage, percent, extra = {}) => {
     sendProgress(jobId, { stage, percent, ...extra });
+    const rounded = Math.max(0, Math.min(100, Math.round(percent || 0)));
+    const now = Date.now();
+    const shouldPersist = stage !== job.lastAppwriteStage
+      || rounded >= job.lastAppwritePercent + 5
+      || now - job.lastAppwriteAt >= 10000
+      || stage === "done";
+    if (shouldPersist) {
+      job.lastAppwriteStage = stage;
+      job.lastAppwritePercent = rounded;
+      job.lastAppwriteAt = now;
+      void patchAppwriteProgress(req, stage, rounded, "").catch(() => {});
+    }
   };
 
   // Localizar ffmpeg
@@ -243,12 +355,11 @@ async function runPipeline(req, job) {
   const encoder = await detectEncoder(ffmpeg);
   console.log(`[${jobId}] Encoder selecionado: ${encoder}`);
 
-  const tmpDir = path.join(os.tmpdir(), `flight-${sessionId}`);
-  const uploadedFiles = fileOrder.map(({ index, name }) =>
-    path.join(tmpDir, `input_${index}_${sanitizeFilename(name)}`)
-  );
-  const videoFiles = uploadedFiles.filter((file) => isVideoFile(file));
-  const sidecarFiles = uploadedFiles.filter((file) => isSrtFile(file));
+  const tmpDir = path.join(os.tmpdir(), `flight-${jobId}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const selectedFiles = Array.isArray(videoPaths) ? videoPaths.map((item) => path.resolve(String(item))) : [];
+  const videoFiles = selectedFiles.filter((file) => isVideoFile(file));
+  const sidecarFiles = selectedFiles.filter((file) => isSrtFile(file));
 
   for (const f of videoFiles) {
     if (!fs.existsSync(f)) return fail(`Arquivo não encontrado no servidor: ${f}`);
@@ -282,20 +393,19 @@ async function runPipeline(req, job) {
     if (job.cancelled) return fail("Cancelado");
 
     // ── Stage 2: Watermark + Compress (passo único) ─────────────────────────
-    const watermarkPath = path.join(HELPER_DIR, "watermark.png");
+    const watermarkPath = applyLogo ? await prepareWatermark(logoUrl, tmpDir) : null;
     progress("compress", 0);
     await applyWatermarkAndCompress(ffmpeg, encoder, joinedPath, watermarkPath, finalPath, totalDuration, (pct) => {
       if (!job.cancelled) progress("compress", pct);
-    });
+    }, job);
 
     if (job.cancelled) return fail("Cancelado");
 
     // ── Stage 4: Upload multipart ────────────────────────────────────────────
     progress("upload", 0);
-    const fileBytes = fs.readFileSync(finalPath);
-    const fileSize = fileBytes.length;
+    const fileSize = fs.statSync(finalPath).size;
 
-    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, fileBytes, (pct) => {
+    const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, finalPath, (pct) => {
       progress("upload", pct);
     });
 
@@ -330,6 +440,61 @@ async function runPipeline(req, job) {
 }
 
 // ─── FFmpeg helpers ────────────────────────────────────────────────────────────
+
+async function prepareWatermark(logoUrl, tmpDir) {
+  const fallback = path.join(HELPER_DIR, "watermark.png");
+  if (!logoUrl) {
+    if (fs.existsSync(fallback)) return fallback;
+    throw new Error("A escola nao possui logo configurada.");
+  }
+  const output = path.join(tmpDir, "school-logo.png");
+  if (String(logoUrl).startsWith("data:image/")) {
+    const comma = String(logoUrl).indexOf(",");
+    if (comma < 0) throw new Error("Logo da escola invalida.");
+    fs.writeFileSync(output, Buffer.from(String(logoUrl).slice(comma + 1), "base64"));
+    return output;
+  }
+  const response = await retryRequest(() => fetch(logoUrl), "download da logo");
+  if (!response.ok) throw new Error(`Download da logo falhou: ${response.status}`);
+  const file = fs.createWriteStream(output);
+  await pipe(Readable.fromWeb(response.body), file);
+  return output;
+}
+
+async function patchAppwriteProgress(req, stage, percent, errorMessage) {
+  const {
+    appwriteEndpoint,
+    appwriteProjectId,
+    appwriteDbId,
+    videosColId,
+    flightVideoDocId,
+    sessionJwt,
+    applyLogo,
+    videoKey,
+  } = req;
+  if (!sessionJwt || !videosColId || !flightVideoDocId) return false;
+  const url = `${appwriteEndpoint}/databases/${appwriteDbId}/collections/${videosColId}/documents/${flightVideoDocId}`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "X-Appwrite-Project": appwriteProjectId,
+      "X-Appwrite-JWT": sessionJwt,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      data: {
+        apply_logo: Boolean(applyLogo),
+        video_key: videoKey || "",
+        processing_stage: stage,
+        processing_percent: Math.max(0, Math.min(100, Math.round(percent || 0))),
+        processing_error: String(errorMessage || "").slice(0, 2048),
+        processing_updated_at: new Date().toISOString(),
+        processing_status: stage === "error" ? "failed" : stage === "upload" ? "uploading" : stage === "done" ? "ready" : "processing",
+      },
+    }),
+  });
+  return response.ok;
+}
 
 function findBin(name) {
   const exeName = process.platform === "win32" ? `${name}.exe` : name;
@@ -740,14 +905,14 @@ async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDurati
       "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart",
-      "-threads", "0",
+      "-threads", String(ffmpegThreadLimit()),
       "-y", "-progress", "pipe:2", "-nostats", output,
     ], totalDuration, onProgress, { mustSucceed: true });
   }
 }
 
-async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, output, duration, onProgress) {
-  const hasWatermark = fs.existsSync(watermark);
+async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, output, duration, onProgress, job = null) {
+  const hasWatermark = Boolean(watermark && fs.existsSync(watermark));
   const filterArgs = hasWatermark
     ? [
         "-i", input, "-i", watermark,
@@ -765,15 +930,52 @@ async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, outp
     "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
-    "-threads", "0",
+    "-threads", String(ffmpegThreadLimit()),
     "-y", "-progress", "pipe:2", "-nostats", output,
-  ], duration, onProgress, { mustSucceed: true });
+  ], duration, onProgress, { mustSucceed: true, job });
 }
 
-function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false, cwd } = {}) {
+function ffmpegThreadLimit() {
+  const cpuLimit = Math.max(1, Math.floor(os.cpus().length / 2));
+  const memoryLimit = Math.max(1, Math.floor(MEMORY_LIMIT_BYTES / (768 * 1024 * 1024)));
+  return Math.min(cpuLimit, memoryLimit, 8);
+}
+
+function queryWindowsProcessRss(pid) {
+  if (process.platform !== "win32" || !pid) return Promise.resolve(0);
+  return new Promise((resolve) => {
+    const child = spawn("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.on("close", () => {
+      const match = output.match(/"([\d.,]+)\s+K"/i);
+      const kb = match ? Number(match[1].replace(/[.,]/g, "")) : 0;
+      resolve(Number.isFinite(kb) ? kb * 1024 : 0);
+    });
+    child.on("error", () => resolve(0));
+  });
+}
+
+function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false, cwd, job = null } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) });
+    if (job) {
+      job.ffmpegPid = p.pid;
+      job.ffmpegProcess = p;
+    }
     let stderr = "";
+    let memoryExceeded = false;
+    const memoryTimer = setInterval(async () => {
+      const ffmpegRss = await queryWindowsProcessRss(p.pid);
+      const used = process.memoryUsage().rss + ffmpegRss;
+      if (used > MEMORY_LIMIT_BYTES) {
+        memoryExceeded = true;
+        p.kill("SIGTERM");
+      }
+    }, 2000);
 
     p.stderr.on("data", (chunk) => {
       const text = chunk.toString();
@@ -788,6 +990,19 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
     });
 
     p.on("close", (code) => {
+      clearInterval(memoryTimer);
+      if (job) {
+        job.ffmpegPid = null;
+        job.ffmpegProcess = null;
+      }
+      if (job?.cancelled) {
+        reject(new Error("Cancelado"));
+        return;
+      }
+      if (memoryExceeded) {
+        reject(new Error("Processamento interrompido antes de ultrapassar 50% da memoria do computador."));
+        return;
+      }
       if (mustSucceed && code !== 0) {
         reject(new Error(`ffmpeg saiu com código ${code}:\n${stderr.slice(-500)}`));
       } else {
@@ -819,44 +1034,82 @@ async function detectResolution(ffprobe, files) {
 
 // ─── Upload multipart via CF Worker ───────────────────────────────────────────
 
-async function uploadMultipart(workerUrl, token, key, data, onProgress) {
-  // 1. Iniciar
-  const initRes = await fetch(`${workerUrl}/upload/initiate`, {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryRequest(factory, label, retries = MAX_UPLOAD_RETRIES) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await factory();
+      if (response.ok || (response.status < 500 && response.status !== 408 && response.status !== 429)) {
+        return response;
+      }
+      lastError = new Error(`${label} retornou ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < retries) {
+      const delay = Math.min(30000, 1000 * (2 ** attempt)) + Math.floor(Math.random() * 500);
+      await sleep(delay);
+    }
+  }
+  throw lastError || new Error(`${label} falhou`);
+}
+
+async function uploadMultipart(workerUrl, token, key, source, onProgress) {
+  const isPath = typeof source === "string";
+  const totalBytes = isPath ? fs.statSync(source).size : source.length;
+  const fileHandle = isPath ? await fs.promises.open(source, "r") : null;
+
+  const initRes = await retryRequest(() => fetch(`${workerUrl}/upload/initiate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, token }),
-  });
+  }), "inicio do upload");
   if (!initRes.ok) throw new Error(`Upload initiate falhou: ${initRes.status}`);
   const { uploadId, key: uploadKey } = await initRes.json();
 
-  // 2. Partes
-  const totalParts = Math.ceil(data.length / CHUNK_SIZE);
+  const totalParts = Math.ceil(totalBytes / CHUNK_SIZE);
   const parts = [];
 
-  for (let i = 0; i < totalParts; i++) {
-    const chunk = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    const partRes = await fetch(`${workerUrl}/upload/part`, {
-      method: "PUT",
-      headers: {
-        "x-upload-id": uploadId,
-        "x-upload-key": uploadKey,
-        "x-part-number": String(i + 1),
-        "x-token": token,
-        "Content-Type": "application/octet-stream",
-      },
-      body: chunk,
-    });
-    if (!partRes.ok) throw new Error(`Parte ${i + 1} falhou: ${partRes.status}`);
-    parts.push(await partRes.json());
-    onProgress(Math.floor(((i + 1) / totalParts) * 90));
+  try {
+    for (let i = 0; i < totalParts; i++) {
+      const offset = i * CHUNK_SIZE;
+      const length = Math.min(CHUNK_SIZE, totalBytes - offset);
+      let chunk;
+      if (fileHandle) {
+        chunk = Buffer.allocUnsafe(length);
+        const { bytesRead } = await fileHandle.read(chunk, 0, length, offset);
+        if (bytesRead !== length) throw new Error(`Leitura incompleta da parte ${i + 1}`);
+      } else {
+        chunk = source.subarray(offset, offset + length);
+      }
+      const partRes = await retryRequest(() => fetch(`${workerUrl}/upload/part`, {
+        method: "PUT",
+        headers: {
+          "x-upload-id": uploadId,
+          "x-upload-key": uploadKey,
+          "x-part-number": String(i + 1),
+          "x-token": token,
+          "Content-Type": "application/octet-stream",
+        },
+        body: chunk,
+      }), `parte ${i + 1}`);
+      if (!partRes.ok) throw new Error(`Parte ${i + 1} falhou: ${partRes.status}`);
+      parts.push(await partRes.json());
+      onProgress(Math.floor(((i + 1) / totalParts) * 90));
+    }
+  } finally {
+    await fileHandle?.close();
   }
 
-  // 3. Completar
-  const completeRes = await fetch(`${workerUrl}/upload/complete`, {
+  const completeRes = await retryRequest(() => fetch(`${workerUrl}/upload/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ uploadId, key: uploadKey, parts, token }),
-  });
+  }), "conclusao do upload");
   if (!completeRes.ok) throw new Error(`Upload complete falhou: ${completeRes.status}`);
   const { fileUrl } = await completeRes.json();
   onProgress(100);
@@ -931,7 +1184,7 @@ async function renderTelemetryOverlay(req) {
       "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart",
-      "-threads", "0",
+      "-threads", String(ffmpegThreadLimit()),
       "-y", "output.mp4",
     ], 0, () => {}, { mustSucceed: true, cwd: tmpDir });
 
@@ -1099,7 +1352,7 @@ async function compositeOverlay(
       "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart",
-      "-threads", "0",
+      "-threads", String(ffmpegThreadLimit()),
       "-y", "output.mp4",
     ], effectiveDuration, (pct) => {
       if (!job.cancelled) sendProgress(jobId, { stage: "process", percent: 12 + Math.round(pct * 0.73) });
@@ -1190,7 +1443,16 @@ async function updateAppwrite(endpoint, projectId, dbId, colId, docId, jwt, file
     "X-Appwrite-JWT": jwt,
     "Content-Type": "application/json",
   };
-  const baseData = { file_url: fileUrl, file_size: fileSize, duration_sec: durationSec, processing_status: "ready" };
+  const baseData = {
+    file_url: fileUrl,
+    file_size: fileSize,
+    duration_sec: durationSec,
+    processing_status: "ready",
+    processing_stage: "done",
+    processing_percent: 100,
+    processing_error: "",
+    processing_updated_at: new Date().toISOString(),
+  };
   const fullRes = await fetch(url, {
     method: "PATCH",
     headers,

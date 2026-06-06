@@ -33,6 +33,9 @@ const CadastroPage = lazy(() =>
 const PublicProposalPage = lazy(() =>
   import("./pages/PublicProposalPage").then((module) => ({ default: module.PublicProposalPage })),
 );
+const OnboardingPresentationPage = lazy(() =>
+  import("./pages/OnboardingPresentationPage").then((module) => ({ default: module.OnboardingPresentationPage })),
+);
 
 function AppLoading() {
   return (
@@ -52,6 +55,7 @@ export default function App() {
   const isQualificacaoRoute = window.location.pathname === "/qualificacao";
   const isCadastroRoute = window.location.pathname === "/cadastro";
   const isProposalRoute = window.location.pathname.startsWith("/proposta/");
+  const isApresentacaoRoute = window.location.pathname === "/apresentacao";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   useEffect(() => {
@@ -120,6 +124,16 @@ export default function App() {
 
   if (!user) {
     return <LoginPage />;
+  }
+
+  if (isApresentacaoRoute) {
+    return (
+      <PermissionsProvider>
+        <Suspense fallback={<AppLoading />}>
+          <OnboardingPresentationPage />
+        </Suspense>
+      </PermissionsProvider>
+    );
   }
 
   if (user.role === "admin") {

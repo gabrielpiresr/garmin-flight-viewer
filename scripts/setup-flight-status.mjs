@@ -33,10 +33,10 @@ async function safeCreate(label, createFn) {
 
 function inferStatus(doc) {
   if (doc.instructor_signed) return "Realizado";
-  if (typeof doc.flight_status === "string" && ["Previsto", "Cancelado", "Realizado"].includes(doc.flight_status)) {
+  if (typeof doc.flight_status === "string" && ["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"].includes(doc.flight_status)) {
     return doc.flight_status;
   }
-  return "Previsto";
+  return "Confirmado";
 }
 
 async function backfill() {

@@ -21,6 +21,12 @@ export type FlightVideo = {
   telemetry_source: "gopro" | "dji_srt" | "none" | string;
   telemetry_json: string;
   available_widgets: string;
+  apply_logo: boolean;
+  processing_stage: string;
+  processing_percent: number;
+  processing_error: string;
+  video_key: string;
+  processing_updated_at: string;
   created_at: string;
 };
 
@@ -54,6 +60,8 @@ export async function createFlightVideoDoc(payload: {
   originalFilesCount: number;
   actorUserId: string;
   actorRole: UserRole;
+  applyLogo?: boolean;
+  videoKey?: string;
 }): Promise<{ id: string | null; error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { id: null, error: new Error("Appwrite não configurado") };
@@ -73,6 +81,12 @@ export async function createFlightVideoDoc(payload: {
       uploaded_by: payload.uploadedBy,
       file_url: "",
       processing_status: "processing",
+      apply_logo: Boolean(payload.applyLogo),
+      video_key: payload.videoKey ?? "",
+      processing_stage: "queued",
+      processing_percent: 0,
+      processing_error: "",
+      processing_updated_at: new Date().toISOString(),
       original_files_count: payload.originalFilesCount,
       created_at: new Date().toISOString(),
     }, permissions);
@@ -101,6 +115,10 @@ export async function updateFlightVideoReady(docId: string, data: {
       file_size: data.fileSize,
       duration_sec: data.durationSec,
       processing_status: "ready",
+      processing_stage: "done",
+      processing_percent: 100,
+      processing_error: "",
+      processing_updated_at: new Date().toISOString(),
     };
     if (data.telemetryPresent !== undefined) {
       patch.telemetry_present = data.telemetryPresent;
@@ -121,13 +139,17 @@ export async function updateFlightVideoReady(docId: string, data: {
   }
 }
 
-export async function updateFlightVideoFailed(docId: string): Promise<{ error: Error | null }> {
+export async function updateFlightVideoFailed(docId: string, message = ""): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
   }
   try {
     await databases.updateDocument(DB_ID, VIDEOS_COL_ID, docId, {
       processing_status: "failed",
+      processing_stage: "error",
+      processing_percent: 0,
+      processing_error: message.slice(0, 2048),
+      processing_updated_at: new Date().toISOString(),
     });
     return { error: null };
   } catch (e) {
@@ -161,6 +183,12 @@ export async function listFlightVideos(flightId: string): Promise<{ data: Flight
       telemetry_source: (d.telemetry_source as string | null | undefined) ?? "none",
       telemetry_json: (d.telemetry_json as string | null | undefined) ?? "",
       available_widgets: (d.available_widgets as string | null | undefined) ?? "[]",
+      apply_logo: Boolean(d.apply_logo),
+      processing_stage: (d.processing_stage as string | null | undefined) ?? "",
+      processing_percent: Number(d.processing_percent ?? 0),
+      processing_error: (d.processing_error as string | null | undefined) ?? "",
+      video_key: (d.video_key as string | null | undefined) ?? "",
+      processing_updated_at: (d.processing_updated_at as string | null | undefined) ?? "",
       created_at: d.$createdAt,
     }));
 

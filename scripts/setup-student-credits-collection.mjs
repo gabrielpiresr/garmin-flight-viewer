@@ -107,6 +107,7 @@ async function idx(databaseId, collectionId, key, attributes, orders = ["ASC"]) 
 }
 
 async function configureCredits(databaseId, collectionId) {
+  await attr(() => db.createStringAttribute(databaseId, collectionId, "school_id", 64, true), "school_id");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "user_id", 64, true), "user_id");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "aircraft_model_id", 64, true), "aircraft_model_id");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "aircraft_model_name", 128, true), "aircraft_model_name");
@@ -120,7 +121,10 @@ async function configureCredits(databaseId, collectionId) {
   await attr(() => db.createStringAttribute(databaseId, collectionId, "notes", 1024, false), "notes");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "created_by", 64, false), "created_by");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "updated_by", 64, false), "updated_by");
+  await attr(() => db.createBooleanAttribute(databaseId, collectionId, "is_night", false, false), "is_night");
+  await attr(() => db.createStringAttribute(databaseId, collectionId, "cost_snapshot_json", 4096, false), "cost_snapshot_json");
 
+  await idx(databaseId, collectionId, "credits_school_idx", ["school_id"]);
   await idx(databaseId, collectionId, "credits_user_idx", ["user_id"]);
   await idx(databaseId, collectionId, "credits_model_idx", ["aircraft_model_id"]);
   await idx(databaseId, collectionId, "credits_purchase_idx", ["purchase_date"]);

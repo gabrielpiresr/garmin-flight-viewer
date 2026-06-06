@@ -138,6 +138,19 @@ export function ManeuverRichTextEditor({
         <button type="button" disabled={!editor || disabled} onClick={addVideoUrl} className={buttonClass}>
           Vídeo URL
         </button>
+        <span className="mx-0.5 h-5 w-px bg-slate-700" />
+        <button type="button" disabled={!editor || disabled} title="Alinhar à esquerda" onClick={() => editor?.chain().focus().setTextAlign("left").run()} className={`${buttonClass} ${editor?.isActive({ textAlign: "left" }) ? activeClass : ""}`}>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v1.5H2V4zm0 3h8v1.5H2V7zm0 3h12v1.5H2V10zm0 3h6v1.5H2V13z"/></svg>
+        </button>
+        <button type="button" disabled={!editor || disabled} title="Centralizar" onClick={() => editor?.chain().focus().setTextAlign("center").run()} className={`${buttonClass} ${editor?.isActive({ textAlign: "center" }) ? activeClass : ""}`}>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v1.5H2V4zm2 3h8v1.5H4V7zm-2 3h12v1.5H2V10zm3 3h6v1.5H5V13z"/></svg>
+        </button>
+        <button type="button" disabled={!editor || disabled} title="Alinhar à direita" onClick={() => editor?.chain().focus().setTextAlign("right").run()} className={`${buttonClass} ${editor?.isActive({ textAlign: "right" }) ? activeClass : ""}`}>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v1.5H2V4zm4 3h8v1.5H6V7zm-4 3h12v1.5H2V10zm6 3h6v1.5H8V13z"/></svg>
+        </button>
+        <button type="button" disabled={!editor || disabled} title="Justificar" onClick={() => editor?.chain().focus().setTextAlign("justify").run()} className={`${buttonClass} ${editor?.isActive({ textAlign: "justify" }) ? activeClass : ""}`}>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v1.5H2V4zm0 3h12v1.5H2V7zm0 3h12v1.5H2V10zm0 3h12v1.5H2V13z"/></svg>
+        </button>
         <input
           ref={imageInputRef}
           type="file"

@@ -275,7 +275,7 @@ module.exports = async ({ req, res, log, error }) => {
         training_stage_id: payload.trainingStageId || payload.training_stage_id || null,
         training_mission_id: payload.trainingMissionId || payload.training_mission_id || null,
         training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : payload.training_snapshot_json || null,
-        flight_status: "Previsto",
+        flight_status: "Confirmado",
         ...materializedFields,
       },
       permissions,

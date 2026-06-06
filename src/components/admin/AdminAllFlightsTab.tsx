@@ -32,7 +32,7 @@ const PAGE_SIZE = 50;
 const FULL_INFO_PRELOAD_LIMIT = 24;
 
 function isScheduledFlight(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
-  return item.flight_status === "Previsto" && isFutureFlight(item, info);
+  return ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) && isFutureFlight(item, info);
 }
 
 function formatDate(item: SavedFlightListItem, info?: FlightDisplayInfo): string {
@@ -292,7 +292,8 @@ export function AdminAllFlightsTab() {
             <span className="mb-1 block text-xs text-slate-500">Status</span>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as FlightStatus | "all")} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500">
               <option value="all">Todos</option>
-              <option value="Previsto">Previsto</option>
+              <option value="Pendente">Pendente</option>
+              <option value="Confirmado">Confirmado</option>
               <option value="Realizado">Realizado</option>
               <option value="Cancelado">Cancelado</option>
             </select>

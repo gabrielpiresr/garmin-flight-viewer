@@ -217,6 +217,7 @@ ${differentialsHtml}
 </div>
 
 ${sectionsHtml}
+${proposal.paymentUrl ? `<div style="margin:24px 0;text-align:center"><a href="${esc(proposal.paymentUrl)}" style="display:inline-block;padding:14px 24px;border-radius:10px;background:${primary};color:#fff;text-decoration:none;font-weight:700">Ir para pagamento</a><div style="margin-top:8px;font-size:10px;color:#64748b">${esc(proposal.paymentUrl)}</div></div>` : ""}
 ${paymentHtml}
 ${additionalHtml}
 

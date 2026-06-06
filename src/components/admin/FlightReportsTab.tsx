@@ -401,6 +401,10 @@ const numberSort = (key: keyof GroupedReportRow, telemetryKey?: keyof NonNullabl
     return Number((row as Record<string, unknown>)[key] ?? 0);
   };
 
+function isScheduledReportStatus(status: AdminFlightReportRow["status"]): boolean {
+  return status === "Pendente" || status === "Confirmado" || status === "Previsto";
+}
+
 const COLUMNS: ColumnDef[] = [
   { key: "group", label: "Grupo", category: "base", groupOnly: true, sortable: true, format: (row) => (isGroupedRow(row) ? row.group : ""), sortValue: (row) => (isGroupedRow(row) ? row.group : "") },
   { key: "status", label: "Status", category: "base", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.status), sortValue: (row) => (isGroupedRow(row) ? "" : row.status) },
@@ -419,7 +423,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "distanceNm", label: "Dist. (NM)", category: "operation", compact: true, sortable: true, format: (row) => fmtNumber(row.distanceNm, 1), sortValue: (row) => row.distanceNm ?? 0 },
   { key: "flightCount", label: "Voos", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.flightCount : 1), sortValue: (row) => (isGroupedRow(row) ? row.flightCount : 1) },
   { key: "executedCount", label: "Realizados", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.executedCount : row.status === "Realizado" ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.executedCount : row.status === "Realizado" ? 1 : 0) },
-  { key: "futureCount", label: "Previstos", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.futureCount : row.status === "Previsto" ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.futureCount : row.status === "Previsto" ? 1 : 0) },
+  { key: "futureCount", label: "Agendados", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0) },
   { key: "telemetryCount", label: "Com telemetria", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0) },
   { key: "telemetryPresent", label: "Telemetria", category: "telemetry", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.telemetry?.telemetryPresent ? "Sim" : "Não"), sortValue: (row) => (isGroupedRow(row) ? 0 : row.telemetry?.telemetryPresent ? 1 : 0) },
   { key: "takeoffCount", label: "Decol.", category: "telemetry", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "takeoffCount")), sortValue: numberSort("takeoffCount", "takeoffCount") },
@@ -545,7 +549,7 @@ function aggregateRows(rows: AdminFlightReportRow[], groups: FlightReportGroupKe
 
     next.flightCount += 1;
     next.executedCount += row.status === "Realizado" ? 1 : 0;
-    next.futureCount += row.status === "Previsto" ? 1 : 0;
+    next.futureCount += isScheduledReportStatus(row.status) ? 1 : 0;
     next.telemetryCount += telemetry?.telemetryPresent ? 1 : 0;
     next.durationSec += row.durationSec ?? 0;
     next.hours = Number((next.durationSec / 3600).toFixed(2));
@@ -616,7 +620,7 @@ function sanitizeChartMetric(metric: unknown): ChartMetricKey {
 function numericColumnValue(row: ReportRow, key: ReportColumnKey): number | null {
   if (key === "flightCount") return isGroupedRow(row) ? row.flightCount : 1;
   if (key === "executedCount") return isGroupedRow(row) ? row.executedCount : row.status === "Realizado" ? 1 : 0;
-  if (key === "futureCount") return isGroupedRow(row) ? row.futureCount : row.status === "Previsto" ? 1 : 0;
+  if (key === "futureCount") return isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0;
   if (key === "telemetryCount") return isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0;
   if (key === "durationSec") return row.durationSec ?? null;
   if (key === "hours") return row.hours ?? null;
@@ -1241,7 +1245,7 @@ export function FlightReportsTab() {
   const totalHours = filtered.reduce((acc, row) => acc + (row.hours || 0), 0);
   const totalLandings = filtered.reduce((acc, row) => acc + (row.landings || 0), 0);
   const totalDistance = filtered.reduce((acc, row) => acc + (row.distanceNm || 0), 0);
-  const totalFuture = filtered.filter((row) => row.status === "Previsto").length;
+  const totalFuture = filtered.filter((row) => isScheduledReportStatus(row.status)).length;
   const totalTelemetry = filtered.filter((row) => row.telemetry?.telemetryPresent).length;
   const metricLabel = METRIC_OPTIONS.find((item) => item.key === metric)?.label ?? "Horas";
 
@@ -1427,7 +1431,7 @@ export function FlightReportsTab() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-3">
             <div className="inline-flex rounded border border-slate-700 bg-slate-950 p-1">
-              {(["all", "Previsto", "Cancelado", "Realizado"] as const).map((item) => (
+              {(["all", "Pendente", "Confirmado", "Cancelado", "Realizado"] as const).map((item) => (
                 <button key={item} type="button" onClick={() => setStatus(item)} className={`rounded px-3 py-1.5 text-xs font-medium ${status === item ? "bg-emerald-500/15 text-emerald-300" : "text-slate-400 hover:text-slate-200"}`}>
                   {item === "all" ? "Todos status" : item}
                 </button>
@@ -1610,7 +1614,7 @@ export function FlightReportsTab() {
                               <span title={severityHint} className={`rounded px-1.5 py-0.5 font-semibold ${severityClass(severity)}`}>{column.format(row)}</span>
                             ) : column.key === "status" && !isGroupedRow(row) ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-                                row.status === "Previsto"
+                                isScheduledReportStatus(row.status)
                                   ? "bg-sky-500/10 text-sky-300"
                                   : row.status === "Cancelado"
                                     ? "bg-rose-500/10 text-rose-300"

@@ -96,6 +96,10 @@ const CONTRACT_SIGNATURES_COLLECTION_ID =
   process.env.APPWRITE_CONTRACT_SIGNATURES_COL_ID ||
   "contract_signatures";
 const CRM_LEADS_COLLECTION_ID = process.env.APPWRITE_CRM_LEADS_COLLECTION_ID || process.env.APPWRITE_CRM_LEADS_COL_ID || "crm_leads";
+const CRM_PROPOSALS_COLLECTION_ID =
+  process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || process.env.APPWRITE_CRM_PROPOSALS_COL_ID || "crm_proposals";
+const CAKTO_RECEIPTS_COLLECTION_ID =
+  process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || process.env.APPWRITE_CAKTO_RECEIPTS_COL_ID || "cakto_receipts";
 const MAINTENANCE_ATTACHMENTS_COLLECTION_ID =
   process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COLLECTION_ID || process.env.APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID;
 const MANEUVERS_SECTIONS_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_SECTIONS_COLLECTION_ID;
@@ -125,7 +129,12 @@ const GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_OAUTH_CL
 const SYNC_ANAC_FUNCTION_ID = process.env.APPWRITE_SYNC_ANAC_FUNCTION_ID || process.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID || "sync-anac-profile";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
-const VALID_FLIGHT_STATUSES = new Set(["Previsto", "Cancelado", "Realizado"]);
+const VALID_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"]);
+const SCHEDULED_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto"]);
+
+function isScheduledFlightStatusValue(value) {
+  return SCHEDULED_FLIGHT_STATUSES.has(cleanString(value));
+}
 const VALID_INSTRUCTOR_PREFERENCES = new Set(["low", "medium", "high"]);
 const VALID_AVAILABILITY_TYPES = new Set(["available", "preferred"]);
 const META_PREFIX = "#GFV_META_V1:";
@@ -2326,12 +2335,14 @@ async function createStudentImpersonationToken(payload = {}, req = null) {
     findAuthUserByEmail(studentEmail),
   ]);
   if (!targetUser) {
-    throw Object.assign(new Error("Aluno nao encontrado para o e-mail informado."), { status: 404 });
+    throw Object.assign(new Error("Usuario nao encontrado para o e-mail informado."), { status: 404 });
   }
 
   const targetRole = await getActorRole(targetUser.$id);
-  if (targetRole !== "aluno") {
-    throw Object.assign(new Error("Login root permitido apenas para acessar contas de alunos."), { status: 403 });
+  if (!["aluno", "instrutor"].includes(targetRole)) {
+    throw Object.assign(new Error("Login root permitido apenas para acessar contas de alunos ou instrutores."), {
+      status: 403,
+    });
   }
 
   const token = await users.createToken({ userId: targetUser.$id, length: 64, expire: 60 });
@@ -2339,7 +2350,7 @@ async function createStudentImpersonationToken(payload = {}, req = null) {
     eventType: "admin_impersonation_login",
     entityType: "user",
     entityId: targetUser.$id,
-    reason: `Login root para aluno ${targetUser.email || studentEmail}`,
+    reason: `Login root para ${targetRole} ${targetUser.email || studentEmail}`,
     afterSnapshot: {
       targetUserId: targetUser.$id,
       targetEmail: targetUser.email || studentEmail,
@@ -2642,6 +2653,7 @@ async function saveInstructorPaymentSnapshotServer(flightDoc, actorUserId, calcu
     return;
   }
   const instructorUserId = cleanString(flightDoc.instructor_user_id);
+  if (!instructorUserId) return;
   const studentUserId = cleanString(flightDoc.student_user_id || flightDoc.user_id);
   const modelId = await getAircraftModelIdByIdent(cleanString(flightDoc.aircraft_ident));
   const instructorCosts = await getInstructorCostsForUser(instructorUserId);
@@ -3038,7 +3050,8 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
   }
   const docId = sagaCreditDocId(testMode, userId, credit);
   const purchaseDate = dateBrToIso(credit.purchaseDate) || nowIso().slice(0, 10);
-  const expiresAt = dateBrToIso(credit.expiresAt) || purchaseDate;
+  const rawExpiresAt = dateBrToIso(credit.expiresAt);
+  const expiresAt = (rawExpiresAt && rawExpiresAt > purchaseDate) ? rawExpiresAt : addDaysIso(purchaseDate, 60);
   const validityDays = Math.max(0, Math.round((new Date(`${expiresAt}T12:00:00`).getTime() - new Date(`${purchaseDate}T12:00:00`).getTime()) / 86400000));
   const splitAmount =
     typeof credit.totalValue === "number" && Number.isFinite(credit.totalValue)
@@ -3105,7 +3118,8 @@ async function upsertSagaFinancialCredit(actorUserId, entry, userId, mapping, ca
   if (!modelId) return { skipped: true, reason: "missing_credit_aircraft_mapping", aircraft: sagaModel || cleanString(entry.natureza) };
   if (hours <= 0) return { skipped: true, reason: "missing_financial_credit_hours", aircraft: sagaModel };
   const purchaseDate = dateBrToIso(entry.data) || dateBrToIso(matchedCredit?.purchaseDate) || nowIso().slice(0, 10);
-  const expiresAt = dateBrToIso(matchedCredit?.expiresAt) || purchaseDate;
+  const rawExpiresAt2 = dateBrToIso(matchedCredit?.expiresAt);
+  const expiresAt = (rawExpiresAt2 && rawExpiresAt2 > purchaseDate) ? rawExpiresAt2 : addDaysIso(purchaseDate, 60);
   const validityDays = Math.max(0, Math.round((new Date(`${expiresAt}T12:00:00`).getTime() - new Date(`${purchaseDate}T12:00:00`).getTime()) / 86400000));
   const data = sanitizeCreditInput({
     userId,
@@ -4582,7 +4596,7 @@ async function importSagaScheduledFlight(schedule, mapping, catalogs, usersBySag
       status: cleanString(schedule.status) || null,
       usedInstructorAsStudent,
     }),
-    flight_status: cancelled ? "Cancelado" : "Previsto",
+    flight_status: cancelled ? "Cancelado" : "Confirmado",
   };
   materialized.csv_text = buildSagaScheduledFlightCsvMeta(schedule, materialized, studentUserId, instructorUserId);
   const optionalFields = {
@@ -5125,31 +5139,39 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
         list.push({ ...credit, userId, modelId: cleanString(mapping.creditAircraftBySaga?.[cleanString(credit.model)]) });
         creditRowsByUserId.set(userId, list);
       }
-      const nightDemands = collectSagaNightHourDemands(selectedGroups, usersByCanac, mapping, catalogs);
-      const nightDemandsByUserId = new Map();
-      for (const demand of nightDemands) {
-        const list = nightDemandsByUserId.get(demand.userId) || [];
-        list.push(demand);
-        nightDemandsByUserId.set(demand.userId, list);
-      }
+      const { settings: creditSalesSettings } = await loadFlightCreditSalesConfig();
+      const segmentNightHours = creditSalesSettings.nightHoursDifferentFromDay !== false;
 
       const effectiveCreditsByUserId = new Map();
-      for (const [userId, userCredits] of creditRowsByUserId.entries()) {
-        const userDemands = nightDemandsByUserId.get(userId) || [];
-        const segmented = segmentSagaCreditsForNight(userCredits, userDemands);
-        summary.nightHoursReclassified += segmented.nightHoursReclassified || 0;
-        summary.nightCreditRecordsCreated += segmented.nightCreditRecordsCreated || 0;
-        if (segmented.uncoveredNightHours > 0) {
-          summary.logs.push(`Creditos noturnos: aluno ${userId} com ${segmented.uncoveredNightHours}h sem saldo diurno suficiente para reclassificar.`);
+      if (segmentNightHours) {
+        const nightDemands = collectSagaNightHourDemands(selectedGroups, usersByCanac, mapping, catalogs);
+        const nightDemandsByUserId = new Map();
+        for (const demand of nightDemands) {
+          const list = nightDemandsByUserId.get(demand.userId) || [];
+          list.push(demand);
+          nightDemandsByUserId.set(demand.userId, list);
         }
-        let effectiveCredits = segmented.effectiveCredits;
-        if (!effectiveCredits.length && userCredits.length) {
-          effectiveCredits = buildSagaUnsegmentedCredits(userCredits);
-          summary.logs.push(
-            `Creditos: segmentacao noturna nao gerou pacotes para o aluno ${userId}; importando ${effectiveCredits.length} pacote(s) diurno(s) original(is).`,
-          );
+        for (const [userId, userCredits] of creditRowsByUserId.entries()) {
+          const userDemands = nightDemandsByUserId.get(userId) || [];
+          const segmented = segmentSagaCreditsForNight(userCredits, userDemands);
+          summary.nightHoursReclassified += segmented.nightHoursReclassified || 0;
+          summary.nightCreditRecordsCreated += segmented.nightCreditRecordsCreated || 0;
+          if (segmented.uncoveredNightHours > 0) {
+            summary.logs.push(`Creditos noturnos: aluno ${userId} com ${segmented.uncoveredNightHours}h sem saldo diurno suficiente para reclassificar.`);
+          }
+          let effectiveCredits = segmented.effectiveCredits;
+          if (!effectiveCredits.length && userCredits.length) {
+            effectiveCredits = buildSagaUnsegmentedCredits(userCredits);
+            summary.logs.push(
+              `Creditos: segmentacao noturna nao gerou pacotes para o aluno ${userId}; importando ${effectiveCredits.length} pacote(s) diurno(s) original(is).`,
+            );
+          }
+          effectiveCreditsByUserId.set(userId, effectiveCredits);
         }
-        effectiveCreditsByUserId.set(userId, effectiveCredits);
+      } else {
+        for (const [userId, userCredits] of creditRowsByUserId.entries()) {
+          effectiveCreditsByUserId.set(userId, buildSagaUnsegmentedCredits(userCredits));
+        }
       }
 
       const effectiveCreditTotal = Array.from(effectiveCreditsByUserId.values()).reduce((acc, credits) => acc + credits.length, 0);
@@ -5532,7 +5554,7 @@ function isFutureFlight(flight) {
 
 function isCompletedFlight(flight) {
   if (isFutureFlight(flight)) return false;
-  if (flight.flightStatus === "Previsto") return false;
+  if (isScheduledFlightStatusValue(flight.flightStatus)) return false;
   const hasDuration = (flight.durationSec || 0) > 0;
   if (!hasDuration) return false;
   // SAGA may import realized flights with duration but zero landing count (e.g. local SBJD->SBJD).
@@ -5541,7 +5563,7 @@ function isCompletedFlight(flight) {
 
 function normalizeFlightStatus(value, flight) {
   if (VALID_FLIGHT_STATUSES.has(value)) return value;
-  return isFutureFlight(flight) ? "Previsto" : "Realizado";
+  return isFutureFlight(flight) ? "Confirmado" : "Realizado";
 }
 
 function parseInstructorAvailability(value) {
@@ -7870,7 +7892,7 @@ function buildAircraftDashboard({ aircrafts, modelsById, forecastRows, periodRow
 
   for (const row of periodRows) {
     const bucket = ensureAircraftBucket(buckets, row);
-    if (row.status === "Previsto") {
+    if (isScheduledFlightStatusValue(row.status)) {
       bucket.futureFlights += 1;
       continue;
     }
@@ -7994,19 +8016,19 @@ async function getDashboardSummary(payload = {}) {
     .filter((row) => rowMatchesDashboardFilters(row, filters));
   const futureRowsForOperationalCounts = upcomingPage.documents
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
-    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters));
+    .filter((row) => isScheduledFlightStatusValue(row.status) && rowMatchesDashboardFilters(row, filters));
   const upcomingRows = futureRowsForOperationalCounts
     .slice()
-    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters))
+    .filter((row) => isScheduledFlightStatusValue(row.status) && rowMatchesDashboardFilters(row, filters))
     .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)))
     .slice(0, filters.upcomingLimit);
   const forecastRows = forecastFlightDocs
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
-    .filter((row) => row.status === "Previsto" && rowMatchesDashboardFilters(row, filters));
+    .filter((row) => isScheduledFlightStatusValue(row.status) && rowMatchesDashboardFilters(row, filters));
   const alertRows = alertDocs.map((doc) => dashboardAlertRow(doc, aircraftByRegistration, modelsById, profilesByUserId));
 
   const executedRows = periodRows.filter((row) => row.status === "Realizado");
-  const futureRows = periodRows.filter((row) => row.status === "Previsto");
+  const futureRows = periodRows.filter((row) => isScheduledFlightStatusValue(row.status));
   const alertCounts = DASHBOARD_SEVERITIES.reduce((acc, severity) => {
     acc[severity] = alertBucketsRaw[severity]?.total || 0;
     return acc;
@@ -10347,8 +10369,10 @@ const SCHOOL_RULES_KEY = "schoolRules";
 const ONBOARDING_SETTINGS_KEY = "onboarding";
 const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
+const CAKTO_SETTINGS_KEY = "cakto";
+const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
-const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
+const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
 const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
@@ -10511,7 +10535,7 @@ async function reopenFlightForEdit(actorUserId, payload = {}, req) {
       student_amount_calculated: payment.student_amount_calculated ?? null,
     })),
   };
-  const nextStatus = flightDoc.flight_status || "Previsto";
+  const nextStatus = flightDoc.flight_status || "Confirmado";
   const signedRecipientIds = Array.from(new Set(activeSignatures
     .filter((sig) => sig.signer_role === "student" || sig.signer_role === "instructor")
     .map((sig) => cleanString(sig.signer_user_id))
@@ -10685,7 +10709,7 @@ function publicFlightFields(doc, csvText) {
     student_signed: typeof doc.student_signed === "boolean" ? doc.student_signed : null,
     admin_operator_signed: typeof doc.admin_operator_signed === "boolean" ? doc.admin_operator_signed : null,
     instructor_signed_at: doc.instructor_signed_at || null,
-    flight_status: doc.flight_status || "Previsto",
+    flight_status: doc.flight_status || "Confirmado",
     csv_text: csvText || "",
   };
 }
@@ -10704,6 +10728,12 @@ function toPublicVideo(doc) {
     telemetry_source: doc.telemetry_source || "none",
     telemetry_json: doc.telemetry_json || "",
     available_widgets: doc.available_widgets || "[]",
+    apply_logo: Boolean(doc.apply_logo),
+    processing_stage: doc.processing_stage || "",
+    processing_percent: typeof doc.processing_percent === "number" ? doc.processing_percent : 0,
+    processing_error: doc.processing_error || "",
+    video_key: doc.video_key || "",
+    processing_updated_at: doc.processing_updated_at || "",
     created_at: doc.$createdAt || doc.created_at || "",
   };
 }
@@ -10950,7 +10980,7 @@ async function getVideoWorkerConfig(actorUserId, payload) {
     sub: actorUserId,
     flightId,
     iat: now,
-    exp: now + 4 * 60 * 60,
+    exp: now + 48 * 60 * 60,
     nonce: crypto.randomUUID(),
   };
 
@@ -11074,12 +11104,32 @@ function defaultSchoolRules() {
       surfaceColor: "#0f172a",
     },
     schedule: {
+      mode: "intentions",
+      bufferBeforeMinutes: 30,
+      bufferAfterMinutes: 15,
+      slotMinutes: 30,
       minRequestHours: 1,
       maxRequestHours: 4,
+      weekdayMinHours: 1,
+      weekdayMaxHours: 4,
+      weekendMinHours: 1,
+      weekendMaxHours: 4,
+      weekdayMaxFlightsPerDay: null,
+      weekendMaxFlightsPerDay: null,
       allowStudentFlightIntentions: true,
       requireCreditsForIntentions: false,
+      requireCreditsForBooking: false,
+      scheduleStartTime: "06:00",
       allowNightFlights: false,
       nightFlightStartHour: 18,
+      nightBookingWeekdays: [],
+      cancellationPenalty48hPct: 0,
+      cancellationPenalty24hPct: 0,
+      cancellationPenalty12hPct: 0,
+      cancellationPenalty1hPct: 0,
+      autoDebitCancellationPenalty: false,
+      minBookingLeadDays: 0,
+      maxBookingLeadDays: 365,
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
@@ -11242,21 +11292,55 @@ function publicSchoolRules(settings, updatedAt) {
       colorMode: settings?.theme?.colorMode === "light" ? "light" : "dark",
     },
     schedule: {
+      mode: ["booking", "view", "closed", "intentions"].includes(settings?.schedule?.mode)
+        ? settings.schedule.mode
+        : defaults.schedule.mode,
+      bufferBeforeMinutes: Math.max(0, Math.round(Number(settings?.schedule?.bufferBeforeMinutes ?? defaults.schedule.bufferBeforeMinutes))),
+      bufferAfterMinutes: Math.max(0, Math.round(Number(settings?.schedule?.bufferAfterMinutes ?? defaults.schedule.bufferAfterMinutes))),
+      slotMinutes: [15, 30, 45, 60].includes(Number(settings?.schedule?.slotMinutes))
+        ? Number(settings.schedule.slotMinutes)
+        : defaults.schedule.slotMinutes,
+      scheduleStartTime: /^\d{2}:\d{2}$/.test(String(settings?.schedule?.scheduleStartTime ?? ""))
+        ? String(settings.schedule.scheduleStartTime)
+        : defaults.schedule.scheduleStartTime,
       minRequestHours,
       maxRequestHours,
+      weekdayMinHours: Math.max(0.25, Number(settings?.schedule?.weekdayMinHours ?? minRequestHours)),
+      weekdayMaxHours: Math.max(0.25, Number(settings?.schedule?.weekdayMaxHours ?? maxRequestHours)),
+      weekendMinHours: Math.max(0.25, Number(settings?.schedule?.weekendMinHours ?? minRequestHours)),
+      weekendMaxHours: Math.max(0.25, Number(settings?.schedule?.weekendMaxHours ?? maxRequestHours)),
+      weekdayMaxFlightsPerDay: Number(settings?.schedule?.weekdayMaxFlightsPerDay) > 0
+        ? Math.round(Number(settings.schedule.weekdayMaxFlightsPerDay))
+        : null,
+      weekendMaxFlightsPerDay: Number(settings?.schedule?.weekendMaxFlightsPerDay) > 0
+        ? Math.round(Number(settings.schedule.weekendMaxFlightsPerDay))
+        : null,
       allowStudentFlightIntentions: Boolean(
         settings?.schedule?.allowStudentFlightIntentions ?? defaults.schedule.allowStudentFlightIntentions,
       ),
       requireCreditsForIntentions: Boolean(
         settings?.schedule?.requireCreditsForIntentions ?? defaults.schedule.requireCreditsForIntentions,
       ),
+      requireCreditsForBooking: Boolean(
+        settings?.schedule?.requireCreditsForBooking ?? settings?.schedule?.requireCreditsForIntentions ?? false,
+      ),
       allowNightFlights: Boolean(
         settings?.schedule?.allowNightFlights ?? defaults.schedule.allowNightFlights,
       ),
       nightFlightStartHour: (() => {
         const h = Number(settings?.schedule?.nightFlightStartHour ?? defaults.schedule.nightFlightStartHour);
-        return Number.isFinite(h) && h >= 0 && h <= 23 ? Math.round(h) : defaults.schedule.nightFlightStartHour;
+        return Number.isFinite(h) && h >= 0 && h < 24 ? h : defaults.schedule.nightFlightStartHour;
       })(),
+      nightBookingWeekdays: Array.isArray(settings?.schedule?.nightBookingWeekdays)
+        ? [...new Set(settings.schedule.nightBookingWeekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))]
+        : [],
+      cancellationPenalty48hPct: Math.min(100, Math.max(0, Math.round(Number(settings?.schedule?.cancellationPenalty48hPct) || 0))),
+      cancellationPenalty24hPct: Math.min(100, Math.max(0, Math.round(Number(settings?.schedule?.cancellationPenalty24hPct) || 0))),
+      cancellationPenalty12hPct: Math.min(100, Math.max(0, Math.round(Number(settings?.schedule?.cancellationPenalty12hPct) || 0))),
+      cancellationPenalty1hPct: Math.min(100, Math.max(0, Math.round(Number(settings?.schedule?.cancellationPenalty1hPct) || 0))),
+      autoDebitCancellationPenalty: Boolean(settings?.schedule?.autoDebitCancellationPenalty),
+      minBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.minBookingLeadDays) || 0)),
+      maxBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.maxBookingLeadDays ?? 365))),
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [
@@ -11587,7 +11671,7 @@ async function getReferralWelcomeInfo(userId) {
 }
 
 function flightHoursFromDoc(doc) {
-  if (String(doc?.flight_status || "").trim() === "Previsto") return 0;
+  if (isScheduledFlightStatusValue(doc?.flight_status)) return 0;
   if (typeof doc?.block_time_minutes === "number" && doc.block_time_minutes > 0) {
     return doc.block_time_minutes / 60;
   }
@@ -12777,6 +12861,512 @@ async function sagaScheduleRequest(path, options, cookieJar) {
   return { httpStatus: result.response.status, data, endpoint: `${SAGA_BASE_URL}${path}` };
 }
 
+function publicCaktoSettings(settings, updatedAt = null) {
+  return {
+    clientId: cleanString(settings.clientId),
+    productId: cleanString(settings.productId),
+    secretConfigured: Boolean(cleanString(settings.clientSecret)),
+    webhookUrl: cleanString(settings.webhookUrl),
+    updatedAt,
+  };
+}
+
+function defaultFlightCreditSalesConfig() {
+  return {
+    studentPurchasesEnabled: false,
+    nightHoursDifferentFromDay: true,
+    packages: [],
+  };
+}
+
+function publicFlightCreditSalesConfig(settings, updatedAt = null, activeOnly = false) {
+  const source = settings && typeof settings === "object" ? settings : defaultFlightCreditSalesConfig();
+  const packages = Array.isArray(source.packages) ? source.packages : [];
+  return {
+    studentPurchasesEnabled: Boolean(source.studentPurchasesEnabled),
+    nightHoursDifferentFromDay: source.nightHoursDifferentFromDay !== false,
+    packages: packages
+      .filter((item) => !activeOnly || item.active === true)
+      .map((item) => ({
+        id: cleanString(item.id),
+        hours: Number(item.hours) || 0,
+        hourPrice: Number(item.hourPrice) || 0,
+        validityDays: Math.max(0, Math.round(Number(item.validityDays) || 0)),
+        aircraftModelId: cleanString(item.aircraftModelId),
+        aircraftModelName: cleanString(item.aircraftModelName),
+        active: item.active === true,
+      }))
+      .filter((item) => item.id && item.hours > 0 && item.hourPrice > 0 && item.validityDays > 0 && item.aircraftModelId),
+    updatedAt,
+  };
+}
+
+async function loadFlightCreditSalesConfig() {
+  const doc = await getSettingDoc(FLIGHT_CREDIT_SALES_SETTINGS_KEY);
+  const settings = doc
+    ? parseJsonObject(doc.settings_json, defaultFlightCreditSalesConfig())
+    : defaultFlightCreditSalesConfig();
+  return {
+    settings,
+    publicSettings: publicFlightCreditSalesConfig(settings, doc?.$updatedAt || null),
+    doc,
+  };
+}
+
+async function sanitizeFlightCreditPackages(rawPackages) {
+  if (!Array.isArray(rawPackages)) {
+    throw Object.assign(new Error("Lista de pacotes invalida."), { status: 400 });
+  }
+  const seenIds = new Set();
+  const packages = [];
+  for (const raw of rawPackages) {
+    const id = cleanString(raw?.id) || crypto.randomUUID();
+    const hours = Number(raw?.hours);
+    const hourPrice = Number(raw?.hourPrice);
+    const validityDays = Math.round(Number(raw?.validityDays));
+    const aircraftModelId = cleanString(raw?.aircraftModelId);
+    if (seenIds.has(id)) throw Object.assign(new Error("Existem pacotes com identificadores duplicados."), { status: 400 });
+    if (!Number.isFinite(hours) || hours <= 0) throw Object.assign(new Error("Quantidade de horas invalida."), { status: 400 });
+    if (!Number.isFinite(hourPrice) || hourPrice <= 0) throw Object.assign(new Error("Valor da hora invalido."), { status: 400 });
+    if (!Number.isInteger(validityDays) || validityDays <= 0) throw Object.assign(new Error("Dias para expirar invalidos."), { status: 400 });
+    if (!aircraftModelId) throw Object.assign(new Error("Modelo de aviao nao informado."), { status: 400 });
+    if (!AIRCRAFT_MODELS_COLLECTION_ID) {
+      throw Object.assign(new Error("Colecao de modelos de aeronave nao configurada."), { status: 500 });
+    }
+    const model = await databases.getDocument(DATABASE_ID, AIRCRAFT_MODELS_COLLECTION_ID, aircraftModelId);
+    seenIds.add(id);
+    packages.push({
+      id,
+      hours: Number(hours.toFixed(2)),
+      hourPrice: Number(hourPrice.toFixed(2)),
+      validityDays,
+      aircraftModelId,
+      aircraftModelName: cleanString(model.name) || aircraftModelId,
+      active: raw?.active !== false,
+    });
+  }
+  return packages;
+}
+
+async function saveFlightCreditSalesConfig(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const current = await loadFlightCreditSalesConfig();
+  const settings = {
+    studentPurchasesEnabled: Boolean(input?.studentPurchasesEnabled),
+    nightHoursDifferentFromDay: input?.nightHoursDifferentFromDay !== false,
+    packages: await sanitizeFlightCreditPackages(input?.packages),
+  };
+  const data = {
+    key: FLIGHT_CREDIT_SALES_SETTINGS_KEY,
+    settings_json: JSON.stringify(settings),
+    secret_json: current.doc?.secret_json || "{}",
+    updated_at: new Date().toISOString(),
+  };
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicFlightCreditSalesConfig(settings, doc.$updatedAt || null);
+}
+
+async function loadCaktoSettings() {
+  const doc = await getSettingDoc(CAKTO_SETTINGS_KEY);
+  const publicData = parseJsonObject(doc?.settings_json, {});
+  const secretData = parseJsonObject(doc?.secret_json, {});
+  const settings = {
+    clientId: cleanString(publicData.clientId),
+    productId: cleanString(publicData.productId),
+    webhookUrl: cleanString(publicData.webhookUrl),
+    clientSecret: cleanString(secretData.clientSecret),
+  };
+  return { settings, publicSettings: publicCaktoSettings(settings, doc?.$updatedAt || null), doc };
+}
+
+async function saveCaktoSettings(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Coleção de configurações da plataforma não configurada."), { status: 500 });
+  }
+  const current = await loadCaktoSettings();
+  const next = {
+    clientId: cleanString(input?.clientId),
+    productId: cleanString(input?.productId),
+    webhookUrl: current.settings.webhookUrl,
+    clientSecret: cleanString(input?.clientSecret) || current.settings.clientSecret,
+  };
+  if (!next.clientId || !next.productId || !next.clientSecret) {
+    throw Object.assign(new Error("Informe client_id, client_secret e product_id da Cakto."), { status: 400 });
+  }
+  const data = {
+    key: CAKTO_SETTINGS_KEY,
+    settings_json: JSON.stringify({ clientId: next.clientId, productId: next.productId, webhookUrl: next.webhookUrl }),
+    secret_json: JSON.stringify({ clientSecret: next.clientSecret }),
+    updated_at: new Date().toISOString(),
+  };
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicCaktoSettings(next, doc.$updatedAt || null);
+}
+
+async function getCaktoAccessToken() {
+  const { settings } = await loadCaktoSettings();
+  if (!settings.clientId || !settings.clientSecret) {
+    throw Object.assign(new Error("Credenciais da Cakto não configuradas."), { status: 400 });
+  }
+  const response = await fetch("https://api.cakto.com.br/public_api/token/", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: settings.clientId, client_secret: settings.clientSecret }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.access_token) {
+    throw Object.assign(new Error(body.detail || body.error || "Falha ao autenticar na Cakto."), { status: 400 });
+  }
+  return { token: body.access_token, settings };
+}
+
+async function testCaktoConnection() {
+  await getCaktoAccessToken();
+}
+
+function proposalProducts(input) {
+  return Array.isArray(input?.products)
+    ? input.products.map((item) => ({
+        id: cleanString(item?.id),
+        name: cleanString(item?.name),
+        price: Math.max(0, Number(item?.price) || 0),
+      }))
+    : [];
+}
+
+function proposalProductsFromJson(value) {
+  const productsData = parseJsonObject(value, []);
+  if (Array.isArray(productsData)) return proposalProducts({ products: productsData });
+  return proposalProducts({ products: productsData?.products });
+}
+
+function mapCaktoProposal(doc) {
+  const productsData = parseJsonObject(doc.products_json, []);
+  const packageMetadata =
+    productsData && !Array.isArray(productsData) && productsData.kind === "student_credit_package"
+      ? productsData
+      : null;
+  return {
+    id: doc.$id,
+    schoolId: doc.school_id || SCHOOL_ID,
+    leadId: doc.lead_id || "",
+    leadName: doc.lead_name || "",
+    leadEmail: doc.lead_email || "",
+    hours: Number(doc.hours) || 0,
+    hourPrice: Number(doc.hour_price) || 0,
+    totalValue: Number(doc.total_value) || 0,
+    products: Array.isArray(productsData) ? productsData : Array.isArray(productsData?.products) ? productsData.products : [],
+    publicToken: doc.public_token || "",
+    status: doc.status === "sent" ? "sent" : "draft",
+    caktoOfferId: doc.cakto_offer_id || "",
+    paymentUrl: doc.payment_url || "",
+    paymentStatus: ["created", "paid", "failed"].includes(doc.payment_status) ? doc.payment_status : "pending",
+    paymentError: doc.payment_error || "",
+    paymentUpdatedAt: doc.payment_updated_at || null,
+    proposalType: packageMetadata ? "student_credit_package" : "commercial",
+    studentUserId: cleanString(packageMetadata?.studentUserId),
+    creditPackageId: cleanString(packageMetadata?.packageId),
+    creditPackageSnapshot: packageMetadata?.snapshot || null,
+    creditId: cleanString(packageMetadata?.creditId),
+    createdAt: doc.$createdAt || "",
+  };
+}
+
+async function createCaktoOfferForProposal(doc) {
+  const { token, settings } = await getCaktoAccessToken();
+  if (!settings.productId) throw Object.assign(new Error("Produto padrão da Cakto não configurado."), { status: 400 });
+  const products = proposalProductsFromJson(doc.products_json);
+  const price = Math.round((Number(doc.total_value || 0) + products.reduce((sum, item) => sum + (Number(item.price) || 0), 0)) * 100) / 100;
+  const response = await fetch("https://api.cakto.com.br/public_api/offers/", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: `Orçamento - ${cleanString(doc.lead_name) || doc.$id}`,
+      price,
+      product: settings.productId,
+      type: "unique",
+      status: "active",
+      units: 1,
+      intervalType: "lifetime",
+      interval: 1,
+      trial_days: 0,
+      max_retries: 3,
+      retry_interval: 1,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.id) {
+    throw new Error(body.detail || body.message || "Falha ao criar oferta na Cakto.");
+  }
+  return { offerId: cleanString(body.id), paymentUrl: `https://pay.cakto.com.br/${cleanString(body.id)}` };
+}
+
+async function updateProposalPayment(proposalId, patch) {
+  return databases.updateDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, proposalId, {
+    ...patch,
+    payment_updated_at: new Date().toISOString(),
+  });
+}
+
+async function createCaktoProposal(input) {
+  const hours = Math.max(0, Number(input?.hours) || 0);
+  const hourPrice = Math.max(0, Number(input?.hourPrice) || 0);
+  if (!cleanString(input?.leadId) || hours <= 0 || hourPrice <= 0) {
+    throw Object.assign(new Error("Dados do orçamento inválidos."), { status: 400 });
+  }
+  const products = proposalProducts(input);
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      lead_id: cleanString(input.leadId),
+      lead_name: cleanString(input.leadName),
+      lead_email: cleanString(input.leadEmail),
+      hours,
+      hour_price: hourPrice,
+      total_value: Math.round(hours * hourPrice * 100) / 100,
+      products_json: JSON.stringify(products),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCaktoOfferForProposal(doc);
+    return mapCaktoProposal(await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    }));
+  } catch (error) {
+    return mapCaktoProposal(await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    }));
+  }
+}
+
+async function createFlightCreditCheckout(actorUserId, packageId) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role !== "aluno") {
+    throw Object.assign(new Error("A compra de pacotes esta disponivel apenas para alunos."), { status: 403 });
+  }
+  const { settings } = await loadFlightCreditSalesConfig();
+  if (!settings?.studentPurchasesEnabled) {
+    throw Object.assign(new Error("A compra de horas pelo aluno esta desabilitada."), { status: 403 });
+  }
+  const selected = (Array.isArray(settings.packages) ? settings.packages : [])
+    .find((item) => cleanString(item?.id) === cleanString(packageId) && item?.active === true);
+  const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
+  if (!normalized) throw Object.assign(new Error("Pacote indisponivel para compra."), { status: 404 });
+
+  const actor = await users.get({ userId: actorUserId });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const totalValue = Math.round(normalized.hours * normalized.hourPrice * 100) / 100;
+  const snapshot = {
+    packageId: normalized.id,
+    hours: normalized.hours,
+    hourPrice: normalized.hourPrice,
+    totalValue,
+    validityDays: normalized.validityDays,
+    aircraftModelId: normalized.aircraftModelId,
+    aircraftModelName: normalized.aircraftModelName,
+  };
+  const proposalId = sdk.ID.unique();
+  const creditId = `fc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 29)}`;
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    proposalId,
+    {
+      school_id: SCHOOL_ID,
+      lead_id: actorUserId,
+      lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
+      lead_email: cleanString(actor.email),
+      hours: normalized.hours,
+      hour_price: normalized.hourPrice,
+      total_value: totalValue,
+      products_json: JSON.stringify({
+        kind: "student_credit_package",
+        studentUserId: actorUserId,
+        packageId: normalized.id,
+        creditId,
+        snapshot,
+        products: [],
+      }),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCaktoOfferForProposal(doc);
+    const updated = await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    });
+    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+  }
+}
+
+async function retryCaktoProposal(proposalId) {
+  const doc = await databases.getDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, cleanString(proposalId));
+  if (doc.payment_url) return mapCaktoProposal(doc);
+  try {
+    const payment = await createCaktoOfferForProposal(doc);
+    return mapCaktoProposal(await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    }));
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(error, { status: 400 });
+  }
+}
+
+function caktoPayloadData(payload) {
+  if (Array.isArray(payload?.data)) return parseJsonObject(JSON.stringify(payload.data[0] || {}), {});
+  return parseJsonObject(JSON.stringify(payload?.data || {}), {});
+}
+
+function caktoPayloadReceipt(payload) {
+  const data = caktoPayloadData(payload);
+  const customer = data.customer && typeof data.customer === "object" ? data.customer : {};
+  const offer = data.offer && typeof data.offer === "object" ? data.offer : {};
+  const product = data.product && typeof data.product === "object" ? data.product : {};
+  const eventType = cleanString(payload?.event || payload?.event_type || payload?.eventType);
+  const eventAt =
+    (eventType === "purchase_approved" ? cleanString(data.paidAt) : "") ||
+    (eventType === "refund" ? cleanString(data.refundedAt) : "") ||
+    (eventType === "chargeback" ? cleanString(data.chargedbackAt) : "") ||
+    cleanString(data.createdAt || payload?.createdAt || payload?.created_at);
+  return {
+    eventId: cleanString(data.id || payload?.id || payload?.event_id),
+    eventType,
+    orderId: cleanString(data.refId || data.ref_id || data.order_id),
+    offerId: cleanString(offer.id || data.offer_id),
+    productId: cleanString(product.id || data.product_id),
+    customerName: cleanString(customer.name || customer.full_name),
+    customerEmail: cleanString(customer.email),
+    amount: Number(data.amount ?? data.total ?? data.price ?? 0) || 0,
+    currency: cleanString(offer.currency || data.currency || "BRL").toUpperCase(),
+    paymentMethod: cleanString(data.paymentMethodName || data.paymentMethod || data.payment_method),
+    status: cleanString(data.status || eventType),
+    eventAt: eventAt || null,
+  };
+}
+
+function mapCaktoReceipt(doc) {
+  const payloadJson = doc.payload_json || "{}";
+  const payload = parseJsonObject(payloadJson, {});
+  const normalized = caktoPayloadReceipt(payload);
+  return {
+    id: doc.$id,
+    eventId: normalized.eventId || doc.event_id || "",
+    eventType: normalized.eventType || doc.event_type || "",
+    orderId: normalized.orderId || doc.order_id || "",
+    offerId: normalized.offerId || doc.offer_id || "",
+    productId: normalized.productId || doc.product_id || "",
+    proposalId: doc.proposal_id || "",
+    customerName: normalized.customerName || doc.customer_name || "",
+    customerEmail: normalized.customerEmail || doc.customer_email || "",
+    amount: normalized.amount || Number(doc.amount) || 0,
+    currency: normalized.currency || doc.currency || "BRL",
+    paymentMethod: normalized.paymentMethod || doc.payment_method || "",
+    status: normalized.status || doc.status || "",
+    fulfillmentStatus: doc.fulfillment_status || "",
+    fulfillmentError: doc.fulfillment_error || "",
+    fulfillmentUpdatedAt: doc.fulfillment_updated_at || null,
+    creditId: doc.credit_id || "",
+    eventAt: normalized.eventAt || doc.event_at || null,
+    receivedAt: doc.received_at || doc.$createdAt,
+    payloadJson,
+  };
+}
+
+async function listCaktoReceipts(input) {
+  const docs = await listAllDocuments(CAKTO_RECEIPTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.orderDesc("received_at"),
+    sdk.Query.limit(500),
+  ]);
+  const search = cleanString(input?.search).toLowerCase();
+  const from = cleanString(input?.dateFrom);
+  const to = cleanString(input?.dateTo);
+  const rows = docs.map(mapCaktoReceipt).filter((row) => {
+    if (input?.eventType && row.eventType !== input.eventType) return false;
+    if (input?.paymentMethod && row.paymentMethod !== input.paymentMethod) return false;
+    const date = row.eventAt || row.receivedAt;
+    if (from && date < `${from}T00:00:00`) return false;
+    if (to && date > `${to}T23:59:59.999`) return false;
+    if (search && ![
+      row.customerName,
+      row.customerEmail,
+      row.orderId,
+      row.offerId,
+    ].some((value) => value.toLowerCase().includes(search))) return false;
+    return true;
+  });
+  const summary = rows.reduce((acc, row) => {
+    if (row.eventType === "purchase_approved") acc.approved += row.amount;
+    else if (row.eventType === "refund" || row.eventType === "chargeback") acc.refunded += row.amount;
+    else if (["pix_gerado", "boleto_gerado", "picpay_gerado", "openfinance_nubank_gerado"].includes(row.eventType)) acc.pending += row.amount;
+    return acc;
+  }, { approved: 0, refunded: 0, pending: 0 });
+  const limit = Math.min(100, Math.max(1, Number(input?.limit) || 25));
+  const offset = Math.max(0, Number(input?.offset) || 0);
+  return { receipts: rows.slice(offset, offset + limit), total: rows.length, limit, offset, summary };
+}
+
 function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
   const normalizedIdent = normalizeAircraftIdent(aircraftIdent);
   const rawIdent = cleanString(aircraftIdent);
@@ -12833,7 +13423,9 @@ async function syncSagaScheduleEvent(actorUserId, payload = {}) {
   const mode = cleanString(payload.mode) === "cancel" ? "cancel" : "upsert";
   const allowCreate = payload.allowCreate === true;
   if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
-  await requireInstructorOrAdmin(actorUserId);
+  // When called from another Appwrite function via API key there is no user context (actorUserId is null).
+  // The API key itself authorises the call — skip the role check only in that case.
+  if (actorUserId) await requireInstructorOrAdmin(actorUserId);
 
   const mapping = await loadSagaImportMapping();
   const logs = [];
@@ -13067,7 +13659,7 @@ async function syncSagaScheduleFromImportSettings(actorUserId = "system", option
     const fingerprint = sagaScheduleFingerprint(schedule, usersBySagaId, mapping, catalogs);
     const sameDayFlights = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
       sdk.Query.equal("school_id", [SCHOOL_ID]),
-      sdk.Query.equal("flight_status", ["Previsto"]),
+      sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Previsto"]),
       sdk.Query.equal("flight_date", [sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt).date]),
       sdk.Query.limit(200),
     ]).catch(() => ({ documents: [] }));
@@ -13115,7 +13707,7 @@ async function runFlightReminderScan(actorUserId) {
   const today = new Date(now).toISOString().slice(0, 10);
   const afterTomorrow = addDaysIso(today, 2);
   const flights = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
-    sdk.Query.equal("flight_status", ["Previsto"]),
+    sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Previsto"]),
     sdk.Query.greaterThanEqual("flight_date", today),
     sdk.Query.lessThanEqual("flight_date", afterTomorrow),
   ]).catch(() => []);
@@ -13555,6 +14147,263 @@ async function sendTestEmail(to, templateType) {
   if (result.status !== "sent") throw Object.assign(new Error(result.reason || "Email de teste nao enviado."), { status: 400 });
 }
 
+async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null) {
+  const logLine = (msg) => { if (typeof runtimeLog === "function") runtimeLog(msg); };
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+
+  const runId = importRunId || crypto.randomUUID();
+  await saveSagaImportProgress({ runId, status: "running", stage: "login", message: "Conectando ao SAGA...", current: 0, total: 0, logs: [] });
+
+  const profile = await getProfileByUserId(actorUserId);
+  const anac = cleanString(profile?.anac_code);
+  if (!anac) throw Object.assign(new Error("Codigo ANAC nao encontrado no perfil. Atualize seu cadastro antes de sincronizar."), { status: 400 });
+
+  const { credentials, mapping } = await loadSagaImportSettings();
+  if (!credentials.email || !credentials.password) {
+    throw Object.assign(new Error("Credenciais SAGA nao configuradas pelo administrador."), { status: 400 });
+  }
+
+  logLine(`[sagaImportSelfFlights] ANAC=${anac} userId=${actorUserId}`);
+  const logs = [];
+
+  const makeSummary = (overrides = {}) => ({
+    importRunId: runId, testMode: false, useEmailAlias: false,
+    selectedSagaUsers: 0, requestedUsers: 0, requestedFlightGroups: 0, requestedScheduledFlights: 0,
+    usersCreated: 0, usersUpdated: 0, usersSkipped: 0,
+    flightsCreated: 0, flightsUpdated: 0, flightsSkipped: 0, duplicateFlights: 0,
+    scheduledFlightsCreated: 0, scheduledFlightsUpdated: 0, scheduledFlightsSkipped: 0,
+    trainingAssignmentsTouched: 0, anacSynced: 0, anacPending: 0, anacFailed: 0,
+    creditsCreated: 0, creditsUpdated: 0, creditsSkipped: 0, creditHoursImported: 0,
+    nightHoursReclassified: 0, nightCreditRecordsCreated: 0,
+    skippedFlights: [], skippedCredits: [],
+    missing: { aircrafts: [], courses: [], students: [], creditAircrafts: [] },
+    logs,
+    ...overrides,
+  });
+
+  const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
+  await saveSagaImportProgress({ runId, status: "running", stage: "fetch", message: "Buscando voos no SAGA...", current: 0, total: 0, logs });
+
+  const operationsRange = sagaDateRangeMonths(24);
+  const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
+  const operations = await sagaFetch(operationsPath, {
+    method: "GET",
+    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", referer: `${SAGA_BASE_URL}/users` },
+  }, cookieJar);
+  const allFlightRows = translateSagaFlightRows(operations.html);
+  const mappedFlightRows = applySagaFlightColumnMap(allFlightRows.rows, mapping.flightColumnMap);
+
+  const myFlightRows = mappedFlightRows.filter(
+    (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
+  );
+  logs.push(`Voos filtrados por ANAC ${anac}: ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
+  logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados para ANAC ${anac}.`);
+
+  if (!myFlightRows.length) {
+    await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: "Nenhum voo encontrado no SAGA.", current: 0, total: 0, logs });
+    const zeroSummary = makeSummary();
+    await saveSagaImportLastSummary(compactSagaImportSummary(zeroSummary)).catch(() => null);
+    return { ok: true, summary: zeroSummary };
+  }
+
+  await saveSagaImportProgress({ runId, status: "running", stage: "check", message: `${myFlightRows.length} voo(s) encontrado(s), verificando novos...`, current: 0, total: myFlightRows.length, logs });
+
+  const [catalogs, existingProfiles] = await Promise.all([
+    listSagaImportCatalogs(),
+    safeListAllDocuments(PROFILES_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      ...selectQuery(["$id", "user_id", "anac_code", "saga_user_id"]),
+    ]),
+  ]);
+
+  const usersByCanac = new Map();
+  for (const p of existingProfiles) {
+    if (cleanString(p.anac_code) && cleanString(p.user_id)) usersByCanac.set(cleanString(p.anac_code), cleanString(p.user_id));
+  }
+
+  const groups = groupSagaFlightsById(myFlightRows);
+  logs.push(`Grupos de voos: ${groups.length}.`);
+
+  // Batch-check which flights already exist in Appwrite — only import new ones
+  const allDocIds = groups.map((g) => sagaDocId("saga_flight", g.key));
+  const existingIds = new Set();
+  const BATCH = 100;
+  for (let i = 0; i < allDocIds.length; i += BATCH) {
+    const chunk = allDocIds.slice(i, i + BATCH);
+    const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("$id", chunk),
+      sdk.Query.select(["$id"]),
+      sdk.Query.limit(chunk.length),
+    ]).catch(() => ({ documents: [] }));
+    for (const d of found.documents) existingIds.add(d.$id);
+  }
+
+  const newGroups = groups.filter((g) => !existingIds.has(sagaDocId("saga_flight", g.key)));
+  const skippedCount = groups.length - newGroups.length;
+  logs.push(`Ja importados: ${skippedCount}. Novos para importar: ${newGroups.length}.`);
+  logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes.`);
+
+  const summary = makeSummary({ requestedFlightGroups: groups.length, flightsSkipped: skippedCount });
+
+  if (!newGroups.length) {
+    await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: "Todos os voos ja estao importados.", current: 0, total: 0, logs });
+    await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
+    return { ok: true, summary };
+  }
+
+  await saveSagaImportProgress({ runId, status: "running", stage: "import", message: `${newGroups.length} voo(s) novo(s) para importar`, current: 0, total: newGroups.length, logs });
+
+  for (let i = 0; i < newGroups.length; i++) {
+    const group = newGroups[i];
+    const result = await importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode: false, cookieJar, logs });
+    if (result.created) {
+      summary.flightsCreated += 1;
+    } else if (result.updated) {
+      summary.flightsUpdated += 1;
+    } else if (result.skipped) {
+      summary.flightsSkipped += 1;
+      if (result.reason && result.reason !== "already_exists") {
+        summary.skippedFlights.push({ id: result.id, date: result.date, student: result.student, aircraft: result.aircraft, course: result.course, reason: result.reason });
+        if (result.reason === "missing_aircraft_mapping") summary.missing.aircrafts.push(result.aircraft);
+        if (result.reason === "missing_course_mapping") summary.missing.courses.push(result.course);
+        if (result.reason === "missing_student") summary.missing.students.push(result.student);
+      }
+    }
+    await saveSagaImportProgress({ runId, status: "running", stage: "import", message: `Importando voo ${i + 1} de ${newGroups.length}...`, current: i + 1, total: newGroups.length, logs });
+  }
+
+  summary.missing.aircrafts = [...new Set(summary.missing.aircrafts.filter(Boolean))];
+  summary.missing.courses = [...new Set(summary.missing.courses.filter(Boolean))];
+  summary.missing.students = [...new Set(summary.missing.students.filter(Boolean))];
+  logs.push(`Voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsSkipped} ignorados.`);
+  logLine(`[sagaImportSelfFlights] ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsSkipped} ignorados.`);
+
+  await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: `Concluido: ${summary.flightsCreated} novo(s), ${summary.flightsUpdated} atualizado(s).`, current: newGroups.length, total: newGroups.length, logs });
+  await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
+  return { ok: true, summary };
+}
+
+async function sagaImportSelfCredits(actorUserId, runtimeLog) {
+  const logLine = (msg) => { if (typeof runtimeLog === "function") runtimeLog(msg); };
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+
+  const profile = await getProfileByUserId(actorUserId);
+  const anac = cleanString(profile?.anac_code);
+  if (!anac) throw Object.assign(new Error("Codigo ANAC nao encontrado no perfil. Atualize seu cadastro antes de sincronizar."), { status: 400 });
+
+  const [{ credentials, mapping, catalogs }, { settings: creditSalesSettings }] = await Promise.all([
+    loadSagaImportSettings(),
+    loadFlightCreditSalesConfig(),
+  ]);
+  if (!credentials.email || !credentials.password) {
+    throw Object.assign(new Error("Credenciais SAGA nao configuradas pelo administrador."), { status: 400 });
+  }
+  const segmentNightHours = creditSalesSettings.nightHoursDifferentFromDay !== false;
+
+  logLine(`[sagaImportSelfCredits] ANAC=${anac} userId=${actorUserId}`);
+  const logs = [];
+
+  const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
+  const sagaUsersById = await fetchSagaUsersTableFromSession(cookieJar, logs);
+
+  const sagaUser = Array.from(sagaUsersById.values()).find((u) => cleanString(u.codigoAnac) === anac);
+  if (!sagaUser) {
+    logs.push(`SAGA: nenhum usuario encontrado com ANAC ${anac}.`);
+    const emptySummary = {
+      importRunId: crypto.randomUUID(), testMode: false, useEmailAlias: false,
+      selectedSagaUsers: 0, requestedUsers: 0, requestedFlightGroups: 0, requestedScheduledFlights: 0,
+      usersCreated: 0, usersUpdated: 0, usersSkipped: 0,
+      flightsCreated: 0, flightsUpdated: 0, flightsSkipped: 0, duplicateFlights: 0,
+      scheduledFlightsCreated: 0, scheduledFlightsUpdated: 0, scheduledFlightsSkipped: 0,
+      trainingAssignmentsTouched: 0, anacSynced: 0, anacPending: 0, anacFailed: 0,
+      creditsCreated: 0, creditsUpdated: 0, creditsSkipped: 0, creditHoursImported: 0,
+      nightHoursReclassified: 0, nightCreditRecordsCreated: 0,
+      skippedFlights: [], skippedCredits: [],
+      missing: { aircrafts: [], courses: [], students: [], creditAircrafts: [] },
+      logs,
+    };
+    return { ok: true, summary: emptySummary };
+  }
+
+  logs.push(`SAGA: usuario encontrado — ID ${cleanString(sagaUser.id)}, nome: ${cleanString(sagaUser.nome)}.`);
+  const rawCredits = await fetchSagaCreditsForUsers([sagaUser], cookieJar, logs);
+  const creditRows = applySagaCreditColumnMap(rawCredits, mapping.creditColumnMap);
+  logs.push(`Creditos SAGA: ${creditRows.length} linha(s) encontrada(s) para ANAC ${anac}.`);
+  logLine(`[sagaImportSelfCredits] ${creditRows.length} credito(s) para importar.`);
+
+  const importRunId = crypto.randomUUID();
+  const summary = {
+    importRunId, testMode: false, useEmailAlias: false,
+    selectedSagaUsers: 1, requestedUsers: 0, requestedFlightGroups: 0, requestedScheduledFlights: 0,
+    usersCreated: 0, usersUpdated: 0, usersSkipped: 0,
+    flightsCreated: 0, flightsUpdated: 0, flightsSkipped: 0, duplicateFlights: 0,
+    scheduledFlightsCreated: 0, scheduledFlightsUpdated: 0, scheduledFlightsSkipped: 0,
+    trainingAssignmentsTouched: 0, anacSynced: 0, anacPending: 0, anacFailed: 0,
+    creditsCreated: 0, creditsUpdated: 0, creditsSkipped: 0, creditHoursImported: 0,
+    nightHoursReclassified: 0, nightCreditRecordsCreated: 0,
+    skippedFlights: [], skippedCredits: [],
+    missing: { aircrafts: [], courses: [], students: [], creditAircrafts: [] },
+    logs,
+  };
+
+  const creditRowsWithUser = creditRows.map((c) => ({ ...c, userId: actorUserId }));
+  let effectiveCredits = buildSagaUnsegmentedCredits(creditRowsWithUser);
+  if (segmentNightHours && creditRowsWithUser.length > 0) {
+    try {
+      const operationsRange = sagaDateRangeMonths(24);
+      const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
+      const operations = await sagaFetch(operationsPath, {
+        method: "GET",
+        headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", referer: `${SAGA_BASE_URL}/users` },
+      }, cookieJar);
+      const allFlightRows2 = translateSagaFlightRows(operations.html);
+      const mappedFlightRows2 = applySagaFlightColumnMap(allFlightRows2.rows, mapping.flightColumnMap);
+      const myFlightRows2 = mappedFlightRows2.filter(
+        (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
+      );
+      const myFlightGroups2 = groupSagaFlightsById(myFlightRows2);
+      const usersByCanac2 = new Map([[anac, actorUserId]]);
+      const nightDemands = collectSagaNightHourDemands(myFlightGroups2, usersByCanac2, mapping, catalogs);
+      const segmented = segmentSagaCreditsForNight(creditRowsWithUser, nightDemands);
+      summary.nightHoursReclassified = segmented.nightHoursReclassified || 0;
+      summary.nightCreditRecordsCreated = segmented.nightCreditRecordsCreated || 0;
+      if (segmented.uncoveredNightHours > 0) {
+        logs.push(`Creditos noturnos: ${segmented.uncoveredNightHours}h sem saldo diurno suficiente para reclassificar.`);
+      }
+      effectiveCredits = segmented.effectiveCredits.length ? segmented.effectiveCredits : buildSagaUnsegmentedCredits(creditRowsWithUser);
+    } catch (err) {
+      logs.push(`Aviso: nao foi possivel calcular horas noturnas (${err?.message || err}). Importando sem reclassificacao.`);
+      effectiveCredits = buildSagaUnsegmentedCredits(creditRowsWithUser);
+    }
+  }
+
+  for (const credit of effectiveCredits) {
+    const result = await upsertSagaCredit(actorUserId, credit, actorUserId, mapping, catalogs, { testMode: false });
+    if (result.created) {
+      summary.creditsCreated += 1;
+      summary.creditHoursImported += result.hours || 0;
+    } else if (result.updated) {
+      summary.creditsUpdated += 1;
+      summary.creditHoursImported += result.hours || 0;
+    } else {
+      summary.creditsSkipped += 1;
+      summary.skippedCredits.push({
+        student: cleanString(credit.studentName),
+        model: cleanString(credit.model),
+        hours: cleanString(credit.hours || credit.hoursHhmm),
+        reason: result.reason || "unknown",
+        message: sagaImportCreditSkipReasonLabel(result.reason || "unknown"),
+      });
+    }
+  }
+
+  summary.creditHoursImported = Number(summary.creditHoursImported.toFixed(2));
+  summary.logs.push(`Creditos: ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados (${summary.creditHoursImported}h).`);
+  logLine(`[sagaImportSelfCredits] ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados.`);
+  await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
+  return { ok: true, summary };
+}
+
 module.exports = async ({ req, res, log, error }) => {
   try {
     if (!DATABASE_ID || !PROFILES_COLLECTION_ID) {
@@ -13700,6 +14549,51 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, sessionToken });
     }
 
+    if (action === "sagaImportSelfFlights") {
+      if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
+      const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "sagaImportSelfCredits") {
+      if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
+      const result = await sagaImportSelfCredits(actorUserId, log);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getAvailableFlightCreditPackages") {
+      if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+      const role = await getActorRole(actorUserId);
+      if (role !== "aluno") return jsonResponse(res, 403, { message: "Apenas alunos podem consultar pacotes para compra." });
+      const { settings, doc } = await loadFlightCreditSalesConfig();
+      const config = publicFlightCreditSalesConfig(settings, doc?.$updatedAt || null, true);
+      if (!config.studentPurchasesEnabled) config.packages = [];
+      return jsonResponse(res, 200, { config });
+    }
+
+    if (action === "createFlightCreditCheckout") {
+      const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId);
+      return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "sagaGetLastImportSummary") {
+      const doc = await getSettingDoc(SAGA_IMPORT_LAST_SUMMARY_KEY);
+      const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
+      return jsonResponse(res, 200, { ok: true, summary: parsed.summary || null, savedAt: parsed.savedAt || null });
+    }
+
+    if (action === "sagaGetImportProgress") {
+      const doc = await getSettingDoc(SAGA_IMPORT_PROGRESS_KEY);
+      const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
+      const progress = parsed.progress || null;
+      const requestedRunId = cleanString(payload.runId);
+      return jsonResponse(res, 200, {
+        ok: true,
+        progress: !requestedRunId || cleanString(progress?.runId) === requestedRunId ? progress : null,
+        savedAt: parsed.savedAt || null,
+      });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "lookupSagaAnacPersonAdmin") {
@@ -13737,24 +14631,6 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, result);
     }
 
-    if (action === "sagaGetLastImportSummary") {
-      const doc = await getSettingDoc(SAGA_IMPORT_LAST_SUMMARY_KEY);
-      const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
-      return jsonResponse(res, 200, { ok: true, summary: parsed.summary || null, savedAt: parsed.savedAt || null });
-    }
-
-    if (action === "sagaGetImportProgress") {
-      const doc = await getSettingDoc(SAGA_IMPORT_PROGRESS_KEY);
-      const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
-      const progress = parsed.progress || null;
-      const requestedRunId = cleanString(payload.runId);
-      return jsonResponse(res, 200, {
-        ok: true,
-        progress: !requestedRunId || cleanString(progress?.runId) === requestedRunId ? progress : null,
-        savedAt: parsed.savedAt || null,
-      });
-    }
-
     if (action === "sagaSyncScheduleJob") {
       const result = await syncSagaScheduleFromImportSettings(actorUserId || "system", {
         force: payload.force === true,
@@ -13789,6 +14665,54 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getEmailSettings") {
       const { publicSettings } = await loadEmailSettings();
       return jsonResponse(res, 200, { emailSettings: publicSettings });
+    }
+
+    if (action === "getCaktoSettings") {
+      await requireAdmin(actorUserId);
+      const { publicSettings } = await loadCaktoSettings();
+      return jsonResponse(res, 200, { settings: publicSettings });
+    }
+
+    if (action === "getFlightCreditSalesConfig") {
+      await requireAdmin(actorUserId);
+      const { publicSettings } = await loadFlightCreditSalesConfig();
+      return jsonResponse(res, 200, { config: publicSettings });
+    }
+
+    if (action === "saveFlightCreditSalesConfig") {
+      await requireAdmin(actorUserId);
+      const config = await saveFlightCreditSalesConfig(payload.config);
+      return jsonResponse(res, 200, { config });
+    }
+
+    if (action === "saveCaktoSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await saveCaktoSettings(payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "testCaktoConnection") {
+      await requireAdmin(actorUserId);
+      await testCaktoConnection();
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createCaktoProposal") {
+      await requireAdmin(actorUserId);
+      const proposal = await createCaktoProposal(payload.proposal);
+      return jsonResponse(res, 200, { proposal });
+    }
+
+    if (action === "retryCaktoProposal") {
+      await requireAdmin(actorUserId);
+      const proposal = await retryCaktoProposal(payload.proposalId);
+      return jsonResponse(res, 200, { proposal });
+    }
+
+    if (action === "listCaktoReceipts") {
+      await requireAdmin(actorUserId);
+      const page = await listCaktoReceipts(payload);
+      return jsonResponse(res, 200, page);
     }
 
     if (action === "saveEmailSettings") {

@@ -3,12 +3,13 @@ import type { ReactNode } from "react";
 import { ScheduleFlightsTab } from "./ScheduleFlightsTab";
 import { WeeklyConfigTab } from "./WeeklyConfigTab";
 import { ScheduleGenerationTab } from "./ScheduleGenerationTab";
+import { ScheduleSettingsPanel } from "./ScheduleSettingsPanel";
 import { Tabs } from "../ui/Tabs";
 import { useOpenedTabs } from "../../lib/routedTabs";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import type { AdminTabKey } from "../../types/rolePermissions";
 
-export type ScheduleSubTab = "flights" | "weekly" | "generator";
+export type ScheduleSubTab = "flights" | "weekly" | "generator" | "settings";
 
 const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = [
   {
@@ -38,12 +39,22 @@ const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = 
       </svg>
     ),
   },
+  {
+    id: "settings",
+    label: "Configurações",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M11.983 1.904a1.75 1.75 0 00-3.966 0l-.173.692a7.95 7.95 0 00-1.085.45l-.612-.367a1.75 1.75 0 00-2.804 2.804l.367.612a7.95 7.95 0 00-.45 1.085l-.692.173a1.75 1.75 0 000 3.966l.692.173c.115.375.266.737.45 1.085l-.367.612a1.75 1.75 0 002.804 2.804l.612-.367c.348.184.71.335 1.085.45l.173.692a1.75 1.75 0 003.966 0l.173-.692a7.95 7.95 0 001.085-.45l.612.367a1.75 1.75 0 002.804-2.804l-.367-.612c.184-.348.335-.71.45-1.085l.692-.173a1.75 1.75 0 000-3.966l-.692-.173a7.95 7.95 0 00-.45-1.085l.367-.612a1.75 1.75 0 00-2.804-2.804l-.612.367a7.95 7.95 0 00-1.085-.45l-.173-.692zM10 12.25a2.25 2.25 0 110-4.5 2.25 2.25 0 010 4.5z" />
+      </svg>
+    ),
+  },
 ];
 
 const SCHEDULE_SUB_TAB_KEY: Record<ScheduleSubTab, AdminTabKey> = {
   flights:   "schedule.voos",
   weekly:    "schedule.disponibilidades",
   generator: "schedule.gerador",
+  settings: "schedule.configuracoes",
 };
 
 type ScheduleAdminTabProps = {
@@ -111,6 +122,11 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange, vis
       {openedSubTabs.has("generator") ? (
         <div hidden={activeSubTab !== "generator"}>
           <ScheduleGenerationTab onScalePublished={handleScalePublished} />
+        </div>
+      ) : null}
+      {openedSubTabs.has("settings") ? (
+        <div hidden={activeSubTab !== "settings"}>
+          <ScheduleSettingsPanel />
         </div>
       ) : null}
     </div>

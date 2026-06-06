@@ -6,6 +6,7 @@ import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, type FlightStatus } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
+import { cancelScheduleFlight, confirmScheduleFlight } from "../../lib/scheduleBookingDb";
 import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSyncResult } from "../../lib/sagaImportDb";
 import {
   buildConflictsByFlightId,
@@ -22,7 +23,9 @@ import {
   MANUAL_SOURCE_PREFIX,
 } from "../../lib/scheduleGenerationDb";
 import { shortName } from "../../lib/flightDisplay";
+import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
+import type { StudentCreditModelSummary } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
   buildScheduleHourOptions,
@@ -33,7 +36,6 @@ import {
   calendarTopPx,
   minutesToScheduleHHMM,
   parseScheduleTimeToMinutes,
-  snapPointerToStartMinute,
 } from "../../lib/scheduleTimeGrid";
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
@@ -69,6 +71,9 @@ const INSTRUCTOR_BORDER_CLASSES = [
   "border-red-300",
   "border-yellow-300",
 ];
+const CALENDAR_START_HOUR = SLOT_HOURS[0] ?? 6;
+const CALENDAR_MIN_END_HOUR = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) + 1;
+const CALENDAR_MAX_END_HOUR = 24;
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
 type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
@@ -186,9 +191,10 @@ type FlightFormDraft = {
   flightStatus?: FlightStatus;
   cancellationReason?: string;
   cancellationReasonText?: string;
+  waiveCancellationPenalty?: boolean;
 };
 
-type CalendarFlightItem = {
+export type CalendarFlightItem = {
   id: string;
   studentId: string;
   studentLabel: string;
@@ -204,6 +210,8 @@ type CalendarFlightItem = {
   endTime: string;
   isNight?: boolean;
   isOutsideGenerator?: boolean;
+  isOwn?: boolean;
+  isBlocked?: boolean;
 };
 
 function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
@@ -233,14 +241,6 @@ function isDateToday(date: Date): boolean {
   return date.getDate() === t.getDate() && date.getMonth() === t.getMonth() && date.getFullYear() === t.getFullYear();
 }
 
-function formatCalendarDayHeader(weekStart: string, dayOfWeek: number): string {
-  const date = new Date(`${weekStart}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return DAY_LABEL[dayOfWeek];
-  const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  date.setDate(date.getDate() + offset);
-  return `${DAY_LABEL[dayOfWeek]} ${date.getDate()}`;
-}
-
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
   const base = new Date(`${weekStart}T12:00:00`);
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -257,6 +257,44 @@ function hoursToHHMM(hours: number): string {
 function parseStartHour(startTime: string): number {
   const [hh, mm] = startTime.split(":").map(Number);
   return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
+}
+
+function buildCalendarHours(items: CalendarFlightItem[]): number[] {
+  const latestEndMinute = items.reduce((latest, item) => {
+    const endMinute = parseScheduleTimeToMinutes(item.startTime) + Math.round(item.durationHours * 60);
+    return Math.max(latest, endMinute);
+  }, CALENDAR_MIN_END_HOUR * 60);
+  const endHour = Math.min(
+    CALENDAR_MAX_END_HOUR,
+    Math.max(CALENDAR_MIN_END_HOUR, Math.ceil(latestEndMinute / 60)),
+  );
+  return Array.from({ length: endHour - CALENDAR_START_HOUR }, (_, index) => CALENDAR_START_HOUR + index);
+}
+
+function snapCalendarPointerToStartMinute(
+  clientY: number,
+  boardTop: number,
+  rowHeightPerHour: number,
+  endHour: number,
+): number {
+  const minutesFromOrigin = Math.max(0, ((clientY - boardTop) / rowHeightPerHour) * 60);
+  const snapped = Math.round(minutesFromOrigin / 30) * 30;
+  const maxOffset = Math.max(0, (endHour - CALENDAR_START_HOUR) * 60 - 30);
+  return CALENDAR_START_HOUR * 60 + Math.min(snapped, maxOffset);
+}
+
+function useCalendarRowHeight(mobileHeight: number, desktopHeight: number): number {
+  const [rowHeight, setRowHeight] = useState(desktopHeight);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setRowHeight(media.matches ? mobileHeight : desktopHeight);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [desktopHeight, mobileHeight]);
+
+  return rowHeight;
 }
 
 function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: InstructorIdentity | null): FlightRecordMeta {
@@ -330,7 +368,7 @@ function resolveInstructorDraft(
   };
 }
 
-type CalendarDropTarget = {
+export type CalendarDropTarget = {
   dayOfWeek: number;
   startHour: number;
   startTime: string;
@@ -346,13 +384,16 @@ function eventStyleClasses(color: string, instructorBorder: string | null, unass
   return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
 }
 
-function CalendarGrid({
+export function CalendarGrid({
   items,
+  days = DAY_ORDER,
+  title = "Agenda semanal",
   colorByAircraft,
   borderByInstructor,
   backgroundSupply,
   clubMemberByStudentId,
   weekStart,
+  nightStartHour,
   onItemClick,
   onItemDrop,
   onEmptySlotClick,
@@ -360,13 +401,21 @@ function CalendarGrid({
   onNextWeek,
   hasPrevWeek,
   hasNextWeek,
+  privacyMode = false,
+  showTotals = true,
+  showGeneratorLegend = true,
+  getItemColor,
+  blockedSlots,
 }: {
   items: CalendarFlightItem[];
+  days?: readonly number[];
+  title?: string;
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   clubMemberByStudentId?: Record<string, boolean>;
   weekStart: string;
+  nightStartHour: number;
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
@@ -374,25 +423,34 @@ function CalendarGrid({
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
+  privacyMode?: boolean;
+  showTotals?: boolean;
+  showGeneratorLegend?: boolean;
+  getItemColor?: (item: CalendarFlightItem) => string;
+  blockedSlots?: Array<{ dayOfWeek: number; startHour: number; endHour: number }>;
 }) {
-  const rowHeight = 38;
-  const boardHeight = SLOT_HOURS.length * rowHeight;
+  const calendarDays = days;
+  const rowHeight = useCalendarRowHeight(52, 38);
+  const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
+  const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
+  const boardHeight = calendarHours.length * rowHeight;
   const byDay = useMemo(() => {
     const map = new Map<number, CalendarFlightItem[]>();
-    for (const day of DAY_ORDER) map.set(day, []);
+    for (const day of calendarDays) map.set(day, []);
     for (const item of items) {
+      if (!calendarDays.includes(item.dayOfWeek)) continue;
       const rows = map.get(item.dayOfWeek) ?? [];
       rows.push(item);
       map.set(item.dayOfWeek, rows);
     }
-    for (const day of DAY_ORDER) {
+    for (const day of calendarDays) {
       map.set(
         day,
         (map.get(day) ?? []).sort((a, b) => parseScheduleTimeToMinutes(a.startTime) - parseScheduleTimeToMinutes(b.startTime)),
       );
     }
     return map;
-  }, [items]);
+  }, [calendarDays, items]);
 
   const layoutByDay = useMemo(() => {
     const out = new Map<
@@ -404,7 +462,7 @@ function CalendarGrid({
       }>
     >();
 
-    for (const day of DAY_ORDER) {
+    for (const day of calendarDays) {
       const sorted = [...(byDay.get(day) ?? [])].sort((a, b) => {
         const aStart = parseScheduleTimeToMinutes(a.startTime);
         const bStart = parseScheduleTimeToMinutes(b.startTime);
@@ -458,12 +516,13 @@ function CalendarGrid({
     }
 
     return out;
-  }, [byDay]);
+  }, [byDay, calendarDays]);
 
   const dayTotals = useMemo(() => {
     const byDay = new Map<number, { flights: number; hours: number }>();
-    for (const day of DAY_ORDER) byDay.set(day, { flights: 0, hours: 0 });
+    for (const day of calendarDays) byDay.set(day, { flights: 0, hours: 0 });
     for (const item of items) {
+      if (!calendarDays.includes(item.dayOfWeek)) continue;
       const row = byDay.get(item.dayOfWeek) ?? { flights: 0, hours: 0 };
       row.flights += 1;
       row.hours += item.durationHours;
@@ -472,17 +531,16 @@ function CalendarGrid({
     let cumFlights = 0;
     let cumHours = 0;
     const cumulative = new Map<number, { flights: number; hours: number }>();
-    for (const day of DAY_ORDER) {
+    for (const day of calendarDays) {
       const d = byDay.get(day) ?? { flights: 0, hours: 0 };
       cumFlights += d.flights;
       cumHours += d.hours;
       cumulative.set(day, { flights: cumFlights, hours: Number(cumHours.toFixed(1)) });
     }
     return { byDay, cumulative };
-  }, [items]);
+  }, [calendarDays, items]);
 
   const dayBoardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const nightRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [dragState, setDragState] = useState<{
     item: CalendarFlightItem;
     preview: CalendarDropTarget;
@@ -497,37 +555,22 @@ function CalendarGrid({
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
-      for (const day of DAY_ORDER) {
-        const nightEl = nightRowRefs.current.get(day);
-        if (nightEl) {
-          const r = nightEl.getBoundingClientRect();
-          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-            const nightMinute = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) * 60;
-            return {
-              dayOfWeek: day,
-              startHour: nightMinute / 60,
-              startTime: minutesToScheduleHHMM(nightMinute),
-              isNight: true,
-            };
-          }
-        }
-      }
-      for (const day of DAY_ORDER) {
+      for (const day of calendarDays) {
         const board = dayBoardRefs.current.get(day);
         if (!board) continue;
         const r = board.getBoundingClientRect();
         if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
-        const startMinute = snapPointerToStartMinute(clientY, r.top, rowHeight);
+        const startMinute = snapCalendarPointerToStartMinute(clientY, r.top, rowHeight, calendarEndHour);
         return {
           dayOfWeek: day,
           startHour: startMinute / 60,
           startTime: minutesToScheduleHHMM(startMinute),
-          isNight: false,
+          isNight: startMinute >= nightStartHour * 60,
         };
       }
       return null;
     },
-    [rowHeight],
+    [calendarDays, calendarEndHour, nightStartHour, rowHeight],
   );
 
   useEffect(() => {
@@ -561,9 +604,9 @@ function CalendarGrid({
   }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
 
   return (
-    <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+    <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda semanal</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
         {(onPrevWeek || onNextWeek) && (
           <div className="flex items-center gap-1">
             <button
@@ -590,40 +633,49 @@ function CalendarGrid({
       {draggable ? (
         <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
       ) : null}
-      <p className="mb-2 text-[11px] text-slate-600">
-        <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
-      </p>
+      {showGeneratorLegend ? (
+        <p className="mb-2 text-[11px] text-slate-600">
+          <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
+        </p>
+      ) : null}
       <div className="w-full overflow-x-auto">
-        <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
+        <table className="w-full min-w-0 table-fixed border-separate border-spacing-0.5 sm:border-spacing-1">
           <thead>
             <tr>
               <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
-              {DAY_ORDER.map((day) => (
-                <th key={day} className="pb-1 text-center text-xs font-semibold text-slate-400">
-                  {formatCalendarDayHeader(weekStart, day)}
-                </th>
-              ))}
+              {calendarDays.map((day) => {
+                const date = dayOfWeekToDate(weekStart, day);
+                const today = isDateToday(date);
+                return (
+                  <th key={day} className="pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs">
+                    <span className="block uppercase">{DAY_LABEL[day]}</span>
+                    <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
+                      {date.getDate()}
+                    </span>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
             <tr>
               <td className="align-top pr-2">
                 <div className="relative" style={{ height: `${boardHeight}px` }}>
-                  {SLOT_HOURS.map((hour, idx) => (
+                  {calendarHours.map((hour, idx) => (
                     <div key={hour} className="absolute right-0 text-right text-[11px] font-mono text-slate-600" style={{ top: `${idx * rowHeight}px`, width: "2.8rem" }}>
                       {hour}h
                     </div>
                   ))}
                 </div>
               </td>
-              {DAY_ORDER.map((day) => (
+              {calendarDays.map((day) => (
                 <td key={day} className="align-top p-0">
                   <div
                     ref={(node) => {
                       if (node) dayBoardRefs.current.set(day, node);
                       else dayBoardRefs.current.delete(day);
                     }}
-                    className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
+                    className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md"
                     style={{ height: `${boardHeight}px` }}
                     onClick={(e) => {
                       if (!onEmptySlotClick || dragState) return;
@@ -631,8 +683,17 @@ function CalendarGrid({
                       if (target) onEmptySlotClick(target);
                     }}
                   >
+                    {nightStartHour < calendarEndHour ? (
+                      <div
+                        className="pointer-events-none absolute inset-x-0 bg-indigo-950/25"
+                        style={{
+                          top: `${Math.max(0, nightStartHour - CALENDAR_START_HOUR) * rowHeight}px`,
+                          bottom: 0,
+                        }}
+                      />
+                    ) : null}
                     {backgroundSupply
-                      ? SLOT_HOURS.map((hour, idx) => {
+                      ? calendarHours.map((hour, idx) => {
                           const state = backgroundSupply.slotStates[`${day}-${hour}`];
                           if (!state) return null;
                           return (
@@ -644,15 +705,30 @@ function CalendarGrid({
                           );
                         })
                       : null}
-                    {SLOT_HOURS.map((hour, idx) => (
+                    {calendarHours.map((hour, idx) => (
                       <div key={`${day}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                     ))}
-                    {(layoutByDay.get(day) ?? []).filter((e) => !e.item.isNight).map((entry) => {
+                    {blockedSlots?.filter((s) => s.dayOfWeek === day).map((s, i) => {
+                      const startIdx = calendarHours.findIndex((h) => h >= Math.floor(s.startHour));
+                      if (startIdx < 0) return null;
+                      const endIdx = calendarHours.findIndex((h) => h >= Math.ceil(s.endHour));
+                      const spanRows = (endIdx < 0 ? calendarHours.length : endIdx) - startIdx;
+                      return (
+                        <div
+                          key={`blocked-${i}`}
+                          className="pointer-events-none absolute inset-x-0 flex items-start justify-center bg-red-500/20"
+                          style={{ top: `${startIdx * rowHeight}px`, height: `${Math.max(1, spanRows) * rowHeight}px` }}
+                        >
+                          <span className="rounded-b bg-red-950/70 px-1 text-[9px] font-medium text-red-300">Bloqueado</span>
+                        </div>
+                      );
+                    })}
+                    {(layoutByDay.get(day) ?? []).map((entry) => {
                       const item = entry.item;
                       if (dragState?.item.id === item.id) return null;
                       const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                      const color = calendarItemColor(item, colorByAircraft);
+                      const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
                       const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
@@ -671,7 +747,7 @@ function CalendarGrid({
                               dayOfWeek: item.dayOfWeek,
                               startHour: item.startHour,
                               startTime: item.startTime,
-                              isNight: false,
+                              isNight: Boolean(item.isNight),
                             };
                             setDragState({ item, preview: target, startX: e.clientX, startY: e.clientY, hasMoved: false });
                           }}
@@ -698,16 +774,22 @@ function CalendarGrid({
                           }}
                         >
                           <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
-                            <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
-                            {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
+                            <span className="truncate">
+                              {privacyMode
+                                ? (item.isBlocked || item.isOwn ? item.studentLabel : "Ocupado")
+                                : calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}
+                            </span>
+                            {!privacyMode && clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                           </p>
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
-                          <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
-                          <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
+                          <p className="truncate opacity-80">
+                            {privacyMode ? (item.isBlocked ? "" : item.aircraftRegistration) : `${item.aircraftRegistration} · ${shortName(item.instructorLabel) || "Sem instrutor"}`}
+                          </p>
+                          {!privacyMode ? <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p> : null}
                         </div>
                       );
                     })}
-                    {dragState && dragState.preview.dayOfWeek === day && !dragState.preview.isNight ? (() => {
+                    {dragState && dragState.preview.dayOfWeek === day ? (() => {
                       const item = dragState.item;
                       const entry = (layoutByDay.get(day) ?? []).find((e) => e.item.id === item.id) ?? {
                         item,
@@ -739,99 +821,11 @@ function CalendarGrid({
                 </td>
               ))}
             </tr>
-            <tr>
-              <td className="pr-2 pt-1 text-right text-[11px] font-mono text-indigo-400/60">Noite</td>
-              {DAY_ORDER.map((day) => {
-                const nightState = backgroundSupply?.slotStates[`${day}-night`];
-                const nightItems = (layoutByDay.get(day) ?? []).filter((e) => e.item.isNight);
-                return (
-                  <td key={day} className="p-0 pt-1">
-                    <div
-                      ref={(node) => {
-                        if (node) nightRowRefs.current.set(day, node);
-                        else nightRowRefs.current.delete(day);
-                      }}
-                      className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightState === "blocked" ? "border-slate-700/40 bg-slate-800/20" : nightState ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
-                      onClick={(e) => {
-                        if (!onEmptySlotClick || dragState) return;
-                        const target = resolveDropTarget(e.clientX, e.clientY);
-                        if (target) onEmptySlotClick(target);
-                      }}
-                    >
-                      {nightItems.length === 0 && !(dragState?.preview.dayOfWeek === day && dragState.preview.isNight) ? (
-                        <p className="text-center text-[10px] text-slate-600">—</p>
-                      ) : (
-                        <div className="space-y-0.5">
-                          {nightItems.map(({ item }) => {
-                            const color = calendarItemColor(item, colorByAircraft);
-                            const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
-                            if (dragState?.item.id === item.id) return null;
-                            return (
-                              <div
-                                key={item.id}
-                                role="button"
-                                tabIndex={0}
-                                onPointerDown={(e) => {
-                                  if (!draggable) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  dragEndedRef.current = false;
-                                  pointerClickHandledRef.current = false;
-                                  setDragState({
-                                    item,
-                                    preview: {
-                                      dayOfWeek: day,
-                                      startHour: item.startHour,
-                                      startTime: item.startTime,
-                                      isNight: true,
-                                    },
-                                    startX: e.clientX,
-                                    startY: e.clientY,
-                                    hasMoved: false,
-                                  });
-                                }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (dragEndedRef.current) {
-                                    dragEndedRef.current = false;
-                                    e.preventDefault();
-                                    return;
-                                  }
-                                  if (pointerClickHandledRef.current) {
-                                    pointerClickHandledRef.current = false;
-                                    e.preventDefault();
-                                    return;
-                                  }
-                                  onItemClick(item);
-                                }}
-                                className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
-                              >
-                                <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
-                                  <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
-                                  {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
-                                </p>
-                                <p className="truncate opacity-80">{item.aircraftRegistration} · {shortName(item.instructorLabel) || "Sem instrutor"}</p>
-                              </div>
-                            );
-                          })}
-                          {dragState && dragState.preview.dayOfWeek === day && dragState.preview.isNight ? (
-                            <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
-                              <p className="truncate font-semibold">{shortName(dragState.item.studentLabel, dragState.item.studentLabel)}</p>
-                              <p className="truncate opacity-80">Solte para confirmar</p>
-                            </div>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-            <tr>
+            {showTotals ? <tr>
               <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                 Total
               </td>
-              {DAY_ORDER.map((day) => {
+              {calendarDays.map((day) => {
                 const d = dayTotals.byDay.get(day) ?? { flights: 0, hours: 0 };
                 const cum = dayTotals.cumulative.get(day) ?? { flights: 0, hours: 0 };
                 return (
@@ -849,7 +843,7 @@ function CalendarGrid({
                   </td>
                 );
               })}
-            </tr>
+            </tr> : null}
           </tbody>
         </table>
       </div>
@@ -871,6 +865,7 @@ function DailyCalendarGrid({
   selectedDay,
   weekStart,
   groupBy,
+  nightStartHour,
   colorByAircraft,
   borderByInstructor,
   weekData,
@@ -889,6 +884,7 @@ function DailyCalendarGrid({
   selectedDay: number;
   weekStart: string;
   groupBy: "instructor" | "aircraft";
+  nightStartHour: number;
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   weekData: ScheduleWeekData;
@@ -903,8 +899,10 @@ function DailyCalendarGrid({
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   clubMemberByStudentId?: Record<string, boolean>;
 }) {
-  const rowHeight = 38;
-  const boardHeight = SLOT_HOURS.length * rowHeight;
+  const rowHeight = useCalendarRowHeight(64, 38);
+  const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
+  const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
+  const boardHeight = calendarHours.length * rowHeight;
   const draggable = Boolean(onItemDrop);
 
   const dayItems = useMemo(
@@ -952,7 +950,7 @@ function DailyCalendarGrid({
   const layoutByCol = useMemo(() => {
     const out = new Map<string, Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }>>();
     for (const col of columns) {
-      const sorted = [...col.items.filter((i) => !i.isNight)].sort((a, b) => {
+      const sorted = [...col.items].sort((a, b) => {
         const aStart = parseScheduleTimeToMinutes(a.startTime);
         const bStart = parseScheduleTimeToMinutes(b.startTime);
         if (aStart !== bStart) return aStart - bStart;
@@ -1002,7 +1000,6 @@ function DailyCalendarGrid({
   }, [columns]);
 
   const boardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const nightRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [dragState, setDragState] = useState<{
     item: CalendarFlightItem;
     preview: CalendarDropTarget;
@@ -1017,34 +1014,16 @@ function DailyCalendarGrid({
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
       for (const col of columns) {
-        const nightEl = nightRefs.current.get(col.key);
-        if (nightEl) {
-          const r = nightEl.getBoundingClientRect();
-          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-            const nightMinute = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) * 60;
-            const base: CalendarDropTarget = {
-              dayOfWeek: selectedDay,
-              startHour: nightMinute / 60,
-              startTime: minutesToScheduleHHMM(nightMinute),
-              isNight: true,
-            };
-            return groupBy === "instructor"
-              ? { ...base, targetInstructorId: col.key === "__none__" ? null : col.key }
-              : { ...base, targetAircraftRegistration: col.key };
-          }
-        }
-      }
-      for (const col of columns) {
         const board = boardRefs.current.get(col.key);
         if (!board) continue;
         const r = board.getBoundingClientRect();
         if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
-        const startMinute = snapPointerToStartMinute(clientY, r.top, rowHeight);
+        const startMinute = snapCalendarPointerToStartMinute(clientY, r.top, rowHeight, calendarEndHour);
         const base: CalendarDropTarget = {
           dayOfWeek: selectedDay,
           startHour: startMinute / 60,
           startTime: minutesToScheduleHHMM(startMinute),
-          isNight: false,
+          isNight: startMinute >= nightStartHour * 60,
         };
         return groupBy === "instructor"
           ? { ...base, targetInstructorId: col.key === "__none__" ? null : col.key }
@@ -1052,7 +1031,7 @@ function DailyCalendarGrid({
       }
       return null;
     },
-    [columns, groupBy, selectedDay],
+    [calendarEndHour, columns, groupBy, nightStartHour, selectedDay],
   );
 
   useEffect(() => {
@@ -1121,7 +1100,7 @@ function DailyCalendarGrid({
         >
           ‹
         </button>
-        <div className="flex flex-1 gap-1">
+        <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1">
           {DAY_ORDER.map((day) => {
             const date = dayOfWeekToDate(weekStart, day);
             const today = isDateToday(date);
@@ -1131,7 +1110,7 @@ function DailyCalendarGrid({
                 key={day}
                 type="button"
                 onClick={() => onSelectDay(day)}
-                className={`flex flex-1 flex-col items-center rounded-lg border px-1.5 py-1.5 text-[11px] transition-colors ${
+                className={`flex min-w-0 flex-1 flex-col items-center rounded border px-0.5 py-1.5 text-[10px] transition-colors sm:rounded-lg sm:px-1.5 sm:text-[11px] ${
                   selected
                     ? "border-sky-500 bg-sky-600/20 text-sky-300"
                     : today
@@ -1169,7 +1148,10 @@ function DailyCalendarGrid({
         </p>
       ) : (
         <div className="w-full overflow-x-auto">
-          <table className="w-full min-w-0 table-fixed border-separate border-spacing-1">
+          <table
+            className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
+            style={{ minWidth: columns.length > 1 ? `${Math.max(520, columns.length * 180 + 48)}px` : "100%" }}
+          >
             <thead>
               <tr>
                 <th className="w-12 pb-2" />
@@ -1193,7 +1175,7 @@ function DailyCalendarGrid({
               <tr>
                 <td className="align-top pr-2">
                   <div className="relative" style={{ height: `${boardHeight}px` }}>
-                    {SLOT_HOURS.map((hour, idx) => (
+                    {calendarHours.map((hour, idx) => (
                       <div key={hour} className="absolute right-0 text-right text-[11px] font-mono text-slate-600" style={{ top: `${idx * rowHeight}px`, width: "2.8rem" }}>
                         {hour}h
                       </div>
@@ -1206,7 +1188,7 @@ function DailyCalendarGrid({
                     <td key={col.key} className="align-top p-0">
                       <div
                         ref={(node) => { if (node) boardRefs.current.set(col.key, node); else boardRefs.current.delete(col.key); }}
-                        className="relative rounded-md border border-slate-700/60 bg-slate-800/30"
+                        className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md"
                         style={{ height: `${boardHeight}px` }}
                         onClick={(e) => {
                           if (!onEmptySlotClick || dragState) return;
@@ -1214,8 +1196,17 @@ function DailyCalendarGrid({
                           if (t) onEmptySlotClick(t);
                         }}
                       >
+                        {nightStartHour < calendarEndHour ? (
+                          <div
+                            className="pointer-events-none absolute inset-x-0 bg-indigo-950/25"
+                            style={{
+                              top: `${Math.max(0, nightStartHour - CALENDAR_START_HOUR) * rowHeight}px`,
+                              bottom: 0,
+                            }}
+                          />
+                        ) : null}
                         {backgroundSupply
-                          ? SLOT_HOURS.map((hour, idx) => {
+                          ? calendarHours.map((hour, idx) => {
                               const state = backgroundSupply.slotStates[`${selectedDay}-${hour}`];
                               if (!state) return null;
                               return (
@@ -1227,11 +1218,10 @@ function DailyCalendarGrid({
                               );
                             })
                           : null}
-                        {SLOT_HOURS.map((hour, idx) => (
+                        {calendarHours.map((hour, idx) => (
                           <div key={`${col.key}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                         ))}
                         {entries.map((entry) => {
-                          if (entry.item.isNight) return null;
                           if (dragState?.item.id === entry.item.id) return null;
                           const item = entry.item;
                           const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
@@ -1255,7 +1245,7 @@ function DailyCalendarGrid({
                                   dayOfWeek: selectedDay,
                                   startHour: item.startHour,
                                   startTime: item.startTime,
-                                  isNight: false,
+                                  isNight: Boolean(item.isNight),
                                 };
                                 setDragState({ item, preview: t, startX: e.clientX, startY: e.clientY, hasMoved: false });
                               }}
@@ -1288,7 +1278,7 @@ function DailyCalendarGrid({
                           );
                         })}
                         {/* Drag preview */}
-                        {dragState && !dragState.preview.isNight && (() => {
+                        {dragState && (() => {
                           const item = dragState.item;
                           const entry = entries.find((e) => e.item.id === item.id) ?? { item, columnIndex: 0, columnCount: 1 };
                           const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
@@ -1318,77 +1308,6 @@ function DailyCalendarGrid({
                             </div>
                           );
                         })()}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-              {/* Night row */}
-              <tr>
-                <td className="pr-2 pt-1 text-right text-[11px] font-mono text-indigo-400/60">Noite</td>
-                {columns.map((col) => {
-                  const nightItems = col.items.filter((i) => i.isNight);
-                  return (
-                    <td key={col.key} className="p-0 pt-1">
-                      <div
-                        ref={(node) => { if (node) nightRefs.current.set(col.key, node); else nightRefs.current.delete(col.key); }}
-                        className={`min-h-[36px] rounded-md border px-1.5 py-1 ${nightItems.length > 0 ? "border-indigo-700/50 bg-indigo-950/30" : "border-slate-700/30 bg-slate-800/10"}`}
-                      >
-                        {nightItems.length === 0 ? (
-                          <p className="text-center text-[10px] text-slate-600">—</p>
-                        ) : (
-                          <div className="space-y-0.5">
-                            {nightItems.map((item) => {
-                              const color = calendarItemColor(item, colorByAircraft);
-                              const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
-                              if (dragState?.item.id === item.id) return null;
-                              return (
-                                <div
-                                  key={item.id}
-                                  role="button"
-                                  tabIndex={0}
-                                  onPointerDown={(e) => {
-                                    if (!draggable) return;
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    dragEndedRef.current = false;
-                                    pointerClickHandledRef.current = false;
-                                    setDragState({
-                                      item,
-                                      preview: { dayOfWeek: selectedDay, startHour: item.startHour, startTime: item.startTime, isNight: true },
-                                      startX: e.clientX,
-                                      startY: e.clientY,
-                                      hasMoved: false,
-                                    });
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
-                                    if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
-                                    onItemClick(item);
-                                  }}
-                                  className={eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}
-                                >
-                                  <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
-                                    <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
-                                    {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
-                                  </p>
-                                  {groupBy === "aircraft" ? (
-                                    <p className="truncate opacity-80">{shortName(item.instructorLabel) || "Sem instrutor"}</p>
-                                  ) : (
-                                    <p className="truncate opacity-80">{item.aircraftRegistration}</p>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            {dragState?.preview.isNight ? (
-                              <div className="pointer-events-none overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1 py-0.5 text-[10px] text-white ring-2 ring-violet-400/50">
-                                <p className="truncate font-semibold">{shortName(dragState.item.studentLabel, dragState.item.studentLabel)}</p>
-                                <p className="truncate opacity-80">Solte para confirmar</p>
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
                       </div>
                     </td>
                   );
@@ -1441,8 +1360,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
-  const [agendaView, setAgendaView] = useState<"weekly" | "daily">("weekly");
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("weekly");
   const [dailyGroupBy, setDailyGroupBy] = useState<"instructor" | "aircraft">("instructor");
+  const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
   const [selectedDay, setSelectedDay] = useState<number>(() => new Date().getDay());
   const [error, setError] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<FlightFormDraft | null>(null);
@@ -1454,6 +1374,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [clubMemberByStudentId, setClubMemberByStudentId] = useState<Record<string, boolean>>({});
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
+  const [formStudentCredits, setFormStudentCredits] = useState<StudentCreditModelSummary[] | null>(null);
+  const [formStudentCreditsLoading, setFormStudentCreditsLoading] = useState(false);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
@@ -1467,6 +1389,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const minGapMinutes = 30;
   const hourOptions = useMemo(() => buildScheduleHourOptions(scheduleRules), [scheduleRules]);
+  const threeDayStartIndex = Math.min(
+    Math.max(DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]), 0),
+    DAY_ORDER.length - 3,
+  );
+  const threeDayWindow = DAY_ORDER.slice(threeDayStartIndex, threeDayStartIndex + 3);
 
   useEffect(() => {
     if (!error || error === lastErrorToastRef.current) return;
@@ -1746,11 +1673,30 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     };
   }, [weekData?.students]);
 
+  useEffect(() => {
+    const studentId = formDraft?.studentId;
+    if (!formDraft || !studentId || !user?.id || !user?.role) {
+      setFormStudentCredits(null);
+      setFormStudentCreditsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFormStudentCredits(null);
+    setFormStudentCreditsLoading(true);
+    getStudentCreditStatement({ viewer: { userId: user.id, role: user.role }, studentUserId: studentId })
+      .then((stmt) => { if (!cancelled) { setFormStudentCredits(stmt.summaries); setFormStudentCreditsLoading(false); } })
+      .catch(() => { if (!cancelled) { setFormStudentCredits([]); setFormStudentCreditsLoading(false); } });
+    return () => { cancelled = true; };
+  // formDraft?.demandId changes each time the modal opens (new demandId per session)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formDraft?.demandId, formDraft?.studentId, user?.id, user?.role]);
+
   const calendarItems = useMemo<CalendarFlightItem[]>(
     () =>
       flights
         .filter(
           (row) =>
+            (!hideCancelledFlights || row.flightStatus !== "Cancelado") &&
             visibleAircraft.includes(row.aircraftRegistration ?? "") &&
             (row.instructorId ? visibleInstructors.includes(row.instructorId) : visibleInstructors.includes("__none__")),
         )
@@ -1776,7 +1722,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             isOutsideGenerator: row.isOutsideGenerator ?? false,
           };
         }),
-    [flights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors],
+    [flights, hideCancelledFlights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors],
+  );
+
+  const cancelledFlightCount = useMemo(
+    () => flights.filter((row) => row.flightStatus === "Cancelado").length,
+    [flights],
   );
 
   const selectedSupplyForBackground = useMemo(() => {
@@ -1885,7 +1836,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
-      flightStatus: "Previsto",
+      flightStatus: "Confirmado",
       isNight: false,
     });
     setFormConflicts([]);
@@ -1923,7 +1874,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       durationHours: row.durationHours,
       isNight: decoded?.header.isNight ?? row.isNight ?? false,
       sagaScheduleId: row.sagaScheduleId ?? null,
-      flightStatus: full.data?.flight_status ?? "Previsto",
+      flightStatus: full.data?.flight_status ?? "Confirmado",
       cancellationReason: existingCancellation?.reasonCode ?? "",
       cancellationReasonText: existingCancellation?.reasonText ?? "",
     });
@@ -1938,7 +1889,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       draft: {
         ...formDraft,
         studentLabel: formDraft.studentLabel || formDraft.studentId,
-        flightStatus: formDraft.flightStatus ?? "Previsto",
+        flightStatus: formDraft.flightStatus ?? "Confirmado",
       },
       supplies: weekData.supplies,
       flights,
@@ -1973,14 +1924,25 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         csv_text: csvText,
         aircraft_ident: formDraft.aircraftRegistration,
         duration_sec: Math.round(formDraft.durationHours * 3600),
-        flightStatus: formDraft.flightStatus ?? "Previsto",
+        flightStatus: formDraft.flightStatus ?? "Confirmado",
       };
 
       if (formMode === "edit" && formDraft.id) {
         const nextDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
         const nextStartTime = formDraft.startTime;
-        const result = await updateFlight(formDraft.id, payload);
-        if (result.error) throw result.error;
+        const existingStatus = flights.find((row) => row.id === formDraft.id)?.flightStatus;
+        if (formDraft.flightStatus === "Cancelado" && existingStatus !== "Cancelado") {
+          await cancelScheduleFlight(formDraft.id, {
+            waivePenalty: formDraft.waiveCancellationPenalty,
+            reason: [formDraft.cancellationReason, formDraft.cancellationReasonText].filter(Boolean).join(": "),
+          });
+        } else {
+          if (existingStatus === "Pendente" && formDraft.flightStatus === "Confirmado") {
+            await confirmScheduleFlight(formDraft.id);
+          }
+          const result = await updateFlight(formDraft.id, payload);
+          if (result.error) throw result.error;
+        }
         void syncFlightCalendarEvent(formDraft.id, "upsert");
         void runSagaScheduleSync(formDraft.id, "upsert", { sagaScheduleId: formDraft.sagaScheduleId ?? null });
         void dispatchNotificationEvent({
@@ -2314,105 +2276,86 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             </section>
           ) : null}
 
-          {/* Mobile daily list */}
-          <div className="space-y-3 md:hidden">
-            {DAY_ORDER.map((day) => {
-              const dayItems = calendarItems.filter((item) => item.dayOfWeek === day);
-              if (dayItems.length === 0) return null;
-              return (
-                <div key={day}>
-                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                    {formatCalendarDayHeader(weekData.week.weekStart, day)}
-                  </p>
-                  <ul className="space-y-2">
-                    {dayItems.map((item) => {
-                      const bg = colorByAircraft.get(item.aircraftRegistration) ?? "bg-slate-700";
-                      return (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!canEditFlight) return;
-                              const selected = flights.find((row) => row.id === item.id);
-                              if (selected) void openEditModal(selected);
-                            }}
-                            className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 text-left"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <span className={`h-2.5 w-2.5 rounded-sm ${bg}`} />
-                                <span className="text-xs font-medium text-slate-200">{item.aircraftRegistration || "—"}</span>
-                                <span className="text-xs text-slate-400">{item.startTime} – {item.endTime}</span>
-                                {item.isNight ? <span className="rounded border border-slate-600 px-1 py-0.5 text-[10px] text-slate-400">Noturno</span> : null}
-                              </div>
-                            </div>
-                            <p className="mt-1 truncate text-xs text-slate-400">
-                              {calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)} · {shortName(item.instructorLabel) || "Sem INVA"}
-                            </p>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              );
-            })}
-            {calendarItems.length === 0 ? (
-              <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">Nenhum voo nesta semana.</p>
-            ) : null}
-          </div>
-
-          {/* Desktop calendar grid */}
-          <div className="hidden md:block space-y-0">
-            {/* View mode toggle */}
+          {/* Calendar grid */}
+          <div className="space-y-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <div className="flex overflow-hidden rounded-lg border border-slate-700">
+              <div className="flex flex-1 overflow-hidden rounded-lg border border-slate-700 sm:flex-none">
                 <button
                   type="button"
                   onClick={() => setAgendaView("weekly")}
-                  className={`px-3 py-1.5 text-xs border-r border-slate-700 transition-colors ${agendaView === "weekly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "weekly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                 >
                   Semanal
                 </button>
                 <button
                   type="button"
+                  onClick={() => setAgendaView("three-day")}
+                  className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "three-day" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  3 dias
+                </button>
+                <button
+                  type="button"
                   onClick={() => setAgendaView("daily")}
-                  className={`px-3 py-1.5 text-xs transition-colors ${agendaView === "daily" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  className={`flex-1 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "daily" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                 >
                   Diária
                 </button>
               </div>
               {agendaView === "daily" && (
-                <div className="ml-auto flex overflow-hidden rounded-lg border border-slate-700">
+                <div className="flex w-full overflow-hidden rounded-lg border border-slate-700 sm:ml-auto sm:w-auto">
                   <button
                     type="button"
                     onClick={() => setDailyGroupBy("instructor")}
-                    className={`px-3 py-1.5 text-xs border-r border-slate-700 transition-colors ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                   >
-                    Instrutor
+                    Por instrutor
                   </button>
                   <button
                     type="button"
                     onClick={() => setDailyGroupBy("aircraft")}
-                    className={`px-3 py-1.5 text-xs transition-colors ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    className={`flex-1 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                   >
-                    Avião
+                    Por avião
                   </button>
                 </div>
               )}
+              <label className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:ml-auto sm:w-auto">
+                <span>
+                  Ocultar cancelados
+                  {cancelledFlightCount > 0 ? <span className="ml-1 text-slate-500">({cancelledFlightCount})</span> : null}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={hideCancelledFlights}
+                  onChange={(event) => setHideCancelledFlights(event.target.checked)}
+                  className="h-4 w-4 accent-sky-500"
+                />
+              </label>
             </div>
 
-            {agendaView === "weekly" ? (
+            {agendaView !== "daily" ? (
               <CalendarGrid
                 items={calendarItems}
+                days={agendaView === "three-day" ? threeDayWindow : DAY_ORDER}
+                title={agendaView === "three-day" ? "Agenda de 3 dias" : "Agenda semanal"}
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
                 backgroundSupply={selectedSupplyForBackground}
                 clubMemberByStudentId={clubMemberByStudentId}
                 weekStart={weekData.week.weekStart}
-                hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
-                hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                nightStartHour={scheduleRules.nightFlightStartHour}
+                hasPrevWeek={agendaView === "three-day"
+                  ? threeDayStartIndex > 0
+                  : weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
+                hasNextWeek={agendaView === "three-day"
+                  ? threeDayStartIndex < DAY_ORDER.length - 3
+                  : weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
                 onPrevWeek={() => {
+                  if (agendaView === "three-day") {
+                    setSelectedDay(DAY_ORDER[Math.max(0, threeDayStartIndex - 1)]!);
+                    return;
+                  }
                   const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
                   const prev = weekOptions[idx - 1];
                   if (!prev) return;
@@ -2423,6 +2366,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   void loadWeek(prev.weekStart, prev, { showSkeleton: true });
                 }}
                 onNextWeek={() => {
+                  if (agendaView === "three-day") {
+                    setSelectedDay(DAY_ORDER[Math.min(DAY_ORDER.length - 3, threeDayStartIndex + 1)]!);
+                    return;
+                  }
                   const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
                   const next = weekOptions[idx + 1];
                   if (!next) return;
@@ -2456,12 +2403,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 }}
               />
             ) : (
-              <section className="w-full rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
                 <DailyCalendarGrid
                   items={calendarItems}
                   selectedDay={selectedDay}
                   weekStart={weekData.week.weekStart}
                   groupBy={dailyGroupBy}
+                  nightStartHour={scheduleRules.nightFlightStartHour}
                   colorByAircraft={colorByAircraft}
                   borderByInstructor={borderByInstructor}
                   weekData={weekData}
@@ -2754,7 +2702,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   <label className="block text-xs text-slate-400">
                     Status do voo
                     <select
-                      value={formDraft.flightStatus ?? "Previsto"}
+                      value={formDraft.flightStatus ?? "Confirmado"}
                       onChange={(e) => setFormDraft((prev) => prev ? { ...prev, flightStatus: e.target.value as FlightStatus, cancellationReason: "", cancellationReasonText: "" } : prev)}
                       className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                     >
@@ -2790,6 +2738,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           />
                         </label>
                       )}
+                      <label className="flex items-center gap-2 text-xs text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={formDraft.waiveCancellationPenalty ?? false}
+                          onChange={(e) => setFormDraft((prev) => prev ? { ...prev, waiveCancellationPenalty: e.target.checked } : prev)}
+                        />
+                        Não descontar multa do aluno
+                      </label>
                     </div>
                   )}
                 </div>
@@ -2896,6 +2852,46 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 />
               </label>
+            </div>
+
+            {/* 4-time summary (Apresentação / Acionamento / Corte / Encerramento) */}
+            {(() => {
+              const startMin = parseScheduleTimeToMinutes(formDraft.startTime);
+              const durMin = Math.round(formDraft.durationHours * 60);
+              const presentation = minutesToScheduleHHMM(startMin - scheduleRules.bufferBeforeMinutes);
+              const cutoff = minutesToScheduleHHMM(startMin + durMin);
+              const end = minutesToScheduleHHMM(startMin + durMin + scheduleRules.bufferAfterMinutes);
+              return (
+                <div className="mx-4 mb-3 grid grid-cols-2 gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100 sm:grid-cols-4">
+                  <div><p className="text-sky-300">Apresentação</p><strong>{presentation}</strong></div>
+                  <div><p className="text-sky-300">Acionamento</p><strong>{formDraft.startTime}</strong></div>
+                  <div><p className="text-sky-300">Corte</p><strong>{cutoff}</strong></div>
+                  <div><p className="text-sky-300">Encerramento</p><strong>{end}</strong></div>
+                </div>
+              );
+            })()}
+
+            {/* Student credits — always shown when modal is open */}
+            <div className="mx-4 mb-3 rounded-xl border border-slate-700 bg-slate-800/60 p-3">
+              <p className="mb-2 text-xs font-semibold text-slate-300">Créditos disponíveis do aluno</p>
+              {formStudentCreditsLoading ? (
+                <p className="text-xs text-slate-500">Carregando créditos...</p>
+              ) : formStudentCredits && formStudentCredits.length > 0 ? (
+                <div className="space-y-1">
+                  {formStudentCredits.map((row) => (
+                    <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
+                      <span className="text-slate-300">{row.aircraftModelName}</span>
+                      <span className="text-slate-400">
+                        Disponível: <strong className={row.availableHours > 0 ? "text-emerald-300" : "text-red-300"}>
+                          {Math.floor(row.availableHours)}h{String(Math.round((row.availableHours % 1) * 60)).padStart(2, "0")}
+                        </strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">Nenhum crédito encontrado para este aluno.</p>
+              )}
             </div>
 
             {!selectedAircraftHasSupply ? (

@@ -1,5 +1,5 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, DEFAULT_SCHOOL_ID, STUDENT_CREDITS_COL_ID } from "./appwrite";
+import { databases, ID, isAppwriteConfigured, Permission, Role, SCHOOL_ID, DEFAULT_SCHOOL_ID, STUDENT_CREDITS_COL_ID, CREDIT_ADJUSTMENTS_COL_ID } from "./appwrite";
 import { getSchoolCosts } from "./schoolCostsDb";
 import type { StudentPaymentMethod } from "../types/costs";
 
@@ -200,12 +200,12 @@ function modelName(modelId: string | null, modelsById: Map<string, AircraftModel
   return modelsById.get(modelId)?.name || "Modelo não identificado";
 }
 
-/** Scheduled SAGA imports and explicit Previsto; saga-flight-* is never treated as scheduled. */
+/** Scheduled imports and explicit pending/confirmed flights are not consumed credits yet. */
 function isCreditStatementScheduledFlight(item: SavedFlightListItem): boolean {
   const source = String(item.source_filename || "").toLowerCase();
   if (source.includes("saga-schedule") || source.includes("saga-test-schedule")) return true;
   if (item.saga_schedule_id) return true;
-  return String(item.flight_status || "").trim() === "Previsto";
+  return ["Pendente", "Confirmado", "Previsto"].includes(String(item.flight_status || "").trim());
 }
 
 function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | null): FlightSource | null {
@@ -290,9 +290,21 @@ function summarizeModel(
   purchases: MutableCredit[],
   debits: StudentCreditFlightDebit[],
   generatedDate: string,
+  simplified = false,
 ): StudentCreditModelSummary {
   const purchasedHours = purchases.reduce((acc, credit) => acc + credit.hours, 0);
   const consumedHours = debits.reduce((acc, debit) => acc + debit.allocatedHours, 0);
+  if (simplified) {
+    return {
+      aircraftModelId: modelId,
+      aircraftModelName: modelLabel,
+      purchasedHours: roundHours(purchasedHours),
+      consumedHours: roundHours(consumedHours),
+      expiredHours: 0,
+      availableHours: roundHours(purchasedHours - consumedHours),
+      unallocatedFlightHours: 0,
+    };
+  }
   const expiredHours = purchases
     .filter((credit) => credit.expiresAt < generatedDate)
     .reduce((acc, credit) => acc + credit.remainingHours, 0);
@@ -318,7 +330,10 @@ export function buildStudentCreditStatement(params: {
   aircrafts: Aircraft[];
   models: AircraftModel[];
   generatedAt?: string;
+  adjustments?: StudentCreditStatement["adjustments"];
+  nightHoursDifferentFromDay?: boolean;
 }): StudentCreditStatement {
+  const simplified = params.nightHoursDifferentFromDay === false;
   const generatedDate = asIsoDate(params.generatedAt || todayIso());
   const modelsById = new Map(params.models.map((model) => [model.id, model]));
   const aircraftByRegistration = new Map(params.aircrafts.map((aircraft) => [normalizeRegistration(aircraft.registration), aircraft]));
@@ -332,15 +347,21 @@ export function buildStudentCreditStatement(params: {
     const candidateCredits = mutableCredits.filter(
       (credit) => credit.aircraftModelId === aircraftModelId && credit.remainingHours > EPSILON,
     );
-    const eligibleCredits = mutableCredits
-      .filter(
-        (credit) =>
-          credit.aircraftModelId === aircraftModelId &&
-          credit.expiresAt >= flight.flightDate &&
-          credit.remainingHours > EPSILON &&
-          credit.isNight === flight.isNight,
-      )
-      .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate));
+    const eligibleCredits = simplified
+      ? mutableCredits
+          .filter(
+            (credit) => credit.aircraftModelId === aircraftModelId && credit.remainingHours > EPSILON,
+          )
+          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate))
+      : mutableCredits
+          .filter(
+            (credit) =>
+              credit.aircraftModelId === aircraftModelId &&
+              credit.expiresAt >= flight.flightDate &&
+              credit.remainingHours > EPSILON &&
+              credit.isNight === flight.isNight,
+          )
+          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate));
 
     let remainingDebit = flight.hours;
     const allocations = [];
@@ -393,6 +414,7 @@ export function buildStudentCreditStatement(params: {
         mutableCredits.filter((credit) => credit.aircraftModelId === modelId),
         debits.filter((debit) => (debit.aircraftModelId || "unresolved") === modelId),
         generatedDate,
+        simplified,
       );
     })
     .sort((a, b) => a.aircraftModelName.localeCompare(b.aircraftModelName, "pt-BR"));
@@ -402,17 +424,22 @@ export function buildStudentCreditStatement(params: {
   fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit statement totals snapshot',data:{userId:params.userId,debitsCount:debits.length,has739:!!debit739,debit739:debit739?{hours:debit739.hours,allocatedHours:debit739.allocatedHours,unallocatedHours:debit739.unallocatedHours,isNight:debit739.isNight}:null,consumedHours:roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),unallocatedHours:roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0))},timestamp:Date.now()})}).catch(()=>{});
   // #endregion
 
+  const adjustments = params.adjustments ?? [];
+  const adjustmentHours = adjustments.reduce((sum, item) => sum + Math.abs(Math.min(0, item.hours)), 0);
   return {
     userId: params.userId,
     generatedAt: generatedDate,
     purchases: [...params.purchases].sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate)),
     flightDebits: [...debits].sort((a, b) => b.flightDate.localeCompare(a.flightDate)),
+    adjustments,
     summaries,
     totals: {
       purchasedHours: roundHours(summaries.reduce((acc, item) => acc + item.purchasedHours, 0)),
-      consumedHours: roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),
+      consumedHours: roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0) + adjustmentHours),
       expiredHours: roundHours(summaries.reduce((acc, item) => acc + item.expiredHours, 0)),
-      availableHours: roundHours(summaries.reduce((acc, item) => acc + item.availableHours, 0)),
+      availableHours: simplified
+        ? roundHours(summaries.reduce((acc, item) => acc + item.availableHours, 0) - adjustmentHours)
+        : roundHours(Math.max(0, summaries.reduce((acc, item) => acc + item.availableHours, 0) - adjustmentHours)),
       unallocatedFlightHours: roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0)),
       amountPaid: Number(params.purchases.reduce((acc, item) => acc + item.amountPaid, 0).toFixed(2)),
     },
@@ -507,16 +534,24 @@ export async function deleteStudentCredit(creditId: string): Promise<void> {
 export async function getStudentCreditStatement(params: {
   viewer: { userId: string; role: UserRole };
   studentUserId: string;
+  nightHoursDifferentFromDay?: boolean;
 }): Promise<StudentCreditStatement> {
   if (params.viewer.role === "aluno" && params.viewer.userId !== params.studentUserId) {
     throw new Error("Aluno so pode consultar seus proprios creditos.");
   }
 
-  const [purchases, flights, aircrafts, models] = await Promise.all([
+  const [purchases, flights, aircrafts, models, adjustmentDocs] = await Promise.all([
     listStudentCredits(params.studentUserId),
     listFlightSourcesForStudent(params.viewer, params.studentUserId),
     listAircrafts(SCHOOL_ID ?? ""),
     listModels(),
+    databases && DB_ID
+      ? databases.listDocuments(DB_ID, CREDIT_ADJUSTMENTS_COL_ID, [
+          Query.equal("student_user_id", [params.studentUserId]),
+          Query.orderDesc("occurred_at"),
+          Query.limit(500),
+        ]).catch(() => ({ documents: [] }))
+      : Promise.resolve({ documents: [] }),
   ]);
 
   return buildStudentCreditStatement({
@@ -525,5 +560,16 @@ export async function getStudentCreditStatement(params: {
     flights,
     aircrafts,
     models,
+    nightHoursDifferentFromDay: params.nightHoursDifferentFromDay,
+    adjustments: adjustmentDocs.documents.map((doc) => ({
+      id: doc.$id,
+      flightId: (doc.flight_id as string | null | undefined) ?? null,
+      aircraftModelId: String(doc.aircraft_model_id ?? ""),
+      aircraftIdent: String(doc.aircraft_ident ?? ""),
+      hours: Number(doc.hours ?? 0),
+      percentage: Number(doc.percentage ?? 0),
+      reason: String(doc.reason ?? ""),
+      occurredAt: String(doc.occurred_at ?? doc.$createdAt ?? ""),
+    })),
   });
 }

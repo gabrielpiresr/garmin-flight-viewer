@@ -17,6 +17,22 @@
       "entrypoint": "src/main.js",
       "path": "functions/instructor-patch-flight",
       "ignore": ["node_modules", ".npm"]
+    },
+    {
+      "functionId": "schedule-booking",
+      "name": "Schedule Booking",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/schedule-booking",
+      "ignore": ["node_modules", ".npm"]
+    },
+    {
+      "functionId": "cakto-webhook",
+      "name": "Cakto Webhook",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/cakto-webhook",
+      "ignore": ["node_modules", ".npm"]
     }
   ]
 }

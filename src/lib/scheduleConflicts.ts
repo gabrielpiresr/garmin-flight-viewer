@@ -1,4 +1,5 @@
 import type { AircraftWeekSupply, ExistingScheduledFlight } from "../types/schedule";
+import type { FlightStatus } from "./flightsDb";
 import { hoursOverlappingInterval } from "./scheduleTimeGrid";
 
 export type FlightConflictType = "aircraft_blocked" | "min_gap" | "overlap" | "other";
@@ -12,7 +13,7 @@ export type ConflictFlightDraft = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
-  flightStatus?: "Previsto" | "Cancelado" | "Realizado";
+  flightStatus?: FlightStatus;
   isNight?: boolean;
 };
 
@@ -35,7 +36,7 @@ function toMinutes(startHour: number, durationHours: number): { start: number; e
   return { start, end };
 }
 
-function isCancelledFlight(row: { flightStatus?: "Previsto" | "Cancelado" | "Realizado" }): boolean {
+function isCancelledFlight(row: { flightStatus?: FlightStatus }): boolean {
   return row.flightStatus === "Cancelado";
 }
 

@@ -43,7 +43,7 @@ export function CreditStatementView({
   compact = false,
   renderPurchaseActions,
 }: Props) {
-  const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0;
+  const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0 || statement.adjustments.length > 0;
 
   return (
     <section className="space-y-4">
@@ -125,13 +125,11 @@ export function CreditStatementView({
                       <th className="px-3 py-2 font-medium">Valor</th>
                       <th className="px-3 py-2 font-medium">Horas</th>
                       <th className="px-3 py-2 font-medium">Validade</th>
-                      <th className="px-3 py-2 font-medium">Status</th>
                       {renderPurchaseActions ? <th className="px-3 py-2 font-medium">Ações</th> : null}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {statement.purchases.map((purchase) => {
-                      const expired = purchase.expiresAt < statement.generatedAt;
                       const payment = purchase.paymentInstallments
                         ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
                         : purchase.paymentMethod || "Forma não informada";
@@ -148,9 +146,6 @@ export function CreditStatementView({
                           <td className="px-3 py-2">{formatCurrency(purchase.amountPaid)}</td>
                           <td className="px-3 py-2">{formatHours(purchase.hours)}</td>
                           <td className="px-3 py-2">{formatDate(purchase.expiresAt)}</td>
-                          <td className={expired ? "px-3 py-2 text-red-300" : "px-3 py-2 text-emerald-300"}>
-                            {expired ? "Vencido" : "Ativo"}
-                          </td>
                           {renderPurchaseActions ? (
                             <td className="px-3 py-2">
                               <div className="flex flex-wrap gap-2">{renderPurchaseActions(purchase)}</div>
@@ -206,6 +201,22 @@ export function CreditStatementView({
           </div>
         </div>
       )}
+      {statement.adjustments.length > 0 ? (
+        <section className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+          <h3 className="mb-3 text-sm font-semibold text-rose-200">Ajustes e multas</h3>
+          <div className="space-y-2">
+            {statement.adjustments.map((adjustment) => (
+              <div key={adjustment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-slate-950/30 px-3 py-2 text-xs">
+                <div>
+                  <p className="font-medium text-slate-200">{adjustment.reason || "Multa de cancelamento"}</p>
+                  <p className="text-slate-500">{adjustment.aircraftIdent} · {adjustment.percentage}%</p>
+                </div>
+                <strong className="text-rose-300">{adjustment.hours.toFixed(2)}h</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </section>
   );
 }

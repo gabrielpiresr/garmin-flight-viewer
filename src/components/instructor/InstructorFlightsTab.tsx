@@ -29,12 +29,15 @@ import {
 } from "../../lib/flightListDisplayCache";
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
+import { ADMIN_USERS_FUNCTION_ID } from "../../lib/appwrite";
+import { importSelfFlightsFromSaga, type SagaImportProgress } from "../../lib/sagaImportDb";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
 import { PreencherFichaFlow } from "./PreencherFichaFlow";
 import { Skeleton } from "../ui/Skeleton";
+import { useToast } from "../ui/ToastProvider";
 
 type View = "list" | "detail" | "create" | "preencher-ficha";
 type DisplayMode = "cards" | "calendar" | "table";
@@ -72,7 +75,7 @@ function selectFullInfoPreloadItems(
 }
 
 function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
-  return item.flight_status === "Previsto" && isFutureFlight(item, info);
+  return ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) && isFutureFlight(item, info);
 }
 
 function FlightStatusBadge({ status }: { status: SavedFlightListItem["flight_status"] }) {
@@ -371,6 +374,7 @@ function FlightCard({
 
 export function InstructorFlightsTab() {
   const { user, configured } = useAuth();
+  const { showToast } = useToast();
   const [view, setView] = useState<View>("list");
   const [selectedFlightId, setSelectedFlightId] = useState<string | undefined>();
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
@@ -383,6 +387,8 @@ export function InstructorFlightsTab() {
   const [totalFlights, setTotalFlights] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sagaImporting, setSagaImporting] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SagaImportProgress | null>(null);
   const [search, setSearch] = useState("");
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [suggestionFlightId, setSuggestionFlightId] = useState<string | null>(null);
@@ -742,6 +748,31 @@ export function InstructorFlightsTab() {
     closeSuggestion();
   };
 
+  const handleSagaSync = async () => {
+    if (sagaImporting) return;
+    setSagaImporting(true);
+    setSyncProgress(null);
+    try {
+      const summary = await importSelfFlightsFromSaga({
+        onProgress: (p) => setSyncProgress(p),
+      });
+      const novos = (summary.flightsCreated ?? 0) + (summary.flightsUpdated ?? 0);
+      showToast({
+        message:
+          novos > 0
+            ? `${summary.flightsCreated} voo(s) novo(s) e ${summary.flightsUpdated} atualizado(s) importados do SAGA.`
+            : "Nenhum voo novo encontrado no SAGA.",
+        variant: novos > 0 ? "success" : "info",
+      });
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      showToast({ message: (e as Error).message, variant: "error" });
+    } finally {
+      setSagaImporting(false);
+      setSyncProgress(null);
+    }
+  };
+
   const handleCreated = (id: string) => {
     invalidateFlightListDisplayCache([id]);
     setRefreshKey((k) => k + 1);
@@ -810,6 +841,33 @@ export function InstructorFlightsTab() {
               </button>
             ))}
           </div>
+          {!!ADMIN_USERS_FUNCTION_ID && (
+            <button
+              type="button"
+              onClick={() => void handleSagaSync()}
+              disabled={sagaImporting}
+              className="flex items-center gap-2 rounded-lg border border-sky-700/50 bg-sky-900/30 px-4 py-2 text-sm font-medium text-sky-300 transition hover:bg-sky-800/40 disabled:opacity-50"
+            >
+              {sagaImporting ? (
+                <>
+                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  Sincronizando…
+                </>
+              ) : (
+                <>
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 12v-2a8 8 0 018-8 8 8 0 017.32 4.74" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M20 12v2a8 8 0 01-8 8 8 8 0 01-7.32-4.74" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M20 4v4h-4M4 20v-4h4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Sincronizar do SAGA
+                </>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setView("create")}
@@ -917,7 +975,7 @@ export function InstructorFlightsTab() {
             onDelete={(id) => void handleDelete(id)}
             onPreencherFicha={(id) => {
               const item = items.find((f) => f.id === id);
-              if (item?.flight_status === "Previsto") {
+              if (item && ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status)) {
                 setSelectedFlightId(id);
                 setView("preencher-ficha");
               }
@@ -997,7 +1055,7 @@ export function InstructorFlightsTab() {
                         onDelete={() => void handleDelete(item.id)}
                         onEditSuggestion={() => openSuggestion(item.id)}
                         onPreencherFicha={
-                          item.flight_status === "Previsto" &&
+                          ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) &&
                           user?.role === "instrutor" &&
                           item.instructor_user_id === user.id
                             ? () => { setSelectedFlightId(item.id); setView("preencher-ficha"); }
@@ -1027,6 +1085,37 @@ export function InstructorFlightsTab() {
             onLoadMore={() => void loadMore()}
             onRefresh={() => void refresh()}
           />
+        </div>
+      )}
+
+      {sagaImporting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3">
+              <svg className="h-5 w-5 shrink-0 animate-spin text-sky-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              <h3 className="text-base font-semibold text-slate-100">Sincronizando com SAGA</h3>
+            </div>
+            <p className="mb-4 text-sm text-slate-300">
+              {syncProgress?.message || "Conectando ao SAGA..."}
+            </p>
+            {syncProgress && syncProgress.total > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs text-slate-500">
+                  <span>{syncProgress.stage === "import" ? `${syncProgress.current} de ${syncProgress.total} voos` : syncProgress.stage}</span>
+                  <span>{Math.round((syncProgress.current / syncProgress.total) * 100)}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-700">
+                  <div
+                    className="h-1.5 rounded-full bg-sky-500 transition-all duration-300"
+                    style={{ width: `${Math.round((syncProgress.current / syncProgress.total) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1423,7 +1512,7 @@ function FlightTableSection({
                         ) : null}
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
-                            {onPreencherFicha && (isFutureSection || item.flight_status === "Previsto") ? (
+                            {onPreencherFicha && (isFutureSection || ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status)) ? (
                               <button
                                 type="button"
                                 onClick={(e) => {

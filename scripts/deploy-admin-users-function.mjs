@@ -135,6 +135,10 @@ async function main() {
     env.VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID ||
     "profile_documents";
   const flightsCollectionId = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || env.VITE_APPWRITE_COLLECTION_ID;
+  const videosCollectionId =
+    process.env.APPWRITE_VIDEOS_COLLECTION_ID ||
+    env.VITE_APPWRITE_VIDEOS_COLLECTION_ID ||
+    "6a0200bf00297bfc2231";
   const weeklyPlansCollectionId =
     process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || env.VITE_APPWRITE_WEEKLY_PLANS_COL_ID;
   const instructorPrefsCollectionId =
@@ -145,6 +149,10 @@ async function main() {
     process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || env.VITE_APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
   const schoolCostsCollectionId =
     process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || env.VITE_APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
+  const crmProposalsCollectionId =
+    process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || env.VITE_APPWRITE_CRM_PROPOSALS_COL_ID || "crm_proposals";
+  const caktoReceiptsCollectionId =
+    process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || env.VITE_APPWRITE_CAKTO_RECEIPTS_COL_ID || "cakto_receipts";
   const instructorCostsCollectionId =
     process.env.APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
   const flightInstructorPaymentsCollectionId =
@@ -255,6 +263,7 @@ async function main() {
   if (!databaseId) missing.push("VITE_APPWRITE_DATABASE_ID");
   if (!profilesCollectionId) missing.push("VITE_APPWRITE_PROFILES_COLLECTION_ID");
   if (!flightsCollectionId) missing.push("VITE_APPWRITE_COLLECTION_ID");
+  if (!videosCollectionId) missing.push("VITE_APPWRITE_VIDEOS_COLLECTION_ID");
   if (!weeklyPlansCollectionId) missing.push("VITE_APPWRITE_WEEKLY_PLANS_COL_ID");
   if (!instructorPrefsCollectionId) missing.push("VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID");
   if (!studentCreditsCollectionId) missing.push("VITE_APPWRITE_STUDENT_CREDITS_COL_ID");
@@ -285,11 +294,14 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_PROFILES_COLLECTION_ID", profilesCollectionId);
   await upsertVariable(functions, "APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID", profileDocumentsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHTS_COLLECTION_ID", flightsCollectionId);
+  await upsertVariable(functions, "APPWRITE_VIDEOS_COLLECTION_ID", videosCollectionId);
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_CREDITS_COLLECTION_ID", studentCreditsCollectionId);
   await upsertVariable(functions, "APPWRITE_PRODUCT_SALES_COLLECTION_ID", productSalesCollectionId);
   await upsertVariable(functions, "APPWRITE_SCHOOL_COSTS_COLLECTION_ID", schoolCostsCollectionId);
+  await upsertVariable(functions, "APPWRITE_CRM_PROPOSALS_COLLECTION_ID", crmProposalsCollectionId);
+  await upsertVariable(functions, "APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID", caktoReceiptsCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID", instructorCostsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID", flightInstructorPaymentsCollectionId);
   await upsertVariable(functions, "APPWRITE_FUELINGS_COLLECTION_ID", fuelingsCollectionId);

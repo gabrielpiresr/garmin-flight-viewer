@@ -29,6 +29,16 @@ type ProposalDoc = {
   products_json?: string | null;
   public_token?: string;
   status?: string | null;
+  cakto_offer_id?: string | null;
+  payment_url?: string | null;
+  payment_status?: string | null;
+  payment_error?: string | null;
+  payment_updated_at?: string | null;
+  proposal_type?: string | null;
+  student_user_id?: string | null;
+  credit_package_id?: string | null;
+  credit_package_snapshot_json?: string | null;
+  credit_id?: string | null;
 };
 
 function safeParse<T>(json: string | null | undefined, fallback: T): T {
@@ -37,6 +47,18 @@ function safeParse<T>(json: string | null | undefined, fallback: T): T {
 }
 
 function toProposal(doc: ProposalDoc): CrmProposal {
+  const productsData = safeParse<unknown>(doc.products_json, []);
+  const packageMetadata =
+    productsData && !Array.isArray(productsData) && typeof productsData === "object" &&
+    (productsData as Record<string, unknown>).kind === "student_credit_package"
+      ? productsData as {
+          studentUserId?: string;
+          packageId?: string;
+          creditId?: string;
+          snapshot?: CrmProposal["creditPackageSnapshot"];
+          products?: ProposalProduct[];
+        }
+      : null;
   return {
     id: doc.$id,
     schoolId: doc.school_id ?? DEFAULT_SCHOOL_ID,
@@ -46,9 +68,23 @@ function toProposal(doc: ProposalDoc): CrmProposal {
     hours: doc.hours ?? 0,
     hourPrice: doc.hour_price ?? 0,
     totalValue: doc.total_value ?? 0,
-    products: safeParse<ProposalProduct[]>(doc.products_json, []),
+    products: Array.isArray(productsData)
+      ? productsData as ProposalProduct[]
+      : Array.isArray(packageMetadata?.products) ? packageMetadata.products : [],
     publicToken: doc.public_token ?? "",
     status: (doc.status === "sent" ? "sent" : "draft") as CrmProposal["status"],
+    caktoOfferId: doc.cakto_offer_id ?? "",
+    paymentUrl: doc.payment_url ?? "",
+    paymentStatus: ["created", "paid", "failed"].includes(doc.payment_status || "")
+      ? doc.payment_status as CrmProposal["paymentStatus"]
+      : "pending",
+    paymentError: doc.payment_error ?? "",
+    paymentUpdatedAt: doc.payment_updated_at ?? null,
+    proposalType: packageMetadata ? "student_credit_package" : "commercial",
+    studentUserId: packageMetadata?.studentUserId ?? "",
+    creditPackageId: packageMetadata?.packageId ?? "",
+    creditPackageSnapshot: packageMetadata?.snapshot ?? null,
+    creditId: packageMetadata?.creditId ?? "",
     createdAt: doc.$createdAt ?? "",
   };
 }

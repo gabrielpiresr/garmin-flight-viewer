@@ -39,6 +39,8 @@ import {
 import { OnboardingSettingsPanel } from "./OnboardingSettingsPanel";
 import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
 import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
+import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
+import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
 
 const RolesSettingsTab = lazy(() =>
   import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
@@ -825,7 +827,9 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("financeiro") ? (
         <div hidden={activeSubTab !== "financeiro"} className="space-y-4">
           <SchoolCostsPanel />
+          <FlightCreditPackagesPanel />
           <SchoolProductsPanel />
+          <CaktoSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("onboarding") ? (
