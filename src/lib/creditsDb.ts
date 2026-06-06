@@ -295,13 +295,16 @@ function summarizeModel(
   const purchasedHours = purchases.reduce((acc, credit) => acc + credit.hours, 0);
   const consumedHours = debits.reduce((acc, debit) => acc + debit.allocatedHours, 0);
   if (simplified) {
+    // No modo simplificado: soma TODAS as horas voadas (incluindo parciais),
+    // permitindo saldo negativo quando o aluno voou mais do que comprou.
+    const totalFlownHours = debits.reduce((acc, debit) => acc + debit.hours, 0);
     return {
       aircraftModelId: modelId,
       aircraftModelName: modelLabel,
       purchasedHours: roundHours(purchasedHours),
-      consumedHours: roundHours(consumedHours),
+      consumedHours: roundHours(totalFlownHours),
       expiredHours: 0,
-      availableHours: roundHours(purchasedHours - consumedHours),
+      availableHours: roundHours(purchasedHours - totalFlownHours),
       unallocatedFlightHours: 0,
     };
   }
