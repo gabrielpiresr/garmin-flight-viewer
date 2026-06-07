@@ -36,7 +36,7 @@ export function VideoHelperSetupPage() {
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
             O download com corte e instrumentos precisa de um aplicativo rodando no computador. Ele processa o vídeo localmente e entrega o arquivo pronto ao sistema.
           </p>
-          <p className="mt-2 text-xs text-slate-500">Versão atual: 1.3.0</p>
+          <p className="mt-2 text-xs text-slate-500">Versão atual: 1.3.2</p>
           <div className="mt-5 flex flex-wrap gap-3">
             <a
               href={HELPER_DOWNLOAD_URL}

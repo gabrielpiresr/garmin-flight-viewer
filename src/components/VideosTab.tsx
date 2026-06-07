@@ -66,7 +66,7 @@ const HELPER_URL = "http://127.0.0.1:7842";
 const HELPER_SETUP_PATH = "/video-helper";
 
 type HelperStatus = "checking" | "online" | "offline";
-type SelectedFile = { name: string; path: string; size: number };
+type SelectedFile = { name: string; path: string; size: number; modifiedAtMs?: number };
 type ProcessingMode = "original" | "compatible" | "compressed";
 type ProcessingStrategy = "direct" | "remux" | "concat-copy" | "transcode";
 
@@ -246,7 +246,15 @@ async function pickFilesFromHelper(): Promise<SelectedFile[]> {
   const response = await fetch(`${HELPER_URL}/pick-files`, { method: "POST" });
   const body = await response.json().catch(() => ({})) as { files?: SelectedFile[]; error?: string };
   if (!response.ok) throw new Error(body.error || "Falha ao abrir o seletor de arquivos.");
-  return Array.isArray(body.files) ? body.files : [];
+  const files = Array.isArray(body.files) ? body.files : [];
+  return [...files].sort((a, b) => {
+    const aModified = Number(a.modifiedAtMs);
+    const bModified = Number(b.modifiedAtMs);
+    if (Number.isFinite(aModified) && Number.isFinite(bModified) && aModified !== bModified) {
+      return aModified - bModified;
+    }
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  });
 }
 
 export function VideosTab({ flightId, publicMode = false, publicVideos }: {
@@ -337,7 +345,13 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         const response = await fetch(`${HELPER_URL}/jobs/${candidate.id}`);
         if (!response.ok || cancelled) return;
         const body = await response.json() as {
-          job?: { stage?: ProcessStage; percent?: number; message?: string; strategy?: ProcessingStrategy };
+          job?: {
+            stage?: ProcessStage;
+            percent?: number;
+            message?: string;
+            strategy?: ProcessingStrategy;
+            result?: ProgressPayload | null;
+          };
         };
         if (!body.job || cancelled) return;
         setProcessingJobId(candidate.id);
@@ -345,8 +359,20 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         setProgress(body.job.percent ?? 0);
         setProcessingStrategy(body.job.strategy ?? null);
         if (body.job.stage === "done") {
+          const result = body.job.result;
+          if (result?.file_url) {
+            await updateFlightVideoReady(candidate.id, {
+              fileUrl: result.file_url,
+              fileSize: result.file_size ?? null,
+              durationSec: result.duration_sec ?? null,
+              telemetryPresent: result.telemetry_present,
+              telemetrySource: result.telemetry_source,
+              telemetryJson: result.telemetry_json,
+              availableWidgets: result.available_widgets,
+            });
+          }
           setIsDone(true);
-          void loadVideos();
+          await loadVideos();
           return;
         }
         if (body.job.stage === "error") {
@@ -369,7 +395,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     if (!processingJobId || evtSourceRef.current) return;
     const source = new EventSource(`${HELPER_URL}/progress/${processingJobId}`);
     evtSourceRef.current = source;
-    source.onmessage = (event) => {
+    source.onmessage = async (event) => {
       const payload = JSON.parse(event.data) as ProgressPayload;
       setProgressStage(payload.stage);
       setProgress(payload.percent);
@@ -377,8 +403,19 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       if (payload.stage === "done") {
         source.close();
         evtSourceRef.current = null;
+        if (payload.file_url) {
+          await updateFlightVideoReady(processingJobId, {
+            fileUrl: payload.file_url,
+            fileSize: payload.file_size ?? null,
+            durationSec: payload.duration_sec ?? null,
+            telemetryPresent: payload.telemetry_present,
+            telemetrySource: payload.telemetry_source,
+            telemetryJson: payload.telemetry_json,
+            availableWidgets: payload.available_widgets,
+          });
+        }
         setIsDone(true);
-        void loadVideos();
+        await loadVideos();
       } else if (payload.stage === "error") {
         source.close();
         evtSourceRef.current = null;
@@ -923,7 +960,9 @@ function FileSelectionList({
 }) {
   return (
     <div className="mt-4 space-y-3">
-      <p className="text-xs text-slate-500">Arraste para reordenar. Ordem = sequência de concatenação.</p>
+      <p className="text-xs text-slate-500">
+        Ordenado pela data de modificação, do mais antigo para o mais novo. Arraste para ajustar manualmente.
+      </p>
       <ul className="space-y-1.5">
         {files.map((f, i) => (
           <li

@@ -72,7 +72,8 @@ type EndConditionForm =
   | { type: "none" }
   | { type: "time"; value_seconds: number }
   | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
-  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" };
+  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" }
+  | { type: "instructor_marked" };
 
 type ParameterForm = {
   parameter: string;
@@ -134,6 +135,8 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
     end_condition = { type: "time", value_seconds: step.end_condition.value_seconds };
   } else if (step.end_condition.type === "traffic_pattern_leg") {
     end_condition = { type: "traffic_pattern_leg", leg: step.end_condition.leg };
+  } else if (step.end_condition.type === "instructor_marked") {
+    end_condition = { type: "instructor_marked" };
   } else {
     end_condition = {
       type: "parameter",
@@ -227,6 +230,7 @@ function EndConditionEditor({
     if (type === "none") onChange({ type: "none" });
     else if (type === "time") onChange({ type: "time", value_seconds: 30 });
     else if (type === "traffic_pattern_leg") onChange({ type: "traffic_pattern_leg", leg: "final" });
+    else if (type === "instructor_marked") onChange({ type: "instructor_marked" });
     else onChange({ type: "parameter", parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 });
   };
 
@@ -242,6 +246,7 @@ function EndConditionEditor({
           <option value="none">Nenhuma — etapa cobre toda a manobra</option>
           <option value="time">Por tempo (duração fixa em segundos)</option>
           <option value="parameter">Por parâmetro (aguardar condição na telemetria)</option>
+          <option value="instructor_marked">Definido pelo instrutor (marcação manual)</option>
           {isLanding && (
             <option value="traffic_pattern_leg">Por perna do circuito</option>
           )}
@@ -307,6 +312,12 @@ function EndConditionEditor({
         </div>
       )}
 
+      {value.type === "instructor_marked" && (
+        <p className="text-xs text-slate-400">
+          O instrutor marcará manualmente no gráfico de telemetria o momento em que esta etapa termina, durante a análise do voo.
+        </p>
+      )}
+
       {value.type === "traffic_pattern_leg" && (
         <div>
           <span className={labelCls}>Perna do circuito</span>
@@ -348,6 +359,8 @@ function ParameterCard({
   const handleParamChange = (p: string) => {
     set({ parameter: p, label: TELEMETRY_PARAMETER_LABELS[p] ?? p });
   };
+
+  const isHeadingTrack = param.parameter === "heading" || param.parameter === "track";
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 space-y-2">
@@ -402,50 +415,62 @@ function ParameterCard({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <span className={labelCls}>Mín. esperado (início)</span>
+          <span className={labelCls}>
+            {isHeadingTrack ? "Variância mín. (°)" : "Mín. esperado (início)"}
+          </span>
           <input
             type="number"
             value={param.min}
             onChange={(e) => set({ min: e.target.value })}
             className={inputCls}
-            placeholder="Sem limite"
+            placeholder={isHeadingTrack ? "Sem mínimo" : "Sem limite"}
           />
         </div>
         <div>
-          <span className={labelCls}>Máx. esperado (início)</span>
+          <span className={labelCls}>
+            {isHeadingTrack ? "Variância máx. (°)" : "Máx. esperado (início)"}
+          </span>
           <input
             type="number"
             value={param.max}
             onChange={(e) => set({ max: e.target.value })}
             className={inputCls}
-            placeholder="Sem limite"
+            placeholder={isHeadingTrack ? "Ex: 10" : "Sem limite"}
           />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <span className={labelCls}>Mín. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
-          <input
-            type="number"
-            value={param.min_end}
-            onChange={(e) => set({ min_end: e.target.value })}
-            className={inputCls}
-            placeholder="Mesmo que início"
-          />
-        </div>
-        <div>
-          <span className={labelCls}>Máx. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
-          <input
-            type="number"
-            value={param.max_end}
-            onChange={(e) => set({ max_end: e.target.value })}
-            className={inputCls}
-            placeholder="Mesmo que início"
-          />
-        </div>
-      </div>
-      {(param.min_end !== "" || param.max_end !== "") && (
-        <p className="text-xs text-slate-500">Se início e fim configurados, o limite é interpolado linearmente ao longo da etapa.</p>
+      {isHeadingTrack ? (
+        <p className="text-xs text-sky-400/80">
+          Para proa/track, o limite é relativo à proa inicial da etapa. Ex: variância máx. 10° → piloto pode variar ±10° da proa no início da etapa.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <span className={labelCls}>Mín. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
+              <input
+                type="number"
+                value={param.min_end}
+                onChange={(e) => set({ min_end: e.target.value })}
+                className={inputCls}
+                placeholder="Mesmo que início"
+              />
+            </div>
+            <div>
+              <span className={labelCls}>Máx. esperado (fim) <span className="normal-case font-normal text-slate-600">(opcional)</span></span>
+              <input
+                type="number"
+                value={param.max_end}
+                onChange={(e) => set({ max_end: e.target.value })}
+                className={inputCls}
+                placeholder="Mesmo que início"
+              />
+            </div>
+          </div>
+          {(param.min_end !== "" || param.max_end !== "") && (
+            <p className="text-xs text-slate-500">Se início e fim configurados, o limite é interpolado linearmente ao longo da etapa.</p>
+          )}
+        </>
       )}
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -502,7 +527,9 @@ function StepRow({
                   ? `${step.end_condition.value_seconds}s`
                   : step.end_condition.type === "traffic_pattern_leg"
                     ? `perna ${LEG_LABELS_PT[step.end_condition.leg]}`
-                    : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`
+                    : step.end_condition.type === "instructor_marked"
+                      ? "definido pelo instrutor"
+                      : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`
               }`
             : ""}
         </p>
@@ -592,12 +619,14 @@ function StepModal({
             ? { type: "time" as const, value_seconds: form.end_condition.value_seconds }
             : form.end_condition.type === "traffic_pattern_leg"
               ? { type: "traffic_pattern_leg" as const, leg: form.end_condition.leg }
-              : {
-                  type: "parameter" as const,
-                  parameter: form.end_condition.parameter,
-                  operator: form.end_condition.operator,
-                  value: form.end_condition.value,
-                };
+              : form.end_condition.type === "instructor_marked"
+                ? { type: "instructor_marked" as const }
+                : {
+                    type: "parameter" as const,
+                    parameter: form.end_condition.parameter,
+                    operator: form.end_condition.operator,
+                    value: form.end_condition.value,
+                  };
 
       const stepData = {
         template_id: templateId,

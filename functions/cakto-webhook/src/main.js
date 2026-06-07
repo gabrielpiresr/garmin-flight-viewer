@@ -12,8 +12,17 @@ const RECEIPTS_COLLECTION_ID = process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID
 const PROPOSALS_COLLECTION_ID = process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || "crm_proposals";
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || "student_credits";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || "school_costs";
+const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID || "";
+const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || "";
 const WEBHOOK_TOKEN = process.env.CAKTO_WEBHOOK_TOKEN || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
+const SAGA_BASE_URL = process.env.SAGA_BASE_URL || "https://epeac.saga.aero";
+const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
+const SAGA_CREDIT_TYPE = process.env.SAGA_CREDIT_TYPE || "GENERIC";
+const SAGA_CREDIT_AIRCRAFT_ICAO = process.env.SAGA_CREDIT_AIRCRAFT_ICAO || "MC01";
+const SAGA_AUTH_SESSION_KEY = "sagaAuthSession";
+const SAGA_IMPORT_CREDENTIALS_KEY = "sagaImportCredentials";
+const SAGA_IMPORT_MAPPING_KEY = "sagaImportMapping";
 
 const ALLOWED_EVENTS = new Set([
   "purchase_approved",
@@ -103,7 +112,7 @@ async function findProposal(offerId) {
   const result = await databases.listDocuments(DATABASE_ID, PROPOSALS_COLLECTION_ID, [
     sdk.Query.equal("cakto_offer_id", [offerId]),
     sdk.Query.limit(1),
-  ]).catch(() => ({ documents: [] }));
+  ]);
   return result.documents?.[0] || null;
 }
 
@@ -140,6 +149,250 @@ function creditPermissions(userId) {
   ];
 }
 
+function sagaSetCookieHeaders(headers) {
+  if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
+  const raw = headers.get("set-cookie");
+  if (!raw) return [];
+  return raw.split(/,(?=\s*[^;,=\s]+=[^;,]*;)/g).map((cookie) => cookie.trim()).filter(Boolean);
+}
+
+function sagaMergeCookies(cookieJar, headers) {
+  for (const cookie of sagaSetCookieHeaders(headers)) {
+    const pair = String(cookie).split(";", 1)[0] || "";
+    const eqIndex = pair.indexOf("=");
+    if (eqIndex > 0) cookieJar.set(pair.slice(0, eqIndex), pair.slice(eqIndex + 1));
+  }
+}
+
+function sagaCookieHeader(cookieJar) {
+  return Array.from(cookieJar.entries()).map(([key, value]) => `${key}=${value}`).join("; ");
+}
+
+function sagaPersistableCookieKey(key) {
+  return key === "XSRF-TOKEN" || /session/i.test(key);
+}
+
+function sagaCookieJarFromObject(cookies) {
+  const cookieJar = new Map();
+  if (!cookies || typeof cookies !== "object") return cookieJar;
+  for (const [key, value] of Object.entries(cookies)) {
+    if (clean(key) && clean(value) && sagaPersistableCookieKey(clean(key))) {
+      cookieJar.set(clean(key), clean(value));
+    }
+  }
+  return cookieJar;
+}
+
+function sagaCookieJarToObject(cookieJar) {
+  return Object.fromEntries(Array.from(cookieJar.entries()).filter(([key]) => sagaPersistableCookieKey(key)));
+}
+
+function extractSagaCsrfToken(html) {
+  const text = String(html || "");
+  const patterns = [
+    /<input\b[^>]*name=["']_token["'][^>]*value=["']([^"']+)["']/i,
+    /<input\b[^>]*value=["']([^"']+)["'][^>]*name=["']_token["']/i,
+    /<meta\b[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i,
+    /<meta\b[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function isSagaLoginResponse(result) {
+  const location = clean(result?.response?.headers?.get("location"));
+  return location.includes("/login") ||
+    (Number(result?.response?.status) === 200 &&
+      /name=["']email["'][\s\S]{0,1000}name=["']password["']/i.test(String(result?.html || "")));
+}
+
+async function sagaFetch(path, options, cookieJar) {
+  const headers = {
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148 Safari/537.36",
+    "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+    ...(options.headers || {}),
+  };
+  const cookie = sagaCookieHeader(cookieJar);
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(`${SAGA_BASE_URL}${path}`, {
+    ...options,
+    headers,
+    redirect: "manual",
+  });
+  sagaMergeCookies(cookieJar, response.headers);
+  return { response, html: await response.text() };
+}
+
+async function getPlatformSetting(key) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
+  const result = await databases.listDocuments(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, [
+    sdk.Query.equal("key", [key]),
+    sdk.Query.limit(1),
+  ]);
+  return result.documents?.[0] || null;
+}
+
+async function saveSagaAuthSession(cookieJar, email) {
+  const current = await getPlatformSetting(SAGA_AUTH_SESSION_KEY);
+  const data = {
+    key: SAGA_AUTH_SESSION_KEY,
+    settings_json: JSON.stringify({
+      cookies: sagaCookieJarToObject(cookieJar),
+      loginEmail: clean(email),
+      savedAt: new Date().toISOString(),
+    }),
+  };
+  if (current) {
+    await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.$id, data);
+  } else {
+    await databases.createDocument(
+      DATABASE_ID,
+      PLATFORM_SETTINGS_COLLECTION_ID,
+      sdk.ID.unique(),
+      data,
+      ADMIN_PERMS,
+    );
+  }
+}
+
+async function loadSagaSession() {
+  const sessionDoc = await getPlatformSetting(SAGA_AUTH_SESSION_KEY);
+  const session = safeParse(sessionDoc?.settings_json, {});
+  const cookieJar = sagaCookieJarFromObject(session.cookies);
+  if (cookieJar.size > 0) return { cookieJar, email: clean(session.loginEmail) };
+
+  const credentialsDoc = await getPlatformSetting(SAGA_IMPORT_CREDENTIALS_KEY);
+  const credentials = safeParse(credentialsDoc?.settings_json, {});
+  return loginSaga(clean(credentials.email), String(credentials.password || ""));
+}
+
+async function loginSaga(email, password) {
+  if (!email || !password) throw new Error("Credenciais do SAGA nao configuradas no Appwrite.");
+  const cookieJar = new Map();
+  const loginPage = await sagaFetch("/login", {
+    method: "GET",
+    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+  }, cookieJar);
+  const token = extractSagaCsrfToken(loginPage.html);
+  if (!token) throw new Error("Token CSRF do login do SAGA nao encontrado.");
+  const form = new URLSearchParams({ _token: token, email, password });
+  const result = await sagaFetch("/login", {
+    method: "POST",
+    body: form.toString(),
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "content-type": "application/x-www-form-urlencoded",
+      origin: SAGA_BASE_URL,
+      referer: `${SAGA_BASE_URL}/login`,
+    },
+  }, cookieJar);
+  const location = clean(result.response.headers.get("location"));
+  if (isSagaLoginResponse(result) || (result.response.status !== 302 && !/dashboard|logout/i.test(result.html))) {
+    throw new Error(`Login no SAGA nao confirmado (HTTP ${result.response.status}, redirect ${location || "ausente"}).`);
+  }
+  await saveSagaAuthSession(cookieJar, email);
+  return { cookieJar, email };
+}
+
+async function sagaCreditPage(session, sagaStudentId) {
+  let result = await sagaFetch(`/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`, {
+    method: "GET",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      referer: `${SAGA_BASE_URL}/credits/create`,
+    },
+  }, session.cookieJar);
+  if (!isSagaLoginResponse(result)) return result;
+
+  const credentialsDoc = await getPlatformSetting(SAGA_IMPORT_CREDENTIALS_KEY);
+  const credentials = safeParse(credentialsDoc?.settings_json, {});
+  const refreshed = await loginSaga(clean(credentials.email), String(credentials.password || ""));
+  session.cookieJar = refreshed.cookieJar;
+  session.email = refreshed.email;
+  result = await sagaFetch(`/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`, {
+    method: "GET",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      referer: `${SAGA_BASE_URL}/credits/create`,
+    },
+  }, session.cookieJar);
+  if (isSagaLoginResponse(result)) throw new Error("Sessao do SAGA expirou ao abrir a tela de creditos.");
+  return result;
+}
+
+async function sagaStudentIdForUser(userId) {
+  if (!PROFILES_COLLECTION_ID) throw new Error("Colecao de perfis nao configurada na Function.");
+  const result = await databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [userId]),
+    sdk.Query.limit(1),
+  ]);
+  const sagaStudentId = clean(result.documents?.[0]?.saga_user_id);
+  if (sagaStudentId) return sagaStudentId;
+
+  const deterministicSagaId = clean(userId).match(/^saga_(\d+)$/)?.[1] || "";
+  if (deterministicSagaId) return deterministicSagaId;
+  throw new Error("Aluno sem saga_user_id vinculado no perfil.");
+}
+
+async function sagaAircraftIcaoForModel(modelId) {
+  const mappingDoc = await getPlatformSetting(SAGA_IMPORT_MAPPING_KEY);
+  const mapping = safeParse(mappingDoc?.settings_json, {});
+  const candidates = Object.entries(asObject(mapping.creditAircraftBySaga))
+    .filter(([, localModelId]) => clean(localModelId) === clean(modelId))
+    .map(([sagaModel]) => clean(sagaModel))
+    .filter(Boolean);
+  return candidates.find((sagaModel) => sagaModel === SAGA_CREDIT_AIRCRAFT_ICAO) ||
+    candidates.find((sagaModel) => !/^\d+$/.test(sagaModel)) ||
+    SAGA_CREDIT_AIRCRAFT_ICAO;
+}
+
+async function createSagaCredit({ studentUserId, creditId, purchaseDate, expiresAt, aircraftModelId, hours, amountPaid }) {
+  const sagaStudentId = await sagaStudentIdForUser(studentUserId);
+  const session = await loadSagaSession();
+  const marker = `GFV-CAKTO:${creditId}`;
+  let page = await sagaCreditPage(session, sagaStudentId);
+  if (page.html.includes(marker)) return { status: "already_exists", marker, sagaStudentId };
+
+  const csrfToken = extractSagaCsrfToken(page.html);
+  if (!csrfToken) throw new Error("Token CSRF do formulario de creditos do SAGA nao encontrado.");
+  const hourlyValue = Math.round((amountPaid / hours) * 100) / 100;
+  const aircraftIcao = await sagaAircraftIcaoForModel(aircraftModelId);
+  const form = new URLSearchParams({
+    _token: csrfToken,
+    student_id: sagaStudentId,
+    created_at: purchaseDate,
+    aircraft_icao: aircraftIcao,
+    type: SAGA_CREDIT_TYPE,
+    hours: String(hours),
+    value: String(hourlyValue),
+    bank_id: SAGA_CREDIT_BANK_ID,
+    expiration_at: expiresAt,
+    notes: `Compra online Cakto. ${marker}`,
+  });
+  const post = await sagaFetch("/credits", {
+    method: "POST",
+    body: form.toString(),
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "content-type": "application/x-www-form-urlencoded",
+      origin: SAGA_BASE_URL,
+      referer: `${SAGA_BASE_URL}/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`,
+    },
+  }, session.cookieJar);
+  if (isSagaLoginResponse(post)) throw new Error("Sessao do SAGA expirou ao lancar o credito.");
+
+  page = await sagaCreditPage(session, sagaStudentId);
+  if (!page.html.includes(marker)) {
+    const location = clean(post.response.headers.get("location"));
+    throw new Error(`SAGA nao confirmou o credito (HTTP ${post.response.status}, redirect ${location || "ausente"}).`);
+  }
+  await saveSagaAuthSession(session.cookieJar, session.email).catch(() => undefined);
+  return { status: "completed", marker, sagaStudentId };
+}
+
 async function buildCostSnapshot(amount, paymentMethod, appliedAt) {
   if (!SCHOOL_COSTS_COLLECTION_ID) return null;
   try {
@@ -167,14 +420,19 @@ async function buildCostSnapshot(amount, paymentMethod, appliedAt) {
 
 async function updateFulfillment(receiptId, proposalId, patch) {
   const updatedAt = new Date().toISOString();
+  const receiptPatch = {
+    fulfillment_status: patch.status,
+    fulfillment_error: clean(patch.error).slice(0, 2048),
+    fulfillment_updated_at: updatedAt,
+    credit_id: clean(patch.creditId),
+  };
+  if (patch.sagaStatus !== undefined) receiptPatch.saga_status = clean(patch.sagaStatus);
+  if (patch.sagaError !== undefined) receiptPatch.saga_error = clean(patch.sagaError).slice(0, 2048);
+  if (patch.sagaMarker !== undefined) receiptPatch.saga_credit_marker = clean(patch.sagaMarker);
+  if (patch.sagaStatus !== undefined) receiptPatch.saga_updated_at = updatedAt;
   await Promise.all([
     receiptId
-      ? databases.updateDocument(DATABASE_ID, RECEIPTS_COLLECTION_ID, receiptId, {
-          fulfillment_status: patch.status,
-          fulfillment_error: clean(patch.error).slice(0, 2048),
-          fulfillment_updated_at: updatedAt,
-          credit_id: clean(patch.creditId),
-        })
+      ? databases.updateDocument(DATABASE_ID, RECEIPTS_COLLECTION_ID, receiptId, receiptPatch)
       : Promise.resolve(),
     proposalId
       ? databases.updateDocument(DATABASE_ID, PROPOSALS_COLLECTION_ID, proposalId, {
@@ -235,8 +493,44 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
     if (Number(err?.code) !== 409) throw err;
   }
 
-  await updateFulfillment(receiptId, proposal.$id, { status: "completed", error: "", creditId });
-  return { applicable: true, creditId };
+  await updateFulfillment(receiptId, proposal.$id, {
+    status: "pending",
+    error: "",
+    creditId,
+    sagaStatus: "pending",
+    sagaError: "",
+    sagaMarker: `GFV-CAKTO:${creditId}`,
+  });
+  try {
+    const saga = await createSagaCredit({
+      studentUserId,
+      creditId,
+      purchaseDate,
+      expiresAt: addDaysIso(purchaseDate, validityDays),
+      aircraftModelId: clean(snapshot.aircraftModelId),
+      hours,
+      amountPaid,
+    });
+    await updateFulfillment(receiptId, proposal.$id, {
+      status: "completed",
+      error: "",
+      creditId,
+      sagaStatus: saga.status,
+      sagaError: "",
+      sagaMarker: saga.marker,
+    });
+    return { applicable: true, creditId, sagaStatus: saga.status };
+  } catch (err) {
+    await updateFulfillment(receiptId, proposal.$id, {
+      status: "failed",
+      error: err?.message || String(err),
+      creditId,
+      sagaStatus: "failed",
+      sagaError: err?.message || String(err),
+      sagaMarker: `GFV-CAKTO:${creditId}`,
+    }).catch(() => undefined);
+    throw err;
+  }
 }
 
 function normalize(payload, receivedAt) {
@@ -314,7 +608,7 @@ module.exports = async ({ req, res, log, error }) => {
       return res.json({ ok: true, ignored: true }, 200);
     }
     const raw = JSON.stringify(payload);
-    const dedupeSource = normalized.eventId || `${normalized.eventType}:${normalized.orderId}:${normalized.offerId}:${raw}`;
+    const dedupeSource = `${normalized.eventType}:${normalized.eventId || `${normalized.orderId}:${normalized.offerId}:${raw}`}`;
     const dedupeKey = crypto.createHash("sha256").update(dedupeSource).digest("hex");
     const documentId = `cw_${dedupeKey.slice(0, 32)}`;
     const proposal = await findProposal(normalized.offerId);
@@ -346,6 +640,9 @@ module.exports = async ({ req, res, log, error }) => {
           fulfillment_status: normalized.eventType === "purchase_approved" ? "pending" : "not_applicable",
           fulfillment_error: "",
           credit_id: "",
+          saga_status: normalized.eventType === "purchase_approved" ? "pending" : "not_applicable",
+          saga_error: "",
+          saga_credit_marker: "",
         },
         ADMIN_PERMS,
       );

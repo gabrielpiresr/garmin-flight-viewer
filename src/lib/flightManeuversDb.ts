@@ -25,6 +25,12 @@ function isReviewsReady(): boolean {
 }
 
 function toManeuver(doc: Record<string, unknown>): FlightManeuver {
+  let instructor_step_marks: string[] | undefined;
+  try {
+    if (typeof doc.step_marks_json === "string" && doc.step_marks_json) {
+      instructor_step_marks = JSON.parse(doc.step_marks_json) as string[];
+    }
+  } catch { /* keep undefined */ }
   return {
     id: doc.$id as string,
     flight_id: (doc.flight_id as string) ?? "",
@@ -35,6 +41,7 @@ function toManeuver(doc: Record<string, unknown>): FlightManeuver {
     start_time: (doc.start_time as string) ?? "",
     end_time: (doc.end_time as string) ?? "",
     status: ((doc.status as string) ?? "draft") as FlightManeuverStatus,
+    ...(instructor_step_marks ? { instructor_step_marks } : {}),
     created_by: (doc.created_by as string) ?? "",
     created_at: (doc.created_at as string) ?? "",
     updated_at: (doc.updated_at as string) ?? "",
@@ -114,10 +121,14 @@ export async function updateFlightManeuver(
   data: Partial<Omit<FlightManeuver, "id" | "flight_id" | "created_at" | "created_by">>,
 ): Promise<FlightManeuver> {
   if (!isManeuversReady()) throw new Error("Appwrite not configured");
-  const doc = await databases!.updateDocument(DB_ID, FLIGHT_MANEUVERS_COL_ID!, id, {
-    ...data,
-    updated_at: new Date().toISOString(),
-  });
+  const { instructor_step_marks, ...rest } = data;
+  const payload: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() };
+  if (instructor_step_marks !== undefined) {
+    payload.step_marks_json = instructor_step_marks.length > 0
+      ? JSON.stringify(instructor_step_marks)
+      : null;
+  }
+  const doc = await databases!.updateDocument(DB_ID, FLIGHT_MANEUVERS_COL_ID!, id, payload);
   return toManeuver(doc as Record<string, unknown>);
 }
 

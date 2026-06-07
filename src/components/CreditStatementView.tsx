@@ -25,11 +25,21 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
 }
 
-function MetricCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function MetricCard({
+  label,
+  value,
+  hint,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  valueClassName?: string;
+}) {
   return (
     <div className="border-l border-slate-700/70 pl-3">
       <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 text-xl font-semibold text-slate-100">{value}</p>
+      <p className={`mt-1 text-xl font-semibold ${valueClassName ?? "text-slate-100"}`}>{value}</p>
       {hint ? <p className="mt-0.5 text-xs text-slate-500">{hint}</p> : null}
     </div>
   );
@@ -44,6 +54,7 @@ export function CreditStatementView({
   renderPurchaseActions,
 }: Props) {
   const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0 || statement.adjustments.length > 0;
+  const studentBalanceHours = statement.totals.purchasedHours - statement.totals.consumedHours;
 
   return (
     <section className="space-y-4">
@@ -62,7 +73,11 @@ export function CreditStatementView({
       </div>
 
       <div className={`grid gap-4 border-y border-slate-800 py-3 ${compact ? "md:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-5"}`}>
-        <MetricCard label="Saldo disponível" value={formatHours(statement.totals.availableHours)} />
+        <MetricCard
+          label="Saldo disponível"
+          value={formatHours(studentBalanceHours)}
+          valueClassName={studentBalanceHours < 0 ? "text-red-300" : "text-emerald-300"}
+        />
         <MetricCard label="Horas compradas" value={formatHours(statement.totals.purchasedHours)} />
         <MetricCard label="Horas consumidas" value={formatHours(statement.totals.consumedHours)} />
         <MetricCard label="Horas vencidas" value={formatHours(statement.totals.expiredHours)} />

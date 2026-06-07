@@ -30,6 +30,10 @@ export type CaktoReceipt = {
   fulfillmentError: string;
   fulfillmentUpdatedAt: string | null;
   creditId: string;
+  sagaStatus: string;
+  sagaError: string;
+  sagaCreditMarker: string;
+  sagaUpdatedAt: string | null;
   eventAt: string | null;
   receivedAt: string;
   payloadJson: string;

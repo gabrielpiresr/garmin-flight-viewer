@@ -25,6 +25,7 @@ export type AdminTabKey =
   | "contents"
   | "contents.manobras"
   | "contents.manuais"
+  | "contents.manuais-internos"
   | "contents.ajuda"
   | "contents.exercicios"
   | "users"
@@ -60,6 +61,7 @@ export type InstructorTabKey =
   | "flights"
   | "notices"
   | "manuals"
+  | "manuais-internos"
   | "maneuvers"
   | "students"
   | "fuelings"
@@ -180,6 +182,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contents": "Conteúdos",
   "contents.manobras": "Conteúdos › Manobras",
   "contents.manuais": "Conteúdos › Manuais",
+  "contents.manuais-internos": "Conteúdos › Manuais Internos",
   "contents.ajuda": "Conteúdos › Central de Ajuda",
   "contents.exercicios": "Conteúdos › Exercícios",
   "users": "Usuários",
@@ -216,6 +219,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "flights": "Meus Voos",
   "notices": "Avisos",
   "manuals": "Manuais",
+  "manuais-internos": "Manuais Internos",
   "maneuvers": "Manobras",
   "students": "Alunos",
   "fuelings": "Abastecimentos",

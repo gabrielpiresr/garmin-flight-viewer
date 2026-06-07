@@ -64,6 +64,14 @@ export const TELEMETRY_PARAMETER_LABELS: Record<string, string> = {
   normal_g: "G normal",
 };
 
+const HEADING_TRACK_PARAMS = new Set(["heading", "track"]);
+
+/** Diferença angular com sinal em [-180, 180). Lida com wrap-around 0°/360°. */
+function angularDiff(a: number, b: number): number {
+  const diff = ((a - b) % 360 + 360) % 360;
+  return diff > 180 ? diff - 360 : diff;
+}
+
 // Data points are stripped before writing to Appwrite (size limit).
 // Charts always reconstruct from CSV at render time — no sampling needed here.
 function sampleDataPoints(pairs: Array<{ t: number; v: number }>) {
@@ -115,7 +123,6 @@ function analyzeParameter(
   stepStartMs: number,
   stepEndMs: number,
 ): AnalyzedParameter {
-  // Resolve effective min/max start values (min_start takes precedence over legacy min)
   const minStart = paramCfg.min_start !== undefined ? paramCfg.min_start
     : paramCfg.min !== undefined ? paramCfg.min : undefined;
   const maxStart = paramCfg.max_start !== undefined ? paramCfg.max_start
@@ -124,18 +131,22 @@ function analyzeParameter(
   const maxEnd = paramCfg.max_end;
 
   const stepDurationMs = Math.max(1, stepEndMs - stepStartMs);
-  const hasInterpolatedMin = minStart !== undefined && minEnd !== undefined;
-  const hasInterpolatedMax = maxStart !== undefined && maxEnd !== undefined;
+  const isHeadingTrack = HEADING_TRACK_PARAMS.has(paramCfg.parameter);
+  const isBank = paramCfg.parameter === "bank";
+
+  // Para proa/track, min/max são variâncias relativas — sem interpolação
+  const hasInterpolatedMin = !isHeadingTrack && minStart !== undefined && minEnd !== undefined;
+  const hasInterpolatedMax = !isHeadingTrack && maxStart !== undefined && maxEnd !== undefined;
 
   const effectiveMin = (absoluteMs: number): number | undefined => {
-    if (minStart === undefined) return undefined;
+    if (isHeadingTrack || minStart === undefined) return undefined;
     if (!hasInterpolatedMin) return minStart;
     const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
     return minStart + (minEnd! - minStart) * ratio;
   };
 
   const effectiveMax = (absoluteMs: number): number | undefined => {
-    if (maxStart === undefined) return undefined;
+    if (isHeadingTrack || maxStart === undefined) return undefined;
     if (!hasInterpolatedMax) return maxStart;
     const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
     return maxStart + (maxEnd! - maxStart) * ratio;
@@ -166,26 +177,33 @@ function analyzeParameter(
   const maxObs = Math.max(...values);
   const avgObs = values.reduce((a, b) => a + b, 0) / values.length;
 
-  // Estimate sample interval (ms per row)
   let sampleIntervalMs = 1000;
   if (valid.length > 1) {
     sampleIntervalMs = (valid[valid.length - 1].absoluteMs - valid[0].absoluteMs) / (valid.length - 1);
   }
 
-  const isBank = paramCfg.parameter === "bank";
+  // Para proa/track: proa de referência = primeiro valor válido da etapa
+  const refHeading = isHeadingTrack ? valid[0].value : 0;
+
   let timeOutMs = 0;
   let hasHardLimit = false;
   for (const r of valid) {
-    const eMin = effectiveMin(r.absoluteMs);
-    const eMax = effectiveMax(r.absoluteMs);
     let belowMin: boolean;
     let aboveMax: boolean;
-    if (isBank) {
-      // Rolagem é simétrica: max=10 significa ±10°, min=5 significa ±5°
+    if (isHeadingTrack) {
+      // min/max representam variância máxima/mínima em graus a partir da proa de referência
+      const deviation = Math.abs(angularDiff(r.value, refHeading));
+      aboveMax = maxStart !== undefined && deviation > maxStart;
+      belowMin = minStart !== undefined && minStart > 0 && deviation < minStart;
+    } else if (isBank) {
       const absV = Math.abs(r.value);
+      const eMin = effectiveMin(r.absoluteMs);
+      const eMax = effectiveMax(r.absoluteMs);
       aboveMax = eMax !== undefined && absV > Math.abs(eMax);
       belowMin = eMin !== undefined && Math.abs(eMin) > 0 && absV < Math.abs(eMin);
     } else {
+      const eMin = effectiveMin(r.absoluteMs);
+      const eMax = effectiveMax(r.absoluteMs);
       belowMin = eMin !== undefined && r.value < eMin;
       aboveMax = eMax !== undefined && r.value > eMax;
     }
@@ -204,14 +222,22 @@ function analyzeParameter(
   const rawPoints = valid.map((r) => ({ t: Math.round((r.absoluteMs - stepStartMs) / 1000), v: r.value }));
   const data_points = sampleDataPoints(rawPoints);
 
+  // Para proa/track: exibe limites absolutos calculados a partir da proa de referência ± variância
+  const displayExpMin = isHeadingTrack
+    ? (maxStart !== undefined ? Math.round((refHeading - maxStart) * 10) / 10 : null)
+    : minStart ?? null;
+  const displayExpMax = isHeadingTrack
+    ? (maxStart !== undefined ? Math.round((refHeading + maxStart) * 10) / 10 : null)
+    : maxStart ?? null;
+
   return {
     parameter: paramCfg.parameter,
     label: paramCfg.label,
     min_observed: Math.round(minObs * 10) / 10,
     max_observed: Math.round(maxObs * 10) / 10,
     avg_observed: Math.round(avgObs * 10) / 10,
-    expected_min: minStart ?? null,
-    expected_max: maxStart ?? null,
+    expected_min: displayExpMin,
+    expected_max: displayExpMax,
     ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
     ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
     status: paramStatus,
@@ -256,6 +282,10 @@ export function analyzeFlightManeuver(
   const sortedSteps = [...steps].sort((a, b) => a.order_index - b.order_index);
   const analyzedSteps: AnalyzedStep[] = [];
   const overallAlerts: ReviewAlert[] = [];
+
+  // Marcações manuais do instrutor (para etapas com end_condition "instructor_marked")
+  let instructorMarkIdx = 0;
+  const instructorMarkMs = (maneuver.instructor_step_marks ?? []).map((s) => new Date(s).getTime());
 
   // ── Detecção de padrão de circuito (pouso/TGL) ───────────────────────────
   const isLandingCategory = _template.category === "landing" || _template.category === "touch_and_go";
@@ -310,6 +340,18 @@ export function analyzeFlightManeuver(
             break;
           }
         }
+      } else if (cond.type === "instructor_marked") {
+        const markMs = instructorMarkMs[instructorMarkIdx];
+        instructorMarkIdx++;
+        if (markMs !== undefined) {
+          for (let i = stepStartCursor; i < maneuverRows.length; i++) {
+            if (maneuverRows[i]!.absoluteMs >= markMs) {
+              stepEndIdx = i;
+              break;
+            }
+          }
+        }
+        // Se não há marcação: stepEndIdx permanece em maneuverRows.length - 1 (fim da manobra)
       } else if (cond.type === "traffic_pattern_leg" && trafficPattern && chartTimeBaseMs) {
         const leg = trafficPattern.legs.find((l) => l.type === cond.leg);
         if (leg) {

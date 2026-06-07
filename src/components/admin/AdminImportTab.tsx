@@ -22,7 +22,11 @@ import {
 } from "../../lib/sagaImportDb";
 import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
 import { useSagaImportMissionPrompt } from "../../hooks/useSagaImportMissionPrompt";
-import { allMissionOptions, collectMissionLookupKeysFromFlights } from "../../lib/sagaMissionMappingUi";
+import {
+  allMissionOptions,
+  collectMissionLookupKeysFromFlights,
+  isScopedSagaMissionKey,
+} from "../../lib/sagaMissionMappingUi";
 
 type TableColumn<T> = { key: keyof T; label: string; className?: string };
 
@@ -413,6 +417,60 @@ function MappingSelect({
   );
 }
 
+function MappingCard({
+  title,
+  headerAction,
+  emptyMessage,
+  values,
+  renderRow,
+}: {
+  title: string;
+  headerAction?: ReactNode;
+  emptyMessage?: string;
+  values: string[];
+  renderRow: (sagaValue: string) => ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-800">
+      <div className="flex min-h-10 items-center justify-between gap-3 border-b border-slate-800 bg-slate-950 px-3 py-2">
+        <span className="text-sm font-semibold text-slate-200">{title}</span>
+        {headerAction}
+      </div>
+      <div className="max-h-96 divide-y divide-slate-800 overflow-x-hidden overflow-y-auto">
+        {values.length ? values.map((sagaValue) => (
+          <div key={sagaValue} className="min-w-0 px-3 py-3">
+            {renderRow(sagaValue)}
+          </div>
+        )) : (
+          <p className="px-3 py-10 text-center text-sm text-slate-500">{emptyMessage ?? "Nenhum item."}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MappingRow({
+  sagaLabel,
+  mono = false,
+  children,
+}: {
+  sagaLabel: string;
+  mono?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <span
+        className={`break-words text-sm text-slate-300 ${mono ? "font-mono text-xs" : ""}`}
+        title={sagaLabel}
+      >
+        {sagaLabel}
+      </span>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
 function MappingPanel({
   result,
   mapping,
@@ -426,6 +484,7 @@ function MappingPanel({
   onSave: () => void;
   saving: boolean;
 }) {
+  const [showOnlyMissingMissions, setShowOnlyMissingMissions] = useState(false);
   const mappedFlights = applyColumnMapToFlights(result.flights, mapping.flightColumnMap);
   const creditColumnMap = normalizeSagaCreditColumnMap(mapping.creditColumnMap);
   const mappedCredits = applyColumnMapToCredits(result.credits, creditColumnMap);
@@ -446,13 +505,15 @@ function MappingPanel({
   }));
   const missionValues = unique([
     ...collectMissionLookupKeysFromFlights(mappedFlights),
-    ...Object.keys(mapping.missionBySaga ?? {}),
+    ...Object.keys(mapping.missionBySaga ?? {}).filter((key) => !isScopedSagaMissionKey(key)),
   ]);
   const missionOptions = allMissionOptions(result.catalogs);
+  const validMissionIds = new Set(missionOptions.map((option) => option.value));
   const missingAircrafts = aircraftValues.filter((value) => !mapping.aircraftBySaga[value]);
   const missingCourses = courseValues.filter((value) => !mapping.courseBySaga[value]);
   const missingCreditAircrafts = creditAircraftValues.filter((value) => !mapping.creditAircraftBySaga[value]);
-  const missingMissions = missionValues.filter((value) => !mapping.missionBySaga?.[value]);
+  const missingMissions = missionValues.filter((value) => !validMissionIds.has(mapping.missionBySaga?.[value] ?? ""));
+  const visibleMissionValues = showOnlyMissingMissions ? missingMissions : missionValues;
   const sagaAircraftIdsCount = Object.values(mapping.aircraftIdByRegistration ?? {}).filter(Boolean).length;
 
   function setAircraft(sagaValue: string, localValue: string) {
@@ -481,55 +542,6 @@ function MappingPanel({
       ...mapping,
       missionBySaga: { ...(mapping.missionBySaga ?? {}), [sagaValue]: localValue },
     });
-  }
-
-  function MappingCard({
-    title,
-    emptyMessage,
-    values,
-    renderRow,
-  }: {
-    title: string;
-    emptyMessage?: string;
-    values: string[];
-    renderRow: (sagaValue: string) => ReactNode;
-  }) {
-    return (
-      <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-800">
-        <div className="border-b border-slate-800 bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-200">{title}</div>
-        <div className="max-h-96 divide-y divide-slate-800 overflow-x-hidden overflow-y-auto">
-          {values.length ? values.map((sagaValue) => (
-            <div key={sagaValue} className="min-w-0 px-3 py-3">
-              {renderRow(sagaValue)}
-            </div>
-          )) : (
-            <p className="px-3 py-10 text-center text-sm text-slate-500">{emptyMessage ?? "Nenhum item."}</p>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function MappingRow({
-    sagaLabel,
-    mono = false,
-    children,
-  }: {
-    sagaLabel: string;
-    mono?: boolean;
-    children: ReactNode;
-  }) {
-    return (
-      <div className="flex min-w-0 flex-col gap-2">
-        <span
-          className={`break-words text-sm text-slate-300 ${mono ? "font-mono text-xs" : ""}`}
-          title={sagaLabel}
-        >
-          {sagaLabel}
-        </span>
-        <div className="min-w-0">{children}</div>
-      </div>
-    );
   }
 
   return (
@@ -589,9 +601,22 @@ function MappingPanel({
         )} />
 
         <MappingCard
-          title="Missoes SAGA"
-          values={missionValues}
-          emptyMessage="Nenhuma missao detectada nos voos carregados."
+          title={`Missoes SAGA (${missingMissions.length} sem correspondencia)`}
+          headerAction={(
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-normal text-slate-400">
+              <input
+                type="checkbox"
+                checked={showOnlyMissingMissions}
+                onChange={(event) => setShowOnlyMissingMissions(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-amber-500"
+              />
+              Somente sem correspondencia
+            </label>
+          )}
+          values={visibleMissionValues}
+          emptyMessage={showOnlyMissingMissions
+            ? "Todas as missoes possuem correspondencia."
+            : "Nenhuma missao detectada nos voos carregados."}
           renderRow={(sagaValue) => (
             <MappingRow sagaLabel={sagaValue} mono>
               <MappingSelect

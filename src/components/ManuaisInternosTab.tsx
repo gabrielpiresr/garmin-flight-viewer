@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { getManualDownloadUrl, getManualViewUrl, listManuals, type Manual } from "../lib/manuaisDb";
+import {
+  getManualInternoDownloadUrl,
+  getManualInternoViewUrl,
+  listManuaisInternos,
+  type ManualInterno,
+} from "../lib/manuaisInternosDb";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -33,8 +38,8 @@ function FileIcon({ mime, size = "md", isExternalLink }: FileIconProps) {
   return <span className={`flex shrink-0 items-center justify-center rounded-xl bg-slate-700/60 font-bold text-slate-400 ${dim}`}>ARQ</span>;
 }
 
-function groupByCategory(manuals: Manual[]): Map<string, Manual[]> {
-  const map = new Map<string, Manual[]>();
+function groupByCategory(manuals: ManualInterno[]): Map<string, ManualInterno[]> {
+  const map = new Map<string, ManualInterno[]>();
   for (const m of manuals) {
     const list = map.get(m.category) ?? [];
     list.push(m);
@@ -48,9 +53,9 @@ function canPreviewInline(mime: string | null): boolean {
   return m.includes("pdf") || m.includes("image");
 }
 
-function ManualPreviewModal({ manual, onClose }: { manual: Manual; onClose: () => void }) {
-  const viewUrl = getManualViewUrl(manual.fileId);
-  const downloadUrl = getManualDownloadUrl(manual.fileId);
+function ManualPreviewModal({ manual, onClose }: { manual: ManualInterno; onClose: () => void }) {
+  const viewUrl = getManualInternoViewUrl(manual.fileId);
+  const downloadUrl = getManualInternoDownloadUrl(manual.fileId);
   const mime = (manual.mimeType ?? "").toLowerCase();
   const isPdf = mime.includes("pdf");
   const isImage = mime.includes("image");
@@ -68,7 +73,7 @@ function ManualPreviewModal({ manual, onClose }: { manual: Manual; onClose: () =
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="manual-preview-title"
+      aria-labelledby="manual-interno-preview-title"
       onClick={onClose}
     >
       <div
@@ -77,7 +82,7 @@ function ManualPreviewModal({ manual, onClose }: { manual: Manual; onClose: () =
       >
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
           <div className="min-w-0">
-            <p id="manual-preview-title" className="truncate text-sm font-semibold text-slate-100">
+            <p id="manual-interno-preview-title" className="truncate text-sm font-semibold text-slate-100">
               {manual.name}
             </p>
             {manual.fileSize ? (
@@ -143,22 +148,22 @@ function ManualPreviewModal({ manual, onClose }: { manual: Manual; onClose: () =
 
 // ─── main component ──────────────────────────────────────────────────────────
 
-export function ManuaisTab() {
-  const [manuals, setManuals] = useState<Manual[]>([]);
+export function ManuaisInternosTab() {
+  const [manuals, setManuals] = useState<ManualInterno[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [previewManual, setPreviewManual] = useState<Manual | null>(null);
+  const [previewManual, setPreviewManual] = useState<ManualInterno | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void listManuals().then(({ data, error: err }) => {
+    void listManuaisInternos().then(({ data, error: err }) => {
       if (cancelled) return;
       setLoading(false);
       if (err) {
-        setError("Não foi possível carregar os manuais.");
+        setError("Não foi possível carregar os manuais internos.");
         return;
       }
       setManuals(data ?? []);
@@ -227,7 +232,7 @@ export function ManuaisTab() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar manuais…"
+            placeholder="Buscar manuais internos…"
             className="w-full rounded-xl border border-slate-700 bg-slate-800/60 py-2.5 pl-10 pr-4 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500/40"
           />
         </div>
@@ -239,7 +244,7 @@ export function ManuaisTab() {
             <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
           </svg>
           <p className="text-sm font-medium text-slate-400">Nenhum material disponível</p>
-          <p className="mt-1 text-xs text-slate-600">Os materiais de consulta aparecerão aqui quando forem publicados.</p>
+          <p className="mt-1 text-xs text-slate-600">Os materiais internos aparecerão aqui quando forem publicados.</p>
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-8 text-center">
@@ -284,8 +289,8 @@ export function ManuaisTab() {
                   <div className="divide-y divide-slate-800/50 border-t border-slate-800/60">
                     {items.map((m) => {
                       const isLink = !!m.externalUrl;
-                      const downloadUrl = isLink ? null : getManualDownloadUrl(m.fileId);
-                      const viewUrl = isLink ? null : getManualViewUrl(m.fileId);
+                      const downloadUrl = isLink ? null : getManualInternoDownloadUrl(m.fileId);
+                      const viewUrl = isLink ? null : getManualInternoViewUrl(m.fileId);
                       const previewable = Boolean(viewUrl && canPreviewInline(m.mimeType));
                       return (
                         <div

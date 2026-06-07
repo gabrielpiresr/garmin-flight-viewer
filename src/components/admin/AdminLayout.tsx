@@ -35,6 +35,9 @@ const TrainingExercisesTab = lazy(() =>
   import("./TrainingExercisesTab").then((module) => ({ default: module.TrainingExercisesTab })),
 );
 const ManuaisAdminTab = lazy(() => import("./ManuaisAdminTab").then((module) => ({ default: module.ManuaisAdminTab })));
+const ManuaisInternosAdminTab = lazy(() =>
+  import("./ManuaisInternosAdminTab").then((module) => ({ default: module.ManuaisInternosAdminTab })),
+);
 const ModelsTab = lazy(() => import("./ModelsTab").then((module) => ({ default: module.ModelsTab })));
 const NoTelemetryTab = lazy(() => import("./NoTelemetryTab").then((module) => ({ default: module.NoTelemetryTab })));
 const PlatformSettingsTab = lazy(() =>
@@ -89,7 +92,7 @@ type AdminSection =
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "help" | "exercises";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "exercises";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -396,6 +399,15 @@ const CONTENTS_TABS = [
     ),
   },
   {
+    id: "manuais-internos",
+    label: "Manuais internos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "help",
     label: "Central de Ajuda",
     icon: (
@@ -462,6 +474,7 @@ const REPORTS_ROUTES = [
 const CONTENTS_ROUTES = [
   { id: "maneuvers", path: "/admin/conteudos/manobras", aliases: ["/admin/manobras"] },
   { id: "manuals", path: "/admin/conteudos/manuais", aliases: ["/admin/manuais"] },
+  { id: "manuais-internos", path: "/admin/conteudos/manuais-internos" },
   { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
@@ -541,6 +554,7 @@ const REPORTS_TAB_KEYS: Record<string, AdminTabKey> = {
 const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   maneuvers: "contents.manobras",
   manuals: "contents.manuais",
+  "manuais-internos": "contents.manuais-internos",
   help: "contents.ajuda",
   exercises: "contents.exercicios",
 };
@@ -840,6 +854,9 @@ export function AdminLayout() {
               ) : null}
               {openedContentsTabs.has("manuals") ? (
                 <div hidden={contentsTab !== "manuals"}><LazyTab><ManuaisAdminTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("manuais-internos") ? (
+                <div hidden={contentsTab !== "manuais-internos"}><LazyTab><ManuaisInternosAdminTab /></LazyTab></div>
               ) : null}
               {openedContentsTabs.has("help") ? (
                 <div hidden={contentsTab !== "help"}><LazyTab><HelpCenterAdminTab /></LazyTab></div>

@@ -48,6 +48,7 @@ function createJob(jobId) {
     lastAppwriteStage: "",
     lastAppwritePercent: -1,
     lastAppwriteAt: 0,
+    appwritePatchChain: Promise.resolve(),
   };
   job.cancel = () => {
     job.cancelled = true;
@@ -136,7 +137,7 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.3.0",
+      version: "1.3.2",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,
@@ -148,10 +149,18 @@ const server = http.createServer(async (req, res) => {
       const paths = await pickFilesNative();
       const files = paths
         .filter((filePath) => fs.existsSync(filePath))
-        .map((filePath) => ({
-          path: filePath,
-          name: path.basename(filePath),
-          size: fs.statSync(filePath).size,
+        .map((filePath) => {
+          const stat = fs.statSync(filePath);
+          return {
+            path: filePath,
+            name: path.basename(filePath),
+            size: stat.size,
+            modifiedAtMs: stat.mtimeMs,
+          };
+        })
+        .sort((a, b) => a.modifiedAtMs - b.modifiedAtMs || a.name.localeCompare(b.name, undefined, {
+          numeric: true,
+          sensitivity: "base",
         }));
       return json(res, { files });
     } catch (error) {
@@ -372,7 +381,9 @@ async function runPipeline(req, job) {
       job.lastAppwriteStage = stage;
       job.lastAppwritePercent = rounded;
       job.lastAppwriteAt = now;
-      void patchAppwriteProgress(req, stage, rounded, "").catch(() => {});
+      job.appwritePatchChain = job.appwritePatchChain
+        .catch(() => {})
+        .then(() => patchAppwriteProgress(req, stage, rounded, ""));
     }
   };
 
@@ -470,6 +481,7 @@ async function runPipeline(req, job) {
     const finalDuration = ffprobe ? (await probeDuration(ffprobe, uploadPath)) ?? totalDuration : totalDuration;
 
     // Atualizar Appwrite
+    await job.appwritePatchChain.catch(() => {});
     const appwriteOk = await updateAppwrite(appwriteEndpoint, appwriteProjectId, appwriteDbId, videosColId,
       flightVideoDocId, sessionJwt, fileUrl, fileSize, finalDuration, telemetry);
     if (!appwriteOk) {
@@ -479,7 +491,9 @@ async function runPipeline(req, job) {
     // Limpar temporários
     cleanup(tmpDir);
 
-    progress("done", 100, {
+    sendProgress(jobId, {
+      stage: "done",
+      percent: 100,
       file_url: fileUrl,
       file_size: fileSize,
       duration_sec: finalDuration,

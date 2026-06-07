@@ -2369,7 +2369,7 @@ async function createStudentImpersonationToken(payload = {}, req = null) {
   };
 }
 
-async function updateSagaProfileFields(userId, sagaUser, role) {
+async function updateSagaProfileFields(userId, sagaUser, role, { enableAccess = false } = {}) {
   const profileId = await upsertProfile(userId, sagaUser.email || "", role);
   const detail = sagaUser && typeof sagaUser.detail === "object" ? sagaUser.detail : {};
   const emergency = detail.emergency_contact && typeof detail.emergency_contact === "object" ? detail.emergency_contact : {};
@@ -2426,6 +2426,7 @@ async function updateSagaProfileFields(userId, sagaUser, role) {
   const sexo = genderRaw === "M" ? "Masculino" : genderRaw === "F" ? "Feminino" : null;
   const sagaNickname = cleanString(detail.nickname || sagaUser.nickname).slice(0, 128) || null;
   const fields = {
+    ...(enableAccess ? { is_active: true } : {}),
     full_name: cleanString(sagaUser.nome).slice(0, 255) || null,
     nickname: sagaNickname,
     cpf: cleanString(sagaUser.cpf).slice(0, 14) || null,
@@ -2499,6 +2500,7 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
       password: shouldUseCpfPassword ? cpfPassword : crypto.randomBytes(18).toString("base64url"),
       name: cleanString(sagaUser.nome).slice(0, 128) || email,
     });
+    authUser = await users.updateStatus({ userId: authUser.$id, status: true });
     created = true;
   } else if (cleanString(sagaUser.nome) && authUser.name !== cleanString(sagaUser.nome).slice(0, 128)) {
     try {
@@ -2519,7 +2521,7 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
     new Set([...(authUser.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), role]),
   );
   await users.updateLabels({ userId: authUser.$id, labels });
-  await updateSagaProfileFields(authUser.$id, { ...sagaUser, email }, role);
+  await updateSagaProfileFields(authUser.$id, { ...sagaUser, email }, role, { enableAccess: created });
   return { created, updated: !created, userId: authUser.$id };
 }
 
@@ -2710,6 +2712,62 @@ async function saveInstructorPaymentSnapshotServer(flightDoc, actorUserId, calcu
       perms,
     );
   }
+}
+
+async function refreshZeroStudentPaymentSnapshots(userId, actorUserId, logs = null) {
+  const safeUserId = cleanString(userId);
+  if (!safeUserId || !FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID || !FLIGHTS_COLLECTION_ID) return 0;
+  const payments = await safeListAllDocuments(FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [safeUserId]),
+    ...selectQuery([
+      "$id",
+      "flight_id",
+      "aircraft_model_id",
+      "is_night",
+      "flight_minutes_considered",
+      "student_amount_calculated",
+    ]),
+  ]).catch(() => []);
+  const zeroPayments = payments.filter((payment) => Number(payment.student_amount_calculated || 0) === 0);
+  let updated = 0;
+  for (const payment of zeroPayments) {
+    const flightId = cleanString(payment.flight_id);
+    if (!flightId || !payment.$id) continue;
+    const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, [
+      sdk.Query.select(["aircraft_ident", "block_time_minutes", "total_flight_minutes", "is_night"]),
+    ]).catch(() => null);
+    if (!flight) continue;
+    const modelId = cleanString(payment.aircraft_model_id) || await getAircraftModelIdByIdent(cleanString(flight.aircraft_ident));
+    const isNight = typeof payment.is_night === "boolean" ? payment.is_night : Boolean(flight.is_night);
+    const minutes = Number(
+      payment.flight_minutes_considered ||
+      flight.block_time_minutes ||
+      flight.total_flight_minutes ||
+      0,
+    ) || 0;
+    const studentRate = await resolveStudentHourlyRateServer(safeUserId, modelId, isNight);
+    const studentAmount = sagaRoundMoney(studentRate.hourlyRate * (minutes / 60));
+    if (studentAmount <= 0) continue;
+    const patch = {
+      student_hourly_rate_applied: sagaRoundMoney(studentRate.hourlyRate),
+      student_amount_calculated: studentAmount,
+      student_rate_source: studentRate.source || "none",
+      student_credit_id: studentRate.creditId || null,
+      updated_by: actorUserId,
+    };
+    try {
+      await databases.updateDocument(DATABASE_ID, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, payment.$id, patch);
+    } catch (err) {
+      if (!isUnknownCreatedByAttributeError(err)) throw err;
+      const { updated_by: _updatedBy, ...compatPatch } = patch;
+      await databases.updateDocument(DATABASE_ID, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, payment.$id, compatPatch);
+    }
+    updated += 1;
+  }
+  if (updated > 0 && Array.isArray(logs)) {
+    logs.push(`Pagamentos de voos: ${updated} lancamento(s) zerado(s) recalculado(s) apos atualizar os creditos.`);
+  }
+  return updated;
 }
 
 async function syncSagaUserAnac(userId, sagaUser) {
@@ -3581,6 +3639,33 @@ function sagaParseExerciseGrade(value) {
   return grade === "NO" ? "NO" : grade;
 }
 
+function sagaExerciseTitleKey(value) {
+  return cleanString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+function dedupeSagaExercises(exercises) {
+  const byTitle = new Map();
+  for (const exercise of Array.isArray(exercises) ? exercises : []) {
+    const title = cleanString(exercise?.title);
+    const key = sagaExerciseTitleKey(title);
+    if (!key) continue;
+    const current = byTitle.get(key);
+    const next = {
+      ...exercise,
+      title,
+      grade: ["NO", "1", "2", "3", "4"].includes(cleanString(exercise?.grade))
+        ? cleanString(exercise.grade)
+        : "NO",
+    };
+    if (!current || (current.grade === "NO" && next.grade !== "NO")) byTitle.set(key, next);
+  }
+  return Array.from(byTitle.values());
+}
+
 function sagaParseExerciseRows(lines) {
   const headerIndex = lines.findIndex((line, index) => {
     const joined = [line, lines[index + 1], lines[index + 2]].filter(Boolean).join(" ");
@@ -3614,7 +3699,7 @@ function sagaParseExerciseRows(lines) {
     }
   }
 
-  return rows;
+  return dedupeSagaExercises(rows);
 }
 
 function sagaParseFlightRecordPdfText(text) {
@@ -3999,6 +4084,85 @@ function sagaMissionLookupKey(rawMission) {
   return sagaMissionKey(code || raw);
 }
 
+function sagaMissionCanonicalKey(value) {
+  const key = sagaMissionKey(value);
+  const match = key.match(/^([A-Z]{1,8})0*(\d+)([A-Z]?)$/);
+  if (!match) return key;
+  return `${match[1]}${Number(match[2])}${match[3]}`;
+}
+
+function sagaMissionCodeV2(value) {
+  const normalized = cleanString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  const pieces = normalized.split(/\s*[-\u2013\u2014:|/]\s*/).reverse();
+  for (const piece of pieces) {
+    const match = piece.match(/\b([A-Z]{1,8})\s*[- ]?\s*(\d{1,3}[A-Z]?)\b/);
+    if (match) return `${match[1]}${match[2]}`;
+  }
+  const match = normalized.match(/\b([A-Z]{1,8})\s*[- ]?\s*(\d{1,3}[A-Z]?)\b/);
+  return match ? `${match[1]}${match[2]}` : "";
+}
+
+function sagaMissionLookupKeyV2(rawMission) {
+  const raw = cleanString(rawMission);
+  if (!raw) return "";
+  return sagaMissionKey(sagaMissionCodeV2(raw) || raw);
+}
+
+function sagaMissionScopedKey(trainingTrackId, lookupKey) {
+  const trackId = cleanString(trainingTrackId);
+  const missionKey = sagaMissionKey(lookupKey);
+  return trackId && missionKey ? `${trackId}::${missionKey}` : "";
+}
+
+function sagaMissionTargetKeys(rawMission) {
+  const raw = cleanString(rawMission);
+  const values = [raw, sagaMissionCodeV2(raw), ...raw.split(/\s*[-\u2013\u2014:|/]\s*/)];
+  return Array.from(new Set(values.flatMap((value) => [
+    sagaMissionKey(value),
+    sagaMissionCanonicalKey(value),
+  ].filter(Boolean))));
+}
+
+function sagaMissionAliasesV2(mission) {
+  const values = [
+    mission?.id,
+    mission?.code,
+    mission?.name,
+    mission?.title,
+    `${mission?.type || ""}${mission?.order || ""}`,
+  ];
+  return Array.from(new Set(values.flatMap((value) => {
+    const cleanValue = cleanString(value);
+    if (!cleanValue) return [];
+    const code = sagaMissionCodeV2(cleanValue);
+    return [
+      sagaMissionKey(cleanValue),
+      sagaMissionCanonicalKey(cleanValue),
+      sagaMissionKey(code),
+      sagaMissionCanonicalKey(code),
+    ].filter(Boolean);
+  })));
+}
+
+function sagaMissionMatchScoreV2(rawMission, mission) {
+  const targets = sagaMissionTargetKeys(rawMission);
+  if (!targets.length) return 0;
+  const aliases = sagaMissionAliasesV2(mission);
+  if (targets.some((target) => aliases.includes(target))) return 1;
+  let best = 0;
+  for (const target of targets) {
+    for (const alias of aliases) {
+      if (target.length < 4 || alias.length < 4) continue;
+      if (alias.includes(target) || target.includes(alias)) best = Math.max(best, 0.88);
+      if (alias.startsWith(target) || target.startsWith(alias)) best = Math.max(best, 0.84);
+    }
+  }
+  return best;
+}
+
 function sagaResolveTrainingMissionFromId(track, missionId, rawMission, missionCode) {
   if (!track || !missionId) return null;
   for (const stage of Array.isArray(track.stages) ? track.stages : []) {
@@ -4044,10 +4208,12 @@ function sagaFlightNeedsMissionMapping(group, mapping, catalogs) {
 
 function sagaResolveTrainingMission(trainingTrackId, catalogs, rawMission, missionBySaga = {}) {
   const track = (catalogs?.trainingTracks || []).find((item) => cleanString(item.id) === cleanString(trainingTrackId));
-  const missionCode = sagaMissionCode(rawMission);
-  const lookupKey = sagaMissionLookupKey(rawMission);
+  const missionCode = sagaMissionCodeV2(rawMission);
+  const lookupKey = sagaMissionLookupKeyV2(rawMission);
+  const scopedLookupKey = sagaMissionScopedKey(trainingTrackId, lookupKey);
   const mappedMissionId = cleanString(
-    missionBySaga?.[lookupKey] ||
+    missionBySaga?.[scopedLookupKey] ||
+      missionBySaga?.[lookupKey] ||
       missionBySaga?.[sagaMissionKey(rawMission)] ||
       missionBySaga?.[cleanString(rawMission)],
   );
@@ -4055,7 +4221,7 @@ function sagaResolveTrainingMission(trainingTrackId, catalogs, rawMission, missi
     const mapped = sagaResolveTrainingMissionFromId(track, mappedMissionId, rawMission, missionCode);
     if (mapped) return mapped;
   }
-  if (!track || !missionCode) {
+  if (!track || !cleanString(rawMission)) {
     return {
       trackId: cleanString(trainingTrackId) || null,
       stageId: null,
@@ -4068,30 +4234,22 @@ function sagaResolveTrainingMission(trainingTrackId, catalogs, rawMission, missi
       },
     };
   }
-  const targetKey = sagaMissionKey(missionCode);
-  let bestCandidate = null;
-  let bestScore = 0;
+  const candidates = [];
   for (const stage of Array.isArray(track.stages) ? track.stages : []) {
     for (const mission of Array.isArray(stage?.missions) ? stage.missions : []) {
-      const candidates = [
-        mission?.id,
-        mission?.name,
-        mission?.title,
-        mission?.code,
-        `${mission?.type || ""}${mission?.order || ""}`,
-      ].map(sagaMissionKey).filter(Boolean);
-      const exact = candidates.includes(targetKey);
-      const score = exact ? 1 : sagaMissionMatchScore(missionCode, mission);
-      if (!exact && score < 0.8) continue;
-      if (score > bestScore) {
-        bestScore = score;
-        bestCandidate = { stage, mission, score };
-      }
-      if (exact) break;
+      const score = sagaMissionMatchScoreV2(rawMission, mission);
+      if (score >= 0.84) candidates.push({ stage, mission, score });
     }
-    if (bestScore >= 1) break;
   }
-  if (bestCandidate) {
+  candidates.sort((left, right) => right.score - left.score);
+  const bestCandidate = candidates[0] || null;
+  const ambiguous = Boolean(
+    bestCandidate &&
+    candidates[1] &&
+    candidates[1].score === bestCandidate.score &&
+    cleanString(candidates[1].mission?.id) !== cleanString(bestCandidate.mission?.id),
+  );
+  if (bestCandidate && !ambiguous) {
       return {
         trackId: cleanString(track.id),
         stageId: cleanString(bestCandidate.stage.id) || null,
@@ -4260,7 +4418,7 @@ function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, in
     },
     legs: metaLegs,
     exercises: pdfOk && Array.isArray(pdfRecord.exercises)
-      ? pdfRecord.exercises.map((exercise) => ({
+      ? dedupeSagaExercises(pdfRecord.exercises).map((exercise) => ({
           id: sagaDocId("saga_exercise", `${groupKey}_${cleanString(exercise.title)}`).slice(0, 64),
           title: cleanString(exercise.title),
           grade: ["NO", "1", "2", "3", "4"].includes(cleanString(exercise.grade)) ? cleanString(exercise.grade) : "NO",
@@ -4281,6 +4439,117 @@ function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, in
     },
   };
   return `${META_PREFIX}${Buffer.from(JSON.stringify(meta), "utf8").toString("base64")}\n`;
+}
+
+function sagaSignaturePermissions(studentUserId, instructorUserId) {
+  return Array.from(new Set([
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+    studentUserId ? sdk.Permission.read(sdk.Role.user(studentUserId)) : null,
+    instructorUserId ? sdk.Permission.read(sdk.Role.user(instructorUserId)) : null,
+  ].filter(Boolean)));
+}
+
+async function ensureSagaInstructorSignature(flightDoc, signedAt, logs = null) {
+  const flightId = cleanString(flightDoc?.$id);
+  const instructorUserId = cleanString(flightDoc?.instructor_user_id);
+  const studentUserId = cleanString(flightDoc?.student_user_id || flightDoc?.user_id);
+  if (!FLIGHT_SIGNATURES_COLLECTION_ID || !flightId || !instructorUserId) return false;
+  const existing = await databases.listDocuments(DATABASE_ID, FLIGHT_SIGNATURES_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    sdk.Query.equal("signer_role", ["instructor"]),
+    sdk.Query.limit(100),
+  ]).catch(() => ({ documents: [] }));
+  if ((existing.documents || []).some((doc) => cleanString(doc.status || "active") === "active")) return false;
+
+  const effectiveSignedAt = cleanString(signedAt) || nowIso();
+  const payloadSnapshotJson = stableStringify({
+    source: "saga_import",
+    flightId,
+    sagaFlightId: cleanString(flightDoc.saga_flight_id),
+    signerUserId: instructorUserId,
+    signerRole: "instructor",
+    signedAt: effectiveSignedAt,
+  });
+  const payload = {
+    flight_id: flightId,
+    signer_user_id: instructorUserId,
+    signer_role: "instructor",
+    signed_at: effectiveSignedAt,
+    user_agent: "SAGA import",
+    content_hash: sha256(payloadSnapshotJson),
+    payload_version: "saga-import-v1",
+    payload_hash_alg: "SHA-256",
+    payload_snapshot_json: payloadSnapshotJson,
+    reauthenticated_at: null,
+    auth_method: "saga_import",
+    school_id: flightDoc.school_id || SCHOOL_ID,
+    status: "active",
+  };
+  const signatureId = sdk.ID.unique();
+  try {
+    await databases.createDocument(
+      DATABASE_ID,
+      FLIGHT_SIGNATURES_COLLECTION_ID,
+      signatureId,
+      payload,
+      sagaSignaturePermissions(studentUserId, instructorUserId),
+    );
+  } catch (err) {
+    if (Number(err?.code) === 409 || /already exists|duplicate/i.test(String(err?.message || ""))) return false;
+    if (!/attribute|unknown|invalid document structure/i.test(String(err?.message || ""))) throw err;
+    const {
+      payload_version: _payloadVersion,
+      payload_hash_alg: _payloadHashAlg,
+      payload_snapshot_json: _payloadSnapshotJson,
+      reauthenticated_at: _reauthenticatedAt,
+      auth_method: _authMethod,
+      ...compatPayload
+    } = payload;
+    await databases.createDocument(
+      DATABASE_ID,
+      FLIGHT_SIGNATURES_COLLECTION_ID,
+      signatureId,
+      compatPayload,
+      sagaSignaturePermissions(studentUserId, instructorUserId),
+    );
+  }
+  if (Array.isArray(logs)) logs.push(`Ficha SAGA ${cleanString(flightDoc.saga_flight_id) || flightId}: assinatura INVA importada.`);
+  return true;
+}
+
+async function repairExistingSagaFlight(docId, logs = null) {
+  const flightDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
+  if (!flightDoc) return { repaired: false };
+  const signatures = FLIGHT_SIGNATURES_COLLECTION_ID
+    ? await databases.listDocuments(DATABASE_ID, FLIGHT_SIGNATURES_COLLECTION_ID, [
+        sdk.Query.equal("flight_id", [docId]),
+        sdk.Query.limit(100),
+      ]).catch(() => ({ documents: [] }))
+    : { documents: [] };
+  const activeRoles = new Set(
+    (signatures.documents || [])
+      .filter((signature) => cleanString(signature.status || "active") === "active")
+      .map((signature) => cleanString(signature.signer_role)),
+  );
+  const patch = {
+    instructor_signed: true,
+    student_signed: activeRoles.has("student"),
+    admin_operator_signed: activeRoles.has("admin_operator"),
+    instructor_signed_at: flightDoc.instructor_signed_at || flightDoc.saga_imported_at || nowIso(),
+    flight_status: "Realizado",
+  };
+  const meta = decodeFlightMeta(flightDoc.csv_text);
+  if (meta && Array.isArray(meta.exercises)) {
+    const deduped = dedupeSagaExercises(meta.exercises);
+    if (deduped.length !== meta.exercises.length) {
+      patch.csv_text = `${META_PREFIX}${Buffer.from(JSON.stringify({ ...meta, exercises: deduped }), "utf8").toString("base64")}\n`;
+    }
+  }
+  const updated = await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, patch);
+  const signatureCreated = await ensureSagaInstructorSignature(updated, patch.instructor_signed_at, logs);
+  return { repaired: Boolean(patch.csv_text) || signatureCreated };
 }
 
 async function updateSagaFlightDocument(docId, materialized, optionalFields, studentUserId, instructorUserId) {
@@ -4385,8 +4654,8 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     training_snapshot_json: JSON.stringify({ ...resolvedMission.snapshot, course: sagaCourse, mission: rawMission || null }),
     flight_status: "Realizado",
     instructor_signed: true,
-    student_signed: true,
-    admin_operator_signed: true,
+    student_signed: false,
+    admin_operator_signed: false,
     instructor_signed_at: nowIso(),
   };
   let pdfRecord = pdfRecordOverride === undefined ? null : pdfRecordOverride;
@@ -4417,6 +4686,7 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H2',location:'main.js:2727',message:'flight updated existing doc',data:{groupId:group?.id,groupKey,docId,date:materialized.flight_date,studentUserId,aircraftIdent},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
     const updatedDoc = await updateSagaFlightDocument(docId, materialized, optionalFields, studentUserId, instructorUserId);
+    await ensureSagaInstructorSignature(updatedDoc, materialized.instructor_signed_at, logs);
     await saveInstructorPaymentSnapshotServer(updatedDoc, "saga-import", materialized.instructor_signed_at);
     const assigned = await ensureSagaStudentTrack(studentUserId, trainingTrackId);
     return { updated: true, duplicate: true, id: group.id, documentId: docId, trackAssigned: assigned };
@@ -4447,6 +4717,7 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
   }
 
   const trackAssigned = await ensureSagaStudentTrack(studentUserId, trainingTrackId);
+  await ensureSagaInstructorSignature(doc, materialized.instructor_signed_at, logs);
   await saveInstructorPaymentSnapshotServer(doc, "saga-import", materialized.instructor_signed_at);
   return { created: true, id: group.id, documentId: doc.$id, trackAssigned };
 }
@@ -4990,11 +5261,11 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
       const sagaCourse = cleanString(firstLeg.curso);
       const trainingTrackId = cleanString(mapping.courseBySaga?.[sagaCourse]);
       const track = (catalogs.trainingTracks || []).find((item) => cleanString(item.id) === trainingTrackId);
-      const lookupKey = sagaMissionLookupKey(rawMission);
+      const lookupKey = sagaMissionLookupKeyV2(rawMission);
       const pendingMission = {
         lookupKey,
         rawMission,
-        missionCode: sagaMissionCode(rawMission),
+        missionCode: sagaMissionCodeV2(rawMission),
         trainingTrackId,
         trackName: cleanString(track?.name) || sagaCourse,
         sagaFlightId: cleanString(group.id),
@@ -7311,6 +7582,7 @@ function toUserSummary(user, profile, preference, flights, plans, trainingTracks
     email: detail.email,
     name: detail.name,
     role: detail.role,
+    customRoleSlug: detail.customRoleSlug,
     labels: detail.labels,
     emailVerification: detail.emailVerification,
     createdAt: detail.createdAt,
@@ -8698,14 +8970,53 @@ async function setStudentTrackFlightReviewClubMembership(targetUserId, assignmen
   return getUserDetail(studentUserId);
 }
 
-async function listSummaries({ search = "", limit = DEFAULT_LIMIT, offset = 0 } = {}) {
+async function listSummaries({ search = "", role = "", customRoleSlug = "", limit = DEFAULT_LIMIT, offset = 0 } = {}) {
   const safeLimit = clampLimit(limit);
   const safeOffset = clampOffset(offset);
   const needle = normalizeSearch(search);
+  const safeRole = VALID_ROLES.has(cleanString(role)) ? cleanString(role) : "";
+  const safeCustomRoleSlug = cleanString(customRoleSlug);
   let pageUsers = [];
   let total = 0;
 
-  if (needle) {
+  if (safeRole) {
+    const profileQueries = [
+      sdk.Query.equal("role", [safeRole]),
+      ...selectQuery(["user_id", "custom_role_slug"]),
+    ];
+    const matchingProfiles = await listAllDocuments(PROFILES_COLLECTION_ID, profileQueries);
+    let matchingUserIds = matchingProfiles
+      .filter((profile) => {
+        const profileCustomRoleSlug = cleanString(profile.custom_role_slug);
+        return safeCustomRoleSlug
+          ? profileCustomRoleSlug === safeCustomRoleSlug
+          : !profileCustomRoleSlug;
+      })
+      .map((profile) => cleanString(profile.user_id))
+      .filter(Boolean);
+    if (needle) {
+      const [authRes, profileSearchUserIds] = await Promise.all([
+        users.list({
+          search: String(search || "").trim(),
+          queries: [sdk.Query.limit(MAX_LIMIT), sdk.Query.offset(0)],
+          total: true,
+        }).catch(() => ({ users: [] })),
+        findProfileSearchUserIds(search),
+      ]);
+      const searchIds = new Set([
+        ...(authRes.users || []).map((user) => user.$id),
+        ...profileSearchUserIds,
+      ]);
+      matchingUserIds = matchingUserIds.filter((userId) => searchIds.has(userId));
+    }
+    const matchingUsers = (await getUsersByIds(matchingUserIds)).sort((a, b) => {
+      const aName = a.name || a.email || a.$id;
+      const bName = b.name || b.email || b.$id;
+      return aName.localeCompare(bName, "pt-BR");
+    });
+    total = matchingUsers.length;
+    pageUsers = matchingUsers.slice(safeOffset, safeOffset + safeLimit);
+  } else if (needle) {
     const [authRes, profileUserIds] = await Promise.all([
       users.list({
         search: String(search || "").trim(),
@@ -13327,6 +13638,10 @@ function mapCaktoReceipt(doc) {
     fulfillmentError: doc.fulfillment_error || "",
     fulfillmentUpdatedAt: doc.fulfillment_updated_at || null,
     creditId: doc.credit_id || "",
+    sagaStatus: doc.saga_status || "",
+    sagaError: doc.saga_error || "",
+    sagaCreditMarker: doc.saga_credit_marker || "",
+    sagaUpdatedAt: doc.saga_updated_at || null,
     eventAt: normalized.eventAt || doc.event_at || null,
     receivedAt: doc.received_at || doc.$createdAt,
     payloadJson,
@@ -14239,14 +14554,28 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   }
 
   const newGroups = groups.filter((g) => !existingIds.has(sagaDocId("saga_flight", g.key)));
+  const existingGroups = groups.filter((g) => existingIds.has(sagaDocId("saga_flight", g.key)));
   const skippedCount = groups.length - newGroups.length;
   logs.push(`Ja importados: ${skippedCount}. Novos para importar: ${newGroups.length}.`);
   logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes.`);
 
   const summary = makeSummary({ requestedFlightGroups: groups.length, flightsSkipped: skippedCount });
 
+  let repairedExisting = 0;
+  for (const group of existingGroups) {
+    const repair = await repairExistingSagaFlight(sagaDocId("saga_flight", group.key), logs);
+    if (repair.repaired) repairedExisting += 1;
+  }
+  if (repairedExisting > 0) {
+    summary.flightsUpdated += repairedExisting;
+    logs.push(`Voos SAGA existentes reparados: ${repairedExisting}.`);
+  }
+
   if (!newGroups.length) {
-    await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: "Todos os voos ja estao importados.", current: 0, total: 0, logs });
+    const message = repairedExisting > 0
+      ? `${repairedExisting} voo(s) existente(s) reparado(s).`
+      : "Todos os voos ja estao importados.";
+    await saveSagaImportProgress({ runId, status: "completed", stage: "done", message, current: 0, total: 0, logs });
     await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
     return { ok: true, summary };
   }
@@ -14398,6 +14727,7 @@ async function sagaImportSelfCredits(actorUserId, runtimeLog) {
   }
 
   summary.creditHoursImported = Number(summary.creditHoursImported.toFixed(2));
+  summary.flightPaymentsUpdated = await refreshZeroStudentPaymentSnapshots(actorUserId, actorUserId, logs);
   summary.logs.push(`Creditos: ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados (${summary.creditHoursImported}h).`);
   logLine(`[sagaImportSelfCredits] ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados.`);
   await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
@@ -15014,6 +15344,8 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "listSummaries" || action === "list") {
       const page = await listSummaries({
         search: String(payload.search || ""),
+        role: String(payload.role || ""),
+        customRoleSlug: String(payload.customRoleSlug || ""),
         limit: payload.limit,
         offset: payload.offset,
       });

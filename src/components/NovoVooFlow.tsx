@@ -463,15 +463,50 @@ function isExerciseGrade(value: unknown): value is ExerciseGrade {
   return value === "NO" || value === "1" || value === "2" || value === "3" || value === "4";
 }
 
+function exerciseTitleKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function dedupeExerciseGrades(exercises: FlightExerciseGrade[]): FlightExerciseGrade[] {
+  const byTitle = new Map<string, FlightExerciseGrade>();
+  for (const exercise of exercises) {
+    const key = exerciseTitleKey(exercise.title);
+    if (!key) continue;
+    const current = byTitle.get(key);
+    if (!current) {
+      byTitle.set(key, exercise);
+      continue;
+    }
+    byTitle.set(key, {
+      ...current,
+      exerciseId: current.exerciseId.startsWith("legacy-") ? exercise.exerciseId : current.exerciseId,
+      acceptableProficiency: current.acceptableProficiency || exercise.acceptableProficiency,
+      grade: current.grade ?? exercise.grade,
+      order: Math.min(current.order, exercise.order),
+    });
+  }
+  return Array.from(byTitle.values()).sort((a, b) => a.order - b.order);
+}
+
 function normalizeSavedExercises(value: unknown): FlightExerciseGrade[] {
   if (!Array.isArray(value)) return [];
-  return value
+  return dedupeExerciseGrades(value
     .map((row, index) => {
-      const item = row as Partial<FlightExerciseGrade>;
+      const item = row as Partial<FlightExerciseGrade> & { id?: string };
       const title = typeof item.title === "string" ? item.title.trim() : "";
       if (!title) return null;
       return {
-        exerciseId: typeof item.exerciseId === "string" && item.exerciseId ? item.exerciseId : `legacy-${index + 1}`,
+        exerciseId:
+          typeof item.exerciseId === "string" && item.exerciseId
+            ? item.exerciseId
+            : typeof item.id === "string" && item.id
+              ? item.id
+              : `legacy-${index + 1}`,
         title,
         acceptableProficiency:
           typeof item.acceptableProficiency === "string" ? item.acceptableProficiency.trim() : "",
@@ -480,7 +515,7 @@ function normalizeSavedExercises(value: unknown): FlightExerciseGrade[] {
       } satisfies FlightExerciseGrade;
     })
     .filter((item): item is FlightExerciseGrade => Boolean(item))
-    .sort((a, b) => a.order - b.order);
+    .sort((a, b) => a.order - b.order));
 }
 
 function mergeExerciseGrades(
@@ -488,12 +523,15 @@ function mergeExerciseGrades(
   saved: FlightExerciseGrade[],
 ): FlightExerciseGrade[] {
   const byId = new Map(catalog.map((exercise) => [exercise.id, exercise]));
+  const byTitle = new Map(catalog.map((exercise) => [exerciseTitleKey(exercise.title), exercise]));
   const usedIds = new Set<string>();
-  const mergedSaved = saved.map((exercise) => {
-    const catalogExercise = byId.get(exercise.exerciseId);
+  const mergedSaved = dedupeExerciseGrades(saved).map((exercise) => {
+    const catalogExercise =
+      byId.get(exercise.exerciseId) ??
+      byTitle.get(exerciseTitleKey(exercise.title));
     if (catalogExercise) usedIds.add(catalogExercise.id);
     return {
-      exerciseId: exercise.exerciseId,
+      exerciseId: catalogExercise?.id ?? exercise.exerciseId,
       title: catalogExercise?.title ?? exercise.title,
       acceptableProficiency: catalogExercise?.acceptableProficiency ?? exercise.acceptableProficiency,
       grade: isExerciseGrade(exercise.grade) ? exercise.grade : null,
@@ -509,7 +547,7 @@ function mergeExerciseGrades(
       grade: "4" as ExerciseGrade,
       order: exercise.order,
     }) satisfies FlightExerciseGrade);
-  return [...mergedSaved, ...newCatalogRows].sort((a, b) => a.order - b.order);
+  return dedupeExerciseGrades([...mergedSaved, ...newCatalogRows]);
 }
 
 function escapeHtml(text: string): string {

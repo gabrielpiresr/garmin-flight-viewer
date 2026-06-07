@@ -86,6 +86,11 @@ export function CaktoReceiptsTab() {
                         {row.fulfillmentStatus === "completed" ? "Liberado" : row.fulfillmentStatus === "failed" ? "Falhou" : row.fulfillmentStatus}
                       </p>
                       {row.creditId ? <p className="font-mono text-[10px] text-slate-500">{row.creditId}</p> : null}
+                      {row.sagaStatus ? (
+                        <p className={row.sagaStatus === "completed" || row.sagaStatus === "already_exists" ? "text-emerald-300" : row.sagaStatus === "failed" ? "text-red-300" : "text-amber-300"}>
+                          SAGA: {row.sagaStatus === "completed" ? "lancado" : row.sagaStatus === "already_exists" ? "ja lancado" : row.sagaStatus}
+                        </p>
+                      ) : null}
                     </>
                   ) : null}
                 </td>
@@ -111,6 +116,12 @@ export function CaktoReceiptsTab() {
               <div className="mt-4 rounded-lg border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-200">
                 <p className="font-semibold">Falha ao liberar creditos</p>
                 <p className="mt-1 text-xs">{selected.fulfillmentError}</p>
+              </div>
+            ) : null}
+            {selected.sagaError ? (
+              <div className="mt-4 rounded-lg border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-200">
+                <p className="font-semibold">Falha ao lancar o credito no SAGA</p>
+                <p className="mt-1 text-xs">{selected.sagaError}</p>
               </div>
             ) : null}
             <pre className="mt-4 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-4 text-xs text-slate-300">{JSON.stringify(JSON.parse(selected.payloadJson), null, 2)}</pre>

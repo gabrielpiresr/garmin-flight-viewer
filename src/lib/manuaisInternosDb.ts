@@ -1,9 +1,17 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, MANUALS_BUCKET_ID, MANUALS_COL_ID, DEFAULT_SCHOOL_ID, storage } from "./appwrite";
+import {
+  databases,
+  ID,
+  isAppwriteConfigured,
+  INTERNAL_MANUALS_BUCKET_ID,
+  INTERNAL_MANUALS_COL_ID,
+  DEFAULT_SCHOOL_ID,
+  storage,
+} from "./appwrite";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
-export type Manual = {
+export type ManualInterno = {
   id: string;
   schoolId: string;
   name: string;
@@ -19,7 +27,7 @@ export type Manual = {
   updatedAt: string;
 };
 
-export type CreateManualPayload = {
+export type CreateManualInternoPayload = {
   name: string;
   category: string;
   /** Provide either file OR externalUrl, not both. */
@@ -28,11 +36,13 @@ export type CreateManualPayload = {
   actorUserId?: string;
 };
 
-function isManuaisConfigured(): boolean {
-  return Boolean(isAppwriteConfigured && databases && storage && DB_ID && MANUALS_COL_ID && MANUALS_BUCKET_ID);
+function isConfigured(): boolean {
+  return Boolean(
+    isAppwriteConfigured && databases && storage && DB_ID && INTERNAL_MANUALS_COL_ID && INTERNAL_MANUALS_BUCKET_ID,
+  );
 }
 
-function toManual(doc: Record<string, unknown>): Manual {
+function toManualInterno(doc: Record<string, unknown>): ManualInterno {
   return {
     id: doc.$id as string,
     schoolId: (doc.school_id as string | undefined) ?? "",
@@ -50,46 +60,50 @@ function toManual(doc: Record<string, unknown>): Manual {
   };
 }
 
-export function getManualDownloadUrl(fileId: string): string | null {
-  if (!storage || !MANUALS_BUCKET_ID || !fileId) return null;
-  return storage.getFileDownload(MANUALS_BUCKET_ID, fileId).toString();
+export function getManualInternoDownloadUrl(fileId: string): string | null {
+  if (!storage || !INTERNAL_MANUALS_BUCKET_ID || !fileId) return null;
+  return storage.getFileDownload(INTERNAL_MANUALS_BUCKET_ID, fileId).toString();
 }
 
-export function getManualViewUrl(fileId: string): string | null {
-  if (!storage || !MANUALS_BUCKET_ID || !fileId) return null;
-  return storage.getFileView(MANUALS_BUCKET_ID, fileId).toString();
+export function getManualInternoViewUrl(fileId: string): string | null {
+  if (!storage || !INTERNAL_MANUALS_BUCKET_ID || !fileId) return null;
+  return storage.getFileView(INTERNAL_MANUALS_BUCKET_ID, fileId).toString();
 }
 
-export async function listManuals(): Promise<{ data: Manual[] | null; error: Error | null }> {
-  if (!isManuaisConfigured() || !DB_ID || !MANUALS_COL_ID) {
+export async function listManuaisInternos(): Promise<{ data: ManualInterno[] | null; error: Error | null }> {
+  if (!isConfigured() || !DB_ID || !INTERNAL_MANUALS_COL_ID) {
     return { data: [], error: null };
   }
   try {
-    const res = await databases!.listDocuments(DB_ID, MANUALS_COL_ID, [
+    const res = await databases!.listDocuments(DB_ID, INTERNAL_MANUALS_COL_ID, [
       Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
       Query.orderAsc("category"),
       Query.orderAsc("sort_order"),
       Query.orderAsc("name"),
       Query.limit(500),
     ]);
-    return { data: res.documents.map((doc) => toManual(doc as Record<string, unknown>)), error: null };
+    return { data: res.documents.map((doc) => toManualInterno(doc as Record<string, unknown>)), error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }
 }
 
-export async function createManual(payload: CreateManualPayload): Promise<{ data: Manual | null; error: Error | null }> {
-  if (!isManuaisConfigured() || !DB_ID || !MANUALS_COL_ID || !MANUALS_BUCKET_ID) {
+export async function createManualInterno(
+  payload: CreateManualInternoPayload,
+): Promise<{ data: ManualInterno | null; error: Error | null }> {
+  if (!isConfigured() || !DB_ID || !INTERNAL_MANUALS_COL_ID || !INTERNAL_MANUALS_BUCKET_ID) {
     return {
       data: null,
-      error: new Error("Módulo de manuais não configurado. Execute npm run appwrite:setup-manuals e defina as variáveis no .env.local."),
+      error: new Error(
+        "Módulo de manuais internos não configurado. Defina VITE_APPWRITE_INTERNAL_MANUALS_COL_ID e VITE_APPWRITE_INTERNAL_MANUALS_BUCKET_ID no .env.local.",
+      ),
     };
   }
 
   // ── External link (no file upload) ──────────────────────────────────────────
   if (payload.externalUrl) {
     try {
-      const doc = await databases!.createDocument(DB_ID, MANUALS_COL_ID, ID.unique(), {
+      const doc = await databases!.createDocument(DB_ID, INTERNAL_MANUALS_COL_ID, ID.unique(), {
         school_id: DEFAULT_SCHOOL_ID,
         name: payload.name,
         category: payload.category,
@@ -101,7 +115,7 @@ export async function createManual(payload: CreateManualPayload): Promise<{ data
         sort_order: 0,
         created_by: payload.actorUserId ?? null,
       });
-      return { data: toManual(doc as unknown as Record<string, unknown>), error: null };
+      return { data: toManualInterno(doc as unknown as Record<string, unknown>), error: null };
     } catch (error) {
       return { data: null, error: error as Error };
     }
@@ -111,14 +125,14 @@ export async function createManual(payload: CreateManualPayload): Promise<{ data
   const file = payload.file!;
   let fileId: string | null = null;
   try {
-    const uploaded = await storage!.createFile(MANUALS_BUCKET_ID, ID.unique(), file);
+    const uploaded = await storage!.createFile(INTERNAL_MANUALS_BUCKET_ID, ID.unique(), file);
     fileId = uploaded.$id;
   } catch (error) {
     return { data: null, error: error as Error };
   }
 
   try {
-    const doc = await databases!.createDocument(DB_ID, MANUALS_COL_ID, ID.unique(), {
+    const doc = await databases!.createDocument(DB_ID, INTERNAL_MANUALS_COL_ID, ID.unique(), {
       school_id: DEFAULT_SCHOOL_ID,
       name: payload.name,
       category: payload.category,
@@ -130,11 +144,10 @@ export async function createManual(payload: CreateManualPayload): Promise<{ data
       sort_order: 0,
       created_by: payload.actorUserId ?? null,
     });
-    return { data: toManual(doc as unknown as Record<string, unknown>), error: null };
+    return { data: toManualInterno(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {
-    // Best-effort cleanup of uploaded file
     try {
-      await storage!.deleteFile(MANUALS_BUCKET_ID, fileId!);
+      await storage!.deleteFile(INTERNAL_MANUALS_BUCKET_ID, fileId!);
     } catch {
       // ignore
     }
@@ -142,17 +155,17 @@ export async function createManual(payload: CreateManualPayload): Promise<{ data
   }
 }
 
-export async function deleteManual(manualId: string): Promise<{ error: Error | null }> {
-  if (!isManuaisConfigured() || !DB_ID || !MANUALS_COL_ID || !MANUALS_BUCKET_ID) {
-    return { error: new Error("Módulo de manuais não configurado.") };
+export async function deleteManualInterno(manualId: string): Promise<{ error: Error | null }> {
+  if (!isConfigured() || !DB_ID || !INTERNAL_MANUALS_COL_ID || !INTERNAL_MANUALS_BUCKET_ID) {
+    return { error: new Error("Módulo de manuais internos não configurado.") };
   }
   try {
-    const doc = await databases!.getDocument(DB_ID, MANUALS_COL_ID, manualId);
+    const doc = await databases!.getDocument(DB_ID, INTERNAL_MANUALS_COL_ID, manualId);
     const fileId = (doc.file_id as string | null | undefined) ?? null;
-    await databases!.deleteDocument(DB_ID, MANUALS_COL_ID, manualId);
+    await databases!.deleteDocument(DB_ID, INTERNAL_MANUALS_COL_ID, manualId);
     if (fileId) {
       try {
-        await storage!.deleteFile(MANUALS_BUCKET_ID, fileId);
+        await storage!.deleteFile(INTERNAL_MANUALS_BUCKET_ID, fileId);
       } catch {
         // ignore orphaned file
       }
@@ -163,12 +176,12 @@ export async function deleteManual(manualId: string): Promise<{ error: Error | n
   }
 }
 
-export async function updateManualMeta(
+export async function updateManualInternoMeta(
   manualId: string,
   updates: { name?: string; category?: string; sortOrder?: number; externalUrl?: string | null },
-): Promise<{ data: Manual | null; error: Error | null }> {
-  if (!isManuaisConfigured() || !DB_ID || !MANUALS_COL_ID) {
-    return { data: null, error: new Error("Módulo de manuais não configurado.") };
+): Promise<{ data: ManualInterno | null; error: Error | null }> {
+  if (!isConfigured() || !DB_ID || !INTERNAL_MANUALS_COL_ID) {
+    return { data: null, error: new Error("Módulo de manuais internos não configurado.") };
   }
   try {
     const payload: Record<string, unknown> = {};
@@ -176,8 +189,8 @@ export async function updateManualMeta(
     if (updates.category !== undefined) payload.category = updates.category;
     if (updates.sortOrder !== undefined) payload.sort_order = updates.sortOrder;
     if (updates.externalUrl !== undefined) payload.external_url = updates.externalUrl;
-    const doc = await databases!.updateDocument(DB_ID, MANUALS_COL_ID, manualId, payload);
-    return { data: toManual(doc as unknown as Record<string, unknown>), error: null };
+    const doc = await databases!.updateDocument(DB_ID, INTERNAL_MANUALS_COL_ID, manualId, payload);
+    return { data: toManualInterno(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }

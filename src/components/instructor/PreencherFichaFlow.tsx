@@ -74,14 +74,45 @@ function isExerciseGrade(v: unknown): v is ExerciseGrade {
   return v === "NO" || v === "1" || v === "2" || v === "3" || v === "4";
 }
 
+function exerciseTitleKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function dedupeExerciseGrades(exercises: FlightExerciseGrade[]): FlightExerciseGrade[] {
+  const byTitle = new Map<string, FlightExerciseGrade>();
+  for (const exercise of exercises) {
+    const key = exerciseTitleKey(exercise.title);
+    if (!key) continue;
+    const current = byTitle.get(key);
+    if (!current) {
+      byTitle.set(key, exercise);
+      continue;
+    }
+    byTitle.set(key, {
+      ...current,
+      exerciseId: current.exerciseId.startsWith("legacy-") ? exercise.exerciseId : current.exerciseId,
+      acceptableProficiency: current.acceptableProficiency || exercise.acceptableProficiency,
+      grade: current.grade ?? exercise.grade,
+      order: Math.min(current.order, exercise.order),
+    });
+  }
+  return Array.from(byTitle.values()).sort((a, b) => a.order - b.order);
+}
+
 function mergeExerciseGrades(catalog: TrainingExercise[], saved: FlightExerciseGrade[]): FlightExerciseGrade[] {
   const byId = new Map(catalog.map((e) => [e.id, e]));
+  const byTitle = new Map(catalog.map((e) => [exerciseTitleKey(e.title), e]));
   const usedIds = new Set<string>();
-  const merged = saved.map((exercise) => {
-    const cat = byId.get(exercise.exerciseId);
+  const merged = dedupeExerciseGrades(saved).map((exercise) => {
+    const cat = byId.get(exercise.exerciseId) ?? byTitle.get(exerciseTitleKey(exercise.title));
     if (cat) usedIds.add(cat.id);
     return {
-      exerciseId: exercise.exerciseId,
+      exerciseId: cat?.id ?? exercise.exerciseId,
       title: cat?.title ?? exercise.title,
       acceptableProficiency: cat?.acceptableProficiency ?? exercise.acceptableProficiency,
       grade: isExerciseGrade(exercise.grade) ? exercise.grade : null,
@@ -91,7 +122,7 @@ function mergeExerciseGrades(catalog: TrainingExercise[], saved: FlightExerciseG
   const newRows = catalog
     .filter((e) => e.isActive && !usedIds.has(e.id))
     .map((e) => ({ exerciseId: e.id, title: e.title, acceptableProficiency: e.acceptableProficiency, grade: "4" as ExerciseGrade, order: e.order }) satisfies FlightExerciseGrade);
-  return [...merged, ...newRows].sort((a, b) => a.order - b.order);
+  return dedupeExerciseGrades([...merged, ...newRows]);
 }
 
 function applySagaExerciseGrades(

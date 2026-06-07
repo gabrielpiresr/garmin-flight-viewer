@@ -40,8 +40,12 @@ const RECEIPTS_ID = "cakto_receipts";
 const PROPOSALS_ID = "crm_proposals";
 const STUDENT_CREDITS_ID = env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID || "student_credits";
 const SCHOOL_COSTS_ID = env.VITE_APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
+const PROFILES_ID = env.VITE_APPWRITE_PROFILES_COLLECTION_ID || "";
 const WEBHOOK_FUNCTION_ID = "cakto-webhook";
 const PLATFORM_SETTINGS_ID = env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID || "6a048f8a0018727e83ff";
+if (!PROFILES_ID || !PLATFORM_SETTINGS_ID) {
+  throw new Error("Defina VITE_APPWRITE_PROFILES_COLLECTION_ID e VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID.");
+}
 const ADMIN_PERMS = [
   Permission.read(Role.label("admin")),
   Permission.create(Role.label("admin")),
@@ -85,6 +89,9 @@ const stringAttrs = [
   ["fulfillment_status", 32, false],
   ["fulfillment_error", 2048, false],
   ["credit_id", 36, false],
+  ["saga_status", 32, false],
+  ["saga_error", 2048, false],
+  ["saga_credit_marker", 255, false],
 ];
 for (const [key, size, required] of stringAttrs) {
   await ignoreConflict(`atributo ${key}`, () => db.createStringAttribute(DATABASE_ID, RECEIPTS_ID, key, size, required));
@@ -93,6 +100,7 @@ await ignoreConflict("atributo amount", () => db.createFloatAttribute(DATABASE_I
 await ignoreConflict("atributo event_at", () => db.createDatetimeAttribute(DATABASE_ID, RECEIPTS_ID, "event_at", false));
 await ignoreConflict("atributo received_at", () => db.createDatetimeAttribute(DATABASE_ID, RECEIPTS_ID, "received_at", true));
 await ignoreConflict("atributo fulfillment_updated_at", () => db.createDatetimeAttribute(DATABASE_ID, RECEIPTS_ID, "fulfillment_updated_at", false));
+await ignoreConflict("atributo saga_updated_at", () => db.createDatetimeAttribute(DATABASE_ID, RECEIPTS_ID, "saga_updated_at", false));
 
 for (const [key, attributes, orders] of [
   ["cakto_dedupe_unique", ["dedupe_key"], ["ASC"]],
@@ -109,6 +117,17 @@ await ignoreConflict("índice crm_proposals.cakto_offer", () => db.createIndex(D
 let webhookFunction;
 try {
   webhookFunction = await functions.get({ functionId: WEBHOOK_FUNCTION_ID });
+  await functions.update({
+    functionId: WEBHOOK_FUNCTION_ID,
+    name: "Cakto Webhook",
+    runtime: "node-22",
+    execute: ["any"],
+    timeout: 30,
+    enabled: true,
+    logging: true,
+    entrypoint: "src/main.js",
+    commands: "npm install",
+  });
 } catch (error) {
   if (Number(error?.code) !== 404) throw error;
   webhookFunction = await functions.create({
@@ -116,7 +135,7 @@ try {
     name: "Cakto Webhook",
     runtime: "node-22",
     execute: ["any"],
-    timeout: 15,
+    timeout: 30,
     enabled: true,
     logging: true,
     entrypoint: "src/main.js",
@@ -134,15 +153,34 @@ async function upsertVar(key, value, secret = false) {
     await functions.createVariable({ functionId: WEBHOOK_FUNCTION_ID, variableId: key.toLowerCase().replace(/_/g, "-").slice(0, 36), key, value, secret });
   }
 }
-const currentToken = process.env.CAKTO_WEBHOOK_TOKEN || crypto.randomBytes(24).toString("hex");
+const settingDocs = await db.listDocuments(DATABASE_ID, PLATFORM_SETTINGS_ID, [
+  Query.equal("key", ["cakto"]),
+  Query.limit(1),
+]);
+const currentSetting = settingDocs.documents[0];
+const currentPublic = currentSetting?.settings_json ? JSON.parse(currentSetting.settings_json) : {};
+const currentSecret = currentSetting?.secret_json ? JSON.parse(currentSetting.secret_json) : {};
+let savedWebhookToken = "";
+try {
+  savedWebhookToken = new URL(currentPublic.webhookUrl || "").searchParams.get("token") || "";
+} catch {
+  savedWebhookToken = "";
+}
+const currentToken = process.env.CAKTO_WEBHOOK_TOKEN || savedWebhookToken || crypto.randomBytes(24).toString("hex");
 await upsertVar("APPWRITE_API_KEY", API_KEY, true);
 await upsertVar("APPWRITE_DATABASE_ID", DATABASE_ID);
 await upsertVar("APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID", RECEIPTS_ID);
 await upsertVar("APPWRITE_CRM_PROPOSALS_COLLECTION_ID", PROPOSALS_ID);
 await upsertVar("APPWRITE_STUDENT_CREDITS_COLLECTION_ID", STUDENT_CREDITS_ID);
 await upsertVar("APPWRITE_SCHOOL_COSTS_COLLECTION_ID", SCHOOL_COSTS_ID);
+await upsertVar("APPWRITE_PROFILES_COLLECTION_ID", PROFILES_ID);
+await upsertVar("APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", PLATFORM_SETTINGS_ID);
 await upsertVar("CAKTO_WEBHOOK_TOKEN", currentToken, true);
 await upsertVar("SCHOOL_ID", env.VITE_SCHOOL_ID || "escola_principal");
+await upsertVar("SAGA_BASE_URL", "https://epeac.saga.aero");
+await upsertVar("SAGA_CREDIT_BANK_ID", "6");
+await upsertVar("SAGA_CREDIT_TYPE", "GENERIC");
+await upsertVar("SAGA_CREDIT_AIRCRAFT_ICAO", "MC01");
 
 const proxyHeaders = {
   "X-Appwrite-Project": PROJECT_ID,
@@ -166,13 +204,6 @@ if (!webhookDomain) {
 }
 
 const webhookUrl = `https://${webhookDomain}/?token=${encodeURIComponent(currentToken)}`;
-const settingDocs = await db.listDocuments(DATABASE_ID, PLATFORM_SETTINGS_ID, [
-  Query.equal("key", ["cakto"]),
-  Query.limit(1),
-]);
-const currentSetting = settingDocs.documents[0];
-const currentPublic = currentSetting?.settings_json ? JSON.parse(currentSetting.settings_json) : {};
-const currentSecret = currentSetting?.secret_json ? JSON.parse(currentSetting.secret_json) : {};
 const settingData = {
   key: "cakto",
   settings_json: JSON.stringify({ ...currentPublic, webhookUrl }),

@@ -31,6 +31,10 @@ export function sagaMissionLookupKey(rawMission: string): string {
   return sagaMissionKey(code || raw);
 }
 
+export function isScopedSagaMissionKey(value: string): boolean {
+  return String(value || "").includes("::");
+}
+
 export function collectMissionLookupKeysFromFlights(flights: SagaFlight[]): string[] {
   const keys = new Set<string>();
   for (const flight of flights) {

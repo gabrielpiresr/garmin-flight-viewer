@@ -30,7 +30,8 @@ export type ReviewStatus = "ok" | "attention" | "critical" | "unavailable";
 export type StepEndCondition =
   | { type: "time"; value_seconds: number }
   | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
-  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" };
+  | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" }
+  | { type: "instructor_marked" };
 
 export type StepParameter = {
   parameter: string;
@@ -87,6 +88,8 @@ export type FlightManeuver = {
   start_time: string;
   end_time: string;
   status: FlightManeuverStatus;
+  /** ISO timestamps marcados pelo instrutor para delimitar o fim de cada etapa com condição "instructor_marked". */
+  instructor_step_marks?: string[];
   created_by: string;
   created_at: string;
   updated_at: string;

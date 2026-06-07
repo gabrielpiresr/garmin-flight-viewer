@@ -67,12 +67,40 @@ type SheetTotals = ReturnType<typeof sheetTotals>;
 
 type RewardEvaluationCache = {
   sheetTotals?: SheetTotals;
+  flightTotals?: {
+    flightCount: number;
+    totalHours: number;
+    totalDistanceNm: number;
+    totalLandings: number;
+  };
 };
 
 function getSheetTotals(fullFlights: SavedFlightFull[], cache?: RewardEvaluationCache): SheetTotals {
   if (!cache) return sheetTotals(fullFlights);
   cache.sheetTotals ??= sheetTotals(fullFlights);
   return cache.sheetTotals;
+}
+
+function flightTotals(flights: SavedFlightListItem[]) {
+  return flights.reduce(
+    (acc, flight) => {
+      acc.flightCount += 1;
+      acc.totalHours += (flight.block_time_minutes ?? Math.round((flight.duration_sec ?? 0) / 60)) / 60;
+      acc.totalDistanceNm += flight.total_miles ?? 0;
+      acc.totalLandings += Math.max(0, flight.landings ?? 0);
+      return acc;
+    },
+    { flightCount: 0, totalHours: 0, totalDistanceNm: 0, totalLandings: 0 },
+  );
+}
+
+function getFlightTotals(
+  flights: SavedFlightListItem[],
+  cache?: RewardEvaluationCache,
+): { flightCount: number; totalHours: number; totalDistanceNm: number; totalLandings: number } {
+  if (!cache) return flightTotals(flights);
+  cache.flightTotals ??= flightTotals(flights);
+  return cache.flightTotals;
 }
 
 function missionTypeForFlight(flight: SavedFlightListItem, track: TrainingTrack | null | undefined): string | null {
@@ -90,13 +118,13 @@ function metricValueWithCache(metric: RewardMetric, context: RewardMetricContext
 
   switch (metric) {
     case "flight_count":
-      return journey.totals.flights;
+      return Math.max(journey.totals.flights, getFlightTotals(flights, cache).flightCount);
     case "total_hours":
-      return journey.totals.hours;
+      return Math.max(journey.totals.hours, getFlightTotals(flights, cache).totalHours);
     case "total_distance_nm":
-      return journey.totals.distanceNm;
+      return Math.max(journey.totals.distanceNm, getFlightTotals(flights, cache).totalDistanceNm);
     case "total_landings":
-      return journey.totals.landings;
+      return Math.max(journey.totals.landings, getFlightTotals(flights, cache).totalLandings);
     case "smooth_landings":
       return journey.totals.smoothLandings;
     case "smooth_landing_rate":

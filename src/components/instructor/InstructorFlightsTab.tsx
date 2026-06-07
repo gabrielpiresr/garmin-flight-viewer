@@ -1430,7 +1430,7 @@ function FlightTableSection({
                   <tr>
                     <th className="px-3 py-2 font-semibold">Data</th>
                     <th className="px-3 py-2 font-semibold">Início</th>
-                    <th className="px-3 py-2 font-semibold">Aluno</th>
+                    <th className="w-36 max-w-36 px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">ANAC</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
@@ -1472,9 +1472,9 @@ function FlightTableSection({
                       >
                         <td className="px-3 py-2 text-slate-200">{formatDate(item, info)}</td>
                         <td className="px-3 py-2">{info?.startTime || "—"}</td>
-                        <td className="px-3 py-2">
-                          <span className="inline-flex min-w-0 items-center gap-1">
-                            <span className="truncate">{info?.studentName ?? "—"}</span>
+                        <td className="w-36 max-w-36 px-3 py-2">
+                          <span className="inline-flex min-w-0 items-start gap-1">
+                            <span className="whitespace-normal break-words leading-4">{info?.studentName ?? "—"}</span>
                             {item.student_user_id && clubMemberByStudentId?.[item.student_user_id] ? <FlightReviewClubBadge /> : null}
                           </span>
                         </td>

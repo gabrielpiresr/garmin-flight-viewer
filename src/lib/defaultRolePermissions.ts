@@ -14,7 +14,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "students",
   "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
-  "contents", "contents.manobras", "contents.manuais", "contents.ajuda",
+  "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda",
   "users",
   "import",
   "disparos", "disparos.email-mkt", "disparos.avisos",
@@ -45,13 +45,13 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  * Abas opcionais (dre, schedule) estão incluídas mas desativadas por padrão.
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
-  "home", "journey", "flights", "notices", "manuals", "maneuvers", "students", "fuelings", "profile", "help",
+  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help",
   "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "indique-ganhe",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
-  "home", "journey", "flights", "notices", "manuals", "maneuvers", "students", "fuelings", "profile", "help",
+  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help",
 ]);
 
 /** Ações habilitadas por padrão para o instrutor */

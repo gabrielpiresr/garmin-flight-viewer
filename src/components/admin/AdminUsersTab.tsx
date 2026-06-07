@@ -358,6 +358,7 @@ export function AdminUsersTab() {
   const [showUserList, setShowUserList] = useState(true);
   const [activeSubTab, setActiveSubTab] = useState<UserSubTab>("profile");
   const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [loadingList, setLoadingList] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
@@ -451,7 +452,10 @@ export function AdminUsersTab() {
     return storage.getFileView(BUCKET_ID, selectedDetail.profile.anacPhotoFileId).toString();
   }, [selectedDetail?.profile.anacPhotoFileId]);
 
-  async function loadPage(nextOffset = offset, nextSearch = search) {
+  async function loadPage(nextOffset = offset, nextSearch = search, nextRoleFilter = roleFilter) {
+    const [role, customRoleSlug] = nextRoleFilter.includes(":")
+      ? nextRoleFilter.split(":", 2)
+      : [nextRoleFilter, null];
     setLoadingList(true);
     setError(null);
     try {
@@ -459,6 +463,8 @@ export function AdminUsersTab() {
         search: nextSearch.trim(),
         limit: PAGE_SIZE,
         offset: nextOffset,
+        role: (role || "") as UserRole | "",
+        customRoleSlug,
       });
       setUsers(page.users);
       setTotal(page.total);
@@ -478,7 +484,7 @@ export function AdminUsersTab() {
   }
 
   useEffect(() => {
-    void loadPage(0, "");
+    void loadPage(0, "", "");
   }, []);
 
   useEffect(() => {
@@ -758,7 +764,11 @@ export function AdminUsersTab() {
       setSelectedDetail(null);
       setSelectedId(null);
       setActiveFlightId(null);
-      await loadPage(Math.max(0, offset - (users.length === 1 && offset > 0 ? PAGE_SIZE : 0)), search);
+      await loadPage(
+        Math.max(0, offset - (users.length === 1 && offset > 0 ? PAGE_SIZE : 0)),
+        search,
+        roleFilter,
+      );
       const issueCount = deletion.errors.length + deletion.fileErrors.length;
       setSuccess(
         `Usuario excluido. ${deletion.deletedDocuments} documento(s) e ${deletion.deletedFiles} arquivo(s) removidos${
@@ -905,9 +915,33 @@ export function AdminUsersTab() {
           onSubmit={(e) => {
             e.preventDefault();
             setShowUserList(true);
-            void loadPage(0, search);
+            void loadPage(0, search, roleFilter);
           }}
         >
+          <select
+            value={roleFilter}
+            onChange={(e) => {
+              const nextRole = e.target.value;
+              setRoleFilter(nextRole);
+              setShowUserList(true);
+              void loadPage(0, search, nextRole);
+            }}
+            className="min-w-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500 sm:w-48"
+          >
+            <option value="">Todos os roles</option>
+            {ROLE_OPTIONS.map((role) => (
+              <option key={role} value={role}>{ROLE_LABEL[role]}</option>
+            ))}
+            {tenantRoles.filter((role) => !role.isSystem).length ? (
+              <optgroup label="Roles personalizados">
+                {tenantRoles
+                  .filter((role) => !role.isSystem)
+                  .map((role) => (
+                    <option key={role.$id} value={`${role.portalType}:${role.slug}`}>{role.name}</option>
+                  ))}
+              </optgroup>
+            ) : null}
+          </select>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -934,7 +968,7 @@ export function AdminUsersTab() {
             </p>
             <button
               type="button"
-              onClick={() => void loadPage(offset, search)}
+              onClick={() => void loadPage(offset, search, roleFilter)}
               className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
             >
               Recarregar
@@ -1005,7 +1039,7 @@ export function AdminUsersTab() {
               <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-800 pt-3">
                 <button
                   type="button"
-                  onClick={() => void loadPage(Math.max(0, offset - PAGE_SIZE), search)}
+                  onClick={() => void loadPage(Math.max(0, offset - PAGE_SIZE), search, roleFilter)}
                   disabled={!canGoBack || loadingList}
                   className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                 >
@@ -1014,7 +1048,7 @@ export function AdminUsersTab() {
                 <span className="text-xs text-slate-500">Pagina {Math.floor(offset / PAGE_SIZE) + 1}</span>
                 <button
                   type="button"
-                  onClick={() => void loadPage(offset + PAGE_SIZE, search)}
+                  onClick={() => void loadPage(offset + PAGE_SIZE, search, roleFilter)}
                   disabled={!canGoNext || loadingList}
                   className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                 >

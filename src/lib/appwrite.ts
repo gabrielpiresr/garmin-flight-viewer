@@ -116,6 +116,11 @@ export const FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID =
 export const MANUALS_BUCKET_ID = import.meta.env.VITE_APPWRITE_MANUALS_BUCKET_ID as string | undefined;
 export const MANUALS_COL_ID = import.meta.env.VITE_APPWRITE_MANUALS_COL_ID as string | undefined;
 
+// Manuais internos (admin + instrutor)
+export const INTERNAL_MANUALS_BUCKET_ID =
+  (import.meta.env.VITE_APPWRITE_INTERNAL_MANUALS_BUCKET_ID as string | undefined) ?? MANUALS_BUCKET_ID;
+export const INTERNAL_MANUALS_COL_ID = import.meta.env.VITE_APPWRITE_INTERNAL_MANUALS_COL_ID as string | undefined;
+
 // Email MKT
 export const BROADCAST_SEGMENTS_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_SEGMENTS_COL_ID as string | undefined;
 export const BROADCAST_MESSAGES_COL_ID = import.meta.env.VITE_APPWRITE_BROADCAST_MESSAGES_COL_ID as string | undefined;

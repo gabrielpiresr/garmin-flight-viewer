@@ -24,6 +24,9 @@ const InstructorStudentsTab = lazy(() =>
 const JornadaTab = lazy(() => import("../JornadaTab").then((module) => ({ default: module.JornadaTab })));
 const ManobrasTab = lazy(() => import("../ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
 const ManuaisTab = lazy(() => import("../ManuaisTab").then((module) => ({ default: module.ManuaisTab })));
+const ManuaisInternosTab = lazy(() =>
+  import("../ManuaisInternosTab").then((module) => ({ default: module.ManuaisInternosTab })),
+);
 const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const ContractsUserTab = lazy(() => import("../ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
@@ -36,6 +39,7 @@ type InstructorSection =
   | "fuelings"
   | "notices"
   | "manuals"
+  | "manuais-internos"
   | "maneuvers"
   | "students"
   | "profile"
@@ -104,6 +108,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
+      </svg>
+    ),
+  },
+  {
+    id: "manuais-internos",
+    label: "Manuais internos",
+    sublabel: "Documentos de uso interno",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -210,6 +224,7 @@ const SECTION_ROUTES = [
   { id: "fuelings", path: "/instrutor/abastecimentos" },
   { id: "notices", path: "/instrutor/avisos" },
   { id: "manuals", path: "/instrutor/manuais" },
+  { id: "manuais-internos", path: "/instrutor/manuais-internos" },
   { id: "maneuvers", path: "/instrutor/manobras" },
   { id: "students", path: "/instrutor/alunos" },
   { id: "profile", path: "/instrutor/perfil" },
@@ -434,6 +449,13 @@ export function InstructorLayout() {
             <div hidden={section !== "manuals"}>
               <LazyTab>
                 <ManuaisTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("manuais-internos") && (
+            <div hidden={section !== "manuais-internos"}>
+              <LazyTab>
+                <ManuaisInternosTab />
               </LazyTab>
             </div>
           )}

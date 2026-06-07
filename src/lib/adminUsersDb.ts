@@ -140,6 +140,8 @@ export async function listAdminUserSummaries(params: {
   search: string;
   limit: number;
   offset: number;
+  role?: UserRole | "";
+  customRoleSlug?: string | null;
 }): Promise<AdminUsersPage> {
   const response = await executeAdminUsers({ action: "listSummaries", ...params });
   return {

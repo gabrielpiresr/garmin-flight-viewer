@@ -72,18 +72,36 @@ export async function reconcileProcessingVideosFromR2(
   flightId: string,
   videos: FlightVideo[],
 ): Promise<number> {
-  if (!isVideoStorageConfigured()) return 0;
+  let fixed = 0;
+  const pendingWithUrl = videos.filter(
+    (video) =>
+      (video.processing_status === "processing" || video.processing_status === "uploading")
+      && Boolean(video.file_url.trim()),
+  );
+  for (const video of pendingWithUrl) {
+    const { error } = await updateFlightVideoReady(video.id, {
+      fileUrl: video.file_url,
+      fileSize: video.file_size,
+      durationSec: video.duration_sec,
+      telemetryPresent: video.telemetry_present,
+      telemetrySource: video.telemetry_source,
+      telemetryJson: video.telemetry_json,
+      availableWidgets: parseAvailableWidgets(video.available_widgets),
+    });
+    if (!error) fixed++;
+  }
 
   const stuck = videos.filter(
-    (v) => v.processing_status === "processing" && !(v.file_url ?? "").trim(),
+    (video) =>
+      (video.processing_status === "processing" || video.processing_status === "uploading")
+      && !video.file_url.trim(),
   );
-  if (stuck.length === 0) return 0;
+  if (stuck.length === 0 || !isVideoStorageConfigured()) return fixed;
 
   const r2Objects = await listR2VideosForFlight(flightId);
-  if (r2Objects.length === 0) return 0;
+  if (r2Objects.length === 0) return fixed;
 
   const usedKeys = new Set<string>();
-  let fixed = 0;
 
   const sorted = [...stuck].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
@@ -109,5 +127,16 @@ export async function reconcileProcessingVideosFromR2(
 }
 
 export function hasStuckProcessingVideos(videos: FlightVideo[]): boolean {
-  return videos.some((v) => v.processing_status === "processing" && !(v.file_url ?? "").trim());
+  return videos.some(
+    (video) => video.processing_status === "processing" || video.processing_status === "uploading",
+  );
+}
+
+function parseAvailableWidgets(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }

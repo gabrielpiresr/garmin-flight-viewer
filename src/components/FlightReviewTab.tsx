@@ -31,6 +31,7 @@ import type {
   FlightManeuver,
   FlightManeuverReview,
   ManeuverTemplate,
+  ManeuverTemplateStep,
 } from "../types/flightReview";
 import { MANEUVER_CATEGORY_LABELS } from "../types/flightReview";
 import type { FlightPoint } from "../types/flight";
@@ -608,6 +609,7 @@ function ModalTelemetryChart({
   data,
   dataKey,
   domain,
+  extraMarks,
   height,
   label,
   onHoverX,
@@ -622,6 +624,7 @@ function ModalTelemetryChart({
   data: ModalTelemetryPoint[];
   dataKey: "alt" | "ias" | "rpm";
   domain: [number, number] | null;
+  extraMarks?: Array<{ x: number; color: string; label: string }>;
   height: number;
   label: string;
   onHoverX: (x: number | null) => void;
@@ -736,6 +739,28 @@ function ModalTelemetryChart({
         ctx.restore();
       }
 
+      if (extraMarks) {
+        for (const em of extraMarks) {
+          if (em.x < xMin || em.x > xMax) continue;
+          const x = toX(em.x);
+          ctx.save();
+          ctx.strokeStyle = em.color;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, top + plotH);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = em.color;
+          ctx.font = "9px system-ui, sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(em.label, Math.min(width - right - 20, Math.max(left + 20, x)), top + plotH - 14);
+          ctx.restore();
+        }
+      }
+
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.7;
       ctx.beginPath();
@@ -769,7 +794,7 @@ function ModalTelemetryChart({
       observer.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [color, dataKey, height, selectionEnd, selectionStart, telemetryBaseMs, visibleData, xDomain, yDomain, tickFmt]);
+  }, [color, dataKey, extraMarks, height, selectionEnd, selectionStart, telemetryBaseMs, visibleData, xDomain, yDomain, tickFmt]);
 
   const xFromClient = (clientX: number): number | null => {
     const shell = shellRef.current;
@@ -1460,9 +1485,11 @@ function ManeuverCard({
   review,
   isInstructor,
   flightId,
+  csvText,
   parsedResult,
   onDeleted,
   onAnalyzed,
+  onMarked,
   onEdit,
 }: {
   maneuver: FlightManeuver;
@@ -1470,15 +1497,41 @@ function ManeuverCard({
   review: FlightManeuverReview | undefined;
   isInstructor: boolean;
   flightId: string;
+  csvText: string | null;
   parsedResult: ParseResult | null;
   onDeleted: (id: string) => void;
   onAnalyzed: (review: FlightManeuverReview, updatedManeuver: FlightManeuver) => void;
+  onMarked: (updated: FlightManeuver) => void;
   onEdit?: () => void;
 }) {
   const { showToast } = useToast();
   const [analyzing, setAnalyzing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showMarkSteps, setShowMarkSteps] = useState(false);
+  const [templateSteps, setTemplateSteps] = useState<ManeuverTemplateStep[] | null>(null);
+
+  // Carrega as etapas do template para detectar se há etapas com instructor_marked
+  useEffect(() => {
+    if (!isInstructor) return;
+    listManeuverTemplateSteps(maneuver.template_id).then(setTemplateSteps);
+  }, [isInstructor, maneuver.template_id]);
+
+  const sortedTemplateSteps = useMemo(
+    () => (templateSteps ?? []).slice().sort((a, b) => a.order_index - b.order_index),
+    [templateSteps],
+  );
+
+  const hasInstructorMarkedSteps = useMemo(
+    () =>
+      sortedTemplateSteps.some(
+        (s, i) => s.end_condition?.type === "instructor_marked" && i < sortedTemplateSteps.length - 1,
+      ),
+    [sortedTemplateSteps],
+  );
+
+  const needsMarking =
+    hasInstructorMarkedSteps && !(maneuver.instructor_step_marks?.length);
 
   const durationMs =
     maneuver.start_time && maneuver.end_time
@@ -1590,6 +1643,19 @@ function ManeuverCard({
         <div className="flex shrink-0 flex-wrap gap-2">
           {isInstructor && (
             <>
+              {hasInstructorMarkedSteps && (
+                <button
+                  type="button"
+                  onClick={() => setShowMarkSteps(true)}
+                  className={`rounded border px-3 py-1.5 text-xs font-medium ${
+                    needsMarking
+                      ? "border-amber-600/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                      : "border-slate-700 text-slate-400 hover:bg-slate-800"
+                  }`}
+                >
+                  {needsMarking ? "Marcar etapas !" : "Marcar etapas"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void handleAnalyze()}
@@ -1668,6 +1734,319 @@ function ManeuverCard({
           )}
         </div>
       )}
+
+      {showMarkSteps && (
+        <MarkStepsModal
+          maneuver={maneuver}
+          csvText={csvText}
+          templateId={maneuver.template_id}
+          onClose={() => setShowMarkSteps(false)}
+          onMarked={(updated) => {
+            onMarked(updated);
+            setShowMarkSteps(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Mark steps modal ----------
+
+/** Cores para as marcações de etapa (sequencial, reaproveita a paleta de step colors). */
+const MARK_COLORS = ["#f59e0b", "#34d399", "#f87171", "#a78bfa", "#fb923c", "#22d3ee", "#c084fc"];
+
+function MarkStepsModal({
+  maneuver,
+  csvText,
+  templateId,
+  onClose,
+  onMarked,
+}: {
+  maneuver: FlightManeuver;
+  csvText: string | null;
+  templateId: string;
+  onClose: () => void;
+  onMarked: (updated: FlightManeuver) => void;
+}) {
+  const { showToast } = useToast();
+  const [templateSteps, setTemplateSteps] = useState<ManeuverTemplateStep[] | null>(null);
+  const [marks, setMarks] = useState<number[]>(() => {
+    if (!maneuver.instructor_step_marks?.length) return [];
+    return [];
+  });
+  const [saving, setSaving] = useState(false);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const mapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
+
+  const telemetry = useMemo<TelemetryPreview | null>(() => {
+    if (!csvText) return null;
+    try {
+      const parsed = parseGarminCsv(csvText);
+      const { chartData, chartTimeBaseMs, points: flightPoints } = parsed;
+      if (!chartTimeBaseMs || chartData.length === 0) return null;
+      const totalMs = chartData[chartData.length - 1]?.x ?? 0;
+      const step = Math.max(1, Math.ceil(chartData.length / 500));
+      const points = chartData
+        .filter((_, i) => i % step === 0)
+        .map((row) => ({
+          x: row.x as number,
+          alt: (row["gpsAltFt"] as number | null) ?? null,
+          ias: (row["iasKt"] as number | null) ?? null,
+          rpm: (row["rpm"] as number | null) ?? null,
+        }));
+      return { points, baseMs: chartTimeBaseMs, totalMs, flightPoints };
+    } catch {
+      return null;
+    }
+  }, [csvText]);
+
+  // Pré-carrega os marks existentes no estado assim que temos telemetria
+  useEffect(() => {
+    if (!maneuver.instructor_step_marks?.length || !telemetry) return;
+    const preloaded = maneuver.instructor_step_marks
+      .map((iso) => new Date(iso).getTime() - telemetry.baseMs)
+      .filter((x) => x >= 0);
+    setMarks(preloaded);
+  // Só na montagem
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [telemetry]);
+
+  useEffect(() => {
+    listManeuverTemplateSteps(templateId).then(setTemplateSteps);
+  }, [templateId]);
+
+  const sortedSteps = useMemo(
+    () => (templateSteps ?? []).slice().sort((a, b) => a.order_index - b.order_index),
+    [templateSteps],
+  );
+
+  // Etapas que precisam de marcação: as que têm instructor_marked, exceto a última etapa do template
+  const stepsToMark = useMemo(
+    () =>
+      sortedSteps.filter(
+        (s, i) => s.end_condition?.type === "instructor_marked" && i < sortedSteps.length - 1,
+      ),
+    [sortedSteps],
+  );
+
+  const marksNeeded = stepsToMark.length;
+  const currentMarkIdx = marks.length; // índice da próxima marcação a fazer
+
+  // Limites da manobra no eixo X da telemetria
+  const maneuverStartX = telemetry ? new Date(maneuver.start_time).getTime() - telemetry.baseMs : 0;
+  const maneuverEndX = telemetry ? new Date(maneuver.end_time).getTime() - telemetry.baseMs : 0;
+  // Domínio fixo no janela da manobra
+  const chartDomain = telemetry ? ([maneuverStartX, maneuverEndX] as [number, number]) : null;
+
+  const handleChartSelect = useCallback(
+    (xMs: number) => {
+      if (currentMarkIdx >= marksNeeded) return;
+      const minX = marks.length > 0 ? marks[marks.length - 1]! : maneuverStartX;
+      if (xMs <= minX || xMs >= maneuverEndX) return;
+      setMarks((prev) => [...prev, xMs]);
+    },
+    [currentMarkIdx, marksNeeded, marks, maneuverStartX, maneuverEndX],
+  );
+
+  const handleUndo = () => setMarks((prev) => prev.slice(0, -1));
+  const handleReset = () => setMarks([]);
+
+  const handleSave = async () => {
+    if (!telemetry) return;
+    setSaving(true);
+    try {
+      const isoMarks = marks.map((x) => new Date(telemetry.baseMs + x).toISOString());
+      const updated = await updateFlightManeuver(maneuver.id, { instructor_step_marks: isoMarks });
+      onMarked(updated);
+      showToast({ variant: "success", message: "Marcações de etapa salvas." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const extraMarks = useMemo(
+    () =>
+      marks.map((x, i) => ({
+        x,
+        color: MARK_COLORS[i % MARK_COLORS.length]!,
+        label: stepsToMark[i]?.name ?? `Etapa ${i + 1}`,
+      })),
+    [marks, stepsToMark],
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
+      <div className="my-4 w-full max-w-4xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+        {/* Header */}
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-100">Marcar limites de etapa</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-200">
+            ✕
+          </button>
+        </div>
+
+        {templateSteps === null ? (
+          <div className="flex h-32 items-center justify-center gap-2 text-sm text-slate-500">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+            Carregando etapas...
+          </div>
+        ) : marksNeeded === 0 ? (
+          <p className="rounded-lg border border-slate-700 p-4 text-sm text-slate-400">
+            Nenhuma etapa deste template requer marcação manual pelo instrutor.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {/* Progresso */}
+            <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                Etapas a marcar ({marks.length}/{marksNeeded})
+              </p>
+              <div className="space-y-1">
+                {stepsToMark.map((step, i) => {
+                  const isDone = i < marks.length;
+                  const isCurrent = i === currentMarkIdx;
+                  return (
+                    <div
+                      key={step.id}
+                      className={`flex items-center gap-2 rounded-lg px-2 py-1 text-sm ${
+                        isDone
+                          ? "text-emerald-400"
+                          : isCurrent
+                            ? "text-sky-300 font-semibold"
+                            : "text-slate-600"
+                      }`}
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: isDone
+                            ? MARK_COLORS[i % MARK_COLORS.length]
+                            : isCurrent
+                              ? "#38bdf8"
+                              : "#334155",
+                        }}
+                      />
+                      <span className="flex-1">{step.name}</span>
+                      {isDone && telemetry && (
+                        <span className="text-xs text-slate-500 tabular-nums">
+                          {formatDateTime(new Date(telemetry.baseMs + marks[i]!).toISOString())}
+                        </span>
+                      )}
+                      {isCurrent && (
+                        <span className="text-xs text-sky-500">← marque no gráfico</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Gráfico */}
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                  {currentMarkIdx < marksNeeded
+                    ? <>Clique para marcar o fim de: <span className="text-sky-300">{stepsToMark[currentMarkIdx]?.name}</span></>
+                    : <span className="text-emerald-400">Todas as etapas marcadas</span>
+                  }
+                </span>
+                <div className="flex gap-2">
+                  {marks.length > 0 && (
+                    <button type="button" onClick={handleUndo} className="text-xs text-slate-500 hover:text-slate-300">
+                      Desfazer
+                    </button>
+                  )}
+                  {marks.length > 0 && (
+                    <button type="button" onClick={handleReset} className="text-xs text-slate-500 hover:text-slate-300">
+                      Resetar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {!csvText ? (
+                <div className="flex h-32 items-center justify-center gap-2 text-xs text-slate-500">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+                  Carregando telemetria...
+                </div>
+              ) : !telemetry ? (
+                <p className="h-32 flex items-center justify-center text-xs text-slate-500">
+                  Telemetria não disponível.
+                </p>
+              ) : (
+                <div ref={chartContainerRef} className="select-none" style={{ cursor: currentMarkIdx < marksNeeded ? "crosshair" : "default" }}>
+                  {telemetry.flightPoints.length > 0 && (
+                    <div className="mb-2 overflow-hidden rounded-lg border border-slate-700" style={{ height: 140 }}>
+                      <FlightMap
+                        points={telemetry.flightPoints}
+                        selectedRangeT={[new Date(maneuver.start_time).getTime(), new Date(maneuver.end_time).getTime()]}
+                        hoverCallbackRef={mapHoverRef}
+                        className="h-full w-full"
+                      />
+                    </div>
+                  )}
+                  {[
+                    { dataKey: "alt" as const, label: "Altitude (ft)", color: "#94a3b8", height: 120, tickFmt: (v: number) => `${Math.round(v)}ft` },
+                    { dataKey: "ias" as const, label: "IAS (kt)", color: "#38bdf8", height: 80, tickFmt: (v: number) => `${Math.round(v)}kt` },
+                  ].map(({ dataKey, label, color, height, tickFmt }) => (
+                    <div key={dataKey}>
+                      <p className="mt-1 text-xs font-medium text-slate-500">{label}</p>
+                      <ModalTelemetryChart
+                        color={color}
+                        data={telemetry.points}
+                        dataKey={dataKey}
+                        domain={chartDomain}
+                        extraMarks={extraMarks}
+                        height={height}
+                        label={label}
+                        onHoverX={(xMs) => {
+                          if (xMs === null) { mapHoverRef.current?.(null); return; }
+                          const pos = findHoverPos(telemetry.flightPoints, telemetry.baseMs, xMs);
+                          mapHoverRef.current?.(pos);
+                        }}
+                        onSelectX={handleChartSelect}
+                        selectionStart={maneuverStartX}
+                        selectionEnd={maneuverEndX}
+                        tickFmt={tickFmt}
+                        telemetryBaseMs={telemetry.baseMs}
+                        totalMs={telemetry.totalMs}
+                      />
+                    </div>
+                  ))}
+                  <p className="mt-1 text-center text-xs text-slate-600">
+                    Janela da manobra: {formatHHMMSS(maneuverStartX, telemetry.baseMs)} → {formatHHMMSS(maneuverEndX, telemetry.baseMs)}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          {marksNeeded > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={saving || marks.length === 0}
+              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+            >
+              {saving ? "Salvando..." : "Salvar marcações"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2320,6 +2699,10 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     setEditManeuver(null);
   };
 
+  const handleMarked = (updated: FlightManeuver) => {
+    setManeuvers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+  };
+
   // ---- Fullscreen derived state ----
   const fsManeuver = useMemo(() => (fsManId ? maneuvers.find((m) => m.id === fsManId) ?? null : null), [fsManId, maneuvers]);
 
@@ -2698,9 +3081,11 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
               review={reviewMap[m.id]}
               isInstructor={isInstructor}
               flightId={flightId}
+              csvText={flightCsvText}
               parsedResult={parsedCsvResult}
               onDeleted={handleDeleted}
               onAnalyzed={handleAnalyzed}
+              onMarked={handleMarked}
               onEdit={isInstructor ? () => setEditManeuver(m) : undefined}
             />
           ))}
