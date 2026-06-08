@@ -420,8 +420,8 @@ export function MainLayout() {
               href="/apresentacao"
               target="_blank"
               rel="noopener noreferrer"
-              title={sidebarCollapsed ? "Apresentação" : undefined}
-              aria-label={sidebarCollapsed ? "Apresentação" : undefined}
+              title={sidebarCollapsed ? "Onboarding" : undefined}
+              aria-label={sidebarCollapsed ? "Onboarding" : undefined}
               className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
             >
               <span className="opacity-70 group-hover:opacity-100">
@@ -430,7 +430,7 @@ export function MainLayout() {
                 </svg>
               </span>
               <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
-                <p className="text-sm font-medium leading-none">Apresentação</p>
+                <p className="text-sm font-medium leading-none">Onboarding</p>
               </div>
             </a>
           ) : null}

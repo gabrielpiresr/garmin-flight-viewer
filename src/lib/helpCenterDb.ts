@@ -2,6 +2,7 @@ import { Query } from "appwrite";
 import {
   ADMIN_USERS_FUNCTION_ID,
   databases,
+  DEFAULT_SCHOOL_ID,
   functions,
   HELP_ARTICLES_COL_ID,
   HELP_MEDIA_BUCKET_ID,
@@ -9,8 +10,6 @@ import {
   HELP_SUBSECTIONS_COL_ID,
   ID,
   isAppwriteConfigured,
-  Permission,
-  Role, DEFAULT_SCHOOL_ID,
   storage,
 } from "./appwrite";
 import type {
@@ -384,9 +383,7 @@ export async function uploadHelpMedia(file: File): Promise<{ data: HelpMediaUplo
     return { data: null, error: new Error("Bucket de mídia da central de ajuda não configurado.") };
   }
   try {
-    const uploaded = await storage.createFile(HELP_MEDIA_BUCKET_ID, ID.unique(), file, [
-      Permission.read(Role.any()),
-    ]);
+    const uploaded = await storage.createFile(HELP_MEDIA_BUCKET_ID, ID.unique(), file);
     return {
       data: {
         fileId: uploaded.$id,

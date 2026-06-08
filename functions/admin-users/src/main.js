@@ -12068,13 +12068,21 @@ function mapOnboardingStepDoc(doc) {
   const descriptionJson =
     parseStoredRichJsonField(doc.description_json) ||
     (plainDescription ? legacyPlainTextToRichDoc(plainDescription) : emptyRichDoc());
+  const rawLayout = cleanString(doc.layout);
+  const layout = ["hero", "split", "text-only", "video-focus", "list"].includes(rawLayout) ? rawLayout : "hero";
+  const rawPos = cleanString(doc.media_position);
+  const mediaPosition = ["left", "right", "top", "bottom"].includes(rawPos) ? rawPos : "right";
   return {
     id: doc.$id,
     title: cleanString(doc.title),
+    subtitle: cleanString(doc.subtitle) || null,
     description: plainDescription || "",
     descriptionJson,
     descriptionHtml: cleanString(doc.description_html),
     imageFileId: cleanString(doc.image_file_id) || null,
+    videoUrl: cleanString(doc.video_url) || null,
+    layout,
+    mediaPosition,
     sortOrder: Number(doc.sort_order) || 0,
     updatedAt: doc.$updatedAt || null,
   };
@@ -15008,6 +15016,28 @@ module.exports = async ({ req, res, log, error }) => {
       });
     }
 
+    if (action === "getStudentsProgress") {
+      await requireInstructorOrAdmin(actorUserId);
+      const studentsProgress = await getStudentsProgress(payload);
+      return jsonResponse(res, 200, { studentsProgress });
+    }
+
+    if (action === "getDetail") {
+      await requireInstructorOrAdmin(actorUserId);
+      const user = await getUserDetail(String(payload.userId || ""));
+      const executedIds = (user.executedFlights || []).map((flight) => flight.id);
+      log(
+        `[getDetail] userId=${user.userId} executed=${executedIds.length} planned=${(user.plannedFlights || []).length} has739=${executedIds.includes("saga_flight_739")} ids=${executedIds.slice(0, 20).join(",")}`,
+      );
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "listFlightReports") {
+      await requireInstructorOrAdmin(actorUserId);
+      const report = await listFlightReports(payload);
+      return jsonResponse(res, 200, report);
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "lookupSagaAnacPersonAdmin") {
@@ -15370,15 +15400,6 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true });
     }
 
-    if (action === "getDetail") {
-      const user = await getUserDetail(String(payload.userId || ""));
-      const executedIds = (user.executedFlights || []).map((flight) => flight.id);
-      log(
-        `[getDetail] userId=${user.userId} executed=${executedIds.length} planned=${(user.plannedFlights || []).length} has739=${executedIds.includes("saga_flight_739")} ids=${executedIds.slice(0, 20).join(",")}`,
-      );
-      return jsonResponse(res, 200, { user });
-    }
-
     if (action === "assignStudentTrainingTrack") {
       const user = await assignStudentTrainingTrack(
         payload.userId,
@@ -15410,19 +15431,9 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { scheduleWeekFlights });
     }
 
-    if (action === "listFlightReports") {
-      const report = await listFlightReports(payload);
-      return jsonResponse(res, 200, report);
-    }
-
     if (action === "getDashboardSummary") {
       const dashboard = await getDashboardSummary(payload);
       return jsonResponse(res, 200, { dashboard });
-    }
-
-    if (action === "getStudentsProgress") {
-      const studentsProgress = await getStudentsProgress(payload);
-      return jsonResponse(res, 200, { studentsProgress });
     }
 
     if (action === "listSummaries" || action === "list") {

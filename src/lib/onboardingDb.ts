@@ -18,10 +18,6 @@ import {
 
   ONBOARDING_STEPS_COL_ID,
 
-  Permission,
-
-  Role,
-
   storage,
 
 } from "./appwrite";
@@ -534,11 +530,7 @@ export async function uploadOnboardingVideo(file: File): Promise<{ videoUrl: str
 
   try {
 
-    const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file, [
-
-      Permission.read(Role.any()),
-
-    ]);
+    const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file);
 
     const url = storage.getFileView(ONBOARDING_MEDIA_BUCKET_ID, uploaded.$id).toString();
 
@@ -564,11 +556,7 @@ export async function uploadOnboardingImage(file: File): Promise<{ fileId: strin
 
   try {
 
-    const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file, [
-
-      Permission.read(Role.any()),
-
-    ]);
+    const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file);
 
     return { fileId: uploaded.$id, error: null };
 

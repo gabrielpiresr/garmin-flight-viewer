@@ -42,8 +42,11 @@ export function useOnboardingGate(): OnboardingGateState {
         ]);
         if (cancelled) return;
         const enabled = publicConfig.onboarding.enabled;
+        // Accepts slides with title only (image/video-only slides are valid in the new system)
         const activeSteps = publicConfig.steps.filter(
-          (step) => step.title.trim() && hasRichTextContent(step.descriptionJson),
+          (step) =>
+            step.title.trim() &&
+            (hasRichTextContent(step.descriptionJson) || Boolean(step.imageFileId) || Boolean(step.videoUrl)),
         );
         setSteps(activeSteps);
         setShouldShow(Boolean(enabled && activeSteps.length > 0 && !completedAt));

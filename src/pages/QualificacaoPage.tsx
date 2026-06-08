@@ -12,9 +12,9 @@ const WEEK_DAYS: AvailableDay[] = ["seg", "ter", "qua", "qui", "sex"];
 const WEEKEND_DAYS: AvailableDay[] = ["sab", "dom"];
 
 const COURSES = [
-  { value: "Piloto Privado",   label: "Piloto Privado (PPL)" },
-  { value: "Piloto Comercial", label: "Piloto Comercial (CPL)" },
-  { value: "INVA",             label: "INVA — Habilitação por Instrumentos" },
+  { value: "Piloto Privado",   label: "Piloto Privado" },
+  { value: "Piloto Comercial", label: "Piloto Comercial" },
+  { value: "INVA",             label: "INVA" },
   { value: "Recheque",         label: "Recheque" },
   { value: "Aperfeiçoamento",  label: "Aperfeiçoamento" },
 ];
