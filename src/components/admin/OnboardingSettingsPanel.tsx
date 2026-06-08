@@ -33,6 +33,7 @@ export function OnboardingSettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
+  const [showInStudentMenu, setShowInStudentMenu] = useState(false);
   const [steps, setSteps] = useState<OnboardingStep[]>([]);
   const [draft, setDraft] = useState<StepDraft | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -42,6 +43,7 @@ export function OnboardingSettingsPanel() {
     try {
       const data = await getOnboardingConfig();
       setEnabled(data.onboarding.enabled);
+      setShowInStudentMenu(data.onboarding.showInStudentMenu);
       setSteps(data.steps);
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
@@ -61,9 +63,22 @@ export function OnboardingSettingsPanel() {
     }
     setSaving(true);
     try {
-      const saved = await saveOnboardingConfig({ enabled: next });
+      const saved = await saveOnboardingConfig({ enabled: next, showInStudentMenu });
       setEnabled(saved.enabled);
       showToast({ variant: "success", message: next ? "Onboarding ativado." : "Onboarding desativado." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleMenuToggle(next: boolean) {
+    setSaving(true);
+    try {
+      const saved = await saveOnboardingConfig({ enabled, showInStudentMenu: next });
+      setShowInStudentMenu(saved.showInStudentMenu);
+      showToast({ variant: "success", message: next ? "Link adicionado ao menu do aluno." : "Link removido do menu do aluno." });
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
@@ -167,16 +182,31 @@ export function OnboardingSettingsPanel() {
             Exibido no primeiro acesso de alunos aprovados. Cada etapa é uma tela com título, descrição e imagem opcional.
           </p>
         </div>
-        <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2.5">
-          <span className="text-sm text-slate-300">Ativar onboarding</span>
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={saving}
-            onChange={(e) => void handleToggle(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500"
-          />
-        </label>
+        <div className="flex flex-col gap-2">
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2.5">
+            <span className="text-sm text-slate-300">Ativar onboarding</span>
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={saving}
+              onChange={(e) => void handleToggle(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500"
+            />
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2.5">
+            <div>
+              <span className="text-sm text-slate-300">Mostrar no menu do aluno</span>
+              <p className="text-xs text-slate-500">Exibe link na barra lateral para o aluno acessar a qualquer hora</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={showInStudentMenu}
+              disabled={saving}
+              onChange={(e) => void handleMenuToggle(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500"
+            />
+          </label>
+        </div>
       </div>
 
       <div className="space-y-3">

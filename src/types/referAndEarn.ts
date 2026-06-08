@@ -25,6 +25,7 @@ export type ReferAndEarnConfigInput = {
 export type ReferralWelcomeInfo = {
   valid: boolean;
   referrerFirstName: string | null;
+  referrerNickname?: string | null;
   schoolName: string;
 };
 

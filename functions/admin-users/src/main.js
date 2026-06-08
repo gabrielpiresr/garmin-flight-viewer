@@ -6540,7 +6540,7 @@ async function deleteSagaUserAdmin(actorUserId, payload = {}) {
   return { ok: true, message: `Usuario ${sagaUserId} excluido no SAGA.` };
 }
 
-function buildSagaStudentForm(profile, lead, token, sagaAnac) {
+function buildSagaStudentForm(profile, lead, token, sagaAnac, { useStudentEmail = false } = {}) {
   const data = contractProfileData(profile, lead);
   const form = new URLSearchParams();
   const anacDigits = sagaOnlyDigits(data.anacCode || lead?.anac_code);
@@ -6556,7 +6556,7 @@ function buildSagaStudentForm(profile, lead, token, sagaAnac) {
   form.set("access_type", "student");
   form.set("is_coordinator", "0");
   form.set("gender", mapSagaGender(profile?.sexo));
-  form.set("email", anacDigits ? `aluno+${anacDigits}@epeac.com.br` : "");
+  form.set("email", useStudentEmail ? (cleanString(data.email) || cleanString(lead?.email) || "").toLowerCase() : (anacDigits ? `aluno+${anacDigits}@epeac.com.br` : ""));
   appendSagaAnacFieldsToForm(form, sagaAnac);
   return form;
 }
@@ -6646,6 +6646,7 @@ async function createSagaStudentFromEnrollment({
   trainingTrackId,
   trainingTrackName,
   ignoreSagaDuplicates = false,
+  useStudentEmail = false,
 }) {
   try {
     const existingId = cleanString(profile?.saga_user_id);
@@ -6705,7 +6706,7 @@ async function createSagaStudentFromEnrollment({
     const createPath = createContext.path || "/users/create";
     const createReferer = createContext.referer || `${SAGA_BASE_URL}${createPath}`;
 
-    const form = buildSagaStudentForm(profile, lead, token, sagaAnac);
+    const form = buildSagaStudentForm(profile, lead, token, sagaAnac, { useStudentEmail });
     const postResult = await sagaPostStudentCreate(cookieJar, {
       html: createContext.html || createContext.page?.html || "",
       createPath,
@@ -7026,6 +7027,7 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
       trainingTrackId,
       trainingTrackName,
       ignoreSagaDuplicates: payload.ignoreSagaDuplicates === true,
+      useStudentEmail: payload.useStudentEmail === true,
     });
     if (!sagaResult.ok && !sagaResult.skipped) {
       throw Object.assign(new Error(sagaResult.message || "Falha ao criar aluno no SAGA."), { status: 422 });
@@ -11804,19 +11806,20 @@ async function loadSchoolRules() {
 }
 
 function defaultOnboardingConfig() {
-  return { enabled: false };
+  return { enabled: false, showInStudentMenu: false };
 }
 
 function publicOnboardingConfig(settings, updatedAt) {
   return {
     enabled: Boolean(settings?.enabled),
+    showInStudentMenu: Boolean(settings?.showInStudentMenu),
     updatedAt: updatedAt || null,
   };
 }
 
 function sanitizeOnboardingConfigInput(input) {
   const raw = input && typeof input === "object" ? input : {};
-  return { enabled: Boolean(raw.enabled) };
+  return { enabled: Boolean(raw.enabled), showInStudentMenu: Boolean(raw.showInStudentMenu) };
 }
 
 async function loadOnboardingConfig() {
@@ -11970,13 +11973,15 @@ async function getReferralWelcomeInfo(userId) {
   const schoolName = cleanString(brand?.schoolName) || "Escola";
   const safeUserId = cleanString(userId);
   if (!safeUserId || !(await isValidReferrerUserId(safeUserId))) {
-    return { valid: false, referrerFirstName: null, schoolName };
+    return { valid: false, referrerFirstName: null, referrerNickname: null, schoolName };
   }
   const profile = await getProfileByUserId(safeUserId);
   const firstName = referrerFirstName(profile?.full_name);
+  const nickname = cleanString(profile?.nickname) || null;
   return {
-    valid: Boolean(firstName),
+    valid: Boolean(nickname || firstName),
     referrerFirstName: firstName || null,
+    referrerNickname: nickname,
     schoolName,
   };
 }
@@ -13564,6 +13569,80 @@ async function createFlightCreditCheckout(actorUserId, packageId) {
   }
 }
 
+async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId) {
+  await requireAdmin(actorUserId);
+  const safeTargetUserId = cleanString(targetUserId);
+  if (!safeTargetUserId) throw Object.assign(new Error("Usuário de destino não informado."), { status: 400 });
+  const safePackageId = cleanString(packageId);
+  if (!safePackageId) throw Object.assign(new Error("Pacote não informado."), { status: 400 });
+  const { settings } = await loadFlightCreditSalesConfig();
+  const selected = (Array.isArray(settings.packages) ? settings.packages : [])
+    .find((item) => cleanString(item?.id) === safePackageId && item?.active === true);
+  const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
+  if (!normalized) throw Object.assign(new Error("Pacote indisponível ou inativo."), { status: 404 });
+  const targetUser = await users.get({ userId: safeTargetUserId });
+  const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
+  const totalValue = Math.round(normalized.hours * normalized.hourPrice * 100) / 100;
+  const snapshot = {
+    packageId: normalized.id,
+    hours: normalized.hours,
+    hourPrice: normalized.hourPrice,
+    totalValue,
+    validityDays: normalized.validityDays,
+    aircraftModelId: normalized.aircraftModelId,
+    aircraftModelName: normalized.aircraftModelName,
+  };
+  const proposalId = sdk.ID.unique();
+  const creditId = `fc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 29)}`;
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    proposalId,
+    {
+      school_id: SCHOOL_ID,
+      lead_id: safeTargetUserId,
+      lead_name: cleanString(targetProfile?.full_name) || cleanString(targetUser.name) || "Aluno",
+      lead_email: cleanString(targetUser.email),
+      hours: normalized.hours,
+      hour_price: normalized.hourPrice,
+      total_value: totalValue,
+      products_json: JSON.stringify({
+        kind: "student_credit_package",
+        studentUserId: safeTargetUserId,
+        packageId: normalized.id,
+        creditId,
+        snapshot,
+        products: [],
+      }),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.read(sdk.Role.user(safeTargetUserId)),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCaktoOfferForProposal(doc);
+    const updated = await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    });
+    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+  }
+}
+
 async function retryCaktoProposal(proposalId) {
   const doc = await databases.getDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, cleanString(proposalId));
   if (doc.payment_url) return mapCaktoProposal(doc);
@@ -14903,6 +14982,11 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "createFlightCreditCheckout") {
       const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId);
+      return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "adminCreateFlightCreditCheckout") {
+      const checkout = await adminCreateFlightCreditCheckout(actorUserId, payload.targetUserId, payload.packageId);
       return jsonResponse(res, 200, { checkout });
     }
 

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { listCaktoReceipts } from "../../lib/caktoDb";
 import type { CaktoReceipt, CaktoReceiptPage } from "../../types/cakto";
 import { useToast } from "../ui/ToastProvider";
+import { getFlightCreditSalesConfig, adminCreateFlightCreditCheckout } from "../../lib/flightCreditSalesDb";
+import type { FlightCreditPackage } from "../../types/flightCreditSales";
+import { listAdminUsers } from "../../lib/adminUsersDb";
+import type { AdminUserSummary } from "../../types/adminUsers";
 
 const eventLabels: Record<string, string> = {
   purchase_approved: "Compra aprovada",
@@ -15,6 +19,172 @@ const eventLabels: Record<string, string> = {
 };
 const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
+function PaymentLinkModal({ onClose }: { onClose: () => void }) {
+  const { showToast } = useToast();
+  const [search, setSearch] = useState("");
+  const [users, setUsers] = useState<AdminUserSummary[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(null);
+  const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
+  const [packagesLoading, setPackagesLoading] = useState(true);
+  const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      setPackagesLoading(true);
+      try {
+        const config = await getFlightCreditSalesConfig();
+        const active = config.packages.filter((p) => p.active);
+        setPackages(active);
+        if (active.length > 0) setSelectedPackageId(active[0].id);
+      } catch (e) {
+        showToast({ variant: "error", message: (e as Error).message });
+      } finally {
+        setPackagesLoading(false);
+      }
+    })();
+  }, [showToast]);
+
+  const searchUsers = useCallback(async (q: string) => {
+    if (!q.trim()) { setUsers([]); return; }
+    setUsersLoading(true);
+    try {
+      const result = await listAdminUsers(q);
+      setUsers(result.filter((u) => u.role === "aluno"));
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    const t = setTimeout(() => void searchUsers(search), 300);
+    return () => clearTimeout(t);
+  }, [search, searchUsers]);
+
+  async function handleGenerate() {
+    if (!selectedUser || !selectedPackageId) return;
+    setGenerating(true);
+    try {
+      const checkout = await adminCreateFlightCreditCheckout(selectedUser.userId, selectedPackageId);
+      setPaymentUrl(checkout.paymentUrl);
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  const selectedPackage = packages.find((p) => p.id === selectedPackageId);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-950 p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-100">Gerar link de pagamento</h2>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300 text-xs">Fechar</button>
+        </div>
+
+        {paymentUrl ? (
+          <div className="mt-4 space-y-3">
+            <p className="text-xs text-emerald-300">Link gerado com sucesso!</p>
+            <div className="rounded-lg border border-slate-800 bg-black/30 p-3">
+              <a href={paymentUrl} target="_blank" rel="noopener noreferrer" className="break-all text-xs text-sky-400 underline">{paymentUrl}</a>
+            </div>
+            <button
+              type="button"
+              onClick={() => { void navigator.clipboard.writeText(paymentUrl); showToast({ variant: "success", message: "Link copiado!" }); }}
+              className="w-full rounded-lg border border-slate-700 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
+            >
+              Copiar link
+            </button>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Aluno</label>
+              <input
+                value={selectedUser ? (selectedUser.name || selectedUser.email) : search}
+                onChange={(e) => { setSearch(e.target.value); setSelectedUser(null); setPaymentUrl(null); }}
+                placeholder="Buscar aluno por nome ou e-mail..."
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+              />
+              {!selectedUser && users.length > 0 && (
+                <ul className="mt-1 max-h-40 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900">
+                  {usersLoading ? (
+                    <li className="px-3 py-2 text-xs text-slate-500">Buscando...</li>
+                  ) : (
+                    users.map((u) => (
+                      <li key={u.userId}>
+                        <button
+                          type="button"
+                          onClick={() => { setSelectedUser(u); setSearch(""); setUsers([]); }}
+                          className="w-full px-3 py-2 text-left text-xs text-slate-300 hover:bg-slate-800"
+                        >
+                          <span className="font-medium">{u.name || u.email}</span>
+                          {u.name ? <span className="ml-1 text-slate-500">{u.email}</span> : null}
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              )}
+              {selectedUser && (
+                <div className="mt-1 flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2">
+                  <div>
+                    <p className="text-xs font-medium text-slate-200">{selectedUser.name || selectedUser.email}</p>
+                    {selectedUser.name ? <p className="text-[10px] text-slate-500">{selectedUser.email}</p> : null}
+                  </div>
+                  <button type="button" onClick={() => setSelectedUser(null)} className="text-[10px] text-slate-500 hover:text-slate-300">Trocar</button>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Pacote de horas</label>
+              {packagesLoading ? (
+                <div className="h-9 animate-pulse rounded-lg bg-slate-800" />
+              ) : packages.length === 0 ? (
+                <p className="text-xs text-amber-400">Nenhum pacote ativo configurado em Admin &gt; Configurações &gt; Financeiro.</p>
+              ) : (
+                <select
+                  value={selectedPackageId}
+                  onChange={(e) => setSelectedPackageId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                >
+                  {packages.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.hours}h — {money(p.hours * p.hourPrice)} ({p.aircraftModelName || "—"})
+                    </option>
+                  ))}
+                </select>
+              )}
+              {selectedPackage && (
+                <p className="mt-1 text-[10px] text-slate-500">
+                  {selectedPackage.hours}h × {money(selectedPackage.hourPrice)}/h = {money(selectedPackage.hours * selectedPackage.hourPrice)} · validade {selectedPackage.validityDays} dias
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              disabled={!selectedUser || !selectedPackageId || generating || packages.length === 0}
+              onClick={() => void handleGenerate()}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 py-2 text-xs font-medium text-white hover:bg-sky-500 transition disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {generating && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+              {generating ? "Gerando..." : "Gerar link"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function CaktoReceiptsTab() {
   const { showToast } = useToast();
   const [page, setPage] = useState<CaktoReceiptPage>({ receipts: [], total: 0, limit: 25, offset: 0, summary: { approved: 0, refunded: 0, pending: 0 } });
@@ -26,6 +196,7 @@ export function CaktoReceiptsTab() {
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<CaktoReceipt | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,17 +214,28 @@ export function CaktoReceiptsTab() {
   const filterCls = "rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-200";
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
-        {[
-          ["Aprovados", page.summary.approved, "text-emerald-300"],
-          ["Reembolsados/chargeback", page.summary.refunded, "text-rose-300"],
-          ["Cobranças abertas", page.summary.pending, "text-amber-300"],
-        ].map(([label, value, color]) => (
-          <div key={String(label)} className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-            <p className="text-xs text-slate-500">{label}</p>
-            <p className={`mt-1 text-xl font-bold ${color}`}>{money(Number(value))}</p>
-          </div>
-        ))}
+      <div className="flex items-center justify-between">
+        <div className="grid flex-1 gap-3 sm:grid-cols-3">
+          {[
+            ["Aprovados", page.summary.approved, "text-emerald-300"],
+            ["Reembolsados/chargeback", page.summary.refunded, "text-rose-300"],
+            ["Cobranças abertas", page.summary.pending, "text-amber-300"],
+          ].map(([label, value, color]) => (
+            <div key={String(label)} className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <p className="text-xs text-slate-500">{label}</p>
+              <p className={`mt-1 text-xl font-bold ${color}`}>{money(Number(value))}</p>
+            </div>
+          ))}
+        </div>
+        <div className="ml-4 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowPaymentModal(true)}
+            className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 transition"
+          >
+            Gerar link de pagamento
+          </button>
+        </div>
       </div>
       <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
         <input value={search} onChange={(e) => { setSearch(e.target.value); setOffset(0); }} placeholder="Cliente, e-mail, pedido ou oferta" className={`${filterCls} min-w-64 flex-1`} />
@@ -128,6 +310,7 @@ export function CaktoReceiptsTab() {
           </div>
         </div>
       ) : null}
+      {showPaymentModal ? <PaymentLinkModal onClose={() => setShowPaymentModal(false)} /> : null}
     </div>
   );
 }

@@ -146,8 +146,8 @@ export function QualificacaoPage() {
     void getReferralWelcome(referrerUserId)
       .then((info) => {
         if (cancelled) return;
-        if (info.valid && info.referrerFirstName) {
-          setWelcomeInfo({ referrerName: info.referrerFirstName, schoolName: info.schoolName });
+        if (info.valid && (info.referrerNickname || info.referrerFirstName)) {
+          setWelcomeInfo({ referrerName: info.referrerNickname ?? info.referrerFirstName ?? "", schoolName: info.schoolName });
           setShowWelcome(true);
         } else {
           setShowWelcome(false);

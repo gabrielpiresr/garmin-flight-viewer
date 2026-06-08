@@ -224,7 +224,7 @@ export async function getOnboardingPublic(): Promise<OnboardingPublicPayload> {
 
   return {
 
-    onboarding: response.onboarding ?? { enabled: false, updatedAt: null },
+    onboarding: response.onboarding ?? { enabled: false, showInStudentMenu: false, updatedAt: null },
 
     steps: (response.steps ?? []).map((step) => toStep(step as unknown as Record<string, unknown>)),
 
@@ -240,7 +240,7 @@ export async function getOnboardingConfig(): Promise<OnboardingPublicPayload> {
 
   return {
 
-    onboarding: response.onboarding ?? { enabled: false, updatedAt: null },
+    onboarding: response.onboarding ?? { enabled: false, showInStudentMenu: false, updatedAt: null },
 
     steps: (response.steps ?? []).map((step) => toStep(step as unknown as Record<string, unknown>)),
 
@@ -519,6 +519,36 @@ export function getOnboardingImageUrl(fileId: string | null | undefined): string
   if (!fileId || !storage || !ONBOARDING_MEDIA_BUCKET_ID) return "";
 
   return storage.getFileView(ONBOARDING_MEDIA_BUCKET_ID, fileId).toString();
+
+}
+
+
+
+export async function uploadOnboardingVideo(file: File): Promise<{ videoUrl: string | null; error: Error | null }> {
+
+  if (!storage || !ONBOARDING_MEDIA_BUCKET_ID) {
+
+    return { videoUrl: null, error: new Error("Bucket de mídia do onboarding não configurado.") };
+
+  }
+
+  try {
+
+    const uploaded = await storage.createFile(ONBOARDING_MEDIA_BUCKET_ID, ID.unique(), file, [
+
+      Permission.read(Role.any()),
+
+    ]);
+
+    const url = storage.getFileView(ONBOARDING_MEDIA_BUCKET_ID, uploaded.$id).toString();
+
+    return { videoUrl: url, error: null };
+
+  } catch (error) {
+
+    return { videoUrl: null, error: error as Error };
+
+  }
 
 }
 

@@ -42,8 +42,8 @@ function ProgressDots({
           onClick={() => onSelect(i)}
           className={`rounded-full transition-all duration-300 ${
             i === current
-              ? "h-2.5 w-10 bg-cyan-400"
-              : "h-2.5 w-2.5 bg-slate-600 hover:bg-slate-500"
+              ? "h-2 w-6 bg-cyan-400 sm:h-2.5 sm:w-10"
+              : "h-2 w-2 bg-slate-600 hover:bg-slate-500 sm:h-2.5 sm:w-2.5"
           }`}
           aria-label={`Slide ${i + 1}`}
         />
@@ -191,7 +191,7 @@ export function OnboardingPresentationPage() {
       {/* Main Content */}
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
-        <div className="absolute left-0 right-0 top-0 z-20 flex items-center justify-between px-5 py-4">
+        <div className="absolute left-0 right-0 top-0 z-20 flex items-center justify-between px-3 py-3 sm:px-5 sm:py-4">
           <BackButton />
           {canEdit && (
             <button
@@ -224,11 +224,11 @@ export function OnboardingPresentationPage() {
         </div>
 
         {/* Bottom Navigation */}
-        <div className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-between px-8 py-5">
+        <div className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-4 sm:px-8 sm:py-5">
           <button
             onClick={() => navigate("prev")}
             disabled={index === 0 || animating}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-slate-300 backdrop-blur-sm transition hover:bg-slate-800 disabled:opacity-30"
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-slate-300 backdrop-blur-sm transition hover:bg-slate-800 disabled:opacity-30 sm:h-11 sm:w-11"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -245,7 +245,7 @@ export function OnboardingPresentationPage() {
           <button
             onClick={() => navigate("next")}
             disabled={index === steps.length - 1 || animating}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-slate-300 backdrop-blur-sm transition hover:bg-slate-800 disabled:opacity-30"
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-slate-300 backdrop-blur-sm transition hover:bg-slate-800 disabled:opacity-30 sm:h-11 sm:w-11"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -256,7 +256,7 @@ export function OnboardingPresentationPage() {
 
       {/* Editor Panel */}
       {editorOpen && canEdit && (
-        <div className="w-[520px] flex-shrink-0 overflow-hidden border-l border-slate-700 transition-all duration-300">
+        <div className="w-full flex-shrink-0 overflow-hidden border-l border-slate-700 transition-all duration-300 sm:w-[420px] md:w-[520px]">
           <Suspense
             fallback={
               <div className="flex h-full items-center justify-center bg-slate-900">

@@ -22,7 +22,7 @@ function TopBadge() {
 function SlideShell({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
     <div className={`h-full w-full overflow-y-auto ${className}`}>
-      <div className="flex min-h-full flex-col items-center justify-center px-8 py-24">
+      <div className="flex min-h-full flex-col items-center justify-center px-4 py-20 sm:px-8 sm:py-24">
         {children}
       </div>
     </div>
@@ -116,10 +116,10 @@ export function HeroSlide({ step }: SlideProps) {
 
       {/* Scrollable content over bg */}
       <div className="relative z-10 h-full overflow-y-auto">
-        <div className="flex min-h-full flex-col items-center justify-center gap-6 px-8 py-24 text-center">
+        <div className="flex min-h-full flex-col items-center justify-center gap-6 px-4 py-20 text-center sm:px-8 sm:py-24">
           <TopBadge />
           <div>
-            <h1 className="mb-3 text-4xl font-bold leading-tight text-white md:text-5xl">{step.title}</h1>
+            <h1 className="mb-3 text-3xl font-bold leading-tight text-white sm:text-4xl md:text-5xl">{step.title}</h1>
             {step.subtitle && (
               <p className="text-lg text-slate-300 md:text-xl">{step.subtitle}</p>
             )}
@@ -146,7 +146,7 @@ export function SplitSlide({ step }: SlideProps) {
     <div className="flex flex-col gap-4">
       <TopBadge />
       <div>
-        <h1 className="mb-2 text-3xl font-bold leading-tight text-white md:text-4xl">{step.title}</h1>
+        <h1 className="mb-2 text-2xl font-bold leading-tight text-white sm:text-3xl md:text-4xl">{step.title}</h1>
         {step.subtitle && (
           <p className="text-base text-slate-400">{step.subtitle}</p>
         )}
@@ -193,7 +193,7 @@ export function TextOnlySlide({ step }: SlideProps) {
     <div className="w-full max-w-3xl">
       <div className="mb-5 flex flex-col gap-3">
         <TopBadge />
-        <h1 className="text-3xl font-bold leading-tight text-white md:text-4xl">{step.title}</h1>
+        <h1 className="text-2xl font-bold leading-tight text-white sm:text-3xl md:text-4xl">{step.title}</h1>
         {step.subtitle && (
           <p className="text-base text-slate-400">{step.subtitle}</p>
         )}
@@ -262,7 +262,7 @@ export function VideoFocusSlide({ step }: SlideProps) {
       <div className="w-full max-w-4xl">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <TopBadge />
-          <h1 className="text-3xl font-bold text-white md:text-4xl">{step.title}</h1>
+          <h1 className="text-2xl font-bold text-white sm:text-3xl md:text-4xl">{step.title}</h1>
           {step.subtitle && <p className="text-base text-slate-400">{step.subtitle}</p>}
         </div>
         <div className="flex flex-col gap-5">
@@ -298,7 +298,7 @@ export function ListSlide({ step }: SlideProps) {
         </div>
         <TopBadge />
         <div>
-          <h1 className="text-3xl font-bold text-white md:text-4xl">{step.title}</h1>
+          <h1 className="text-2xl font-bold text-white sm:text-3xl md:text-4xl">{step.title}</h1>
           {step.subtitle && <p className="mt-2 text-base text-slate-400">{step.subtitle}</p>}
         </div>
       </div>

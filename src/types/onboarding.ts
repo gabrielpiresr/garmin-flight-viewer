@@ -1,10 +1,12 @@
 export type OnboardingConfig = {
   enabled: boolean;
+  showInStudentMenu: boolean;
   updatedAt: string | null;
 };
 
 export type OnboardingConfigInput = {
   enabled: boolean;
+  showInStudentMenu?: boolean;
 };
 
 import type { ManeuverRichContent } from "./maneuver";

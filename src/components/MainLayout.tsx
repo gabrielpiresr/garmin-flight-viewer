@@ -5,6 +5,7 @@ import { FlightReviewClubProvider } from "../contexts/FlightReviewClubContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { getReferAndEarnPublic, programConfigForRole } from "../lib/referAndEarnDb";
+import { getOnboardingPublic } from "../lib/onboardingDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
@@ -241,6 +242,7 @@ export function MainLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isClubMember, setIsClubMember] = useState(false);
   const [referProgramActive, setReferProgramActive] = useState(false);
+  const [onboardingInMenu, setOnboardingInMenu] = useState(false);
 
   const visibleNavItems = useMemo(
     () =>
@@ -307,6 +309,22 @@ export function MainLayout() {
       cancelled = true;
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getOnboardingPublic()
+      .then(({ onboarding }) => {
+        if (cancelled) return;
+        setOnboardingInMenu(Boolean(onboarding.enabled && onboarding.showInStudentMenu));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOnboardingInMenu(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!availableNavItems.some((item) => item.id === section)) {
@@ -394,6 +412,25 @@ export function MainLayout() {
               </span>
               <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
                 <p className="text-sm font-medium leading-none">Flight Review Club</p>
+              </div>
+            </a>
+          ) : null}
+          {onboardingInMenu ? (
+            <a
+              href="/apresentacao"
+              target="_blank"
+              rel="noopener noreferrer"
+              title={sidebarCollapsed ? "Apresentação" : undefined}
+              aria-label={sidebarCollapsed ? "Apresentação" : undefined}
+              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+            >
+              <span className="opacity-70 group-hover:opacity-100">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                  <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                </svg>
+              </span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">Apresentação</p>
               </div>
             </a>
           ) : null}

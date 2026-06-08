@@ -53,3 +53,9 @@ export async function createFlightCreditCheckout(packageId: string): Promise<Fli
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;
 }
+
+export async function adminCreateFlightCreditCheckout(targetUserId: string, packageId: string): Promise<FlightCreditCheckout> {
+  const response = await execute({ action: "adminCreateFlightCreditCheckout", targetUserId, packageId });
+  if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
+  return response.checkout;
+}

@@ -159,6 +159,7 @@ export async function runEnrollmentAutomation(input: {
   customVarValues: Record<string, string>;
   createInSaga?: boolean;
   ignoreSagaDuplicates?: boolean;
+  useStudentEmail?: boolean;
 }): Promise<{ createdContracts: number; nextStatus: string; saga?: EnrollmentSagaResult }> {
   const response = await executeAdminUsers({
     action: "runEnrollmentAutomation",
@@ -168,6 +169,7 @@ export async function runEnrollmentAutomation(input: {
     customVarValues: input.customVarValues,
     createInSaga: input.createInSaga !== false,
     ignoreSagaDuplicates: input.ignoreSagaDuplicates === true,
+    useStudentEmail: input.useStudentEmail === true,
   });
   return {
     createdContracts: response.createdContracts ?? 0,

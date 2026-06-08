@@ -106,21 +106,32 @@ export async function saveProposalConfig(input: ProposalConfigInput): Promise<{ 
 }
 
 export async function uploadProposalImage(file: File): Promise<{ fileId: string; url: string } | null> {
-  const bucketId = NOTICES_BUCKET_ID ?? BUCKET_ID;
-  if (!storage || !bucketId) return null;
-  try {
-    const uploaded = await storage.createFile(bucketId, ID.unique(), file, [Permission.read(Role.any())]);
-    const url = storage.getFileView(bucketId, uploaded.$id).toString();
-    return { fileId: uploaded.$id, url };
-  } catch {
-    return null;
+  const explicitProposalBucketId = import.meta.env.VITE_APPWRITE_PROPOSALS_BUCKET_ID as string | undefined;
+  const bucketId = explicitProposalBucketId ?? BUCKET_ID ?? NOTICES_BUCKET_ID;
+  if (!storage || !bucketId) {
+    throw new Error("Bucket de propostas nao configurado. Defina VITE_APPWRITE_PROPOSALS_BUCKET_ID.");
   }
+  const uploaded = await storage.createFile(bucketId, ID.unique(), file, [Permission.read(Role.any())]);
+  const url = storage.getFileView(bucketId, uploaded.$id).toString();
+  // Persistimos "bucketId:fileId" para evitar mismatch entre ambientes com buckets diferentes.
+  return { fileId: `${bucketId}:${uploaded.$id}`, url };
 }
 
 export function getProposalImageUrl(fileIdOrUrl: string): string {
   if (!fileIdOrUrl) return "";
   if (fileIdOrUrl.startsWith("http")) return fileIdOrUrl;
-  const bucketId = NOTICES_BUCKET_ID ?? BUCKET_ID;
-  if (!storage || !bucketId) return "";
-  return storage.getFileView(bucketId, fileIdOrUrl).toString();
+  if (!storage) return "";
+
+  const explicitProposalBucketId = import.meta.env.VITE_APPWRITE_PROPOSALS_BUCKET_ID as string | undefined;
+  const [prefixBucket, rawFileId] = fileIdOrUrl.includes(":")
+    ? (fileIdOrUrl.split(":", 2) as [string, string])
+    : ["", fileIdOrUrl];
+  if (prefixBucket && rawFileId) {
+    return storage.getFileView(prefixBucket, rawFileId).toString();
+  }
+
+  // Compatibilidade com registros antigos (sem prefixo de bucket).
+  const fallbackBucketId = explicitProposalBucketId ?? BUCKET_ID ?? NOTICES_BUCKET_ID;
+  if (!fallbackBucketId) return "";
+  return storage.getFileView(fallbackBucketId, fileIdOrUrl).toString();
 }

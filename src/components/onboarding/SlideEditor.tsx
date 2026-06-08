@@ -7,6 +7,7 @@ import {
   reorderOnboardingSteps,
   updateOnboardingStep,
   uploadOnboardingImage,
+  uploadOnboardingVideo,
 } from "../../lib/onboardingDb";
 import { uploadManeuverMedia } from "../../lib/maneuversDb";
 import { createEmptyRichContent, richContentToPlainText } from "../../lib/maneuverContent";
@@ -75,6 +76,8 @@ export function SlideEditor({ steps, currentIndex, onStepsChange, onNavigateTo, 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [videoInputMode, setVideoInputMode] = useState<"url" | "file">("url");
 
   const currentStep = steps[currentIndex];
 
@@ -112,6 +115,20 @@ export function SlideEditor({ steps, currentIndex, onStepsChange, onNavigateTo, 
       return;
     }
     updateDraft((d) => ({ ...d, imageFileId: fileId }));
+  }
+
+  async function handleVideoFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setUploadingVideo(true);
+    const { videoUrl, error } = await uploadOnboardingVideo(file);
+    setUploadingVideo(false);
+    if (error || !videoUrl) {
+      showToast({ variant: "error", message: "Erro ao enviar vídeo." });
+      return;
+    }
+    updateDraft((d) => ({ ...d, videoUrl }));
   }
 
   async function handleSave() {
@@ -364,16 +381,67 @@ export function SlideEditor({ steps, currentIndex, onStepsChange, onNavigateTo, 
           </label>
         </div>
 
-        {/* Video URL */}
+        {/* Video */}
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-400">URL de Vídeo (YouTube ou MP4)</label>
-          <input
-            type="url"
-            value={draft.videoUrl}
-            onChange={(e) => updateDraft((d) => ({ ...d, videoUrl: e.target.value }))}
-            placeholder="https://youtube.com/watch?v=..."
-            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500"
-          />
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-medium text-slate-400">Vídeo</label>
+            <div className="flex rounded-lg border border-slate-700 bg-slate-800 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setVideoInputMode("url")}
+                className={`rounded px-2 py-1 transition ${videoInputMode === "url" ? "bg-slate-600 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}
+              >
+                URL
+              </button>
+              <button
+                type="button"
+                onClick={() => setVideoInputMode("file")}
+                className={`rounded px-2 py-1 transition ${videoInputMode === "file" ? "bg-slate-600 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}
+              >
+                Arquivo local
+              </button>
+            </div>
+          </div>
+          {videoInputMode === "url" ? (
+            <input
+              type="url"
+              value={draft.videoUrl}
+              onChange={(e) => updateDraft((d) => ({ ...d, videoUrl: e.target.value }))}
+              placeholder="https://youtube.com/watch?v=... ou link de vídeo MP4"
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500"
+            />
+          ) : (
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-600 bg-slate-800/50 px-3 py-2 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-300">
+                <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M9 10h6v4H9m0-4H6a2 2 0 00-2 2v0a2 2 0 002 2h3" />
+                </svg>
+                {uploadingVideo ? "Enviando vídeo..." : "Selecionar arquivo de vídeo (MP4, WebM, MOV)"}
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime,video/*"
+                  className="hidden"
+                  disabled={uploadingVideo}
+                  onChange={handleVideoFileUpload}
+                />
+              </label>
+              {draft.videoUrl && !draft.videoUrl.includes("youtube") && !draft.videoUrl.includes("youtu.be") && (
+                <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2">
+                  <span className="truncate text-xs text-slate-400">Vídeo carregado</span>
+                  <button
+                    type="button"
+                    onClick={() => updateDraft((d) => ({ ...d, videoUrl: "" }))}
+                    className="ml-2 flex-shrink-0 text-xs text-slate-500 hover:text-red-300"
+                  >
+                    Remover
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {draft.videoUrl && (
+            <p className="mt-1 truncate text-[10px] text-slate-500">{draft.videoUrl}</p>
+          )}
         </div>
 
         {/* Reorder */}

@@ -1810,6 +1810,7 @@ function EnrollmentAutomationModal({
     templateIds: string[];
     createInSaga: boolean;
     ignoreSagaDuplicates: boolean;
+    useStudentEmail: boolean;
   }) => void;
 }) {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(
@@ -1817,6 +1818,7 @@ function EnrollmentAutomationModal({
   );
   const [createInSaga, setCreateInSaga] = useState(true);
   const [ignoreSagaDuplicates, setIgnoreSagaDuplicates] = useState(false);
+  const [useStudentEmail, setUseStudentEmail] = useState(false);
   const selectedTemplates = templates.filter((template) => selectedTemplateIds.has(template.id));
   const variables = uniqueCustomVariables(selectedTemplates);
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -1939,7 +1941,7 @@ function EnrollmentAutomationModal({
             <span className="text-sm text-slate-200">
               Criar aluno no SAGA
               <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
-                Usa a sessão SAGA configurada em Admin &gt; Import. E-mail: aluno+{"{ANAC}"}@epeac.com.br
+                Usa a sessão SAGA configurada em Admin &gt; Import.{useStudentEmail ? " E-mail real do aluno." : " E-mail: aluno+{ANAC}@epeac.com.br"}
               </span>
             </span>
           </label>
@@ -1959,7 +1961,22 @@ function EnrollmentAutomationModal({
               </span>
             </label>
           )}
-          {!sagaAnacReady && (
+          {createInSaga && (
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={useStudentEmail}
+                onChange={(e) => setUseStudentEmail(e.target.checked)}
+                className="mt-0.5 rounded border-slate-600 bg-slate-900 text-sky-500 focus:ring-sky-500"
+              />
+              <span className="text-sm text-slate-200">
+                Usar e-mail real do aluno no SAGA
+                <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
+                  Por padrão usa aluno+{"{ANAC}"}@epeac.com.br. Marque para usar o e-mail cadastrado do aluno.
+                </span>
+              </span>
+            </label>
+          )}          {!sagaAnacReady && (
             <p className="rounded-lg border border-amber-800/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
               Consulte os dados ANAC no detalhe do lead (SAGA / ANAC) antes de enviar a matrícula.
             </p>
@@ -1998,6 +2015,7 @@ function EnrollmentAutomationModal({
                 templateIds: Array.from(selectedTemplateIds),
                 createInSaga,
                 ignoreSagaDuplicates,
+                useStudentEmail,
               })
             }
             className="flex items-center gap-2 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 transition disabled:cursor-not-allowed disabled:opacity-50"
@@ -2450,6 +2468,7 @@ export function CrmTab() {
       templateIds: string[];
       createInSaga: boolean;
       ignoreSagaDuplicates: boolean;
+      useStudentEmail: boolean;
     },
   ) {
     if (automationRunning) return;
@@ -2462,6 +2481,7 @@ export function CrmTab() {
         templateIds: input.templateIds,
         createInSaga: input.createInSaga,
         ignoreSagaDuplicates: input.ignoreSagaDuplicates,
+        useStudentEmail: input.useStudentEmail,
       });
       const nextStatus = result.nextStatus as CrmStatus;
       setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: nextStatus } : l));
