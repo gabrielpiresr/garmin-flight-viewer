@@ -25,7 +25,7 @@ import {
 import { renderMarkdownBlocks } from "../lib/markdown";
 import { dispatchNotificationEvent } from "../lib/notificationsDb";
 import { parseGarminCsv } from "../lib/parseGarminCsv";
-import { getProfile, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
+import { getProfile, listAssignableInstructors, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
 import { lookupSagaFlight, type SagaLookupFlightResult } from "../lib/sagaImportDb";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
 import { buildTrainingSnapshot, listStudentTrainingTracks } from "../lib/trainingTracksDb";
@@ -85,6 +85,19 @@ function inferInstructorOutcome(text: string): InstructorOutcome {
   if (/\b(reprovado|reprovada|insatisfatorio|inapto|nao aprovado|nao aprovada)\b/.test(normalized)) return "failed";
   if (/\b(aprovado|aprovada|satisfatorio|apto|apta)\b/.test(normalized)) return "approved";
   return "";
+}
+
+function normalizeIdentityText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeAnacCode(value: string): string {
+  return value.replace(/\D+/g, "").trim();
 }
 
 function normalizeExerciseTitle(value: string): string {
@@ -764,6 +777,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [loadedInstructorName, setLoadedInstructorName] = useState("");
   const [loadedInstructorAnac, setLoadedInstructorAnac] = useState("");
   const [loadedInstructorWeightKg, setLoadedInstructorWeightKg] = useState<number | null>(null);
+  const [loadedInstructorUserId, setLoadedInstructorUserId] = useState<string | null>(null);
   const [studentsLoading, setStudentsLoading] = useState(false);
   const [aircraftLoading, setAircraftLoading] = useState(false);
   const [aerodromesLoading, setAerodromesLoading] = useState(false);
@@ -961,12 +975,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   useEffect(() => {
     if (!initialFlightId) return;
     setLoadingExisting(true);
+    setLoadedInstructorUserId(null);
     void getSavedFlight(initialFlightId)
       .then(async ({ data, error: loadError }) => {
         if (loadError || !data) {
           setError(loadError?.message ?? "Não foi possível carregar a ficha.");
           return;
         }
+        setLoadedInstructorUserId(data.instructor_user_id ?? null);
         const instructorFromDb = data.instructor_user_id ? await getProfile(data.instructor_user_id) : null;
         const decoded = decodeFlightRecord(data.csv_text);
         const meta = decoded.meta;
@@ -1672,6 +1688,40 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
     }
 
     const meta = buildFlightMeta();
+    let effectiveInstructorUserId = initialFlightId ? loadedInstructorUserId : user.id;
+    if (initialFlightId && !effectiveInstructorUserId && (user.role === "admin" || user.role === "instrutor")) {
+      try {
+        const instructorCandidates = await listAssignableInstructors(user.role);
+        const anacHints = [
+          meta.header.instructorAnac ?? "",
+          loadedInstructorAnac,
+          displayInstructorAnac,
+        ]
+          .map((value) => normalizeAnacCode(String(value || "")))
+          .filter(Boolean);
+        const nameHints = [
+          meta.header.instructorName ?? "",
+          loadedInstructorName,
+          displayInstructorName,
+        ]
+          .map((value) => normalizeIdentityText(String(value || "")))
+          .filter(Boolean);
+
+        const byAnac = instructorCandidates.find((instructor) => {
+          const instructorAnac = normalizeAnacCode(String(instructor.anacCode || ""));
+          return instructorAnac && anacHints.includes(instructorAnac);
+        });
+        const byName = !byAnac
+          ? instructorCandidates.find((instructor) =>
+              nameHints.includes(normalizeIdentityText(instructor.label || "")),
+            )
+          : null;
+
+        effectiveInstructorUserId = byAnac?.userId ?? byName?.userId ?? null;
+      } catch {
+        // Keep save flow resilient even if instructor lookup fails.
+      }
+    }
     const csvPayload = encodeFlightRecord({ meta, telemetryCsv, telemetryFiles });
     const parsedTelemetry = telemetryCsv.trim() ? parseGarminCsv(telemetryCsv) : null;
     const telemetryMetrics = parsedTelemetry
@@ -1680,7 +1730,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           identity: deriveIdentity({
             meta,
             studentUserId: studentId,
-            instructorUserId: user.id,
+            instructorUserId: effectiveInstructorUserId,
             aircraftIdent: aircraft.trim() || null,
           }),
           meta,
@@ -1690,7 +1740,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       actorUserId: user.id,
       actorRole: user.role,
       studentUserId: studentId,
-      instructorUserId: user.id,
+      instructorUserId: effectiveInstructorUserId,
       source_filename: csvFileName ?? "manual-entry.csv",
       csv_text: csvPayload,
       aircraft_ident: aircraft.trim() || null,

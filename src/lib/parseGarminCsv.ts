@@ -44,7 +44,7 @@ function findUtcTimeColumn(headers: string[]): string | undefined {
 
 function findDateColumn(headers: string[]): string | undefined {
   return (
-    findColumn(headers, [/^date\s*\(yyyy/i, /^lcl\s*date$/i, /^local\s*date$/i, /^utc\s*date$/i]) ??
+    findColumn(headers, [/^date\s*\(yyyy/i, /^lcl\s*date\b/i, /^local\s*date\b/i, /^utc\s*date\b/i]) ??
     findColumn(headers, [/^date$/i])
   );
 }
@@ -72,7 +72,11 @@ function parseNumberCell(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const s = String(value).trim();
   if (!s) return null;
-  const cleaned = s.replace(/"/g, "").replace(/\s/g, "").replace(",", ".");
+  const cleaned = s
+    .replace(/"/g, "")
+    .replace(/\s/g, "")
+    .replace(/^\+\-(?=\d)/, "-")
+    .replace(",", ".");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }
@@ -207,6 +211,29 @@ function parseRowInstant(
     return parseTimeToMs(row[colTime], colTime);
   }
   return null;
+}
+
+function isRepeatedHeaderRow(
+  row: Record<string, unknown>,
+  cols: {
+    colLat?: string;
+    colLon?: string;
+    dateForInstant?: string;
+    timeForInstant?: string;
+  },
+): boolean {
+  const norm = (v: unknown) => normHeader(String(v ?? ""));
+  const lat = cols.colLat ? norm(row[cols.colLat]) : "";
+  const lon = cols.colLon ? norm(row[cols.colLon]) : "";
+  const d = cols.dateForInstant ? norm(row[cols.dateForInstant]) : "";
+  const t = cols.timeForInstant ? norm(row[cols.timeForInstant]) : "";
+
+  const latLike = /^(lat|latitude)\b/.test(lat);
+  const lonLike = /^(lon|lng|longitude)\b/.test(lon);
+  const dateLike = /\bdate\b/.test(d);
+  const timeLike = /\btime\b/.test(t);
+
+  return latLike && lonLike && (dateLike || timeLike);
 }
 
 /**
@@ -355,8 +382,8 @@ export function parseGarminCsv(text: string): ParseResult {
     warnings.push(`Avisos do parser CSV: ${msg}`);
   }
 
-  const rows = parsed.data.filter((r) => Object.keys(r).some((k) => String(r[k] ?? "").trim() !== ""));
-  if (rows.length === 0) {
+  const rawRows = parsed.data.filter((r) => Object.keys(r).some((k) => String(r[k] ?? "").trim() !== ""));
+  if (rawRows.length === 0) {
     warnings.push("Nenhuma linha de dados encontrada após o cabeçalho.");
     return {
       points: [],
@@ -370,7 +397,7 @@ export function parseGarminCsv(text: string): ParseResult {
     };
   }
 
-  const headers = Object.keys(rows[0]!);
+  const headers = Object.keys(rawRows[0]!);
   const colLat =
     findColumn(headers, [/^latitude/i, /^lat\s*\(/i]) ??
     findColumn(headers, [/^lat(itude)?$/, /^position\s*lat/, /^gps\s*lat/, /^(nm|deg)\s*lat/, /^lat$/i]);
@@ -394,14 +421,23 @@ export function parseGarminCsv(text: string): ParseResult {
   const colLocalTime = findLocalTimeColumn(headers);
   const colUtcTime = findUtcTimeColumn(headers);
   const colLclDate =
-    findColumn(headers, [/^lcl\s*date$/i, /^local\s*date$/i]) ?? findColumn(headers, [/^utc\s*date$/i]);
+    findColumn(headers, [/^lcl\s*date\b/i, /^local\s*date\b/i]) ?? findColumn(headers, [/^utc\s*date\b/i]);
   const colLclTime =
-    findColumn(headers, [/^lcl\s*time$/i, /^local\s*time$/i]) ?? findColumn(headers, [/^utc\s*time$/i]);
+    findColumn(headers, [/^lcl\s*time\b/i, /^local\s*time\b/i]) ?? findColumn(headers, [/^utc\s*time\b/i]);
   const colTime =
     findColumn(headers, [/^timestamp$/, /^time$/, /date\s*&\s*time/, /^datetime$/, /^elapsed/]);
 
   const dateForInstant = colDate ?? colLclDate;
   const timeForInstant = colLocalTime ?? colLclTime ?? colUtcTime;
+  const rows = rawRows.filter(
+    (row) =>
+      !isRepeatedHeaderRow(row, {
+        colLat,
+        colLon,
+        dateForInstant,
+        timeForInstant,
+      }),
+  );
 
   const telemetryResolved = resolveTelemetryColumns(headers);
   const telemetryColumns = Object.fromEntries(telemetryResolved);

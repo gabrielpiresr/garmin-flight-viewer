@@ -8550,8 +8550,19 @@ async function listFlightReports(params = {}) {
     );
   }
 
-  const rows = flights.map((doc) => {
-    const flight = toFlight(doc);
+  const hydratedFlights = await Promise.all(
+    flights.map(async (doc) => {
+      const shouldHydrateCsv =
+        !cleanString(doc.csv_text) &&
+        cleanString(doc.csv_file_id) &&
+        !cleanString(doc.instructor_user_id);
+      if (!shouldHydrateCsv) return toFlight(doc);
+      const csvText = await loadFlightCsvText(doc);
+      return toFlight({ ...doc, csv_text: csvText });
+    }),
+  );
+
+  const rows = hydratedFlights.map((flight) => {
     const aircraftIdent = normalizeAircraftIdent(flight.aircraftIdent);
     const aircraft = aircraftByRegistration.get(aircraftIdent);
     const model = aircraft ? modelsById.get(aircraft.model_id) : null;
