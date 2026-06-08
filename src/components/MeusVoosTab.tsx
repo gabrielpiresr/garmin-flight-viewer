@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { ADMIN_USERS_FUNCTION_ID, SCHOOL_ID } from "../lib/appwrite";
-import { importSelfFlightsFromSaga, type SagaImportProgress } from "../lib/sagaImportDb";
+import {
+  importSelfCreditsFromSaga,
+  importSelfFlightsFromSaga,
+  type SagaImportProgress,
+} from "../lib/sagaImportDb";
 import { useToast } from "./ui/ToastProvider";
 import { listAircrafts } from "../lib/aircraftDb";
 import {
@@ -285,6 +289,18 @@ export function MeusVoosTab() {
     setSagaImporting(true);
     setSyncProgress(null);
     try {
+      if (isStudentView) {
+        setSyncProgress({
+          runId: "self-credit-sync",
+          status: "running",
+          stage: "credits",
+          message: "Atualizando créditos no SAGA antes dos voos...",
+          current: 0,
+          total: 0,
+          logs: [],
+        });
+        await importSelfCreditsFromSaga();
+      }
       const summary = await importSelfFlightsFromSaga({
         onProgress: (p) => setSyncProgress(p),
       });
