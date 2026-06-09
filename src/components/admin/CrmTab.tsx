@@ -751,7 +751,7 @@ function LeadDetailModal({
             {row("Telefone", lead.phone)}
           </div>
 
-          {(lead.desiredCourse || lead.desiredHours || lead.weeklyHours || lead.startDate || availDays) && (
+          {(lead.desiredCourse || lead.desiredHours || lead.weeklyHours || lead.startDate || availDays || lead.transferSchool) && (
             <div>
               <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">Qualificação</p>
               {row("Curso desejado", lead.desiredCourse)}
@@ -760,6 +760,7 @@ function LeadDetailModal({
               {row("Início desejado", lead.startDate)}
               {row("Dias disponíveis", availDays)}
               {row("Período", periodLabel)}
+              {lead.transferSchool && row("Transferência", `Sim — ${lead.transferSchool}`)}
             </div>
           )}
 
