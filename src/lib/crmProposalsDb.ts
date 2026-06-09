@@ -71,7 +71,9 @@ function toProposal(doc: ProposalDoc): CrmProposal {
     totalValue: doc.total_value ?? 0,
     products: Array.isArray(productsData)
       ? productsData as ProposalProduct[]
-      : Array.isArray(packageMetadata?.products) ? packageMetadata.products : [],
+      : Array.isArray((productsData as Record<string, unknown> | null)?.products)
+        ? ((productsData as Record<string, unknown>).products as ProposalProduct[])
+        : [],
     notes,
     publicToken: doc.public_token ?? "",
     status: (doc.status === "sent" ? "sent" : "draft") as CrmProposal["status"],

@@ -222,6 +222,17 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
   await executeNotifications({ action: "deletePushSubscription", endpoint });
 }
 
+export async function notifyCrmLeadEvent(
+  eventType: "crm.lead_qualified" | "crm.lead_registered",
+  leadData: { leadId: string; name: string; email: string; course?: string | null; transferSchool?: string | null },
+): Promise<void> {
+  try {
+    await executeNotifications({ action: "notifyCrmLeadEvent", eventType, leadData });
+  } catch (error) {
+    console.warn("[crm] Falha ao notificar admins:", eventType, error);
+  }
+}
+
 export async function dispatchNotificationEvent(
   payload: NotificationDispatchPayload,
 ): Promise<{ error: Error | null; deliveries?: NotificationResponse["deliveries"] }> {

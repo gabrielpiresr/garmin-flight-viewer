@@ -148,6 +148,7 @@ export type CrmLead = {
   cpf: string | null;
   sagaAnacJson: string | null;
   theoreticalExamDone: boolean | null; // PPL: já fez banca teórica?
+  transferSchool: string | null;       // escola de origem se for transferência
   // Proposta aceita
   acceptedProposalId: string | null;
   // Controle
@@ -184,4 +185,5 @@ export type CrmLeadQualInput = {
   birthDate?: string | null;
   cpf?: string | null;
   theoreticalExamDone?: boolean | null;
+  transferSchool?: string | null;
 };

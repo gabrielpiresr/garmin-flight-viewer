@@ -8,6 +8,7 @@ import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
+import { notifyCrmLeadEvent } from "../../lib/notificationsDb";
 import { hasStudentScheduledFlights, hasStudentRealizedFlights } from "../../lib/flightsDb";
 import { getProposalsByLead } from "../../lib/crmProposalsDb";
 import { createLeadComment, deleteLeadComment, listLeadComments, type CrmLeadComment } from "../../lib/crmCommentsDb";
@@ -556,6 +557,7 @@ function LeadModal({
     } else {
       const { data, error: err } = await createLead({ name, email, phone, crmStatus: status });
       if (err || !data) { setError(err?.message ?? "Erro ao criar."); setSaving(false); return; }
+      void notifyCrmLeadEvent("crm.lead_registered", { leadId: data.id, name: data.name, email: data.email });
       onSaved(data);
     }
     setSaving(false);
@@ -1818,7 +1820,7 @@ function EnrollmentAutomationModal({
   );
   const [createInSaga, setCreateInSaga] = useState(true);
   const [ignoreSagaDuplicates, setIgnoreSagaDuplicates] = useState(false);
-  const [useStudentEmail, setUseStudentEmail] = useState(false);
+  const [useStudentEmail, setUseStudentEmail] = useState(true);
   const selectedTemplates = templates.filter((template) => selectedTemplateIds.has(template.id));
   const variables = uniqueCustomVariables(selectedTemplates);
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -1843,15 +1845,23 @@ function EnrollmentAutomationModal({
       setTracksLoading(true);
       const { data, error } = await listTrainingTracks();
       if (!error && data.length > 0) {
-        setTracks(data.map((track) => ({ id: track.id, name: track.name })));
+        const mapped = data.map((track) => ({ id: track.id, name: track.name }));
+        setTracks(mapped);
         const preferred = data.find((track) => track.isDefault) ?? data[0];
         setTrainingTrackId(preferred.id);
+        setValues((prev) => ({ ...prev, curso: preferred.name }));
       } else {
         setTracks([]);
       }
       setTracksLoading(false);
     })();
   }, []);
+
+  function handleTrackChange(trackId: string) {
+    setTrainingTrackId(trackId);
+    const track = tracks.find((t) => t.id === trackId);
+    if (track) setValues((prev) => ({ ...prev, curso: track.name }));
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
@@ -1914,7 +1924,7 @@ function EnrollmentAutomationModal({
             Trilha de treinamento (CURSO DE na ficha)
             <select
               value={trainingTrackId}
-              onChange={(e) => setTrainingTrackId(e.target.value)}
+              onChange={(e) => handleTrackChange(e.target.value)}
               disabled={tracksLoading || tracks.length === 0}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-60"
             >

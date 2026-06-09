@@ -8,7 +8,9 @@ export type NotificationEventType =
   | "flight.reminder_24h"
   | "weeklyPlan.submitted"
   | "notice.published"
-  | "schedule.published";
+  | "schedule.published"
+  | "crm.lead_qualified"
+  | "crm.lead_registered";
 
 export type EmailTemplateType = NotificationEventType | "test";
 

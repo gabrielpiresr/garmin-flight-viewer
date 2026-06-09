@@ -43,6 +43,7 @@ type CrmLeadDoc = {
   cpf?: string | null;
   saga_anac_json?: string | null;
   theoretical_exam_done?: boolean | null;
+  transfer_school?: string | null;
   qual_token?: string | null;
   qual_filled_at?: string | null;
   referrer_user_id?: string | null;
@@ -180,6 +181,7 @@ function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
     cpf: doc.cpf ?? null,
     sagaAnacJson: doc.saga_anac_json ?? null,
     theoreticalExamDone: typeof doc.theoretical_exam_done === "boolean" ? doc.theoretical_exam_done : null,
+    transferSchool: doc.transfer_school ?? null,
     acceptedProposalId: doc.accepted_proposal_id ?? null,
     qualToken: doc.qual_token ?? null,
     qualFilledAt: doc.qual_filled_at ?? null,
@@ -318,6 +320,7 @@ export async function updateLead(
     if (updates.anacCode !== undefined) payload.anac_code = updates.anacCode;
     if (updates.birthDate !== undefined) payload.birth_date = updates.birthDate;
     if (updates.theoreticalExamDone !== undefined) payload.theoretical_exam_done = updates.theoreticalExamDone;
+    if (updates.transferSchool !== undefined) payload.transfer_school = updates.transferSchool;
     if (updates.acceptedProposalId !== undefined) payload.accepted_proposal_id = updates.acceptedProposalId;
     if (updates.statusEnteredAt !== undefined) payload.status_entered_at = updates.statusEnteredAt;
     if (updates.funnelEnteredAt !== undefined) payload.funnel_entered_at = updates.funnelEnteredAt;
@@ -358,6 +361,7 @@ export async function upsertLeadByEmail(
     if (input.birthDate !== undefined) qualPayload.birth_date = input.birthDate;
     if (input.cpf !== undefined) qualPayload.cpf = input.cpf;
     if (input.theoreticalExamDone !== undefined) qualPayload.theoretical_exam_done = input.theoreticalExamDone;
+    if (input.transferSchool !== undefined) qualPayload.transfer_school = input.transferSchool;
     if (input.notes !== undefined) qualPayload.notes = input.notes;
     qualPayload.qual_filled_at = new Date().toISOString();
     const safeReferrer = input.referrerUserId?.trim() || null;

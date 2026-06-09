@@ -3,7 +3,7 @@ import { useState } from "react";
 
 const HELPER_RELEASE_URL = "https://github.com/gabrielpiresr/garmin-flight-viewer/releases/tag/helper";
 const HELPER_DOWNLOAD_URL =
-  "https://sfo.cloud.appwrite.io/v1/storage/buckets/video-helper-releases/files/6a2844a4e2b03e52a935/download?project=6a01ac8a0009fbf94f05";
+  "https://sfo.cloud.appwrite.io/v1/storage/buckets/video-helper-releases/files/6a28474930a45bebbbae/download?project=6a01ac8a0009fbf94f05";
 const HELPER_HEALTH_URL = "http://127.0.0.1:7842/health";
 const HELPER_MIN_VERSION = "1.3.3";
 

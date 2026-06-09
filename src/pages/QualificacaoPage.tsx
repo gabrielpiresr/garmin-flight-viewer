@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { upsertLeadByEmail } from "../lib/crmDb";
-import { getCachedBrandSettings } from "../lib/notificationsDb";
+import { getCachedBrandSettings, notifyCrmLeadEvent } from "../lib/notificationsDb";
 import { getReferralWelcome } from "../lib/referAndEarnDb";
 import { executeSagaAnacLookup } from "../lib/sagaAnacSync";
 import type { AvailableDay, AvailablePeriod } from "../types/crm";
@@ -82,6 +82,8 @@ type FormState = {
   cpf: string;
   anacCode: string;
   noAnac: boolean;
+  isTransfer: boolean;
+  transferSchool: string;
   desiredCourse: string;
   theoreticalExamDone: boolean | null;
   desiredHours: string;
@@ -176,6 +178,8 @@ export function QualificacaoPage() {
     cpf: "",
     anacCode: "",
     noAnac: false,
+    isTransfer: false,
+    transferSchool: "",
     desiredCourse: "",
     theoreticalExamDone: null,
     desiredHours: "",
@@ -290,6 +294,7 @@ export function QualificacaoPage() {
       availableDays: form.availableDays,
       availablePeriod: (form.availablePeriod as AvailablePeriod) || null,
       notes: form.notes.trim() || null,
+      transferSchool: !form.noAnac && form.isTransfer ? form.transferSchool.trim() || null : null,
     });
 
     setSaving(false);
@@ -304,6 +309,13 @@ export function QualificacaoPage() {
           email: form.email.trim().toLowerCase(),
         });
       }
+      void notifyCrmLeadEvent("crm.lead_qualified", {
+        leadId: "",
+        name: form.name.trim(),
+        email: form.email.trim().toLowerCase(),
+        course: form.desiredCourse || null,
+        transferSchool: !form.noAnac && form.isTransfer ? form.transferSchool.trim() || null : null,
+      });
       setSaved(true);
     }
   }
@@ -459,7 +471,7 @@ export function QualificacaoPage() {
                         ...p,
                         noAnac: checked,
                         ...(checked
-                          ? { anacCode: "", cpf: "", desiredCourse: "Piloto Privado", theoreticalExamDone: false }
+                          ? { anacCode: "", cpf: "", desiredCourse: "Piloto Privado", theoreticalExamDone: false, isTransfer: false, transferSchool: "" }
                           : { theoreticalExamDone: null }),
                       }));
                     }}
@@ -467,6 +479,47 @@ export function QualificacaoPage() {
                   Ainda não tenho código ANAC
                 </label>
               </div>
+
+              {/* Pergunta de transferência — só aparece quando tem código ANAC */}
+              {!form.noAnac && form.anacCode.trim() && (
+                <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 space-y-3">
+                  <p className="text-sm font-medium text-slate-200">Você está vindo de transferência?</p>
+                  <div className="flex gap-4">
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+                      <input
+                        type="radio"
+                        name="isTransfer"
+                        checked={form.isTransfer === true}
+                        onChange={() => set("isTransfer", true)}
+                        className="accent-sky-500"
+                      />
+                      Sim
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+                      <input
+                        type="radio"
+                        name="isTransfer"
+                        checked={form.isTransfer === false}
+                        onChange={() => setForm((p) => ({ ...p, isTransfer: false, transferSchool: "" }))}
+                        className="accent-sky-500"
+                      />
+                      Não
+                    </label>
+                  </div>
+                  {form.isTransfer && (
+                    <div>
+                      <FieldLabel optional>De qual escola você está vindo?</FieldLabel>
+                      <input
+                        type="text"
+                        value={form.transferSchool}
+                        onChange={(e) => set("transferSchool", e.target.value)}
+                        placeholder="Nome da escola de origem"
+                        className={inputCls}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 

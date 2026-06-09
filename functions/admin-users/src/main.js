@@ -12699,6 +12699,42 @@ function buildNotificationMessage(event, flight) {
       url,
     };
   }
+  if (type === "crm.lead_qualified") {
+    const name = cleanString(data.name) || "Novo lead";
+    const email = cleanString(data.email) || "";
+    const course = cleanString(data.course);
+    const transferSchool = cleanString(data.transferSchool);
+    return {
+      eyebrow: "CRM — Novo lead",
+      title: "Qualificação recebida",
+      intro: `Um novo lead preencheu o formulário de qualificação.`,
+      body: `${name}${email ? ` (${email})` : ""} preencheu o formulário de qualificação${course ? ` para o curso de ${course}` : ""}${transferSchool ? ` — vindo de transferência de ${transferSchool}` : ""}.`,
+      details: [
+        ["Nome", name],
+        ...(email ? [["E-mail", email]] : []),
+        ...(course ? [["Curso desejado", course]] : []),
+        ...(transferSchool ? [["Transferência de", transferSchool]] : []),
+      ],
+      ctaLabel: "Abrir CRM",
+      url,
+    };
+  }
+  if (type === "crm.lead_registered") {
+    const name = cleanString(data.name) || "Novo lead";
+    const email = cleanString(data.email) || "";
+    return {
+      eyebrow: "CRM — Novo lead",
+      title: "Lead registrado",
+      intro: `Um novo lead foi registrado no CRM.`,
+      body: `${name}${email ? ` (${email})` : ""} foi adicionado ao CRM.`,
+      details: [
+        ["Nome", name],
+        ...(email ? [["E-mail", email]] : []),
+      ],
+      ctaLabel: "Abrir CRM",
+      url,
+    };
+  }
   return {
     eyebrow: "Notificação",
     title: "Nova notificação",
@@ -12937,6 +12973,40 @@ async function isAdmin(actorUserId) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function listAdminUserIds() {
+  try {
+    const res = await users.list({
+      queries: [sdk.Query.limit(100), sdk.Query.contains("labels", ["admin"])],
+      total: true,
+    });
+    return (res.users || []).map((u) => cleanString(u.$id)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function notifyCrmLeadEventToAdmins(eventType, leadData) {
+  const safeData = leadData && typeof leadData === "object" ? leadData : {};
+  const [{ settings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+  const adminIds = await listAdminUserIds();
+  if (adminIds.length === 0) return;
+  const message = buildNotificationMessage({ eventType, data: safeData }, null);
+  for (const adminId of adminIds) {
+    try {
+      const user = await users.get({ userId: adminId });
+      if (settings.enabled && user?.email) {
+        await sendEmailToUser(settings, brand, user, message);
+      }
+      await sendPushToUser(adminId, message);
+    } catch {
+      // skip user on failure
+    }
   }
 }
 
@@ -15564,6 +15634,14 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "deletePushSubscription") {
       await deletePushSubscription(actorUserId, payload.endpoint);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "notifyCrmLeadEvent") {
+      const validTypes = new Set(["crm.lead_qualified", "crm.lead_registered"]);
+      const evtType = cleanString(payload.eventType);
+      if (!validTypes.has(evtType)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
+      await notifyCrmLeadEventToAdmins(evtType, payload.leadData);
       return jsonResponse(res, 200, { ok: true });
     }
 
