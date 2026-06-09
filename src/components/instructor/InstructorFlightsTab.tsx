@@ -425,7 +425,7 @@ export function InstructorFlightsTab() {
   const [sagaMissionModalFlight, setSagaMissionModalFlight] = useState<SavedFlightListItem | null>(null);
   const [sagaPendingMission, setSagaPendingMission] = useState<SagaImportPendingMission | null>(null);
   const [sagaMissionCatalogs, setSagaMissionCatalogs] = useState<SagaImportCatalogs>({ aircrafts: [], aircraftModels: [], trainingTracks: [] });
-  const [sagaMissionMapping, setSagaMissionMapping] = useState<SagaImportMapping | null>(null);
+  const [, setSagaMissionMapping] = useState<SagaImportMapping | null>(null);
   const [sagaMissionSelection, setSagaMissionSelection] = useState("");
   const [sagaMissionConfirming, setSagaMissionConfirming] = useState(false);
   const [search, setSearch] = useState("");
