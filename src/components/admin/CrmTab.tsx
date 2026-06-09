@@ -847,9 +847,9 @@ const CRM_TRANSFER_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: str
 const drawerFieldCls = "mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
 const QUAL_COURSES = [
-  { value: "Piloto Privado",   label: "Piloto Privado (PPL)" },
-  { value: "Piloto Comercial", label: "Piloto Comercial (CPL)" },
-  { value: "INVA",             label: "INVA — Habilitação por Instrumentos" },
+  { value: "Piloto Privado",   label: "Piloto Privado" },
+  { value: "Piloto Comercial", label: "Piloto Comercial" },
+  { value: "INVA",             label: "INVA" },
   { value: "Recheque",         label: "Recheque" },
   { value: "Aperfeiçoamento",  label: "Aperfeiçoamento" },
 ];
@@ -1073,6 +1073,7 @@ function LeadDetailDrawer({
     birthDate: lead.birthDate ?? "",
     cpf: lead.cpf ?? "",
     theoreticalExamDone: lead.theoreticalExamDone == null ? "" : lead.theoreticalExamDone ? "true" : "false",
+    transferSchool: lead.transferSchool ?? "",
     notes: lead.notes ?? "",
   }));
   const [profile, setProfile] = useState<PilotProfile | null>(null);
@@ -1128,6 +1129,7 @@ function LeadDetailDrawer({
       birthDate: lead.birthDate ?? "",
       cpf: lead.cpf ?? "",
       theoreticalExamDone: lead.theoreticalExamDone == null ? "" : lead.theoreticalExamDone ? "true" : "false",
+      transferSchool: lead.transferSchool ?? "",
       notes: lead.notes ?? "",
     });
     window.setTimeout(() => { leadReady.current = true; }, 0);
@@ -1236,6 +1238,7 @@ function LeadDetailDrawer({
         birthDate: textOrNull(leadForm.birthDate),
         cpf: textOrNull(leadForm.cpf),
         theoreticalExamDone: leadForm.theoreticalExamDone === "" ? null : leadForm.theoreticalExamDone === "true",
+        transferSchool: textOrNull(leadForm.transferSchool),
         notes: textOrNull(leadForm.notes),
       };
       setLeadSaveState("saving");
@@ -1257,6 +1260,7 @@ function LeadDetailDrawer({
         birthDate: nextLead.birthDate,
         cpf: nextLead.cpf,
         theoreticalExamDone: nextLead.theoreticalExamDone,
+        transferSchool: nextLead.transferSchool,
         notes: nextLead.notes,
       }).then(({ error }) => setLeadSaveState(error ? "error" : "saved"));
     }, 700);
@@ -1427,6 +1431,7 @@ function LeadDetailDrawer({
               <DrawerField label="Codigo ANAC"><input value={leadForm.anacCode} onChange={(e) => setLeadField("anacCode", e.target.value)} className={drawerFieldCls} /></DrawerField>
               <DrawerField label="CPF"><input value={leadForm.cpf} onChange={(e) => setLeadField("cpf", e.target.value)} className={drawerFieldCls} placeholder="000.000.000-00" /></DrawerField>
               <DrawerField label="Nascimento"><input type="date" value={leadForm.birthDate} onChange={(e) => setLeadField("birthDate", e.target.value)} className={drawerFieldCls} /></DrawerField>
+              <DrawerField label="Escola de transferência"><input value={leadForm.transferSchool} onChange={(e) => setLeadField("transferSchool", e.target.value)} className={drawerFieldCls} placeholder="Escola de origem (deixe vazio se não for transferência)" /></DrawerField>
             </div>
             <div>
               <span className="mb-1 block text-xs text-slate-500">Dias disponiveis</span>
