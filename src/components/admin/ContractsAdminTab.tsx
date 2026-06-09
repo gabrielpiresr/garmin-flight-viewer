@@ -3,6 +3,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { Tabs } from "../ui/Tabs";
 import { ContractLayoutsSection } from "./ContractLayoutsSection";
 import { ContractEmitidosSection } from "./ContractEmitidosSection";
+import { usePermissions } from "../../contexts/PermissionsContext";
 
 type ContractsSubTab = "layouts" | "emitidos";
 
@@ -31,21 +32,30 @@ const CONTRACTS_TABS = [
 
 export function ContractsAdminTab() {
   const { user } = useAuth();
+  const { canTab } = usePermissions();
   const [subTab, setSubTab] = useState<ContractsSubTab>("emitidos");
 
   const schoolId = user?.schoolId ?? "";
+  const canLayouts = canTab("contracts.layouts");
+  const canEmitidos = canTab("contracts.emitidos");
+  const visibleTabs = CONTRACTS_TABS.filter((tab) =>
+    tab.id === "layouts" ? canLayouts : canEmitidos,
+  );
+  const activeTab = visibleTabs.some((tab) => tab.id === subTab)
+    ? subTab
+    : (visibleTabs[0]?.id ?? "emitidos");
 
   return (
     <div className="space-y-4">
       <Tabs
-        items={CONTRACTS_TABS}
-        value={subTab}
+        items={visibleTabs}
+        value={activeTab}
         onChange={setSubTab}
         ariaLabel="Subabas de contratos"
         accent="sky"
       />
-      {subTab === "layouts" && <ContractLayoutsSection schoolId={schoolId} adminUserId={user?.id ?? ""} />}
-      {subTab === "emitidos" && <ContractEmitidosSection schoolId={schoolId} adminUserId={user?.id ?? ""} />}
+      {activeTab === "layouts" && canLayouts && <ContractLayoutsSection schoolId={schoolId} adminUserId={user?.id ?? ""} />}
+      {activeTab === "emitidos" && canEmitidos && <ContractEmitidosSection schoolId={schoolId} adminUserId={user?.id ?? ""} />}
     </div>
   );
 }

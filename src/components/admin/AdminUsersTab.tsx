@@ -843,8 +843,11 @@ export function AdminUsersTab() {
         onAwaitingMissionMapping,
       });
       setSagaUserImportSummary(
-        `${summary.flightsCreated + summary.flightsUpdated} voo(s), ${summary.scheduledFlightsCreated + summary.scheduledFlightsUpdated} agendamento(s) e ${summary.creditsCreated + summary.creditsUpdated + (summary.financialCreditsCreated ?? 0) + (summary.financialCreditsUpdated ?? 0)} crédito(s) processados.`,
+        `${summary.flightsCreated + summary.flightsUpdated} voo(s), ${(summary.flightsDeleted ?? 0)} removido(s), ${summary.scheduledFlightsCreated + summary.scheduledFlightsUpdated} agendamento(s) e ${summary.creditsCreated + summary.creditsUpdated + (summary.financialCreditsCreated ?? 0) + (summary.financialCreditsUpdated ?? 0)} crédito(s) processados.`,
       );
+      if (summary.staleCleanup) {
+        console.log("[SAGA sync][AdminUsers] cleanup", summary.staleCleanup);
+      }
       if (sagaImportMapping) {
         const savedMapping = await saveSagaImportMapping(sagaImportMapping).catch(() => sagaImportMapping);
         setSagaImportMapping(savedMapping);

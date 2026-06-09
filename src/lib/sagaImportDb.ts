@@ -139,6 +139,7 @@ export type SagaImportSummary = {
   usersSkipped: number;
   flightsCreated: number;
   flightsUpdated: number;
+  flightsDeleted?: number;
   flightsSkipped: number;
   duplicateFlights: number;
   scheduledFlightsCreated: number;
@@ -157,6 +158,27 @@ export type SagaImportSummary = {
   creditHoursImported: number;
   nightHoursReclassified?: number;
   nightCreditRecordsCreated?: number;
+  deletedFlights?: Array<{
+    flightId: string;
+    sagaFlightId?: string;
+    reason: string;
+    message: string;
+  }>;
+  staleCleanup?: {
+    totalSchoolDocs: number;
+    actorLinkedDocs: number;
+    candidates: number;
+    deleted: number;
+    failed: number;
+    skippedOutOfRange: number;
+    skippedNoSagaKey: number;
+    skippedPresentInSaga: number;
+    failures: Array<{
+      flightId: string;
+      sagaFlightId?: string;
+      message: string;
+    }>;
+  };
   skippedFlights: Array<{
     id: string;
     date: string;

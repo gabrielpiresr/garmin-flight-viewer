@@ -64,11 +64,13 @@ import {
 
 const HELPER_URL = "http://127.0.0.1:7842";
 const HELPER_SETUP_PATH = "/video-helper";
+const HELPER_MIN_VERSION = "1.3.3";
 
 type HelperStatus = "checking" | "online" | "offline";
 type SelectedFile = { name: string; path: string; size: number; modifiedAtMs?: number };
 type ProcessingMode = "original" | "compatible" | "compressed";
 type ProcessingStrategy = "direct" | "remux" | "concat-copy" | "transcode";
+type ConcatenationMode = "local" | "player";
 
 type ProcessStage =
   | "telemetry-detect"
@@ -207,6 +209,20 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function sortVideosByCreatedAtAsc<T extends { created_at: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aMs = new Date(a.created_at).getTime();
+    const bMs = new Date(b.created_at).getTime();
+    if (Number.isFinite(aMs) && Number.isFinite(bMs) && aMs !== bMs) return aMs - bMs;
+    return String(a.created_at).localeCompare(String(b.created_at));
+  });
+}
+
+function pathExtFromName(name: string): string {
+  const match = String(name).trim().match(/\.[a-z0-9]{1,8}$/i);
+  return match ? match[0].toLowerCase() : "";
+}
+
 function fmt(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
@@ -225,13 +241,40 @@ function isMobileOrTabletDevice(): boolean {
   return /Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle/i.test(ua);
 }
 
-async function getHelperStatus(): Promise<HelperStatus> {
+function parseVersionParts(value: string): number[] {
+  return String(value || "0")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+}
+
+function isHelperVersionAtLeast(current: string, minimum: string): boolean {
+  const a = parseVersionParts(current);
+  const b = parseVersionParts(minimum);
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av > bv) return true;
+    if (av < bv) return false;
+  }
+  return true;
+}
+
+async function getHelperHealth(): Promise<{ online: boolean; version: string | null }> {
   try {
     const res = await fetch(`${HELPER_URL}/health`, { signal: AbortSignal.timeout(2000) });
-    return res.ok ? "online" : "offline";
+    if (!res.ok) return { online: false, version: null };
+    const body = await res.json() as { version?: string };
+    return { online: true, version: body.version?.trim() || null };
   } catch {
-    return "offline";
+    return { online: false, version: null };
   }
+}
+
+async function getHelperStatus(): Promise<HelperStatus> {
+  const health = await getHelperHealth();
+  return health.online ? "online" : "offline";
 }
 
 function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
@@ -277,6 +320,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const [isDone, setIsDone] = useState(false);
   const [applyLogo, setApplyLogo] = useState(false);
   const [processingMode, setProcessingMode] = useState<ProcessingMode>("original");
+  const [concatenationMode, setConcatenationMode] = useState<ConcatenationMode>("local");
   const [processingStrategy, setProcessingStrategy] = useState<ProcessingStrategy | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const dragIndexRef = useRef<number | null>(null);
@@ -289,7 +333,8 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
 
   const loadVideos = useCallback(async () => {
     if (publicMode) {
-      setVideos((publicVideos ?? []).filter((video) => video.processing_status === "ready" && Boolean(video.file_url)));
+      const readyVideos = (publicVideos ?? []).filter((video) => video.processing_status === "ready" && Boolean(video.file_url));
+      setVideos(sortVideosByCreatedAtAsc(readyVideos));
       setLoadingVideos(false);
       return;
     }
@@ -305,7 +350,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
       }
     }
     setLoadingVideos(false);
-    setVideos(list);
+    setVideos(sortVideosByCreatedAtAsc(list));
   }, [flightId, publicMode, publicVideos]);
 
   useEffect(() => {
@@ -473,12 +518,158 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
 
   const handleGenerate = async () => {
     if (!flightId || !user || selectedFiles.length === 0) return;
-    if (!selectedFiles.some((item) => isVideoUploadFile(item.name))) {
+    const selectedVideoFiles = selectedFiles.filter((item) => isVideoUploadFile(item.name));
+    if (selectedVideoFiles.length === 0) {
       setProcessingError("Selecione pelo menos um arquivo de video. O SRT deve acompanhar o MP4/MOV, nao substituir o video.");
       return;
     }
 
+    if (concatenationMode === "player" && applyLogo) {
+      setProcessingError("No modo de concatenar apenas no player, a logo nao e aplicada no upload. Use concat local para renderizar logo.");
+      return;
+    }
+
+    if (concatenationMode === "player" && processingMode !== "original") {
+      setProcessingError("No modo de concatenar apenas no player, use Preservar arquivo original para enviar os videos sem recodificacao.");
+      return;
+    }
+
     setProcessingError(null);
+    if (concatenationMode === "player") {
+      setIsAnalyzing(true);
+      try {
+        const helperHealth = await getHelperHealth();
+        if (!helperHealth.online) {
+          throw new Error(`Flight Video Helper não encontrado. Abra ${HELPER_SETUP_PATH} e instale a versão ${HELPER_MIN_VERSION}.`);
+        }
+        if (!helperHealth.version || !isHelperVersionAtLeast(helperHealth.version, HELPER_MIN_VERSION)) {
+          const detected = helperHealth.version ? ` Versão detectada: ${helperHealth.version}.` : "";
+          throw new Error(
+            `Atualize o Flight Video Helper para ${HELPER_MIN_VERSION} ou superior para usar upload sem concatenação.${detected} Abra ${HELPER_SETUP_PATH}.`,
+          );
+        }
+
+        let sessionJwt = "";
+        try {
+          if (account) {
+            const jwtResult = await account.createJWT();
+            sessionJwt = jwtResult.jwt;
+          }
+        } catch {
+          // sem JWT o helper nao atualiza Appwrite diretamente
+        }
+
+        let successCount = 0;
+        for (const [index, file] of selectedVideoFiles.entries()) {
+          const outputExtension = pathExtFromName(file.name) || ".mp4";
+          const videoKey = `flight-${flightId}-${Date.now()}-${index + 1}${outputExtension}`;
+          const { id: docId, error: docError } = await createFlightVideoDoc({
+            flightId,
+            uploadedBy: user.id,
+            originalFilesCount: 1,
+            actorUserId: user.id,
+            actorRole: user.role,
+            applyLogo: false,
+            videoKey,
+          });
+          if (docError || !docId) throw new Error(docError?.message ?? "Erro ao criar registro do vídeo");
+
+          let workerConfig: { url: string; token: string } | null = null;
+          try {
+            workerConfig = await getWorkerConfig({ mode: "upload", flightId, key: videoKey });
+          } catch (e) {
+            await updateFlightVideoFailed(docId, (e as Error).message);
+            throw e as Error;
+          }
+          if (!workerConfig) {
+            const message = "Storage não configurado. Verifique a Function administrativa e as variáveis CF_WORKER_URL/WORKER_SECRET.";
+            await updateFlightVideoFailed(docId, message);
+            throw new Error(message);
+          }
+
+          setProcessingJobId(docId);
+          setProgressStage("upload");
+          setProgress(0);
+          setProcessingStrategy("direct");
+          const res = await fetch(`${HELPER_URL}/upload-direct`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId: docId,
+              filePath: file.path,
+              fileName: file.name,
+              cfWorkerUrl: workerConfig.url,
+              cfWorkerToken: workerConfig.token,
+              videoKey,
+              appwriteEndpoint: import.meta.env.VITE_APPWRITE_ENDPOINT as string,
+              appwriteProjectId: import.meta.env.VITE_APPWRITE_PROJECT_ID as string,
+              appwriteDbId: import.meta.env.VITE_APPWRITE_DATABASE_ID as string,
+              videosColId: import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string,
+              sessionJwt,
+              flightVideoDocId: docId,
+            }),
+          });
+          const body = await res.json().catch(() => ({})) as { error?: string };
+          if (!res.ok) {
+            const message = body.error || `Erro no upload direto (${res.status})`;
+            await updateFlightVideoFailed(docId, message);
+            throw new Error(message);
+          }
+
+          await new Promise<void>((resolve, reject) => {
+            const source = new EventSource(`${HELPER_URL}/progress/${docId}`);
+            evtSourceRef.current = source;
+            source.onmessage = async (event) => {
+              const payload = JSON.parse(event.data) as ProgressPayload;
+              setProgressStage(payload.stage);
+              setProgress(payload.percent);
+              if (payload.strategy) setProcessingStrategy(payload.strategy);
+
+              if (payload.stage === "done") {
+                source.close();
+                evtSourceRef.current = null;
+                if (payload.file_url) {
+                  await updateFlightVideoReady(docId, {
+                    fileUrl: payload.file_url,
+                    fileSize: payload.file_size ?? null,
+                    durationSec: payload.duration_sec ?? null,
+                    telemetryPresent: false,
+                    telemetrySource: "none",
+                    telemetryJson: "",
+                    availableWidgets: [],
+                  });
+                }
+                successCount += 1;
+                resolve();
+              } else if (payload.stage === "error") {
+                source.close();
+                evtSourceRef.current = null;
+                const message = payload.message || "Erro no upload direto";
+                void updateFlightVideoFailed(docId, message);
+                reject(new Error(message));
+              }
+            };
+            source.onerror = () => {
+              source.close();
+              evtSourceRef.current = null;
+              reject(new Error("Conexao com helper perdida durante upload direto"));
+            };
+          });
+        }
+        setIsDone(successCount > 0);
+        setSelectedFiles([]);
+        setProcessingJobId(null);
+        setProgress(0);
+        setProgressStage(null);
+        await loadVideos();
+      } catch (error) {
+        setProcessingError((error as Error).message);
+      } finally {
+        setIsAnalyzing(false);
+      }
+      return;
+    }
+
     setIsAnalyzing(true);
     let analysis: FileAnalysis;
     try {
@@ -536,7 +727,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     const { id: docId, error: docError } = await createFlightVideoDoc({
       flightId,
       uploadedBy: user.id,
-      originalFilesCount: selectedFiles.filter((item) => isVideoUploadFile(item.name)).length,
+      originalFilesCount: selectedVideoFiles.length,
       actorUserId: user.id,
       actorRole: user.role,
       applyLogo,
@@ -734,6 +925,8 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               onApplyLogoChange={setApplyLogo}
               processingMode={processingMode}
               onProcessingModeChange={setProcessingMode}
+              concatenationMode={concatenationMode}
+              onConcatenationModeChange={setConcatenationMode}
               isAnalyzing={isAnalyzing}
             />
           )}
@@ -805,18 +998,22 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
             ))}
           </ul>
         ) : videos.length > 0 ? (
-          <ul className="space-y-2">
-            {videos.map((v) => (
-              <VideoCard
-                key={v.id}
-                video={v}
-                isInstructor={isInstructor}
-                publicMode={publicMode}
-                onDelete={() => void handleDeleteVideo(v.id)}
-                onRetry={() => void handleRetry(v.id)}
-              />
-            ))}
-          </ul>
+          <div className="space-y-3">
+            <QueuedVideosPlayer videos={videos} />
+            <ul className="space-y-2">
+              {videos.map((v) => (
+                <VideoCard
+                  key={v.id}
+                  video={v}
+                  isInstructor={isInstructor}
+                  publicMode={publicMode}
+                  showInlinePlayer={false}
+                  onDelete={() => void handleDeleteVideo(v.id)}
+                  onRetry={() => void handleRetry(v.id)}
+                />
+              ))}
+            </ul>
+          </div>
         ) : null}
       </div>
     </div>
@@ -943,6 +1140,8 @@ function FileSelectionList({
   onApplyLogoChange,
   processingMode,
   onProcessingModeChange,
+  concatenationMode,
+  onConcatenationModeChange,
   isAnalyzing,
 }: {
   files: SelectedFile[];
@@ -956,6 +1155,8 @@ function FileSelectionList({
   onApplyLogoChange: (value: boolean) => void;
   processingMode: ProcessingMode;
   onProcessingModeChange: (value: ProcessingMode) => void;
+  concatenationMode: ConcatenationMode;
+  onConcatenationModeChange: (value: ConcatenationMode) => void;
   isAnalyzing: boolean;
 }) {
   return (
@@ -1046,16 +1247,63 @@ function FileSelectionList({
         </label>
       </div>
 
+      <div className="grid gap-2 lg:grid-cols-2">
+        <label className={`cursor-pointer rounded-lg border px-3 py-2.5 text-xs ${
+          concatenationMode === "local"
+            ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+            : "border-slate-700/60 bg-slate-900/50 text-slate-300"
+        }`}>
+          <span className="flex items-center gap-2 font-medium">
+            <input
+              type="radio"
+              name="video-concat-mode"
+              checked={concatenationMode === "local"}
+              onChange={() => onConcatenationModeChange("local")}
+              className="accent-sky-500"
+            />
+            Concatenar localmente
+          </span>
+          <span className="mt-1 block pl-5 text-[10px] leading-4 text-slate-400">
+            Junta os vídeos antes de enviar para a nuvem.
+          </span>
+        </label>
+        <label className={`cursor-pointer rounded-lg border px-3 py-2.5 text-xs ${
+          concatenationMode === "player"
+            ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+            : "border-slate-700/60 bg-slate-900/50 text-slate-300"
+        }`}>
+          <span className="flex items-center gap-2 font-medium">
+            <input
+              type="radio"
+              name="video-concat-mode"
+              checked={concatenationMode === "player"}
+              onChange={() => onConcatenationModeChange("player")}
+              className="accent-sky-500"
+            />
+            Concatenar só no player
+          </span>
+          <span className="mt-1 block pl-5 text-[10px] leading-4 text-slate-400">
+            Faz upload de cada arquivo separado e reproduz em fila no player.
+          </span>
+        </label>
+      </div>
+
       <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
         <input
           type="checkbox"
           checked={applyLogo}
           onChange={(event) => onApplyLogoChange(event.target.checked)}
+          disabled={concatenationMode === "player"}
           className="size-4 accent-sky-500"
         />
         Aplicar a logo da escola no vídeo
         <span className="ml-auto text-[10px] text-slate-500">exige recodificação</span>
       </label>
+      {concatenationMode === "player" && (
+        <p className="text-[10px] text-amber-300">
+          No modo "concatenar só no player", o upload envia os vídeos sem recodificação e sem logo.
+        </p>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
@@ -2031,17 +2279,102 @@ function expandAvailableTelemetryWidgets(available: VideoTelemetryWidget[], poin
   return Array.from(set);
 }
 
+function QueuedVideosPlayer({ videos }: { videos: FlightVideo[] }) {
+  const ordered = useMemo(
+    () =>
+      sortVideosByCreatedAtAsc(
+        videos.filter((video) => video.processing_status === "ready" && Boolean(video.file_url)),
+      ),
+    [videos],
+  );
+  const [activeIndex, setActiveIndex] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (activeIndex >= ordered.length) setActiveIndex(0);
+  }, [activeIndex, ordered.length]);
+
+  useEffect(() => {
+    if (ordered.length === 0) return;
+    const current = ordered[activeIndex];
+    if (!current) return;
+    const el = videoRef.current;
+    if (!el) return;
+    el.load();
+  }, [activeIndex, ordered]);
+
+  const onEnded = useCallback(() => {
+    if (ordered.length <= 1) return;
+    setActiveIndex((prev) => (prev + 1) % ordered.length);
+  }, [ordered.length]);
+
+  const handleDownloadAll = useCallback(async () => {
+    for (const item of ordered) {
+      if (!item.file_url) continue;
+      window.open(item.file_url, "_blank", "noopener,noreferrer");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }, [ordered]);
+
+  if (ordered.length === 0) return null;
+  const active = ordered[Math.min(activeIndex, ordered.length - 1)];
+  const totalDuration = ordered.reduce((sum, item) => sum + (item.duration_sec ?? 0), 0);
+
+  return (
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-xs text-slate-300">
+          Reprodução em fila ({ordered.length} arquivo{ordered.length > 1 ? "s" : ""}) · {formatDurationSec(totalDuration)}
+        </p>
+        <button
+          type="button"
+          onClick={() => void handleDownloadAll()}
+          className="rounded-md bg-slate-800 px-2.5 py-1 text-xs text-sky-300 hover:bg-slate-700"
+        >
+          Baixar todos
+        </button>
+      </div>
+      <div className="overflow-hidden rounded-lg border border-slate-800 bg-black">
+        <video
+          ref={videoRef}
+          src={active.file_url}
+          controls
+          preload="metadata"
+          className="w-full"
+          onEnded={onEnded}
+        />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {ordered.map((item, idx) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setActiveIndex(idx)}
+            className={`rounded-md px-2 py-1 text-[11px] ${
+              idx === activeIndex ? "bg-sky-500/20 text-sky-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+            }`}
+          >
+            Parte {idx + 1}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 function VideoCard({
   video,
   isInstructor,
   publicMode = false,
+  showInlinePlayer = true,
   onDelete,
   onRetry,
 }: {
   video: FlightVideo;
   isInstructor: boolean;
   publicMode?: boolean;
+  showInlinePlayer?: boolean;
   onDelete: () => void;
   onRetry: () => void;
 }) {
@@ -2052,7 +2385,7 @@ function VideoCard({
   return (
     <li className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
       <div className="flex flex-col gap-4">
-        {isReady && video.file_url && (
+        {showInlinePlayer && isReady && video.file_url && (
           <TelemetryVideoPlayer video={video} publicMode={publicMode} />
         )}
 

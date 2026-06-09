@@ -1036,6 +1036,9 @@ export function AdminImportTab() {
         onAwaitingMissionMapping,
       });
       setImportSummary(summary);
+      if (summary.staleCleanup) {
+        console.log("[SAGA import][AdminImportTab] cleanup", summary.staleCleanup);
+      }
       setMappingDraft((current) => ({ ...current, missionBySaga: saved.missionBySaga ?? current.missionBySaga }));
     } catch (err) {
       const remoteProgress = await fetchSagaImportProgress(importRunId).catch(() => null);
@@ -1298,7 +1301,9 @@ export function AdminImportTab() {
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
                   <p className="text-xs uppercase tracking-widest text-slate-500">Voos</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-100">{importSummary.flightsCreated} criados | {importSummary.flightsUpdated} atualizados</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-100">
+                    {importSummary.flightsCreated} criados | {importSummary.flightsUpdated} atualizados | {importSummary.flightsDeleted ?? 0} removidos
+                  </p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
                   <p className="text-xs uppercase tracking-widest text-slate-500">Duplicados</p>
@@ -1340,6 +1345,23 @@ export function AdminImportTab() {
                   {importSummary.missing.courses.length ? <p>Cursos sem de-para: {importSummary.missing.courses.join(", ")}</p> : null}
                   {importSummary.missing.students.length ? <p>Alunos sem usuario importado/localizado: {importSummary.missing.students.join(", ")}</p> : null}
                   {importSummary.missing.creditAircrafts.length ? <p>Modelos de credito sem de-para: {importSummary.missing.creditAircrafts.join(", ")}</p> : null}
+                  {importSummary.staleCleanup ? (
+                    <>
+                      <p>
+                        Cleanup SAGA: escola={importSummary.staleCleanup.totalSchoolDocs} vinculados={importSummary.staleCleanup.actorLinkedDocs}
+                        {" "}candidatos={importSummary.staleCleanup.candidates} removidos={importSummary.staleCleanup.deleted} falhas={importSummary.staleCleanup.failed}
+                      </p>
+                      <p>
+                        Cleanup detalhes: foraFaixa={importSummary.staleCleanup.skippedOutOfRange} semSagaKey={importSummary.staleCleanup.skippedNoSagaKey}
+                        {" "}presentesNoSAGA={importSummary.staleCleanup.skippedPresentInSaga}
+                      </p>
+                      {importSummary.staleCleanup.failures?.slice(0, 10).map((failure) => (
+                        <p key={`${failure.flightId}-${failure.sagaFlightId || "sem-saga-id"}`}>
+                          Falha cleanup voo {failure.flightId} (SAGA {failure.sagaFlightId || "-"}) - {failure.message}
+                        </p>
+                      ))}
+                    </>
+                  ) : null}
                 </div>
                 {importSummary.skippedFlights.length ? (
                   <div className="md:col-span-4 overflow-hidden rounded-xl border border-slate-800">
@@ -1367,6 +1389,33 @@ export function AdminImportTab() {
                               <td className="whitespace-nowrap px-3 py-2 text-slate-300">{flight.aircraft || "-"}</td>
                               <td className="min-w-56 px-3 py-2 text-slate-300">{flight.course || "-"}</td>
                               <td className="min-w-64 px-3 py-2 text-amber-100">{flight.message || flight.reason}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+                {importSummary.deletedFlights?.length ? (
+                  <div className="md:col-span-4 overflow-hidden rounded-xl border border-red-700/50">
+                    <div className="border-b border-red-700/40 bg-red-950/40 px-3 py-2 text-sm font-semibold text-red-100">
+                      Voos removidos por exclusao no SAGA
+                    </div>
+                    <div className="max-h-80 overflow-auto">
+                      <table className="min-w-full text-left text-sm">
+                        <thead className="sticky top-0 bg-red-950/70 text-xs uppercase tracking-widest text-red-200">
+                          <tr>
+                            <th className="px-3 py-2">ID local</th>
+                            <th className="px-3 py-2">ID SAGA</th>
+                            <th className="px-3 py-2">Motivo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-red-900/40 bg-slate-900/30">
+                          {importSummary.deletedFlights.map((flight) => (
+                            <tr key={`${flight.flightId}-${flight.sagaFlightId || "sem-saga-id"}`}>
+                              <td className="whitespace-nowrap px-3 py-2 text-slate-200">{flight.flightId}</td>
+                              <td className="whitespace-nowrap px-3 py-2 text-slate-300">{flight.sagaFlightId || "-"}</td>
+                              <td className="min-w-64 px-3 py-2 text-red-100">{flight.message || flight.reason}</td>
                             </tr>
                           ))}
                         </tbody>

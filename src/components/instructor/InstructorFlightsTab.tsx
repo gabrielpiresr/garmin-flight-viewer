@@ -798,12 +798,23 @@ export function InstructorFlightsTab() {
         onProgress: (p) => setSyncProgress(p),
       });
       const novos = (summary.flightsCreated ?? 0) + (summary.flightsUpdated ?? 0);
+      const removidos = summary.flightsDeleted ?? 0;
+      const deletedIds = (summary.deletedFlights ?? []).map((item) => item.flightId).filter(Boolean);
+      if (summary.staleCleanup) {
+        console.log("[SAGA sync][InstructorFlights] cleanup", summary.staleCleanup);
+      }
       showToast({
-        message:
+        message: [
           novos > 0
             ? `${summary.flightsCreated} voo(s) novo(s) e ${summary.flightsUpdated} atualizado(s) importados do SAGA.`
             : "Nenhum voo novo encontrado no SAGA.",
-        variant: novos > 0 ? "success" : "info",
+          removidos > 0 ? `${removidos} voo(s) removido(s) localmente por terem sido apagados no SAGA.` : "",
+          summary.staleCleanup?.failed
+            ? `Falha ao remover ${summary.staleCleanup.failed} voo(s). Abra o console para detalhes.`
+            : "",
+          deletedIds.length ? `IDs removidos: ${deletedIds.join(", ")}` : "",
+        ].filter(Boolean).join(" "),
+        variant: novos > 0 || removidos > 0 ? "success" : "info",
       });
       setRefreshKey((k) => k + 1);
     } catch (e) {

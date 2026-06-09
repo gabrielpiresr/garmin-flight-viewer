@@ -70,10 +70,13 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
     children: [
       { key: "contents.manobras", label: "Manobras" },
       { key: "contents.manuais", label: "Manuais" },
+      { key: "contents.manuais-internos", label: "Manuais internos" },
       { key: "contents.ajuda", label: "Central de Ajuda" },
+      { key: "contents.exercicios", label: "Exercícios" },
     ],
   },
   { label: "Usuários", parentKey: "users" },
+  { label: "Import", parentKey: "import" },
   {
     label: "Disparos",
     parentKey: "disparos",
@@ -85,6 +88,24 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
   { label: "Diário de Bordo", parentKey: "logbook" },
   { label: "Abastecimentos", parentKey: "fuelings" },
   { label: "DRE", parentKey: "dre" },
+  { label: "Recebimentos", parentKey: "receipts" },
+  { label: "CRM", parentKey: "crm" },
+  { label: "Flight Review", parentKey: "flight-review" },
+  {
+    label: "Contratos",
+    parentKey: "contracts",
+    children: [
+      { key: "contracts.layouts", label: "Layouts" },
+      { key: "contracts.emitidos", label: "Emitidos" },
+    ],
+  },
+  {
+    label: "Atualizações",
+    parentKey: "atualizacoes",
+    children: [
+      { key: "atualizacoes.agendamentos", label: "Agendamentos" },
+    ],
+  },
   {
     label: "Configurações",
     parentKey: "settings",
@@ -99,6 +120,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "settings.onboarding", label: "Onboarding" },
       { key: "settings.indique-ganhe", label: "Indique e ganhe" },
       { key: "settings.roles", label: "Roles" },
+      { key: "settings.propostas", label: "Propostas" },
     ],
   },
 ];

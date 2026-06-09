@@ -22,6 +22,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "fuelings",
   "dre",
   "receipts",
+  "crm",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas",

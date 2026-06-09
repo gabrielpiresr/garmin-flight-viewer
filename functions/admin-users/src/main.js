@@ -1670,6 +1670,9 @@ function capSagaImportMappingForStorage(mapping = {}) {
 
 function compactSagaImportSummary(summary) {
   if (!summary || typeof summary !== "object") return summary;
+  const staleCleanup = summary.staleCleanup && typeof summary.staleCleanup === "object"
+    ? summary.staleCleanup
+    : null;
   return {
     importRunId: cleanString(summary.importRunId),
     testMode: summary.testMode !== false,
@@ -1683,6 +1686,7 @@ function compactSagaImportSummary(summary) {
     usersSkipped: Number(summary.usersSkipped) || 0,
     flightsCreated: Number(summary.flightsCreated) || 0,
     flightsUpdated: Number(summary.flightsUpdated) || 0,
+    flightsDeleted: Number(summary.flightsDeleted) || 0,
     flightsSkipped: Number(summary.flightsSkipped) || 0,
     duplicateFlights: Number(summary.duplicateFlights) || 0,
     scheduledFlightsCreated: Number(summary.scheduledFlightsCreated) || 0,
@@ -1706,6 +1710,20 @@ function compactSagaImportSummary(summary) {
     logs: Array.isArray(summary.logs)
       ? summary.logs.slice(-40).map(truncateSagaImportLogLine).filter(Boolean)
       : [],
+    staleCleanup: staleCleanup
+      ? {
+        totalSchoolDocs: Number(staleCleanup.totalSchoolDocs) || 0,
+        actorLinkedDocs: Number(staleCleanup.actorLinkedDocs) || 0,
+        candidates: Number(staleCleanup.candidates) || 0,
+        deleted: Number(staleCleanup.deleted) || 0,
+        failed: Number(staleCleanup.failed) || 0,
+        skippedOutOfRange: Number(staleCleanup.skippedOutOfRange) || 0,
+        skippedNoSagaKey: Number(staleCleanup.skippedNoSagaKey) || 0,
+        skippedPresentInSaga: Number(staleCleanup.skippedPresentInSaga) || 0,
+        failures: Array.isArray(staleCleanup.failures) ? staleCleanup.failures.slice(0, 50) : [],
+      }
+      : undefined,
+    deletedFlights: Array.isArray(summary.deletedFlights) ? summary.deletedFlights.slice(0, 50) : [],
     skippedFlights: Array.isArray(summary.skippedFlights) ? summary.skippedFlights.slice(0, 50) : [],
     skippedCredits: Array.isArray(summary.skippedCredits) ? summary.skippedCredits.slice(0, 50) : [],
   };
@@ -14888,7 +14906,7 @@ async function sendTestEmail(to, templateType) {
   if (result.status !== "sent") throw Object.assign(new Error(result.reason || "Email de teste nao enviado."), { status: 400 });
 }
 
-async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null) {
+async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null, options = {}) {
   const logLine = (msg) => { if (typeof runtimeLog === "function") runtimeLog(msg); };
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
 
@@ -14911,11 +14929,23 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
     importRunId: runId, testMode: false, useEmailAlias: false,
     selectedSagaUsers: 0, requestedUsers: 0, requestedFlightGroups: 0, requestedScheduledFlights: 0,
     usersCreated: 0, usersUpdated: 0, usersSkipped: 0,
-    flightsCreated: 0, flightsUpdated: 0, flightsSkipped: 0, duplicateFlights: 0,
+    flightsCreated: 0, flightsUpdated: 0, flightsDeleted: 0, flightsSkipped: 0, duplicateFlights: 0,
     scheduledFlightsCreated: 0, scheduledFlightsUpdated: 0, scheduledFlightsSkipped: 0,
     trainingAssignmentsTouched: 0, anacSynced: 0, anacPending: 0, anacFailed: 0,
     creditsCreated: 0, creditsUpdated: 0, creditsSkipped: 0, creditHoursImported: 0,
     nightHoursReclassified: 0, nightCreditRecordsCreated: 0,
+    deletedFlights: [],
+    staleCleanup: {
+      totalSchoolDocs: 0,
+      actorLinkedDocs: 0,
+      candidates: 0,
+      deleted: 0,
+      failed: 0,
+      skippedOutOfRange: 0,
+      skippedNoSagaKey: 0,
+      skippedPresentInSaga: 0,
+      failures: [],
+    },
     skippedFlights: [], skippedCredits: [],
     missing: { aircrafts: [], courses: [], students: [], creditAircrafts: [] },
     logs,
@@ -14939,13 +14969,6 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   );
   logs.push(`Voos filtrados por ANAC ${anac}: ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
   logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados para ANAC ${anac}.`);
-
-  if (!myFlightRows.length) {
-    await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: "Nenhum voo encontrado no SAGA.", current: 0, total: 0, logs });
-    const zeroSummary = makeSummary();
-    await saveSagaImportLastSummary(compactSagaImportSummary(zeroSummary)).catch(() => null);
-    return { ok: true, summary: zeroSummary };
-  }
 
   await saveSagaImportProgress({ runId, status: "running", stage: "check", message: `${myFlightRows.length} voo(s) encontrado(s), verificando novos...`, current: 0, total: myFlightRows.length, logs });
 
@@ -14986,9 +15009,14 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes.`);
 
   const summary = makeSummary({ requestedFlightGroups: groups.length, flightsSkipped: skippedCount });
+  const staleCleanup = await purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs);
+  summary.flightsDeleted = staleCleanup.deletedFlights.length;
+  summary.deletedFlights = staleCleanup.deletedFlights;
+  summary.staleCleanup = staleCleanup.diagnostics;
 
   let repairedExisting = 0;
-  const shouldRepairExisting = payload.repairExisting === true;
+  // Optional repair mode for existing imported flights; disabled by default in self-sync flow.
+  const shouldRepairExisting = options?.repairExisting === true;
   if (shouldRepairExisting) {
     for (const group of existingGroups) {
       const repair = await repairExistingSagaFlight(sagaDocId("saga_flight", group.key), logs);
@@ -15004,8 +15032,10 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
 
   if (!newGroups.length) {
     const message = repairedExisting > 0
-      ? `${repairedExisting} voo(s) existente(s) reparado(s).`
-      : "Todos os voos ja estao importados.";
+      ? `${repairedExisting} voo(s) existente(s) reparado(s). ${summary.flightsDeleted} removido(s) por nao existir(em) mais no SAGA.`
+      : summary.flightsDeleted > 0
+        ? `${summary.flightsDeleted} voo(s) removido(s) localmente por terem sido apagados no SAGA.`
+        : "Todos os voos ja estao importados.";
     await saveSagaImportProgress({ runId, status: "completed", stage: "done", message, current: 0, total: 0, logs });
     await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
     return { ok: true, summary };
@@ -15035,12 +15065,109 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   summary.missing.aircrafts = [...new Set(summary.missing.aircrafts.filter(Boolean))];
   summary.missing.courses = [...new Set(summary.missing.courses.filter(Boolean))];
   summary.missing.students = [...new Set(summary.missing.students.filter(Boolean))];
-  logs.push(`Voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsSkipped} ignorados.`);
-  logLine(`[sagaImportSelfFlights] ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsSkipped} ignorados.`);
+  logs.push(`Voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsDeleted} removidos, ${summary.flightsSkipped} ignorados.`);
+  logLine(`[sagaImportSelfFlights] ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.flightsDeleted} removidos, ${summary.flightsSkipped} ignorados.`);
 
-  await saveSagaImportProgress({ runId, status: "completed", stage: "done", message: `Concluido: ${summary.flightsCreated} novo(s), ${summary.flightsUpdated} atualizado(s).`, current: newGroups.length, total: newGroups.length, logs });
+  await saveSagaImportProgress({
+    runId,
+    status: "completed",
+    stage: "done",
+    message: `Concluido: ${summary.flightsCreated} novo(s), ${summary.flightsUpdated} atualizado(s), ${summary.flightsDeleted} removido(s).`,
+    current: newGroups.length,
+    total: newGroups.length,
+    logs,
+  });
   await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
   return { ok: true, summary };
+}
+
+async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs = []) {
+  const sagaKeysPresent = new Set((groups || []).map((group) => cleanString(group?.key)).filter(Boolean));
+  const startDate = cleanString(operationsRange?.startDate);
+  const endDate = cleanString(operationsRange?.endDate);
+  const diagnostics = {
+    totalSchoolDocs: 0,
+    actorLinkedDocs: 0,
+    candidates: 0,
+    deleted: 0,
+    failed: 0,
+    skippedOutOfRange: 0,
+    skippedNoSagaKey: 0,
+    skippedPresentInSaga: 0,
+    failures: [],
+  };
+  const inRange = (value) => {
+    const date = cleanString(value).slice(0, 10);
+    if (!date) return false;
+    if (startDate && date < startDate) return false;
+    if (endDate && date > endDate) return false;
+    return true;
+  };
+  const schoolDocs = await safeListAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery(["$id", "flight_date", "student_user_id", "user_id", "instructor_user_id", "saga_flight_id"]),
+  ]);
+  diagnostics.totalSchoolDocs = schoolDocs.length;
+  const docs = schoolDocs.filter((doc) => {
+    const studentUserId = cleanString(doc?.student_user_id || doc?.user_id);
+    const legacyUserId = cleanString(doc?.user_id);
+    const instructorUserId = cleanString(doc?.instructor_user_id);
+    return studentUserId === actorUserId || legacyUserId === actorUserId || instructorUserId === actorUserId;
+  });
+  diagnostics.actorLinkedDocs = docs.length;
+  const staleDocs = docs.filter((doc) => {
+    if (!inRange(doc?.flight_date)) {
+      diagnostics.skippedOutOfRange += 1;
+      return false;
+    }
+    const sagaKey = parseSagaGroupKeyFromFlightDoc(doc);
+    if (!sagaKey) {
+      diagnostics.skippedNoSagaKey += 1;
+      return false;
+    }
+    if (sagaKeysPresent.has(sagaKey)) {
+      diagnostics.skippedPresentInSaga += 1;
+      return false;
+    }
+    return true;
+  });
+  diagnostics.candidates = staleDocs.length;
+
+  logs.push(
+    `[saga-sync-cleanup] actor=${actorUserId} escola=${diagnostics.totalSchoolDocs} vinculados=${diagnostics.actorLinkedDocs} ` +
+    `candidatos=${diagnostics.candidates} emSAGA=${sagaKeysPresent.size} foraFaixa=${diagnostics.skippedOutOfRange} ` +
+    `semSagaKey=${diagnostics.skippedNoSagaKey} presentesNoSAGA=${diagnostics.skippedPresentInSaga}`,
+  );
+
+  const deletedFlights = [];
+  for (const doc of staleDocs) {
+    const flightId = cleanString(doc?.$id);
+    if (!flightId) continue;
+    try {
+      await sagaDeleteFlight(actorUserId, { flightId });
+      const sagaFlightId = cleanString(doc?.saga_flight_id);
+      deletedFlights.push({
+        flightId,
+        sagaFlightId,
+        reason: "missing_in_saga",
+        message: "Voo removido localmente por ter sido apagado no SAGA.",
+      });
+      diagnostics.deleted += 1;
+      logs.push(`Voo removido por exclusao no SAGA: local=${flightId}${sagaFlightId ? ` saga=${sagaFlightId}` : ""}.`);
+    } catch (err) {
+      const sagaFlightId = cleanString(doc?.saga_flight_id);
+      const message = cleanString(err?.message || err);
+      diagnostics.failed += 1;
+      diagnostics.failures.push({
+        flightId,
+        sagaFlightId,
+        message,
+      });
+      logs.push(`Falha ao remover voo local ${flightId}${sagaFlightId ? ` (saga=${sagaFlightId})` : ""}: ${message}.`);
+    }
+  }
+  logs.push(`[saga-sync-cleanup] resultado removidos=${diagnostics.deleted} falhas=${diagnostics.failed}.`);
+  return { deletedFlights, diagnostics };
 }
 
 function parseSagaGroupKeyFromFlightDoc(flightDoc) {
@@ -15246,7 +15373,6 @@ async function sagaDeleteFlight(actorUserId, payload = {}) {
     DATABASE_ID,
     FLIGHTS_COLLECTION_ID,
     flightId,
-    ...selectQuery(["$id", "student_user_id", "user_id", "instructor_user_id", "instructor_signed", "saga_flight_id", "source_filename", "csv_file_id"]),
   ).catch(() => null);
   if (!doc) throw Object.assign(new Error("Voo nao encontrado."), { status: 404 });
 
@@ -15559,7 +15685,7 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "sagaImportSelfFlights") {
       if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
-      const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null);
+      const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null, payload);
       return jsonResponse(res, 200, result);
     }
 

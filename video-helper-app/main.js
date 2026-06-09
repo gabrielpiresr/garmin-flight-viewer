@@ -11,7 +11,7 @@ const RESOURCES = app.isPackaged
   : path.join(__dirname, "..", "video-helper");
 
 const HELPER_JS = path.join(RESOURCES, "helper.js");
-const HELPER_URL_REMOTE = "https://raw.githubusercontent.com/gabrielpiresr/garmin-flight-viewer/main/video-helper/helper.js";
+const HELPER_URL_REMOTE = "https://sfo.cloud.appwrite.io/v1/storage/buckets/helper-releases/files/helper-js-latest/view?project=6a01ac8a0009fbf94f05";
 
 let tray = null;
 let statusWindow = null;
@@ -29,7 +29,7 @@ app.setLoginItemSettings({ openAtLogin: true });
 app.whenReady().then(() => {
   createStatusWindow();
   createTray();
-  startHelper();
+  updateHelperThenStart();
 });
 
 app.on("second-instance", () => {
@@ -43,9 +43,13 @@ app.on("before-quit", () => {
   helperProc?.kill();
 });
 
-function fetchRemoteHelper() {
+function fetchRemoteHelper(url, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
-    https.get(HELPER_URL_REMOTE, { timeout: 10000 }, (res) => {
+    https.get(url, { timeout: 10000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        return fetchRemoteHelper(res.headers.location, redirectsLeft - 1).then(resolve).catch(reject);
+      }
       if (res.statusCode !== 200) {
         res.resume();
         return reject(new Error(`HTTP ${res.statusCode}`));
@@ -58,7 +62,7 @@ function fetchRemoteHelper() {
 }
 
 function updateHelperThenStart() {
-  fetchRemoteHelper()
+  fetchRemoteHelper(HELPER_URL_REMOTE)
     .then((remote) => {
       const local = fs.existsSync(HELPER_JS) ? fs.readFileSync(HELPER_JS, "utf8") : "";
       if (remote !== local) {
