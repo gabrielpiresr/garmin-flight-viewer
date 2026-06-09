@@ -45,7 +45,7 @@ import {
 } from "../lib/weightBalance";
 import type { Aircraft } from "../types/admin";
 import type { ExerciseGrade, FlightExerciseGrade, TrainingExercise } from "../types/trainingExercise";
-import type { StudentTrainingTrack, TrainingSelectionSnapshot } from "../types/trainingTrack";
+import type { StudentTrainingTrack, TrainingSelectionSnapshot, TrainingMissionType } from "../types/trainingTrack";
 import { useToast } from "./ui/ToastProvider";
 
 const DEFAULT_BRIEFING =
@@ -335,6 +335,42 @@ const STEPS = [
   { id: "exercicios", label: "Exercícios" },
   { id: "risco", label: "Risco e parecer" },
 ] as const;
+
+function buildPrimarySnapshotFromSelection(
+  tracks: StudentTrainingTrack[],
+  selectedTrackId: string,
+  selectedMissionIds: string[],
+): TrainingSelectionSnapshot | null {
+  if (!Array.isArray(selectedMissionIds) || selectedMissionIds.length === 0) return null;
+  const missionSet = new Set(selectedMissionIds.map((id) => String(id || "").trim()).filter(Boolean));
+  if (!missionSet.size) return null;
+  const orderedTracks = [
+    ...tracks.filter((track) => track.trackId === selectedTrackId),
+    ...tracks.filter((track) => track.trackId !== selectedTrackId),
+  ];
+  for (const studentTrack of orderedTracks) {
+    const track = studentTrack.track;
+    if (!track) continue;
+    for (const stage of track.stages ?? []) {
+      for (const mission of stage.missions ?? []) {
+        if (!missionSet.has(String(mission.id || "").trim())) continue;
+        return {
+          trackId: track.id,
+          trackName: track.name,
+          stageId: stage.id,
+          stageName: stage.name,
+          missionId: mission.id,
+          missionName: mission.name,
+          missionType: mission.type as TrainingMissionType,
+          durationMinutes: mission.durationMinutes,
+          maneuvers: mission.maneuvers ?? [],
+          maneuverSectionIds: mission.maneuverSectionIds ?? [],
+        };
+      }
+    }
+  }
+  return null;
+}
 export type NovoVooStepId = (typeof STEPS)[number]["id"];
 
 const GRADE_OPTIONS: ExerciseGrade[] = ["NO", "1", "2", "3", "4"];
@@ -786,6 +822,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [saving, setSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [flightId, setFlightId] = useState<string | null>(null);
+  const [missionEditOnlyOverride, setMissionEditOnlyOverride] = useState(false);
   const [stepIdx, setStepIdx] = useState(() => {
     const initialIndex = STEPS.findIndex((step) => step.id === initialStepId);
     return initialIndex >= 0 ? initialIndex : 0;
@@ -1184,7 +1221,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         .filter((snapshot): snapshot is TrainingSelectionSnapshot => Boolean(snapshot)),
     [selectedTrainingTrack, trainingMissionIds],
   );
-  const selectedTrainingSnapshot = selectedTrainingSnapshots[0] ?? null;
+  const selectedTrainingSnapshot = buildPrimarySnapshotFromSelection(
+    studentTracks,
+    trainingTrackId,
+    trainingMissionIds,
+  ) ?? selectedTrainingSnapshots[0] ?? null;
+  const canEditMissionSelection = canEdit || (isInstructorFlow && instructorAlreadySigned && missionEditOnlyOverride);
 
   const relevantExerciseIds = useMemo<Set<string> | null>(() => {
     if (selectedTrainingSnapshots.length === 0) return null;
@@ -1634,7 +1676,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
   const persist = async (): Promise<boolean> => {
     if (!user) return false;
-    if (!canEdit) {
+    if (!canEdit && !canEditMissionSelection) {
       if (canEditWeightBalance && flightId) {
         await persistWeightBalance();
         return false;
@@ -1752,6 +1794,8 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       telemetryMetrics,
       telemetryAlertParsed: parsedTelemetry,
       flightStatus: normalizedStatus,
+      allowSignedTelemetryUpdate: instructorAlreadySigned && missionEditOnlyOverride,
+      allowSignedMissionEdit: instructorAlreadySigned && missionEditOnlyOverride,
     };
     if (flightId) {
       const { error: updateErr } = await updateFlight(flightId, payload);
@@ -1858,6 +1902,21 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           Ficha bloqueada — assinada pelo instrutor. Edição desabilitada.
         </div>
       )}
+      {instructorAlreadySigned && isInstructorFlow ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-950/20 px-3 py-2 text-xs text-sky-200">
+          <span>Você pode ajustar somente a missão, sem destravar a ficha.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setMissionEditOnlyOverride((current) => !current);
+              setStepIdx(1);
+            }}
+            className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 font-semibold text-sky-100 hover:bg-sky-500/20"
+          >
+            {missionEditOnlyOverride ? "Desativar ajuste de missão" : "Ajustar missão"}
+          </button>
+        </div>
+      ) : null}
 
       {!hideStepMenu && (
       <div className="overflow-x-auto">
@@ -2094,7 +2153,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                     <button
                       type="button"
                       onClick={() => setTrainingMissionIds([])}
-                      disabled={!canEdit}
+                      disabled={!canEditMissionSelection}
                       className="text-[11px] font-semibold text-slate-400 hover:text-slate-200 disabled:opacity-50"
                     >
                       Limpar
@@ -2120,7 +2179,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={!canEdit}
+                              disabled={!canEditMissionSelection}
                               onChange={() =>
                                 setTrainingMissionIds((current) =>
                                   current.includes(mission.id)
@@ -2902,14 +2961,20 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           >
             Exportar PDF
           </button>
-          {(canEdit || (canEditWeightBalance && stepId === "peso-balanceamento")) && (
+          {(canEdit || canEditMissionSelection || (canEditWeightBalance && stepId === "peso-balanceamento")) && (
             <button
               type="button"
               onClick={() => void persist()}
               disabled={saving}
               className="w-full rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60 sm:w-auto"
             >
-              {saving ? "Salvando..." : canEdit ? "Salvar alterações" : "Salvar peso e balanceamento"}
+              {saving
+                ? "Salvando..."
+                : canEdit
+                  ? "Salvar alterações"
+                  : canEditMissionSelection
+                    ? "Salvar missão"
+                    : "Salvar peso e balanceamento"}
             </button>
           )}
           {stepIdx === STEPS.length - 1 && canEdit && flightId && !instructorAlreadySigned && onSaveAndSign ? (

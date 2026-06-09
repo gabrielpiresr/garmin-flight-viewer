@@ -136,7 +136,10 @@ async function getCachedFullFlightInfo(item: SavedFlightListItem): Promise<Fligh
 
   const promise = (async () => {
     const fallback = await getProfileFallback(item);
-    if (hasMaterializedDisplayInfo(item)) {
+    const missingInstructorIdentity =
+      !item.instructor_user_id &&
+      !(fallback.instructorName && fallback.instructorName.trim());
+    if (hasMaterializedDisplayInfo(item) && !missingInstructorIdentity) {
       return buildFlightDisplayInfo(item, null, fallback);
     }
     const saved = await getSavedFlight(item.id);

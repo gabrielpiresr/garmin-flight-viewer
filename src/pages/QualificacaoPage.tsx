@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { upsertLeadByEmail } from "../lib/crmDb";
+import { getCachedBrandSettings } from "../lib/notificationsDb";
 import { getReferralWelcome } from "../lib/referAndEarnDb";
 import { executeSagaAnacLookup } from "../lib/sagaAnacSync";
 import type { AvailableDay, AvailablePeriod } from "../types/crm";
@@ -132,6 +133,8 @@ function resolveReferrerUserId(params: URLSearchParams): string | null {
 export function QualificacaoPage() {
   const params = new URLSearchParams(window.location.search);
   const emailHint = params.get("email") ?? "";
+  const brand = getCachedBrandSettings();
+  const logoUrl = brand?.logoUrl || "";
   const [referrerUserId] = useState(() => resolveReferrerUserId(params));
   const [showWelcome, setShowWelcome] = useState(false);
   const [welcomeLoading, setWelcomeLoading] = useState(Boolean(referrerUserId));
@@ -249,6 +252,10 @@ export function QualificacaoPage() {
       if (!form.birthDate) errs.push("Informe a data de nascimento para consultar a ANAC.");
       if (onlyDigits(form.cpf).length !== 11) errs.push("Informe um CPF válido para consultar a ANAC.");
     }
+    if (form.heightCm && Number(form.heightCm) < 100)
+      errs.push("A altura deve ser de no mínimo 100 cm.");
+    if (form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === null)
+      errs.push("Informe se já realizou a banca teórica do Piloto Privado.");
     return errs;
   }
 
@@ -362,9 +369,13 @@ export function QualificacaoPage() {
     <div className="min-h-screen bg-slate-950">
       {/* Hero */}
       <div className="border-b border-slate-800/60 bg-slate-900/50 px-4 py-8 text-center">
-        <div className="mx-auto mb-3 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-sky-500/10 text-2xl">
-          ✈️
-        </div>
+        {logoUrl ? (
+          <img src={logoUrl} alt="Logo da escola" className="mx-auto mb-5 max-h-14 max-w-[180px] object-contain" />
+        ) : (
+          <div className="mx-auto mb-3 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-sky-500/10 text-2xl">
+            ✈️
+          </div>
+        )}
         <h1 className="text-2xl font-bold text-slate-100 sm:text-3xl">Pronto para voar?</h1>
         <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
           Preencha suas informações e nossa equipe montará a proposta ideal para você. Leva menos de 3 minutos.
@@ -443,11 +454,14 @@ export function QualificacaoPage() {
                 <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-slate-500">
                   <input type="checkbox" checked={form.noAnac}
                     onChange={(e) => {
-                      set("noAnac", e.target.checked);
-                      if (e.target.checked) {
-                        set("anacCode", "");
-                        set("cpf", "");
-                      }
+                      const checked = e.target.checked;
+                      setForm((p) => ({
+                        ...p,
+                        noAnac: checked,
+                        ...(checked
+                          ? { anacCode: "", cpf: "", desiredCourse: "Piloto Privado", theoreticalExamDone: false }
+                          : { theoreticalExamDone: null }),
+                      }));
                     }}
                     className="h-3.5 w-3.5 rounded accent-sky-500" />
                   Ainda não tenho código ANAC
@@ -465,18 +479,29 @@ export function QualificacaoPage() {
 
               <div>
                 <FieldLabel>Qual curso você deseja fazer?</FieldLabel>
-                <select value={form.desiredCourse} onChange={(e) => handleCourseChange(e.target.value)} className={inputCls}>
+                <select
+                  value={form.desiredCourse}
+                  onChange={(e) => handleCourseChange(e.target.value)}
+                  disabled={form.noAnac}
+                  className={`${inputCls} ${form.noAnac ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
                   <option value="">Selecione um curso...</option>
                   {COURSES.map((c) => (
                     <option key={c.value} value={c.value}>{c.label}</option>
                   ))}
                 </select>
+                {form.noAnac && (
+                  <p className="mt-1.5 text-xs text-sky-500/80">
+                    Sem código ANAC o curso disponível é Piloto Privado.
+                  </p>
+                )}
               </div>
 
               {form.desiredCourse === "Piloto Privado" && (
-                <div className="rounded-xl border border-sky-800/40 bg-sky-950/30 p-4">
+                <div className={`rounded-xl border border-sky-800/40 bg-sky-950/30 p-4 ${form.noAnac ? "opacity-60 pointer-events-none select-none" : ""}`}>
                   <p className="mb-3 text-sm font-medium text-sky-200">
                     Você já realizou a banca teórica?
+                    {!form.noAnac && <span className="ml-1 text-xs font-normal text-red-400">*</span>}
                   </p>
                   <div className="flex gap-2">
                     {[
@@ -563,9 +588,15 @@ export function QualificacaoPage() {
               </div>
               <div>
                 <FieldLabel optional>Altura (cm)</FieldLabel>
-                <input type="number" inputMode="decimal" min={100} max={250} step={0.1}
-                  value={form.heightCm} onChange={(e) => set("heightCm", e.target.value)}
-                  placeholder="Ex.: 175" className={inputCls} />
+                <input
+                  type="text" inputMode="numeric"
+                  value={form.heightCm}
+                  onChange={(e) => set("heightCm", e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="Ex.: 175" className={inputCls}
+                />
+                {form.heightCm && Number(form.heightCm) < 100 && (
+                  <p className="mt-1.5 text-xs text-red-400">A altura deve ser de no mínimo 100 cm.</p>
+                )}
               </div>
             </div>
           </section>

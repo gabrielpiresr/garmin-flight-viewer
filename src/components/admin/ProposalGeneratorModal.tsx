@@ -5,9 +5,11 @@ import { getProposalConfig } from "../../lib/proposalSettingsDb";
 import { openProposalPdf } from "../../lib/proposalPdf";
 import { updateLead } from "../../lib/crmDb";
 import { listSchoolProducts } from "../../lib/schoolProductsDb";
+import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import type { CrmLead } from "../../types/crm";
 import type { CrmProposal, ProposalProduct } from "../../types/proposal";
 import type { SchoolProduct } from "../../types/costs";
+import type { FlightCreditPackage } from "../../types/flightCreditSales";
 import { useToast } from "../ui/ToastProvider";
 
 function parseBrl(raw: string): number {
@@ -35,8 +37,12 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
 
   const [hours, setHours] = useState(lead.desiredHours ? String(lead.desiredHours) : "");
   const [hourPriceStr, setHourPriceStr] = useState("");
+  const [notes, setNotes] = useState("");
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+
   const [products, setProducts] = useState<SchoolProduct[]>([]);
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+  const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [saving, setSaving] = useState(false);
   const [createdProposal, setCreatedProposal] = useState<CrmProposal | null>(null);
@@ -47,6 +53,9 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
     Promise.all([
       listSchoolProducts().then(setProducts),
       getProposalsByLead(lead.id).then(setExistingProposals),
+      getFlightCreditSalesConfig()
+        .then((cfg) => setPackages(cfg.packages.filter((p) => p.active)))
+        .catch(() => {}),
     ]).finally(() => {
       setLoadingProducts(false);
       setLoadingExisting(false);
@@ -56,6 +65,28 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
   const hourNum = Number.parseFloat(hours) || 0;
   const hourPrice = parseBrl(hourPriceStr);
   const totalValue = Math.round(hourNum * hourPrice * 100) / 100;
+
+  function selectPackage(pkg: FlightCreditPackage) {
+    if (selectedPackageId === pkg.id) {
+      setSelectedPackageId(null);
+      setHours("");
+      setHourPriceStr("");
+    } else {
+      setSelectedPackageId(pkg.id);
+      setHours(String(pkg.hours));
+      setHourPriceStr(formatBrl(pkg.hourPrice));
+    }
+  }
+
+  function handleHoursChange(v: string) {
+    setHours(v);
+    setSelectedPackageId(null);
+  }
+
+  function handlePriceChange(v: string) {
+    setHourPriceStr(v);
+    setSelectedPackageId(null);
+  }
 
   function toggleProduct(id: string) {
     setSelectedProductIds((prev) => {
@@ -89,6 +120,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
         hours: hourNum,
         hourPrice,
         products: selectedProducts,
+        notes: notes.trim(),
       });
 
       await updateLead(lead.id, { crmStatus: "proposta_enviada" });
@@ -259,6 +291,52 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
           {/* Formulário nova proposta */}
           {!createdProposal && (
             <>
+              {/* Pacotes de horas ativos */}
+              {!loadingProducts && packages.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Pacotes disponíveis</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {packages.map((pkg) => {
+                      const isSelected = selectedPackageId === pkg.id;
+                      const total = pkg.hours * pkg.hourPrice;
+                      return (
+                        <button
+                          key={pkg.id}
+                          type="button"
+                          onClick={() => selectPackage(pkg)}
+                          className={`rounded-lg border px-3 py-2.5 text-left text-xs transition ${
+                            isSelected
+                              ? "border-sky-500/60 bg-sky-500/10 text-sky-200"
+                              : "border-slate-700 bg-slate-800/50 text-slate-300 hover:border-slate-600 hover:bg-slate-800"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-semibold text-sm">{pkg.hours}h de voo</span>
+                            {isSelected && (
+                              <span className="text-sky-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                                  <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
+                                </svg>
+                              </span>
+                            )}
+                          </div>
+                          {pkg.aircraftModelName && (
+                            <p className="text-slate-500 mb-1">{pkg.aircraftModelName}</p>
+                          )}
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>{pkg.hourPrice.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}/h</span>
+                            <span className="font-medium text-slate-300">
+                              {total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Horas e preço */}
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="text-xs text-slate-400">Horas de voo</label>
@@ -267,7 +345,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                     min="0"
                     step="0.5"
                     value={hours}
-                    onChange={(e) => setHours(e.target.value)}
+                    onChange={(e) => handleHoursChange(e.target.value)}
                     placeholder="Ex: 40"
                     className={inputCls}
                   />
@@ -278,7 +356,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                     type="text"
                     inputMode="decimal"
                     value={hourPriceStr}
-                    onChange={(e) => setHourPriceStr(e.target.value)}
+                    onChange={(e) => handlePriceChange(e.target.value)}
                     onBlur={() => { if (hourPrice > 0) setHourPriceStr(formatBrl(hourPrice)); }}
                     placeholder="Ex: 850,00"
                     className={inputCls}
@@ -319,6 +397,18 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                   )}
                 </div>
               )}
+
+              {/* Texto personalizado */}
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Mensagem personalizada</label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Escreva uma mensagem específica para esta proposta (opcional). Ela aparecerá na proposta enviada ao aluno."
+                  rows={4}
+                  className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
             </>
           )}
         </div>

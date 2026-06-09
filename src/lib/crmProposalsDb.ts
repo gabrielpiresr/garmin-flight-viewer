@@ -48,9 +48,9 @@ function safeParse<T>(json: string | null | undefined, fallback: T): T {
 
 function toProposal(doc: ProposalDoc): CrmProposal {
   const productsData = safeParse<unknown>(doc.products_json, []);
+  const isObject = productsData !== null && typeof productsData === "object" && !Array.isArray(productsData);
   const packageMetadata =
-    productsData && !Array.isArray(productsData) && typeof productsData === "object" &&
-    (productsData as Record<string, unknown>).kind === "student_credit_package"
+    isObject && (productsData as Record<string, unknown>).kind === "student_credit_package"
       ? productsData as {
           studentUserId?: string;
           packageId?: string;
@@ -59,6 +59,7 @@ function toProposal(doc: ProposalDoc): CrmProposal {
           products?: ProposalProduct[];
         }
       : null;
+  const notes = isObject ? String((productsData as Record<string, unknown>).notes ?? "") : "";
   return {
     id: doc.$id,
     schoolId: doc.school_id ?? DEFAULT_SCHOOL_ID,
@@ -71,6 +72,7 @@ function toProposal(doc: ProposalDoc): CrmProposal {
     products: Array.isArray(productsData)
       ? productsData as ProposalProduct[]
       : Array.isArray(packageMetadata?.products) ? packageMetadata.products : [],
+    notes,
     publicToken: doc.public_token ?? "",
     status: (doc.status === "sent" ? "sent" : "draft") as CrmProposal["status"],
     caktoOfferId: doc.cakto_offer_id ?? "",

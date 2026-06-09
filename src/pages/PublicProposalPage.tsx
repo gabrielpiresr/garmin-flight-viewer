@@ -112,6 +112,13 @@ export function PublicProposalPage() {
           </p>
         </section>
 
+        {/* ── Mensagem personalizada da proposta ───────────────────────────────── */}
+        {proposal.notes && (
+          <section className="rounded-2xl bg-white shadow-sm overflow-hidden" style={{ borderLeft: `4px solid ${primary}` }}>
+            <p className="px-6 py-5 text-slate-700 leading-relaxed whitespace-pre-line text-base">{proposal.notes}</p>
+          </section>
+        )}
+
         {/* ── 2. Vídeo de capa ─────────────────────────────────────────────────── */}
         {config?.coverVideoUrl && youtubeEmbedUrl(config.coverVideoUrl) && (
           <section>

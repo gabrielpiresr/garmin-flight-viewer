@@ -1,4 +1,48 @@
 import type { SagaFlight, SagaImportCatalogs } from "./sagaImportDb";
+import type { TrainingMissionType } from "../types/trainingTrack";
+
+const TRAINING_MISSION_TYPE_LABEL: Record<TrainingMissionType, string> = {
+  DC: "Duplo comando",
+  SL: "Solo",
+  PIC: "Piloto em comando",
+};
+
+export function trainingMissionTypeLabel(type: unknown): string {
+  const normalized = String(type || "").trim().toUpperCase();
+  if (normalized === "DC" || normalized === "SL" || normalized === "PIC") {
+    return TRAINING_MISSION_TYPE_LABEL[normalized];
+  }
+  return normalized;
+}
+
+export function formatMissionDurationMinutes(minutes: unknown): string {
+  const value = Math.max(0, Math.round(Number(minutes) || 0));
+  if (value <= 0) return "";
+  const hours = Math.floor(value / 60);
+  const mins = value % 60;
+  if (hours === 0) return `${mins}min`;
+  if (mins === 0) return `${hours}h`;
+  return `${hours}h${String(mins).padStart(2, "0")}min`;
+}
+
+export function formatSagaMissionOptionLabel(parts: {
+  type?: unknown;
+  order?: unknown;
+  name?: unknown;
+  title?: unknown;
+  durationMinutes?: unknown;
+  stageName?: unknown;
+}): string {
+  const type = String(parts.type || "").trim().toUpperCase();
+  const order = String(parts.order ?? "").trim();
+  const name = String(parts.name || parts.title || "").trim();
+  const stageName = String(parts.stageName || "").trim();
+  const code = type && order ? `${type}${order}` : "";
+  const meta = [trainingMissionTypeLabel(type), formatMissionDurationMinutes(parts.durationMinutes)]
+    .filter(Boolean)
+    .join(" · ");
+  return [code, name, meta, stageName].filter(Boolean).join(" — ");
+}
 
 export function sagaMissionCode(value: string): string {
   const normalized = String(value || "")
@@ -44,11 +88,31 @@ export function collectMissionLookupKeysFromFlights(flights: SagaFlight[]): stri
   return [...keys].sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
+function parseCatalogStages(stages: unknown): unknown[] {
+  if (!stages) return [];
+  if (Array.isArray(stages)) return stages;
+  if (typeof stages === "string") {
+    try {
+      const parsed = JSON.parse(stages) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function cleanCatalogId(value: string): string {
+  return String(value || "").trim();
+}
+
 export function missionOptionsForTrack(catalogs: SagaImportCatalogs, trainingTrackId: string) {
-  const track = catalogs.trainingTracks.find((row) => row.id === trainingTrackId);
-  if (!track || !Array.isArray(track.stages)) return [];
+  const trackId = cleanCatalogId(trainingTrackId);
+  const track = catalogs.trainingTracks.find((row) => cleanCatalogId(row.id) === trackId);
+  const stages = parseCatalogStages(track?.stages);
+  if (!track || stages.length === 0) return [];
   const options: Array<{ value: string; label: string }> = [];
-  for (const stage of track.stages) {
+  for (const stage of stages) {
     const stageName = typeof stage === "object" && stage && "name" in stage ? String((stage as { name?: string }).name || "") : "";
     const missions =
       typeof stage === "object" && stage && "missions" in stage
@@ -58,13 +122,16 @@ export function missionOptionsForTrack(catalogs: SagaImportCatalogs, trainingTra
     for (const mission of missions) {
       const id = String(mission.id || "").trim();
       if (!id) continue;
-      const type = String(mission.type || "").trim();
-      const order = String(mission.order ?? "").trim();
-      const name = String(mission.name || mission.title || "").trim();
-      const code = type && order ? `${type}${order}` : "";
       options.push({
         value: id,
-        label: [code, name, stageName].filter(Boolean).join(" — "),
+        label: formatSagaMissionOptionLabel({
+          type: mission.type,
+          order: mission.order,
+          name: mission.name,
+          title: mission.title,
+          durationMinutes: mission.durationMinutes,
+          stageName,
+        }),
       });
     }
   }

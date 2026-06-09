@@ -15,6 +15,7 @@ import { InstallPwaButton } from "../InstallPwaButton";
 import { Tabs } from "../ui/Tabs";
 import type { SettingsSubTab } from "./PlatformSettingsTab";
 import type { ScheduleSubTab } from "./ScheduleAdminTab";
+import type { AtualizacoesSubTab } from "./AtualizacoesAdminTab";
 import type { AdminTabKey } from "../../types/rolePermissions";
 
 const AdminHome = lazy(() => import("./AdminHome").then((module) => ({ default: module.AdminHome })));
@@ -70,6 +71,9 @@ const CrmTab = lazy(() => import("./CrmTab").then((module) => ({ default: module
 const CaktoReceiptsTab = lazy(() =>
   import("./CaktoReceiptsTab").then((module) => ({ default: module.CaktoReceiptsTab })),
 );
+const AtualizacoesAdminTab = lazy(() =>
+  import("./AtualizacoesAdminTab").then((module) => ({ default: module.AtualizacoesAdminTab })),
+);
 
 type AdminSection =
   | "home"
@@ -88,7 +92,8 @@ type AdminSection =
   | "flight-review"
   | "contracts"
   | "crm"
-  | "receipts";
+  | "receipts"
+  | "atualizacoes";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -122,6 +127,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v.75h9V3a.75.75 0 011.5 0v.75h.75a3 3 0 013 3v10.5a3 3 0 01-3 3H5.25a3 3 0 01-3-3V6.75a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm-3 5.25a1.5 1.5 0 011.5-1.5h13.5a1.5 1.5 0 011.5 1.5v.75H3.75V7.5zm4.5 4.5a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-1.5h2.25a.75.75 0 000-1.5H12V10.5a.75.75 0 00-1.5 0V12H8.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "atualizacoes",
+    label: "Atualizações",
+    sublabel: "Agendamentos SAGA",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm4.28 10.28a.75.75 0 000-1.06l-3-3a.75.75 0 10-1.06 1.06l1.72 1.72H8.25a.75.75 0 000 1.5h5.69l-1.72 1.72a.75.75 0 101.06 1.06l3-3z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -484,6 +499,10 @@ const DISPAROS_ROUTES = [
   { id: "notices", path: "/admin/disparos/avisos", aliases: ["/admin/configuracoes/avisos", "/admin/avisos"] },
 ] satisfies readonly TabRoute<DisparosSubTab>[];
 
+const ATUALIZACOES_ROUTES = [
+  { id: "agendamentos", path: "/admin/atualizacoes/agendamentos", aliases: ["/admin/atualizacoes"] },
+] satisfies readonly TabRoute<AtualizacoesSubTab>[];
+
 const SETTINGS_ROUTES = [
   { id: "rules", path: "/admin/configuracoes", aliases: ["/admin/configuracoes/regras"] },
   { id: "email", path: "/admin/configuracoes/email" },
@@ -515,6 +534,7 @@ const ADMIN_ROUTES = [
   { id: "contracts", path: "/admin/contratos" },
   { id: "crm", path: "/admin/crm" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
 
 const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
@@ -586,6 +606,8 @@ function resolveAdminPageTitle(
       return DISPAROS_TABS.find((tab) => tab.id === disparosTab)?.label ?? fallback;
     case "settings":
       return SETTINGS_TAB_LABELS[settingsTab] ?? fallback;
+    case "atualizacoes":
+      return "Agendamentos";
     default:
       return fallback;
   }
@@ -644,6 +666,7 @@ export function AdminLayout() {
   const [disparosTab, setDisparosTab] = useState<DisparosSubTab>(() => resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
   const openedDisparosTabs = useOpenedTabs(disparosTab);
   const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "rules"));
+  const [atualizacoesTab, setAtualizacoesTab] = useState<AtualizacoesSubTab>(() => resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
   const pageTitle = resolveAdminPageTitle(
@@ -665,6 +688,7 @@ export function AdminLayout() {
       if (routeMatches(CONTENTS_ROUTES)) setContentsTab(resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
       if (routeMatches(DISPAROS_ROUTES)) setDisparosTab(resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
       if (routeMatches(SETTINGS_ROUTES)) setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "rules"));
+      if (routeMatches(ATUALIZACOES_ROUTES)) setAtualizacoesTab(resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
     };
     syncSubRoutes();
     window.addEventListener("popstate", syncSubRoutes);
@@ -678,6 +702,7 @@ export function AdminLayout() {
     if (target === "contents") { setSection(target, { path: pathForRoute(CONTENTS_ROUTES, contentsTab) }); return; }
     if (target === "disparos") { setSection(target, { path: pathForRoute(DISPAROS_ROUTES, disparosTab) }); return; }
     if (target === "settings") { setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) }); return; }
+    if (target === "atualizacoes") { setSection(target, { path: pathForRoute(ATUALIZACOES_ROUTES, atualizacoesTab) }); return; }
     setSection(target);
   }
 
@@ -692,6 +717,7 @@ export function AdminLayout() {
   function changeContentsTab(next: ContentsSubTab) { setContentsTab(next); setSection("contents", { path: pathForRoute(CONTENTS_ROUTES, next) }); }
   function changeDisparosTab(next: DisparosSubTab) { setDisparosTab(next); setSection("disparos", { path: pathForRoute(DISPAROS_ROUTES, next) }); }
   function changeSettingsTab(next: SettingsSubTab) { setSettingsTab(next); setSection("settings", { path: pathForRoute(SETTINGS_ROUTES, next) }); }
+  function changeAtualizacoesTab(next: AtualizacoesSubTab) { setAtualizacoesTab(next); setSection("atualizacoes", { path: pathForRoute(ATUALIZACOES_ROUTES, next) }); }
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -920,6 +946,13 @@ export function AdminLayout() {
           )}
           {openedSections.has("crm") && (
             <div hidden={section !== "crm"}><LazyTab><CrmTab /></LazyTab></div>
+          )}
+          {openedSections.has("atualizacoes") && (
+            <div hidden={section !== "atualizacoes"}>
+              <LazyTab>
+                <AtualizacoesAdminTab subTab={atualizacoesTab} onSubTabChange={changeAtualizacoesTab} />
+              </LazyTab>
+            </div>
           )}
         </main>
 

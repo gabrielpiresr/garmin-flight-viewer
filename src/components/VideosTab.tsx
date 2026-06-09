@@ -1835,6 +1835,37 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
         </div>
       )}
 
+      {/* Rotação — disponível em todos os modos */}
+      <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 px-2 py-1.5">
+        <span className="text-[11px] font-medium text-slate-500">Rotação:</span>
+        <button
+          type="button"
+          onClick={() => setVideoRotationDeg((d) => (d + 270) % 360)}
+          title="Girar 90° anti-horário"
+          className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
+        >
+          ↺
+        </button>
+        <button
+          type="button"
+          onClick={() => setVideoRotationDeg((d) => (d + 90) % 360)}
+          title="Girar 90° horário"
+          className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
+        >
+          ↻
+        </button>
+        {videoRotationDeg !== 0 && (
+          <button
+            type="button"
+            onClick={() => setVideoRotationDeg(0)}
+            title="Resetar rotação"
+            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-400 hover:bg-slate-700"
+          >
+            {videoRotationDeg}°
+          </button>
+        )}
+      </div>
+
       {/* Seleção de trecho + orientação */}
       {!publicMode && (
       <div className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 p-2">
@@ -1867,33 +1898,6 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
               <span>{o === "horizontal" ? "16:9" : "9:16"}</span>
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setVideoRotationDeg((d) => (d + 270) % 360)}
-            title="Girar 90° anti-horário"
-            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
-          >
-            ↺
-          </button>
-          <button
-            type="button"
-            onClick={() => setVideoRotationDeg((d) => (d + 90) % 360)}
-            title="Girar 90° horário"
-            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700"
-          >
-            ↻
-          </button>
-          {videoRotationDeg !== 0 && (
-            <button
-              type="button"
-              onClick={() => setVideoRotationDeg(0)}
-              title="Resetar rotação"
-              className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-400 hover:bg-slate-700"
-            >
-              {videoRotationDeg}°
-            </button>
-          )}
-          <span className="text-[11px] font-medium text-slate-600">|</span>
           <span className="text-[11px] font-medium text-slate-500">Trecho:</span>
           <button
             type="button"

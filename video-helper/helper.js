@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.3.2",
+      version: "1.3.3",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,

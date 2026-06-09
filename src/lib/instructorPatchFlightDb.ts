@@ -12,6 +12,7 @@ export type InstructorPatchFlightPayload = {
   trainingStageId?: string | null;
   trainingMissionId?: string | null;
   trainingSnapshot?: TrainingSelectionSnapshot | null;
+  allowSignedMissionEdit?: boolean;
 };
 
 export async function instructorPatchFlight(
@@ -34,6 +35,7 @@ export async function instructorPatchFlight(
       trainingSnapshotJson: payload.trainingSnapshot
         ? JSON.stringify(payload.trainingSnapshot)
         : null,
+      allowSignedMissionEdit: payload.allowSignedMissionEdit === true,
     };
 
     const execution = await functions.createExecution(

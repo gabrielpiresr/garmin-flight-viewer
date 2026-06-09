@@ -18,6 +18,7 @@ export type PublicFlightReviewIntro = {
   flightId: string;
   missionName: string;
   studentName: string;
+  studentNickname: string;
   flightDate: string;
   startTime: string;
   aircraftIdent: string;

@@ -1,6 +1,6 @@
 {
   "name": "flight-video-helper-app",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Flight Video Helper — runs the local video processing server",
   "main": "main.js",
   "scripts": {

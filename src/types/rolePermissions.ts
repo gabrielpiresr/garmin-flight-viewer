@@ -52,7 +52,9 @@ export type AdminTabKey =
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
-  | "contracts.emitidos";
+  | "contracts.emitidos"
+  | "atualizacoes"
+  | "atualizacoes.agendamentos";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -73,6 +75,7 @@ export type InstructorTabKey =
   | "schedule.disponibilidades"
   | "schedule.gerador"
   | "contratos"
+  | "reports"
   | "indique-ganhe";
 
 /** Chaves de abas do portal aluno */
@@ -210,6 +213,8 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",
   "contracts.emitidos": "Contratos › Emitidos",
+  "atualizacoes": "Atualizações",
+  "atualizacoes.agendamentos": "Atualizações › Agendamentos",
 };
 
 /** Labels descritivos para abas do portal instrutor */
@@ -231,6 +236,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "schedule.disponibilidades": "Escala › Disponibilidades",
   "schedule.gerador": "Escala › Gerador",
   "contratos": "Contratos",
+  "reports": "Relatórios",
   "indique-ganhe": "Indique e ganhe",
 };
 

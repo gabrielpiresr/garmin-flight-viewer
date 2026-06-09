@@ -30,7 +30,16 @@ import {
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import { ADMIN_USERS_FUNCTION_ID } from "../../lib/appwrite";
-import { importSelfFlightsFromSaga, type SagaImportProgress } from "../../lib/sagaImportDb";
+import {
+  importSelfFlightsFromSaga,
+  reloadSagaFlightFromSource,
+  getSagaImportSettings,
+  type SagaImportCatalogs,
+  type SagaImportProgress,
+  type SagaImportMapping,
+  type SagaImportPendingMission,
+} from "../../lib/sagaImportDb";
+import { allMissionOptions, missionOptionsForTrack } from "../../lib/sagaMissionMappingUi";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
@@ -179,6 +188,11 @@ function landingCountClass(info?: FlightDisplayInfo): string {
   return (info?.landings ?? 0) > 0 ? "text-slate-300" : "text-amber-300";
 }
 
+function missionLabel(info?: FlightDisplayInfo): string {
+  const raw = info?.trainingMissionName ?? "";
+  return raw.trim() || "—";
+}
+
 function SigBadge({ signed, label }: { signed: boolean; label: string }) {
   return (
     <span
@@ -200,6 +214,8 @@ function FlightCard({
   videoAttached,
   onOpen,
   onDelete,
+  onReloadSaga,
+  reloadingSaga = false,
   onEditSuggestion,
   onPreencherFicha,
   onExportFicha,
@@ -215,6 +231,8 @@ function FlightCard({
   videoAttached: boolean;
   onOpen: () => void;
   onDelete: () => void;
+  onReloadSaga?: () => void;
+  reloadingSaga?: boolean;
   onEditSuggestion: () => void;
   onPreencherFicha?: () => void;
   onExportFicha?: () => void;
@@ -336,6 +354,19 @@ function FlightCard({
               {exportingFicha ? "Gerando..." : "Ficha"}
             </button>
           ) : null}
+          {onReloadSaga ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onReloadSaga();
+              }}
+              disabled={reloadingSaga}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-600/40 bg-amber-900/10 px-3 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
+            >
+              {reloadingSaga ? "Recarregando..." : "Recarregar SAGA"}
+            </button>
+          ) : null}
           {!future && canSignAsInstructor && !sigs?.instructor ? (
             <button
               type="button"
@@ -361,7 +392,7 @@ function FlightCard({
               e.stopPropagation();
               onDelete();
             }}
-            disabled={Boolean(item.instructor_signed)}
+            disabled={Boolean(item.instructor_signed && !item.saga_flight_id)}
             className="text-left text-xs text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40 sm:text-right"
           >
             Apagar
@@ -389,6 +420,14 @@ export function InstructorFlightsTab() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [sagaImporting, setSagaImporting] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SagaImportProgress | null>(null);
+  const [syncOverlayVisible, setSyncOverlayVisible] = useState(false);
+  const [reloadingSagaFlightId, setReloadingSagaFlightId] = useState<string | null>(null);
+  const [sagaMissionModalFlight, setSagaMissionModalFlight] = useState<SavedFlightListItem | null>(null);
+  const [sagaPendingMission, setSagaPendingMission] = useState<SagaImportPendingMission | null>(null);
+  const [sagaMissionCatalogs, setSagaMissionCatalogs] = useState<SagaImportCatalogs>({ aircrafts: [], aircraftModels: [], trainingTracks: [] });
+  const [sagaMissionMapping, setSagaMissionMapping] = useState<SagaImportMapping | null>(null);
+  const [sagaMissionSelection, setSagaMissionSelection] = useState("");
+  const [sagaMissionConfirming, setSagaMissionConfirming] = useState(false);
   const [search, setSearch] = useState("");
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [suggestionFlightId, setSuggestionFlightId] = useState<string | null>(null);
@@ -613,7 +652,8 @@ export function InstructorFlightsTab() {
 
   const handleDelete = async (id: string) => {
     const item = items.find((f) => f.id === id);
-    if (item?.instructor_signed) {
+    const isSagaImported = Boolean(item?.saga_flight_id);
+    if (item?.instructor_signed && !isSagaImported) {
       setErr("Não é possível apagar um voo assinado pelo instrutor.");
       return;
     }
@@ -751,6 +791,7 @@ export function InstructorFlightsTab() {
   const handleSagaSync = async () => {
     if (sagaImporting) return;
     setSagaImporting(true);
+    setSyncOverlayVisible(true);
     setSyncProgress(null);
     try {
       const summary = await importSelfFlightsFromSaga({
@@ -769,7 +810,116 @@ export function InstructorFlightsTab() {
       showToast({ message: (e as Error).message, variant: "error" });
     } finally {
       setSagaImporting(false);
-      setSyncProgress(null);
+      window.setTimeout(() => {
+        setSyncProgress(null);
+        setSyncOverlayVisible(false);
+      }, 250);
+    }
+  };
+
+  const handleReloadSagaFlight = async (
+    flight: SavedFlightListItem,
+    options?: { lookupKey: string; missionId: string } | { skipMissionMapping: true },
+  ) => {
+    if (reloadingSagaFlightId) return;
+    setReloadingSagaFlightId(flight.id);
+    try {
+      const result = await reloadSagaFlightFromSource({
+        flightId: flight.id,
+        sagaFlightId: flight.saga_flight_id ?? undefined,
+        missionLookupKey: options && "lookupKey" in options ? options.lookupKey : undefined,
+        missionId: options && "lookupKey" in options ? options.missionId : undefined,
+        skipMissionMapping: options && "skipMissionMapping" in options ? true : undefined,
+      });
+      if (result.paused && result.pendingMission?.lookupKey) {
+        const settings = await getSagaImportSettings().catch(() => null);
+        setSagaMissionCatalogs(settings?.catalogs ?? { aircrafts: [], aircraftModels: [], trainingTracks: [] });
+        setSagaMissionMapping(settings?.mapping ?? null);
+        setSagaPendingMission(result.pendingMission);
+        setSagaMissionModalFlight(flight);
+        const existing = settings?.mapping?.missionBySaga?.[result.pendingMission.lookupKey] ?? "";
+        setSagaMissionSelection(existing);
+        showToast({
+          variant: "info",
+          message: "Missão SAGA sem de-para. Selecione a missão local para continuar.",
+        });
+        return;
+      }
+      showToast({
+        variant: result.refreshed ? "success" : "info",
+        message: result.message || "Dados do voo recarregados do SAGA.",
+      });
+      invalidateFlightListDisplayCache([flight.id]);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      showToast({ message: (e as Error).message, variant: "error" });
+    } finally {
+      setReloadingSagaFlightId(null);
+    }
+  };
+
+  const missionOptions = useMemo(() => {
+    if (!sagaPendingMission) return [];
+    if (sagaPendingMission.missionOptions?.length) return sagaPendingMission.missionOptions;
+    const trackOptions = missionOptionsForTrack(sagaMissionCatalogs, sagaPendingMission.trainingTrackId);
+    if (trackOptions.length > 0) return trackOptions;
+    return allMissionOptions(sagaMissionCatalogs);
+  }, [sagaMissionCatalogs, sagaPendingMission]);
+
+  const closeSagaMissionModal = () => {
+    if (sagaMissionConfirming) return;
+    setSagaMissionModalFlight(null);
+    setSagaPendingMission(null);
+    setSagaMissionSelection("");
+  };
+
+  const skipSagaMissionMapping = async () => {
+    const flight = sagaMissionModalFlight;
+    if (!flight) return;
+    setSagaMissionConfirming(true);
+    try {
+      await handleReloadSagaFlight(flight, { skipMissionMapping: true });
+      setSagaMissionModalFlight(null);
+      setSagaPendingMission(null);
+      setSagaMissionSelection("");
+    } finally {
+      setSagaMissionConfirming(false);
+    }
+  };
+
+  const confirmSagaMissionMapping = async () => {
+    if (!sagaPendingMission?.lookupKey || !sagaMissionSelection || !sagaMissionModalFlight) return;
+    setSagaMissionConfirming(true);
+    try {
+      await handleReloadSagaFlight(sagaMissionModalFlight, {
+        lookupKey: sagaPendingMission.lookupKey,
+        missionId: sagaMissionSelection,
+      });
+      setSagaMissionMapping((current) => ({
+        ...(current ?? {
+          aircraftBySaga: {},
+          aircraftIdByRegistration: {},
+          courseBySaga: {},
+          missionBySaga: {},
+          creditAircraftBySaga: {},
+          flightColumnMap: {},
+          creditColumnMap: {},
+          sendFlightsToSaga: false,
+          syncScheduleFromSaga: false,
+          updatedAt: null,
+        }),
+        missionBySaga: {
+          ...(current?.missionBySaga ?? {}),
+          [sagaPendingMission.lookupKey]: sagaMissionSelection,
+        },
+      }));
+      setSagaMissionModalFlight(null);
+      setSagaPendingMission(null);
+      setSagaMissionSelection("");
+    } catch (error) {
+      showToast({ variant: "error", message: (error as Error).message || "Falha ao salvar de-para da missão." });
+    } finally {
+      setSagaMissionConfirming(false);
     }
   };
 
@@ -957,6 +1107,8 @@ export function InstructorFlightsTab() {
             emptyLabel="Nenhum voo futuro."
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
+            onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
+            reloadingSagaFlightId={reloadingSagaFlightId}
             onEditSuggestion={openSuggestion}
             onPreencherFicha={(id) => {
               setSelectedFlightId(id);
@@ -973,6 +1125,8 @@ export function InstructorFlightsTab() {
             emptyLabel="Nenhum voo antigo."
             onOpen={openFlight}
             onDelete={(id) => void handleDelete(id)}
+            onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
+            reloadingSagaFlightId={reloadingSagaFlightId}
             onPreencherFicha={(id) => {
               const item = items.find((f) => f.id === id);
               if (item && ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status)) {
@@ -1018,6 +1172,8 @@ export function InstructorFlightsTab() {
                         videoAttached={videoFlagsById[item.id] ?? false}
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
+                        onReloadSaga={item.saga_flight_id ? () => void handleReloadSagaFlight(item) : undefined}
+                        reloadingSaga={reloadingSagaFlightId === item.id}
                         onEditSuggestion={() => openSuggestion(item.id)}
                         onPreencherFicha={
                           user?.role === "instrutor" && item.instructor_user_id === user.id
@@ -1053,6 +1209,8 @@ export function InstructorFlightsTab() {
                         videoAttached={videoFlagsById[item.id] ?? false}
                         onOpen={() => openFlight(item.id)}
                         onDelete={() => void handleDelete(item.id)}
+                        onReloadSaga={item.saga_flight_id ? () => void handleReloadSagaFlight(item) : undefined}
+                        reloadingSaga={reloadingSagaFlightId === item.id}
                         onEditSuggestion={() => openSuggestion(item.id)}
                         onPreencherFicha={
                           ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) &&
@@ -1088,7 +1246,7 @@ export function InstructorFlightsTab() {
         </div>
       )}
 
-      {sagaImporting && (
+      {syncOverlayVisible && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4">
           <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
             <div className="mb-4 flex items-center gap-3">
@@ -1330,6 +1488,82 @@ export function InstructorFlightsTab() {
           </div>
         </div>
       )}
+      {sagaPendingMission && sagaMissionModalFlight ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
+          <div className="w-full max-w-2xl rounded-2xl border border-amber-500/40 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-amber-400">De-para de missão</p>
+                <h3 className="text-lg font-semibold text-slate-100">Missão SAGA sem correspondência</h3>
+              </div>
+              <button
+                type="button"
+                onClick={closeSagaMissionModal}
+                disabled={sagaMissionConfirming}
+                className="rounded-lg border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Fechar
+              </button>
+            </div>
+            <p className="text-sm text-slate-400">
+              O voo <span className="font-mono text-slate-200">{sagaPendingMission.sagaFlightId}</span> trouxe a missão{" "}
+              <span className="font-semibold text-amber-100">{sagaPendingMission.rawMission || sagaPendingMission.lookupKey}</span> no curso{" "}
+              <span className="text-slate-200">{sagaPendingMission.trackName}</span>.
+            </p>
+            <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-500">
+              <p>Aluno: {sagaPendingMission.studentName || "—"}</p>
+              <p>Data: {sagaPendingMission.flightDate || "—"}</p>
+              {sagaPendingMission.missionCode ? <p>Código normalizado: {sagaPendingMission.missionCode}</p> : null}
+            </div>
+            <label className="mt-4 block text-sm text-slate-300">
+              Missão local
+              <select
+                value={sagaMissionSelection}
+                onChange={(event) => setSagaMissionSelection(event.target.value)}
+                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+              >
+                <option value="">Selecione a missão</option>
+                {missionOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {missionOptions.length === 0 ? (
+              <p className="mt-2 text-xs text-amber-300">
+                Não foi possível listar as missões desta trilha aqui. Você ainda pode atualizar o voo sem alterar a missão.
+              </p>
+            ) : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeSagaMissionModal}
+                disabled={sagaMissionConfirming}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void skipSagaMissionMapping()}
+                disabled={sagaMissionConfirming}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+              >
+                {sagaMissionConfirming ? "Atualizando..." : "Atualizar sem missão"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmSagaMissionMapping()}
+                disabled={!sagaMissionSelection || sagaMissionConfirming}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
+              >
+                {sagaMissionConfirming ? "Salvando..." : "Salvar de-para e continuar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1386,6 +1620,8 @@ function FlightTableSection({
   emptyLabel,
   onOpen,
   onDelete,
+  onReloadSaga,
+  reloadingSagaFlightId,
   onEditSuggestion,
   onPreencherFicha,
   onExportFicha,
@@ -1403,6 +1639,8 @@ function FlightTableSection({
   emptyLabel: string;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onReloadSaga?: (flight: SavedFlightListItem) => void;
+  reloadingSagaFlightId?: string | null;
   onEditSuggestion?: (id: string) => void;
   onPreencherFicha?: (id: string) => void;
   onExportFicha?: (id: string) => void;
@@ -1433,6 +1671,7 @@ function FlightTableSection({
                     <th className="w-36 max-w-36 px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">ANAC</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
+                    <th className="px-3 py-2 font-semibold">Missão</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
                     <th className="px-3 py-2 font-semibold">Duração</th>
                     {isFutureSection ? (
@@ -1480,6 +1719,9 @@ function FlightTableSection({
                         </td>
                         <td className="px-3 py-2">{info?.studentAnac ?? "—"}</td>
                         <td className="px-3 py-2">{info?.aircraft ?? item.aircraft_ident ?? "—"}</td>
+                        <td className="max-w-56 px-3 py-2">
+                          <span className="line-clamp-2 break-words text-slate-300">{missionLabel(info)}</span>
+                        </td>
                         <td className="px-3 py-2"><FlightStatusBadge status={item.flight_status} /></td>
                         <td className="px-3 py-2">{formatDecimalHours(info?.totalFlightMinutes)}</td>
                         {isFutureSection ? (
@@ -1553,6 +1795,19 @@ function FlightTableSection({
                                 {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
                               </button>
                             ) : null}
+                            {item.saga_flight_id && onReloadSaga ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onReloadSaga(item);
+                                }}
+                                disabled={reloadingSagaFlightId === item.id}
+                                className="rounded border border-amber-600/40 bg-amber-900/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
+                              >
+                                {reloadingSagaFlightId === item.id ? "Recarregando..." : "Recarregar SAGA"}
+                              </button>
+                            ) : null}
                             {!isFutureSection && onSign && canSignAsInstructor?.(item) && !sigs?.instructor ? (
                               <button
                                 type="button"
@@ -1571,7 +1826,7 @@ function FlightTableSection({
                                 e.stopPropagation();
                                 onDelete(item.id);
                               }}
-                              disabled={Boolean(item.instructor_signed)}
+                              disabled={Boolean(item.instructor_signed && !item.saga_flight_id)}
                               className="text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               Apagar

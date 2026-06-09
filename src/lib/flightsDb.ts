@@ -1,5 +1,6 @@
 import { Query } from "appwrite";
 import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, DEFAULT_SCHOOL_ID, storage } from "./appwrite";
+import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 
 import { decodeFlightRecord, decodeFlightRecordMeta, encodeFlightRecord, type FlightRecordMeta } from "./flightRecordCodec";
 import { flightBlockMinutesFromMeta } from "./flightHours";
@@ -59,6 +60,7 @@ export type SavedFlightListItem = {
   admin_operator_signed: boolean | null;
   instructor_signed_at: string | null;
   flight_status: FlightStatus;
+  saga_flight_id?: string | null;
   saga_schedule_id?: string | null;
   saga_schedule_synced_at?: string | null;
   saga_schedule_sync_status?: string | null;
@@ -108,6 +110,7 @@ const MATERIALIZED_FLIGHT_LIST_FIELDS = [
 const SCHEDULE_FLIGHT_LIST_FIELDS = ["schedule_week_start", "schedule_demand_id"];
 const SIGNATURE_FLIGHT_LIST_FIELDS = ["instructor_signed", "student_signed", "admin_operator_signed", "instructor_signed_at"];
 const STATUS_FLIGHT_LIST_FIELDS = ["flight_status"];
+const SAGA_FLIGHT_LIST_FIELDS = ["saga_flight_id"];
 const SAGA_SCHEDULE_LIST_FIELDS = ["saga_schedule_id", "saga_schedule_synced_at", "saga_schedule_sync_status"];
 
 const FLIGHT_LIST_SELECT = [...LEGACY_FLIGHT_LIST_SELECT, ...MATERIALIZED_FLIGHT_LIST_FIELDS];
@@ -117,6 +120,7 @@ const FLIGHT_LIST_SELECT_WITH_SCHEDULE = [
   ...SCHEDULE_FLIGHT_LIST_FIELDS,
   ...SIGNATURE_FLIGHT_LIST_FIELDS,
   ...STATUS_FLIGHT_LIST_FIELDS,
+  ...SAGA_FLIGHT_LIST_FIELDS,
   ...SAGA_SCHEDULE_LIST_FIELDS,
 ];
 
@@ -173,6 +177,7 @@ function toSavedFlightListItem(d: { [key: string]: unknown; $id: string; $create
     admin_operator_signed: readBoolean(d.admin_operator_signed),
     instructor_signed_at: (d.instructor_signed_at as string | null | undefined) ?? null,
     flight_status: normalizeFlightStatus(d.flight_status),
+    saga_flight_id: (d.saga_flight_id as string | null | undefined) ?? null,
     saga_schedule_id: (d.saga_schedule_id as string | null | undefined) ?? null,
     saga_schedule_synced_at: (d.saga_schedule_synced_at as string | null | undefined) ?? null,
     saga_schedule_sync_status: (d.saga_schedule_sync_status as string | null | undefined) ?? null,
@@ -1193,6 +1198,7 @@ export async function updateFlight(id: string, payload: {
   telemetryAlertParsed?: ParseResult | null;
   flightStatus?: FlightStatus | null;
   allowSignedTelemetryUpdate?: boolean;
+  allowSignedMissionEdit?: boolean;
 }): Promise<{ error: Error | null }> {
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
@@ -1203,7 +1209,7 @@ export async function updateFlight(id: string, payload: {
       return { error: new Error("Apenas instrutor ou admin pode atualizar voos.") };
     }
 
-    if (!payload.allowSignedTelemetryUpdate) {
+    if (!payload.allowSignedTelemetryUpdate && !payload.allowSignedMissionEdit) {
       const lockCheck = await assertFlightNotLocked(id);
       if (lockCheck.error && lockCheck.locked) return { error: lockCheck.error };
     }
@@ -1525,17 +1531,53 @@ export async function deleteSavedFlight(id: string): Promise<{ error: Error | nu
   if (!isAppwriteConfigured || !databases) {
     return { error: new Error("Appwrite não configurado") };
   }
+  const runSagaDeleteViaAdminFunction = async (): Promise<{ error: Error | null }> => {
+    if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+      return { error: new Error("Função administrativa de exclusão não configurada.") };
+    }
+    try {
+      const execution = await functions.createExecution(
+        ADMIN_USERS_FUNCTION_ID,
+        JSON.stringify({ action: "sagaDeleteFlight", flightId: id }),
+        false,
+      );
+      let response: { ok?: boolean; message?: string } = {};
+      try {
+        response = execution.responseBody ? JSON.parse(execution.responseBody) : {};
+      } catch {
+        response = {};
+      }
+      const responseMessage = String(response.message || "").toLowerCase();
+      const responseNotFound = responseMessage.includes("voo nao encontrado") || responseMessage.includes("not found");
+      if (responseNotFound) {
+        return { error: null };
+      }
+      if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || response.ok !== true) {
+        return { error: new Error(response.message || "Falha ao apagar voo via função administrativa.") };
+      }
+      return { error: null };
+    } catch (error) {
+      return { error: error as Error };
+    }
+  };
   try {
-    const lockCheck = await assertFlightNotLocked(id);
-    if (lockCheck.error && lockCheck.locked) {
+    const doc = await databases.getDocument(DB_ID, COL_ID, id, [Query.select(["instructor_signed", "saga_flight_id", "source_filename", "csv_file_id"])]);
+    const isSagaImported =
+      String(doc.saga_flight_id || "").trim().length > 0 ||
+      String(doc.source_filename || "").toLowerCase().includes("saga");
+    if (doc.instructor_signed && !isSagaImported) {
       return { error: new Error("Não é possível apagar um voo assinado pelo instrutor.") };
+    }
+    // For SAGA flights, prefer server-side delete first (API-key context) to avoid browser ACL issues.
+    if (isSagaImported && functions && ADMIN_USERS_FUNCTION_ID) {
+      const adminDelete = await runSagaDeleteViaAdminFunction();
+      if (!adminDelete.error) return { error: null };
     }
 
     // Try to delete the associated CSV file from Storage as well
     if (storage && BUCKET_ID) {
       try {
-        const d = await databases.getDocument(DB_ID, COL_ID, id);
-        const csvFileId = d.csv_file_id as string | null | undefined;
+        const csvFileId = doc.csv_file_id as string | null | undefined;
         if (csvFileId) {
           await storage.deleteFile(BUCKET_ID, csvFileId);
         }
@@ -1544,10 +1586,26 @@ export async function deleteSavedFlight(id: string): Promise<{ error: Error | nu
       }
     }
     await databases.deleteDocument(DB_ID, COL_ID, id);
-    await clearFlightTelemetryMetrics(id);
-    await clearFlightTelemetryAlerts(id);
+    // Best-effort cleanup: the flight deletion is the source of truth.
+    // Telemetry cleanup must never turn a successful delete into an error.
+    await Promise.allSettled([
+      clearFlightTelemetryMetrics(id),
+      clearFlightTelemetryAlerts(id),
+    ]);
     return { error: null };
   } catch (e) {
-    return { error: e as Error };
+    const err = e as Error & { code?: number };
+    const message = String(err.message || "").toLowerCase();
+    const notFound =
+      err.code === 404 ||
+      message.includes("not found") ||
+      message.includes("voo nao encontrado");
+    // Delete is idempotent: if it is already gone, treat as success.
+    if (notFound) return { error: null };
+    const unauthorized = err.code === 401 || err.message?.toLowerCase().includes("not authorized");
+    if (unauthorized && functions && ADMIN_USERS_FUNCTION_ID) {
+      return runSagaDeleteViaAdminFunction();
+    }
+    return { error: err };
   }
 }

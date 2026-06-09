@@ -73,6 +73,22 @@ function extractMaterializedFields(csvText) {
   }
 }
 
+function collectTrainingMissionIds({ csvText, fallbackMissionId = null }) {
+  try {
+    const meta = decodeMeta(csvText);
+    const missionIds = Array.from(
+      new Set([
+        ...(Array.isArray(meta?.training?.missionIds) ? meta.training.missionIds : []),
+        String(meta?.training?.missionId || "").trim(),
+        String(fallbackMissionId || "").trim(),
+      ].filter(Boolean)),
+    );
+    return missionIds;
+  } catch {
+    return [String(fallbackMissionId || "").trim()].filter(Boolean);
+  }
+}
+
 function decodeMeta(csvText) {
   const firstLine = String(csvText || "").split("\n")[0]?.trim() ?? "";
   if (!firstLine.startsWith(META_PREFIX)) return null;
@@ -142,6 +158,7 @@ export default async ({ req, res, log, error }) => {
       trainingMissionId,
       trainingSnapshotJson,
       weightBalance,
+      allowSignedMissionEdit,
     } = body;
 
     if (
@@ -210,8 +227,22 @@ export default async ({ req, res, log, error }) => {
     if (flight.instructor_user_id !== callerUserId) {
       return res.json({ ok: false, message: "Only the assigned instructor can fill this flight record." }, 403);
     }
-    if (flight.instructor_signed) {
+    if (flight.instructor_signed && allowSignedMissionEdit !== true) {
       return res.json({ ok: false, message: "Flight is locked (already signed by instructor)." }, 403);
+    }
+    if (flight.instructor_signed && allowSignedMissionEdit === true) {
+      const missionOnly = (
+        trainingMissionId !== undefined ||
+        trainingSnapshotJson !== undefined ||
+        csvText !== undefined
+      ) && (
+        flightStatus === undefined &&
+        trainingTrackId === undefined &&
+        trainingStageId === undefined
+      );
+      if (!missionOnly) {
+        return res.json({ ok: false, message: "Signed flight allows only mission adjustment." }, 403);
+      }
     }
 
     const materialized = csvText ? extractMaterializedFields(csvText) : {};
@@ -225,6 +256,14 @@ export default async ({ req, res, log, error }) => {
       ...(trainingSnapshotJson !== undefined ? { training_snapshot_json: trainingSnapshotJson } : {}),
       ...materialized,
     };
+    if (csvText !== undefined || trainingMissionId !== undefined) {
+      const sourceCsv = String(csvText || flight.csv_text || "");
+      const missionIds = collectTrainingMissionIds({
+        csvText: sourceCsv,
+        fallbackMissionId: trainingMissionId ?? flight.training_mission_id ?? null,
+      });
+      updateData.training_mission_ids_json = missionIds.length > 0 ? JSON.stringify(missionIds) : null;
+    }
 
     if (!Object.keys(updateData).length) {
       return res.json({ ok: false, message: "Nothing to update." }, 400);

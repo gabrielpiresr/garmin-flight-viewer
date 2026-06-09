@@ -20,6 +20,7 @@ export type FlightDisplayInfo = {
   instructorSuggestionMd: string;
   studentSuggestionMd: string;
   weightBalanceFilled: boolean;
+  trainingMissionName: string;
 };
 
 export function parseDurationToMinutes(value: string): number {
@@ -61,6 +62,42 @@ function parseMiles(value: string): number {
   if (!raw) return 0;
   const n = Number(raw.replace(",", ".").replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function missionLabelFromSnapshotJson(snapshotJsonRaw: string | null | undefined): string {
+  if (!snapshotJsonRaw) return "";
+  try {
+    const parsed = JSON.parse(snapshotJsonRaw) as {
+      missionName?: string;
+      snapshots?: Array<{ missionName?: string }>;
+    };
+    const missionNames = Array.from(
+      new Set([
+        ...(Array.isArray(parsed?.snapshots) ? parsed.snapshots.map((snapshot) => String(snapshot?.missionName ?? "").trim()) : []),
+        String(parsed?.missionName ?? "").trim(),
+      ].filter(Boolean)),
+    );
+    return missionNames.join(", ");
+  } catch {
+    return "";
+  }
+}
+
+function missionLabelFromMeta(meta: ReturnType<typeof decodeFlightRecord>["meta"]): string {
+  const names = Array.from(
+    new Set([
+      ...(meta?.training?.snapshots ?? []).map((snapshot) => String(snapshot?.missionName ?? "").trim()),
+      String(meta?.training?.snapshot?.missionName ?? "").trim(),
+    ].filter(Boolean)),
+  );
+  return names.join(", ");
+}
+
+function instructorNameFromMeta(meta: ReturnType<typeof decodeFlightRecord>["meta"]): string {
+  const direct = String(meta?.header?.instructorName ?? "").trim();
+  if (direct) return direct;
+  const label = String(meta?.header?.instructorUserId ?? "").trim();
+  return label;
 }
 
 export function getDateBase(item: SavedFlightListItem, info?: Pick<FlightDisplayInfo, "flightDateIso">): Date {
@@ -135,6 +172,7 @@ export function buildFlightDisplayInfo(
     instructorSuggestionMd: item.instructor_suggestion_md ?? "",
     studentSuggestionMd: item.student_suggestion_md ?? "",
     weightBalanceFilled: item.weight_balance_complete ?? false,
+    trainingMissionName: missionLabelFromSnapshotJson(item.training_snapshot_json) || "—",
   };
 
   if (!csvText) return defaultInfo;
@@ -169,7 +207,7 @@ export function buildFlightDisplayInfo(
     endTime: lastLegEngineCut(meta) || addMinutesToTime(meta.header.startTime || meta.header.departureTimeUtc || "", durationMin),
     studentName: meta.header.studentName || fallback?.studentName || meta.header.studentLabel || "—",
     studentAnac: meta.header.studentAnac || fallback?.studentAnac || "—",
-    instructorName: meta.header.instructorName || fallback?.instructorName || "",
+    instructorName: instructorNameFromMeta(meta) || fallback?.instructorName || "",
     instructorAnac: meta.header.instructorAnac || fallback?.instructorAnac || "",
     aircraft: meta.header.aircraft || item.aircraft_ident || "—",
     fromTo: airports.length > 0 ? airports.join(" -> ") : "—",
@@ -189,6 +227,7 @@ export function buildFlightDisplayInfo(
         meta.weightBalance.inputs.tripFuel.value !== null &&
         meta.weightBalance.results.isComplete,
     ),
+    trainingMissionName: missionLabelFromMeta(meta) || defaultInfo.trainingMissionName || "—",
   };
 }
 

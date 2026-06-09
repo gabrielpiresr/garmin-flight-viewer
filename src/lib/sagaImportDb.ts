@@ -182,6 +182,27 @@ export type SagaImportSummary = {
   logs: string[];
 };
 
+export type SagaReloadFlightResult = {
+  ok: boolean;
+  message: string;
+  flightId?: string;
+  sagaFlightId?: string;
+  sagaScheduleId?: string | null;
+  refreshed?: boolean;
+  created?: boolean;
+  updated?: boolean;
+  skipped?: boolean;
+  paused?: boolean;
+  reason?: string;
+  pendingMission?: SagaImportPendingMission;
+  logs?: string[];
+};
+
+export type SagaMissionOption = {
+  value: string;
+  label: string;
+};
+
 export type SagaImportPendingMission = {
   lookupKey: string;
   rawMission: string;
@@ -192,6 +213,7 @@ export type SagaImportPendingMission = {
   studentName: string;
   flightDate: string;
   course: string;
+  missionOptions?: SagaMissionOption[];
 };
 
 export type SagaImportProgress = {
@@ -516,6 +538,37 @@ async function waitForFunctionExecution(
   return lastExecution;
 }
 
+function isSagaExecutionTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes("A importacao ainda esta em andamento no Appwrite");
+}
+
+function summaryMatchesRunId(summary: SagaImportSummary | null | undefined, runId?: string): boolean {
+  if (!summary) return false;
+  if (!runId) return true;
+  return String(summary.importRunId || "").trim() === String(runId || "").trim();
+}
+
+async function waitForSagaRunCompletion(
+  importRunId: string,
+  options: { onProgress?: (progress: SagaImportProgress) => void; timeoutMs?: number } = {},
+): Promise<SagaImportProgress | null> {
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000;
+  let lastProgress: SagaImportProgress | null = null;
+  while (Date.now() - startedAt <= timeoutMs) {
+    const progress = await fetchSagaImportProgress(importRunId).catch(() => null);
+    if (progress) {
+      lastProgress = progress;
+      if (options.onProgress) options.onProgress(progress);
+      const status = String(progress.status || "").toLowerCase();
+      if (status === "completed" || status === "failed") return progress;
+    }
+    await sleep(2500);
+  }
+  return lastProgress;
+}
+
 async function fetchLastSagaImportSummary(): Promise<SagaImportSummary | null> {
   const { functions: fn, functionId } = getAdminFunctionClient();
   const execution = await fn.createExecution(
@@ -709,6 +762,43 @@ export async function runSagaScheduleSyncNow(force = false): Promise<SagaSchedul
   });
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
     throw new Error(response.message || "Falha ao executar sincronizacao manual da escala SAGA.");
+  }
+  return response;
+}
+
+export type SagaScheduleItem = {
+  id: string;
+  startAt: string;
+  endAt: string;
+  startAtRaw: string;
+  endAtRaw: string;
+  createdAt: string;
+  studentSagaId: string;
+  instructorSagaId: string;
+  aircraftSagaId: string;
+  aircraft: string;
+  aircraftModel: string;
+  studentName: string;
+  instructorName: string;
+  notes: string;
+  status: string;
+  active: boolean;
+  raw: Record<string, unknown>;
+};
+
+export async function fetchSagaSchedules(): Promise<{ ok: boolean; schedules: SagaScheduleItem[]; logs: string[] }> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaFetchSchedules" }),
+    false,
+  );
+  const response = parseJsonBody<{ ok: boolean; schedules: SagaScheduleItem[]; logs: string[]; message?: string }>(
+    execution.responseBody,
+    { ok: false, schedules: [], logs: [] },
+  );
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao buscar agendamentos do SAGA.");
   }
   return response;
 }
@@ -974,18 +1064,80 @@ export async function importSelfFlightsFromSaga(
     JSON.stringify({ action: "sagaImportSelfFlights", importRunId }),
     true,
   );
-  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000, {
-    progressRunId: importRunId,
-    onProgress: options.onProgress,
-  });
-  const response = parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {});
-  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
-    throw new Error(response.message || "Falha ao sincronizar voos do SAGA.");
+  let execution: Awaited<ReturnType<typeof waitForFunctionExecution>> | null = null;
+  let timedOut = false;
+  try {
+    execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000, {
+      progressRunId: importRunId,
+      onProgress: options.onProgress,
+    });
+  } catch (error) {
+    if (!isSagaExecutionTimeoutError(error)) throw error;
+    timedOut = true;
   }
-  // responseBody is always empty for async executions in Appwrite Cloud — fall back to saved summary
-  const summary = response.summary ?? await fetchLastSagaImportSummary().catch(() => null);
-  if (!summary) throw new Error(response.message || "Falha ao sincronizar voos do SAGA: tente novamente.");
+
+  const shouldWaitForTerminalProgress =
+    timedOut ||
+    !execution ||
+    execution.status === "processing" ||
+    execution.status === "waiting";
+  const terminalProgress = shouldWaitForTerminalProgress
+    ? await waitForSagaRunCompletion(importRunId, {
+        onProgress: options.onProgress,
+        timeoutMs: 3 * 60 * 1000,
+      }).catch(() => null)
+    : null;
+  if (terminalProgress && String(terminalProgress.status || "").toLowerCase() === "failed") {
+    throw new Error(terminalProgress.message || "Falha ao sincronizar voos do SAGA.");
+  }
+
+  const response = execution
+    ? parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {})
+    : {};
+  if (execution && (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400)) {
+    if (!terminalProgress || String(terminalProgress.status || "").toLowerCase() !== "completed") {
+      throw new Error(response.message || terminalProgress?.message || "Falha ao sincronizar voos do SAGA.");
+    }
+  }
+  // responseBody is often empty for async executions in Appwrite Cloud — fall back to saved summary by runId
+  const lastSummary = await fetchLastSagaImportSummary().catch(() => null);
+  const summary = summaryMatchesRunId(response.summary ?? null, importRunId)
+    ? (response.summary ?? null)
+    : summaryMatchesRunId(lastSummary, importRunId)
+      ? lastSummary
+      : response.summary ?? lastSummary;
+  if (!summary) throw new Error(response.message || terminalProgress?.message || "Falha ao sincronizar voos do SAGA: tente novamente.");
   return summary;
+}
+
+export async function reloadSagaFlightFromSource(params: {
+  flightId: string;
+  sagaFlightId?: string;
+  missionLookupKey?: string;
+  missionId?: string;
+  skipMissionMapping?: boolean;
+}): Promise<SagaReloadFlightResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({
+      action: "sagaReloadSingleFlight",
+      flightId: params.flightId,
+      sagaFlightId: params.sagaFlightId ?? null,
+      missionLookupKey: params.missionLookupKey ?? null,
+      missionId: params.missionId ?? null,
+      skipMissionMapping: params.skipMissionMapping === true,
+    }),
+    false,
+  );
+  const response = parseJsonBody<SagaReloadFlightResult>(execution.responseBody, {
+    ok: false,
+    message: "Resposta inválida ao recarregar voo do SAGA.",
+  });
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao recarregar dados do voo no SAGA.");
+  }
+  return response;
 }
 
 export async function importSelfCreditsFromSaga(): Promise<SagaImportSummary> {

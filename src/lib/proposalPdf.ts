@@ -135,6 +135,10 @@ export function openProposalPdf(proposal: CrmProposal, config: ProposalConfig): 
   const additionalHtml = config.additionalInfoRichJson
     ? `<section class="section"><h2 class="section-title">Informações adicionais</h2><div class="rich">${richToHtml(config.additionalInfoRichJson)}</div></section>` : "";
 
+  const notesHtml = proposal.notes
+    ? `<div class="notes-box">${esc(proposal.notes).replace(/\n/g, "<br>")}</div>`
+    : "";
+
   const html = `<!DOCTYPE html><html lang="pt-BR"><head>
 <meta charset="UTF-8"/>
 <title>Proposta — ${esc(proposal.leadName)}</title>
@@ -150,6 +154,7 @@ body{font-family:${fontStack};background:#fff;color:#1e293b;line-height:1.6;font
 .greeting{text-align:center;margin-bottom:32px}
 .greeting h1{font-size:26px;font-weight:800;color:#0f172a}
 .greeting p{color:#64748b;font-size:14px;margin-top:6px}
+.notes-box{border-left:4px solid ${primary};background:#f8fafc;border-radius:0 8px 8px 0;padding:14px 18px;margin-bottom:28px;font-size:13px;color:#334155;white-space:pre-line;line-height:1.7}
 .section{margin-bottom:28px}
 .section-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#0f172a;padding-bottom:8px;border-bottom:2px solid ${primary};margin-bottom:14px}
 .diff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
@@ -203,6 +208,7 @@ td{padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#334155}
   <p>Preparamos esta proposta exclusiva para você.</p>
 </div>
 
+${notesHtml}
 ${coverVideoHtml}
 ${differentialsHtml}
 

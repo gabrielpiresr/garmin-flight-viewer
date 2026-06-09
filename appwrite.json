@@ -33,6 +33,30 @@
       "entrypoint": "src/main.js",
       "path": "functions/cakto-webhook",
       "ignore": ["node_modules", ".npm"]
+    },
+    {
+      "functionId": "create-flight",
+      "name": "Create Flight",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/create-flight",
+      "ignore": ["node_modules", ".npm"]
+    },
+    {
+      "functionId": "sign-flight",
+      "name": "Sign Flight",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/sign-flight",
+      "ignore": ["node_modules", ".npm"]
+    },
+    {
+      "functionId": "sync-anac-profile",
+      "name": "Sync Anac Profile",
+      "runtime": "node-22",
+      "entrypoint": "src/main.js",
+      "path": "functions/sync-anac-profile",
+      "ignore": ["node_modules", ".npm"]
     }
   ]
 }

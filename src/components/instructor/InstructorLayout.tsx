@@ -18,6 +18,9 @@ const InstructorHome = lazy(() => import("./InstructorHome").then((module) => ({
 const InstructorProfileTab = lazy(() =>
   import("./InstructorProfileTab").then((module) => ({ default: module.InstructorProfileTab })),
 );
+const FlightReportsTab = lazy(() =>
+  import("../admin/FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })),
+);
 const InstructorStudentsTab = lazy(() =>
   import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
 );
@@ -47,7 +50,8 @@ type InstructorSection =
   | "dre"
   | "schedule"
   | "contratos"
-  | "indique-ganhe";
+  | "indique-ganhe"
+  | "reports";
 
 type NavItem = {
   id: InstructorSection;
@@ -206,6 +210,17 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "reports",
+    label: "Relatórios",
+    sublabel: "Seus voos em relatórios",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
+        <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
     id: "indique-ganhe",
     label: "Indique e ganhe",
     sublabel: "Indique alunos e acompanhe",
@@ -232,6 +247,7 @@ const SECTION_ROUTES = [
   { id: "dre", path: "/instrutor/edb" },
   { id: "schedule", path: "/instrutor/escala" },
   { id: "contratos", path: "/instrutor/contratos" },
+  { id: "reports", path: "/instrutor/relatorios" },
   { id: "indique-ganhe", path: "/instrutor/indique-ganhe" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
@@ -509,6 +525,13 @@ export function InstructorLayout() {
                   schoolId={user?.schoolId ?? ""}
                   userRole="instrutor"
                 />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("reports") && (
+            <div hidden={section !== "reports"}>
+              <LazyTab>
+                <FlightReportsTab lockedInstructorUserId={user?.id ?? ""} hideInstructorFilter />
               </LazyTab>
             </div>
           )}

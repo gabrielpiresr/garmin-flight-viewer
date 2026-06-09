@@ -371,31 +371,11 @@ async function main() {
 
   if (finalStatus === "ready") {
     // activate:true in createDeployment is unreliable in Appwrite Cloud — force activation via PUT
-    const apiBase = endpoint.replace(/\/+$/, "");
-    const activateRes = await fetch(`${apiBase}/functions/${functionId}`, {
-      method: "PUT",
-      headers: {
-        "x-appwrite-key": apiKey,
-        "x-appwrite-project": projectId,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        name: "Admin Users",
-        runtime: "node-22",
-        entrypoint: "src/main.js",
-        execute: ["users"],
-        events: [],
-        schedule: "*/15 * * * *",
-        timeout: 60,
-        enabled: true,
-        logging: true,
-        commands: "npm install",
-        scopes: [],
-        deployment: deployment.$id,
-      }),
+    const activated = await functions.updateFunctionDeployment({
+      functionId,
+      deploymentId: deployment.$id,
     });
-    const activateJson = await activateRes.json();
-    const activeId = activateJson.deploymentId;
+    const activeId = activated.deploymentId;
     if (activeId === deployment.$id) {
       console.log(`Deployment activated: ${activeId}`);
     } else {

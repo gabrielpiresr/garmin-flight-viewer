@@ -25,6 +25,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas",
+  "atualizacoes", "atualizacoes.agendamentos",
 ];
 
 const ALL_ACTIONS: ActionKey[] = [
@@ -46,12 +47,12 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
   "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help",
-  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "indique-ganhe",
+  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
-  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help",
+  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "reports",
 ]);
 
 /** Ações habilitadas por padrão para o instrutor */

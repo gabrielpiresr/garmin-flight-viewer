@@ -5,6 +5,7 @@ import { TelemetriaTab } from "../components/TelemetriaTab";
 import { Tabs } from "../components/ui/Tabs";
 import { VideosTab } from "../components/VideosTab";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import { detectFlightSegments } from "../lib/flightSegments";
 import {
   getPublicFlightReviewIntro,
   getPublicFlightReviewShare,
@@ -13,7 +14,7 @@ import {
 } from "../lib/publicFlightReviewShare";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
 
-type PublicTab = "resumo" | "telemetria" | "flight-review" | "videos";
+type PublicTab = "resumo" | "telemetria" | "flight-review";
 
 type PublicTabItem = { id: PublicTab; label: string; icon: ReactNode };
 
@@ -43,15 +44,6 @@ const PUBLIC_TABS: PublicTabItem[] = [
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M3.25 3A1.75 1.75 0 001.5 4.75v8.5C1.5 14.216 2.284 15 3.25 15h4.19l-1.22 1.22a.75.75 0 101.06 1.06L10 14.56l2.72 2.72a.75.75 0 101.06-1.06L12.56 15h4.19a1.75 1.75 0 001.75-1.75v-8.5A1.75 1.75 0 0016.75 3H3.25zm11.5 4.25a.75.75 0 00-1.5 0v3.5a.75.75 0 001.5 0v-3.5zm-4 1.25a.75.75 0 00-1.5 0v2.25a.75.75 0 001.5 0V8.5zm-4 1.25a.75.75 0 00-1.5 0v1a.75.75 0 001.5 0v-1z" />
-      </svg>
-    ),
-  },
-  {
-    id: "videos",
-    label: "Vídeos",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path d="M3.5 5.75A1.75 1.75 0 015.25 4h7.5a1.75 1.75 0 011.75 1.75v.84l2.38-1.43A.75.75 0 0118 5.8v8.4a.75.75 0 01-1.12.65l-2.38-1.43v.83A1.75 1.75 0 0112.75 16h-7.5a1.75 1.75 0 01-1.75-1.75v-8.5z" />
       </svg>
     ),
   },
@@ -146,7 +138,7 @@ export function PublicFlightReviewPage() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (!share?.flight.csv_text || !visitedTabs.has("telemetria") || telemetryReady || telemetryParsing) return;
+    if (!share?.flight.csv_text || telemetryReady || telemetryParsing) return;
     let cancelled = false;
     setTelemetryParsing(true);
     const timeoutId = window.setTimeout(() => {
@@ -168,7 +160,7 @@ export function PublicFlightReviewPage() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [share, telemetryParsing, telemetryReady, visitedTabs]);
+  }, [share, telemetryParsing, telemetryReady]);
 
   if (loadingIntro) return <LoadingState />;
 
@@ -186,7 +178,7 @@ export function PublicFlightReviewPage() {
 
   const brand = share?.brandSettings || intro?.brandSettings || null;
   const title = share?.missionName || intro?.missionName || "Flight Review";
-  const studentName = intro?.studentName || "O aluno";
+  const studentName = intro?.studentNickname || intro?.studentName || "O aluno";
   const flightDateLabel = formatFlightDate(intro?.flightDate || share?.flight.flight_date);
 
   if (!entered) {
@@ -202,7 +194,7 @@ export function PublicFlightReviewPage() {
                 {studentName} compartilhou um voo com vocês
               </h1>
               <p className="mt-4 max-w-xl text-base leading-7 text-slate-300 sm:text-lg">
-                Voo do dia {flightDateLabel}. Veja o resumo, a telemetria, o Flight Review e os vídeos em uma página pública.
+                Voo do dia {flightDateLabel}. Veja o vídeo, a telemetria e o Flight Review completo.
               </p>
               <button
                 type="button"
@@ -265,7 +257,19 @@ export function PublicFlightReviewPage() {
 
         {visitedTabs.has("resumo") || activeTab === "resumo" ? (
           <section hidden={activeTab !== "resumo"}>
-            {share ? <FlightSummaryPanel flight={share.flight} missionName={title} /> : <TabLoadingState label="Carregando resumo..." />}
+            {share ? (
+              <>
+                <div className="mb-5">
+                  <VideosTab flightId={share.flight.id} publicMode publicVideos={share.videos} />
+                </div>
+                {telemetryReady && parsedTelemetry && (
+                  <FlightLegsPanel parsedTelemetry={parsedTelemetry} />
+                )}
+                <FlightSummaryPanel flight={share.flight} missionName={title} />
+              </>
+            ) : (
+              <TabLoadingState label="Carregando..." />
+            )}
           </section>
         ) : null}
 
@@ -298,15 +302,10 @@ export function PublicFlightReviewPage() {
           </section>
         ) : null}
 
-        {visitedTabs.has("videos") || activeTab === "videos" ? (
-          <section hidden={activeTab !== "videos"}>
-            {share ? <VideosTab flightId={share.flight.id} publicMode publicVideos={share.videos} /> : <TabLoadingState label="Carregando vídeos..." />}
-          </section>
-        ) : null}
       </main>
 
       <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Navegação do Flight Review público">
-        <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
+        <div className="flex rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
           {PUBLIC_TABS.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -314,19 +313,64 @@ export function PublicFlightReviewPage() {
                 key={item.id}
                 type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
+                className={`flex flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-semibold transition ${
                   isActive
                     ? "bg-sky-400 text-slate-950 shadow-lg shadow-sky-950/30"
                     : "text-slate-500 hover:text-slate-300"
                 }`}
               >
                 <span className="h-4 w-4">{item.icon}</span>
-                <span className="max-w-full truncate">{item.label}</span>
+                <span>{item.label}</span>
               </button>
             );
           })}
         </div>
       </nav>
+    </div>
+  );
+}
+
+function FlightLegsPanel({ parsedTelemetry }: { parsedTelemetry: ParseResult }) {
+  const segments =
+    parsedTelemetry.chartData.length > 0 && parsedTelemetry.hasChartTime
+      ? detectFlightSegments(parsedTelemetry.chartData, parsedTelemetry.chartTimeBaseMs, parsedTelemetry.points)
+      : [];
+
+  if (segments.length === 0) return null;
+
+  const takeoffs = segments.filter((s) => s.type === "takeoff").length;
+  const landings = segments.filter((s) => s.type === "landing").length;
+  const tgls = segments.filter((s) => s.type === "tgl").length;
+
+  return (
+    <div className="mb-5 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-300">Pernas do voo</h2>
+        <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+          {takeoffs > 0 && <span>{takeoffs} decolagem{takeoffs > 1 ? "s" : ""}</span>}
+          {landings > 0 && <span>{landings} pouso{landings > 1 ? "s" : ""}</span>}
+          {tgls > 0 && <span>{tgls} TGL{tgls > 1 ? "s" : ""}</span>}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {segments.map((seg) => (
+          <span
+            key={seg.id}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+              seg.type === "takeoff"
+                ? "border-emerald-700/30 bg-emerald-950/50 text-emerald-300"
+                : seg.type === "landing"
+                  ? "border-sky-700/30 bg-sky-950/50 text-sky-300"
+                  : "border-violet-700/30 bg-violet-950/50 text-violet-300"
+            }`}
+          >
+            <span aria-hidden="true">
+              {seg.type === "takeoff" ? "↑" : seg.type === "landing" ? "↓" : "↕"}
+            </span>
+            {seg.label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

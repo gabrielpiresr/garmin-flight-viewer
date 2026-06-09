@@ -1138,12 +1138,24 @@ function columnsForContext(selectedColumns: ReportColumnKey[], activeGroups: Fli
   });
 }
 
-export function FlightReportsTab() {
+type FlightReportsTabProps = {
+  lockedInstructorUserId?: string;
+  hideInstructorFilter?: boolean;
+};
+
+export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFilter = false }: FlightReportsTabProps = {}) {
   const { showToast } = useToast();
   const chartRef = useRef<HTMLDivElement | null>(null);
+  const lockedInstructorId = lockedInstructorUserId.trim();
+  const serverInstructorsFilter = useMemo(
+    () => (lockedInstructorId ? [lockedInstructorId] : undefined),
+    [lockedInstructorId],
+  );
+  const awaitingInstructorId = hideInstructorFilter && !lockedInstructorId;
   const [rows, setRows] = useState<AdminFlightReportRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [totalRows, setTotalRows] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -1170,25 +1182,37 @@ export function FlightReportsTab() {
   const [openFilter, setOpenFilter] = useState<MultiFilterKey | null>(null);
 
   useEffect(() => {
+    if (awaitingInstructorId) return;
+
+    let cancelled = false;
     setLoading(true);
-    listAdminFlightReports({ limit: REPORT_PAGE_SIZE })
+    setError(null);
+    listAdminFlightReports({ limit: REPORT_PAGE_SIZE, instructors: serverInstructorsFilter })
       .then((page) => {
+        if (cancelled) return;
         setRows(page.flights);
         setNextCursor(page.nextCursor);
         setTotalRows(page.total);
       })
       .catch((err: Error) => {
+        if (cancelled) return;
         setError(err.message);
         showToast({ variant: "error", message: err.message });
       })
-      .finally(() => setLoading(false));
-  }, [showToast]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [awaitingInstructorId, serverInstructorsFilter, showToast]);
 
   const loadMoreReports = useCallback(async () => {
-    if (!nextCursor || loadingMore) return;
+    if (!nextCursor || loadingMore || loadingAll) return;
     setLoadingMore(true);
     try {
-      const page = await listAdminFlightReports({ limit: REPORT_PAGE_SIZE, cursor: nextCursor });
+      const page = await listAdminFlightReports({ limit: REPORT_PAGE_SIZE, cursor: nextCursor, instructors: serverInstructorsFilter });
       setRows((current) => {
         const byId = new Map(current.map((row) => [row.id, row]));
         for (const row of page.flights) byId.set(row.id, row);
@@ -1203,7 +1227,35 @@ export function FlightReportsTab() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, nextCursor, showToast]);
+  }, [loadingAll, loadingMore, nextCursor, serverInstructorsFilter, showToast]);
+
+  const loadAllReports = useCallback(async () => {
+    if (!nextCursor || loadingMore || loadingAll) return;
+    setLoadingAll(true);
+    try {
+      let cursor: string | null = nextCursor;
+      let safety = 0;
+      let latestTotal = totalRows;
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      while (cursor && safety < 200) {
+        const page = await listAdminFlightReports({ limit: REPORT_PAGE_SIZE, cursor, instructors: serverInstructorsFilter });
+        for (const row of page.flights) byId.set(row.id, row);
+        latestTotal = page.total;
+        if (page.nextCursor === cursor) break;
+        cursor = page.nextCursor;
+        safety += 1;
+      }
+      setRows([...byId.values()]);
+      setNextCursor(cursor);
+      setTotalRows(latestTotal);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Nao foi possivel carregar todos os relatorios.";
+      setError(message);
+      showToast({ variant: "error", message });
+    } finally {
+      setLoadingAll(false);
+    }
+  }, [loadingAll, loadingMore, nextCursor, rows, serverInstructorsFilter, showToast, totalRows]);
 
   const activeGroups = useMemo(
     () => [...(temporalGroup ? [temporalGroup] : []), ...dimensionGroups],
@@ -1228,12 +1280,13 @@ export function FlightReportsTab() {
         if (toDate && date > toDate) return false;
         if (models.length && !models.includes(row.modelName)) return false;
         if (aircrafts.length && !aircrafts.includes(row.aircraftIdent ?? "")) return false;
-        if (instructors.length && !instructors.includes(row.instructorName)) return false;
+        if (lockedInstructorId && row.instructorUserId !== lockedInstructorId) return false;
+        if (!lockedInstructorId && instructors.length && !instructors.includes(row.instructorName)) return false;
         if (students.length && !students.includes(row.studentName)) return false;
         if (status !== "all" && row.status !== status) return false;
         return true;
       }),
-    [aircrafts, fromDate, instructors, models, rows, status, students, toDate],
+    [aircrafts, fromDate, instructors, lockedInstructorId, models, rows, status, students, toDate],
   );
 
   const reportRows = useMemo(() => aggregateRows(filtered, activeGroups), [activeGroups, filtered]);
@@ -1286,7 +1339,7 @@ export function FlightReportsTab() {
     setToDate("");
     setModels([]);
     setAircrafts([]);
-    setInstructors([]);
+    if (!lockedInstructorId) setInstructors([]);
     setStudents([]);
     setStatus("all");
   }
@@ -1365,7 +1418,7 @@ export function FlightReportsTab() {
     setPresetToDelete(null);
   }
 
-  if (loading) {
+  if (loading || awaitingInstructorId) {
     return (
       <div className="w-full space-y-4">
         <Skeleton className="h-28 rounded-xl" />
@@ -1395,14 +1448,24 @@ export function FlightReportsTab() {
         </div>
         <div className="flex flex-wrap gap-2">
           {nextCursor ? (
-            <button
-              type="button"
-              onClick={() => void loadMoreReports()}
-              disabled={loadingMore}
-              className="rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
-            >
-              {loadingMore ? "Carregando..." : "Carregar mais"}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void loadMoreReports()}
+                disabled={loadingMore || loadingAll}
+                className="rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                {loadingMore ? "Carregando..." : "Carregar mais"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadAllReports()}
+                disabled={loadingMore || loadingAll}
+                className="rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                {loadingAll ? "Carregando tudo..." : "Carregar tudo"}
+              </button>
+            </>
           ) : null}
           <button type="button" onClick={() => exportCsv(sortedRows, visibleColumns, summaryRow)} className="rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800">
             CSV
@@ -1422,7 +1485,9 @@ export function FlightReportsTab() {
           <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPeriodPreset("custom"); }} className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
           <FilterMultiSelect label="Modelos" options={options.models} value={models} open={openFilter === "models"} onOpen={() => setOpenFilter((current) => current === "models" ? null : "models")} onChange={setModels} />
           <FilterMultiSelect label="Aviões" options={options.aircrafts} value={aircrafts} open={openFilter === "aircrafts"} onOpen={() => setOpenFilter((current) => current === "aircrafts" ? null : "aircrafts")} onChange={setAircrafts} />
-          <FilterMultiSelect label="Instrutores" options={options.instructors} value={instructors} open={openFilter === "instructors"} onOpen={() => setOpenFilter((current) => current === "instructors" ? null : "instructors")} onChange={setInstructors} />
+          {!hideInstructorFilter && !lockedInstructorId ? (
+            <FilterMultiSelect label="Instrutores" options={options.instructors} value={instructors} open={openFilter === "instructors"} onOpen={() => setOpenFilter((current) => current === "instructors" ? null : "instructors")} onChange={setInstructors} />
+          ) : null}
           <FilterMultiSelect label="Alunos" options={options.students} value={students} open={openFilter === "students"} onOpen={() => setOpenFilter((current) => current === "students" ? null : "students")} onChange={setStudents} />
         </div>
 

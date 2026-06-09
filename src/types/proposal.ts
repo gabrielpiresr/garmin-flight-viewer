@@ -54,6 +54,7 @@ export type CrmProposal = {
   hourPrice: number;
   totalValue: number;
   products: ProposalProduct[];
+  notes: string;
   publicToken: string;
   status: "draft" | "sent";
   caktoOfferId: string;
@@ -84,4 +85,5 @@ export type CrmProposalInput = {
   hours: number;
   hourPrice: number;
   products: ProposalProduct[];
+  notes?: string;
 };

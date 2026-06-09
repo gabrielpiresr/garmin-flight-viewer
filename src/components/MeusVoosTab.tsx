@@ -4,6 +4,7 @@ import { ADMIN_USERS_FUNCTION_ID, SCHOOL_ID } from "../lib/appwrite";
 import {
   importSelfCreditsFromSaga,
   importSelfFlightsFromSaga,
+  reloadSagaFlightFromSource,
   type SagaImportProgress,
 } from "../lib/sagaImportDb";
 import { useToast } from "./ui/ToastProvider";
@@ -122,6 +123,11 @@ function FutureStudentSuggestionStatus({ suggestion }: { suggestion?: string }) 
     return <span className="rounded bg-amber-900/40 px-2 py-1 text-[11px] font-semibold text-amber-400">Pendente</span>;
   }
   return <span className="text-xs text-emerald-400">OK - {text}</span>;
+}
+
+function missionLabel(info?: FlightCardInfo): string {
+  const raw = info?.trainingMissionName ?? "";
+  return raw.trim() || "—";
 }
 
 function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" | "default" }) {
@@ -280,6 +286,8 @@ export function MeusVoosTab() {
   const [studentSuggestionError, setStudentSuggestionError] = useState<string | null>(null);
   const [sagaImporting, setSagaImporting] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SagaImportProgress | null>(null);
+  const [syncOverlayVisible, setSyncOverlayVisible] = useState(false);
+  const [reloadingSagaFlightId, setReloadingSagaFlightId] = useState<string | null>(null);
   const canManageFlights = user?.role === "instrutor" || user?.role === "admin";
   const isStudentView = user?.role === "aluno";
   const showSagaSync = !!ADMIN_USERS_FUNCTION_ID && !!user;
@@ -287,6 +295,7 @@ export function MeusVoosTab() {
   const handleSagaSync = async () => {
     if (sagaImporting) return;
     setSagaImporting(true);
+    setSyncOverlayVisible(true);
     setSyncProgress(null);
     try {
       if (isStudentView) {
@@ -317,7 +326,31 @@ export function MeusVoosTab() {
       showToast({ message: (e as Error).message, variant: "error" });
     } finally {
       setSagaImporting(false);
-      setSyncProgress(null);
+      window.setTimeout(() => {
+        setSyncProgress(null);
+        setSyncOverlayVisible(false);
+      }, 250);
+    }
+  };
+
+  const handleReloadSagaFlight = async (flight: SavedFlightListItem) => {
+    if (reloadingSagaFlightId) return;
+    setReloadingSagaFlightId(flight.id);
+    try {
+      const result = await reloadSagaFlightFromSource({
+        flightId: flight.id,
+        sagaFlightId: flight.saga_flight_id ?? undefined,
+      });
+      showToast({
+        variant: result.refreshed ? "success" : "info",
+        message: result.message || "Dados do voo recarregados do SAGA.",
+      });
+      invalidateFlightListDisplayCache([flight.id]);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      showToast({ message: (e as Error).message, variant: "error" });
+    } finally {
+      setReloadingSagaFlightId(null);
     }
   };
 
@@ -641,7 +674,8 @@ export function MeusVoosTab() {
 
   const handleDelete = async (id: string) => {
     const item = items.find((i) => i.id === id);
-    if (item?.instructor_signed) {
+    const isSagaImported = Boolean(item?.saga_flight_id);
+    if (item?.instructor_signed && !isSagaImported) {
       setErr("Não é possível apagar um voo assinado pelo instrutor.");
       return;
     }
@@ -886,6 +920,8 @@ export function MeusVoosTab() {
               openFlight(id);
             }}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
+            onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
+            reloadingSagaFlightId={reloadingSagaFlightId}
             showStudentPending={isStudentView}
             onStudentSuggestion={isStudentView ? openStudentSuggestionModal : undefined}
             onStudentWeightBalance={isStudentView ? openFutureWeightBalance : undefined}
@@ -900,6 +936,8 @@ export function MeusVoosTab() {
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
+            onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
+            reloadingSagaFlightId={reloadingSagaFlightId}
           />
           <FlightListPagingActions
             hasMore={Boolean(nextCursor)}
@@ -1081,6 +1119,19 @@ export function MeusVoosTab() {
                                 >
                                   Detalhes
                                 </button>
+                                {f.saga_flight_id ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleReloadSagaFlight(f);
+                                    }}
+                                    disabled={reloadingSagaFlightId === f.id}
+                                    className="rounded-lg border border-amber-600/40 bg-amber-900/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
+                                  >
+                                    {reloadingSagaFlightId === f.id ? "Recarregando..." : "Recarregar SAGA"}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -1105,7 +1156,7 @@ export function MeusVoosTab() {
                                   e.stopPropagation();
                                   void handleDelete(f.id);
                                 }}
-                                disabled={Boolean(f.instructor_signed)}
+                                disabled={Boolean(f.instructor_signed && !f.saga_flight_id)}
                                 className="ml-auto text-xs text-red-400/80 underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 Apagar
@@ -1209,6 +1260,19 @@ export function MeusVoosTab() {
                                 >
                                   Detalhes
                                 </button>
+                                {f.saga_flight_id ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleReloadSagaFlight(f);
+                                    }}
+                                    disabled={reloadingSagaFlightId === f.id}
+                                    className="rounded-lg border border-amber-600/40 bg-amber-900/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
+                                  >
+                                    {reloadingSagaFlightId === f.id ? "Recarregando..." : "Recarregar SAGA"}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -1245,7 +1309,7 @@ export function MeusVoosTab() {
           />
         </div>
       )}
-      {sagaImporting && (
+      {syncOverlayVisible && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4">
           <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
             <div className="mb-4 flex items-center gap-3">
@@ -1532,6 +1596,8 @@ function FlightTableSection({
   onExportFicha,
   exportingFichaId,
   onDelete,
+  onReloadSaga,
+  reloadingSagaFlightId,
   onStudentSuggestion,
   onStudentWeightBalance,
   showStudentPending = false,
@@ -1545,6 +1611,8 @@ function FlightTableSection({
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
   onDelete?: (id: string) => void;
+  onReloadSaga?: (flight: SavedFlightListItem) => void;
+  reloadingSagaFlightId?: string | null;
   onStudentSuggestion?: (id: string) => void;
   onStudentWeightBalance?: (id: string) => void;
   showStudentPending?: boolean;
@@ -1569,6 +1637,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Aluno</th>
                     <th className="px-3 py-2 font-semibold">Instrutor</th>
                     <th className="px-3 py-2 font-semibold">Matrícula</th>
+                    <th className="px-3 py-2 font-semibold">Missão</th>
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Fim</th> : null}
                     {!showStudentPending ? <th className="px-3 py-2 font-semibold">Rota</th> : null}
                     {!showStudentPending ? <th className="px-3 py-2 font-semibold">Duração</th> : null}
@@ -1601,6 +1670,9 @@ function FlightTableSection({
                           <span className={`rounded border px-1.5 py-0.5 ${aircraftColor(info?.aircraft ?? item.aircraft_ident ?? "")}`}>
                             {info?.aircraft ?? item.aircraft_ident ?? "—"}
                           </span>
+                        </td>
+                        <td className="max-w-56 px-3 py-2">
+                          <span className="line-clamp-2 break-words text-slate-300">{missionLabel(info)}</span>
                         </td>
                         {showStudentPending ? <td className="px-3 py-2">{info?.endTime || "—"}</td> : null}
                         {!showStudentPending ? <td className="px-3 py-2">{info?.fromTo ?? "—"}</td> : null}
@@ -1669,6 +1741,19 @@ function FlightTableSection({
                                   >
                                     Detalhes
                                   </button>
+                                  {item.saga_flight_id && onReloadSaga ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onReloadSaga(item);
+                                      }}
+                                      disabled={reloadingSagaFlightId === item.id}
+                                      className="rounded border border-amber-600/40 bg-amber-900/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
+                                    >
+                                      {reloadingSagaFlightId === item.id ? "Recarregando..." : "Recarregar SAGA"}
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     onClick={(e) => {

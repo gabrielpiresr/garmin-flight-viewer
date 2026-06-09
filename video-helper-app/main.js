@@ -91,7 +91,8 @@ function startHelper() {
   helperProc.on("message", async (message) => {
     if (!message || message.type !== "pick-files" || !message.requestId) return;
     try {
-      const result = await dialog.showOpenDialog({
+      showStatusWindow();
+      const result = await dialog.showOpenDialog(statusWindow, {
         title: "Selecionar gravacoes do voo",
         properties: ["openFile", "multiSelections"],
         filters: [{

@@ -15,6 +15,7 @@ import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import type {
   StudentTrainingTrack,
   TrainingMission,
+  TrainingMissionType,
   TrainingSelectionSnapshot,
   TrainingStage,
 } from "../../types/trainingTrack";
@@ -102,6 +103,42 @@ function dedupeExerciseGrades(exercises: FlightExerciseGrade[]): FlightExerciseG
     });
   }
   return Array.from(byTitle.values()).sort((a, b) => a.order - b.order);
+}
+
+function buildPrimaryTrainingSnapshotFromSelection(
+  tracks: StudentTrainingTrack[],
+  selectedTrackId: string | null,
+  selectedMissionIds: string[],
+): TrainingSelectionSnapshot | null {
+  if (!Array.isArray(selectedMissionIds) || selectedMissionIds.length === 0) return null;
+  const missionSet = new Set(selectedMissionIds.map((id) => String(id || "").trim()).filter(Boolean));
+  if (!missionSet.size) return null;
+  const orderedTracks = [
+    ...tracks.filter((track) => track.trackId === selectedTrackId),
+    ...tracks.filter((track) => track.trackId !== selectedTrackId),
+  ];
+  for (const studentTrack of orderedTracks) {
+    const track = studentTrack.track;
+    if (!track) continue;
+    for (const stage of track.stages ?? []) {
+      for (const mission of stage.missions ?? []) {
+        if (!missionSet.has(String(mission.id || "").trim())) continue;
+        return {
+          trackId: track.id,
+          trackName: track.name,
+          stageId: stage.id,
+          stageName: stage.name,
+          missionId: mission.id,
+          missionName: mission.name,
+          missionType: mission.type as TrainingMissionType,
+          durationMinutes: mission.durationMinutes,
+          maneuvers: mission.maneuvers ?? [],
+          maneuverSectionIds: mission.maneuverSectionIds ?? [],
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function mergeExerciseGrades(catalog: TrainingExercise[], saved: FlightExerciseGrade[]): FlightExerciseGrade[] {
@@ -448,12 +485,13 @@ export function PreencherFichaFlow({
       ?? studentTracks.find((t) => t.isPrimary && t.track)
       ?? studentTracks.find((t) => t.track);
 
-    // Build snapshot for first selected mission (primary)
-    const primaryMissionId = selectedMissionIds[0] ?? null;
+    // Build snapshot from the actual selected mission set, not only index 0.
     const snapshot: TrainingSelectionSnapshot | null =
-      primaryMissionId && primaryTrack?.track
-        ? buildTrainingSnapshot(primaryTrack.track, primaryMissionId)
-        : null;
+      buildPrimaryTrainingSnapshotFromSelection(studentTracks, selectedTrackId, selectedMissionIds)
+      ?? (() => {
+        const primaryMissionId = selectedMissionIds[0] ?? null;
+        return primaryMissionId && primaryTrack?.track ? buildTrainingSnapshot(primaryTrack.track, primaryMissionId) : null;
+      })();
 
     const currentDecoded = decodeFlightRecord(flight.csv_text);
     const baseMeta: FlightRecordMeta = currentDecoded.meta ?? {

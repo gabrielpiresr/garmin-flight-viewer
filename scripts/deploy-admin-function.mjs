@@ -25,6 +25,10 @@ const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "6a01ac8a0009fbf94f05";
 const API_KEY = process.env.APPWRITE_API_KEY;
 const FUNCTION_ID = "admin-users";
 const FUNCTION_TIMEOUT_SECONDS = Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300);
+const FUNCTION_EXECUTE = (process.env.ADMIN_USERS_FUNCTION_EXECUTE || "any")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 if (!API_KEY) {
   console.error("❌  APPWRITE_API_KEY is required.");
@@ -65,7 +69,7 @@ function createTarHeader(name, size, isDir) {
 function collectFiles(dir, rel = "") {
   const entries = [];
   for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name.startsWith(".")) continue;
+    if (name === "node_modules" || name === "deploy.tar.gz" || name.startsWith(".")) continue;
     const abs = join(dir, name);
     const relPath = rel ? `${rel}/${name}` : name;
     const st = statSync(abs);
@@ -159,7 +163,7 @@ const updated = await functions.update({
   functionId: FUNCTION_ID,
   name: functionInfo.name || "Admin Users",
   runtime: functionInfo.runtime || "node-22",
-  execute: Array.isArray(functionInfo.execute) && functionInfo.execute.length ? functionInfo.execute : ["any"],
+  execute: FUNCTION_EXECUTE.length ? FUNCTION_EXECUTE : ["any"],
   events: Array.isArray(functionInfo.events) ? functionInfo.events : [],
   schedule: typeof functionInfo.schedule === "string" ? functionInfo.schedule : "",
   timeout: FUNCTION_TIMEOUT_SECONDS,
