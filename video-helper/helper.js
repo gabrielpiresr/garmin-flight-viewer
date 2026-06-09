@@ -251,6 +251,32 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /upload-direct — envia um arquivo sem concat/ffmpeg
+  if (url === "/upload-direct" && req.method === "POST") {
+    let body;
+    try { body = await readJson(req); } catch { return json(res, { error: "JSON inválido" }, 400); }
+
+    if (activeJobId && !["done", "error"].includes(jobs.get(activeJobId)?.stage)) {
+      return json(res, { error: "Ja existe um video sendo processado.", activeJobId }, 409);
+    }
+    if (!body?.jobId || !body?.filePath || !body?.cfWorkerUrl || !body?.cfWorkerToken || !body?.videoKey) {
+      return json(res, { error: "Parametros obrigatorios ausentes para upload direto." }, 400);
+    }
+
+    const job = createJob(body.jobId);
+    activeJobId = body.jobId;
+    json(res, { ok: true, jobId: body.jobId });
+
+    setImmediate(() => runDirectUploadPipeline(body, job)
+      .catch((error) => {
+        sendProgress(body.jobId, { stage: "error", percent: 0, message: error.message });
+      })
+      .finally(() => {
+        if (activeJobId === body.jobId) activeJobId = null;
+      }));
+    return;
+  }
+
   const jobMatch = url.match(/^\/jobs\/([^/]+)$/);
   if (jobMatch && req.method === "GET") {
     const job = jobs.get(jobMatch[1]);
@@ -509,6 +535,51 @@ async function runPipeline(req, job) {
     fail(e.message);
     cleanup(tmpDir);
   }
+}
+
+async function runDirectUploadPipeline(req, job) {
+  const {
+    jobId,
+    filePath,
+    cfWorkerUrl,
+    cfWorkerToken,
+    videoKey,
+  } = req;
+
+  const ffprobe = findBin("ffprobe");
+  const resolvedPath = path.resolve(String(filePath || ""));
+  if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+    sendProgress(jobId, { stage: "error", percent: 0, message: "Arquivo nao encontrado para upload direto." });
+    return;
+  }
+  if (!isVideoFile(resolvedPath)) {
+    sendProgress(jobId, { stage: "error", percent: 0, message: "O upload direto aceita apenas arquivos de video." });
+    return;
+  }
+
+  sendProgress(jobId, { stage: "upload", percent: 0, strategy: "direct" });
+  const fileSize = fs.statSync(resolvedPath).size;
+  const fileUrl = await uploadMultipart(cfWorkerUrl, cfWorkerToken, videoKey, resolvedPath, (pct) => {
+    if (!job.cancelled) sendProgress(jobId, { stage: "upload", percent: pct, strategy: "direct" });
+  });
+  if (job.cancelled) {
+    sendProgress(jobId, { stage: "error", percent: 0, message: "Cancelado" });
+    return;
+  }
+
+  const durationSec = ffprobe ? (await probeDuration(ffprobe, resolvedPath)) ?? null : null;
+  sendProgress(jobId, {
+    stage: "done",
+    percent: 100,
+    strategy: "direct",
+    file_url: fileUrl,
+    file_size: fileSize,
+    duration_sec: durationSec,
+    telemetry_present: false,
+    telemetry_source: "none",
+    available_widgets: [],
+    telemetry_json: "",
+  });
 }
 
 // ─── FFmpeg helpers ────────────────────────────────────────────────────────────

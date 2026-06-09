@@ -1,6 +1,6 @@
 {
   "name": "flight-video-helper",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Processa gravações de voo localmente e envia para R2",
   "main": "helper.js",
   "scripts": {
