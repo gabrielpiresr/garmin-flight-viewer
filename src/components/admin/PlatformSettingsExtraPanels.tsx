@@ -20,7 +20,7 @@ const defaultBrandForm: EmailBrandSettingsInput = {
   logoFileId: null,
   primaryColor: "#0ea5e9",
   accentColor: "#10b981",
-  appUrl: typeof window !== "undefined" ? window.location.origin : "",
+  appUrl: "",
   supportEmail: "",
   footerText: "Este é um email automático da plataforma.",
   faviconUrl: "",
@@ -33,7 +33,7 @@ function toBrandForm(settings: EmailBrandSettings): EmailBrandSettingsInput {
     logoFileId: settings.logoFileId,
     primaryColor: settings.primaryColor,
     accentColor: settings.accentColor,
-    appUrl: settings.appUrl || (typeof window !== "undefined" ? window.location.origin : ""),
+    appUrl: settings.appUrl || "",
     supportEmail: settings.supportEmail,
     footerText: settings.footerText,
     faviconUrl: settings.faviconUrl ?? "",
@@ -340,7 +340,7 @@ export function AppearanceSettingsPanel() {
         </div>
       </div>
       <div className="flex justify-end">
-        <button type="button" onClick={() => void handleSave()} disabled={saving} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50">
+        <button type="button" onClick={() => void handleSave()} disabled={saving || loading} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50">
           {saving ? "Salvando..." : "Salvar aparência"}
         </button>
       </div>
