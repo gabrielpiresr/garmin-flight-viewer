@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { listOnboardingSteps } from "../lib/onboardingDb";
+import { openOnboardingPdf } from "../lib/onboardingPdf";
 import { SlideRenderer } from "../components/onboarding/SlideLayouts";
 import type { MediaPosition, OnboardingStep, SlideLayout } from "../types/onboarding";
 import type { ManeuverRichContent } from "../types/maneuver";
@@ -193,26 +194,42 @@ export function OnboardingPresentationPage() {
         {/* Top Bar */}
         <div className="absolute left-0 right-0 top-0 z-20 flex items-center justify-between px-3 py-3 sm:px-5 sm:py-4">
           <BackButton />
-          {canEdit && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setEditorOpen((prev) => !prev)}
-              className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs backdrop-blur-sm transition ${
-                editorOpen
-                  ? "border-cyan-500 bg-cyan-500/20 text-cyan-300"
-                  : "border-slate-700/80 bg-slate-900/80 text-slate-300 hover:bg-slate-800"
-              }`}
+              onClick={() => openOnboardingPdf(steps)}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-300 backdrop-blur-sm transition hover:bg-slate-800"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   strokeWidth={2}
-                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                  d="M12 16v-8m0 8l-3-3m3 3l3-3M5 20h14"
                 />
               </svg>
-              {editorOpen ? "Fechar editor" : "Editar apresentação"}
+              Baixar PDF
             </button>
-          )}
+            {canEdit && (
+              <button
+                onClick={() => setEditorOpen((prev) => !prev)}
+                className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs backdrop-blur-sm transition ${
+                  editorOpen
+                    ? "border-cyan-500 bg-cyan-500/20 text-cyan-300"
+                    : "border-slate-700/80 bg-slate-900/80 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                  />
+                </svg>
+                {editorOpen ? "Fechar editor" : "Editar apresentação"}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Slide */}

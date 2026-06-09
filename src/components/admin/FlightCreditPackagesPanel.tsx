@@ -5,7 +5,7 @@ import {
   saveFlightCreditSalesConfig,
 } from "../../lib/flightCreditSalesDb";
 import type { AircraftModel } from "../../types/admin";
-import type { FlightCreditPackage } from "../../types/flightCreditSales";
+import type { FlightCreditPackage, PackageEligibility } from "../../types/flightCreditSales";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
@@ -15,6 +15,11 @@ type PackageDraft = {
   validityDays: string;
   aircraftModelId: string;
   active: boolean;
+  eligibilityType: "all" | "saga_id_range" | "created_date_range";
+  sagaIdMin: string;
+  sagaIdMax: string;
+  createdFrom: string;
+  createdTo: string;
 };
 
 const emptyDraft: PackageDraft = {
@@ -23,6 +28,11 @@ const emptyDraft: PackageDraft = {
   validityDays: "90",
   aircraftModelId: "",
   active: true,
+  eligibilityType: "all",
+  sagaIdMin: "",
+  sagaIdMax: "",
+  createdFrom: "",
+  createdTo: "",
 };
 
 function formatBrl(value: number): string {
@@ -76,12 +86,18 @@ export function FlightCreditPackagesPanel() {
 
   function openEdit(item: FlightCreditPackage) {
     setEditingId(item.id);
+    const el = item.eligibility ?? { type: "all" as const };
     setDraft({
       hours: String(item.hours),
       hourPrice: String(item.hourPrice),
       validityDays: String(item.validityDays),
       aircraftModelId: item.aircraftModelId,
       active: item.active,
+      eligibilityType: el.type,
+      sagaIdMin: el.type === "saga_id_range" ? String(el.min ?? "") : "",
+      sagaIdMax: el.type === "saga_id_range" ? String(el.max ?? "") : "",
+      createdFrom: el.type === "created_date_range" ? (el.from ?? "") : "",
+      createdTo: el.type === "created_date_range" ? (el.to ?? "") : "",
     });
     setShowForm(true);
   }
@@ -101,6 +117,26 @@ export function FlightCreditPackagesPanel() {
       showToast({ variant: "warning", message: "Preencha horas, valor, validade e modelo com valores validos." });
       return;
     }
+
+    let eligibility: PackageEligibility;
+    if (draft.eligibilityType === "saga_id_range") {
+      const min = draft.sagaIdMin !== "" ? Number(draft.sagaIdMin) : null;
+      const max = draft.sagaIdMax !== "" ? Number(draft.sagaIdMax) : null;
+      if ((min !== null && !Number.isFinite(min)) || (max !== null && !Number.isFinite(max))) {
+        showToast({ variant: "warning", message: "Informe valores numericos validos para o range de ID SAGA." });
+        return;
+      }
+      eligibility = { type: "saga_id_range", min, max };
+    } else if (draft.eligibilityType === "created_date_range") {
+      eligibility = {
+        type: "created_date_range",
+        from: draft.createdFrom || null,
+        to: draft.createdTo || null,
+      };
+    } else {
+      eligibility = { type: "all" };
+    }
+
     const next: FlightCreditPackage = {
       id: editingId || crypto.randomUUID(),
       hours: Number(hours.toFixed(2)),
@@ -109,6 +145,7 @@ export function FlightCreditPackagesPanel() {
       aircraftModelId: model.id,
       aircraftModelName: model.name,
       active: draft.active,
+      eligibility,
     };
     setPackages((current) => editingId
       ? current.map((item) => item.id === editingId ? next : item)
@@ -205,6 +242,65 @@ export function FlightCreditPackagesPanel() {
               </select>
             </label>
           </div>
+          <div className="mt-3">
+            <label className="text-xs text-slate-400">Visivel para
+              <select
+                value={draft.eligibilityType}
+                onChange={(e) => setDraft((value) => ({ ...value, eligibilityType: e.target.value as PackageDraft["eligibilityType"] }))}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+              >
+                <option value="all">Todos os alunos</option>
+                <option value="saga_id_range">Alunos com ID SAGA entre X e Y</option>
+                <option value="created_date_range">Alunos cadastrados entre data X e Y</option>
+              </select>
+            </label>
+            {draft.eligibilityType === "saga_id_range" && (
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <label className="text-xs text-slate-400">ID SAGA minimo
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Sem limite inferior"
+                    value={draft.sagaIdMin}
+                    onChange={(e) => setDraft((value) => ({ ...value, sagaIdMin: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  />
+                </label>
+                <label className="text-xs text-slate-400">ID SAGA maximo
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Sem limite superior"
+                    value={draft.sagaIdMax}
+                    onChange={(e) => setDraft((value) => ({ ...value, sagaIdMax: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  />
+                </label>
+              </div>
+            )}
+            {draft.eligibilityType === "created_date_range" && (
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <label className="text-xs text-slate-400">Cadastrado a partir de
+                  <input
+                    type="date"
+                    value={draft.createdFrom}
+                    onChange={(e) => setDraft((value) => ({ ...value, createdFrom: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  />
+                </label>
+                <label className="text-xs text-slate-400">Cadastrado ate
+                  <input
+                    type="date"
+                    value={draft.createdTo}
+                    onChange={(e) => setDraft((value) => ({ ...value, createdTo: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
           <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
             <input type="checkbox" checked={draft.active} onChange={(e) => setDraft((value) => ({ ...value, active: e.target.checked }))} className="accent-emerald-500" />
             Pacote ativo
@@ -226,6 +322,26 @@ export function FlightCreditPackagesPanel() {
               <p className="text-xs text-slate-500">
                 {formatBrl(item.hourPrice)}/h · {formatBrl(item.hours * item.hourPrice)} · validade de {item.validityDays} dias
               </p>
+              {item.eligibility && item.eligibility.type !== "all" && (
+                <p className="mt-1 text-xs text-amber-400">
+                  {item.eligibility.type === "saga_id_range" && (
+                    <>
+                      ID SAGA:{" "}
+                      {item.eligibility.min !== null ? item.eligibility.min : "∞"}{" "}
+                      ate{" "}
+                      {item.eligibility.max !== null ? item.eligibility.max : "∞"}
+                    </>
+                  )}
+                  {item.eligibility.type === "created_date_range" && (
+                    <>
+                      Cadastro:{" "}
+                      {item.eligibility.from ?? "∞"}{" "}
+                      ate{" "}
+                      {item.eligibility.to ?? "∞"}
+                    </>
+                  )}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => openEdit(item)} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-700">Editar</button>

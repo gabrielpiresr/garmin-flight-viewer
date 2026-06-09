@@ -1,3 +1,8 @@
+export type PackageEligibility =
+  | { type: "all" }
+  | { type: "saga_id_range"; min: number | null; max: number | null }
+  | { type: "created_date_range"; from: string | null; to: string | null };
+
 export type FlightCreditPackage = {
   id: string;
   hours: number;
@@ -6,6 +11,7 @@ export type FlightCreditPackage = {
   aircraftModelId: string;
   aircraftModelName: string;
   active: boolean;
+  eligibility: PackageEligibility;
 };
 
 export type FlightCreditSalesConfig = {
