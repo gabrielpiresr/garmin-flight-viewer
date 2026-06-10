@@ -11086,7 +11086,7 @@ const CAKTO_SETTINGS_KEY = "cakto";
 const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
-const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published"];
+const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published", "cakto.sale_approved"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
   sdk.Permission.update(sdk.Role.label("admin")),
@@ -12655,6 +12655,17 @@ function formatFlightDateLabel(isoDate) {
   return `${d}/${mo}/${y}`;
 }
 
+function formatMoneyLabel(amount, currency) {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const code = /^[A-Z]{3}$/.test(cleanString(currency).toUpperCase()) ? cleanString(currency).toUpperCase() : "BRL";
+  try {
+    return value.toLocaleString("pt-BR", { style: "currency", currency: code });
+  } catch {
+    return `${code} ${value.toFixed(2)}`;
+  }
+}
+
 function buildNotificationMessage(event, flight) {
   const type = cleanString(event.eventType);
   const data = event.data && typeof event.data === "object" ? event.data : {};
@@ -12795,6 +12806,34 @@ function buildNotificationMessage(event, flight) {
         ...(transferSchool ? [["Transferência de", transferSchool]] : []),
       ],
       ctaLabel: "Abrir CRM",
+      url,
+    };
+  }
+  if (type === "cakto.sale_approved") {
+    const name = cleanString(data.customerName) || "Cliente";
+    const email = cleanString(data.customerEmail);
+    const amountLabel = formatMoneyLabel(data.amount, data.currency);
+    const paymentMethod = cleanString(data.paymentMethod);
+    const installments = Number(data.paymentInstallments) || 0;
+    const paymentLabel = paymentMethod
+      ? `${paymentMethod}${installments > 1 ? ` (${installments}x)` : ""}`
+      : "";
+    const productLabel = cleanString(data.productLabel);
+    const orderId = cleanString(data.orderId);
+    return {
+      eyebrow: "Vendas — Cakto",
+      title: "Nova venda aprovada",
+      intro: "Uma nova venda foi aprovada na Cakto.",
+      body: `${name}${email ? ` (${email})` : ""} realizou uma compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""}${paymentLabel ? ` via ${paymentLabel}` : ""}.`,
+      details: [
+        ["Cliente", name],
+        ...(email ? [["E-mail", email]] : []),
+        ...(productLabel ? [["Produto", productLabel]] : []),
+        ...(amountLabel ? [["Valor", amountLabel]] : []),
+        ...(paymentLabel ? [["Pagamento", paymentLabel]] : []),
+        ...(orderId ? [["Pedido", orderId]] : []),
+      ],
+      ctaLabel: "Ver vendas",
       url,
     };
   }
@@ -13087,6 +13126,40 @@ async function notifyCrmLeadEventToAdmins(eventType, leadData) {
       // skip user on failure
     }
   }
+}
+
+async function loadCaktoWebhookToken() {
+  // O settings doc "cakto" é a fonte da verdade (setup-cakto.mjs mantém o token
+  // do webhook sincronizado nele); a env pode ficar obsoleta após rotação.
+  const doc = await getSettingDoc("cakto");
+  const settings = parseJsonObject(doc?.settings_json, {});
+  try {
+    const fromSettings = cleanString(new URL(cleanString(settings.webhookUrl)).searchParams.get("token"));
+    if (fromSettings) return fromSettings;
+  } catch {
+    // Sem webhookUrl válida — tenta a env abaixo.
+  }
+  return cleanString(process.env.CAKTO_WEBHOOK_TOKEN);
+}
+
+function timingSafeEqualString(left, right) {
+  const a = Buffer.from(cleanString(left));
+  const b = Buffer.from(cleanString(right));
+  return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+}
+
+async function notifyCaktoSaleToAdmins(sale) {
+  const safeSale = sale && typeof sale === "object" ? sale : {};
+  const receiptId = cleanString(safeSale.receiptId);
+  const dedupeKey = `cakto.sale_approved:${receiptId || sha256Hex(JSON.stringify(safeSale))}`;
+  const adminIds = await listAdminUserIds();
+  if (adminIds.length === 0) return [];
+  return dispatchNotificationEvent("system", {
+    eventType: "cakto.sale_approved",
+    dedupeKey,
+    recipientUserIds: adminIds,
+    data: safeSale,
+  });
 }
 
 const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h"]);
@@ -15196,6 +15269,18 @@ function sampleEventForTemplate(templateType) {
         ],
       },
     },
+    "cakto.sale_approved": {
+      eventType: "cakto.sale_approved",
+      data: {
+        customerName: "João Silva",
+        customerEmail: "joao@example.com",
+        amount: 4500,
+        currency: "BRL",
+        paymentMethod: "PIX",
+        productLabel: "Pacote 10h — C152",
+        orderId: "ORD-12345",
+      },
+    },
   };
   return samples[eventType] || {
     eventType: "test",
@@ -15904,6 +15989,17 @@ module.exports = async ({ req, res, log, error }) => {
       if (!validTypes.has(evtType)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
       await notifyCrmLeadEventToAdmins(evtType, payload.leadData);
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "notifyCaktoSaleEvent") {
+      // Chamada interna da function cakto-webhook — autenticada pelo token do webhook.
+      const expectedToken = await loadCaktoWebhookToken();
+      if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
+        return jsonResponse(res, 401, { message: "Token inválido." });
+      }
+      const deliveries = await notifyCaktoSaleToAdmins(payload.sale);
+      log(`[notifyCaktoSaleEvent] receipt=${cleanString(payload.sale?.receiptId)} deliveries=${JSON.stringify(deliveries)}`);
+      return jsonResponse(res, 200, { ok: true, deliveries });
     }
 
     if (action === "dispatchEvent") {

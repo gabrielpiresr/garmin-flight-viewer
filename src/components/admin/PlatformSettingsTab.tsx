@@ -165,6 +165,7 @@ const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
   { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },
+  { id: "cakto.sale_approved", label: "Venda Cakto aprovada" },
 ];
 
 const emptyForm: EmailSettingsInput = {

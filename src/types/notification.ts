@@ -10,7 +10,8 @@ export type NotificationEventType =
   | "notice.published"
   | "schedule.published"
   | "crm.lead_qualified"
-  | "crm.lead_registered";
+  | "crm.lead_registered"
+  | "cakto.sale_approved";
 
 export type EmailTemplateType = NotificationEventType | "test";
 

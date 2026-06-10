@@ -7,7 +7,9 @@ const client = new sdk.Client()
   .setKey(process.env.APPWRITE_API_KEY || "");
 
 const databases = new sdk.Databases(client);
+const functionsApi = new sdk.Functions(client);
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID || "";
+const ADMIN_USERS_FUNCTION_ID = process.env.ADMIN_USERS_FUNCTION_ID || "admin-users";
 const RECEIPTS_COLLECTION_ID = process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || "cakto_receipts";
 const PROPOSALS_COLLECTION_ID = process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || "crm_proposals";
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || "student_credits";
@@ -533,6 +535,35 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
   }
 }
 
+async function notifyAdminsOfSale(receiptId, normalized, proposal) {
+  const metadata = safeParse(proposal?.products_json, null);
+  const snapshot = metadata && !Array.isArray(metadata) ? asObject(metadata.snapshot) : {};
+  const hours = Number(snapshot.hours);
+  const productLabel = Number.isFinite(hours) && hours > 0 && clean(snapshot.aircraftModelName)
+    ? `${hours}h — ${clean(snapshot.aircraftModelName)}`
+    : "";
+  await functionsApi.createExecution({
+    functionId: ADMIN_USERS_FUNCTION_ID,
+    async: true,
+    body: JSON.stringify({
+      action: "notifyCaktoSaleEvent",
+      token: WEBHOOK_TOKEN,
+      sale: {
+        receiptId,
+        customerName: normalized.customerName,
+        customerEmail: normalized.customerEmail,
+        amount: normalized.amount,
+        currency: normalized.currency,
+        paymentMethod: normalized.paymentMethod,
+        paymentInstallments: normalized.paymentInstallments,
+        orderId: normalized.orderId,
+        productLabel,
+        eventAt: normalized.eventAt || normalized.receivedAt,
+      },
+    }),
+  });
+}
+
 function normalize(payload, receivedAt) {
   const data = payloadData(payload);
   const order = asObject(payload.order || data.order || data);
@@ -649,6 +680,13 @@ module.exports = async ({ req, res, log, error }) => {
       receiptCreated = true;
     } catch (err) {
       if (Number(err?.code) !== 409) throw err;
+    }
+    if (receiptCreated && normalized.eventType === "purchase_approved") {
+      try {
+        await notifyAdminsOfSale(documentId, normalized, proposal);
+      } catch (notifyError) {
+        error(`Falha ao notificar admins da venda: ${notifyError?.message || notifyError}`);
+      }
     }
     const proposalMetadata = safeParse(proposal?.products_json, null);
     if (normalized.eventType === "purchase_approved" && proposalMetadata?.kind === "student_credit_package") {

@@ -177,6 +177,7 @@ await upsertVar("APPWRITE_PROFILES_COLLECTION_ID", PROFILES_ID);
 await upsertVar("APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", PLATFORM_SETTINGS_ID);
 await upsertVar("CAKTO_WEBHOOK_TOKEN", currentToken, true);
 await upsertVar("SCHOOL_ID", env.VITE_SCHOOL_ID || "escola_principal");
+await upsertVar("ADMIN_USERS_FUNCTION_ID", env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users");
 await upsertVar("SAGA_BASE_URL", "https://epeac.saga.aero");
 await upsertVar("SAGA_CREDIT_BANK_ID", "6");
 await upsertVar("SAGA_CREDIT_TYPE", "GENERIC");
