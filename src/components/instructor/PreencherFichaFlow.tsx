@@ -492,6 +492,23 @@ export function PreencherFichaFlow({
         const primaryMissionId = selectedMissionIds[0] ?? null;
         return primaryMissionId && primaryTrack?.track ? buildTrainingSnapshot(primaryTrack.track, primaryMissionId) : null;
       })();
+    // Snapshots de todas as missões selecionadas (trilha selecionada primeiro).
+    const orderedSnapshotTracks = [
+      ...studentTracks.filter((t) => t.trackId === selectedTrackId),
+      ...studentTracks.filter((t) => t.trackId !== selectedTrackId),
+    ];
+    const snapshots = selectedMissionIds
+      .map((missionId) => {
+        for (const studentTrack of orderedSnapshotTracks) {
+          const built = buildTrainingSnapshot(studentTrack.track, missionId);
+          if (built) return built;
+        }
+        return null;
+      })
+      .filter((item): item is TrainingSelectionSnapshot => Boolean(item));
+    const cleanedMissionIds = Array.from(
+      new Set(selectedMissionIds.map((id) => String(id || "").trim()).filter(Boolean)),
+    );
 
     const currentDecoded = decodeFlightRecord(flight.csv_text);
     const baseMeta: FlightRecordMeta = currentDecoded.meta ?? {
@@ -618,6 +635,23 @@ export function PreencherFichaFlow({
       };
     }
 
+    // Grava a missão também no meta da ficha (etapa "Pré voo" lê o meta primeiro):
+    // sem isso a ficha abria sem missão mesmo com o documento correto.
+    const trainingTrackIdFinal = snapshot?.trackId ?? flight.training_track_id ?? null;
+    if (trainingTrackIdFinal && (snapshot || cleanedMissionIds.length > 0)) {
+      finalMeta = {
+        ...finalMeta,
+        training: {
+          trackId: trainingTrackIdFinal,
+          stageId: snapshot?.stageId,
+          missionId: snapshot?.missionId,
+          missionIds: cleanedMissionIds,
+          snapshot,
+          snapshots,
+        },
+      };
+    }
+
     const csvPayload = encodeFlightRecord({ meta: finalMeta, telemetryCsv: telemetryCsv ?? "", telemetryFiles: [] });
 
 
@@ -626,10 +660,11 @@ export function PreencherFichaFlow({
       instructorUserId: user.id,
       csvText: csvPayload,
       flightStatus: "Realizado",
-      trainingTrackId: snapshot?.trackId ?? flight.training_track_id ?? null,
+      trainingTrackId: trainingTrackIdFinal,
       trainingStageId: snapshot?.stageId ?? null,
       trainingMissionId: snapshot?.missionId ?? null,
       trainingSnapshot: snapshot,
+      trainingSnapshots: snapshots,
     });
 
     setSaving(false);

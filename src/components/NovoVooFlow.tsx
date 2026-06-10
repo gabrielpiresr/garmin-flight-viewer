@@ -28,7 +28,7 @@ import { parseGarminCsv } from "../lib/parseGarminCsv";
 import { getProfile, listAssignableInstructors, listAssignableStudents, type PilotProfile, type StudentOption } from "../lib/rbac";
 import { lookupSagaFlight, type SagaLookupFlightResult } from "../lib/sagaImportDb";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
-import { buildTrainingSnapshot, listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import { buildTrainingSnapshot, listStudentTrainingTracks, parseTrainingSnapshotsJson } from "../lib/trainingTracksDb";
 import { listManeuverSections } from "../lib/maneuversDb";
 import type { ManeuverSection } from "../types/maneuver";
 import { computeFlightEventTimes, computeScheduledBlockTimes } from "../lib/flightLogbookTimes";
@@ -848,6 +848,10 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
   const [tracksLoading, setTracksLoading] = useState(false);
   const [trainingTrackId, setTrainingTrackId] = useState("");
   const [trainingMissionIds, setTrainingMissionIds] = useState<string[]>([]);
+  // Snapshots salvos na ficha: fallback de exibição/persistência quando a trilha
+  // atual do aluno não contém mais a missão (trilha trocada, missão removida etc.).
+  const [loadedTrainingSnapshots, setLoadedTrainingSnapshots] = useState<TrainingSelectionSnapshot[]>([]);
+  const loadedTrainingTrackIdRef = useRef<string>("");
 
   const [legs, setLegs] = useState<LegDraft[]>([emptyLeg(flightDate)]);
   const [sagaFlightId, setSagaFlightId] = useState("");
@@ -1003,6 +1007,9 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
         setStudentTracks(active);
         setTrainingTrackId((current) => {
           if (current && active.some((row) => row.trackId === current)) return current;
+          // Trilha gravada na ficha carregada: preserva mesmo fora da lista ativa
+          // (trilha pausada/trocada) para não perder a missão salva do voo.
+          if (current && current === loadedTrainingTrackIdRef.current) return current;
           return active.find((row) => row.isPrimary)?.trackId ?? active[0]?.trackId ?? "";
         });
       })
@@ -1038,12 +1045,14 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           setCancellationReasonText("");
           setStartTime("");
           setAircraft(data.aircraft_ident ?? "");
+          loadedTrainingTrackIdRef.current = data.training_track_id ?? "";
           setTrainingTrackId(data.training_track_id ?? "");
           setTrainingMissionIds(
             normalizeTrainingMissionIds({
               legacyMissionId: data.training_mission_id,
             }),
           );
+          setLoadedTrainingSnapshots(parseTrainingSnapshotsJson(data.training_snapshot_json));
           setScheduleMeta(undefined);
           setExerciseGrades(mergeExerciseGrades(exerciseCatalogRef.current, []));
           setLoadedInstructorName(instructorFromDb?.data?.fullName?.trim() || "");
@@ -1081,6 +1090,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
               : ""),
         );
         setAircraft(meta.header.aircraft ?? data.aircraft_ident ?? "");
+        loadedTrainingTrackIdRef.current = meta.training?.trackId ?? data.training_track_id ?? "";
         setTrainingTrackId(meta.training?.trackId ?? data.training_track_id ?? "");
         setTrainingMissionIds(
           normalizeTrainingMissionIds({
@@ -1088,6 +1098,17 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
             legacyMissionId: meta.training?.missionId ?? data.training_mission_id,
           }),
         );
+        setLoadedTrainingSnapshots(() => {
+          const fromMeta = [
+            ...(meta.training?.snapshots ?? []),
+            ...(meta.training?.snapshot ? [meta.training.snapshot] : []),
+          ].filter((snapshot) => String(snapshot?.missionId ?? "").trim());
+          const byMission = new Map(fromMeta.map((snapshot) => [snapshot.missionId, snapshot]));
+          for (const snapshot of parseTrainingSnapshotsJson(data.training_snapshot_json)) {
+            if (!byMission.has(snapshot.missionId)) byMission.set(snapshot.missionId, snapshot);
+          }
+          return [...byMission.values()];
+        });
         setObjectiveMd(meta.preFlight.objectiveMd ?? "");
         setBriefingMd(meta.preFlight.briefingMd ?? DEFAULT_BRIEFING);
         setInstructorSuggestionMd(meta.preFlight.instructorSuggestionMd ?? "");
@@ -1214,12 +1235,21 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       ) ?? [],
     [selectedTrainingTrack],
   );
+  const loadedSnapshotsByMissionId = useMemo(
+    () => new Map(loadedTrainingSnapshots.map((snapshot) => [snapshot.missionId, snapshot])),
+    [loadedTrainingSnapshots],
+  );
   const selectedTrainingSnapshots = useMemo(
     () =>
       trainingMissionIds
-        .map((missionId) => buildTrainingSnapshot(selectedTrainingTrack, missionId))
+        .map(
+          (missionId) =>
+            buildTrainingSnapshot(selectedTrainingTrack, missionId) ??
+            loadedSnapshotsByMissionId.get(missionId) ??
+            null,
+        )
         .filter((snapshot): snapshot is TrainingSelectionSnapshot => Boolean(snapshot)),
-    [selectedTrainingTrack, trainingMissionIds],
+    [loadedSnapshotsByMissionId, selectedTrainingTrack, trainingMissionIds],
   );
   const selectedTrainingSnapshot = buildPrimarySnapshotFromSelection(
     studentTracks,
@@ -1310,10 +1340,15 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
 
   useEffect(() => {
     if (trainingMissionIds.length === 0) return;
+    // Não podar enquanto as trilhas do aluno não chegaram (ou a trilha do voo
+    // não está no catálogo): sem isso, abrir uma ficha salva apagava a missão.
+    if (tracksLoading || !selectedTrainingTrack) return;
     const available = new Set(trainingMissions.map((row) => row.mission.id));
-    const next = trainingMissionIds.filter((missionId) => available.has(missionId));
+    const next = trainingMissionIds.filter(
+      (missionId) => available.has(missionId) || loadedSnapshotsByMissionId.has(missionId),
+    );
     if (next.length !== trainingMissionIds.length) setTrainingMissionIds(next);
-  }, [trainingMissionIds, trainingMissions]);
+  }, [loadedSnapshotsByMissionId, selectedTrainingTrack, tracksLoading, trainingMissionIds, trainingMissions]);
 
   useEffect(() => {
     if (occurrenceCode !== NO_OCCURRENCE && !occurrences.trim()) {
@@ -1791,6 +1826,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       trainingStageId: selectedTrainingSnapshot?.stageId ?? null,
       trainingMissionId: selectedTrainingSnapshot?.missionId ?? null,
       trainingSnapshot: selectedTrainingSnapshot,
+      trainingSnapshots: selectedTrainingSnapshots,
       telemetryMetrics,
       telemetryAlertParsed: parsedTelemetry,
       flightStatus: normalizedStatus,
@@ -2144,6 +2180,12 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                       {row.track?.name || row.trackId}
                     </option>
                   ))}
+                  {trainingTrackId && !studentTracks.some((row) => row.trackId === trainingTrackId) ? (
+                    <option value={trainingTrackId}>
+                      {(loadedTrainingSnapshots.find((snapshot) => snapshot.trackId === trainingTrackId)?.trackName ||
+                        trainingTrackId) + " (trilha do voo)"}
+                    </option>
+                  ) : null}
                 </select>
               </label>
               <div className="text-xs text-slate-400">
@@ -2198,6 +2240,30 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                           </label>
                         );
                       })}
+                      {selectedTrainingSnapshots
+                        .filter((snapshot) => !trainingMissions.some((row) => row.mission.id === snapshot.missionId))
+                        .map((snapshot) => (
+                          <label
+                            key={snapshot.missionId}
+                            className={`flex cursor-pointer items-start gap-2 rounded-md border border-amber-600/50 bg-amber-500/10 px-2 py-2 text-slate-100 transition ${!canEdit ? "cursor-default opacity-70" : ""}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked
+                              disabled={!canEditMissionSelection}
+                              onChange={() =>
+                                setTrainingMissionIds((current) => current.filter((missionId) => missionId !== snapshot.missionId))
+                              }
+                              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-amber-500"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-sm font-semibold">{snapshot.missionName}</span>
+                              <span className="block text-[11px] text-amber-300/80">
+                                Missão salva na ficha (fora da trilha atual)
+                              </span>
+                            </span>
+                          </label>
+                        ))}
                     </div>
                   )}
                 </div>

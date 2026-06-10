@@ -11,6 +11,7 @@ import type { FlightTelemetryMetricsBundle } from "./flightTelemetryMetrics";
 import type { ParseResult } from "./parseGarminCsv";
 import type { UserRole } from "./rbac";
 import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
+import { serializeTrainingSnapshotJson } from "./trainingTracksDb";
 import { createAdminAuditEvent } from "./adminUsersDb";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
@@ -1082,6 +1083,7 @@ export async function insertFlight(payload: {
   trainingStageId?: string | null;
   trainingMissionId?: string | null;
   trainingSnapshot?: TrainingSelectionSnapshot | null;
+  trainingSnapshots?: TrainingSelectionSnapshot[] | null;
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
   telemetryAlertParsed?: ParseResult | null;
 }): Promise<{ id: string | null; error: Error | null }> {
@@ -1143,7 +1145,7 @@ export async function insertFlight(payload: {
         training_track_id: payload.trainingTrackId ?? null,
         training_stage_id: payload.trainingStageId ?? null,
         training_mission_id: payload.trainingMissionId ?? null,
-        training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
+        training_snapshot_json: serializeTrainingSnapshotJson(payload.trainingSnapshot, payload.trainingSnapshots),
         flight_seq_number,
         flight_status: "Confirmado",
       },
@@ -1194,6 +1196,7 @@ export async function updateFlight(id: string, payload: {
   trainingStageId?: string | null;
   trainingMissionId?: string | null;
   trainingSnapshot?: TrainingSelectionSnapshot | null;
+  trainingSnapshots?: TrainingSelectionSnapshot[] | null;
   telemetryMetrics?: FlightTelemetryMetricsBundle | null;
   telemetryAlertParsed?: ParseResult | null;
   flightStatus?: FlightStatus | null;
@@ -1228,7 +1231,7 @@ export async function updateFlight(id: string, payload: {
       ? payload.trainingMissionId
       : ((current.training_mission_id as string | null | undefined) ?? null);
     const trainingSnapshotJson = payload.trainingSnapshot !== undefined
-      ? (payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null)
+      ? serializeTrainingSnapshotJson(payload.trainingSnapshot, payload.trainingSnapshots)
       : ((current.training_snapshot_json as string | null | undefined) ?? null);
     // INVA/admin no browser não podem reenviar ACL com permissões de outro papel (ex.: label:admin) — Appwrite 401.
     const permissions =
@@ -1334,6 +1337,19 @@ export async function updateFlight(id: string, payload: {
     const appwriteCode = (err as unknown as { code?: number }).code;
     if (payload.actorRole === "instrutor" && (appwriteCode === 401 || err.message?.toLowerCase().includes("not authorized"))) {
       const { instructorPatchFlight } = await import("./instructorPatchFlightDb");
+      // Ajuste de missão em voo assinado: a função só aceita csvText + missão
+      // (status/trilha/etapa precisam ficar de fora do body).
+      if (payload.allowSignedMissionEdit) {
+        return instructorPatchFlight({
+          flightId: id,
+          instructorUserId: payload.actorUserId,
+          csvText: payload.csv_text,
+          trainingMissionId: payload.trainingMissionId,
+          trainingSnapshot: payload.trainingSnapshot,
+          trainingSnapshots: payload.trainingSnapshots,
+          allowSignedMissionEdit: true,
+        });
+      }
       return instructorPatchFlight({
         flightId: id,
         instructorUserId: payload.actorUserId,
@@ -1343,6 +1359,7 @@ export async function updateFlight(id: string, payload: {
         trainingStageId: payload.trainingStageId,
         trainingMissionId: payload.trainingMissionId,
         trainingSnapshot: payload.trainingSnapshot,
+        trainingSnapshots: payload.trainingSnapshots,
       });
     }
     return { error: err };

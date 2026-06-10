@@ -266,6 +266,48 @@ export function buildTrainingSnapshot(
   };
 }
 
+/**
+ * Lê o training_snapshot_json de um voo, aceitando tanto o formato legado
+ * (um único snapshot) quanto o formato com `snapshots` embutido (multi-missão).
+ * Retorna a lista de snapshots (primário primeiro), sem duplicar missionId.
+ */
+export function parseTrainingSnapshotsJson(raw: string | null | undefined): TrainingSelectionSnapshot[] {
+  if (!raw || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as
+      | (TrainingSelectionSnapshot & { snapshots?: TrainingSelectionSnapshot[] })
+      | null;
+    if (!parsed || typeof parsed !== "object") return [];
+    const candidates = [parsed, ...(Array.isArray(parsed.snapshots) ? parsed.snapshots : [])];
+    const byMission = new Map<string, TrainingSelectionSnapshot>();
+    for (const candidate of candidates) {
+      const missionId = String(candidate?.missionId ?? "").trim();
+      if (!missionId || byMission.has(missionId)) continue;
+      byMission.set(missionId, candidate);
+    }
+    return [...byMission.values()];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Serializa a seleção de treinamento para o training_snapshot_json do voo.
+ * Mantém o snapshot primário na raiz (compatível com leitores legados) e,
+ * quando há mais de uma missão, embute a lista completa em `snapshots`.
+ */
+export function serializeTrainingSnapshotJson(
+  primary: TrainingSelectionSnapshot | null | undefined,
+  snapshots?: TrainingSelectionSnapshot[] | null,
+): string | null {
+  const list = (snapshots ?? []).filter((snapshot) => String(snapshot?.missionId ?? "").trim());
+  const root = primary ?? list[0] ?? null;
+  if (!root) return null;
+  const extras = list.filter((snapshot) => snapshot.missionId !== root.missionId);
+  if (extras.length === 0) return JSON.stringify(root);
+  return JSON.stringify({ ...root, snapshots: [root, ...extras] });
+}
+
 const VALID_STATUS_TRANSITIONS: Record<StudentTrainingTrackStatus, StudentTrainingTrackStatus[]> = {
   active: ["paused", "completed"],
   paused: ["active", "completed"],

@@ -68,14 +68,18 @@ async function upsertVariable(functions, key, value, secret = false) {
 }
 
 async function ensureFunction(functions) {
+  // Execução pública (Role.any) é obrigatória: o link público de flight review e o
+  // bootstrap de permissões executam a função como guest. Schedule/timeout espelham
+  // deploy-admin-function.mjs — NÃO sobrescrever a config quando a função já existe
+  // (um update aqui com valores antigos já derrubou o link público em produção).
   const params = {
     functionId,
     name: "Admin Users",
     runtime: sdk.Runtime.Node22,
-    execute: [sdk.Role.users()],
+    execute: [sdk.Role.any()],
     events: [],
-    schedule: "*/15 * * * *",
-    timeout: 60,
+    schedule: process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 */12 * * *",
+    timeout: Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300),
     enabled: true,
     logging: true,
     entrypoint: "src/main.js",
@@ -90,8 +94,7 @@ async function ensureFunction(functions) {
 
   try {
     await functions.get({ functionId });
-    await functions.update(params);
-    console.log(`Function updated: ${functionId}`);
+    console.log(`Function exists: ${functionId} (config preservada — atualizada só pelo deploy-admin-function.mjs)`);
   } catch (error) {
     if (error?.code !== 404) throw error;
     await functions.create(params);

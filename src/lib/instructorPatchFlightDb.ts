@@ -1,6 +1,7 @@
 import { functions, INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID } from "./appwrite";
 import type { FlightStatus } from "./flightsDb";
 import type { FlightWeightBalanceMeta } from "./weightBalance";
+import { serializeTrainingSnapshotJson } from "./trainingTracksDb";
 import type { TrainingSelectionSnapshot } from "../types/trainingTrack";
 
 export type InstructorPatchFlightPayload = {
@@ -12,6 +13,7 @@ export type InstructorPatchFlightPayload = {
   trainingStageId?: string | null;
   trainingMissionId?: string | null;
   trainingSnapshot?: TrainingSelectionSnapshot | null;
+  trainingSnapshots?: TrainingSelectionSnapshot[] | null;
   allowSignedMissionEdit?: boolean;
 };
 
@@ -35,7 +37,7 @@ export async function instructorPatchFlight(
       ...(payload.trainingStageId !== undefined ? { trainingStageId: payload.trainingStageId } : {}),
       ...(payload.trainingMissionId !== undefined ? { trainingMissionId: payload.trainingMissionId } : {}),
       ...(payload.trainingSnapshot !== undefined
-        ? { trainingSnapshotJson: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null }
+        ? { trainingSnapshotJson: serializeTrainingSnapshotJson(payload.trainingSnapshot, payload.trainingSnapshots) }
         : {}),
       allowSignedMissionEdit: payload.allowSignedMissionEdit === true,
     };

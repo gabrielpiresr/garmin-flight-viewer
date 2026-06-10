@@ -3247,9 +3247,6 @@ function buildSagaUnsegmentedCredits(purchases) {
 
 async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode = false } = {}) {
   if (!STUDENT_CREDITS_COLLECTION_ID) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1628',message:'credit skipped missing credits collection',data:{userId,model:cleanString(credit?.model)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "credits_collection_missing", aircraft: cleanString(credit.model) };
   }
   const sagaModel = cleanString(credit.model);
@@ -3260,15 +3257,9 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
     hours = sagaFallbackHoursFromCells(credit.rawCells);
   }
   if (!modelId) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1635',message:'credit skipped missing model mapping',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),model:sagaModel,hoursRaw:cleanString(credit?.hours||credit?.hoursHhmm)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "missing_credit_aircraft_mapping", aircraft: sagaModel };
   }
   if (hours <= 0) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1636',message:'credit skipped zero hours',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),model:sagaModel,hoursRaw:cleanString(credit?.hours||credit?.hoursHhmm),hours},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "zero_credit_balance", aircraft: sagaModel };
   }
   const docId = sagaCreditDocId(testMode, userId, credit);
@@ -3307,9 +3298,6 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
   };
   const existing = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId).catch(() => null);
   if (existing) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:1661',message:'credit updated existing doc',data:{userId,sagaUserId:cleanString(credit?.sagaUserId),docId,model:sagaModel,hours},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       await databases.updateDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
         ...data,
@@ -4613,6 +4601,35 @@ function sagaImportMetaLegFromLookup(leg, summary, fallbackDate) {
   };
 }
 
+// Bloco meta.training do registro da ficha, espelhando os campos materializados
+// do documento (a ficha no app lê meta.training antes dos campos do documento).
+function buildSagaTrainingMetaBlock(materialized) {
+  const trackId = cleanString(materialized.training_track_id);
+  if (!trackId) return null;
+  const missionId = cleanString(materialized.training_mission_id) || null;
+  let snapshot = null;
+  try {
+    const parsed = JSON.parse(cleanString(materialized.training_snapshot_json) || "null");
+    if (parsed && typeof parsed === "object") snapshot = parsed;
+  } catch {
+    snapshot = null;
+  }
+  const snapshots = [];
+  for (const candidate of [snapshot, ...(Array.isArray(snapshot?.snapshots) ? snapshot.snapshots : [])]) {
+    const candidateMissionId = cleanString(candidate?.missionId);
+    if (!candidateMissionId || snapshots.some((item) => cleanString(item.missionId) === candidateMissionId)) continue;
+    snapshots.push(candidate);
+  }
+  return {
+    trackId,
+    stageId: cleanString(materialized.training_stage_id) || undefined,
+    missionId: missionId || undefined,
+    missionIds: Array.from(new Set([missionId, ...snapshots.map((item) => cleanString(item.missionId))].filter(Boolean))),
+    snapshot,
+    snapshots,
+  };
+}
+
 function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId, pdfRecord = null) {
   const lastLeg = group.legs[group.legs.length - 1] || firstLeg;
   const flightDate = materialized.flight_date || "";
@@ -4627,11 +4644,13 @@ function buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, in
   const firstTakeoff = metaLegs.find((leg) => cleanString(leg.takeoff))?.takeoff || "";
   const lastLanding = [...metaLegs].reverse().find((leg) => cleanString(leg.landing))?.landing || "";
   const pdfOk = pdfRecord?.ok === true;
+  const trainingMeta = buildSagaTrainingMetaBlock(materialized);
   const meta = {
     source: "saga",
     sagaFlightId: group.id,
     sagaFlightGroupKey: groupKey,
     sagaFlightGroupOrdinal: group.ordinal || 1,
+    ...(trainingMeta ? { training: trainingMeta } : {}),
     header: {
       studentUserId: studentUserId || "",
       studentLabel: cleanString(firstLeg.aluno),
@@ -4820,7 +4839,7 @@ async function ensureSagaStudentTrack(studentUserId, trainingTrackId) {
   }
 }
 
-async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode = false, cookieJar = null, logs = null, pdfRecordOverride = undefined, forceStudentUserId = null, forceInstructorUserId = null, existingDocId = null, skipMissionMapping = false } = {}) {
+async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode = false, cookieJar = null, logs = null, pdfRecordOverride = undefined, forceStudentUserId = null, forceInstructorUserId = null, existingDocId = null, skipMissionMapping = false, missionRemapped = false } = {}) {
   const firstLeg = group.legs[0] || {};
   const groupKey = cleanString(group.key || group.id);
   const sagaAircraft = cleanString(firstLeg.aeronave);
@@ -4839,21 +4858,12 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     course: sagaCourse,
   };
   if (!aircraftIdent) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2664',message:'flight skipped missing aircraft mapping',data:{groupId:group?.id,groupKey,sagaAircraft,date:cleanString(firstLeg?.dataDoVoo),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "missing_aircraft_mapping", ...baseFailure };
   }
   if (!trainingTrackId) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2665',message:'flight skipped missing course mapping',data:{groupId:group?.id,groupKey,sagaCourse,date:cleanString(firstLeg?.dataDoVoo),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "missing_course_mapping", ...baseFailure };
   }
   if (!studentUserId) {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H1',location:'main.js:2666',message:'flight skipped missing student mapping',data:{groupId:group?.id,groupKey,date:cleanString(firstLeg?.dataDoVoo),student:cleanString(firstLeg?.aluno),studentCanac:cleanString(firstLeg?.canacAluno)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return { skipped: true, reason: "missing_student", ...baseFailure };
   }
 
@@ -4891,6 +4901,7 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     training_stage_id: resolvedMission.stageId,
     training_mission_id: resolvedMission.missionId,
     training_snapshot_json: JSON.stringify({ ...resolvedMission.snapshot, course: sagaCourse, mission: rawMission || null }),
+    training_mission_ids_json: resolvedMission.missionId ? JSON.stringify([resolvedMission.missionId]) : null,
     flight_status: "Realizado",
     instructor_signed: true,
     student_signed: false,
@@ -4913,15 +4924,33 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
         : `Ficha SAGA ${group.id}: ${pdfRecord?.message || "sem dados aplicados"}`);
     }
   }
-  if (existingDoc && skipMissionMapping) {
+  // Missão ajustada manualmente no app (snapshot sem source "saga"): reimports e
+  // recargas não devem sobrescrever, exceto quando o usuário remapeia explicitamente.
+  const existingSnapshotSource = (() => {
+    try {
+      const parsed = JSON.parse(cleanString(existingDoc?.training_snapshot_json) || "null");
+      return parsed && typeof parsed === "object" ? cleanString(parsed.source) : "";
+    } catch {
+      return "";
+    }
+  })();
+  const manualMissionAdjustment = Boolean(
+    existingDoc &&
+    cleanString(existingDoc.training_mission_id) &&
+    existingSnapshotSource !== "saga" &&
+    existingSnapshotSource !== "saga_schedule",
+  );
+  const preserveExistingTraining = Boolean(existingDoc) && !missionRemapped && (skipMissionMapping || manualMissionAdjustment);
+  if (preserveExistingTraining) {
     materialized.training_track_id = cleanString(existingDoc.training_track_id) || trainingTrackId;
     materialized.training_stage_id = cleanString(existingDoc.training_stage_id) || null;
     materialized.training_mission_id = cleanString(existingDoc.training_mission_id) || null;
     materialized.training_snapshot_json = cleanString(existingDoc.training_snapshot_json) || materialized.training_snapshot_json;
+    materialized.training_mission_ids_json = cleanString(existingDoc.training_mission_ids_json) || materialized.training_mission_ids_json;
   }
   materialized.csv_text = buildSagaFlightCsvMeta(group, firstLeg, materialized, studentUserId, instructorUserId, pdfRecord);
   if (existingDoc) {
-    const merged = mergeSagaCsvPreservingTelemetry(materialized.csv_text, existingDoc.csv_text);
+    const merged = mergeSagaCsvPreservingTelemetry(materialized.csv_text, existingDoc.csv_text, { preserveTraining: preserveExistingTraining });
     materialized.csv_text = merged.csvText;
     if (merged.hasTelemetry) {
       materialized.telemetry_present = true;
@@ -5186,9 +5215,6 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
     ? groupedFlights.filter((group) => group.legs.some((leg) => selectedStudentCanacs.has(cleanString(leg.canacAluno))))
     : groupedFlights;
   const selectedGroups = importScope.pastFlights ? (testMode ? filteredGroups.slice(0, 5) : filteredGroups) : [];
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H3',location:'main.js:2912',message:'flight selection counts',data:{testMode,requestedSagaUsers:requestedSagaUserIds.size,flightsInput:flightsInput.length,groupedFlights:groupedFlights.length,filteredGroups:filteredGroups.length,selectedGroups:selectedGroups.length},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   const scheduleLogs = [];
   let scheduledFlights = [];
   let importCookieJar = null;
@@ -5273,9 +5299,6 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
       ? usersInput.filter((user) => selectedCanacs.has(cleanString(user.codigoAnac)) || selectedSagaUserIds.has(cleanString(user.id)))
       : usersInput;
   const selectedUsers = importScope.users ? selectedUsersUnscoped : [];
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H4',location:'main.js:2950',message:'selected users for import',data:{usersInput:usersInput.length,selectedUsers:selectedUsers.length,selectedCanacs:selectedCanacs.size,instructorCanacs:instructorCanacs.size},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const summary = {
     importRunId,
@@ -5627,9 +5650,6 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
   await reportProgress("Voos agendados", `${selectedScheduledFlights.length}/${selectedScheduledFlights.length} agendados processados.`, selectedScheduledFlights.length, selectedScheduledFlights.length, true);
 
   const importedStudents = importedUsers.filter((item) => item.role === "aluno");
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H4',location:'main.js:3078',message:'imported users role split',data:{importedUsers:importedUsers.length,importedStudents:importedStudents.length,importedInstructors:importedUsers.filter((item)=>item.role==='instrutor').length},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (importScope.credits && importedStudents.length && STUDENT_CREDITS_COLLECTION_ID) {
     try {
       await reportProgress("Creditos", `Buscando creditos SAGA de ${importedStudents.length} aluno(s).`, 0, importedStudents.length, true);
@@ -5640,9 +5660,6 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
         summary.logs,
       );
       const creditRows = applySagaCreditColumnMap(fetchedCreditRows, mapping.creditColumnMap);
-      // #region agent log
-      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'saga-import-debug',hypothesisId:'H5',location:'main.js:3085',message:'credit rows fetched after remap',data:{importedStudents:importedStudents.length,creditRows:creditRows.length},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       logLine(`Creditos SAGA: ${creditRows.length} linhas brutas para ${importedStudents.length} aluno(s).`);
       const creditModels = uniqueCleanValues(creditRows.map((credit) => credit.model));
       logLine(`Creditos SAGA modelos: ${creditModels.join(", ") || "(nenhum)"}`);
@@ -6099,13 +6116,17 @@ function encodeFlightRecordCsv({ meta, telemetryCsv, telemetryFiles }) {
   return `${META_PREFIX}${metaEncoded}\n${csv}`;
 }
 
-function mergeSagaFlightMetaWithExisting(sagaMeta, existingMeta) {
+function mergeSagaFlightMetaWithExisting(sagaMeta, existingMeta, { preserveTraining = true } = {}) {
   if (!sagaMeta) return existingMeta;
   if (!existingMeta) return sagaMeta;
   return {
     ...sagaMeta,
     schedule: existingMeta.schedule ?? sagaMeta.schedule,
-    training: existingMeta.training ?? sagaMeta.training,
+    // preserveTraining: ajuste manual/skip de missão mantém o training existente;
+    // caso contrário (resolução nova do SAGA ou remap explícito) o novo vence.
+    training: preserveTraining
+      ? (existingMeta.training ?? sagaMeta.training)
+      : (sagaMeta.training ?? existingMeta.training),
     cancellation: existingMeta.cancellation ?? sagaMeta.cancellation,
     technicalLog: existingMeta.technicalLog ?? sagaMeta.technicalLog,
     maintenanceSnapshot: existingMeta.maintenanceSnapshot ?? sagaMeta.maintenanceSnapshot,
@@ -6118,10 +6139,10 @@ function mergeSagaFlightMetaWithExisting(sagaMeta, existingMeta) {
   };
 }
 
-function mergeSagaCsvPreservingTelemetry(sagaCsvText, existingCsvText) {
+function mergeSagaCsvPreservingTelemetry(sagaCsvText, existingCsvText, { preserveTraining = true } = {}) {
   const sagaDecoded = decodeFlightRecordCsv(sagaCsvText);
   const existingDecoded = decodeFlightRecordCsv(existingCsvText);
-  const mergedMeta = mergeSagaFlightMetaWithExisting(sagaDecoded.meta, existingDecoded.meta);
+  const mergedMeta = mergeSagaFlightMetaWithExisting(sagaDecoded.meta, existingDecoded.meta, { preserveTraining });
   const telemetryCsv = cleanString(existingDecoded.telemetryCsv);
   const telemetryFiles = existingDecoded.telemetryFiles;
   const hasTelemetry = Boolean(telemetryCsv) || (Array.isArray(telemetryFiles) && telemetryFiles.length > 0);
@@ -15542,6 +15563,7 @@ async function sagaReloadSingleFlight(actorUserId, payload = {}, runtimeLog = nu
       forceInstructorUserId: null,
       existingDocId: flightId,
       skipMissionMapping,
+      missionRemapped: Boolean(missionLookupKey && missionId),
     },
   );
 
