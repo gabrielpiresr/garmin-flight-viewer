@@ -1,8 +1,53 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { renderMarkdownBlocks } from "../lib/markdown";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { renderNoticeContent } from "../lib/noticeContent";
 import { listPublishedNotices } from "../lib/noticesDb";
 import type { Notice } from "../types/notice";
 import { Skeleton } from "./ui/Skeleton";
+
+/** Altura máxima (px) do conteúdo recolhido antes de exibir "Ver tudo". */
+const COLLAPSED_MAX_HEIGHT = 176;
+
+function NoticeBody({ contentMd }: { contentMd: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const check = () => setOverflowing(el.scrollHeight > COLLAPSED_MAX_HEIGHT + 24);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [contentMd]);
+
+  return (
+    <div>
+      <div className="relative">
+        <div
+          ref={contentRef}
+          className="overflow-hidden transition-[max-height]"
+          style={expanded ? undefined : { maxHeight: COLLAPSED_MAX_HEIGHT }}
+        >
+          <div className="space-y-2 text-sm">{renderNoticeContent(contentMd)}</div>
+        </div>
+        {!expanded && overflowing ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/95 to-transparent" />
+        ) : null}
+      </div>
+      {overflowing ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-2 text-xs font-semibold text-sky-400 hover:text-sky-300"
+        >
+          {expanded ? "Ver menos" : "Ver tudo"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 function formatPublishedAt(valueIso: string): string {
   const date = new Date(valueIso);
@@ -135,7 +180,7 @@ export function NoticeFeed({
                     <p className="text-xs text-slate-500">{formatPublishedAt(notice.publishedAt)}</p>
                   </div>
 
-                  <div className="space-y-2 text-sm">{renderMarkdownBlocks(notice.contentMd)}</div>
+                  <NoticeBody contentMd={notice.contentMd} />
 
                   {notice.ctaLabel && notice.ctaUrl ? (
                     <a

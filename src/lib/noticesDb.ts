@@ -11,6 +11,7 @@ import {
 
 
 import type { CreateNoticePayload, Notice, UpdateNoticePayload } from "../types/notice";
+import type { ManeuverMediaUpload } from "../types/maneuver";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -54,6 +55,30 @@ async function uploadBanner(file: File): Promise<{ fileId: string | null; error:
     return { fileId: uploaded.$id, error: null };
   } catch (error) {
     return { fileId: null, error: error as Error };
+  }
+}
+
+/** Upload de mídia (imagem/vídeo) inserida no editor de texto rico dos avisos. */
+export async function uploadNoticeMedia(
+  file: File,
+): Promise<{ data: ManeuverMediaUpload | null; error: Error | null }> {
+  const bucketId = getNoticeBucketId();
+  if (!storage || !bucketId) {
+    return { data: null, error: new Error("Bucket de avisos não configurado") };
+  }
+  try {
+    const uploaded = await storage.createFile(bucketId, ID.unique(), file);
+    return {
+      data: {
+        fileId: uploaded.$id,
+        url: storage.getFileView(bucketId, uploaded.$id).toString(),
+        name: file.name,
+        mimeType: file.type,
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: error as Error };
   }
 }
 

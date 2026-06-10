@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
-import { renderMarkdownBlocks } from "../../lib/markdown";
+import { createEmptyRichContent, richContentToPlainText } from "../../lib/maneuverContent";
+import { noticeContentToRich, renderNoticeContent } from "../../lib/noticeContent";
 import { dispatchNotificationEvent } from "../../lib/notificationsDb";
-import { createNotice, deleteNotice, listAllNotices, updateNotice } from "../../lib/noticesDb";
+import { createNotice, deleteNotice, listAllNotices, updateNotice, uploadNoticeMedia } from "../../lib/noticesDb";
+import { hasRichTextContent } from "../../lib/richContentFields";
+import type { ManeuverMediaUpload, ManeuverRichContent } from "../../types/maneuver";
 import type { Notice } from "../../types/notice";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
+import { ManeuverRichTextEditor } from "./ManeuverRichTextEditor";
 
 type EditorForm = {
   title: string;
-  contentMd: string;
+  contentRich: ManeuverRichContent;
   ctaLabel: string;
   ctaUrl: string;
   publishedAtLocal: string;
@@ -21,7 +25,7 @@ type EditorForm = {
 
 const emptyForm: EditorForm = {
   title: "",
-  contentMd: "",
+  contentRich: createEmptyRichContent(),
   ctaLabel: "",
   ctaUrl: "",
   publishedAtLocal: "",
@@ -65,7 +69,6 @@ export function NoticesTab() {
   const [openEditor, setOpenEditor] = useState(false);
   const [editing, setEditing] = useState<Notice | null>(null);
   const [form, setForm] = useState<EditorForm>(emptyForm);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,8 +91,6 @@ export function NoticesTab() {
     if (error) showToast({ variant: "error", message: error });
   }, [error, showToast]);
 
-  const previewBlocks = useMemo(() => renderMarkdownBlocks(form.contentMd), [form.contentMd]);
-
   function resetEditor() {
     setEditing(null);
     setForm({
@@ -107,7 +108,7 @@ export function NoticesTab() {
     setEditing(notice);
     setForm({
       title: notice.title,
-      contentMd: notice.contentMd,
+      contentRich: noticeContentToRich(notice.contentMd),
       ctaLabel: notice.ctaLabel ?? "",
       ctaUrl: notice.ctaUrl ?? "",
       publishedAtLocal: formatInputDateTime(notice.publishedAt),
@@ -119,20 +120,14 @@ export function NoticesTab() {
     setOpenEditor(true);
   }
 
-  function insertMarkdown(before: string, after = "") {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selected = form.contentMd.slice(start, end);
-    const next = `${form.contentMd.slice(0, start)}${before}${selected}${after}${form.contentMd.slice(end)}`;
-    setForm((prev) => ({ ...prev, contentMd: next }));
-
-    requestAnimationFrame(() => {
-      textarea.focus();
-      const cursor = start + before.length + selected.length + after.length;
-      textarea.setSelectionRange(cursor, cursor);
-    });
+  async function handleUploadMedia(file: File): Promise<ManeuverMediaUpload | null> {
+    const result = await uploadNoticeMedia(file);
+    if (result.error) {
+      setError(result.error.message);
+      return null;
+    }
+    showToast({ variant: "success", message: "Mídia enviada." });
+    return result.data;
   }
 
   async function handleSave() {
@@ -140,12 +135,17 @@ export function NoticesTab() {
       setError("Usuário admin não identificado.");
       return;
     }
-    if (!form.title.trim() || !form.contentMd.trim()) {
+    if (!form.title.trim() || !hasRichTextContent(form.contentRich)) {
       setError("Título e conteúdo são obrigatórios.");
       return;
     }
     if ((form.ctaLabel && !form.ctaUrl) || (!form.ctaLabel && form.ctaUrl)) {
       setError("Preencha CTA com texto e URL juntos, ou deixe ambos vazios.");
+      return;
+    }
+    const contentSerialized = JSON.stringify(form.contentRich);
+    if (contentSerialized.length > 60000) {
+      setError("Conteúdo muito longo. Reduza o texto ou a quantidade de mídias.");
       return;
     }
 
@@ -154,7 +154,7 @@ export function NoticesTab() {
     const payload = {
       actorUserId: user.id,
       title: form.title.trim(),
-      contentMd: form.contentMd.trim(),
+      contentMd: contentSerialized,
       ctaLabel: form.ctaLabel.trim() || null,
       ctaUrl: form.ctaUrl.trim() || null,
       publishedAt: toIsoDate(form.publishedAtLocal),
@@ -192,7 +192,8 @@ export function NoticesTab() {
         actorUserId: user.id,
         data: {
           title: result.data.title,
-          contentMd: result.data.contentMd,
+          // Texto puro para o corpo do email/push (o JSON do editor não é legível).
+          contentMd: richContentToPlainText(form.contentRich),
           ctaUrl: result.data.ctaUrl,
         },
       });
@@ -346,49 +347,14 @@ export function NoticesTab() {
             </div>
 
             <div className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => insertMarkdown("**", "**")}
-                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  Negrito
-                </button>
-                <button
-                  type="button"
-                  onClick={() => insertMarkdown("*", "*")}
-                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  Itálico
-                </button>
-                <button
-                  type="button"
-                  onClick={() => insertMarkdown("\n- ")}
-                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  Bullet
-                </button>
-                <button
-                  type="button"
-                  onClick={() => insertMarkdown("\n1. ")}
-                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  Number
-                </button>
-              </div>
-
-              <textarea
-                ref={textareaRef}
-                value={form.contentMd}
-                onChange={(e) => setForm((prev) => ({ ...prev, contentMd: e.target.value }))}
-                rows={12}
-                placeholder="Escreva o conteúdo em markdown..."
-                className="w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+              <label className="mb-1 block text-xs text-slate-400">Conteúdo</label>
+              <ManeuverRichTextEditor
+                value={form.contentRich}
+                onChange={(contentRich) => setForm((prev) => ({ ...prev, contentRich }))}
+                onUploadMedia={handleUploadMedia}
+                disabled={saving}
+                placeholder="Escreva o conteúdo do aviso..."
               />
-              <div className="rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                <p className="mb-2 text-xs uppercase tracking-wider text-slate-500">Preview</p>
-                <div className="space-y-3 text-sm">{previewBlocks.length ? previewBlocks : <p className="text-slate-500">Sem conteúdo.</p>}</div>
-              </div>
             </div>
           </div>
 
@@ -467,7 +433,7 @@ export function NoticesTab() {
                   </span>
                 </div>
 
-                <div className="line-clamp-4 text-sm text-slate-300">{renderMarkdownBlocks(notice.contentMd)}</div>
+                <div className="line-clamp-4 text-sm text-slate-300">{renderNoticeContent(notice.contentMd)}</div>
 
                 <div className="flex flex-wrap gap-2">
                   <button
