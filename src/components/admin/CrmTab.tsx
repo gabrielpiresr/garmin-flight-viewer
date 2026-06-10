@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import type { ReactNode } from "react";
 import { ProposalGeneratorModal } from "./ProposalGeneratorModal";
 import { useAuth } from "../../contexts/AuthContext";
@@ -2189,6 +2189,21 @@ export function CrmTab() {
   const [leads, setLeads] = useState<CrmLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [draggedLead, setDraggedLead] = useState<CrmLead | null>(null);
+  const boardRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll horizontal do board enquanto arrasta um card perto das bordas,
+  // para soltar em colunas fora da área visível (drag nativo não rola o container).
+  const handleBoardDragOver = (e: DragEvent<HTMLDivElement>) => {
+    const el = boardRef.current;
+    if (!el || !draggedLead) return;
+    const rect = el.getBoundingClientRect();
+    const edge = 96;
+    if (e.clientX < rect.left + edge) {
+      el.scrollLeft -= Math.ceil((rect.left + edge - e.clientX) / 3);
+    } else if (e.clientX > rect.right - edge) {
+      el.scrollLeft += Math.ceil((e.clientX - (rect.right - edge)) / 3);
+    }
+  };
   const [automationRunning, setAutomationRunning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -2650,7 +2665,7 @@ export function CrmTab() {
       </div>
 
       {/* Kanban Board */}
-      <div className="flex gap-3 overflow-x-auto pb-4">
+      <div ref={boardRef} onDragOver={handleBoardDragOver} className="flex gap-3 overflow-x-auto pb-4">
         {CRM_STATUSES.map((status) => (
           <KanbanColumn
             key={status}

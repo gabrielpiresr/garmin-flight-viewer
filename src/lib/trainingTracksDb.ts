@@ -53,23 +53,29 @@ function parseStages(value: unknown): TrainingStage[] {
         name: asString(stage.name) || `Etapa ${stageIndex + 1}`,
         order: typeof stage.order === "number" ? stage.order : stageIndex + 1,
         missions: Array.isArray(stage.missions)
-          ? stage.missions.map((mission, missionIndex) => ({
-              id: asString(mission.id) || `mission-${stageIndex + 1}-${missionIndex + 1}`,
-              name: asString(mission.name) || `Missão ${missionIndex + 1}`,
-              durationMinutes: typeof mission.durationMinutes === "number" ? mission.durationMinutes : 60,
-              type: normalizeType(mission.type),
-              maneuvers: Array.isArray(mission.maneuvers)
-                ? mission.maneuvers.map((item) => asString(item)).filter(Boolean)
-                : [],
-              maneuverSectionIds: Array.from(
+          ? stage.missions.map((mission, missionIndex) => {
+              const maneuverSectionIds = Array.from(
                 new Set([
                   ...asStringArray(mission.maneuverSectionIds),
                   // Support reading legacy docs that still have the singular field
                   asString((mission as Record<string, unknown>).maneuverSectionId),
                 ].filter(Boolean)),
-              ),
-              order: typeof mission.order === "number" ? mission.order : missionIndex + 1,
-            }))
+              );
+              return {
+                id: asString(mission.id) || `mission-${stageIndex + 1}-${missionIndex + 1}`,
+                name: asString(mission.name) || `Missão ${missionIndex + 1}`,
+                durationMinutes: typeof mission.durationMinutes === "number" ? mission.durationMinutes : 60,
+                type: normalizeType(mission.type),
+                maneuvers: Array.isArray(mission.maneuvers)
+                  ? mission.maneuvers.map((item) => asString(item)).filter(Boolean)
+                  : [],
+                maneuverSectionIds,
+                primaryManeuverSectionIds: asStringArray(mission.primaryManeuverSectionIds).filter((id) =>
+                  maneuverSectionIds.includes(id),
+                ),
+                order: typeof mission.order === "number" ? mission.order : missionIndex + 1,
+              };
+            })
           : [],
       }))
       .sort((a, b) => a.order - b.order)
@@ -256,6 +262,7 @@ export function buildTrainingSnapshot(
     durationMinutes: found.mission.durationMinutes,
     maneuvers: found.mission.maneuvers,
     maneuverSectionIds: found.mission.maneuverSectionIds ?? [],
+    primaryManeuverSectionIds: found.mission.primaryManeuverSectionIds ?? [],
   };
 }
 

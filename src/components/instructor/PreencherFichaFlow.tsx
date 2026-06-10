@@ -746,7 +746,7 @@ export function PreencherFichaFlow({
               <div>
                 <p className="text-lg font-semibold text-sky-200">Usar voo do SAGA</p>
                 <p className="mt-1 text-sm text-slate-400">
-                  Importa pernas, horários e exercícios automaticamente a partir do sistema SAGA.
+                  Importa pernas, horários e critérios automaticamente a partir do sistema SAGA.
                 </p>
               </div>
             </button>

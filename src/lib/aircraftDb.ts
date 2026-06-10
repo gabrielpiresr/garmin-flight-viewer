@@ -124,6 +124,28 @@ export async function listAircrafts(schoolId: string): Promise<Aircraft[]> {
   return res.documents.map((d) => toAircraft(d as Record<string, unknown>));
 }
 
+/**
+ * Matrículas (normalizadas em maiúsculas) das aeronaves tipo "ground" da escola.
+ * Inclui aeronaves já excluídas para que voos antigos nelas continuem fora das métricas.
+ */
+export async function listGroundAircraftIdents(schoolId: string): Promise<Set<string>> {
+  if (!isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return new Set();
+  try {
+    const res = await databases.listDocuments(DB_ID, AIRCRAFTS_COL_ID, [
+      Query.equal("school_id", [schoolId]),
+      Query.equal("type", ["ground"]),
+      Query.limit(500),
+    ]);
+    return new Set(
+      res.documents
+        .map((d) => String((d as Record<string, unknown>).registration ?? "").trim().toUpperCase())
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 export async function getAircraftByRegistration(registration: string, schoolId: string): Promise<Aircraft | null> {
   const normalized = registration.trim().toUpperCase();
   if (!normalized || !isReady() || !databases || !DB_ID || !AIRCRAFTS_COL_ID) return null;

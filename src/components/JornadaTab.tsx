@@ -5,8 +5,10 @@ import { decodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCo
 import { getFlightRecordMetaBatch, getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import { aggregateJourneyMetrics, type JourneyMetrics } from "../lib/journeyMetrics";
 import { listJourneyTelemetrySummaries } from "../lib/flightTelemetryMetricsDb";
+import { listGroundAircraftIdents } from "../lib/aircraftDb";
+import { SCHOOL_ID } from "../lib/appwrite";
 import { listManeuverCatalog } from "../lib/maneuversDb";
-import { completedStagesForTrack, evaluateRewards } from "../lib/rewardEvaluation";
+import { completedStagesForTrack, evaluateRewards, normalizeAircraftIdent } from "../lib/rewardEvaluation";
 import { listJourneyRewards } from "../lib/rewardsDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import type { EvaluatedJourneyReward, JourneyReward } from "../types/rewards";
@@ -325,9 +327,7 @@ function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
               </p>
             </div>
           ) : (
-            <p className="mt-2 text-[11px] text-emerald-400/80">
-              {decimalFormatter.format(reward.currentValue)} de {decimalFormatter.format(reward.targetValue)}
-            </p>
+            <p className="mt-2 text-[11px] font-semibold text-emerald-400/80">Concluído</p>
           )}
         </div>
       </div>
@@ -441,6 +441,7 @@ function FormationJourney({ state }: { state: FormationState }) {
   const [autoSelectedStageKey, setAutoSelectedStageKey] = useState("");
   const [trackRewards, setTrackRewards] = useState<JourneyReward[]>([]);
   const [trackRewardsLoading, setTrackRewardsLoading] = useState(false);
+  const [groundAircraftIdents, setGroundAircraftIdents] = useState<Set<string>>(new Set());
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
   const activeTracks = useMemo(
@@ -505,9 +506,20 @@ function FormationJourney({ state }: { state: FormationState }) {
         flights: state.flights,
         fullFlights: state.fullFlights,
         formation: { selectedTrack: track, completedMissionIds: approvedMissionIds, completedStageIds },
+        groundAircraftIdents,
       }),
-    [completedMissionIds, completedStageIds, journeyMetrics, state.flights, state.fullFlights, track, trackRewards],
+    [completedMissionIds, completedStageIds, groundAircraftIdents, journeyMetrics, state.flights, state.fullFlights, track, trackRewards],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void listGroundAircraftIdents(SCHOOL_ID ?? "escola_principal").then((idents) => {
+      if (!cancelled) setGroundAircraftIdents(idents);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -518,7 +530,10 @@ function FormationJourney({ state }: { state: FormationState }) {
       if (cancelled || res.error) return;
       setJourneyMetrics(
         aggregateJourneyMetrics({
-          summaries: res.data ?? [],
+          // Voos em aeronaves "ground" não contam nas métricas de conquistas.
+          summaries: (res.data ?? []).filter(
+            (summary) => !groundAircraftIdents.has(normalizeAircraftIdent(summary.aircraft_ident)),
+          ),
           landings: [],
           takeoffs: [],
         }),
@@ -527,7 +542,7 @@ function FormationJourney({ state }: { state: FormationState }) {
     return () => {
       cancelled = true;
     };
-  }, [configured, user]);
+  }, [configured, user, groundAircraftIdents]);
 
   useEffect(() => {
     if (selectedTrackId && activeTracks.some((row) => row.trackId === selectedTrackId)) return;

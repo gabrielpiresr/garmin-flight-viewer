@@ -158,14 +158,17 @@ function fitText(value: string, x: number, y: number, options: {
   opacity?: number;
 }): string {
   const safe = escapeXml(value);
+  // Reduz o font-size para caber em maxWidth em vez de usar textLength/lengthAdjust,
+  // que deforma os glifos (estica texto curto quando a estimativa de largura erra).
   const estimatedWidth = value.length * options.fontSize * 0.56;
-  const shouldFit = estimatedWidth > options.maxWidth;
-  const textLength = shouldFit ? ` textLength="${options.maxWidth}" lengthAdjust="spacingAndGlyphs"` : "";
+  const fontSize = estimatedWidth > options.maxWidth
+    ? Math.max(10, Math.floor(options.fontSize * (options.maxWidth / estimatedWidth)))
+    : options.fontSize;
   const anchor = options.anchor ? ` text-anchor="${options.anchor}"` : "";
   const weight = options.fontWeight ? ` font-weight="${options.fontWeight}"` : "";
   const letterSpacing = options.letterSpacing !== undefined ? ` letter-spacing="${options.letterSpacing}"` : "";
   const opacity = options.opacity !== undefined ? ` opacity="${options.opacity}"` : "";
-  return `<text x="${x}" y="${y}" fill="${options.color ?? "#f8fafc"}" font-size="${options.fontSize}"${weight}${anchor}${letterSpacing}${opacity}${textLength}>${safe}</text>`;
+  return `<text x="${x}" y="${y}" fill="${options.color ?? "#f8fafc"}" font-size="${fontSize}"${weight}${anchor}${letterSpacing}${opacity}>${safe}</text>`;
 }
 
 function safeColor(value: string | null | undefined, fallback: string): string {

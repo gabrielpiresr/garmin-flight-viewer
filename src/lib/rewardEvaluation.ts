@@ -15,7 +15,23 @@ export type RewardMetricContext = {
   flights: SavedFlightListItem[];
   fullFlights?: SavedFlightFull[];
   formation?: FormationProgress | null;
+  /** Matrículas (maiúsculas) de aeronaves tipo "ground" — voos nelas não contam para conquistas. */
+  groundAircraftIdents?: Set<string>;
 };
+
+export function normalizeAircraftIdent(value: string | null | undefined): string {
+  return (value ?? "").trim().toUpperCase();
+}
+
+function withoutGroundFlights(context: RewardMetricContext): RewardMetricContext {
+  const ground = context.groundAircraftIdents;
+  if (!ground || ground.size === 0) return context;
+  return {
+    ...context,
+    flights: context.flights.filter((flight) => !ground.has(normalizeAircraftIdent(flight.aircraft_ident))),
+    fullFlights: context.fullFlights?.filter((flight) => !ground.has(normalizeAircraftIdent(flight.aircraft_ident))),
+  };
+}
 
 function parseTimeToHours(value: string | null | undefined): number {
   const raw = String(value || "").trim();
@@ -169,7 +185,7 @@ function metricValueWithCache(metric: RewardMetric, context: RewardMetricContext
 }
 
 export function metricValue(metric: RewardMetric, context: RewardMetricContext): number {
-  return metricValueWithCache(metric, context);
+  return metricValueWithCache(metric, withoutGroundFlights(context));
 }
 
 function conditionProgress(current: number, target: number): number {
@@ -199,9 +215,10 @@ function evaluateRules(rules: RewardRules, context: RewardMetricContext, cache: 
 
 export function evaluateRewards(rewards: JourneyReward[], context: RewardMetricContext): EvaluatedJourneyReward[] {
   const cache: RewardEvaluationCache = {};
+  const scopedContext = withoutGroundFlights(context);
   return rewards
     .filter((reward) => reward.isActive)
-    .map((reward) => ({ ...reward, ...evaluateRules(reward.rules, context, cache) }))
+    .map((reward) => ({ ...reward, ...evaluateRules(reward.rules, scopedContext, cache) }))
     .sort((a, b) => Number(b.achieved) - Number(a.achieved) || a.order - b.order || a.title.localeCompare(b.title, "pt-BR"));
 }
 

@@ -472,7 +472,7 @@ export function ManobrasTab() {
                 </div>
                 {exercises.length > 0 ? (
                   <div className="mt-3">
-                    <p className="mb-2 text-xs font-medium text-slate-400">Exercícios vinculados a esta manobra</p>
+                    <p className="mb-2 text-xs font-medium text-slate-400">Critérios vinculados a esta manobra</p>
                     <div className="grid gap-1 sm:grid-cols-2">
                       {exercises.map((ex) => (
                         <label key={ex.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs text-slate-300 hover:border-slate-600">

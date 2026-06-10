@@ -68,7 +68,7 @@ export async function createTrainingExercise(
   input: TrainingExerciseInput,
 ): Promise<{ data: TrainingExercise | null; error: Error | null }> {
   if (!isTrainingExercisesConfigured() || !databases || !DB_ID || !TRAINING_EXERCISES_COL_ID) {
-    return { data: null, error: new Error("Coleção de exercícios não configurada.") };
+    return { data: null, error: new Error("Coleção de critérios não configurada.") };
   }
 
   try {
@@ -84,7 +84,7 @@ export async function updateTrainingExercise(
   input: TrainingExerciseInput,
 ): Promise<{ data: TrainingExercise | null; error: Error | null }> {
   if (!isTrainingExercisesConfigured() || !databases || !DB_ID || !TRAINING_EXERCISES_COL_ID) {
-    return { data: null, error: new Error("Coleção de exercícios não configurada.") };
+    return { data: null, error: new Error("Coleção de critérios não configurada.") };
   }
 
   try {
@@ -97,7 +97,7 @@ export async function updateTrainingExercise(
 
 export async function deleteTrainingExercise(exerciseId: string): Promise<{ error: Error | null }> {
   if (!isTrainingExercisesConfigured() || !databases || !DB_ID || !TRAINING_EXERCISES_COL_ID) {
-    return { error: new Error("Coleção de exercícios não configurada.") };
+    return { error: new Error("Coleção de critérios não configurada.") };
   }
 
   try {

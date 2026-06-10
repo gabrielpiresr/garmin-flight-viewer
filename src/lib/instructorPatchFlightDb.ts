@@ -23,18 +23,20 @@ export async function instructorPatchFlight(
   }
 
   try {
+    // Campos undefined são omitidos do body: a função trata ausência como "não alterar".
+    // Enviar null explícito limpa o campo no voo.
     const body = {
       action: "patchFlightAsInstructor",
       flightId: payload.flightId,
       instructorUserId: payload.instructorUserId,
       csvText: payload.csvText,
       flightStatus: payload.flightStatus,
-      trainingTrackId: payload.trainingTrackId ?? null,
-      trainingStageId: payload.trainingStageId ?? null,
-      trainingMissionId: payload.trainingMissionId ?? null,
-      trainingSnapshotJson: payload.trainingSnapshot
-        ? JSON.stringify(payload.trainingSnapshot)
-        : null,
+      ...(payload.trainingTrackId !== undefined ? { trainingTrackId: payload.trainingTrackId } : {}),
+      ...(payload.trainingStageId !== undefined ? { trainingStageId: payload.trainingStageId } : {}),
+      ...(payload.trainingMissionId !== undefined ? { trainingMissionId: payload.trainingMissionId } : {}),
+      ...(payload.trainingSnapshot !== undefined
+        ? { trainingSnapshotJson: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null }
+        : {}),
       allowSignedMissionEdit: payload.allowSignedMissionEdit === true,
     };
 

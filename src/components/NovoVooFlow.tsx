@@ -332,7 +332,7 @@ const STEPS = [
   { id: "pre-voo", label: "Pré voo" },
   { id: "peso-balanceamento", label: "Peso e balanceamento" },
   { id: "pernas", label: "Pernas" },
-  { id: "exercicios", label: "Exercícios" },
+  { id: "exercicios", label: "Critérios" },
   { id: "risco", label: "Risco e parecer" },
 ] as const;
 
@@ -2588,13 +2588,13 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
       {stepId === "exercicios" && (
         <section className="space-y-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Exercícios</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Critérios</p>
             <p className="mt-1 text-xs text-slate-500">
-              Avalie cada exercício com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
+              Avalie cada critério com NO, 1, 2, 3 ou 4. Clique novamente na nota para limpar.
             </p>
             {relevantExerciseIds !== null ? (
               <p className="mt-1 text-xs text-sky-400/80">
-                Mostrando exercícios das manobras vinculadas às missões selecionadas no pré-voo.
+                Mostrando critérios das manobras vinculadas às missões selecionadas no pré-voo.
               </p>
             ) : null}
           </div>
@@ -2602,11 +2602,11 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
           {exercisesLoading && exerciseGrades.length === 0 ? (
             <div className="flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-900/30 p-4 text-sm text-slate-400">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-              Carregando exercícios...
+              Carregando critérios...
             </div>
           ) : exerciseGrades.length === 0 ? (
             <div className="rounded-xl border border-slate-700/70 bg-slate-900/30 p-6 text-center text-sm text-slate-500">
-              Nenhum exercício ativo cadastrado no admin.
+              Nenhum critério ativo cadastrado no admin.
             </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-slate-700/70 bg-slate-900/30">
@@ -2614,7 +2614,7 @@ export function NovoVooFlow({ initialFlightId, embedded = false, initialStepId, 
                 <table className="min-w-full divide-y divide-slate-800 text-sm">
                   <thead className="bg-slate-950/50 text-left text-xs uppercase tracking-wider text-slate-500">
                     <tr>
-                      <th className="px-3 py-2">Exercício</th>
+                      <th className="px-3 py-2">Critério</th>
                       <th className="px-3 py-2">Grau</th>
                       <th className="px-3 py-2">Proficiência aceitável</th>
                     </tr>

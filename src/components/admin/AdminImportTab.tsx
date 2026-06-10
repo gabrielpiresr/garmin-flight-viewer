@@ -8,6 +8,7 @@ import {
   importSagaData,
   normalizeSagaCreditColumnMap,
   runSagaScheduleSyncNow,
+  runSagaAllUsersSyncNow,
   saveSagaImportMapping,
   type SagaImportScope,
   type SagaFinancialEntry,
@@ -80,6 +81,7 @@ const EMPTY_MAPPING: SagaImportMapping = {
   creditColumnMap: DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   sendFlightsToSaga: false,
   syncScheduleFromSaga: false,
+  syncAllUsersFromSaga: false,
   updatedAt: null,
 };
 
@@ -862,6 +864,7 @@ export function AdminImportTab() {
   const [progressTick, setProgressTick] = useState(0);
   const [importScope, setImportScope] = useState<SagaImportScope>(DEFAULT_IMPORT_SCOPE);
   const [syncingScheduleNow, setSyncingScheduleNow] = useState(false);
+  const [syncingAllUsersNow, setSyncingAllUsersNow] = useState(false);
   const {
     pendingMission,
     awaitingMission,
@@ -922,6 +925,7 @@ export function AdminImportTab() {
           creditColumnMap: normalizeSagaCreditColumnMap(settings.mapping.creditColumnMap),
           sendFlightsToSaga: settings.mapping.sendFlightsToSaga === true,
           syncScheduleFromSaga: settings.mapping.syncScheduleFromSaga === true,
+          syncAllUsersFromSaga: settings.mapping.syncAllUsersFromSaga === true,
           updatedAt: settings.mapping.updatedAt,
         });
         setEmail(settings.credentials.email ?? "");
@@ -971,6 +975,7 @@ export function AdminImportTab() {
         creditColumnMap: normalizeSagaCreditColumnMap(next.proposedMapping.creditColumnMap),
         sendFlightsToSaga: next.proposedMapping.sendFlightsToSaga === true,
         syncScheduleFromSaga: next.proposedMapping.syncScheduleFromSaga === true,
+        syncAllUsersFromSaga: next.proposedMapping.syncAllUsersFromSaga === true,
         updatedAt: next.mapping.updatedAt,
       });
     } catch (err) {
@@ -1076,6 +1081,26 @@ export function AdminImportTab() {
     }
   }
 
+  async function handleSyncAllUsersNow() {
+    setSyncingAllUsersNow(true);
+    setError(null);
+    try {
+      const result = await runSagaAllUsersSyncNow(true);
+      const flightsCreated = Number(result.flightsCreated || 0);
+      const flightsUpdated = Number(result.flightsUpdated || 0);
+      const flightsDeleted = Number(result.flightsDeleted || 0);
+      const creditsCreated = Number(result.creditsCreated || 0);
+      const creditsUpdated = Number(result.creditsUpdated || 0);
+      setError(
+        `Sincronizacao geral concluida: voos ${flightsCreated} criados, ${flightsUpdated} atualizados, ${flightsDeleted} removidos | creditos ${creditsCreated} criados, ${creditsUpdated} atualizados.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao sincronizar voos/creditos do SAGA agora.");
+    } finally {
+      setSyncingAllUsersNow(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <SagaImportProgressOverlay
@@ -1127,6 +1152,20 @@ export function AdminImportTab() {
                 </span>
               </span>
             </label>
+            <label className="mt-3 flex max-w-3xl cursor-pointer items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <input
+                type="checkbox"
+                checked={mappingDraft.syncAllUsersFromSaga === true}
+                onChange={(event) => setMappingDraft((current) => ({ ...current, syncAllUsersFromSaga: event.target.checked }))}
+                className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-slate-100">Sincronizar voos + creditos (todos usuários) a cada 12h</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Quando ligado, o backend roda rotina automatica no mesmo fluxo de "Atualizar do SAGA", para todos os alunos, janela de 7 dias, incluindo exclusao local de voos removidos no SAGA.
+                </span>
+              </span>
+            </label>
             <div className="mt-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
               <div>
                 <span className="block text-sm font-semibold text-slate-100">Forcar sincronizacao da escala agora</span>
@@ -1141,6 +1180,22 @@ export function AdminImportTab() {
                 className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {syncingScheduleNow ? "Sincronizando..." : "Sincronizar agora"}
+              </button>
+            </div>
+            <div className="mt-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <div>
+                <span className="block text-sm font-semibold text-slate-100">Forcar sincronizacao geral agora (voos + creditos)</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Executa imediatamente a rotina dos ultimos 7 dias para todos os usuarios, incluindo limpeza de voos apagados no SAGA.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleSyncAllUsersNow}
+                disabled={syncingAllUsersNow || loading || settingsLoading}
+                className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {syncingAllUsersNow ? "Sincronizando..." : "Sincronizar tudo agora"}
               </button>
             </div>
           </div>

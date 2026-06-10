@@ -1145,6 +1145,14 @@ function sagaDateRangeMonths(months) {
   return { startDate: iso(start), endDate: iso(end) };
 }
 
+function sagaDateRangeDays(days) {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - Math.max(1, Number(days) || 7));
+  const iso = (date) => date.toISOString().slice(0, 10);
+  return { startDate: iso(start), endDate: iso(end) };
+}
+
 function sagaScheduleMonthTargets(monthCount = 3) {
   const base = new Date();
   const targets = [];
@@ -1559,6 +1567,7 @@ const SAGA_IMPORT_LAST_SUMMARY_KEY = "sagaImportLastSummary";
 const SAGA_IMPORT_CREDENTIALS_KEY = "sagaImportCredentials";
 const SAGA_IMPORT_PROGRESS_KEY = "sagaImportProgress";
 const SAGA_IMPORT_PAUSED_STATE_KEY = "sagaImportPausedState";
+const SAGA_IMPORT_ALL_USERS_LAST_RUN_KEY = "sagaImportAllUsersLastRun";
 
 function defaultSagaImportMapping() {
   return {
@@ -1571,6 +1580,7 @@ function defaultSagaImportMapping() {
     creditColumnMap: { ...SAGA_DEFAULT_CREDIT_COLUMN_MAP },
     sendFlightsToSaga: false,
     syncScheduleFromSaga: false,
+    syncAllUsersFromSaga: false,
     updatedAt: null,
   };
 }
@@ -1629,6 +1639,7 @@ function sanitizeSagaImportMapping(input = {}) {
     creditColumnMap: normalizeSagaCreditColumnMap(input.creditColumnMap),
     sendFlightsToSaga: input.sendFlightsToSaga === true,
     syncScheduleFromSaga: input.syncScheduleFromSaga === true,
+    syncAllUsersFromSaga: input.syncAllUsersFromSaga === true,
     updatedAt: input.updatedAt || null,
   };
 }
@@ -1903,6 +1914,29 @@ async function saveSagaImportProgress(input = {}) {
   return progress;
 }
 
+async function loadSagaAllUsersLastRunState() {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
+  const doc = await getSettingDoc(SAGA_IMPORT_ALL_USERS_LAST_RUN_KEY);
+  if (!doc) return null;
+  const parsed = parseJsonObject(doc.settings_json, {});
+  const lastRunAt = cleanString(parsed.lastRunAt || "");
+  const status = cleanString(parsed.status || "");
+  const message = cleanString(parsed.message || "");
+  if (!lastRunAt) return null;
+  return { lastRunAt, status, message };
+}
+
+async function saveSagaAllUsersLastRunState(input = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
+  const payload = {
+    lastRunAt: cleanString(input.lastRunAt) || nowIso(),
+    status: cleanString(input.status) || "completed",
+    message: cleanString(input.message || ""),
+  };
+  await upsertPlatformSettingDoc(SAGA_IMPORT_ALL_USERS_LAST_RUN_KEY, payload).catch(() => null);
+  return payload;
+}
+
 async function saveSagaImportMapping(input) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
@@ -2039,6 +2073,25 @@ function uniqueCleanValues(values) {
   return Array.from(new Set((values || []).map(cleanString).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
+function resolveSagaCreditModelMappingId(creditAircraftBySaga, sagaModel) {
+  const map = creditAircraftBySaga && typeof creditAircraftBySaga === "object" ? creditAircraftBySaga : {};
+  const direct = cleanString(map[cleanString(sagaModel)]);
+  if (direct) return direct;
+  const normalizedSagaModel = normalizeSearch(sagaModel);
+  if (!normalizedSagaModel) return "";
+  for (const [mappedSagaModel, mappedModelId] of Object.entries(map)) {
+    if (normalizeSearch(mappedSagaModel) === normalizedSagaModel) {
+      const cleanMappedModelId = cleanString(mappedModelId);
+      if (cleanMappedModelId) return cleanMappedModelId;
+    }
+  }
+  return "";
+}
+
+function hasSagaCreditModelMapping(creditAircraftBySaga, sagaModel) {
+  return Boolean(resolveSagaCreditModelMappingId(creditAircraftBySaga, sagaModel));
+}
+
 function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [], scheduledFlights = []) {
   const mapping = sanitizeSagaImportMapping(savedMapping);
   const aircrafts = catalogs?.aircrafts || [];
@@ -2089,7 +2142,7 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [],
   }
 
   for (const sagaCreditModel of uniqueCleanValues((credits || []).map((credit) => credit.model))) {
-    if (creditAircraftBySaga[sagaCreditModel]) continue;
+    if (hasSagaCreditModelMapping(creditAircraftBySaga, sagaCreditModel)) continue;
     const normalized = normalizeSearch(sagaCreditModel);
     const aircraftMatch = aircraftByNickname.get(normalized) || aircrafts.find((aircraft) => {
       const nickname = normalizeSearch(aircraft.nickname);
@@ -2116,7 +2169,7 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [],
     syncScheduleFromSaga: mapping.syncScheduleFromSaga === true,
     missingAircrafts: uniqueCleanValues((flights || []).map((flight) => flight.aeronave)).filter((value) => !aircraftBySaga[value]),
     missingCourses: uniqueCleanValues((flights || []).map((flight) => flight.curso)).filter((value) => !courseBySaga[value]),
-    missingCreditAircrafts: uniqueCleanValues((credits || []).map((credit) => credit.model)).filter((value) => !creditAircraftBySaga[value]),
+    missingCreditAircrafts: uniqueCleanValues((credits || []).map((credit) => credit.model)).filter((value) => !hasSagaCreditModelMapping(creditAircraftBySaga, value)),
   };
 }
 
@@ -2968,7 +3021,12 @@ function findSagaCreditForFinancialEntry(entry, userId, creditRows) {
 
 function findSagaFinancialModel(entry, matchedCredit, mapping, catalogs) {
   const matchedModel = cleanString(matchedCredit?.model);
-  if (matchedModel) return { sagaModel: matchedModel, modelId: cleanString(mapping.creditAircraftBySaga?.[matchedModel]) };
+  if (matchedModel) {
+    return {
+      sagaModel: matchedModel,
+      modelId: resolveSagaCreditModelMappingId(mapping?.creditAircraftBySaga, matchedModel),
+    };
+  }
   const haystack = normalizeSearch(`${entry?.natureza || ""} ${entry?.acoes || ""}`);
   for (const [sagaModel, modelId] of Object.entries(mapping.creditAircraftBySaga || {})) {
     if (sagaModel && haystack.includes(normalizeSearch(sagaModel))) return { sagaModel: cleanString(sagaModel), modelId: cleanString(modelId) };
@@ -3195,7 +3253,7 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
     return { skipped: true, reason: "credits_collection_missing", aircraft: cleanString(credit.model) };
   }
   const sagaModel = cleanString(credit.model);
-  const modelId = cleanString(mapping.creditAircraftBySaga?.[sagaModel]);
+  const modelId = resolveSagaCreditModelMappingId(mapping?.creditAircraftBySaga, sagaModel);
   const model = (catalogs.aircraftModels || []).find((item) => item.id === modelId);
   let hours = sagaHoursValue(credit.hours || credit.hoursHhmm);
   if (hours <= 0) {
@@ -14521,6 +14579,90 @@ async function syncSagaScheduleFromImportSettings(actorUserId = "system", option
   };
 }
 
+async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) {
+  const mapping = await loadSagaImportMapping();
+  const forceRun = options.force === true;
+  const minIntervalMs = 12 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  if (!forceRun && mapping.syncAllUsersFromSaga !== true) {
+    return { ok: true, skipped: true, message: "Sync geral SAGA desativado nas configuracoes.", logs: [] };
+  }
+  if (!forceRun) {
+    const lastRun = await loadSagaAllUsersLastRunState();
+    const lastRunMs = lastRun?.lastRunAt ? Date.parse(lastRun.lastRunAt) : 0;
+    if (Number.isFinite(lastRunMs) && lastRunMs > 0) {
+      const elapsed = Math.max(0, nowMs - lastRunMs);
+      if (elapsed < minIntervalMs) {
+        const waitMinutes = Math.ceil((minIntervalMs - elapsed) / 60000);
+        return {
+          ok: true,
+          skipped: true,
+          message: `Sync geral executado recentemente; proxima execucao em ~${waitMinutes} min.`,
+          logs: [],
+        };
+      }
+    }
+  }
+  const credentials = await loadSagaImportCredentials();
+  if (!credentials.email || !credentials.password) {
+    return { ok: false, skipped: true, message: "Credenciais SAGA ausentes para sync geral.", logs: [] };
+  }
+
+  const logs = [];
+  const result = await sagaFetchUsers({
+    email: credentials.email,
+    password: credentials.password,
+    sendFlightsToSaga: mapping.sendFlightsToSaga === true,
+  });
+  logs.push(...(Array.isArray(result.logs) ? result.logs : []));
+
+  const importRunId = `saga-sync-all-${Date.now()}`;
+  const scope = {
+    users: true,
+    pastFlights: true,
+    schedule: true,
+    credits: true,
+  };
+  const summaryResult = await sagaImportData(
+    {
+      users: result.users || [],
+      flights: result.flights || [],
+      financialEntries: result.financialEntries || [],
+      mapping,
+      scope,
+      testMode: false,
+      useEmailAlias: false,
+      email: credentials.email,
+      password: credentials.password,
+      importRunId,
+    },
+    actorUserId,
+    null,
+  );
+
+  const summary = summaryResult?.summary || {};
+  const summaryLogs = Array.isArray(summary.logs) ? summary.logs.slice(-40) : [];
+  await saveSagaAllUsersLastRunState({
+    lastRunAt: nowIso(),
+    status: summaryResult?.ok === false ? "failed" : "completed",
+    message: summaryResult?.message || "",
+  }).catch(() => null);
+  return {
+    ok: summaryResult?.ok !== false,
+    skipped: false,
+    forced: forceRun,
+    message: summaryResult?.message || "",
+    flightsCreated: Number(summary.flightsCreated) || 0,
+    flightsUpdated: Number(summary.flightsUpdated) || 0,
+    flightsDeleted: Number(summary.flightsDeleted) || 0,
+    flightsSkipped: Number(summary.flightsSkipped) || 0,
+    creditsCreated: Number(summary.creditsCreated) || 0,
+    creditsUpdated: Number(summary.creditsUpdated) || 0,
+    creditsSkipped: Number(summary.creditsSkipped) || 0,
+    logs: [...logs.slice(-20), ...summaryLogs],
+  };
+}
+
 function flightStartDate(flight) {
   const date = cleanString(flight.flight_date);
   const start = cleanString(flight.start_time).slice(0, 5) || "23:59";
@@ -15025,7 +15167,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
   await saveSagaImportProgress({ runId, status: "running", stage: "fetch", message: "Buscando voos no SAGA...", current: 0, total: 0, logs });
 
-  const operationsRange = sagaDateRangeMonths(24);
+  const operationsRange = sagaDateRangeDays(7);
   const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
   const operations = await sagaFetch(operationsPath, {
     method: "GET",
@@ -15037,7 +15179,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const myFlightRows = mappedFlightRows.filter(
     (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
   );
-  logs.push(`Voos filtrados por ANAC ${anac}: ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
+  logs.push(`Voos filtrados por ANAC ${anac} (janela 7 dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
   logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados para ANAC ${anac}.`);
 
   await saveSagaImportProgress({ runId, status: "running", stage: "check", message: `${myFlightRows.length} voo(s) encontrado(s), verificando novos...`, current: 0, total: myFlightRows.length, logs });
@@ -15544,7 +15686,7 @@ async function sagaImportSelfCredits(actorUserId, runtimeLog) {
   let effectiveCredits = buildSagaUnsegmentedCredits(creditRowsWithUser);
   if (segmentNightHours && creditRowsWithUser.length > 0) {
     try {
-      const operationsRange = sagaDateRangeMonths(24);
+      const operationsRange = sagaDateRangeDays(7);
       const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
       const operations = await sagaFetch(operationsPath, {
         method: "GET",
@@ -15624,7 +15766,13 @@ module.exports = async ({ req, res, log, error }) => {
         runFlightReminderScan("system"),
         syncSagaScheduleFromImportSettings("system").catch((err) => ({ ok: false, message: String(err?.message || err) })),
       ]);
-      return jsonResponse(res, 200, { ok: true, ...reminderResult, sagaScheduleSync: scheduleResult });
+      const allUsersSyncResult = await sagaImportAllUsersFromSaga("system").catch((err) => ({ ok: false, message: String(err?.message || err) }));
+      return jsonResponse(res, 200, {
+        ok: true,
+        ...reminderResult,
+        sagaScheduleSync: scheduleResult,
+        sagaAllUsersSync: allUsersSyncResult,
+      });
     }
 
     if (action === "registerPushSubscription") {
@@ -15913,6 +16061,13 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "sagaSyncScheduleJob") {
       const result = await syncSagaScheduleFromImportSettings(actorUserId || "system", {
+        force: payload.force === true,
+      });
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "sagaSyncAllUsersFromSagaJob") {
+      const result = await sagaImportAllUsersFromSaga(actorUserId || "system", {
         force: payload.force === true,
       });
       return jsonResponse(res, 200, result);

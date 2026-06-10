@@ -429,6 +429,8 @@ export function InstructorFlightsTab() {
   const [sagaMissionSelection, setSagaMissionSelection] = useState("");
   const [sagaMissionConfirming, setSagaMissionConfirming] = useState(false);
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [suggestionFlightId, setSuggestionFlightId] = useState<string | null>(null);
   const [suggestionDraft, setSuggestionDraft] = useState("");
@@ -587,16 +589,22 @@ export function InstructorFlightsTab() {
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
+    if (!q && !dateFrom && !dateTo) return items;
     return items.filter((item) => {
       const info = infoById[item.id];
-      return (
-        (info?.studentName ?? "").toLowerCase().includes(q) ||
-        (info?.studentAnac ?? "").toLowerCase().includes(q) ||
-        (info?.aircraft ?? "").toLowerCase().includes(q)
-      );
+      if (q) {
+        const matches =
+          (info?.studentName ?? "").toLowerCase().includes(q) ||
+          (info?.studentAnac ?? "").toLowerCase().includes(q) ||
+          (info?.aircraft ?? "").toLowerCase().includes(q);
+        if (!matches) return false;
+      }
+      const iso = info?.flightDateIso ?? (item.created_at ?? "").slice(0, 10);
+      if (dateFrom && iso < dateFrom) return false;
+      if (dateTo && iso > dateTo) return false;
+      return true;
     });
-  }, [infoById, items, search]);
+  }, [infoById, items, search, dateFrom, dateTo]);
 
   const futureItems = useMemo(
     () => filteredItems.filter((item) => isScheduledFlightStatus(item, infoById[item.id])),
@@ -1040,13 +1048,29 @@ export function InstructorFlightsTab() {
       </div>
 
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por aluno, ANAC, aeronave ou nome do voo"
-          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-        />
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_10rem_10rem]">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por aluno, ANAC, aeronave ou nome do voo"
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+          />
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            title="Data inicial"
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+          />
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            title="Data final"
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+          />
+        </div>
       </div>
 
       {err ? (

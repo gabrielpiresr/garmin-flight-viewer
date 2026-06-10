@@ -24,6 +24,7 @@ type MissionDraft = Omit<TrainingMission, "durationMinutes" | "maneuvers"> & {
   duration: string;
   maneuversText: string;
   maneuverSectionIds: string[];
+  primaryManeuverSectionIds: string[];
 };
 
 type StageDraft = Omit<TrainingStage, "missions"> & {
@@ -71,6 +72,7 @@ function emptyMission(order: number): MissionDraft {
     type: "DC",
     maneuversText: "",
     maneuverSectionIds: [],
+    primaryManeuverSectionIds: [],
     order,
   };
 }
@@ -108,6 +110,7 @@ function toDraft(track?: TrainingTrack | null): TrackDraft {
         type: mission.type,
         maneuversText: mission.maneuvers.join("\n"),
         maneuverSectionIds: mission.maneuverSectionIds ?? [],
+        primaryManeuverSectionIds: mission.primaryManeuverSectionIds ?? [],
         order: mission.order,
       })),
     })),
@@ -132,6 +135,9 @@ function normalizeDraftStages(stages: StageDraft[]): TrainingStage[] {
             .filter(Boolean),
           maneuverSectionId: mission.maneuverSectionIds[0] ?? null,
           maneuverSectionIds: mission.maneuverSectionIds,
+          primaryManeuverSectionIds: mission.primaryManeuverSectionIds.filter((id) =>
+            mission.maneuverSectionIds.includes(id),
+          ),
           order: missionIndex + 1,
         }))
         .filter((mission) => mission.name.trim()),
@@ -290,9 +296,26 @@ export function TrainingTracksTab() {
     const mission = draft.stages[stageIndex]?.missions[missionIndex];
     if (!mission) return;
     const current = new Set(mission.maneuverSectionIds);
-    if (current.has(sectionId)) current.delete(sectionId);
-    else current.add(sectionId);
-    updateMission(stageIndex, missionIndex, { maneuverSectionIds: Array.from(current) });
+    const primary = new Set(mission.primaryManeuverSectionIds);
+    if (current.has(sectionId)) {
+      current.delete(sectionId);
+      primary.delete(sectionId);
+    } else {
+      current.add(sectionId);
+    }
+    updateMission(stageIndex, missionIndex, {
+      maneuverSectionIds: Array.from(current),
+      primaryManeuverSectionIds: Array.from(primary),
+    });
+  }
+
+  function toggleMissionPrimarySection(stageIndex: number, missionIndex: number, sectionId: string) {
+    const mission = draft.stages[stageIndex]?.missions[missionIndex];
+    if (!mission || !mission.maneuverSectionIds.includes(sectionId)) return;
+    const primary = new Set(mission.primaryManeuverSectionIds);
+    if (primary.has(sectionId)) primary.delete(sectionId);
+    else primary.add(sectionId);
+    updateMission(stageIndex, missionIndex, { primaryManeuverSectionIds: Array.from(primary) });
   }
 
   function addMission(stageIndex: number) {
@@ -492,18 +515,41 @@ export function TrainingTracksTab() {
                       <textarea value={mission.maneuversText} onChange={(e) => updateMission(stageIndex, missionIndex, { maneuversText: e.target.value })} rows={2} className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-cyan-500" />
                     </label>
                     <div className="text-xs text-slate-400 md:col-span-4">
-                      <p>Seções de manobras vinculadas</p>
+                      <p>Seções de manobras vinculadas <span className="text-slate-500">(use a estrela para marcar as principais da missão)</span></p>
                       <div className="mt-1 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                        {maneuverSections.map((section) => (
-                          <label key={section.id} className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800/70 px-2 py-1.5 text-slate-200">
-                            <input
-                              type="checkbox"
-                              checked={mission.maneuverSectionIds.includes(section.id)}
-                              onChange={() => toggleMissionManeuverSection(stageIndex, missionIndex, section.id)}
-                            />
-                            <span className="min-w-0 truncate">{section.title}</span>
-                          </label>
-                        ))}
+                        {maneuverSections.map((section) => {
+                          const linked = mission.maneuverSectionIds.includes(section.id);
+                          const isPrimary = mission.primaryManeuverSectionIds.includes(section.id);
+                          return (
+                            <label
+                              key={section.id}
+                              className={`flex items-center gap-2 rounded border px-2 py-1.5 text-slate-200 ${
+                                isPrimary ? "border-amber-500/60 bg-amber-500/10" : "border-slate-700 bg-slate-800/70"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={linked}
+                                onChange={() => toggleMissionManeuverSection(stageIndex, missionIndex, section.id)}
+                              />
+                              <span className="min-w-0 flex-1 truncate">{section.title}</span>
+                              {linked ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    toggleMissionPrimarySection(stageIndex, missionIndex, section.id);
+                                  }}
+                                  title={isPrimary ? "Remover destaque de principal" : "Marcar como manobra principal"}
+                                  aria-label={isPrimary ? "Remover destaque de principal" : "Marcar como manobra principal"}
+                                  className={`shrink-0 text-base leading-none ${isPrimary ? "text-amber-400" : "text-slate-600 hover:text-amber-300"}`}
+                                >
+                                  {isPrimary ? "★" : "☆"}
+                                </button>
+                              ) : null}
+                            </label>
+                          );
+                        })}
                         {maneuverSections.length === 0 ? <p className="text-slate-500">Nenhuma seção cadastrada.</p> : null}
                       </div>
                     </div>

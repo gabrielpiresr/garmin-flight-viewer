@@ -484,12 +484,12 @@ export function AdminSignaturesTab() {
 
                   {/* Exercícios */}
                   {detailMeta.exercises && detailMeta.exercises.length > 0 && (
-                    <Section title="Exercícios avaliados">
+                    <Section title="Critérios avaliados">
                       <div className="overflow-x-auto">
                         <table className="w-full min-w-[320px] text-xs">
                           <thead>
                             <tr className="border-b border-slate-700/60 text-[10px] uppercase tracking-wider text-slate-500">
-                              <th className="py-1.5 pr-3 text-left font-semibold">Exercício</th>
+                              <th className="py-1.5 pr-3 text-left font-semibold">Critério</th>
                               <th className="py-1.5 pr-3 text-left font-semibold">Nota</th>
                             </tr>
                           </thead>

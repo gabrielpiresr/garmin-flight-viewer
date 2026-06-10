@@ -7,6 +7,8 @@ export type TrainingMission = {
   type: TrainingMissionType;
   maneuvers: string[];
   maneuverSectionIds?: string[];
+  /** Subconjunto de maneuverSectionIds destacado como "principal" da missão. */
+  primaryManeuverSectionIds?: string[];
   order: number;
 };
 
@@ -64,6 +66,7 @@ export type TrainingSelectionSnapshot = {
   durationMinutes: number;
   maneuvers: string[];
   maneuverSectionIds?: string[];
+  primaryManeuverSectionIds?: string[];
 };
 
 export type TrainingMissionSelection = {

@@ -86,7 +86,7 @@ export function TrainingExercisesTab() {
 
   async function handleSave() {
     if (!form.title.trim() || !form.acceptableProficiency.trim()) {
-      setError("Informe o exercício e a proficiência aceitável.");
+      setError("Informe o critério e a proficiência aceitável.");
       return;
     }
 
@@ -109,7 +109,7 @@ export function TrainingExercisesTab() {
       return;
     }
 
-    showToast({ variant: "success", message: editing ? "Exercício atualizado." : "Exercício criado." });
+    showToast({ variant: "success", message: editing ? "Critério atualizado." : "Critério criado." });
     setEditorOpen(false);
     setEditing(null);
     setForm(emptyForm);
@@ -128,19 +128,19 @@ export function TrainingExercisesTab() {
       setError(result.error.message);
       return;
     }
-    showToast({ variant: "success", message: result.data?.isActive ? "Exercício ativado." : "Exercício inativado." });
+    showToast({ variant: "success", message: result.data?.isActive ? "Critério ativado." : "Critério inativado." });
     await load();
   }
 
   async function handleDelete(exercise: TrainingExercise) {
-    const ok = confirm(`Apagar exercício "${exercise.title}"?`);
+    const ok = confirm(`Apagar critério "${exercise.title}"?`);
     if (!ok) return;
     const result = await deleteTrainingExercise(exercise.id);
     if (result.error) {
       setError(result.error.message);
       return;
     }
-    showToast({ variant: "success", message: "Exercício apagado." });
+    showToast({ variant: "success", message: "Critério apagado." });
     await load();
   }
 
@@ -148,7 +148,7 @@ export function TrainingExercisesTab() {
     <div className="mx-auto max-w-6xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Exercícios da ficha</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Critérios da ficha</h2>
           <p className="text-xs text-slate-500">
             {exercises.length} cadastrados, {activeCount} ativos para novas fichas.
           </p>
@@ -158,14 +158,14 @@ export function TrainingExercisesTab() {
           onClick={openCreate}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-500"
         >
-          Novo exercício
+          Novo critério
         </button>
       </div>
 
       {editorOpen ? (
         <section className="space-y-4 rounded-xl border border-slate-700/60 bg-slate-900/60 p-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-slate-100">{editing ? "Editar exercício" : "Novo exercício"}</h3>
+            <h3 className="text-sm font-semibold text-slate-100">{editing ? "Editar critério" : "Novo critério"}</h3>
             <button
               type="button"
               onClick={() => setEditorOpen(false)}
@@ -177,7 +177,7 @@ export function TrainingExercisesTab() {
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_8rem]">
             <label className="block">
-              <span className="mb-1 block text-xs text-slate-400">Exercício</span>
+              <span className="mb-1 block text-xs text-slate-400">Critério</span>
               <input
                 type="text"
                 value={form.title}
@@ -225,7 +225,7 @@ export function TrainingExercisesTab() {
               disabled={saving}
               className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60"
             >
-              {saving ? "Salvando..." : "Salvar exercício"}
+              {saving ? "Salvando..." : "Salvar critério"}
             </button>
             <button
               type="button"
@@ -246,7 +246,7 @@ export function TrainingExercisesTab() {
         </div>
       ) : exercises.length === 0 ? (
         <div className="rounded-xl border border-slate-700/40 bg-slate-900/30 p-10 text-center text-sm text-slate-500">
-          Nenhum exercício cadastrado.
+          Nenhum critério cadastrado.
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/40">
@@ -255,7 +255,7 @@ export function TrainingExercisesTab() {
               <thead className="bg-slate-950/50 text-left text-xs uppercase tracking-wider text-slate-500">
                 <tr>
                   <th className="px-3 py-2">Ordem</th>
-                  <th className="px-3 py-2">Exercício</th>
+                  <th className="px-3 py-2">Critério</th>
                   <th className="px-3 py-2">Proficiência aceitável</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2 text-right">Ações</th>

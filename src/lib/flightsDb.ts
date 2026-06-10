@@ -1216,6 +1216,20 @@ export async function updateFlight(id: string, payload: {
 
     const scheduleFields = getFlightScheduleFields(payload.csv_text);
     const current = await databases.getDocument(DB_ID, COL_ID, id);
+    // Campos de treinamento ausentes (undefined) preservam o valor atual do voo;
+    // só `null` explícito limpa a missão (ex.: upload de telemetria não envia esses campos).
+    const trainingTrackId = payload.trainingTrackId !== undefined
+      ? payload.trainingTrackId
+      : ((current.training_track_id as string | null | undefined) ?? null);
+    const trainingStageId = payload.trainingStageId !== undefined
+      ? payload.trainingStageId
+      : ((current.training_stage_id as string | null | undefined) ?? null);
+    const trainingMissionId = payload.trainingMissionId !== undefined
+      ? payload.trainingMissionId
+      : ((current.training_mission_id as string | null | undefined) ?? null);
+    const trainingSnapshotJson = payload.trainingSnapshot !== undefined
+      ? (payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null)
+      : ((current.training_snapshot_json as string | null | undefined) ?? null);
     // INVA/admin no browser não podem reenviar ACL com permissões de outro papel (ex.: label:admin) — Appwrite 401.
     const permissions =
       payload.actorRole === "instrutor" || payload.actorRole === "admin"
@@ -1253,14 +1267,14 @@ export async function updateFlight(id: string, payload: {
         duration_sec: payload.duration_sec ?? null,
         flight_date: scheduleFields.flight_date,
         start_time: scheduleFields.start_time,
-        training_track_id: payload.trainingTrackId ?? null,
-        training_stage_id: payload.trainingStageId ?? null,
-        training_mission_id: payload.trainingMissionId ?? null,
-        training_snapshot_json: payload.trainingSnapshot ? JSON.stringify(payload.trainingSnapshot) : null,
+        training_track_id: trainingTrackId,
+        training_stage_id: trainingStageId,
+        training_mission_id: trainingMissionId,
+        training_snapshot_json: trainingSnapshotJson,
         flight_status: normalizeFlightStatus(payload.flightStatus ?? current.flight_status),
       },
       csvText: payload.csv_text,
-      trainingMissionId: payload.trainingMissionId,
+      trainingMissionId,
       permissions,
     });
     const metricsResult = await replaceFlightTelemetryMetrics(

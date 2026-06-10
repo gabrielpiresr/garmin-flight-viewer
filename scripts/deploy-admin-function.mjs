@@ -25,6 +25,7 @@ const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "6a01ac8a0009fbf94f05";
 const API_KEY = process.env.APPWRITE_API_KEY;
 const FUNCTION_ID = "admin-users";
 const FUNCTION_TIMEOUT_SECONDS = Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300);
+const FUNCTION_SCHEDULE = process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 */12 * * *";
 const FUNCTION_EXECUTE = (process.env.ADMIN_USERS_FUNCTION_EXECUTE || "any")
   .split(",")
   .map((value) => value.trim())
@@ -165,7 +166,7 @@ const updated = await functions.update({
   runtime: functionInfo.runtime || "node-22",
   execute: FUNCTION_EXECUTE.length ? FUNCTION_EXECUTE : ["any"],
   events: Array.isArray(functionInfo.events) ? functionInfo.events : [],
-  schedule: typeof functionInfo.schedule === "string" ? functionInfo.schedule : "",
+  schedule: FUNCTION_SCHEDULE,
   timeout: FUNCTION_TIMEOUT_SECONDS,
   enabled: functionInfo.enabled !== false,
   logging: functionInfo.logging !== false,
@@ -177,3 +178,4 @@ const updated = await functions.update({
 
 console.log(`✅  Active deployment: ${updated.deploymentId || deployment.$id}`);
 console.log(`✅  Function timeout set to ${updated.timeout || FUNCTION_TIMEOUT_SECONDS}s`);
+console.log(`✅  Function schedule set to ${updated.schedule || FUNCTION_SCHEDULE}`);

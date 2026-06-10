@@ -28,6 +28,8 @@ import {
 } from "../lib/flightTelemetryMetricsDb";
 import { listJourneyRewards } from "../lib/rewardsDb";
 import { evaluateRewards, rewardsToLegacyBadges } from "../lib/rewardEvaluation";
+import { listGroundAircraftIdents } from "../lib/aircraftDb";
+import { SCHOOL_ID } from "../lib/appwrite";
 import type { SavedFlightFull, SavedFlightListItem } from "../lib/flightsDb";
 import { DEFAULT_SCHOOL_RULES } from "../types/schoolRules";
 import { JourneyShareStickersModal } from "./JourneyShareStickersModal";
@@ -200,7 +202,10 @@ function useEvaluatedBadges(metrics: JourneyMetrics, formation: FormationSlice):
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const rewards = await listJourneyRewards({ kind: "badge" });
+      const [rewards, groundAircraftIdents] = await Promise.all([
+        listJourneyRewards({ kind: "badge" }),
+        listGroundAircraftIdents(SCHOOL_ID ?? "escola_principal"),
+      ]);
       if (cancelled) return;
       if (rewards.error || rewards.data.length === 0) {
         setBadges(metrics.badges);
@@ -211,6 +216,7 @@ function useEvaluatedBadges(metrics: JourneyMetrics, formation: FormationSlice):
         flights: formation.flights,
         fullFlights: formation.fullFlights,
         formation: null,
+        groundAircraftIdents,
       });
       setBadges(rewardsToLegacyBadges(evaluated));
     }

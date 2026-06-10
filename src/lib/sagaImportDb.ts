@@ -92,6 +92,7 @@ export type SagaImportMapping = {
   creditColumnMap: Record<string, number>;
   sendFlightsToSaga?: boolean;
   syncScheduleFromSaga?: boolean;
+  syncAllUsersFromSaga?: boolean;
   updatedAt?: string | null;
 };
 
@@ -445,6 +446,7 @@ const EMPTY_MAPPING: SagaImportMapping = {
   creditColumnMap: DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   sendFlightsToSaga: false,
   syncScheduleFromSaga: false,
+  syncAllUsersFromSaga: false,
   updatedAt: null,
 };
 
@@ -459,6 +461,7 @@ function normalizeSagaImportResult(value: Partial<SagaImportResult> | null | und
     creditColumnMap: normalizeSagaCreditColumnMap(value?.mapping?.creditColumnMap),
     sendFlightsToSaga: value?.mapping?.sendFlightsToSaga === true,
     syncScheduleFromSaga: value?.mapping?.syncScheduleFromSaga === true,
+    syncAllUsersFromSaga: value?.mapping?.syncAllUsersFromSaga === true,
     updatedAt: value?.mapping?.updatedAt ?? null,
   };
   return {
@@ -487,6 +490,7 @@ function normalizeSagaImportResult(value: Partial<SagaImportResult> | null | und
       creditColumnMap: normalizeSagaCreditColumnMap(value?.proposedMapping?.creditColumnMap ?? mapping.creditColumnMap),
       sendFlightsToSaga: value?.proposedMapping?.sendFlightsToSaga === true || mapping.sendFlightsToSaga === true,
       syncScheduleFromSaga: value?.proposedMapping?.syncScheduleFromSaga === true || mapping.syncScheduleFromSaga === true,
+      syncAllUsersFromSaga: value?.proposedMapping?.syncAllUsersFromSaga === true || mapping.syncAllUsersFromSaga === true,
       missingAircrafts: Array.isArray(value?.proposedMapping?.missingAircrafts) ? value.proposedMapping.missingAircrafts : [],
       missingCourses: Array.isArray(value?.proposedMapping?.missingCourses) ? value.proposedMapping.missingCourses : [],
       missingCreditAircrafts: Array.isArray(value?.proposedMapping?.missingCreditAircrafts) ? value.proposedMapping.missingCreditAircrafts : [],
@@ -668,6 +672,7 @@ export async function getSagaImportSettings(): Promise<SagaImportSettings> {
       creditColumnMap: normalizeSagaCreditColumnMap(response.mapping.creditColumnMap),
       sendFlightsToSaga: response.mapping.sendFlightsToSaga === true,
       syncScheduleFromSaga: response.mapping.syncScheduleFromSaga === true,
+      syncAllUsersFromSaga: response.mapping.syncAllUsersFromSaga === true,
       updatedAt: response.mapping.updatedAt ?? null,
     },
     catalogs: {
@@ -769,6 +774,21 @@ export type SagaScheduleJobResult = {
   logs?: string[];
 };
 
+export type SagaAllUsersSyncJobResult = {
+  ok: boolean;
+  skipped?: boolean;
+  forced?: boolean;
+  message?: string;
+  flightsCreated?: number;
+  flightsUpdated?: number;
+  flightsDeleted?: number;
+  flightsSkipped?: number;
+  creditsCreated?: number;
+  creditsUpdated?: number;
+  creditsSkipped?: number;
+  logs?: string[];
+};
+
 export async function runSagaScheduleSyncNow(force = false): Promise<SagaScheduleJobResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
   const createdExecution = await fn.createExecution(
@@ -784,6 +804,25 @@ export async function runSagaScheduleSyncNow(force = false): Promise<SagaSchedul
   });
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
     throw new Error(response.message || "Falha ao executar sincronizacao manual da escala SAGA.");
+  }
+  return response;
+}
+
+export async function runSagaAllUsersSyncNow(force = false): Promise<SagaAllUsersSyncJobResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaSyncAllUsersFromSagaJob", force }),
+    true,
+  );
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000);
+  const response = parseJsonBody<SagaAllUsersSyncJobResult>(execution.responseBody, {
+    ok: false,
+    message: "Resposta da sincronizacao geral SAGA nao estava em JSON valido.",
+    logs: [],
+  });
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao executar sincronizacao geral do SAGA.");
   }
   return response;
 }

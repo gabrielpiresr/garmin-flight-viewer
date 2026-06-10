@@ -199,12 +199,12 @@ function formatExerciseGrade(value: string | null | undefined): string {
 
 function buildExercisesTable(meta: FlightRecordMeta): string {
   const exercises = (meta.exercises ?? []).slice().sort((a, b) => a.order - b.order);
-  if (exercises.length === 0) return "<p>Nenhum exercício registrado.</p>";
+  if (exercises.length === 0) return "<p>Nenhum critério registrado.</p>";
   return `
     <table class="ficha-table exercises-table">
       <thead>
         <tr>
-          <th>Exercício</th>
+          <th>Critério</th>
           <th>Grau</th>
           <th>Proficiência aceitável</th>
         </tr>
@@ -609,7 +609,7 @@ function buildPdfHtml({ meta, telemetryCsv, telemetryFileName }: ExportFlightFic
 
         ${section("Registro de pernas", buildLegsTable(meta))}
 
-        ${section("Exercícios", buildExercisesTable(meta))}
+        ${section("Critérios", buildExercisesTable(meta))}
 
         ${section("Peso e balanceamento", buildWeightBalanceSection(meta))}
 

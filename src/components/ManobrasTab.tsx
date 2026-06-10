@@ -130,6 +130,19 @@ export function ManobrasTab({
     return catalog.sections.filter((s) => sectionIds.has(s.id));
   }, [catalog.sections, filteredArticles]);
 
+  const primarySectionIds = useMemo(
+    () => new Set(mission?.primaryManeuverSectionIds ?? []),
+    [mission],
+  );
+  const primarySections = useMemo(
+    () => visibleSections.filter((s) => primarySectionIds.has(s.id)),
+    [visibleSections, primarySectionIds],
+  );
+  const secondarySections = useMemo(
+    () => visibleSections.filter((s) => !primarySectionIds.has(s.id)),
+    [visibleSections, primarySectionIds],
+  );
+
   const selectedSection = useMemo(
     () => catalog.sections.find((s) => s.id === selectedSectionId) ?? null,
     [catalog.sections, selectedSectionId],
@@ -276,12 +289,8 @@ export function ManobrasTab({
         </div>
       ) : !isInsideSection ? (
         /* ── Section index ────────────────────────────────────────────────────── */
-        <div className="space-y-3">
-        {mission ? (
-          <p className="text-sm font-semibold text-slate-400">O que será cobrado</p>
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {visibleSections.map((section) => {
+        (() => {
+          const renderSectionCard = (section: (typeof visibleSections)[number], isPrimary: boolean) => {
             const stats = sectionStats.get(section.id) ?? {
               articleCount: 0,
               exerciseCount: 0,
@@ -291,16 +300,29 @@ export function ManobrasTab({
                 key={section.id}
                 type="button"
                 onClick={() => goToSection(section.id)}
-                className="group flex flex-col gap-2 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-5 text-left transition hover:border-sky-500/40 hover:bg-slate-800/50"
+                className={`group flex flex-col gap-2 rounded-2xl border p-5 text-left transition ${
+                  isPrimary
+                    ? "border-amber-400/50 bg-amber-500/[0.07] hover:border-amber-300/70 hover:bg-amber-500/[0.12]"
+                    : "border-slate-700/60 bg-slate-900/40 hover:border-sky-500/40 hover:bg-slate-800/50"
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <h3 className="text-base font-semibold text-slate-100 group-hover:text-sky-300 leading-snug">
+                  <h3 className={`text-base font-semibold leading-snug ${
+                    isPrimary ? "text-amber-100 group-hover:text-amber-200" : "text-slate-100 group-hover:text-sky-300"
+                  }`}>
                     {section.title}
                   </h3>
-                  <span className="mt-0.5 shrink-0 text-slate-600 transition group-hover:text-sky-400">
+                  <span className={`mt-0.5 shrink-0 transition ${
+                    isPrimary ? "text-amber-500/70 group-hover:text-amber-300" : "text-slate-600 group-hover:text-sky-400"
+                  }`}>
                     <IconArrowRight />
                   </span>
                 </div>
+                {isPrimary ? (
+                  <span className="w-fit rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                    ★ Principal
+                  </span>
+                ) : null}
                 {section.description ? (
                   <p className="line-clamp-2 text-xs leading-relaxed text-slate-500">
                     {section.description}
@@ -316,15 +338,46 @@ export function ManobrasTab({
                   {stats.exerciseCount > 0 ? (
                     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
                       {stats.exerciseCount}{" "}
-                      {stats.exerciseCount === 1 ? "exercício" : "exercícios"}
+                      {stats.exerciseCount === 1 ? "critério" : "critérios"}
                     </span>
                   ) : null}
                 </div>
               </button>
             );
-          })}
-        </div>
-        </div>
+          };
+
+          if (mission && primarySections.length > 0) {
+            return (
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold text-amber-300">Manobras principais</p>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {primarySections.map((section) => renderSectionCard(section, true))}
+                  </div>
+                </div>
+                {secondarySections.length > 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm font-semibold text-slate-400">Manobras secundárias</p>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {secondarySections.map((section) => renderSectionCard(section, false))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-3">
+              {mission ? (
+                <p className="text-sm font-semibold text-slate-400">O que será cobrado</p>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {visibleSections.map((section) => renderSectionCard(section, false))}
+              </div>
+            </div>
+          );
+        })()
       ) : (
         /* ── Two-panel layout ─────────────────────────────────────────────────── */
         <div className="flex min-h-[28rem] overflow-hidden rounded-2xl border border-slate-700/60">
@@ -376,7 +429,7 @@ export function ManobrasTab({
                     >
                       <IconCheckSmall />
                     </span>
-                    <span className="flex-1">Exercícios avaliados</span>
+                    <span className="flex-1">Critérios avaliados</span>
                     <span
                       className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
                         selectedView === "exercises"
@@ -492,7 +545,7 @@ export function ManobrasTab({
                     {selectedSection?.title}
                   </p>
                   <h3 className="mt-0.5 text-base font-semibold text-slate-100">
-                    Exercícios avaliados
+                    Critérios avaliados
                   </h3>
                   <p className="mt-1 text-xs text-slate-500">
                     Habilidades avaliadas durante os voos desta manobra.
