@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { listManeuverCatalog } from "../lib/maneuversDb";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
@@ -7,6 +7,7 @@ import type { ManeuverCatalog } from "../types/maneuver";
 import type { TrainingExercise } from "../types/trainingExercise";
 import type { TrainingMission, TrainingMissionType } from "../types/trainingTrack";
 import { Skeleton } from "./ui/Skeleton";
+import { Tabs } from "./ui/Tabs";
 
 const MISSION_TYPE_LABEL: Record<TrainingMissionType, string> = {
   DC: "Duplo comando",
@@ -30,6 +31,8 @@ type ManobrasTabProps = {
   onBack?: () => void;
   backLabel?: string;
 };
+
+type MissionDetailTab = "manobras" | "criterios";
 
 function normalize(value: string): string {
   return value
@@ -62,6 +65,22 @@ const IconCheckSmall = () => (
   </svg>
 );
 
+function AnimatedPane({ paneKey, children }: { paneKey: string; children: ReactNode }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setVisible(false);
+    const frame = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(frame);
+  }, [paneKey]);
+
+  return (
+    <div className={`transition-all duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"}`}>
+      {children}
+    </div>
+  );
+}
+
 export function ManobrasTab({
   className = "w-full max-w-[96rem]",
   articleIds,
@@ -81,6 +100,7 @@ export function ManobrasTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exercises, setExercises] = useState<TrainingExercise[]>([]);
+  const [missionDetailTab, setMissionDetailTab] = useState<MissionDetailTab>("manobras");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,6 +123,10 @@ export function ManobrasTab({
       if (!res.error) setExercises(res.data);
     });
   }, [load]);
+
+  useEffect(() => {
+    setMissionDetailTab("manobras");
+  }, [mission?.id]);
 
   const allowedArticleIds = useMemo(
     () => (articleIds?.length ? new Set(articleIds) : null),
@@ -188,9 +212,38 @@ export function ManobrasTab({
     return map;
   }, [catalog.sections, filteredArticles, exercises]);
 
+  const exercisesById = useMemo(
+    () => new Map(exercises.map((exercise) => [exercise.id, exercise])),
+    [exercises],
+  );
+
+  const missionCriteriaGroups = useMemo(() => {
+    if (!mission) return [];
+    const sectionIds = new Set(mission.maneuverSectionIds ?? []);
+    return catalog.sections
+      .filter((section) => sectionIds.has(section.id))
+      .map((section) => ({
+        section,
+        exercises: (section.exerciseIds ?? []).map((exerciseId) => exercisesById.get(exerciseId)).filter((exercise): exercise is TrainingExercise => Boolean(exercise)),
+      }))
+      .filter((group) => group.exercises.length > 0);
+  }, [catalog.sections, exercisesById, mission]);
+
+  const missionDetailTabs: Array<{ id: MissionDetailTab; label: string }> = [
+    { id: "manobras", label: "Manobras" },
+    { id: "criterios", label: "Critérios" },
+  ];
+
+  function defaultViewForSection(sectionId: string): string {
+    const section = catalog.sections.find((item) => item.id === sectionId);
+    const hasExercises = (section?.exerciseIds ?? []).some((exerciseId) => exercisesById.has(exerciseId));
+    if (hasExercises) return "exercises";
+    return filteredArticles.find((article) => article.sectionId === sectionId)?.id ?? "";
+  }
+
   function goToSection(sectionId: string) {
     setSelectedSectionId(sectionId);
-    setSelectedView("");
+    setSelectedView(defaultViewForSection(sectionId));
   }
 
   function goToIndex() {
@@ -227,23 +280,14 @@ export function ManobrasTab({
               {formatDuration(mission.durationMinutes)}
             </span>
           </div>
-          {mission.maneuvers.length > 0 ? (
-            <div className="mt-4">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                Manobras
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {mission.maneuvers.map((m) => (
-                  <span
-                    key={m}
-                    className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300"
-                  >
-                    {m}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          <Tabs
+            items={missionDetailTabs}
+            value={missionDetailTab}
+            onChange={setMissionDetailTab}
+            ariaLabel="Conteúdo da missão"
+            accent="sky"
+            className="mt-4"
+          />
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
@@ -270,6 +314,7 @@ export function ManobrasTab({
       )}
 
       {/* Content area */}
+      <AnimatedPane paneKey={`${mission?.id ?? "global"}:${missionDetailTab}:${selectedSectionId}:${selectedView}:${loading ? "loading" : "loaded"}:${error ?? "ok"}`}>
       {loading ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3, 4].map((i) => (
@@ -286,6 +331,59 @@ export function ManobrasTab({
           <p className="mt-1 text-sm text-slate-500">
             Assim que o admin publicar o conteúdo, ele aparecerá aqui.
           </p>
+        </div>
+      ) : mission && missionDetailTab === "criterios" ? (
+        <div className="space-y-3">
+          {missionCriteriaGroups.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-700/70 bg-slate-950/30 p-4 text-sm text-slate-400">
+              Nenhum critério avaliado foi vinculado às manobras desta missão.
+            </div>
+          ) : (
+            missionCriteriaGroups.map(({ section, exercises: sectionExercises }) => {
+              const isPrimary = primarySectionIds.has(section.id);
+              return (
+                <div
+                  key={section.id}
+                  className={`rounded-2xl border p-4 ${
+                    isPrimary
+                      ? "border-amber-400/40 bg-amber-500/[0.07]"
+                      : "border-slate-700/70 bg-slate-900/40"
+                  }`}
+                >
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <p className={`text-sm font-semibold ${isPrimary ? "text-amber-200" : "text-slate-100"}`}>
+                      {section.title}
+                    </p>
+                    {isPrimary ? (
+                      <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                        ★ Principal
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="space-y-2">
+                    {sectionExercises.map((exercise) => (
+                      <div
+                        key={exercise.id}
+                        className="flex items-start gap-3 rounded-xl border border-slate-700/50 bg-slate-900/50 p-3"
+                      >
+                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 border-emerald-500 bg-emerald-500/15 text-emerald-400">
+                          <IconCheckSmall />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-100">{exercise.title}</p>
+                          {exercise.acceptableProficiency ? (
+                            <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                              {exercise.acceptableProficiency}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       ) : !isInsideSection ? (
         /* ── Section index ────────────────────────────────────────────────────── */
@@ -622,6 +720,7 @@ export function ManobrasTab({
           </div>
         </div>
       )}
+      </AnimatedPane>
     </section>
   );
 }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { decodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCodec";
@@ -433,7 +433,13 @@ function ClubMemberBadge() {
   );
 }
 
-function FormationJourney({ state }: { state: FormationState }) {
+function FormationJourney({
+  state,
+  onDrillViewChange,
+}: {
+  state: FormationState;
+  onDrillViewChange?: (isOpen: boolean) => void;
+}) {
   const { user, configured } = useAuth();
   const [journeyMetrics, setJourneyMetrics] = useState<JourneyMetrics>(EMPTY_METRICS);
   const [selectedTrackId, setSelectedTrackId] = useState("");
@@ -444,6 +450,7 @@ function FormationJourney({ state }: { state: FormationState }) {
   const [groundAircraftIdents, setGroundAircraftIdents] = useState<Set<string>>(new Set());
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
+  const visibleTimelineScrollerRef = useRef<HTMLDivElement | null>(null);
   const activeTracks = useMemo(
     () => state.tracks.filter((row) => row.status === "active" && row.track).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
     [state.tracks],
@@ -597,6 +604,19 @@ function FormationJourney({ state }: { state: FormationState }) {
     };
   }, []);
 
+  useEffect(() => {
+    onDrillViewChange?.(drillView.kind !== "timeline");
+  }, [drillView.kind, onDrillViewChange]);
+
+  useEffect(() => {
+    if (drillView.kind !== "timeline") return;
+    const scroller = visibleTimelineScrollerRef.current;
+    if (!scroller) return;
+    const nextCard = scroller.querySelector<HTMLElement>('[data-mission-status="next"]');
+    if (!nextCard) return;
+    nextCard.scrollIntoView({ behavior: "auto", inline: "center", block: "nearest" });
+  }, [drillView.kind, selectedTrackId, visibleStageId, visibleTimeline]);
+
   if (state.loading) {
     return (
       <div className="space-y-4">
@@ -728,7 +748,7 @@ function FormationJourney({ state }: { state: FormationState }) {
           </div>
         ) : null}
         {visibleTimeline.length > 0 ? (
-          <div className="flex gap-3 overflow-x-auto pb-2">
+          <div ref={visibleTimelineScrollerRef} className="flex gap-3 overflow-x-auto pb-2">
           {visibleTimeline.map((item) => {
             const maneuverSectionIds = item.mission.maneuverSectionIds ?? [];
             const maneuverArticles = Array.from(
@@ -742,6 +762,7 @@ function FormationJourney({ state }: { state: FormationState }) {
             return (
             <article
               key={item.mission.id}
+              data-mission-status={item.status}
               className={`w-64 shrink-0 rounded-2xl border p-3 transition ${
                 item.status === "done"
                   ? "border-emerald-400/40 bg-emerald-500/10"
@@ -851,18 +872,21 @@ function EvolutionLoading() {
 export function JornadaTab() {
   const formationState = useFormationProgress();
   const [section, setSection] = useState<JourneySection>("formacao");
+  const [isFormationDrillOpen, setIsFormationDrillOpen] = useState(false);
 
   return (
     <div className="min-w-0 space-y-4">
-      <Tabs
-        items={JOURNEY_SECTIONS}
-        value={section}
-        onChange={setSection}
-        ariaLabel="Subabas da jornada"
-        accent="sky"
-      />
+      {!isFormationDrillOpen ? (
+        <Tabs
+          items={JOURNEY_SECTIONS}
+          value={section}
+          onChange={setSection}
+          ariaLabel="Subabas da jornada"
+          accent="sky"
+        />
+      ) : null}
       {section === "formacao" ? (
-        <FormationJourney state={formationState} />
+        <FormationJourney state={formationState} onDrillViewChange={setIsFormationDrillOpen} />
       ) : (
         <Suspense fallback={<EvolutionLoading />}>
           <JornadaEvolutionPanel

@@ -113,6 +113,8 @@ function toArticle(doc: Record<string, unknown>): ManeuverArticle {
 
 function articlePayload(payload: ManeuverArticlePayload): Record<string, unknown> {
   return {
+    // Sem school_id o artigo é criado mas nunca aparece na listagem (filtra por escola).
+    school_id: DEFAULT_SCHOOL_ID,
     section_id: payload.sectionId,
     subsection_id: payload.subsectionId ?? null,
     title: payload.title,
