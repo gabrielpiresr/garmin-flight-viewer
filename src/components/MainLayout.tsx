@@ -235,13 +235,14 @@ function LazyTab({ children }: { children: ReactNode }) {
 
 export function MainLayout() {
   const { user, signOut } = useAuth();
-  const { canTab } = usePermissions();
+  const { canTab, isLoading: permissionsLoading } = usePermissions();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isClubMember, setIsClubMember] = useState(false);
   const [referProgramActive, setReferProgramActive] = useState(false);
+  const [referProgramLoaded, setReferProgramLoaded] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
 
   const visibleNavItems = useMemo(
@@ -291,6 +292,9 @@ export function MainLayout() {
       .catch(() => {
         if (cancelled) return;
         setReferProgramActive(false);
+      })
+      .finally(() => {
+        if (!cancelled) setReferProgramLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -327,10 +331,14 @@ export function MainLayout() {
   }, []);
 
   useEffect(() => {
+    // Não redirecionar enquanto permissões/configs assíncronas carregam — senão
+    // um F5 em qualquer aba volta para a home antes do menu real estar disponível.
+    if (permissionsLoading) return;
+    if (section === "indique-ganhe" && !referProgramLoaded) return;
     if (!availableNavItems.some((item) => item.id === section)) {
       setSection(availableNavItems[0]!.id, { replace: true });
     }
-  }, [availableNavItems, section]);
+  }, [availableNavItems, section, permissionsLoading, referProgramLoaded]);
 
   const clubLpUrl = rules.flightReviewClub.landingPageType === "external_url"
     ? rules.flightReviewClub.externalUrl
