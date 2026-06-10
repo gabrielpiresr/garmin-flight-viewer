@@ -15,6 +15,10 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
+function firstName(value: string): string {
+  return String(value || "").trim().split(/\s+/).filter(Boolean)[0] || value;
+}
+
 type PmNode = {
   type?: string; text?: string; content?: PmNode[];
   marks?: Array<{ type: string; attrs?: Record<string, unknown> }>;
@@ -138,10 +142,27 @@ export function openProposalPdf(proposal: CrmProposal, config: ProposalConfig): 
   const notesHtml = proposal.notes
     ? `<div class="notes-box">${esc(proposal.notes).replace(/\n/g, "<br>")}</div>`
     : "";
+  const infoPackagesHtml = proposal.infoPackages.length > 0
+    ? `<section class="section">
+        <h2 class="section-title">Outros pacotes disponíveis</h2>
+        <div class="diff-grid">
+          ${proposal.infoPackages.map((pkg) => `
+            <div class="diff-card">
+              <div class="diff-body">
+                <strong class="diff-title">${esc(String(pkg.hours))}h</strong>
+                <p class="diff-desc">${esc(pkg.aircraftModelName || "Aeronave")}</p>
+                <p class="diff-desc">${fmtCurrency(pkg.hourPrice)}/h · validade ${esc(String(pkg.validityDays))} dias</p>
+                <p class="diff-desc"><strong>Total: ${fmtCurrency(pkg.hourPrice * pkg.hours)}</strong></p>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </section>`
+    : "";
 
   const html = `<!DOCTYPE html><html lang="pt-BR"><head>
 <meta charset="UTF-8"/>
-<title>Proposta — ${esc(proposal.leadName)}</title>
+<title>Proposta — ${esc(firstName(proposal.leadName))}</title>
 <style>
 ${fontImport}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -204,11 +225,9 @@ td{padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#334155}
 </header>
 
 <div class="greeting">
-  <h1>Olá, ${esc(proposal.leadName)}!</h1>
+  <h1>Olá, ${esc(firstName(proposal.leadName))}!</h1>
   <p>Preparamos esta proposta exclusiva para você.</p>
 </div>
-
-${notesHtml}
 ${coverVideoHtml}
 ${differentialsHtml}
 
@@ -224,6 +243,8 @@ ${differentialsHtml}
 
 ${sectionsHtml}
 ${proposal.paymentUrl ? `<div style="margin:24px 0;text-align:center"><a href="${esc(proposal.paymentUrl)}" style="display:inline-block;padding:14px 24px;border-radius:10px;background:${primary};color:#fff;text-decoration:none;font-weight:700">Ir para pagamento</a><div style="margin-top:8px;font-size:10px;color:#64748b">${esc(proposal.paymentUrl)}</div></div>` : ""}
+${notesHtml}
+${infoPackagesHtml}
 ${paymentHtml}
 ${additionalHtml}
 

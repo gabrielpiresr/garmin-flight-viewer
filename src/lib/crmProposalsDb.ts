@@ -8,7 +8,7 @@ import {
   CRM_PROPOSALS_COL_ID,
   DEFAULT_SCHOOL_ID,
 } from "./appwrite";
-import type { CrmProposal, CrmProposalInput, ProposalProduct } from "../types/proposal";
+import type { CrmProposal, CrmProposalInput, ProposalProduct, ProposalInfoPackage } from "../types/proposal";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 
@@ -60,6 +60,25 @@ function toProposal(doc: ProposalDoc): CrmProposal {
         }
       : null;
   const notes = isObject ? String((productsData as Record<string, unknown>).notes ?? "") : "";
+  const infoPackagesRaw = isObject ? (productsData as Record<string, unknown>).infoPackages : [];
+  const infoPackages = Array.isArray(infoPackagesRaw)
+    ? infoPackagesRaw
+      .map((item): ProposalInfoPackage | null => {
+        const row = item as Record<string, unknown>;
+        const hours = Number(row?.hours);
+        const hourPrice = Number(row?.hourPrice);
+        const validityDays = Number(row?.validityDays);
+        if (!Number.isFinite(hours) || !Number.isFinite(hourPrice) || !Number.isFinite(validityDays)) return null;
+        return {
+          id: String(row?.id ?? ""),
+          hours,
+          hourPrice,
+          validityDays,
+          aircraftModelName: String(row?.aircraftModelName ?? ""),
+        };
+      })
+      .filter((item): item is ProposalInfoPackage => Boolean(item))
+    : [];
   return {
     id: doc.$id,
     schoolId: doc.school_id ?? DEFAULT_SCHOOL_ID,
@@ -74,6 +93,7 @@ function toProposal(doc: ProposalDoc): CrmProposal {
       : Array.isArray((productsData as Record<string, unknown> | null)?.products)
         ? ((productsData as Record<string, unknown>).products as ProposalProduct[])
         : [],
+    infoPackages,
     notes,
     publicToken: doc.public_token ?? "",
     status: (doc.status === "sent" ? "sent" : "draft") as CrmProposal["status"],

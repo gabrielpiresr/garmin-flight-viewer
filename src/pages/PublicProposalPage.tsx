@@ -19,6 +19,10 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
+function firstName(value: string): string {
+  return String(value || "").trim().split(/\s+/).filter(Boolean)[0] || value;
+}
+
 function applyBranding(config: ProposalConfig) {
   if (config.fontFamily) {
     const id = "proposal-font";
@@ -106,18 +110,11 @@ export function PublicProposalPage() {
         {/* ── 1. Saudação ──────────────────────────────────────────────────────── */}
         <section className="text-center py-4">
           <p style={{ color: primary }} className="text-xs font-semibold uppercase tracking-widest mb-2">{school}</p>
-          <h2 className="text-4xl font-bold text-slate-800 mb-3">Olá, {proposal.leadName}!</h2>
+          <h2 className="text-4xl font-bold text-slate-800 mb-3">Olá, {firstName(proposal.leadName)}!</h2>
           <p className="text-slate-500 text-lg max-w-xl mx-auto">
             Preparamos esta proposta exclusiva para você. Confira os diferenciais e os valores abaixo.
           </p>
         </section>
-
-        {/* ── Mensagem personalizada da proposta ───────────────────────────────── */}
-        {proposal.notes && (
-          <section className="rounded-2xl bg-white shadow-sm overflow-hidden" style={{ borderLeft: `4px solid ${primary}` }}>
-            <p className="px-6 py-5 text-slate-700 leading-relaxed whitespace-pre-line text-base">{proposal.notes}</p>
-          </section>
-        )}
 
         {/* ── 2. Vídeo de capa ─────────────────────────────────────────────────── */}
         {config?.coverVideoUrl && youtubeEmbedUrl(config.coverVideoUrl) && (
@@ -268,6 +265,33 @@ export function PublicProposalPage() {
           </section>
         )}
 
+        {/* ── Mensagem personalizada da proposta ───────────────────────────────── */}
+        {proposal.notes && (
+          <section className="rounded-2xl bg-white shadow-sm overflow-hidden" style={{ borderLeft: `4px solid ${primary}` }}>
+            <p className="px-6 py-5 text-slate-700 leading-relaxed whitespace-pre-line text-base">{proposal.notes}</p>
+          </section>
+        )}
+
+        {/* ── Pacotes extras informativos ───────────────────────────────────────── */}
+        {proposal.infoPackages.length > 0 && (
+          <section>
+            <h3 style={{ borderBottomColor: primary }} className="mb-5 pb-3 text-xl font-bold text-slate-800 border-b-2">
+              Outros pacotes disponíveis
+            </h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {proposal.infoPackages.map((pkg) => (
+                <article key={pkg.id} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <p className="text-sm font-semibold text-slate-800">{pkg.hours}h</p>
+                  <p className="text-xs text-slate-500">{pkg.aircraftModelName || "Aeronave"}</p>
+                  <p className="mt-1 text-sm text-slate-700">{fmtCurrency(pkg.hourPrice)}/h</p>
+                  <p className="text-sm font-semibold text-slate-800">Total: {fmtCurrency(pkg.hourPrice * pkg.hours)}</p>
+                  <p className="text-xs text-slate-500">Validade: {pkg.validityDays} dias</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* ── 6. Formas de pagamento ────────────────────────────────────────────── */}
         {paymentHtml && (
           <section>
@@ -293,7 +317,7 @@ export function PublicProposalPage() {
         {/* ── Footer ────────────────────────────────────────────────────────────── */}
         <footer className="border-t border-slate-200 pt-8 text-center">
           <p className="text-sm text-slate-500">{school} · Proposta gerada em {new Date().toLocaleDateString("pt-BR")}</p>
-          <p className="mt-1 text-xs text-slate-400">Documento confidencial destinado exclusivamente a {proposal.leadName}.</p>
+          <p className="mt-1 text-xs text-slate-400">Documento confidencial destinado exclusivamente a {firstName(proposal.leadName)}.</p>
         </footer>
       </div>
     </div>

@@ -13879,6 +13879,20 @@ function proposalProducts(input) {
     : [];
 }
 
+function proposalInfoPackages(input) {
+  return Array.isArray(input?.infoPackages)
+    ? input.infoPackages
+      .map((item) => ({
+        id: cleanString(item?.id),
+        hours: Math.max(0, Number(item?.hours) || 0),
+        hourPrice: Math.max(0, Number(item?.hourPrice) || 0),
+        validityDays: Math.max(0, Math.round(Number(item?.validityDays) || 0)),
+        aircraftModelName: cleanString(item?.aircraftModelName),
+      }))
+      .filter((item) => item.hours > 0 && item.hourPrice > 0)
+    : [];
+}
+
 function proposalProductsFromJson(value) {
   const productsData = parseJsonObject(value, []);
   if (Array.isArray(productsData)) return proposalProducts({ products: productsData });
@@ -13949,7 +13963,41 @@ async function createCaktoOfferForProposal(doc) {
   if (!response.ok || !body.id) {
     throw new Error(body.detail || body.message || "Falha ao criar oferta na Cakto.");
   }
-  return { offerId: cleanString(body.id), paymentUrl: `https://pay.cakto.com.br/${cleanString(body.id)}` };
+  const offerId = cleanString(body.id);
+  const query = new URLSearchParams();
+  const name = cleanString(doc.lead_name);
+  const email = cleanString(doc.lead_email);
+  let cpfRaw = "";
+  let phoneRaw = "";
+  let profileUserId = "";
+  const leadId = cleanString(doc.lead_id);
+  if (leadId) {
+    const lead = await getLeadById(leadId).catch(() => null);
+    if (lead) {
+      cpfRaw = cleanString(lead.cpf);
+      phoneRaw = cleanString(lead.phone);
+      profileUserId = cleanString(lead.user_id);
+    } else {
+      // Em propostas de pacote de horas, lead_id guarda o userId diretamente.
+      profileUserId = leadId;
+    }
+  }
+  if (profileUserId && (!cpfRaw || !phoneRaw)) {
+    const profile = await getProfileByUserId(profileUserId).catch(() => null);
+    if (!cpfRaw) cpfRaw = cleanString(profile?.cpf);
+    if (!phoneRaw) phoneRaw = cleanString(profile?.phone);
+  }
+  const cpf = cpfRaw.replace(/\D/g, "");
+  const phoneDigits = phoneRaw.replace(/\D/g, "");
+  const phone = phoneDigits
+    ? (phoneDigits.startsWith("55") ? phoneDigits : `55${phoneDigits}`)
+    : "";
+  if (name) query.set("name", name);
+  if (email) query.set("email", email);
+  if (cpf) query.set("cpf", cpf);
+  if (phone) query.set("phone", phone);
+  const paymentUrl = `https://pay.cakto.com.br/${offerId}${query.toString() ? `?${query.toString()}` : ""}`;
+  return { offerId, paymentUrl };
 }
 
 async function updateProposalPayment(proposalId, patch) {
@@ -13966,6 +14014,7 @@ async function createCaktoProposal(input) {
     throw Object.assign(new Error("Dados do orçamento inválidos."), { status: 400 });
   }
   const products = proposalProducts(input);
+  const infoPackages = proposalInfoPackages(input);
   const doc = await databases.createDocument(
     DATABASE_ID,
     CRM_PROPOSALS_COLLECTION_ID,
@@ -13978,7 +14027,12 @@ async function createCaktoProposal(input) {
       hours,
       hour_price: hourPrice,
       total_value: Math.round(hours * hourPrice * 100) / 100,
-      products_json: JSON.stringify({ kind: "commercial", products, notes: cleanString(input?.notes || "") }),
+      products_json: JSON.stringify({
+        kind: "commercial",
+        products,
+        infoPackages,
+        notes: cleanString(input?.notes || ""),
+      }),
       public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
       status: "draft",
       payment_status: "pending",
@@ -14005,7 +14059,7 @@ async function createCaktoProposal(input) {
   }
 }
 
-async function createFlightCreditCheckout(actorUserId, packageId) {
+async function createFlightCreditCheckout(actorUserId, packageId, customHoursInput = null) {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const role = await getActorRole(actorUserId);
   if (role !== "aluno") {
@@ -14015,22 +14069,37 @@ async function createFlightCreditCheckout(actorUserId, packageId) {
   if (!settings?.studentPurchasesEnabled) {
     throw Object.assign(new Error("A compra de horas pelo aluno esta desabilitada."), { status: 403 });
   }
-  const selected = (Array.isArray(settings.packages) ? settings.packages : [])
-    .find((item) => cleanString(item?.id) === cleanString(packageId) && item?.active === true);
+  const packages = (Array.isArray(settings.packages) ? settings.packages : []).filter((item) => item?.active === true);
+  const selected = packages.find((item) => cleanString(item?.id) === cleanString(packageId));
   const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
   if (!normalized) throw Object.assign(new Error("Pacote indisponivel para compra."), { status: 404 });
+  const requestedCustomHours = Number(customHoursInput);
+  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
+  const hasCustomHours = customHours !== null && customHours > 0;
+  const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
+    .sort((a, b) => a.hours - b.hours);
+  const referencePackage = hasCustomHours
+    ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
+    : normalized;
+  if (!referencePackage) throw Object.assign(new Error("Pacote de referencia indisponivel."), { status: 404 });
+  const finalHours = hasCustomHours ? customHours : normalized.hours;
+  if (!Number.isFinite(finalHours) || finalHours <= 0) {
+    throw Object.assign(new Error("Quantidade de horas invalida."), { status: 400 });
+  }
 
   const actor = await users.get({ userId: actorUserId });
   const profile = await getProfileByUserId(actorUserId).catch(() => null);
-  const totalValue = Math.round(normalized.hours * normalized.hourPrice * 100) / 100;
+  const totalValue = Math.round(finalHours * referencePackage.hourPrice * 100) / 100;
   const snapshot = {
     packageId: normalized.id,
-    hours: normalized.hours,
-    hourPrice: normalized.hourPrice,
+    referencePackageId: referencePackage.id,
+    customHours: hasCustomHours ? finalHours : null,
+    hours: finalHours,
+    hourPrice: referencePackage.hourPrice,
     totalValue,
-    validityDays: normalized.validityDays,
-    aircraftModelId: normalized.aircraftModelId,
-    aircraftModelName: normalized.aircraftModelName,
+    validityDays: referencePackage.validityDays,
+    aircraftModelId: referencePackage.aircraftModelId,
+    aircraftModelName: referencePackage.aircraftModelName,
   };
   const proposalId = sdk.ID.unique();
   const creditId = `fc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 29)}`;
@@ -14043,8 +14112,8 @@ async function createFlightCreditCheckout(actorUserId, packageId) {
       lead_id: actorUserId,
       lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
       lead_email: cleanString(actor.email),
-      hours: normalized.hours,
-      hour_price: normalized.hourPrice,
+      hours: finalHours,
+      hour_price: referencePackage.hourPrice,
       total_value: totalValue,
       products_json: JSON.stringify({
         kind: "student_credit_package",
@@ -14083,28 +14152,50 @@ async function createFlightCreditCheckout(actorUserId, packageId) {
   }
 }
 
-async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId) {
+async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null) {
   await requireAdmin(actorUserId);
   const safeTargetUserId = cleanString(targetUserId);
   if (!safeTargetUserId) throw Object.assign(new Error("Usuário de destino não informado."), { status: 400 });
   const safePackageId = cleanString(packageId);
   if (!safePackageId) throw Object.assign(new Error("Pacote não informado."), { status: 400 });
   const { settings } = await loadFlightCreditSalesConfig();
-  const selected = (Array.isArray(settings.packages) ? settings.packages : [])
-    .find((item) => cleanString(item?.id) === safePackageId && item?.active === true);
+  const packages = (Array.isArray(settings.packages) ? settings.packages : []).filter((item) => item?.active === true);
+  const selected = packages.find((item) => cleanString(item?.id) === safePackageId);
   const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
   if (!normalized) throw Object.assign(new Error("Pacote indisponível ou inativo."), { status: 404 });
+  const requestedCustomHours = Number(customHoursInput);
+  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
+  const hasCustomHours = customHours !== null && customHours > 0;
+  const requestedCustomHourPrice = Number(customHourPriceInput);
+  const customHourPrice = Number.isFinite(requestedCustomHourPrice)
+    ? Math.round(requestedCustomHourPrice * 100) / 100
+    : null;
+  const hasCustomHourPrice = customHourPrice !== null && customHourPrice > 0;
+  const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
+    .sort((a, b) => a.hours - b.hours);
+  const referencePackage = hasCustomHours
+    ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
+    : normalized;
+  if (!referencePackage) throw Object.assign(new Error("Pacote de referência indisponível."), { status: 404 });
+  const finalHours = hasCustomHours ? customHours : normalized.hours;
+  if (!Number.isFinite(finalHours) || finalHours <= 0) {
+    throw Object.assign(new Error("Quantidade de horas inválida."), { status: 400 });
+  }
   const targetUser = await users.get({ userId: safeTargetUserId });
   const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
-  const totalValue = Math.round(normalized.hours * normalized.hourPrice * 100) / 100;
+  const finalHourPrice = hasCustomHourPrice ? customHourPrice : referencePackage.hourPrice;
+  const totalValue = Math.round(finalHours * finalHourPrice * 100) / 100;
   const snapshot = {
     packageId: normalized.id,
-    hours: normalized.hours,
-    hourPrice: normalized.hourPrice,
+    referencePackageId: referencePackage.id,
+    customHours: hasCustomHours ? finalHours : null,
+    customHourPrice: hasCustomHourPrice ? finalHourPrice : null,
+    hours: finalHours,
+    hourPrice: finalHourPrice,
     totalValue,
-    validityDays: normalized.validityDays,
-    aircraftModelId: normalized.aircraftModelId,
-    aircraftModelName: normalized.aircraftModelName,
+    validityDays: referencePackage.validityDays,
+    aircraftModelId: referencePackage.aircraftModelId,
+    aircraftModelName: referencePackage.aircraftModelName,
   };
   const proposalId = sdk.ID.unique();
   const creditId = `fc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 29)}`;
@@ -14117,8 +14208,8 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
       lead_id: safeTargetUserId,
       lead_name: cleanString(targetProfile?.full_name) || cleanString(targetUser.name) || "Aluno",
       lead_email: cleanString(targetUser.email),
-      hours: normalized.hours,
-      hour_price: normalized.hourPrice,
+      hours: finalHours,
+      hour_price: finalHourPrice,
       total_value: totalValue,
       products_json: JSON.stringify({
         kind: "student_credit_package",
@@ -15994,12 +16085,18 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "createFlightCreditCheckout") {
-      const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId);
+      const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId, payload.customHours);
       return jsonResponse(res, 200, { checkout });
     }
 
     if (action === "adminCreateFlightCreditCheckout") {
-      const checkout = await adminCreateFlightCreditCheckout(actorUserId, payload.targetUserId, payload.packageId);
+      const checkout = await adminCreateFlightCreditCheckout(
+        actorUserId,
+        payload.targetUserId,
+        payload.packageId,
+        payload.customHours,
+        payload.customHourPrice,
+      );
       return jsonResponse(res, 200, { checkout });
     }
 

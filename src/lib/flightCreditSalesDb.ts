@@ -48,14 +48,29 @@ export async function getAvailableFlightCreditPackages(): Promise<FlightCreditSa
   return response.config;
 }
 
-export async function createFlightCreditCheckout(packageId: string): Promise<FlightCreditCheckout> {
-  const response = await execute({ action: "createFlightCreditCheckout", packageId });
+export async function createFlightCreditCheckout(packageId: string, customHours?: number): Promise<FlightCreditCheckout> {
+  const response = await execute({
+    action: "createFlightCreditCheckout",
+    packageId,
+    ...(Number.isFinite(customHours) ? { customHours } : {}),
+  });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;
 }
 
-export async function adminCreateFlightCreditCheckout(targetUserId: string, packageId: string): Promise<FlightCreditCheckout> {
-  const response = await execute({ action: "adminCreateFlightCreditCheckout", targetUserId, packageId });
+export async function adminCreateFlightCreditCheckout(
+  targetUserId: string,
+  packageId: string,
+  customHours?: number,
+  customHourPrice?: number,
+): Promise<FlightCreditCheckout> {
+  const response = await execute({
+    action: "adminCreateFlightCreditCheckout",
+    targetUserId,
+    packageId,
+    ...(Number.isFinite(customHours) ? { customHours } : {}),
+    ...(Number.isFinite(customHourPrice) ? { customHourPrice } : {}),
+  });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;
 }

@@ -358,7 +358,7 @@ async function createSagaCredit({ studentUserId, creditId, purchaseDate, expires
 
   const csrfToken = extractSagaCsrfToken(page.html);
   if (!csrfToken) throw new Error("Token CSRF do formulario de creditos do SAGA nao encontrado.");
-  const hourlyValue = Math.round((amountPaid / hours) * 100) / 100;
+  const totalValue = Math.round(amountPaid * 100) / 100;
   const aircraftIcao = await sagaAircraftIcaoForModel(aircraftModelId);
   const form = new URLSearchParams({
     _token: csrfToken,
@@ -367,7 +367,7 @@ async function createSagaCredit({ studentUserId, creditId, purchaseDate, expires
     aircraft_icao: aircraftIcao,
     type: SAGA_CREDIT_TYPE,
     hours: String(hours),
-    value: String(hourlyValue),
+    value: String(totalValue),
     bank_id: SAGA_CREDIT_BANK_ID,
     expiration_at: expiresAt,
     notes: `Compra online Cakto. ${marker}`,

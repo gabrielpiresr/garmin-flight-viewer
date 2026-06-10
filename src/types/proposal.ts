@@ -44,6 +44,14 @@ export type ProposalProduct = {
   price: number;
 };
 
+export type ProposalInfoPackage = {
+  id: string;
+  hours: number;
+  hourPrice: number;
+  validityDays: number;
+  aircraftModelName: string;
+};
+
 export type CrmProposal = {
   id: string;
   schoolId: string;
@@ -54,6 +62,7 @@ export type CrmProposal = {
   hourPrice: number;
   totalValue: number;
   products: ProposalProduct[];
+  infoPackages: ProposalInfoPackage[];
   notes: string;
   publicToken: string;
   status: "draft" | "sent";
@@ -85,5 +94,6 @@ export type CrmProposalInput = {
   hours: number;
   hourPrice: number;
   products: ProposalProduct[];
+  infoPackages?: ProposalInfoPackage[];
   notes?: string;
 };

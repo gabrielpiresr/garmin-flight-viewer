@@ -28,6 +28,8 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
   const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [customHoursInput, setCustomHoursInput] = useState("");
+  const [customHourPriceInput, setCustomHourPriceInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
 
@@ -65,11 +67,23 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [search, searchUsers]);
 
-  async function handleGenerate() {
+  function packageReferenceForCustomHours(list: FlightCreditPackage[], customHours: number): FlightCreditPackage | null {
+    if (!list.length) return null;
+    const sorted = [...list].sort((a, b) => a.hours - b.hours);
+    if (!Number.isFinite(customHours) || customHours <= 0) return sorted[0];
+    return [...sorted].reverse().find((item) => item.hours <= customHours) ?? sorted[0];
+  }
+
+  async function handleGenerate(customHours?: number, customHourPrice?: number) {
     if (!selectedUser || !selectedPackageId) return;
     setGenerating(true);
     try {
-      const checkout = await adminCreateFlightCreditCheckout(selectedUser.userId, selectedPackageId);
+      const checkout = await adminCreateFlightCreditCheckout(
+        selectedUser.userId,
+        selectedPackageId,
+        customHours,
+        customHourPrice,
+      );
       setPaymentUrl(checkout.paymentUrl);
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
@@ -79,6 +93,13 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
   }
 
   const selectedPackage = packages.find((p) => p.id === selectedPackageId);
+  const parsedCustomHours = Number(customHoursInput.replace(",", "."));
+  const customHours = Number.isFinite(parsedCustomHours) ? Math.round(parsedCustomHours * 100) / 100 : 0;
+  const parsedCustomHourPrice = Number(customHourPriceInput.replace(",", "."));
+  const customHourPrice = Number.isFinite(parsedCustomHourPrice) ? Math.round(parsedCustomHourPrice * 100) / 100 : 0;
+  const customReference = packageReferenceForCustomHours(packages, customHours);
+  const appliedHourPrice = customHourPrice > 0 ? customHourPrice : customReference?.hourPrice ?? 0;
+  const customTotal = customReference && customHours > 0 && appliedHourPrice > 0 ? customHours * appliedHourPrice : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -178,6 +199,49 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
               {generating && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
               {generating ? "Gerando..." : "Gerar link"}
             </button>
+
+            <div className="rounded-lg border border-emerald-700/40 bg-emerald-950/20 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300">Quantidade personalizada</p>
+              <p className="mt-1 text-[11px] text-slate-400">Digite horas e valor/hora. A validade ainda usa o pacote de referência.</p>
+              <div className="mt-2">
+                <input
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  value={customHoursInput}
+                  onChange={(e) => setCustomHoursInput(e.target.value)}
+                  placeholder="Ex.: 11.5"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+              <div className="mt-2">
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={customHourPriceInput}
+                  onChange={(e) => setCustomHourPriceInput(e.target.value)}
+                  placeholder="Valor por hora (ex.: 950)"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+              {customReference && customHours > 0 ? (
+                <p className="mt-2 text-[11px] text-slate-300">
+                  Referência: {customReference.hours}h · validade {customReference.validityDays} dias · valor/h {money(appliedHourPrice)} · total {customTotal ? money(customTotal) : "—"}
+                </p>
+              ) : (
+                <p className="mt-2 text-[11px] text-slate-500">Informe as horas para calcular a referência.</p>
+              )}
+              <button
+                type="button"
+                disabled={!selectedUser || generating || packages.length === 0 || customHours < 0.5 || customHourPrice <= 0 || !customReference}
+                onClick={() => void handleGenerate(customHours, customHourPrice)}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2 text-xs font-medium text-white hover:bg-emerald-500 transition disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {generating && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+                {generating ? "Gerando..." : "Gerar link personalizado"}
+              </button>
+            </div>
           </div>
         )}
       </div>

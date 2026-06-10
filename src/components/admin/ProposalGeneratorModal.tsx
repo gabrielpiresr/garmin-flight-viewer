@@ -7,7 +7,7 @@ import { updateLead } from "../../lib/crmDb";
 import { listSchoolProducts } from "../../lib/schoolProductsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import type { CrmLead } from "../../types/crm";
-import type { CrmProposal, ProposalProduct } from "../../types/proposal";
+import type { CrmProposal, ProposalInfoPackage, ProposalProduct } from "../../types/proposal";
 import type { SchoolProduct } from "../../types/costs";
 import type { FlightCreditPackage } from "../../types/flightCreditSales";
 import { useToast } from "../ui/ToastProvider";
@@ -39,6 +39,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
   const [hourPriceStr, setHourPriceStr] = useState("");
   const [notes, setNotes] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  const [selectedInfoPackageIds, setSelectedInfoPackageIds] = useState<Set<string>>(new Set());
 
   const [products, setProducts] = useState<SchoolProduct[]>([]);
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
@@ -78,6 +79,15 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
     }
   }
 
+  function toggleInfoPackage(id: string) {
+    setSelectedInfoPackageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   function handleHoursChange(v: string) {
     setHours(v);
     setSelectedPackageId(null);
@@ -112,6 +122,15 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
       const selectedProducts: ProposalProduct[] = products
         .filter((p) => selectedProductIds.has(p.id))
         .map((p) => ({ id: p.id, name: p.name, price: p.idealPrice }));
+      const selectedInfoPackages: ProposalInfoPackage[] = packages
+        .filter((pkg) => selectedInfoPackageIds.has(pkg.id))
+        .map((pkg) => ({
+          id: pkg.id,
+          hours: pkg.hours,
+          hourPrice: pkg.hourPrice,
+          validityDays: pkg.validityDays,
+          aircraftModelName: pkg.aircraftModelName,
+        }));
 
       const data = await createProposalWithPayment({
         leadId: lead.id,
@@ -120,6 +139,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
         hours: hourNum,
         hourPrice,
         products: selectedProducts,
+        infoPackages: selectedInfoPackages,
         notes: notes.trim(),
       });
 
@@ -409,6 +429,35 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                   className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
                 />
               </div>
+
+              {/* Pacotes informativos opcionais */}
+              {!loadingProducts && packages.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                    Outros pacotes para mostrar na proposta (opcional)
+                  </p>
+                  <div className="space-y-1">
+                    {packages.map((pkg) => {
+                      const checked = selectedInfoPackageIds.has(pkg.id);
+                      const total = pkg.hours * pkg.hourPrice;
+                      return (
+                        <label key={`info-${pkg.id}`} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-slate-800/60 transition">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleInfoPackage(pkg.id)}
+                            className="h-4 w-4 rounded border-slate-600 accent-sky-500"
+                          />
+                          <span className="flex-1 text-sm text-slate-300">
+                            {pkg.hours}h · {pkg.aircraftModelName || "Aeronave"} · validade {pkg.validityDays} dias
+                          </span>
+                          <span className="text-xs text-slate-500">{total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
