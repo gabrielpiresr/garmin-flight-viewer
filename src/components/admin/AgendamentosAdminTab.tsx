@@ -299,6 +299,7 @@ export function AgendamentosAdminTab() {
     { label: "Duração", key: "duration" },
     { label: "Tempo de voo", key: null },
     { label: "Marcado em", key: "createdAt" },
+  { label: "Marcado por", key: null },
   ];
 
   // Colunas do cabeçalho da view agrupada
@@ -653,6 +654,9 @@ export function AgendamentosAdminTab() {
                       <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap text-xs">
                         {item.createdAt ? fmtDateTimeBr(item.createdAt) : "-"}
                       </td>
+                      <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap text-xs">
+                        {item.scheduledByName || "-"}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -694,6 +698,11 @@ export function AgendamentosAdminTab() {
                 {item.createdAt && (
                   <p className="mt-3 border-t border-slate-800 pt-2 text-[11px] text-slate-500">
                     Marcado em {fmtDateTimeBr(item.createdAt)}
+                  </p>
+                )}
+                {item.scheduledByName && (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Marcado por {item.scheduledByName}
                   </p>
                 )}
               </div>

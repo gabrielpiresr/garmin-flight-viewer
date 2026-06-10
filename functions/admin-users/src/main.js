@@ -1256,6 +1256,160 @@ function sagaScheduleNotes(schedule) {
   return values.map(cleanString).filter(Boolean).join(" | ");
 }
 
+function sagaScheduleUserLabel(value) {
+  if (value && typeof value === "object") {
+    return cleanString(
+      value.name ||
+      value.nickname ||
+      value.full_name ||
+      value.email ||
+      value.username ||
+      value.user_name ||
+      value.label ||
+      value.id,
+    );
+  }
+  return cleanString(value);
+}
+
+function sagaScheduleLookupUserName(schedule, userId) {
+  const targetId = cleanString(userId);
+  if (!targetId) return "";
+  const collections = [
+    schedule?.users,
+    schedule?.user_list,
+    schedule?.participants,
+    schedule?.attendees,
+    schedule?.staff,
+    schedule?.collaborators,
+    schedule?.instructors,
+    schedule?.students,
+  ];
+  for (const collection of collections) {
+    if (!Array.isArray(collection)) continue;
+    const match = collection.find((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const entryId = cleanString(entry.id || entry.user_id || entry.userId || entry.uuid);
+      return entryId === targetId;
+    });
+    if (match) {
+      const label = sagaScheduleUserLabel(match);
+      const matchId = cleanString(match.id || match.user_id || match.userId || match.uuid);
+      if (label && label !== matchId) return label;
+    }
+  }
+  return "";
+}
+
+function sagaScheduleMarkedByName(schedule, student, instructor) {
+  const explicitName = cleanString(
+    schedule?.scheduled_by_name ||
+    schedule?.scheduledByName ||
+    schedule?.booked_by_name ||
+    schedule?.bookedByName ||
+    schedule?.created_by_name ||
+    schedule?.createdByName ||
+    schedule?.creator_name,
+  );
+  if (explicitName) return explicitName;
+
+  const markerSource =
+    schedule?.scheduled_by ||
+    schedule?.scheduledBy ||
+    schedule?.booked_by ||
+    schedule?.bookedBy ||
+    schedule?.created_by ||
+    schedule?.createdBy ||
+    schedule?.creator ||
+    schedule?.user;
+  const markerId = cleanString(
+    (markerSource && typeof markerSource === "object"
+      ? markerSource.id || markerSource.user_id || markerSource.userId || markerSource.uuid
+      : markerSource) ||
+    schedule?.scheduled_by_id ||
+    schedule?.scheduledById ||
+    schedule?.booked_by_id ||
+    schedule?.bookedById ||
+    schedule?.created_by_id ||
+    schedule?.createdById,
+  );
+  const markerLabel = sagaScheduleUserLabel(markerSource);
+  const lookedUpName = sagaScheduleLookupUserName(schedule, markerId || markerLabel);
+  if (lookedUpName) return lookedUpName;
+
+  const studentId = cleanString(schedule?.student_id || student?.id);
+  if ((markerId || markerLabel) && (markerId || markerLabel) === studentId) {
+    return cleanString(student?.name || student?.nickname || schedule?.student_name || schedule?.student) || markerLabel || markerId;
+  }
+  const instructorId = cleanString(schedule?.instructor_id || instructor?.id);
+  if ((markerId || markerLabel) && (markerId || markerLabel) === instructorId) {
+    return cleanString(instructor?.name || instructor?.nickname || schedule?.instructor_name || schedule?.instructor) || markerLabel || markerId;
+  }
+
+  if (markerLabel && markerId && markerLabel === markerId) return markerId;
+  if (markerLabel && !/^\d+$/.test(markerLabel)) return markerLabel;
+  return markerId || markerLabel;
+}
+
+function sagaScheduleLikelyId(value) {
+  const raw = cleanString(value);
+  if (!raw) return false;
+  if (/^\d+$/.test(raw)) return true;
+  if (/^saga_\d+$/i.test(raw)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) return true;
+  return false;
+}
+
+async function sagaResolveScheduledByNamesFromProfiles(schedules) {
+  const rows = Array.isArray(schedules) ? schedules : [];
+  if (!rows.length) return rows;
+  const markerIds = Array.from(
+    new Set(
+      rows
+        .map((item) => cleanString(item?.scheduledByName))
+        .filter((value) => value && sagaScheduleLikelyId(value))
+        .flatMap((value) => {
+          const out = [value];
+          const numeric = value.match(/^saga_(\d+)$/i)?.[1];
+          if (numeric) out.push(numeric);
+          return out;
+        }),
+    ),
+  );
+  if (!markerIds.length || !PROFILES_COLLECTION_ID) return rows;
+
+  const profiles = await listDocumentsByFieldIn(
+    PROFILES_COLLECTION_ID,
+    "saga_user_id",
+    markerIds,
+    [...selectQuery(["user_id", "full_name", "email", "saga_user_id"])],
+  ).catch(() => []);
+  if (!profiles.length) return rows;
+
+  const profileBySagaId = new Map();
+  for (const profile of profiles) {
+    const sagaId = cleanString(profile.saga_user_id);
+    if (sagaId && !profileBySagaId.has(sagaId)) profileBySagaId.set(sagaId, profile);
+    const numeric = sagaId.match(/^saga_(\d+)$/i)?.[1];
+    if (numeric && !profileBySagaId.has(numeric)) profileBySagaId.set(numeric, profile);
+  }
+
+  const userIds = Array.from(new Set(profiles.map((profile) => cleanString(profile.user_id)).filter(Boolean)));
+  const authUsers = await getUsersByIds(userIds).catch(() => []);
+  const authUserById = new Map(authUsers.map((user) => [cleanString(user.$id), user]));
+
+  return rows.map((item) => {
+    const marker = cleanString(item?.scheduledByName);
+    if (!marker || !sagaScheduleLikelyId(marker)) return item;
+    const profile = profileBySagaId.get(marker);
+    if (!profile) return item;
+    const authUser = authUserById.get(cleanString(profile.user_id));
+    const resolvedName = cleanString(profile.full_name || authUser?.name || authUser?.email || profile.email);
+    if (!resolvedName) return item;
+    return { ...item, scheduledByName: resolvedName };
+  });
+}
+
 function translateSagaScheduleItem(item) {
   const schedule = item && typeof item === "object" ? item : {};
   const student = schedule.student && typeof schedule.student === "object" ? schedule.student : {};
@@ -1269,6 +1423,7 @@ function translateSagaScheduleItem(item) {
   const startAtRaw = cleanString(schedule.start_at_raw || schedule.starts_at_raw || schedule.startAtRaw || (dateRaw && startTimeRaw ? `${dateRaw} ${startTimeRaw}` : dateRaw));
   const endAtRaw = cleanString(schedule.end_at_raw || schedule.ends_at_raw || schedule.endAtRaw || (dateRaw && endTimeRaw ? `${dateRaw} ${endTimeRaw}` : ""));
   const createdAt = cleanString(schedule.created_at || schedule.createdAt || schedule.booked_at || schedule.booking_date || schedule.date_created || "");
+  const scheduledByName = sagaScheduleMarkedByName(schedule, student, instructor);
   return {
     id: cleanString(schedule.id),
     startAt,
@@ -1276,6 +1431,7 @@ function translateSagaScheduleItem(item) {
     startAtRaw,
     endAtRaw,
     createdAt,
+    scheduledByName,
     studentSagaId: cleanString(schedule.student_id || student.id),
     instructorSagaId: cleanString(schedule.instructor_id || instructor.id),
     aircraftSagaId: cleanString(schedule.aircraft_id || aircraft.id),
@@ -16292,7 +16448,8 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       const logs = [];
       const { cookieJar } = await loadSagaAuthSession();
-      const schedules = await fetchSagaScheduledFlights(cookieJar, logs, { skipFutureFilter: true, monthCount: 4 });
+      const schedulesRaw = await fetchSagaScheduledFlights(cookieJar, logs, { skipFutureFilter: true, monthCount: 4 });
+      const schedules = await sagaResolveScheduledByNamesFromProfiles(schedulesRaw);
       return jsonResponse(res, 200, { ok: true, schedules, logs });
     }
 

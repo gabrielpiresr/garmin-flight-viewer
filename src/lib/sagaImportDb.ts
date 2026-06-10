@@ -834,6 +834,7 @@ export type SagaScheduleItem = {
   startAtRaw: string;
   endAtRaw: string;
   createdAt: string;
+  scheduledByName: string;
   studentSagaId: string;
   instructorSagaId: string;
   aircraftSagaId: string;
