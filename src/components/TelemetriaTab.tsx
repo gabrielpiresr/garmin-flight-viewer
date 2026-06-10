@@ -374,6 +374,21 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       setTelemetryDirty(false);
       await loadFlightAlerts();
       showToast({ variant: "success", message: "Telemetria processada." });
+
+      // Feedback do auto-build do Flight Review (roda em segundo plano)
+      void result.reviewAutoBuild?.then((build) => {
+        if (build.added > 0) {
+          showToast({
+            variant: "success",
+            message: `${build.added} manobra${build.added > 1 ? "s" : ""} (decolagem/pouso/TGL) adicionada${build.added > 1 ? "s" : ""} ao Flight Review${build.analyzed > 0 ? " e analisada" + (build.analyzed > 1 ? "s" : "") : ""}.`,
+          });
+        } else if (build.error) {
+          showToast({
+            variant: "error",
+            message: `Flight Review automático falhou: ${build.error.message}`,
+          });
+        }
+      });
     } catch (err) {
       showToast({ variant: "error", message: (err as Error).message || "Falha ao processar telemetria." });
     } finally {
@@ -583,7 +598,6 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     <div className="relative min-w-0 flex flex-col gap-2">
       {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       {uploadPanel}
-      <TelemetryAlertsPanel alerts={flightAlerts} loading={alertsLoading} />
       {showTelemetryManagement ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">
@@ -611,14 +625,23 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
           ref={telemetryFullscreenRef}
           className={
             mapExpanded
-              ? "min-w-0 overflow-hidden bg-slate-950 p-2 text-slate-100"
+              ? "flex min-w-0 flex-col gap-2 overflow-hidden bg-slate-950 p-2 text-slate-100"
               : "min-w-0 xl:h-[calc(100vh-1.5rem)] xl:min-h-[700px]"
           }
           style={mapExpanded ? { height: isBrowserFullscreen ? "100vh" : "calc(100dvh - 16px)" } : undefined}
         >
-          <div className={mapExpanded ? "h-full min-h-0" : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
-            {chartData.length > 0 && !mapExpanded && (
-              <div className="min-h-0 xl:overflow-y-auto xl:pr-1">
+          {mapExpanded && segments.length > 0 && (
+            <div className="max-h-28 shrink-0 overflow-y-auto">
+              <SegmentSelector
+                segments={segments}
+                selectedId={selectedSegmentId}
+                onChange={handleSegmentChange}
+              />
+            </div>
+          )}
+          <div className={mapExpanded ? `grid min-h-0 flex-1 gap-2 ${chartData.length > 0 ? "grid-cols-[minmax(260px,400px)_minmax(0,1fr)]" : "grid-cols-1"}` : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+            {chartData.length > 0 && (
+              <div className={mapExpanded ? "min-h-0 overflow-y-auto pr-1" : "min-h-0 xl:overflow-y-auto xl:pr-1"}>
                 {selectedSegment ? (
                   <SegmentSummary segment={selectedSegment} />
                 ) : (
@@ -691,6 +714,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
           </div>
         </div>
       )}
+
+      <TelemetryAlertsPanel alerts={flightAlerts} loading={alertsLoading} />
     </div>
   );
 

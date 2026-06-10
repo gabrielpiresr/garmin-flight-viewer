@@ -1,6 +1,6 @@
-import { parseGarminCsv } from "./parseGarminCsv";
+import { parseGarminCsv, type ParseResult } from "./parseGarminCsv";
 import { detectTrafficPattern } from "./trafficPattern";
-import { findTouchdown } from "./flightSegments";
+import { detectFlightSegments, findTouchdown } from "./flightSegments";
 import type {
   AnalysisResult,
   AnalyzedParameter,
@@ -13,7 +13,13 @@ import type {
   StepEndCondition,
   StepParameter,
 } from "../types/flightReview";
-import type { TrafficPatternAnalysis } from "../types/flight";
+import type { FlightSegment, TrafficPatternAnalysis } from "../types/flight";
+
+/** Dados pré-computados reutilizáveis entre análises do mesmo voo (evita reparse do CSV). */
+export type ManeuverAnalysisContext = {
+  parsed?: ParseResult;
+  segments?: FlightSegment[];
+};
 
 /** Mapeia nomes canônicos de parâmetros para campos reais do ChartRow (parseGarminCsv output). */
 export const TELEMETRY_FIELD_MAP: Record<string, string> = {
@@ -252,8 +258,9 @@ export function analyzeFlightManeuver(
   _template: ManeuverTemplate,
   steps: ManeuverTemplateStep[],
   csvText: string,
+  context?: ManeuverAnalysisContext,
 ): AnalysisResult {
-  const parsed = parseGarminCsv(csvText);
+  const parsed = context?.parsed ?? parseGarminCsv(csvText);
   const { chartData, chartTimeBaseMs } = parsed;
 
   if (!chartTimeBaseMs || chartData.length === 0) {
@@ -292,21 +299,42 @@ export function analyzeFlightManeuver(
   let trafficPattern: TrafficPatternAnalysis | null = null;
 
   if (isLandingCategory && maneuverRows.length >= 2) {
-    // Encontra os índices em chartData que correspondem à janela da manobra
-    const firstX = maneuverRows[0]!.row.x as number;
-    const lastX  = maneuverRows[maneuverRows.length - 1]!.row.x as number;
-    let segStartIdx = 0;
-    let segEndIdx   = chartData.length - 1;
-    for (let i = 0; i < chartData.length; i++) {
-      if ((chartData[i]!.x as number) >= firstX) { segStartIdx = i; break; }
+    // Mesma lógica da telemetria: usa os segmentos detectados no voo completo,
+    // que conhecem o toque exato de cada pouso/TGL. Buscar o toque apenas dentro
+    // da janela da manobra encontrava o toque do circuito anterior quando os
+    // circuitos eram curtos (< 5 min), gerando pernas erradas/no lugar errado.
+    const segments =
+      context?.segments ?? detectFlightSegments(chartData, chartTimeBaseMs, parsed.points);
+    let bestOverlapMs = 0;
+    for (const seg of segments) {
+      if ((seg.type !== "landing" && seg.type !== "tgl") || !seg.trafficPattern) continue;
+      const segStartMs = chartTimeBaseMs + seg.startX;
+      const segEndMs = chartTimeBaseMs + seg.endX;
+      const overlapMs = Math.min(endMs, segEndMs) - Math.max(startMs, segStartMs);
+      if (overlapMs > bestOverlapMs) {
+        bestOverlapMs = overlapMs;
+        trafficPattern = seg.trafficPattern;
+      }
     }
-    for (let i = chartData.length - 1; i >= 0; i--) {
-      if ((chartData[i]!.x as number) <= lastX) { segEndIdx = i; break; }
-    }
-    if (segEndIdx > segStartIdx) {
-      // Detecta o toque real dentro da janela da manobra; cai para segEndIdx se não encontrado
-      const actualTdIdx = findTouchdown(chartData, segStartIdx, segEndIdx) ?? segEndIdx;
-      trafficPattern = detectTrafficPattern(chartData, segStartIdx, actualTdIdx) ?? null;
+
+    if (!trafficPattern) {
+      // Fallback: detecção local na janela da manobra (manobras marcadas manualmente
+      // fora de qualquer segmento detectado).
+      const firstX = maneuverRows[0]!.row.x as number;
+      const lastX  = maneuverRows[maneuverRows.length - 1]!.row.x as number;
+      let segStartIdx = 0;
+      let segEndIdx   = chartData.length - 1;
+      for (let i = 0; i < chartData.length; i++) {
+        if ((chartData[i]!.x as number) >= firstX) { segStartIdx = i; break; }
+      }
+      for (let i = chartData.length - 1; i >= 0; i--) {
+        if ((chartData[i]!.x as number) <= lastX) { segEndIdx = i; break; }
+      }
+      if (segEndIdx > segStartIdx) {
+        // Detecta o toque real dentro da janela da manobra; cai para segEndIdx se não encontrado
+        const actualTdIdx = findTouchdown(chartData, segStartIdx, segEndIdx) ?? segEndIdx;
+        trafficPattern = detectTrafficPattern(chartData, segStartIdx, actualTdIdx) ?? null;
+      }
     }
   }
 
@@ -353,7 +381,14 @@ export function analyzeFlightManeuver(
         }
         // Se não há marcação: stepEndIdx permanece em maneuverRows.length - 1 (fim da manobra)
       } else if (cond.type === "traffic_pattern_leg" && trafficPattern && chartTimeBaseMs) {
-        const leg = trafficPattern.legs.find((l) => l.type === cond.leg);
+        // Pode haver mais de uma perna do mesmo tipo na janela: em circuitos/TGLs,
+        // a subida após o toque anterior também alinha com a pista e é classificada
+        // como "final". A perna real do circuito é a ÚLTIMA do tipo antes do toque.
+        const tdX = trafficPattern.touchdownX;
+        const candidates = trafficPattern.legs.filter((l) => l.type === cond.leg);
+        const beforeTd = tdX != null ? candidates.filter((l) => l.startX <= tdX) : candidates;
+        const pool = beforeTd.length > 0 ? beforeTd : candidates;
+        const leg = pool.length > 0 ? pool[pool.length - 1] : undefined;
         if (leg) {
           // Para a perna final, limita o fim a 1 segundo após o toque real
           const legEndX =

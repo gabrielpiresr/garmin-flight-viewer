@@ -18,8 +18,8 @@ import {
   upsertFlightManeuverReview,
 } from "../lib/flightManeuversDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import { autoBuildFlightReviewManeuvers } from "../lib/flightReviewAutoBuild";
 import { getSavedFlight } from "../lib/flightsDb";
-import { detectFlightSegments } from "../lib/flightSegments";
 import { parseGarminCsv } from "../lib/parseGarminCsv";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { listManeuverTemplates, listManeuverTemplateSteps, getManeuverTemplate } from "../lib/maneuverTemplatesDb";
@@ -2841,7 +2841,13 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
 
   // Número de gráficos na área de charts (para calcular altura)
   const fsTotalCharts = useMemo(() => {
-    if (fsStepIdx === -1) return (fsManAltPoints.length > 0 ? 1 : 0) + (fsManIasPoints.length > 0 ? 1 : 0);
+    if (fsStepIdx === -1) {
+      return (
+        (fsManAltPoints.length > 0 ? 1 : 0) +
+        (fsManIasPoints.length > 0 ? 1 : 0) +
+        (fsExtraFields[-1] ?? []).length
+      );
+    }
     if (!fsStep) return 0;
     const paramKeys = new Set(fsStep.parameters.map((p) => p.parameter));
     const showAlt = !paramKeys.has("altitude") && fsStepAltPoints.length > 0;
@@ -2903,49 +2909,41 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     if (nearest) fsMapHoverRef.current?.([nearest.lat, nearest.lon]);
   }, [fsStep, fsManeuver, parsedCsvResult?.points]);
 
-  const SEG_CATEGORY_MAP: Record<string, string> = { takeoff: "takeoff", landing: "landing", tgl: "touch_and_go" };
-
   const handleAutoAddSegments = async () => {
     if (!parsedCsvResult || !flight || !user) return;
-    const { chartData, chartTimeBaseMs, points } = parsedCsvResult;
+    const { chartData, chartTimeBaseMs } = parsedCsvResult;
     if (!chartTimeBaseMs || chartData.length === 0) {
       showToast({ variant: "error", message: "Telemetria insuficiente para detecção automática." });
       return;
     }
     setAutoAdding(true);
     try {
-      const segments = detectFlightSegments(chartData, chartTimeBaseMs, points);
-      if (segments.length === 0) {
-        showToast({ variant: "error", message: "Nenhuma decolagem, pouso ou TGL detectados na telemetria." });
-        return;
-      }
-      let added = 0;
-      for (const seg of segments) {
-        const category = SEG_CATEGORY_MAP[seg.type];
-        if (!category) continue;
-        const tmpl = templates.find((t) => t.category === category && t.is_active);
-        if (!tmpl) continue;
-        const startIso = new Date(chartTimeBaseMs + seg.startX).toISOString();
-        const endIso = new Date(chartTimeBaseMs + seg.endX).toISOString();
-        const created = await createFlightManeuver({
-          flight_id: flightId,
-          template_id: tmpl.id,
-          instructor_id: user.id,
-          student_id: flight.student_user_id,
+      const result = await autoBuildFlightReviewManeuvers({
+        flightId,
+        actorUserId: user.id,
+        parsed: parsedCsvResult,
+        flight: {
+          student_user_id: flight.student_user_id,
+          instructor_user_id: flight.instructor_user_id ?? user.id,
           aircraft_ident: flight.aircraft_ident,
-          start_time: startIso,
-          end_time: endIso,
-          status: "draft",
-          created_by: user.id,
-        });
-        handleAdded(created);
-        added += 1;
-      }
-      if (added === 0) {
+        },
+      });
+      if (result.detected === 0) {
+        showToast({ variant: "error", message: "Nenhuma decolagem, pouso ou TGL detectados na telemetria." });
+      } else if (result.added === 0 && result.skipped > 0) {
+        showToast({ variant: "info", message: "Todas as manobras detectadas já estão no Flight Review." });
+      } else if (result.added === 0) {
         showToast({ variant: "error", message: "Nenhum template compatível encontrado para os segmentos detectados." });
       } else {
-        showToast({ variant: "success", message: `${added} manobra${added > 1 ? "s" : ""} adicionada${added > 1 ? "s" : ""} automaticamente.` });
+        showToast({
+          variant: "success",
+          message: `${result.added} manobra${result.added > 1 ? "s" : ""} adicionada${result.added > 1 ? "s" : ""}${result.analyzed > 0 ? ` e ${result.analyzed} analisada${result.analyzed > 1 ? "s" : ""}` : ""} automaticamente.`,
+        });
       }
+      if (result.error) {
+        showToast({ variant: "error", message: result.error.message });
+      }
+      if (result.added > 0) await load();
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
@@ -3299,55 +3297,56 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                   </div>
                 )}
 
-                {/* Seletor de gráficos extras por telemetria */}
-                {parsedCsvResult && (
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                      Gráficos extras
-                    </p>
-                    <select
-                      value=""
-                      onChange={(e) => {
-                        const key = e.target.value;
-                        if (!key) return;
-                        setFsExtraFields((prev) => {
-                          const current = prev[fsStepIdx] ?? [];
-                          if (current.includes(key)) return prev;
-                          return { ...prev, [fsStepIdx]: [...current, key] };
-                        });
-                        e.target.value = "";
-                      }}
-                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
-                    >
-                      <option value="">＋ Adicionar parâmetro…</option>
-                      {Object.entries(TELEMETRY_PARAMETER_LABELS).map(([key, lbl]) => (
-                        <option key={key} value={key}>{lbl}</option>
-                      ))}
-                    </select>
-                    {(fsExtraFields[fsStepIdx] ?? []).length > 0 && (
-                      <div className="mt-1 space-y-0.5">
-                        {(fsExtraFields[fsStepIdx] ?? []).map((key) => (
-                          <div key={key} className="flex items-center justify-between text-xs">
-                            <span className="text-slate-400">{TELEMETRY_PARAMETER_LABELS[key] ?? key}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setFsExtraFields((prev) => ({
-                                  ...prev,
-                                  [fsStepIdx]: (prev[fsStepIdx] ?? []).filter((k) => k !== key),
-                                }))
-                              }
-                              className="ml-1 text-slate-600 hover:text-red-400"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
+              </>
+            )}
+
+            {/* Seletor de gráficos extras por telemetria (etapas e visão Completa) */}
+            {parsedCsvResult && fsManeuver && (fsStep || fsStepIdx === -1) && (
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">
+                  Gráficos extras
+                </p>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const key = e.target.value;
+                    if (!key) return;
+                    setFsExtraFields((prev) => {
+                      const current = prev[fsStepIdx] ?? [];
+                      if (current.includes(key)) return prev;
+                      return { ...prev, [fsStepIdx]: [...current, key] };
+                    });
+                    e.target.value = "";
+                  }}
+                  className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
+                >
+                  <option value="">＋ Adicionar parâmetro…</option>
+                  {Object.entries(TELEMETRY_PARAMETER_LABELS).map(([key, lbl]) => (
+                    <option key={key} value={key}>{lbl}</option>
+                  ))}
+                </select>
+                {(fsExtraFields[fsStepIdx] ?? []).length > 0 && (
+                  <div className="mt-1 space-y-0.5">
+                    {(fsExtraFields[fsStepIdx] ?? []).map((key) => (
+                      <div key={key} className="flex items-center justify-between text-xs">
+                        <span className="text-slate-400">{TELEMETRY_PARAMETER_LABELS[key] ?? key}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFsExtraFields((prev) => ({
+                              ...prev,
+                              [fsStepIdx]: (prev[fsStepIdx] ?? []).filter((k) => k !== key),
+                            }))
+                          }
+                          className="ml-1 text-slate-600 hover:text-red-400"
+                        >
+                          ✕
+                        </button>
                       </div>
-                    )}
+                    ))}
                   </div>
                 )}
-              </>
+              </div>
             )}
             {!fsManId && (
               <p className="mt-4 text-center text-xs text-slate-500">Selecione uma manobra na lista</p>
@@ -3394,6 +3393,35 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                   />
                 </div>
               )}
+              {/* Gráficos extras selecionados pelo usuário (janela completa da manobra) */}
+              {parsedCsvResult && (fsExtraFields[-1] ?? []).map((fieldKey) => {
+                const fieldMap = TELEMETRY_FIELD_MAP[fieldKey];
+                if (!fieldMap) return null;
+                const manStartMs = new Date(fsManeuver.start_time).getTime();
+                const manEndMs = new Date(fsManeuver.end_time).getTime();
+                const pts = extractFieldPoints(parsedCsvResult, manStartMs, manEndMs, fieldMap);
+                if (pts.length === 0) return null;
+                const extraLabel = TELEMETRY_PARAMETER_LABELS[fieldKey] ?? fieldKey;
+                const isZeroCross = fieldKey === "bank" || fieldKey === "pitch";
+                return (
+                  <div key={fieldKey}>
+                    <p className="mb-1 text-xs font-medium text-slate-400">{extraLabel}</p>
+                    <CanvasReviewChart
+                      data={pts}
+                      label={extraLabel}
+                      color="#a78bfa"
+                      domain={computeYDomain(pts, null, null, isZeroCross)}
+                      height={fsChartH}
+                      ranges={fsManChartRanges}
+                      verticalLines={fsManTdLines}
+                      zeroCrossLine={isZeroCross}
+                      formatY={(v) => v.toFixed(1)}
+                      activeT={fsHoverT}
+                      onHoverT={handleFsHoverT}
+                    />
+                  </div>
+                );
+              })}
               {(!fsManAltPoints.length && !fsManIasPoints.length) && (
                 <div className="col-span-2 flex h-full items-center justify-center text-sm text-slate-500">
                   Telemetria insuficiente para visão geral.

@@ -1,4 +1,8 @@
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordTelemetryFile } from "./flightRecordCodec";
+import {
+  autoBuildFlightReviewManeuvers,
+  type AutoBuildFlightReviewResult,
+} from "./flightReviewAutoBuild";
 import { buildFlightTelemetryMetrics, deriveIdentity } from "./flightTelemetryMetrics";
 import { getSavedFlight, updateFlight } from "./flightsDb";
 import { chartDurationSec, summarizeFlight } from "./flightStats";
@@ -13,9 +17,19 @@ export type AttachFlightTelemetryInput = {
   telemetryFiles: FlightRecordTelemetryFile[];
 };
 
+export type AttachFlightTelemetryOutcome = {
+  error: Error | null;
+  /**
+   * Criação/análise automática das manobras do Flight Review (decolagens, pousos
+   * e TGLs detectados na telemetria). Roda em segundo plano — o chamador pode
+   * observar a promise para exibir feedback, mas não precisa aguardá-la.
+   */
+  reviewAutoBuild?: Promise<AutoBuildFlightReviewResult>;
+};
+
 export async function attachFlightTelemetry(
   input: AttachFlightTelemetryInput,
-): Promise<{ error: Error | null }> {
+): Promise<AttachFlightTelemetryOutcome> {
   const { flightId, actorUserId, actorRole, telemetryFiles } = input;
   if (!telemetryFiles.length) {
     return { error: new Error("Selecione pelo menos um CSV para processar.") };
@@ -66,5 +80,21 @@ export async function attachFlightTelemetry(
     allowSignedTelemetryUpdate: true,
   });
 
-  return { error: result.error };
+  if (result.error) return { error: result.error };
+
+  // Em segundo plano: adiciona as manobras de decolagem/pouso/TGL ao Flight Review
+  // e roda a análise de cada uma. Erros ficam no resultado da promise — não
+  // afetam o sucesso do processamento da telemetria.
+  const reviewAutoBuild = autoBuildFlightReviewManeuvers({
+    flightId,
+    actorUserId,
+    parsed,
+    flight: {
+      student_user_id: saved.data.student_user_id ?? decoded.meta.header.studentUserId ?? null,
+      instructor_user_id: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
+      aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
+    },
+  });
+
+  return { error: null, reviewAutoBuild };
 }
