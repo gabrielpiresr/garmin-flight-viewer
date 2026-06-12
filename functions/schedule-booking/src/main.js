@@ -311,7 +311,9 @@ function sagaUserIdOf(profile, userId) {
 function normalizeSagaUserId(value) {
   const raw = clean(value);
   const match = raw.match(/^saga[_-]?(\d+)$/i);
-  return match ? match[1] : raw;
+  const numeric = match ? match[1] : raw;
+  if (/^\d+$/.test(numeric)) return String(Number(numeric));
+  return numeric;
 }
 
 function sameSagaUserId(left, right) {

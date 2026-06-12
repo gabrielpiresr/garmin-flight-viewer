@@ -48,11 +48,17 @@ const STATUS_TEXT_COLOR: Record<string, string> = {
   "Previsto": "text-sky-300",
 };
 
+function getStudentFlightCardClasses(item: CalendarFlightItem): string {
+  if (item.isBlocked) return "bg-red-900/60 border-red-500/50 text-red-200";
+  if (!item.isOwn) return "bg-slate-700/70 border-slate-600/50";
+  return STATUS_COLOR[item.flightStatus ?? "Não confirmado"] ?? "bg-slate-600/90 border-slate-500/60";
+}
+
 function studentItemColor(item: CalendarFlightItem): string {
-  if (item.isBlocked) return "bg-red-900/60";
-  if (!item.isOwn) return "bg-slate-700/70";
-  const cls = STATUS_COLOR[item.flightStatus ?? "Não confirmado"] ?? "bg-slate-600/90";
-  return cls.split(" ").filter((p) => !p.startsWith("border-")).join(" ");
+  return getStudentFlightCardClasses(item)
+    .split(" ")
+    .filter((part) => !part.startsWith("border-") && !part.startsWith("text-"))
+    .join(" ");
 }
 
 // ─── Date / Time helpers ──────────────────────────────────────────────────────
@@ -440,11 +446,7 @@ function StudentAircraftBoard({
                             {col.items.map((item) => {
                               const topPx = timeTopPx(item.startTime);
                               const heightPx = Math.max(CAL_ROW_HEIGHT / 2, item.durationHours * CAL_ROW_HEIGHT);
-                              const colorCls = item.isBlocked
-                                ? "bg-red-900/60 border-red-500/50 text-red-200"
-                                : item.isOwn
-                                  ? (STATUS_COLOR[item.flightStatus ?? "Não confirmado"] ?? "bg-slate-600/90 border-slate-500/60")
-                                  : "bg-slate-700/70 border-slate-600/50";
+                              const colorCls = getStudentFlightCardClasses(item);
                               const isInteractive = !item.isBlocked;
                               const itemDraggable = isInteractive && Boolean(onItemDrop) && (canDragItem ? canDragItem(item) : true);
                               return (

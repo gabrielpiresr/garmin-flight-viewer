@@ -580,7 +580,7 @@ async function enrichCreditAdjustments(adjustments: CreditAdjustmentRow[]): Prom
         return {
           ...adjustment,
           flightDate: adjustment.flightDate || flight.flight_date || null,
-          flightStartTime: adjustment.flightStartTime || flight.start_time || flight.presentation_time || null,
+          flightStartTime: adjustment.flightStartTime || flight.start_time || null,
         };
       } catch {
         return adjustment;
