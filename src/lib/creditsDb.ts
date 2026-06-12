@@ -403,6 +403,16 @@ export function buildStudentCreditStatement(params: {
   for (const credit of mutableCredits) modelIds.add(credit.aircraftModelId);
   for (const debit of debits) modelIds.add(debit.aircraftModelId || "unresolved");
 
+  const adjustments = params.adjustments ?? [];
+  const adjustmentsByModel = new Map<string, number>();
+  for (const adj of adjustments) {
+    const modelId = String(adj.aircraftModelId || "").trim() || "unresolved";
+    const penalty = Math.abs(Math.min(0, adj.hours));
+    if (penalty <= EPSILON) continue;
+    adjustmentsByModel.set(modelId, roundHours((adjustmentsByModel.get(modelId) ?? 0) + penalty));
+    modelIds.add(modelId);
+  }
+
   const summaries = Array.from(modelIds)
     .map((modelId) => {
       const modelLabel =
@@ -411,7 +421,7 @@ export function buildStudentCreditStatement(params: {
           : modelsById.get(modelId)?.name ||
             mutableCredits.find((credit) => credit.aircraftModelId === modelId)?.aircraftModelName ||
             "Modelo não identificado";
-      return summarizeModel(
+      const summary = summarizeModel(
         modelId,
         modelLabel,
         mutableCredits.filter((credit) => credit.aircraftModelId === modelId),
@@ -419,6 +429,15 @@ export function buildStudentCreditStatement(params: {
         generatedDate,
         simplified,
       );
+      const penaltyHours = adjustmentsByModel.get(modelId) ?? 0;
+      if (penaltyHours <= EPSILON) return summary;
+      return {
+        ...summary,
+        consumedHours: roundHours(summary.consumedHours + penaltyHours),
+        availableHours: simplified
+          ? roundHours(summary.availableHours - penaltyHours)
+          : roundHours(Math.max(0, summary.availableHours - penaltyHours)),
+      };
     })
     .sort((a, b) => a.aircraftModelName.localeCompare(b.aircraftModelName, "pt-BR"));
 
@@ -427,8 +446,7 @@ export function buildStudentCreditStatement(params: {
   fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit statement totals snapshot',data:{userId:params.userId,debitsCount:debits.length,has739:!!debit739,debit739:debit739?{hours:debit739.hours,allocatedHours:debit739.allocatedHours,unallocatedHours:debit739.unallocatedHours,isNight:debit739.isNight}:null,consumedHours:roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),unallocatedHours:roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0))},timestamp:Date.now()})}).catch(()=>{});
   // #endregion
 
-  const adjustments = params.adjustments ?? [];
-  const adjustmentHours = adjustments.reduce((sum, item) => sum + Math.abs(Math.min(0, item.hours)), 0);
+  const totalAvailableHours = roundHours(summaries.reduce((acc, item) => acc + item.availableHours, 0));
   return {
     userId: params.userId,
     generatedAt: generatedDate,
@@ -438,11 +456,9 @@ export function buildStudentCreditStatement(params: {
     summaries,
     totals: {
       purchasedHours: roundHours(summaries.reduce((acc, item) => acc + item.purchasedHours, 0)),
-      consumedHours: roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0) + adjustmentHours),
+      consumedHours: roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),
       expiredHours: roundHours(summaries.reduce((acc, item) => acc + item.expiredHours, 0)),
-      availableHours: simplified
-        ? roundHours(summaries.reduce((acc, item) => acc + item.availableHours, 0) - adjustmentHours)
-        : roundHours(Math.max(0, summaries.reduce((acc, item) => acc + item.availableHours, 0) - adjustmentHours)),
+      availableHours: simplified ? totalAvailableHours : roundHours(Math.max(0, totalAvailableHours)),
       unallocatedFlightHours: roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0)),
       amountPaid: Number(params.purchases.reduce((acc, item) => acc + item.amountPaid, 0).toFixed(2)),
     },
@@ -534,6 +550,45 @@ export async function deleteStudentCredit(creditId: string): Promise<void> {
   await databases.deleteDocument(DB_ID, STUDENT_CREDITS_COL_ID, creditId);
 }
 
+type CreditAdjustmentRow = StudentCreditStatement["adjustments"][number];
+
+function mapCreditAdjustment(doc: Record<string, unknown>): CreditAdjustmentRow {
+  return {
+    id: String(doc.$id ?? ""),
+    flightId: (doc.flight_id as string | null | undefined) ?? null,
+    aircraftModelId: String(doc.aircraft_model_id ?? ""),
+    aircraftIdent: String(doc.aircraft_ident ?? ""),
+    hours: Number(doc.hours ?? 0),
+    percentage: Number(doc.percentage ?? 0),
+    reason: String(doc.reason ?? ""),
+    occurredAt: String(doc.occurred_at ?? doc.$createdAt ?? ""),
+    flightDate: String(doc.flight_date ?? "").trim() || null,
+    flightStartTime: String(doc.flight_start_time ?? "").trim() || null,
+  };
+}
+
+async function enrichCreditAdjustments(adjustments: CreditAdjustmentRow[]): Promise<CreditAdjustmentRow[]> {
+  return Promise.all(
+    adjustments.map(async (adjustment) => {
+      if (adjustment.flightDate && adjustment.flightStartTime) return adjustment;
+      const rawFlightId = adjustment.flightId?.replace(/^saga-/, "") ?? "";
+      if (!rawFlightId) return adjustment;
+      try {
+        const result = await getSavedFlight(rawFlightId);
+        const flight = result.data;
+        if (!flight) return adjustment;
+        return {
+          ...adjustment,
+          flightDate: adjustment.flightDate || flight.flight_date || null,
+          flightStartTime: adjustment.flightStartTime || flight.start_time || flight.presentation_time || null,
+        };
+      } catch {
+        return adjustment;
+      }
+    }),
+  );
+}
+
 export async function getStudentCreditStatement(params: {
   viewer: { userId: string; role: UserRole };
   studentUserId: string;
@@ -557,6 +612,8 @@ export async function getStudentCreditStatement(params: {
       : Promise.resolve({ documents: [] }),
   ]);
 
+  const adjustments = await enrichCreditAdjustments(adjustmentDocs.documents.map((doc) => mapCreditAdjustment(doc as Record<string, unknown>)));
+
   return buildStudentCreditStatement({
     userId: params.studentUserId,
     purchases,
@@ -564,15 +621,6 @@ export async function getStudentCreditStatement(params: {
     aircrafts,
     models,
     nightHoursDifferentFromDay: params.nightHoursDifferentFromDay,
-    adjustments: adjustmentDocs.documents.map((doc) => ({
-      id: doc.$id,
-      flightId: (doc.flight_id as string | null | undefined) ?? null,
-      aircraftModelId: String(doc.aircraft_model_id ?? ""),
-      aircraftIdent: String(doc.aircraft_ident ?? ""),
-      hours: Number(doc.hours ?? 0),
-      percentage: Number(doc.percentage ?? 0),
-      reason: String(doc.reason ?? ""),
-      occurredAt: String(doc.occurred_at ?? doc.$createdAt ?? ""),
-    })),
+    adjustments,
   });
 }

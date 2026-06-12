@@ -145,6 +145,8 @@ async function createAdjustments() {
     ["percentage", () => databases.createFloatAttribute(databaseId, id, "percentage", false)],
     ["is_night", () => databases.createBooleanAttribute(databaseId, id, "is_night", false)],
     ["reason", () => databases.createStringAttribute(databaseId, id, "reason", 1024, false)],
+    ["flight_date", () => databases.createStringAttribute(databaseId, id, "flight_date", 10, false)],
+    ["flight_start_time", () => databases.createStringAttribute(databaseId, id, "flight_start_time", 8, false)],
     ["created_by", () => databases.createStringAttribute(databaseId, id, "created_by", 64, false)],
     ["occurred_at", () => databases.createDatetimeAttribute(databaseId, id, "occurred_at", true)],
   ];

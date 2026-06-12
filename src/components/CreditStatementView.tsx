@@ -17,6 +17,20 @@ function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(date);
 }
 
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
+function formatFlightSchedule(flightDate: string | null, flightStartTime: string | null): string | null {
+  if (!flightDate) return null;
+  const dateLabel = formatDate(flightDate);
+  if (!flightStartTime) return dateLabel;
+  return `${dateLabel} às ${flightStartTime}`;
+}
+
 function formatHours(value: number): string {
   return `${Number(value || 0).toFixed(1)}h`;
 }
@@ -220,15 +234,31 @@ export function CreditStatementView({
         <section className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
           <h3 className="mb-3 text-sm font-semibold text-rose-200">Ajustes e multas</h3>
           <div className="space-y-2">
-            {statement.adjustments.map((adjustment) => (
-              <div key={adjustment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/20 bg-slate-950/30 px-3 py-2 text-xs">
-                <div>
-                  <p className="font-medium text-slate-200">{adjustment.reason || "Multa de cancelamento"}</p>
-                  <p className="text-slate-500">{adjustment.aircraftIdent} · {adjustment.percentage}%</p>
+            {statement.adjustments.map((adjustment) => {
+              const flightSchedule = formatFlightSchedule(adjustment.flightDate, adjustment.flightStartTime);
+              return (
+              <div key={adjustment.id} className="rounded-lg border border-rose-500/20 bg-slate-950/30 px-3 py-2.5 text-xs">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <p className="font-medium text-slate-200">{adjustment.reason || "Multa de cancelamento"}</p>
+                    <p className="text-slate-400">
+                      {adjustment.aircraftIdent || "Aeronave não informada"}
+                      {adjustment.percentage > 0 ? ` · multa de ${adjustment.percentage}%` : ""}
+                    </p>
+                    {flightSchedule ? (
+                      <p className="text-slate-500">
+                        Voo cancelado: <span className="text-slate-300">{flightSchedule}</span>
+                      </p>
+                    ) : null}
+                    <p className="text-slate-500">
+                      Cancelamento em: <span className="text-slate-300">{formatDateTime(adjustment.occurredAt)}</span>
+                    </p>
+                  </div>
+                  <strong className="shrink-0 text-rose-300">{Math.abs(adjustment.hours).toFixed(2)}h</strong>
                 </div>
-                <strong className="text-rose-300">{adjustment.hours.toFixed(2)}h</strong>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       ) : null}

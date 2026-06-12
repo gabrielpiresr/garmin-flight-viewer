@@ -61,6 +61,8 @@ export type StudentCreditStatement = {
     percentage: number;
     reason: string;
     occurredAt: string;
+    flightDate: string | null;
+    flightStartTime: string | null;
   }>;
   summaries: StudentCreditModelSummary[];
   totals: {

@@ -57,7 +57,9 @@ type FunctionResponse = {
   penaltyHours?: number;
   available?: boolean;
   creditAvailableHours?: number;
+  creditFreeHours?: number;
   creditSufficient?: boolean;
+  zeroCreditExceptionAvailable?: boolean;
   presentationTime?: string;
   startTime?: string;
   cutoffTime?: string;
@@ -123,7 +125,9 @@ export async function checkScheduleAvailability(input: {
   return {
     available: response.available === true,
     creditAvailableHours: response.creditAvailableHours ?? 0,
+    creditFreeHours: response.creditFreeHours,
     creditSufficient: response.creditSufficient === true,
+    zeroCreditExceptionAvailable: response.zeroCreditExceptionAvailable === true,
     presentationTime: response.presentationTime ?? "",
     startTime: response.startTime ?? "",
     cutoffTime: response.cutoffTime ?? "",

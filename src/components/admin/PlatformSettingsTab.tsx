@@ -41,12 +41,24 @@ import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
 import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
 import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
+import { AdminImportTab } from "./AdminImportTab";
 
 const RolesSettingsTab = lazy(() =>
   import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
 );
 
-export type SettingsSubTab = "email" | "brand" | "rules" | "badges" | "tracks" | "financeiro" | "onboarding" | "indique-ganhe" | "roles" | "propostas";
+export type SettingsSubTab =
+  | "email"
+  | "brand"
+  | "rules"
+  | "badges"
+  | "tracks"
+  | "financeiro"
+  | "onboarding"
+  | "indique-ganhe"
+  | "roles"
+  | "propostas"
+  | "importacoes";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
   {
@@ -140,6 +152,19 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
       </svg>
     ),
   },
+  {
+    id: "importacoes" as SettingsSubTab,
+    label: "Importações",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M10 2.25a.75.75 0 01.75.75v7.19l2.22-2.22a.75.75 0 111.06 1.06l-3.5 3.5a.75.75 0 01-1.06 0l-3.5-3.5a.75.75 0 111.06-1.06l2.22 2.22V3a.75.75 0 01.75-.75zM3.25 11A2.25 2.25 0 015.5 8.75h1.25a.75.75 0 010 1.5H5.5a.75.75 0 00-.75.75v4.5c0 .414.336.75.75.75h9a.75.75 0 00.75-.75V11a.75.75 0 00-.75-.75h-1.25a.75.75 0 010-1.5h1.25A2.25 2.25 0 0116.75 11v4.5a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25V11z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
 ];
 
 /** Mapeamento de sub-aba de configurações → AdminTabKey para controle de permissões */
@@ -154,6 +179,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   "indique-ganhe": "settings.indique-ganhe",
   roles:       "settings.roles",
   propostas:   "settings.propostas",
+  importacoes: "import",
 };
 
 const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
@@ -853,6 +879,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("propostas") ? (
         <div hidden={activeSubTab !== "propostas"}>
           <ProposalSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("importacoes") ? (
+        <div hidden={activeSubTab !== "importacoes"}>
+          <AdminImportTab />
         </div>
       ) : null}
     </div>

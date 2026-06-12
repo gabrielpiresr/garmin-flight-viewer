@@ -116,6 +116,14 @@ function toLocalIso(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function resolveDefaultBookingDate(minBookingLeadDays: number): string {
+  const minDate = new Date();
+  minDate.setDate(minDate.getDate() + Math.max(0, Math.ceil(minBookingLeadDays)));
+  const minIso = toLocalIso(minDate);
+  const tomorrowIso = addDays(toLocalIso(new Date()), 1);
+  return tomorrowIso >= minIso ? tomorrowIso : minIso;
+}
+
 // ─── Regras de slot compartilhadas (modal de solicitação E modal de alteração) ──
 
 type OccupiedInterval = { start: number; end: number };
@@ -918,9 +926,7 @@ export function StudentScheduleTab() {
   // Checkbox obrigatório de ciência (a escola confirma entre 48h e 12h antes)
   const [bookingAck, setBookingAck] = useState(false);
   // Mobile abre direto na visão diária; desktop na semanal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">(() =>
-    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches ? "daily" : "weekly",
-  );
+  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">("daily");
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
   const [onlyMyFlights, setOnlyMyFlights] = useState(false);
   const [blockedSlots, setBlockedSlots] = useState<PublicBlockedSlot[]>([]);
@@ -1029,7 +1035,7 @@ export function StudentScheduleTab() {
         setCreditsLoading(false);
       }
     })();
-  }, [user?.id, user?.role]);
+  }, [user?.id, user?.role, reloadKey]);
 
   useEffect(() => { setFlexibilityMinutes(rules.slotMinutes); }, [rules.slotMinutes]);
 
@@ -1087,6 +1093,53 @@ export function StudentScheduleTab() {
       freeHours: creditHours - futureHours,
     };
   }, [aircrafts, aircraftIdent, futureOwnFlights, creditSummaries]);
+
+  // Créditos: bloqueia envio no modal quando saldo livre não cobre o voo (inclui exceção "1h zerado").
+  const bookingCreditCheck = useMemo(() => {
+    const clear = { blocked: false, message: null as string | null, needsZeroCreditConfirm: false };
+    if (!bookingOpen || !rules.requireCreditsForBooking) return clear;
+    if (creditsLoading || futureLoading) {
+      return { blocked: true, message: null, needsZeroCreditConfirm: false };
+    }
+
+    const modelId = aircrafts.find((aircraft) => aircraft.registration === aircraftIdent)?.modelId ?? null;
+    if (!modelId) {
+      return { blocked: true, message: "Aeronave sem modelo configurado — não é possível verificar créditos.", needsZeroCreditConfirm: false };
+    }
+
+    const freeHours = selectedModelBalance?.freeHours ?? 0;
+    const requestedHours = durationMinutes / 60;
+
+    if (freeHours + 0.001 >= requestedHours) return clear;
+
+    if (rules.allowZeroCreditOneHour && durationMinutes <= 60 && freeHours >= -0.001) {
+      return { blocked: false, message: null, needsZeroCreditConfirm: true };
+    }
+
+    if (freeHours < -0.001) {
+      return {
+        blocked: true,
+        message: `Você já tem horas agendadas sem crédito suficiente. Saldo livre para agendar: −${minutesToHHMM(Math.round(Math.abs(freeHours) * 60))}. Não é possível marcar outro voo nesta condição.`,
+        needsZeroCreditConfirm: false,
+      };
+    }
+
+    return {
+      blocked: true,
+      message: `Crédito insuficiente. Saldo livre para agendar: ${minutesToHHMM(Math.round(Math.max(0, freeHours) * 60))}; este voo precisa de ${minutesToHHMM(durationMinutes)}.`,
+      needsZeroCreditConfirm: false,
+    };
+  }, [
+    bookingOpen,
+    rules.requireCreditsForBooking,
+    rules.allowZeroCreditOneHour,
+    creditsLoading,
+    futureLoading,
+    aircrafts,
+    aircraftIdent,
+    selectedModelBalance?.freeHours,
+    durationMinutes,
+  ]);
 
   // Tempo de voo: além dos limites min/max do dia, um acionamento diurno não pode
   // invadir o período noturno — ex.: noturno às 17:30 e acionamento 16:30 → máx. 1h (item 8).
@@ -1254,6 +1307,8 @@ export function StudentScheduleTab() {
       setFlightDate(addDays(weekStart, target.dayOfWeek === 0 ? 6 : target.dayOfWeek - 1));
       setStartTime(addMinutes(target.startTime, rules.bufferBeforeMinutes));
       if (target.targetAircraftRegistration) setAircraftIdent(target.targetAircraftRegistration);
+    } else {
+      setFlightDate(resolveDefaultBookingDate(rules.minBookingLeadDays));
     }
     setBookingOpen(true);
   }
@@ -1351,13 +1406,28 @@ export function StudentScheduleTab() {
   }
 
   async function submitBooking() {
+    if (bookingCreditCheck.blocked) {
+      showToast({
+        variant: "error",
+        message: bookingCreditCheck.message ?? "Crédito insuficiente para este voo.",
+      });
+      return;
+    }
     setSaving(true);
     try {
       const availability = await checkScheduleAvailability({ aircraftIdent, flightDate, startTime, durationMinutes });
       if (rules.requireCreditsForBooking && !availability.creditSufficient) {
-        // Exceção "1h com crédito zerado": o servidor valida o saldo (até -0,5h);
-        // aqui exibimos o aviso de reposição antes de enviar.
-        if (rules.allowZeroCreditOneHour && durationMinutes <= 60) {
+        const freeHours =
+          availability.creditFreeHours ??
+          selectedModelBalance?.freeHours;
+        const canUseZeroCreditException =
+          rules.allowZeroCreditOneHour &&
+          durationMinutes <= 60 &&
+          (availability.zeroCreditExceptionAvailable === true ||
+            (availability.zeroCreditExceptionAvailable !== false &&
+              freeHours !== undefined &&
+              freeHours >= -0.001));
+        if (canUseZeroCreditException) {
           setZeroCreditConfirmOpen(true);
           return;
         }
@@ -1686,6 +1756,20 @@ export function StudentScheduleTab() {
               </div>
             )}
 
+            {bookingCreditCheck.message && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
+                <span className="mt-0.5 shrink-0">⚠</span>
+                <span>{bookingCreditCheck.message}</span>
+              </div>
+            )}
+
+            {bookingCreditCheck.needsZeroCreditConfirm && (
+              <div className="rounded-lg border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-200">
+                Você está sem saldo livre, mas a escola permite marcar <strong>1 hora de voo</strong> nessa condição.
+                Ao confirmar, será necessário repor os créditos até o início do voo.
+              </div>
+            )}
+
             {/* Blocked aircraft warning */}
             {blockedSlots.some((s) => s.aircraftRegistration === aircraftIdent) && (
               <div className="flex items-center gap-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
@@ -1825,7 +1909,15 @@ export function StudentScheduleTab() {
                 <button type="button" onClick={() => setBookingOpen(false)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
                 <button
                   type="button"
-                  disabled={saving || !aircraftIdent || !bookingAck || dateTooEarly || startTimeInvalid || durationOptions.length === 0}
+                  disabled={
+                    saving ||
+                    !aircraftIdent ||
+                    !bookingAck ||
+                    dateTooEarly ||
+                    startTimeInvalid ||
+                    durationOptions.length === 0 ||
+                    bookingCreditCheck.blocked
+                  }
                   onClick={() => void submitBooking()}
                   className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 >

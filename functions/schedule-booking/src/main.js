@@ -303,19 +303,29 @@ function normalizeRegistration(value) {
 
 /** ID SAGA numérico de um usuário local: perfil.saga_user_id ("70" ou "saga_70") ou user_id no padrão "saga_70". */
 function sagaUserIdOf(profile, userId) {
-  const raw = clean(profile?.saga_user_id);
-  const fromProfile = raw.match(/^saga[_-]?(\d+)$/i)?.[1] || raw;
+  const fromProfile = normalizeSagaUserId(profile?.saga_user_id);
   if (fromProfile) return fromProfile;
   return clean(userId).match(/^saga_(\d+)$/i)?.[1] || "";
+}
+
+function normalizeSagaUserId(value) {
+  const raw = clean(value);
+  const match = raw.match(/^saga[_-]?(\d+)$/i);
+  return match ? match[1] : raw;
+}
+
+function sameSagaUserId(left, right) {
+  const a = normalizeSagaUserId(left);
+  const b = normalizeSagaUserId(right);
+  return Boolean(a) && a === b;
 }
 
 function sagaEventBelongsTo(event, actorId, actorSagaId) {
   const studentUserId = clean(event.studentUserId);
   if (studentUserId && studentUserId === actorId) return true;
-  const studentSagaId = clean(event.studentSagaId);
-  if (!studentSagaId) return false;
-  if (actorSagaId && studentSagaId === actorSagaId) return true;
-  return actorId === `saga_${studentSagaId}`;
+  if (!clean(event.studentSagaId)) return false;
+  if (actorSagaId && sameSagaUserId(event.studentSagaId, actorSagaId)) return true;
+  return actorId === `saga_${normalizeSagaUserId(event.studentSagaId)}`;
 }
 
 function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
@@ -388,10 +398,10 @@ async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, 
   for (const event of events) {
     if (clean(event.id) === clean(ignoreEventId)) continue;
     if (sagaEventIsCancelled(event)) continue;
-    if (clean(event.studentSagaId) !== clean(studentSagaId)) continue;
+    if (!sameSagaUserId(event.studentSagaId, studentSagaId)) continue;
     if (modelByReg[normalizeRegistration(event.aircraft)] !== modelId) continue;
     const times = sagaEventTimes(event, rules);
-    if (!times || times.occupiedStartMs <= now) continue;
+    if (!times || dateTimeMs(times.flightDate, times.startTime) <= now) continue;
     minutes += times.durationMinutes;
   }
   return minutes / 60;
@@ -496,7 +506,7 @@ async function creditAvailable(studentId, modelId, isNight, requestedHours) {
     databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
       sdk.Query.equal("student_user_id", [studentId]),
       sdk.Query.equal("aircraft_model_id", [modelId]),
-      sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Realizado"]),
+      sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Previsto", "Realizado"]),
       sdk.Query.limit(5000),
     ]),
   ]);
@@ -522,12 +532,17 @@ async function creditAvailable(studentId, modelId, isNight, requestedHours) {
   };
 }
 
+/** Saldo livre para agendar = créditos disponíveis menos horas futuras já reservadas. */
+function schedulingFreeBalance(rawAvailableHours, reservedHours = 0) {
+  return rawAvailableHours - reservedHours;
+}
+
 /**
- * Exceção "1h com crédito zerado": quando ativa, aluno com saldo até -0,5h pode
+ * Exceção "1h com crédito zerado": quando ativa, aluno sem saldo livre negativo pode
  * marcar um voo de até 1h (ele é avisado que precisa repor antes do voo).
  */
-function zeroCreditExceptionApplies(rules, balanceHours, durationMinutes) {
-  return rules.allowZeroCreditOneHour === true && durationMinutes <= 60 && balanceHours >= -0.5;
+function zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes) {
+  return rules.allowZeroCreditOneHour === true && durationMinutes <= 60 && freeBalanceHours >= -0.001;
 }
 
 /** Uso semanal do aluno na agenda SAGA (somente voos ativos; horas = acionamento→corte). */
@@ -538,7 +553,7 @@ function sagaStudentWeekUsage(events, rules, studentSagaId, date, ignoreEventId 
   for (const event of events) {
     if (clean(event.id) === clean(ignoreEventId)) continue;
     if (sagaEventIsCancelled(event)) continue;
-    if (clean(event.studentSagaId) !== clean(studentSagaId)) continue;
+    if (!sameSagaUserId(event.studentSagaId, studentSagaId)) continue;
     const times = sagaEventTimes(event, rules);
     if (!times || times.flightDate < wkStart || times.flightDate > wkEnd) continue;
     usage.flights += 1;
@@ -815,7 +830,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       if (dailyLimitSaga) {
         const sameDay = events.filter((event) => {
           if (sagaEventIsCancelled(event)) return false;
-          if (clean(event.studentSagaId) !== studentSagaId) return false;
+          if (!sameSagaUserId(event.studentSagaId, studentSagaId)) return false;
           const eventTimes = sagaEventTimes(event, rules);
           return eventTimes?.flightDate === date;
         });
@@ -826,8 +841,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     if (rules.requireCreditsForBooking) {
       const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules);
       const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
-      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours - reservedHours, durationMinutes)) {
-        fail(`Crédito insuficiente. Disponível: ${Math.max(0, credit.availableHours - reservedHours).toFixed(2)}h.`);
+      const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedHours);
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
+        fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
       }
     }
     // O evento no SAGA armazena o bloco completo (apresentação→encerramento).
@@ -910,8 +926,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   }
   if (rules.requireCreditsForBooking) {
     const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60);
-    if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours, durationMinutes)) {
-      fail(`Crédito insuficiente. Disponível: ${credit.availableHours.toFixed(2)}h.`);
+    const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours);
+    if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
+      fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
     }
   }
   const id = sdk.ID.unique();
@@ -983,10 +1000,15 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
   const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedSagaHours);
+  const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedSagaHours);
+  const zeroCreditExceptionAvailable =
+    rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes);
   return {
     available: true,
     creditAvailableHours: Math.max(0, credit.availableHours - reservedSagaHours),
+    creditFreeHours: freeBalanceHours,
     creditSufficient: credit.sufficient,
+    zeroCreditExceptionAvailable,
     presentationTime: times.presentationTime,
     startTime: times.startTime,
     cutoffTime: times.cutoffTime,
@@ -1038,6 +1060,8 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
       aircraft_model_id: aircraft?.model_id || "",
       aircraft_ident: clean(event.aircraft).toUpperCase(),
       flight_id: `saga-${id}`,
+      flight_date: times.flightDate,
+      flight_start_time: times.startTime,
       adjustment_type: "cancellation_penalty",
       hours: -penaltyHours,
       percentage: penaltyPct,
@@ -1165,8 +1189,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules, id);
     if (studentUserId) {
       const credit = await creditAvailable(studentUserId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
-      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours - reservedHours, durationMinutes)) {
-        fail(`Crédito insuficiente. Disponível: ${Math.max(0, credit.availableHours - reservedHours).toFixed(2)}h.`);
+      const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedHours);
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
+        fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
       }
     }
   }
@@ -1231,6 +1256,8 @@ async function handleCancel(payload, actorId, actorRole, rules) {
       aircraft_model_id: doc.aircraft_model_id || "",
       aircraft_ident: doc.aircraft_ident || "",
       flight_id: id,
+      flight_date: doc.flight_date || "",
+      flight_start_time: doc.start_time || doc.presentation_time || "",
       adjustment_type: "cancellation_penalty",
       hours: -penaltyHours,
       percentage: penaltyPct,

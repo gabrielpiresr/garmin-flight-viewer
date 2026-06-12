@@ -21,7 +21,6 @@ import type { AdminTabKey } from "../../types/rolePermissions";
 const AdminHome = lazy(() => import("./AdminHome").then((module) => ({ default: module.AdminHome })));
 const AdminStudentsTab = lazy(() => import("./AdminStudentsTab").then((module) => ({ default: module.AdminStudentsTab })));
 const AdminUsersTab = lazy(() => import("./AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
-const AdminImportTab = lazy(() => import("./AdminImportTab").then((module) => ({ default: module.AdminImportTab })));
 const FleetTab = lazy(() => import("./FleetTab").then((module) => ({ default: module.FleetTab })));
 const FlightReportsTab = lazy(() => import("./FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })));
 const AdminAllFlightsTab = lazy(() =>
@@ -78,26 +77,24 @@ const AtualizacoesAdminTab = lazy(() =>
 type AdminSection =
   | "home"
   | "fleet"
+  | "schedule"
   | "reports"
   | "contents"
-  | "disparos"
-  | "schedule"
   | "students"
   | "users"
-  | "import"
   | "settings"
   | "logbook"
   | "fuelings"
   | "dre"
-  | "flight-review"
   | "contracts"
   | "crm"
+  | "disparos"
   | "receipts"
   | "atualizacoes";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "exercises";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "exercises" | "flight-review";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -141,35 +138,13 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "students",
-    label: "Alunos",
-    sublabel: "Evolução e ritmo de voo",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M11.7 2.805a.75.75 0 01.6 0l9 3.857a.75.75 0 010 1.378l-9 3.857a.75.75 0 01-.6 0l-9-3.857a.75.75 0 010-1.378l9-3.857z" />
-        <path d="M3.75 10.5a.75.75 0 01.75.75v3.75c0 .557.31 1.07.804 1.33l5.25 2.763a3 3 0 002.892 0l5.25-2.763a1.5 1.5 0 00.804-1.33v-3.75a.75.75 0 011.5 0v3.75a3 3 0 01-1.607 2.66l-5.25 2.763a4.5 4.5 0 01-4.286 0l-5.25-2.763A3 3 0 013 15v-3.75a.75.75 0 01.75-.75z" />
-        <path d="M7.5 12.75a.75.75 0 011.5 0v2.25a.75.75 0 01-1.5 0v-2.25z" />
-      </svg>
-    ),
-  },
-  {
     id: "reports",
     label: "Relatórios",
-    sublabel: "Voos, assinaturas, alertas e telemetria",
+    sublabel: "Todos os voos, relatórios e alertas",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
         <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
-      </svg>
-    ),
-  },
-  {
-    id: "fleet",
-    label: "Frota",
-    sublabel: "Aviões, modelos e manutenções",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
       </svg>
     ),
   },
@@ -184,33 +159,34 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "students",
+    label: "Alunos",
+    sublabel: "Evolução e ritmo de voo",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M11.7 2.805a.75.75 0 01.6 0l9 3.857a.75.75 0 010 1.378l-9 3.857a.75.75 0 01-.6 0l-9-3.857a.75.75 0 010-1.378l9-3.857z" />
+        <path d="M3.75 10.5a.75.75 0 01.75.75v3.75c0 .557.31 1.07.804 1.33l5.25 2.763a3 3 0 002.892 0l5.25-2.763a1.5 1.5 0 00.804-1.33v-3.75a.75.75 0 011.5 0v3.75a3 3 0 01-1.607 2.66l-5.25 2.763a4.5 4.5 0 01-4.286 0l-5.25-2.763A3 3 0 013 15v-3.75a.75.75 0 01.75-.75z" />
+        <path d="M7.5 12.75a.75.75 0 011.5 0v2.25a.75.75 0 01-1.5 0v-2.25z" />
+      </svg>
+    ),
+  },
+  {
+    id: "fleet",
+    label: "Frota",
+    sublabel: "Aviões, modelos e manutenções",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+      </svg>
+    ),
+  },
+  {
     id: "users",
     label: "Usuários",
     sublabel: "Perfis, permissões e voos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-1.083 1.881 10.088 10.088 0 004.884-1.233.75.75 0 00.367-.614 5.625 5.625 0 00-6.39-5.57 8.956 8.956 0 012.223 5.392z" />
-      </svg>
-    ),
-  },
-  {
-    id: "import",
-    label: "Import",
-    sublabel: "SAGA e integraÃ§Ãµes",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M12 2.25a.75.75 0 01.75.75v10.19l3.22-3.22a.75.75 0 111.06 1.06l-4.5 4.5a.75.75 0 01-1.06 0l-4.5-4.5a.75.75 0 111.06-1.06l3.22 3.22V3a.75.75 0 01.75-.75zM4.5 14.25A2.25 2.25 0 016.75 12h1.5a.75.75 0 010 1.5h-1.5a.75.75 0 00-.75.75v4.5c0 .414.336.75.75.75h10.5a.75.75 0 00.75-.75v-4.5a.75.75 0 00-.75-.75h-1.5a.75.75 0 010-1.5h1.5a2.25 2.25 0 012.25 2.25v4.5A2.25 2.25 0 0117.25 21H6.75a2.25 2.25 0 01-2.25-2.25v-4.5z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    id: "disparos",
-    label: "Disparos",
-    sublabel: "Email marketing e avisos",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" />
-        <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 4.836a1.5 1.5 0 001.572 0L22.5 6.908z" />
       </svg>
     ),
   },
@@ -261,16 +237,6 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    id: "flight-review",
-    label: "Flight Review",
-    sublabel: "Templates de manobras e análise",
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-        <path fillRule="evenodd" d="M2.25 2.25a.75.75 0 000 1.5H3v10.5a3 3 0 003 3h1.21l-1.172 3.513a.75.75 0 001.424.474l.329-.987h8.418l.33.987a.75.75 0 001.422-.474l-1.17-3.513H18a3 3 0 003-3V3.75h.75a.75.75 0 000-1.5H2.25zm6.04 16.5l.5-1.5h6.42l.5 1.5H8.29zm7.46-12a.75.75 0 00-1.5 0v6a.75.75 0 001.5 0v-6zm-3 2.25a.75.75 0 00-1.5 0v3.75a.75.75 0 001.5 0V9zm-3 3a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0V12z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
     id: "contracts",
     label: "Contratos",
     sublabel: "Templates e contratos emitidos",
@@ -292,14 +258,40 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "disparos",
+    label: "Disparos",
+    sublabel: "Email marketing e avisos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" />
+        <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 4.836a1.5 1.5 0 001.572 0L22.5 6.908z" />
+      </svg>
+    ),
+  },
+  {
     id: "settings",
     label: "Configurações",
-    sublabel: "Regras, e-mails, critérios e trilhas",
+    sublabel: "Regras, e-mails, trilhas, financeiro e importações",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567l-.108.648a7.52 7.52 0 00-1.705.707l-.535-.38a1.875 1.875 0 00-2.413.205l-.47.47a1.875 1.875 0 00-.205 2.413l.38.535a7.52 7.52 0 00-.707 1.705l-.648.108A1.875 1.875 0 001.25 12.078v.844c0 .917.663 1.699 1.567 1.85l.648.108c.173.603.412 1.174.707 1.705l-.38.535a1.875 1.875 0 00.205 2.413l.47.47c.648.648 1.67.735 2.413.205l.535-.38a7.52 7.52 0 001.705.707l.108.648a1.875 1.875 0 001.85 1.567h.844c.917 0 1.699-.663 1.85-1.567l.108-.648a7.52 7.52 0 001.705-.707l.535.38a1.875 1.875 0 002.413-.205l.47-.47c.648-.648.735-1.67.205-2.413l-.38-.535a7.52 7.52 0 00.707-1.705l.648-.108a1.875 1.875 0 001.567-1.85v-.844c0-.917-.663-1.699-1.567-1.85l-.648-.108a7.52 7.52 0 00-.707-1.705l.38-.535a1.875 1.875 0 00-.205-2.413l-.47-.47a1.875 1.875 0 00-2.413-.205l-.535.38a7.52 7.52 0 00-1.705-.707l-.108-.648a1.875 1.875 0 00-1.85-1.567h-.844zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clipRule="evenodd" />
       </svg>
     ),
+  },
+];
+
+const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
+  {
+    title: "Operação",
+    ids: ["home", "schedule", "students", "users", "atualizacoes", "reports", "contents"],
+  },
+  {
+    title: "Frota",
+    ids: ["fleet", "fuelings", "logbook"],
+  },
+  {
+    title: "Comercial & Financeiro",
+    ids: ["crm", "receipts", "dre", "contracts", "disparos"],
   },
 ];
 
@@ -440,6 +432,15 @@ const CONTENTS_TABS = [
       </svg>
     ),
   },
+  {
+    id: "flight-review",
+    label: "Flight Review",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M2.25 2.25a.75.75 0 000 1.5H3v10.5a3 3 0 003 3h1.21l-1.172 3.513a.75.75 0 001.424.474l.329-.987h8.418l.33.987a.75.75 0 001.422-.474l-1.17-3.513H18a3 3 0 003-3V3.75h.75a.75.75 0 000-1.5H2.25zm6.04 16.5l.5-1.5h6.42l.5 1.5H8.29zm7.46-12a.75.75 0 00-1.5 0v6a.75.75 0 001.5 0v-6zm-3 2.25a.75.75 0 00-1.5 0v3.75a.75.75 0 001.5 0V9zm-3 3a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0V12z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ] satisfies Array<{ id: ContentsSubTab; label: string; icon: ReactNode }>;
 
 const DISPAROS_TABS = [
@@ -492,6 +493,7 @@ const CONTENTS_ROUTES = [
   { id: "manuais-internos", path: "/admin/conteudos/manuais-internos" },
   { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
+  { id: "flight-review", path: "/admin/conteudos/flight-review", aliases: ["/admin/flight-review"] },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
 
 const DISPAROS_ROUTES = [
@@ -514,25 +516,24 @@ const SETTINGS_ROUTES = [
   { id: "indique-ganhe", path: "/admin/configuracoes/indique-ganhe" },
   { id: "roles", path: "/admin/configuracoes/roles" },
   { id: "propostas", path: "/admin/configuracoes/propostas" },
+  { id: "importacoes", path: "/admin/configuracoes/importacoes", aliases: ["/admin/import"] },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
 const ADMIN_ROUTES = [
   { id: "home", path: "/admin" },
   { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
-  { id: "students", path: "/admin/alunos" },
-  { id: "reports", path: "/admin/relatorios", aliases: REPORTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
-  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "reports", path: "/admin/todos-os-voos", aliases: REPORTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "contents", path: "/admin/conteudos/manobras", aliases: CONTENTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "students", path: "/admin/alunos" },
+  { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "users", path: "/admin/usuarios" },
-  { id: "import", path: "/admin/import" },
+  { id: "crm", path: "/admin/crm" },
   { id: "disparos", path: "/admin/disparos/email-mkt", aliases: DISPAROS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
   { id: "dre", path: "/admin/dre" },
   { id: "receipts", path: "/admin/recebimentos" },
-  { id: "flight-review", path: "/admin/flight-review" },
   { id: "contracts", path: "/admin/contratos" },
-  { id: "crm", path: "/admin/crm" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
 ] satisfies readonly TabRoute<AdminSection>[];
@@ -555,6 +556,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   "indique-ganhe": "Indique e ganhe",
   roles: "Roles",
   propostas: "Propostas",
+  importacoes: "Importações",
 };
 
 // Mapeamento de sub-tabs locais para chaves de AdminTabKey (para permissionamento)
@@ -577,6 +579,7 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   "manuais-internos": "contents.manuais-internos",
   help: "contents.ajuda",
   exercises: "contents.exercicios",
+  "flight-review": "flight-review",
 };
 const DISPAROS_TAB_KEYS: Record<string, AdminTabKey> = {
   "email-mkt": "disparos.email-mkt",
@@ -700,6 +703,7 @@ export function AdminLayout() {
     if (target === "schedule") { setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) }); return; }
     if (target === "reports") { setSection(target, { path: pathForRoute(REPORTS_ROUTES, reportsTab) }); return; }
     if (target === "contents") { setSection(target, { path: pathForRoute(CONTENTS_ROUTES, contentsTab) }); return; }
+    if (target === "crm") { setSection(target, { path: "/admin/crm" }); return; }
     if (target === "disparos") { setSection(target, { path: pathForRoute(DISPAROS_ROUTES, disparosTab) }); return; }
     if (target === "settings") { setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) }); return; }
     if (target === "atualizacoes") { setSection(target, { path: pathForRoute(ATUALIZACOES_ROUTES, atualizacoesTab) }); return; }
@@ -757,28 +761,71 @@ export function AdminLayout() {
                 {!sidebarCollapsed ? <div className="h-3 w-24 animate-pulse rounded bg-slate-800" /> : null}
               </div>
             ))
-          ) : visibleNavItems.map((item) => {
-            const isActive = section === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => openSection(item.id)}
-                title={sidebarCollapsed ? item.label : undefined}
-                aria-label={sidebarCollapsed ? item.label : undefined}
-                className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
-                  isActive
-                    ? SELECTED_NAV_CLASS
-                    : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
-                }`}
-              >
-                <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
-                <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
-                  <p className="text-sm font-medium leading-none">{item.label}</p>
-                </div>
-              </button>
-            );
-          })}
+          ) : (
+            <>
+              {NAV_GROUPS.map((group) => {
+                const groupItems = group.ids
+                  .map((id) => visibleNavItems.find((item) => item.id === id))
+                  .filter(Boolean) as NavItem[];
+                if (!groupItems.length) return null;
+                return (
+                  <div key={group.title} className="mb-2">
+                    {!sidebarCollapsed ? (
+                      <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500">{group.title}</p>
+                    ) : null}
+                    <div className="space-y-1">
+                      {groupItems.map((item) => {
+                        const isActive = section === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => openSection(item.id)}
+                            title={sidebarCollapsed ? item.label : undefined}
+                            aria-label={sidebarCollapsed ? item.label : undefined}
+                            className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                              isActive
+                                ? SELECTED_NAV_CLASS
+                                : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
+                            }`}
+                          >
+                            <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
+                            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                              <p className="text-sm font-medium leading-none">{item.label}</p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {(() => {
+                const settingsItem = visibleNavItems.find((item) => item.id === "settings");
+                if (!settingsItem) return null;
+                const isActive = section === settingsItem.id;
+                return (
+                  <button
+                    key={settingsItem.id}
+                    type="button"
+                    onClick={() => openSection(settingsItem.id)}
+                    title={sidebarCollapsed ? settingsItem.label : undefined}
+                    aria-label={sidebarCollapsed ? settingsItem.label : undefined}
+                    className={`group mt-2 flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                      isActive
+                        ? SELECTED_NAV_CLASS
+                        : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{settingsItem.icon}</span>
+                    <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                      <p className="text-sm font-medium leading-none">{settingsItem.label}</p>
+                    </div>
+                  </button>
+                );
+              })()}
+            </>
+          )}
         </nav>
 
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
@@ -852,6 +899,13 @@ export function AdminLayout() {
               ) : null}
             </div>
           )}
+          {openedSections.has("schedule") && (
+            <div hidden={section !== "schedule"}>
+              <LazyTab>
+                <ScheduleAdminTab subTab={scheduleTab} onSubTabChange={changeScheduleTab} />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("reports") && (
             <div hidden={section !== "reports"} className="space-y-4">
               <Tabs items={visibleReportsTabs} value={reportsTab} onChange={changeReportsTab} ariaLabel="Subabas de relatórios" accent="sky" />
@@ -890,24 +944,9 @@ export function AdminLayout() {
               {openedContentsTabs.has("exercises") ? (
                 <div hidden={contentsTab !== "exercises"}><LazyTab><TrainingExercisesTab /></LazyTab></div>
               ) : null}
-            </div>
-          )}
-          {openedSections.has("disparos") && (
-            <div hidden={section !== "disparos"} className="space-y-4">
-              <Tabs items={visibleDisparosTabs} value={disparosTab} onChange={changeDisparosTab} ariaLabel="Subabas de disparos" accent="sky" />
-              {openedDisparosTabs.has("email-mkt") ? (
-                <div hidden={disparosTab !== "email-mkt"}><LazyTab><EmailMktTab /></LazyTab></div>
+              {openedContentsTabs.has("flight-review") ? (
+                <div hidden={contentsTab !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>
               ) : null}
-              {openedDisparosTabs.has("notices") ? (
-                <div hidden={disparosTab !== "notices"}><LazyTab><NoticesTab /></LazyTab></div>
-              ) : null}
-            </div>
-          )}
-          {openedSections.has("schedule") && (
-            <div hidden={section !== "schedule"}>
-              <LazyTab>
-                <ScheduleAdminTab subTab={scheduleTab} onSubTabChange={changeScheduleTab} />
-              </LazyTab>
             </div>
           )}
           {openedSections.has("students") && (
@@ -915,9 +954,6 @@ export function AdminLayout() {
           )}
           {openedSections.has("users") && (
             <div hidden={section !== "users"}><LazyTab><AdminUsersTab /></LazyTab></div>
-          )}
-          {openedSections.has("import") && (
-            <div hidden={section !== "import"}><LazyTab><AdminImportTab /></LazyTab></div>
           )}
           {openedSections.has("settings") && (
             <div hidden={section !== "settings"}>
@@ -938,14 +974,22 @@ export function AdminLayout() {
           {openedSections.has("receipts") && (
             <div hidden={section !== "receipts"}><LazyTab><CaktoReceiptsTab /></LazyTab></div>
           )}
-          {openedSections.has("flight-review") && (
-            <div hidden={section !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>
-          )}
           {openedSections.has("contracts") && (
             <div hidden={section !== "contracts"}><LazyTab><ContractsAdminTab /></LazyTab></div>
           )}
           {openedSections.has("crm") && (
             <div hidden={section !== "crm"}><LazyTab><CrmTab /></LazyTab></div>
+          )}
+          {openedSections.has("disparos") && (
+            <div hidden={section !== "disparos"} className="space-y-4">
+              <Tabs items={visibleDisparosTabs} value={disparosTab} onChange={changeDisparosTab} ariaLabel="Subabas de disparos" accent="sky" />
+              {openedDisparosTabs.has("email-mkt") ? (
+                <div hidden={disparosTab !== "email-mkt"}><LazyTab><EmailMktTab /></LazyTab></div>
+              ) : null}
+              {openedDisparosTabs.has("notices") ? (
+                <div hidden={disparosTab !== "notices"}><LazyTab><NoticesTab /></LazyTab></div>
+              ) : null}
+            </div>
           )}
           {openedSections.has("atualizacoes") && (
             <div hidden={section !== "atualizacoes"}>
