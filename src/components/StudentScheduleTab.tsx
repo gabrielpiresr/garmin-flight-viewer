@@ -14,7 +14,7 @@ import { getStudentCreditStatement } from "../lib/creditsDb";
 import { getAvailableFlightCreditPackages } from "../lib/flightCreditSalesDb";
 import type { StudentCreditModelSummary } from "../types/credits";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../types/schoolRules";
-import type { FlightStatus } from "../lib/flightsDb";
+import { normalizeScheduleFlightStatus, type FlightStatus } from "../lib/flightsDb";
 import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
 import {
@@ -1256,7 +1256,7 @@ export function StudentScheduleTab() {
           dayOfWeek: date.getDay(),
           startHour: timeToMinutes(occupiedStart) / 60,
           durationHours: occupiedMinutes / 60,
-          flightStatus: flight.status,
+          flightStatus: normalizeScheduleFlightStatus(flight.status),
           startTime: occupiedStart,
           endTime: occupiedEnd,
           isOwn: flight.isOwn,
@@ -1713,10 +1713,10 @@ export function StudentScheduleTab() {
         </div>
       )}
 
-      {/* Booking modal — tela cheia no mobile, com footer fixo */}
+      {/* Booking modal — tela cheia no mobile; caixa centralizada no desktop */}
       {bookingOpen && (
-        <div className="fixed inset-0 z-50 flex items-stretch justify-center bg-slate-950/80 sm:items-start sm:overflow-y-auto sm:p-4 sm:pt-8">
-          <div className="flex h-full w-full flex-col bg-slate-900 shadow-2xl sm:h-auto sm:max-h-[calc(100vh-4rem)] sm:max-w-xl sm:rounded-2xl sm:border sm:border-slate-700">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
+          <div className="flex max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-2xl sm:border sm:border-slate-700">
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
             <div>
               <h3 className="font-semibold text-slate-100">Solicitar voo</h3>

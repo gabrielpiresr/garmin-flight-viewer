@@ -26,6 +26,22 @@ export function normalizeFlightStatus(value: unknown): FlightStatus {
   return FLIGHT_STATUS_OPTIONS.includes(value as FlightStatus) ? (value as FlightStatus) : "Confirmado";
 }
 
+/** Status da agenda (SAGA, DB, legado) → rótulo usado nas cores dos cards da escala. */
+export function normalizeScheduleFlightStatus(value: unknown): FlightStatus {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "Confirmado";
+  const upper = raw.toUpperCase();
+  if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(upper)) return "Cancelado";
+  if (upper === "PENDING" || upper === "PENDENTE") return "Pendente";
+  if (upper === "PLANNED" || upper === "PREVISTO") return "Previsto";
+  if (["CONFIRMED", "CONFIRMADO", "CONFIRMADA"].includes(upper)) return "Confirmado";
+  if (["REALIZED", "REALIZADO", "COMPLETED", "CONCLUIDO", "CONCLUÍDO"].includes(upper)) return "Realizado";
+  if (upper === "NÃO CONFIRMADO" || upper === "NAO CONFIRMADO") return "Não confirmado";
+  const canonical: FlightStatus[] = ["Pendente", "Previsto", "Confirmado", "Cancelado", "Realizado", "Não confirmado"];
+  if (canonical.includes(raw as FlightStatus)) return raw as FlightStatus;
+  return "Confirmado";
+}
+
 export type SavedFlightListItem = {
   id: string;
   source_filename: string;

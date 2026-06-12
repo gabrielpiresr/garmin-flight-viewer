@@ -257,13 +257,25 @@ function sagaEventIsCancelled(event) {
   return event?.active === false;
 }
 
-/** Status do evento SAGA traduzido para o vocabulário da escala (CANCELED/CONFIRMED/PENDING/PLANNED). */
+/** Status da agenda (SAGA, DB, legado) → rótulo usado nas cores dos cards. */
+function normalizeScheduleFlightStatus(value) {
+  const raw = clean(value);
+  if (!raw) return "Confirmado";
+  const upper = raw.toUpperCase();
+  if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(upper)) return "Cancelado";
+  if (upper === "PENDING" || upper === "PENDENTE") return "Pendente";
+  if (upper === "PLANNED" || upper === "PREVISTO") return "Previsto";
+  if (["CONFIRMED", "CONFIRMADO", "CONFIRMADA"].includes(upper)) return "Confirmado";
+  if (["REALIZED", "REALIZADO", "COMPLETED", "CONCLUIDO", "CONCLUÍDO"].includes(upper)) return "Realizado";
+  if (upper === "NÃO CONFIRMADO" || upper === "NAO CONFIRMADO") return "Não confirmado";
+  if (["Pendente", "Previsto", "Confirmado", "Cancelado", "Realizado", "Não confirmado"].includes(raw)) return raw;
+  return "Confirmado";
+}
+
+/** Status do evento SAGA traduzido para o vocabulário da escala. */
 function sagaEventStatusLabel(event) {
   if (sagaEventIsCancelled(event)) return "Cancelado";
-  const status = clean(event?.status).toUpperCase();
-  if (status === "PENDING") return "Pendente";
-  if (status === "PLANNED") return "Previsto";
-  return "Confirmado";
+  return normalizeScheduleFlightStatus(event?.status);
 }
 
 /**
@@ -696,6 +708,8 @@ function publicFlight(doc, actorId, actorRole) {
   const derivedCutoff = doc.start_time && durationMinutes > 0
     ? clock(parseClock(doc.start_time) + durationMinutes)
     : null;
+  const status = normalizeScheduleFlightStatus(doc.flight_status);
+  const cancelStatus = status === "Previsto" ? "Confirmado" : status;
   return {
     id: doc.$id,
     aircraftIdent: doc.aircraft_ident || "",
@@ -706,11 +720,11 @@ function publicFlight(doc, actorId, actorRole) {
     cutoffTime: doc.cutoff_time || derivedCutoff,
     endTime: doc.schedule_end_time || doc.cutoff_time || derivedCutoff,
     durationMinutes,
-    status: doc.flight_status === "Previsto" ? "Confirmado" : doc.flight_status,
+    status,
     isOwn: own,
     studentUserId: privileged ? doc.student_user_id : own ? actorId : null,
     instructorUserId: privileged || own ? doc.instructor_user_id || null : null,
-    canCancel: own && ACTIVE_STATUSES.includes(doc.flight_status === "Previsto" ? "Confirmado" : doc.flight_status),
+    canCancel: own && ACTIVE_STATUSES.includes(cancelStatus),
   };
 }
 

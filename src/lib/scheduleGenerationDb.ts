@@ -8,7 +8,7 @@ import {
 } from "./appwrite";
 import { listAircrafts } from "./aircraftDb";
 import { listAssignableInstructors, listStudentIdentitiesForSchedule } from "./rbac";
-import { listAllSavedFlights, listScheduledFlightsForWeek, type SavedFlightListItem } from "./flightsDb";
+import { listAllSavedFlights, listScheduledFlightsForWeek, normalizeScheduleFlightStatus, type SavedFlightListItem } from "./flightsDb";
 import { getSchoolRules } from "./schoolRulesDb";
 import type {
   AircraftWeekSupply,
@@ -295,7 +295,7 @@ function savedFlightToScheduledFlight(row: SavedFlightListItem): ExistingSchedul
     date,
     startTime: row.start_time?.trim() || "06:00",
     durationHours,
-    flightStatus: row.flight_status,
+    flightStatus: normalizeScheduleFlightStatus(row.flight_status),
     isNight: row.is_night ?? false,
     sourceFilename,
     sagaScheduleId: row.saga_schedule_id ?? null,

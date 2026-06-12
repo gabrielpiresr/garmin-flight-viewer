@@ -4,7 +4,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
-import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, type FlightStatus } from "../../lib/flightsDb";
+import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, normalizeScheduleFlightStatus, type FlightStatus } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import { cancelScheduleFlight, confirmScheduleFlight } from "../../lib/scheduleBookingDb";
 import {
@@ -205,13 +205,10 @@ function sagaEventIsCancelled(item: SagaDirectScheduleItem): boolean {
   return item.active === false;
 }
 
-/** Status SAGA (CANCELED/CONFIRMED/PENDING/PLANNED) → vocabulário da escala. */
+/** Status SAGA (CANCELED/CONFIRMED/PENDING/PLANNED + variantes PT) → vocabulário da escala. */
 function sagaEventStatusLabel(item: SagaDirectScheduleItem): FlightStatus {
   if (sagaEventIsCancelled(item)) return "Cancelado";
-  const status = (item.status || "").toUpperCase();
-  if (status === "PENDING") return "Pendente";
-  if (status === "PLANNED") return "Previsto";
-  return "Confirmado";
+  return normalizeScheduleFlightStatus(item.status);
 }
 
 /** Status da escala → status SAGA para o upsert direto. */
@@ -298,6 +295,7 @@ export const FLIGHT_STATUS_CARD_COLOR: Record<string, string> = {
   "Pendente": "bg-orange-600",
   "Cancelado": "bg-red-700",
   "Realizado": "bg-sky-600",
+  "Não confirmado": "bg-slate-600",
 };
 
 function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
@@ -2228,11 +2226,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   // Cores dos cards: por avião (padrão) ou por status. Cancelado é sempre vermelho.
   const resolveItemColor = useCallback(
     (item: CalendarFlightItem): string => {
-      if (item.flightStatus === "Cancelado") return "bg-red-700";
+      const status = normalizeScheduleFlightStatus(item.flightStatus);
+      if (status === "Cancelado") return "bg-red-700";
       if (colorScheme === "status") {
-        return FLIGHT_STATUS_CARD_COLOR[item.flightStatus ?? ""] ?? "bg-slate-600";
+        return FLIGHT_STATUS_CARD_COLOR[status] ?? "bg-slate-600";
       }
-      return calendarItemColor(item, colorByAircraft);
+      return calendarItemColor({ ...item, flightStatus: status }, colorByAircraft);
     },
     [colorScheme, colorByAircraft],
   );
@@ -2376,7 +2375,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             dayOfWeek,
             startHour,
             durationHours: row.durationHours,
-            flightStatus: row.flightStatus,
+            flightStatus: normalizeScheduleFlightStatus(row.flightStatus),
             startTime: row.startTime,
             endTime: hoursToHHMM(startHour + row.durationHours),
             isNight: row.isNight ?? false,
@@ -3587,8 +3586,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       ) : null}
 
       {formDraft && weekData ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
-          <div className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
+          <div className="flex max-h-[100dvh] w-full max-w-2xl flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-xl sm:border sm:border-slate-700">
+            <div className="overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <p className="text-sm font-semibold text-slate-100">{formMode === "create" ? "Novo voo" : "Editar voo"}</p>
               <button
@@ -3897,6 +3897,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               >
                 {formSaving ? "Salvando..." : "Salvar voo"}
               </button>
+            </div>
             </div>
           </div>
         </div>
