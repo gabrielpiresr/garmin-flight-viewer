@@ -84,6 +84,36 @@ const env = {
   SCHOOL_ID: process.env.VITE_SCHOOL_ID || "escola_principal",
 };
 
+// A dynamic key herda os scopes da function; executions.write é necessário para
+// chamar a admin-users no modo "escala somente no SAGA". Preserva o resto da config.
+const currentFn = await functions.get({ functionId });
+const requiredScopes = [
+  "databases.read",
+  "databases.write",
+  "collections.read",
+  "documents.read",
+  "documents.write",
+  "executions.write",
+];
+const mergedScopes = Array.from(new Set([...(currentFn.scopes || []), ...requiredScopes]));
+if (mergedScopes.length !== (currentFn.scopes || []).length) {
+  await functions.update({
+    functionId,
+    name: currentFn.name,
+    runtime: currentFn.runtime,
+    execute: currentFn.execute,
+    events: currentFn.events,
+    schedule: currentFn.schedule,
+    timeout: currentFn.timeout,
+    enabled: currentFn.enabled,
+    logging: currentFn.logging,
+    entrypoint: currentFn.entrypoint,
+    commands: currentFn.commands,
+    scopes: mergedScopes,
+  });
+  console.log(`Scopes atualizados: ${mergedScopes.join(", ")}`);
+}
+
 const variables = await functions.listVariables({ functionId });
 for (const [key, value] of Object.entries(env)) {
   if (!value) throw new Error(`Variável ausente: ${key}`);

@@ -80,6 +80,8 @@ export type ExistingScheduledFlight = {
   id: string;
   demandId: string;
   studentId: string;
+  /** Nome do aluno quando o voo não está vinculado a um usuário local (eventos da agenda SAGA). */
+  studentLabel?: string | null;
   instructorId: string | null;
   instructorLabel: string | null;
   instructorAnac: string | null;

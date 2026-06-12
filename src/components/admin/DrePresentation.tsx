@@ -5,6 +5,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Legend,
   Line,
   LineChart,
@@ -36,6 +37,15 @@ function fmtPct(v: number): string {
 }
 function fmtK(v: number): string {
   return `R$${(v / 1000).toFixed(0)}k`;
+}
+function fmtNum(v: number): string {
+  return Number(v || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+}
+function fmtCompact(v: number): string {
+  const abs = Math.abs(v || 0);
+  if (abs >= 1000000) return `R$${(v / 1000000).toFixed(1)}M`;
+  if (abs >= 1000) return `R$${(v / 1000).toFixed(1)}k`;
+  return fmtBRL(v);
 }
 
 const PRINT_CSS = `
@@ -96,7 +106,20 @@ const PRINT_CSS = `
     overflow-wrap: anywhere !important;
   }
   body.dre-pres-active .pres-no-print { display: none !important; }
+  /* Browser compatibility: some engines obey only keyword, others obey explicit size. */
+  @page { margin: 0; size: landscape; }
   @page { margin: 0; size: A4 landscape; }
+  @page { margin: 0; size: 297mm 210mm; }
+
+  /* Fallback when print engine insists on portrait pages. */
+  @media print and (orientation: portrait) {
+    body.dre-pres-active .pres-slide {
+      width: 210mm !important;
+      height: 148mm !important;
+      min-height: 148mm !important;
+      max-height: 148mm !important;
+    }
+  }
 }
 `;
 
@@ -152,7 +175,6 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
   const data = useMemo(() => {
     const lv = (key: string): Record<string, number> => dre.lines.find((l) => l.key === key)?.values ?? {};
     const cv = (key: string): Record<string, number> => dre.cards.find((c) => c.key === key)?.values ?? {};
-    const card = (key: string) => dre.cards.find((c) => c.key === key);
 
     const rev = lv("section_revenue");
     const deduc = lv("section_commercial_deductions");
@@ -163,10 +185,19 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
     const taxes = lv("section_taxes");
     const netProfit = lv("section_net_profit");
     const fuelLine = lv("fuel_cost");
+    const depreciationLine = lv("aircraft_calculated_depreciation");
     // meta_flown_hours is a DRE line saved in closed snapshots — reliable source for hours
     const hoursLine = lv("meta_flown_hours");
     const revPH = cv("revenue_per_hour");
     const resultPH = cv("result_per_hour");
+    const instrCard = cv("instructor_per_hour");
+    const studentsLine = lv("meta_students_flown");
+    const revenueFlightsLine = dre.lines.find((l) => l.key === "revenue_flights");
+    const studentsFallbackByMonth: Record<string, number> = {};
+    for (const month of dre.months) {
+      const byStudent = revenueFlightsLine?.breakdown?.[month.key]?.by_student ?? [];
+      studentsFallbackByMonth[month.key] = byStudent.filter((item) => Number(item.amount || 0) !== 0).length;
+    }
 
     const sum = (vals: Record<string, number>) =>
       dre.months.reduce((acc, m) => acc + (vals[m.key] ?? 0), 0);
@@ -175,7 +206,7 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
     const totalEbitda = sum(ebitda);
     const totalNet = sum(netProfit);
     const totalHours = sum(hoursLine);
-    const avgRevPH = card("revenue_per_hour")?.total ?? 0;
+    const avgRevPH = totalHours > 0 ? round2(totalRevenue / totalHours) : 0;
     const netMarginPct = totalRevenue > 0 ? (totalNet / totalRevenue) * 100 : 0;
 
     const monthLabel2 = (m: (typeof dre.months)[number]) => m.label;
@@ -199,7 +230,34 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
       "Lucro Líq./h": +(h(m) > 0 ? (netProfit[m.key] ?? 0) / h(m) : 0).toFixed(2),
     }));
 
-    const level1Lines = dre.lines.filter((l) => l.level === 1 && !["section_cash_revenue", "section_asset_variation", "meta_flown_hours", "meta_fuel_liters"].includes(l.key));
+    const compositionPerHourTable = dre.months.map((m) => {
+      const hours = h(m);
+      const revenuePerHour = hours > 0 ? (rev[m.key] ?? 0) / hours : 0;
+      const fuelPerHour = hours > 0 ? Math.abs(fuelLine[m.key] ?? 0) / hours : 0;
+      const instructorPerHour = Math.abs(instrCard[m.key] ?? 0);
+      const desgastePerHour = hours > 0 ? Math.abs(depreciationLine[m.key] ?? 0) / hours : 0;
+      const fixedCostPerHour = hours > 0 ? Math.abs(fixedCosts[m.key] ?? 0) / hours : 0;
+      const taxPerHour = hours > 0 ? Math.abs(taxes[m.key] ?? 0) / hours : 0;
+      const profitPerHour = hours > 0 ? (netProfit[m.key] ?? 0) / hours : 0;
+      return {
+        name: monthLabel2(m),
+        "Valor recebido": +revenuePerHour.toFixed(2),
+        Combustível: +fuelPerHour.toFixed(2),
+        Instrutor: +instructorPerHour.toFixed(2),
+        Desgaste: +desgastePerHour.toFixed(2),
+        "Custos fixos": +fixedCostPerHour.toFixed(2),
+        Imposto: +taxPerHour.toFixed(2),
+        "Lucro da hora": +profitPerHour.toFixed(2),
+      };
+    });
+
+    const opsTimeline = dre.months.map((m) => ({
+      name: monthLabel2(m),
+      "Horas voadas": +(hoursLine[m.key] ?? 0).toFixed(1),
+      "Alunos voados": +((studentsLine[m.key] ?? studentsFallbackByMonth[m.key] ?? 0)).toFixed(0),
+    }));
+
+    const level1Lines = dre.lines.filter((l) => l.level === 1 && !["section_cash_revenue", "section_asset_variation", "meta_flown_hours", "meta_fuel_liters", "meta_students_flown"].includes(l.key));
 
     const bestRevenueMonth = dre.months.length > 0
       ? dre.months.reduce((best, m) => (rev[m.key] ?? 0) > (rev[best.key] ?? 0) ? m : best, dre.months[0])
@@ -255,6 +313,7 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
     return {
       totalRevenue, totalEbitda, totalNet, totalHours, avgRevPH, netMarginPct,
       revenueTimeline, costsTimeline, perHourTimeline, level1Lines,
+      compositionPerHourTable, opsTimeline,
       bestRevenueMonth, bestMarginMonth, bestNetMonth,
       revTrendUp, netTrendUp, secondHalfAvgRev, firstHalfAvgRev,
       secondHalfAvgNet, firstHalfAvgNet,
@@ -523,7 +582,9 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
                     <XAxis dataKey="name" tick={LIGHT_AXIS} />
                     <YAxis tick={LIGHT_AXIS} tickFormatter={fmtK} width={60} />
                     <Tooltip formatter={(v: number) => fmtBRL(v)} contentStyle={LIGHT_TOOLTIP} labelStyle={{ fontWeight: 600 }} />
-                    <Area type="monotone" dataKey="value" name="Receita" stroke="#059669" strokeWidth={2.5} fill="url(#pres-grad-rev)" dot={{ r: 4, fill: "#059669", strokeWidth: 0 }} isAnimationActive={false} />
+                    <Area type="monotone" dataKey="value" name="Receita" stroke="#059669" strokeWidth={2.5} fill="url(#pres-grad-rev)" dot={{ r: 4, fill: "#059669", strokeWidth: 0 }} isAnimationActive={false}>
+                      <LabelList dataKey="value" position="top" formatter={(value: number) => fmtCompact(value)} fill="#065f46" fontSize={10} />
+                    </Area>
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -563,8 +624,12 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
                     <YAxis tick={LIGHT_AXIS} tickFormatter={fmtK} width={60} />
                     <Tooltip formatter={(v: number) => fmtBRL(v)} contentStyle={LIGHT_TOOLTIP} />
                     <Legend wrapperStyle={{ fontSize: 12, color: "#475569" }} />
-                    <Bar dataKey="Custos Variáveis" stackId="a" fill="#f43f5e" isAnimationActive={false} />
-                    <Bar dataKey="Custos Fixos" stackId="a" fill="#f97316" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="Custos Variáveis" stackId="a" fill="#f43f5e" isAnimationActive={false}>
+                      <LabelList dataKey="Custos Variáveis" position="insideTop" formatter={(value: number) => fmtCompact(value)} fill="#fff" fontSize={9} />
+                    </Bar>
+                    <Bar dataKey="Custos Fixos" stackId="a" fill="#f97316" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                      <LabelList dataKey="Custos Fixos" position="insideTop" formatter={(value: number) => fmtCompact(value)} fill="#fff" fontSize={9} />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -605,9 +670,11 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
                     <YAxis tick={LIGHT_AXIS} tickFormatter={(v) => `R$${v}`} width={64} />
                     <Tooltip formatter={(v: number) => fmtBRL(v)} contentStyle={LIGHT_TOOLTIP} />
                     <Legend wrapperStyle={{ fontSize: 12, color: "#475569" }} />
-                    <Line type="monotone" dataKey="Receita/h" stroke="#059669" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="EBITDA/h" stroke="#7c3aed" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="Lucro Líq./h" stroke="#0284c7" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="Receita/h" stroke="#059669" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false}>
+                      <LabelList dataKey="Receita/h" position="top" formatter={(value: number) => fmtBRL(value)} fill="#065f46" fontSize={9} />
+                    </Line>
+                    <Line type="monotone" dataKey="EBITDA/h" stroke="#7c3aed" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="Lucro Líq./h" stroke="#0284c7" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -649,9 +716,71 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
               <SlideFooter period={data.period} />
             </Slide>
 
-            {/* ─── SLIDE 8: CONCLUSÃO E DESTAQUES ─── */}
+            {/* ─── SLIDE 8: COMPOSIÇÃO MÉDIA POR HORA ─── */}
             <Slide>
-              <SlideHeader number="08" title="Conclusão e Destaques" subtitle="Análise de tendências e pontos de atenção" />
+              <SlideHeader number="08" title="Composição Média por Hora de Voo" subtitle="Tabela mensal dos componentes por hora" />
+
+              <div className="pres-table-wrap overflow-hidden rounded-xl border border-slate-200">
+                <table className="pres-table w-full table-fixed border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50">
+                      <th className="px-3 py-2 text-left font-semibold text-slate-600">Mês</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Valor recebido/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Combustível/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Instrutor/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Desgaste/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Custos fixos/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Imposto/h</th>
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">Lucro da hora</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.compositionPerHourTable.map((row) => (
+                      <tr key={row.name} className="border-b border-slate-100">
+                        <td className="px-3 py-2 text-slate-700">{row.name}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row["Valor recebido"])}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row.Combustível)}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row.Instrutor)}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row.Desgaste)}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row["Custos fixos"])}</td>
+                        <td className="px-3 py-2 text-right text-slate-700">{fmtBRL(row.Imposto)}</td>
+                        <td className={`px-3 py-2 text-right font-semibold ${row["Lucro da hora"] >= 0 ? "text-emerald-700" : "text-red-700"}`}>{fmtBRL(row["Lucro da hora"])}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Slide>
+
+            {/* ─── SLIDE 9: HORAS E ALUNOS VOADOS ─── */}
+            <Slide>
+              <SlideHeader number="09" title="Horas Voadas e Alunos Voados" subtitle="Volume operacional mensal" />
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={data.opsTimeline} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                    <CartesianGrid {...LIGHT_GRID} />
+                    <XAxis dataKey="name" tick={LIGHT_AXIS} />
+                    <YAxis yAxisId="hours" orientation="left" tick={LIGHT_AXIS} tickFormatter={(value) => `${value}h`} width={56} />
+                    <YAxis yAxisId="students" orientation="right" tick={LIGHT_AXIS} tickFormatter={(value) => fmtNum(value)} width={40} />
+                    <Tooltip formatter={(value: number, name: string) => (name === "Horas voadas" ? fmtH(value) : fmtNum(value))} contentStyle={LIGHT_TOOLTIP} />
+                    <Legend wrapperStyle={{ fontSize: 12, color: "#475569" }} />
+                    <Bar yAxisId="hours" dataKey="Horas voadas" fill="#0284c7" isAnimationActive={false}>
+                      <LabelList dataKey="Horas voadas" position="top" formatter={(value: number) => fmtH(value)} fill="#0c4a6e" fontSize={9} />
+                    </Bar>
+                    <Bar yAxisId="students" dataKey="Alunos voados" fill="#16a34a" isAnimationActive={false}>
+                      <LabelList dataKey="Alunos voados" position="top" formatter={(value: number) => fmtNum(value)} fill="#14532d" fontSize={9} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <SlideFooter period={data.period} />
+            </Slide>
+
+            {/* ─── SLIDE 10: CONCLUSÃO E DESTAQUES ─── */}
+            <Slide>
+              <SlideHeader number="10" title="Conclusão e Destaques" subtitle="Análise de tendências e pontos de atenção" />
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-3">
@@ -731,6 +860,8 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
                   {new Date(dre.generatedAt).toLocaleDateString("pt-BR")}
                 </p>
               </div>
+
+              <SlideFooter period={data.period} />
             </Slide>
 
           </div>
@@ -738,4 +869,8 @@ export function DrePresentation({ dre, onClose }: { dre: FinancialDreResponse; o
       </div>
     </>
   );
+}
+
+function round2(value: number): number {
+  return Number((value || 0).toFixed(2));
 }

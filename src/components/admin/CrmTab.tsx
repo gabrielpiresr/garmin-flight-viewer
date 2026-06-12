@@ -1073,6 +1073,7 @@ function LeadDetailDrawer({
     birthDate: lead.birthDate ?? "",
     cpf: lead.cpf ?? "",
     theoreticalExamDone: lead.theoreticalExamDone == null ? "" : lead.theoreticalExamDone ? "true" : "false",
+    theoreticalStudyStatus: lead.theoreticalStudyStatus ?? "",
     transferSchool: lead.transferSchool ?? "",
     notes: lead.notes ?? "",
   }));
@@ -1129,6 +1130,7 @@ function LeadDetailDrawer({
       birthDate: lead.birthDate ?? "",
       cpf: lead.cpf ?? "",
       theoreticalExamDone: lead.theoreticalExamDone == null ? "" : lead.theoreticalExamDone ? "true" : "false",
+      theoreticalStudyStatus: lead.theoreticalStudyStatus ?? "",
       transferSchool: lead.transferSchool ?? "",
       notes: lead.notes ?? "",
     });
@@ -1238,6 +1240,7 @@ function LeadDetailDrawer({
         birthDate: textOrNull(leadForm.birthDate),
         cpf: textOrNull(leadForm.cpf),
         theoreticalExamDone: leadForm.theoreticalExamDone === "" ? null : leadForm.theoreticalExamDone === "true",
+        theoreticalStudyStatus: textOrNull(leadForm.theoreticalStudyStatus),
         transferSchool: textOrNull(leadForm.transferSchool),
         notes: textOrNull(leadForm.notes),
       };
@@ -1260,6 +1263,7 @@ function LeadDetailDrawer({
         birthDate: nextLead.birthDate,
         cpf: nextLead.cpf,
         theoreticalExamDone: nextLead.theoreticalExamDone,
+        theoreticalStudyStatus: nextLead.theoreticalStudyStatus,
         transferSchool: nextLead.transferSchool,
         notes: nextLead.notes,
       }).then(({ error }) => setLeadSaveState(error ? "error" : "saved"));
@@ -1367,7 +1371,7 @@ function LeadDetailDrawer({
       onMouseDown={close}
     >
       <aside
-        className={`flex h-full w-1/2 max-w-[50vw] flex-col border-l border-slate-700 bg-[var(--panel)] shadow-2xl transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+        className={`flex h-full w-full flex-col bg-[var(--panel)] shadow-2xl transition-transform duration-300 ease-out sm:w-[85vw] sm:max-w-3xl sm:border-l sm:border-slate-700 lg:w-1/2 lg:max-w-[50vw] ${open ? "translate-x-0" : "translate-x-full"}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between border-b border-slate-800 px-5 py-4">
@@ -1391,6 +1395,9 @@ function LeadDetailDrawer({
               <DrawerField label="Nome"><input value={leadForm.name} onChange={(e) => setLeadField("name", e.target.value)} className={drawerFieldCls} /></DrawerField>
               <DrawerField label="E-mail"><input type="email" value={leadForm.email} onChange={(e) => setLeadField("email", e.target.value)} className={drawerFieldCls} /></DrawerField>
               <DrawerField label="Telefone"><input value={leadForm.phone} onChange={(e) => setLeadField("phone", e.target.value)} className={drawerFieldCls} /></DrawerField>
+              <DrawerField label="Referral">
+                <input value={lead.referralSource ?? ""} readOnly className={`${drawerFieldCls} cursor-default text-slate-400`} placeholder="Nao informado" />
+              </DrawerField>
               <DrawerField label="Etapa"><select value={leadForm.crmStatus} onChange={(e) => setLeadField("crmStatus", e.target.value as CrmStatus)} className={drawerFieldCls}>{CRM_STATUSES.map((status) => <option key={status} value={status}>{CRM_STATUS_LABELS[status]}</option>)}</select></DrawerField>
               <DrawerField label="Curso desejado">
                 <select value={leadForm.desiredCourse} onChange={(e) => setLeadField("desiredCourse", e.target.value)} className={drawerFieldCls}>
@@ -1425,6 +1432,9 @@ function LeadDetailDrawer({
                   <option value="true">Sim, já fiz</option>
                   <option value="false">Não, ainda não</option>
                 </select>
+              </DrawerField>
+              <DrawerField label="Estudo para a banca">
+                <input value={leadForm.theoreticalStudyStatus} onChange={(e) => setLeadField("theoreticalStudyStatus", e.target.value)} className={drawerFieldCls} placeholder="Não informado" />
               </DrawerField>
               <DrawerField label="Peso (kg)"><input inputMode="decimal" value={leadForm.weightKg} onChange={(e) => setLeadField("weightKg", e.target.value)} className={drawerFieldCls} /></DrawerField>
               <DrawerField label="Altura (cm)"><input inputMode="decimal" value={leadForm.heightCm} onChange={(e) => setLeadField("heightCm", e.target.value)} className={drawerFieldCls} /></DrawerField>
@@ -1684,6 +1694,7 @@ function LeadDetailDrawer({
               <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">Criado: {lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "-"}</div>
               <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">Atualizado: {lead.updatedAt ? new Date(lead.updatedAt).toLocaleString("pt-BR") : "-"}</div>
               <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">User ID: {lead.userId || "-"}</div>
+              <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">Referral: {lead.referralSource || "-"}</div>
             </div>
           </section>
 

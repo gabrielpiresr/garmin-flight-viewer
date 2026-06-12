@@ -21,11 +21,14 @@ export type ScheduleHourOption = {
 
 export function buildScheduleHourOptions(
   rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
+  /** Passo da listagem em minutos — admin/instrutor usam metade do slot (ex.: 30 → 15). */
+  stepMinutes: number = SCHEDULE_SLOT_STEP_MINUTES,
 ): ScheduleHourOption[] {
   const options: ScheduleHourOption[] = [];
-  const lastStart = SCHEDULE_DAY_END_MINUTE - SCHEDULE_SLOT_STEP_MINUTES;
+  const step = Math.max(5, Math.round(stepMinutes));
+  const lastStart = SCHEDULE_DAY_END_MINUTE - step;
 
-  for (let minute = SCHEDULE_GRID_ORIGIN_MINUTE; minute <= lastStart; minute += SCHEDULE_SLOT_STEP_MINUTES) {
+  for (let minute = SCHEDULE_GRID_ORIGIN_MINUTE; minute <= lastStart; minute += step) {
     const hour = Math.floor(minute / 60);
     if (!(SLOT_HOURS as readonly number[]).includes(hour)) continue;
     options.push({

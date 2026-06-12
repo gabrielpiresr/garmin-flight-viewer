@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { ScheduleFlightsTab } from "./ScheduleFlightsTab";
 import { WeeklyConfigTab } from "./WeeklyConfigTab";
@@ -7,11 +7,12 @@ import { ScheduleSettingsPanel } from "./ScheduleSettingsPanel";
 import { Tabs } from "../ui/Tabs";
 import { useOpenedTabs } from "../../lib/routedTabs";
 import { usePermissions } from "../../contexts/PermissionsContext";
+import { getCachedSchoolRules, getSchoolRules } from "../../lib/schoolRulesDb";
 import type { AdminTabKey } from "../../types/rolePermissions";
 
 export type ScheduleSubTab = "flights" | "weekly" | "generator" | "settings";
 
-const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode }> = [
+const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode; disabled?: boolean; disabledTooltip?: string }> = [
   {
     id: "flights",
     label: "Escala",
@@ -68,18 +69,35 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange, vis
   const [flightsFocusWeekStart, setFlightsFocusWeekStart] = useState<string | null>(null);
   const { canTab } = usePermissions();
 
+  // Modo "escala somente no SAGA": Disponibilidades e Gerador não se aplicam (a agenda vive no SAGA).
+  const [sagaOnlySchedule, setSagaOnlySchedule] = useState(
+    () => getCachedSchoolRules()?.schedule.sagaOnlySchedule === true,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void getSchoolRules()
+      .then((rules) => { if (!cancelled) setSagaOnlySchedule(rules.schedule.sagaOnlySchedule === true); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
   const visibleSubTabs = useMemo(() => {
-    if (visibleSubTabsOverride && visibleSubTabsOverride.length > 0) {
-      return SUB_TABS.filter((t) => visibleSubTabsOverride.includes(t.id));
-    }
-    return SUB_TABS.filter((t) => canTab(SCHEDULE_SUB_TAB_KEY[t.id] as AdminTabKey));
-  }, [canTab, visibleSubTabsOverride]);
+    const base = visibleSubTabsOverride && visibleSubTabsOverride.length > 0
+      ? SUB_TABS.filter((t) => visibleSubTabsOverride.includes(t.id))
+      : SUB_TABS.filter((t) => canTab(SCHEDULE_SUB_TAB_KEY[t.id] as AdminTabKey));
+    if (!sagaOnlySchedule) return base;
+    return base.map((t) =>
+      t.id === "weekly" || t.id === "generator"
+        ? { ...t, disabled: true, disabledTooltip: "Inativa no modo \"escala somente no SAGA\": a agenda é gerida diretamente no SAGA." }
+        : t,
+    );
+  }, [canTab, visibleSubTabsOverride, sagaOnlySchedule]);
 
   const subTab = controlledSubTab ?? internalSubTab;
   const activeSubTab: ScheduleSubTab =
-    visibleSubTabs.some((t) => t.id === subTab)
+    visibleSubTabs.some((t) => t.id === subTab && !t.disabled)
       ? subTab
-      : (visibleSubTabs[0]?.id ?? "flights");
+      : (visibleSubTabs.find((t) => !t.disabled)?.id ?? "flights");
 
   const openedSubTabs = useOpenedTabs(activeSubTab);
 

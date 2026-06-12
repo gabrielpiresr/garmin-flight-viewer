@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   assignAdminUserTrainingTrack,
+  createAdminUser,
   deleteAdminUserCascade,
   getAdminUserDetail,
   listAdminUserSummaries,
@@ -26,6 +27,7 @@ import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import { StudentObservationsSection } from "./StudentObservationsSection";
 import { InstructorCostsSection } from "./InstructorCostsSection";
 import { UserSalesSection } from "./UserSalesSection";
+import { PaymentLinkModal } from "./CaktoReceiptsTab";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { Skeleton } from "../ui/Skeleton";
@@ -404,6 +406,37 @@ export function AdminUsersTab() {
   } = useSagaImportMissionPrompt();
 
   const [success, setSuccess] = useState<string | null>(null);
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [showPaymentLink, setShowPaymentLink] = useState(false);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [newUser, setNewUser] = useState({
+    fullName: "",
+    email: "",
+    password: "",
+    role: "aluno" as UserRole,
+    phone: "",
+    cpf: "",
+    birthDate: "",
+    anacCode: "",
+  });
+
+  async function handleCreateUser(event: FormEvent) {
+    event.preventDefault();
+    setCreatingUser(true);
+    try {
+      const created = await createAdminUser(newUser);
+      setShowCreateUser(false);
+      setNewUser({ fullName: "", email: "", password: "", role: "aluno", phone: "", cpf: "", birthDate: "", anacCode: "" });
+      setSuccess(`Usuario ${displayName(created)} criado.`);
+      await loadPage(0, search, roleFilter);
+      setSelectedId(created.userId);
+      setShowUserList(false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCreatingUser(false);
+    }
+  }
 
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
@@ -959,6 +992,15 @@ export function AdminUsersTab() {
             Buscar
           </button>
         </form>
+        {canAction("users.manage") ? (
+          <button
+            type="button"
+            onClick={() => setShowCreateUser(true)}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            Novo usuario
+          </button>
+        ) : null}
       </div>
 
       <section className={`grid min-w-0 grid-cols-1 gap-4 transition-[grid-template-columns] duration-300 ease-out ${showUserList ? "lg:grid-cols-[360px_minmax(0,1fr)]" : "lg:grid-cols-1"}`}>
@@ -1118,6 +1160,9 @@ export function AdminUsersTab() {
                         ) : (
                           <p className="text-xs text-slate-600">ID SAGA: <span className="text-slate-500">não vinculado</span></p>
                         )}
+                        <p className="mt-1 text-xs text-slate-600">
+                          Referral: <span className="text-slate-400">{selectedDetail.referralSource || "nao informado"}</span>
+                        </p>
                       </div>
                     </div>
                     {canAction("users.manage") ? (
@@ -1209,6 +1254,15 @@ export function AdminUsersTab() {
                       >
                         {deletingUser ? "Excluindo..." : "Excluir usuario"}
                       </button>
+                      {selectedDetail.role === "aluno" ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowPaymentLink(true)}
+                          className="rounded-lg border border-sky-700/60 bg-sky-950/30 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-sky-950/60"
+                        >
+                          Gerar link de pagamento
+                        </button>
+                      ) : null}
                     </div>
                     ) : null}
                   </div>
@@ -1608,6 +1662,50 @@ export function AdminUsersTab() {
             <FlightDetailView flightId={activeFlightId} onBack={() => setActiveFlightId(null)} backLabel="Voltar ao usuário" />
           </div>
         </div>
+      ) : null}
+      {showCreateUser ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShowCreateUser(false)}>
+          <form onSubmit={(event) => void handleCreateUser(event)} onClick={(event) => event.stopPropagation()} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-100">Criar usuario</h2>
+              <button type="button" onClick={() => setShowCreateUser(false)} className="text-xs text-slate-400">Fechar</button>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-400 sm:col-span-2">Nome completo
+                <input required value={newUser.fullName} onChange={(e) => setNewUser((value) => ({ ...value, fullName: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">E-mail
+                <input required type="email" value={newUser.email} onChange={(e) => setNewUser((value) => ({ ...value, email: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">Senha inicial
+                <input required minLength={8} type="password" value={newUser.password} onChange={(e) => setNewUser((value) => ({ ...value, password: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">Permissao
+                <select value={newUser.role} onChange={(e) => setNewUser((value) => ({ ...value, role: e.target.value as UserRole }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white">
+                  {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{ROLE_LABEL[role]}</option>)}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">Telefone
+                <input value={newUser.phone} onChange={(e) => setNewUser((value) => ({ ...value, phone: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">CPF
+                <input value={newUser.cpf} onChange={(e) => setNewUser((value) => ({ ...value, cpf: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">Nascimento
+                <input type="date" value={newUser.birthDate} onChange={(e) => setNewUser((value) => ({ ...value, birthDate: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+              <label className="text-xs text-slate-400">Codigo ANAC
+                <input value={newUser.anacCode} onChange={(e) => setNewUser((value) => ({ ...value, anacCode: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" />
+              </label>
+            </div>
+            <button type="submit" disabled={creatingUser} className="mt-5 w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+              {creatingUser ? "Criando..." : "Criar usuario"}
+            </button>
+          </form>
+        </div>
+      ) : null}
+      {showPaymentLink && selectedDetail ? (
+        <PaymentLinkModal onClose={() => setShowPaymentLink(false)} initialUser={detailToSummary(selectedDetail)} />
       ) : null}
     </div>
   );

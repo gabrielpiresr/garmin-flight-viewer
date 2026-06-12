@@ -15,6 +15,7 @@ type PackageDraft = {
   validityDays: string;
   aircraftModelId: string;
   active: boolean;
+  isDefault: boolean;
   eligibilityType: "all" | "saga_id_range" | "created_date_range";
   sagaIdMin: string;
   sagaIdMax: string;
@@ -28,6 +29,7 @@ const emptyDraft: PackageDraft = {
   validityDays: "90",
   aircraftModelId: "",
   active: true,
+  isDefault: false,
   eligibilityType: "all",
   sagaIdMin: "",
   sagaIdMax: "",
@@ -93,6 +95,7 @@ export function FlightCreditPackagesPanel() {
       validityDays: String(item.validityDays),
       aircraftModelId: item.aircraftModelId,
       active: item.active,
+      isDefault: item.isDefault,
       eligibilityType: el.type,
       sagaIdMin: el.type === "saga_id_range" ? String(el.min ?? "") : "",
       sagaIdMax: el.type === "saga_id_range" ? String(el.max ?? "") : "",
@@ -144,12 +147,18 @@ export function FlightCreditPackagesPanel() {
       validityDays,
       aircraftModelId: model.id,
       aircraftModelName: model.name,
-      active: draft.active,
+      active: draft.isDefault ? true : draft.active,
+      isDefault: draft.isDefault,
       eligibility,
     };
-    setPackages((current) => editingId
-      ? current.map((item) => item.id === editingId ? next : item)
-      : [...current, next]);
+    setPackages((current) => {
+      const normalized = next.isDefault
+        ? current.map((item) => ({ ...item, isDefault: false }))
+        : current;
+      return editingId
+        ? normalized.map((item) => item.id === editingId ? next : item)
+        : [...normalized, next];
+    });
     closeForm();
   }
 
@@ -305,6 +314,10 @@ export function FlightCreditPackagesPanel() {
             <input type="checkbox" checked={draft.active} onChange={(e) => setDraft((value) => ({ ...value, active: e.target.checked }))} className="accent-emerald-500" />
             Pacote ativo
           </label>
+          <label className="mt-2 flex items-center gap-2 text-xs text-slate-300">
+            <input type="checkbox" checked={draft.isDefault} onChange={(e) => setDraft((value) => ({ ...value, isDefault: e.target.checked }))} className="accent-amber-500" />
+            Pacote default para propostas e links administrativos
+          </label>
           <div className="mt-3 flex gap-2">
             <button type="button" onClick={applyDraft} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Aplicar</button>
             <button type="button" onClick={closeForm} className="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400">Cancelar</button>
@@ -319,6 +332,7 @@ export function FlightCreditPackagesPanel() {
           <div key={item.id} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-3 ${item.active ? "border-slate-700/60 bg-slate-800/30" : "border-slate-800 bg-slate-950/20 opacity-60"}`}>
             <div>
               <p className="text-sm font-medium text-slate-100">{item.hours}h de {item.aircraftModelName}</p>
+              {item.isDefault ? <span className="mt-1 inline-flex rounded-full border border-amber-600/50 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Default</span> : null}
               <p className="text-xs text-slate-500">
                 {formatBrl(item.hourPrice)}/h · {formatBrl(item.hours * item.hourPrice)} · validade de {item.validityDays} dias
               </p>

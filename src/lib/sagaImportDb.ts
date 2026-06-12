@@ -778,7 +778,11 @@ export type SagaAllUsersSyncJobResult = {
   ok: boolean;
   skipped?: boolean;
   forced?: boolean;
+  importRunId?: string;
+  origin?: "manual" | "cron" | string;
   message?: string;
+  usersCreated?: number;
+  usersSkipped?: number;
   flightsCreated?: number;
   flightsUpdated?: number;
   flightsDeleted?: number;
@@ -788,6 +792,37 @@ export type SagaAllUsersSyncJobResult = {
   creditsSkipped?: number;
   logs?: string[];
 };
+
+export type SagaSyncHistoryEntry = {
+  runId: string;
+  origin: "manual" | "cron" | string;
+  status: "completed" | "failed" | string;
+  startedAt: string;
+  completedAt: string;
+  windowDays: number;
+  usersCreated: number;
+  usersSkipped: number;
+  flightsCreated: number;
+  flightsDeleted: number;
+  flightsSkipped: number;
+  creditsCreated: number;
+  creditsSkipped: number;
+  message?: string;
+};
+
+export async function fetchSagaSyncHistory(): Promise<SagaSyncHistoryEntry[]> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaGetSyncHistory" }),
+    false,
+  );
+  const response = parseJsonBody<{ history?: SagaSyncHistoryEntry[]; message?: string }>(execution.responseBody, {});
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao carregar o historico de sincronizacoes.");
+  }
+  return Array.isArray(response.history) ? response.history : [];
+}
 
 export async function runSagaScheduleSyncNow(force = false): Promise<SagaScheduleJobResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
@@ -808,20 +843,47 @@ export async function runSagaScheduleSyncNow(force = false): Promise<SagaSchedul
   return response;
 }
 
-export async function runSagaAllUsersSyncNow(force = false): Promise<SagaAllUsersSyncJobResult> {
+export async function runSagaAllUsersSyncNow(
+  force = false,
+  options: { onProgress?: (progress: SagaImportProgress) => void } = {},
+): Promise<SagaAllUsersSyncJobResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
+  const importRunId = crypto.randomUUID();
   const createdExecution = await fn.createExecution(
     functionId,
-    JSON.stringify({ action: "sagaSyncAllUsersFromSagaJob", force }),
+    JSON.stringify({ action: "sagaSyncAllUsersFromSagaJob", force, importRunId }),
     true,
   );
-  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000);
-  const response = parseJsonBody<SagaAllUsersSyncJobResult>(execution.responseBody, {
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 14 * 60 * 1000, {
+    progressRunId: importRunId,
+    onProgress: options.onProgress,
+  });
+  let response = parseJsonBody<SagaAllUsersSyncJobResult>(execution.responseBody, {
     ok: false,
     message: "Resposta da sincronizacao geral SAGA nao estava em JSON valido.",
     logs: [],
   });
-  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+  if (execution.status !== "failed" && execution.responseStatusCode < 400 && !response.importRunId) {
+    const historyEntry = (await fetchSagaSyncHistory().catch(() => []))
+      .find((entry) => entry.runId === importRunId);
+    if (historyEntry) {
+      response = {
+        ok: historyEntry.status === "completed",
+        importRunId: historyEntry.runId,
+        origin: historyEntry.origin,
+        message: historyEntry.message,
+        usersCreated: historyEntry.usersCreated,
+        usersSkipped: historyEntry.usersSkipped,
+        flightsCreated: historyEntry.flightsCreated,
+        flightsDeleted: historyEntry.flightsDeleted,
+        flightsSkipped: historyEntry.flightsSkipped,
+        creditsCreated: historyEntry.creditsCreated,
+        creditsSkipped: historyEntry.creditsSkipped,
+        logs: [],
+      };
+    }
+  }
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || response.ok === false) {
     throw new Error(response.message || "Falha ao executar sincronizacao geral do SAGA.");
   }
   return response;
@@ -847,6 +909,78 @@ export type SagaScheduleItem = {
   active: boolean;
   raw: Record<string, unknown>;
 };
+
+/** Item de escala saga-only (sem o campo raw, que não é retornado por sagaListSchedulesDirect). */
+export type SagaDirectScheduleItem = Omit<SagaScheduleItem, "raw"> & {
+  /** Usuário local resolvido pelo ID SAGA (perfil.saga_user_id ou user_id "saga_<id>"). */
+  studentUserId?: string;
+  instructorUserId?: string;
+};
+
+/** Lista eventos da agenda SAGA (modo escala somente no SAGA). Permite instrutor ou admin. */
+export async function listSagaSchedulesDirect(monthCount = 3): Promise<SagaDirectScheduleItem[]> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaListSchedulesDirect", monthCount }),
+    false,
+  );
+  const response = parseJsonBody<{ ok: boolean; schedules: SagaDirectScheduleItem[]; message?: string }>(
+    execution.responseBody,
+    { ok: false, schedules: [] },
+  );
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao buscar a escala no SAGA.");
+  }
+  return response.schedules;
+}
+
+export type SagaUpsertScheduleDirectInput = {
+  scheduleId?: string | null;
+  aircraftIdent: string;
+  studentUserId?: string | null;
+  studentSagaId?: string | null;
+  studentName?: string | null;
+  instructorUserId?: string | null;
+  instructorSagaId?: string | null;
+  instructorName?: string | null;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  /** Status do evento no SAGA. Default: PLANNED. */
+  sagaStatus?: "PLANNED" | "PENDING" | "CONFIRMED";
+  notes?: string;
+};
+
+/** Cria/atualiza um evento direto na agenda SAGA (modo escala somente no SAGA). */
+export async function upsertSagaScheduleDirect(input: SagaUpsertScheduleDirectInput): Promise<{ scheduleId: string | null; message: string }> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaUpsertScheduleDirect", ...input }),
+    false,
+  );
+  const response = parseJsonBody<{ ok: boolean; scheduleId?: string | null; message?: string }>(execution.responseBody, { ok: false });
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao salvar o evento na agenda SAGA.");
+  }
+  return { scheduleId: response.scheduleId ?? null, message: response.message || "Evento SAGA salvo." };
+}
+
+/** Remove um evento direto da agenda SAGA (modo escala somente no SAGA). */
+export async function cancelSagaScheduleDirect(scheduleId: string): Promise<{ message: string }> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaCancelScheduleDirect", scheduleId }),
+    false,
+  );
+  const response = parseJsonBody<{ ok: boolean; message?: string }>(execution.responseBody, { ok: false });
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao remover o evento na agenda SAGA.");
+  }
+  return { message: response.message || "Evento SAGA removido." };
+}
 
 export async function fetchSagaSchedules(): Promise<{ ok: boolean; schedules: SagaScheduleItem[]; logs: string[] }> {
   const { functions: fn, functionId } = getAdminFunctionClient();

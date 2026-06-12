@@ -3,6 +3,7 @@ import {
   DEFAULT_SAGA_CREDIT_COLUMN_MAP,
   DEFAULT_SAGA_FLIGHT_COLUMN_MAP,
   fetchSagaImportProgress,
+  fetchSagaSyncHistory,
   fetchSagaUsers,
   getSagaImportSettings,
   importSagaData,
@@ -19,6 +20,7 @@ import {
   type SagaImportProgress,
   type SagaImportResult,
   type SagaImportSummary,
+  type SagaSyncHistoryEntry,
   type SagaUser,
 } from "../../lib/sagaImportDb";
 import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
@@ -865,6 +867,8 @@ export function AdminImportTab() {
   const [importScope, setImportScope] = useState<SagaImportScope>(DEFAULT_IMPORT_SCOPE);
   const [syncingScheduleNow, setSyncingScheduleNow] = useState(false);
   const [syncingAllUsersNow, setSyncingAllUsersNow] = useState(false);
+  const [syncHistory, setSyncHistory] = useState<SagaSyncHistoryEntry[]>([]);
+  const [syncHistoryLoading, setSyncHistoryLoading] = useState(true);
   const {
     pendingMission,
     awaitingMission,
@@ -943,10 +947,25 @@ export function AdminImportTab() {
   }, []);
 
   useEffect(() => {
-    if (!importing) return;
+    if (!importing && !syncingAllUsersNow) return;
     const timer = window.setInterval(() => setProgressTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [importing]);
+  }, [importing, syncingAllUsersNow]);
+
+  async function refreshSyncHistory() {
+    setSyncHistoryLoading(true);
+    try {
+      setSyncHistory(await fetchSagaSyncHistory());
+    } catch {
+      setSyncHistory([]);
+    } finally {
+      setSyncHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshSyncHistory();
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1084,29 +1103,41 @@ export function AdminImportTab() {
   async function handleSyncAllUsersNow() {
     setSyncingAllUsersNow(true);
     setError(null);
+    setImportStartedAt(Date.now());
+    setImportProgress({
+      runId: "",
+      status: "running",
+      stage: "Preparando sincronizacao",
+      message: "Criando execucao no Appwrite.",
+      current: 0,
+      total: 1,
+      logs: [],
+    });
     try {
-      const result = await runSagaAllUsersSyncNow(true);
+      const result = await runSagaAllUsersSyncNow(true, { onProgress: setImportProgress });
+      const usersCreated = Number(result.usersCreated || 0);
       const flightsCreated = Number(result.flightsCreated || 0);
-      const flightsUpdated = Number(result.flightsUpdated || 0);
       const flightsDeleted = Number(result.flightsDeleted || 0);
       const creditsCreated = Number(result.creditsCreated || 0);
-      const creditsUpdated = Number(result.creditsUpdated || 0);
       setError(
-        `Sincronizacao geral concluida: voos ${flightsCreated} criados, ${flightsUpdated} atualizados, ${flightsDeleted} removidos | creditos ${creditsCreated} criados, ${creditsUpdated} atualizados.`,
+        `Sincronizacao geral concluida: ${usersCreated} usuarios, ${flightsCreated} voos e ${creditsCreated} creditos criados; ${flightsDeleted} voos removidos.`,
       );
+      await refreshSyncHistory();
     } catch (err) {
+      setImportProgress(null);
       setError(err instanceof Error ? err.message : "Falha ao sincronizar voos/creditos do SAGA agora.");
     } finally {
       setSyncingAllUsersNow(false);
+      setImportStartedAt(null);
     }
   }
 
   return (
     <div className="space-y-4">
       <SagaImportProgressOverlay
-        active={Boolean(importing) || awaitingMission || importProgress?.status === "failed"}
+        active={Boolean(importing) || syncingAllUsersNow || awaitingMission || importProgress?.status === "failed"}
         awaitingMission={awaitingMission}
-        modeLabel={importModeLabel}
+        modeLabel={syncingAllUsersNow ? "Sincronizacao geral" : importModeLabel}
         importProgress={importProgress}
         importStartedAt={importStartedAt}
         progressTick={progressTick}
@@ -1116,6 +1147,50 @@ export function AdminImportTab() {
         pendingMission={displayPendingMission}
         onConfirmMission={handleConfirmSagaMission}
       />
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-sky-400">Ultimas atualizacoes</p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-100">Sincronizacoes gerais</h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshSyncHistory()}
+            disabled={syncHistoryLoading}
+            className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+          >
+            {syncHistoryLoading ? "Atualizando..." : "Atualizar"}
+          </button>
+        </div>
+        {syncHistory.length ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {syncHistory.map((entry) => (
+              <article key={entry.runId} className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className={`rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${
+                    entry.status === "completed" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"
+                  }`}>
+                    {entry.status === "completed" ? "Concluida" : "Falhou"}
+                  </span>
+                  <span className="text-xs text-slate-500">{entry.origin === "cron" ? "Cronjob" : "Botao manual"}</span>
+                </div>
+                <p className="mt-3 text-sm font-semibold text-slate-200">
+                  {entry.completedAt ? new Date(entry.completedAt).toLocaleString("pt-BR") : "Data indisponivel"}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-slate-400">
+                  Usuarios: {entry.usersCreated} novos. Voos: {entry.flightsCreated} novos, {entry.flightsDeleted} removidos.
+                  {" "}Creditos: {entry.creditsCreated} novos. Janela: {entry.windowDays} dias.
+                </p>
+                {entry.message ? <p className="mt-2 text-xs text-rose-300">{entry.message}</p> : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-6 text-center text-sm text-slate-500">
+            {syncHistoryLoading ? "Carregando historico..." : "Nenhuma sincronizacao geral registrada ainda."}
+          </p>
+        )}
+      </section>
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>

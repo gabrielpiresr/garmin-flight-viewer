@@ -4,8 +4,11 @@ import { listModels } from "../../lib/aircraftModelsDb";
 import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
 import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
 import { flightAircraftHours } from "../../lib/flightHours";
+import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
+import { getSchoolRules } from "../../lib/schoolRulesDb";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import type { Aircraft, AircraftModel, AircraftType, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -65,6 +68,11 @@ const TYPE_BADGE: Record<AircraftType, string> = {
 };
 type AircraftForm = typeof emptyForm;
 type RecurrenceRules = { hours: number | null; days: number | null };
+type ScheduledAircraftFlight = {
+  id: string;
+  dateMs: number;
+  hours: number;
+};
 type UpcomingMaintenance = {
   id: string;
   code: string;
@@ -143,13 +151,37 @@ function latestDate(orders: MaintenanceWorkOrder[]): Date | null {
   return new Date(Math.max(...dates.map((date) => date.getTime())));
 }
 
-function nextDueHours(currentHours: number | null, itemOrders: MaintenanceWorkOrder[], interval: number | null): number | null {
-  if (interval == null || interval <= 0 || currentHours == null) return null;
-  const latestPerformed = itemOrders
-    .filter((order) => order.work_order_type !== "migration_baseline")
+function isCompletedMaintenance(order: MaintenanceWorkOrder): boolean {
+  return order.work_order_type !== "migration_baseline"
+    && order.status !== "canceled"
+    && (order.status === "completed" || order.status === "released" || order.aircraft_released);
+}
+
+function intervalIncludes(parentInterval: number | null, childInterval: number | null): boolean {
+  if (parentInterval == null || childInterval == null || parentInterval < childInterval || childInterval <= 0) return false;
+  const ratio = parentInterval / childInterval;
+  return Math.abs(ratio - Math.round(ratio)) < 0.0001;
+}
+
+function nextDueHours(params: {
+  currentHours: number | null;
+  baselineHours: number | null;
+  interval: number | null;
+  encompassingOrders: MaintenanceWorkOrder[];
+}): { remaining: number | null; dueAt: number | null } {
+  const { currentHours, baselineHours, interval, encompassingOrders } = params;
+  if (interval == null || interval <= 0 || currentHours == null) return { remaining: null, dueAt: null };
+  const latestPerformed = encompassingOrders
+    .filter(isCompletedMaintenance)
     .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
-  const dueAt = latestPerformed ? latestPerformed.aircraft_ttaf + interval : Math.ceil((currentHours + 0.0001) / interval) * interval;
-  return Number((dueAt - currentHours).toFixed(1));
+  const referenceHours = baselineHours ?? currentHours;
+  const dueAt = latestPerformed
+    ? latestPerformed.aircraft_ttaf + interval
+    : Math.ceil((referenceHours - 0.0001) / interval) * interval;
+  return {
+    remaining: Number((dueAt - currentHours).toFixed(1)),
+    dueAt,
+  };
 }
 
 function buildUpcomingMaintenance(params: {
@@ -157,30 +189,52 @@ function buildUpcomingMaintenance(params: {
   modelItems: MaintenanceProgramItem[];
   aircraftOrders: MaintenanceWorkOrder[];
   currentHours: number | null;
-  scheduledFlights: SavedFlightListItem[];
-  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
+  scheduledFlights: ScheduledAircraftFlight[];
 }): UpcomingMaintenance[] {
   const opening = resolveAircraftOpening(params.aircraft, params.aircraftOrders);
   const baselineDate = opening.baselineMs ? new Date(opening.baselineMs) : null;
   const now = new Date();
+  const itemsWithRules = params.modelItems.map((item) => ({ item, rules: parseRecurrenceRules(item.recurrence_rules) }));
 
-  return params.modelItems
-    .map((item) => {
-      const rules = parseRecurrenceRules(item.recurrence_rules);
+  return itemsWithRules
+    .map(({ item, rules }) => {
       const itemOrders = params.aircraftOrders.filter((order) => order.maintenance_program_item_id === item.id);
-      const remainingHours = nextDueHours(params.currentHours, itemOrders, rules.hours);
-      const lastItemDate = latestDate(itemOrders.filter((order) => order.work_order_type !== "migration_baseline"));
+      const encompassingItemIds = new Set(
+        itemsWithRules
+          .filter(({ rules: candidateRules }) => intervalIncludes(candidateRules.hours, rules.hours))
+          .map(({ item: candidate }) => candidate.id),
+      );
+      const encompassingOrders = params.aircraftOrders.filter(
+        (order) => order.maintenance_program_item_id != null && encompassingItemIds.has(order.maintenance_program_item_id),
+      );
+      const hoursDue = nextDueHours({
+        currentHours: params.currentHours,
+        baselineHours: opening.ttaf,
+        interval: rules.hours,
+        encompassingOrders,
+      });
+      const lastItemDate = latestDate(itemOrders.filter(isCompletedMaintenance));
       const referenceDate = lastItemDate ?? baselineDate;
       const dueDate = referenceDate && rules.days != null ? new Date(referenceDate.getTime() + rules.days * 86_400_000) : null;
       return {
         id: item.id,
         code: item.code,
         title: item.title,
-        remainingHours,
+        intervalHours: rules.hours,
+        dueAtHours: hoursDue.dueAt,
+        remainingHours: hoursDue.remaining,
         remainingDays: dueDate ? daysBetween(now, dueDate) : null,
-        forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights, params.metaByFlightId),
+        forecast: predictByScheduledFlights(hoursDue.remaining, params.scheduledFlights),
       };
     })
+    .filter((candidate, _, rows) => !rows.some((other) =>
+      other.id !== candidate.id
+      && candidate.dueAtHours != null
+      && other.dueAtHours != null
+      && Math.abs(other.dueAtHours - candidate.dueAtHours) < 0.05
+      && intervalIncludes(other.intervalHours, candidate.intervalHours)
+      && (other.intervalHours ?? 0) > (candidate.intervalHours ?? 0),
+    ))
     .sort((a, b) => (a.remainingHours ?? Number.POSITIVE_INFINITY) - (b.remainingHours ?? Number.POSITIVE_INFINITY));
 }
 
@@ -195,26 +249,72 @@ function flightDateMs(flight: SavedFlightListItem): number {
   return Number.isFinite(ms) ? ms : new Date(flight.created_at).getTime();
 }
 
-function scheduledAircraftFlights(flights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): SavedFlightListItem[] {
+function scheduledAircraftFlights(flights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): ScheduledAircraftFlight[] {
   const now = Date.now();
   return flights
     .filter((flight) => flightDateMs(flight) > now)
-    .filter((flight) => flightDurationHours(flight, metaByFlightId) > 0)
-    .sort((a, b) => flightDateMs(a) - flightDateMs(b));
+    .filter((flight) => flight.flight_status !== "Cancelado")
+    .map((flight) => ({
+      id: flight.id,
+      dateMs: flightDateMs(flight),
+      hours: flightDurationHours(flight, metaByFlightId),
+    }))
+    .filter((flight) => flight.hours > 0)
+    .sort((a, b) => a.dateMs - b.dateMs);
 }
 
-function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: SavedFlightListItem[], metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>): string {
+function sagaDateMs(value: string): number {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  const ms = match ? new Date(`${match[1]}T${match[2]}:00`).getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sagaEventIsCancelled(item: SagaDirectScheduleItem): boolean {
+  const status = item.status.trim().toUpperCase();
+  return item.active === false || ["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(status);
+}
+
+function sagaScheduledAircraftFlights(
+  schedules: SagaDirectScheduleItem[],
+  rules: FlightScheduleRules,
+): Record<string, ScheduledAircraftFlight[]> {
+  const now = Date.now();
+  const grouped: Record<string, ScheduledAircraftFlight[]> = {};
+  for (const schedule of schedules) {
+    if (sagaEventIsCancelled(schedule)) continue;
+    const startMs = sagaDateMs(schedule.startAtRaw || schedule.startAt);
+    const endMs = sagaDateMs(schedule.endAtRaw || schedule.endAt);
+    if (startMs <= now || endMs <= startMs) continue;
+    const blockMinutes = (endMs - startMs) / 60_000;
+    const flightMinutes = Math.max(0, blockMinutes - rules.bufferBeforeMinutes - rules.bufferAfterMinutes);
+    const registration = schedule.aircraft.trim().toUpperCase();
+    if (!registration || flightMinutes <= 0) continue;
+    (grouped[registration] ??= []).push({
+      id: schedule.id,
+      dateMs: startMs,
+      hours: flightMinutes / 60,
+    });
+  }
+  for (const rows of Object.values(grouped)) rows.sort((a, b) => a.dateMs - b.dateMs);
+  return grouped;
+}
+
+function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: ScheduledAircraftFlight[]): string {
   if (remainingHours == null || !Number.isFinite(remainingHours)) return "sem previsão por horas";
   if (remainingHours <= 0) return "atingida agora";
   let accumulated = 0;
   let lastFlightMs: number | null = null;
-  for (const flight of scheduledFlights) {
-    const flightMs = flightDateMs(flight);
-    lastFlightMs = flightMs;
-    accumulated += flightDurationHours(flight, metaByFlightId);
-    if (accumulated >= remainingHours) return `prevista para ${formatDate(flightMs)}`;
+  for (let index = 0; index < scheduledFlights.length; index += 1) {
+    const flight = scheduledFlights[index]!;
+    lastFlightMs = flight.dateMs;
+    accumulated += flight.hours;
+    if (accumulated >= remainingHours) {
+      return `prevista no ${index + 1}º voo agendado (${formatDate(flight.dateMs)})`;
+    }
   }
-  return lastFlightMs ? `depois do dia ${formatDate(lastFlightMs)}` : "sem voos programados";
+  if (!lastFlightMs) return "sem voos programados";
+  const missingHours = Math.max(0, remainingHours - accumulated);
+  return `${scheduledFlights.length} voo${scheduledFlights.length === 1 ? "" : "s"} agendado${scheduledFlights.length === 1 ? "" : "s"} até ${formatDate(lastFlightMs)}; faltam ${formatHours(missingHours)}`;
 }
 
 type AircraftOpening = {
@@ -341,6 +441,8 @@ export function FleetTab() {
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [workOrders, setWorkOrders] = useState<MaintenanceWorkOrder[]>([]);
   const [flights, setFlights] = useState<SavedFlightListItem[]>([]);
+  const [sagaSchedules, setSagaSchedules] = useState<SagaDirectScheduleItem[]>([]);
+  const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [programItemsByModel, setProgramItemsByModel] = useState<Record<string, MaintenanceProgramItem[]>>({});
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
@@ -367,11 +469,14 @@ export function FleetTab() {
       listModels(),
       listWorkOrders(),
       listAllSavedFlights({ userId: "admin", role: "admin" }, { pageSize: 100, maxItems: 5000 }),
+      getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
     ])
-      .then(async ([aircraftRows, modelRows, orderRows, flightRows]) => {
+      .then(async ([aircraftRows, modelRows, orderRows, flightRows, schoolRules]) => {
         setAircrafts(aircraftRows);
         setModels(modelRows);
         setWorkOrders(orderRows);
+        setScheduleRules(schoolRules.schedule);
+        setSagaSchedules(schoolRules.schedule.sagaOnlySchedule ? await listSagaSchedulesDirect(6) : []);
         if (flightRows.error) throw flightRows.error;
         const flightList = flightRows.data ?? [];
         setFlights(flightList);
@@ -515,6 +620,10 @@ export function FleetTab() {
     return grouped;
   }, [flights]);
   const emptyMetaByFlightId = useMemo(() => new Map<string, FlightRecordMeta | null>(), []);
+  const sagaFlightsByAircraftIdent = useMemo(
+    () => sagaScheduledAircraftFlights(sagaSchedules, scheduleRules),
+    [sagaSchedules, scheduleRules],
+  );
 
   const byType = aircrafts.filter((a) => a.type === typeTab);
   const visible = byType.filter((a) => {
@@ -859,8 +968,11 @@ export function FleetTab() {
             const model = modelMap[ac.model_id];
             const img = ac.image_url ?? model?.default_image;
             const aircraftOrders = workOrdersByAircraft[ac.id] ?? [];
-            const aircraftFlightRows = flightsByAircraftIdent[ac.registration.trim().toUpperCase()] ?? [];
-            const scheduledFlights = scheduledAircraftFlights(aircraftFlightRows, emptyMetaByFlightId);
+            const registration = ac.registration.trim().toUpperCase();
+            const aircraftFlightRows = flightsByAircraftIdent[registration] ?? [];
+            const scheduledFlights = scheduleRules.sagaOnlySchedule
+              ? sagaFlightsByAircraftIdent[registration] ?? []
+              : scheduledAircraftFlights(aircraftFlightRows, emptyMetaByFlightId);
             const totals = currentAircraftTotalsFromBaseline({
               aircraft: ac,
               orders: aircraftOrders,
@@ -874,7 +986,6 @@ export function FleetTab() {
               aircraftOrders,
               currentHours,
               scheduledFlights,
-              metaByFlightId: emptyMetaByFlightId,
             });
             return (
               <div

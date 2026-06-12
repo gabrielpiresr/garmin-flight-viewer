@@ -55,7 +55,16 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
       listSchoolProducts().then(setProducts),
       getProposalsByLead(lead.id).then(setExistingProposals),
       getFlightCreditSalesConfig()
-        .then((cfg) => setPackages(cfg.packages.filter((p) => p.active)))
+        .then((cfg) => {
+          const active = cfg.packages.filter((p) => p.active);
+          setPackages(active);
+          const defaultPackage = active.find((p) => p.isDefault);
+          if (defaultPackage) {
+            setSelectedPackageId(defaultPackage.id);
+            setHours(String(defaultPackage.hours));
+            setHourPriceStr(formatBrl(defaultPackage.hourPrice));
+          }
+        })
         .catch(() => {}),
     ]).finally(() => {
       setLoadingProducts(false);
@@ -332,6 +341,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
                         >
                           <div className="flex items-center justify-between mb-1">
                             <span className="font-semibold text-sm">{pkg.hours}h de voo</span>
+                            {pkg.isDefault ? <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-300">Default</span> : null}
                             {isSelected && (
                               <span className="text-sky-400">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">

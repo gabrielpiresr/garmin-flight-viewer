@@ -14,6 +14,7 @@ export type CaktoSettingsInput = {
 
 export type CaktoReceipt = {
   id: string;
+  source: "cakto" | "saga";
   eventId: string;
   eventType: string;
   orderId: string;
@@ -41,7 +42,9 @@ export type CaktoReceipt = {
 
 export type CaktoReceiptFilters = {
   search?: string;
+  source?: "all" | "cakto" | "saga";
   eventType?: string;
+  eventTypes?: string[];
   paymentMethod?: string;
   dateFrom?: string;
   dateTo?: string;

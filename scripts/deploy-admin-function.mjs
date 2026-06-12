@@ -24,7 +24,7 @@ const ENDPOINT = process.env.APPWRITE_ENDPOINT || "https://sfo.cloud.appwrite.io
 const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "6a01ac8a0009fbf94f05";
 const API_KEY = process.env.APPWRITE_API_KEY;
 const FUNCTION_ID = "admin-users";
-const FUNCTION_TIMEOUT_SECONDS = Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300);
+const FUNCTION_TIMEOUT_SECONDS = Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 900);
 const FUNCTION_SCHEDULE = process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 */12 * * *";
 const FUNCTION_EXECUTE = (process.env.ADMIN_USERS_FUNCTION_EXECUTE || "any")
   .split(",")

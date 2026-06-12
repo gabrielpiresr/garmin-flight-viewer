@@ -11,6 +11,7 @@ export type FlightCreditPackage = {
   aircraftModelId: string;
   aircraftModelName: string;
   active: boolean;
+  isDefault: boolean;
   eligibility: PackageEligibility;
 };
 

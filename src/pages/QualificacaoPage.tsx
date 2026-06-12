@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { upsertLeadByEmail } from "../lib/crmDb";
-import { getCachedBrandSettings, notifyCrmLeadEvent } from "../lib/notificationsDb";
+import { getCachedBrandSettings, getEmailBrandSettings, notifyCrmLeadEvent } from "../lib/notificationsDb";
 import { getReferralWelcome } from "../lib/referAndEarnDb";
 import { executeSagaAnacLookup } from "../lib/sagaAnacSync";
 import type { AvailableDay, AvailablePeriod } from "../types/crm";
@@ -59,6 +59,28 @@ function formatCpfInput(value: string): string {
   return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
 }
 
+function formatPhoneInput(value: string): string {
+  const digits = onlyDigits(value).slice(0, 11);
+  if (digits.length <= 2) return digits ? `(${digits}` : "";
+  if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function isValidCpf(value: string): boolean {
+  const cpf = onlyDigits(value);
+  if (cpf.length !== 11 || /^(\d)\1{10}$/.test(cpf)) return false;
+  const calculateDigit = (length: number) => {
+    let sum = 0;
+    for (let index = 0; index < length; index += 1) {
+      sum += Number(cpf[index]) * (length + 1 - index);
+    }
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  return calculateDigit(9) === Number(cpf[9]) && calculateDigit(10) === Number(cpf[10]);
+}
+
 function isAtLeast16(birthDate: string): boolean {
   if (!birthDate) return true; // campo opcional, não bloqueia
   const birth = new Date(birthDate);
@@ -86,6 +108,7 @@ type FormState = {
   transferSchool: string;
   desiredCourse: string;
   theoreticalExamDone: boolean | null;
+  theoreticalStudyStatus: string;
   desiredHours: string;
   startPeriod: string;
   notes: string;
@@ -96,6 +119,23 @@ type FormState = {
   availableDays: AvailableDay[];
   availablePeriod: AvailablePeriod | "";
 };
+
+type FieldKey =
+  | "desiredCourse"
+  | "theoreticalExamDone"
+  | "theoreticalStudyStatus"
+  | "desiredHours"
+  | "startPeriod"
+  | "weeklyHours"
+  | "availabilityPreset"
+  | "availablePeriod"
+  | "name"
+  | "email"
+  | "phone"
+  | "birthDate"
+  | "cpf"
+  | "anacCode"
+  | "heightCm";
 
 // ─── UI helpers ────────────────────────────────────────────────────────────────
 
@@ -118,6 +158,7 @@ function FieldLabel({ children, optional }: { children: React.ReactNode; optiona
 
 const inputCls =
   "w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30 transition";
+const invalidCls = "border-red-500 bg-red-950/30 focus:border-red-400 focus:ring-red-500/30";
 
 const REFERRAL_STORAGE_KEY = "referral_user_id";
 
@@ -135,12 +176,25 @@ function resolveReferrerUserId(params: URLSearchParams): string | null {
 export function QualificacaoPage() {
   const params = new URLSearchParams(window.location.search);
   const emailHint = params.get("email") ?? "";
-  const brand = getCachedBrandSettings();
-  const logoUrl = brand?.logoUrl || "";
+  const referralSource = params.get("referral")?.trim().slice(0, 255) || null;
+  const [brand, setBrand] = useState(() => getCachedBrandSettings());
+  const logoUrl = brand?.logoUrl || brand?.logoDataUrl || "";
   const [referrerUserId] = useState(() => resolveReferrerUserId(params));
   const [showWelcome, setShowWelcome] = useState(false);
   const [welcomeLoading, setWelcomeLoading] = useState(Boolean(referrerUserId));
   const [welcomeInfo, setWelcomeInfo] = useState<{ referrerName: string; schoolName: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getEmailBrandSettings()
+      .then((settings) => {
+        if (!cancelled) setBrand(settings);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!referrerUserId) {
@@ -182,6 +236,7 @@ export function QualificacaoPage() {
     transferSchool: "",
     desiredCourse: "",
     theoreticalExamDone: null,
+    theoreticalStudyStatus: "",
     desiredHours: "",
     startPeriod: "",
     notes: "",
@@ -196,9 +251,20 @@ export function QualificacaoPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldKey, string>>>({});
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((p) => ({ ...p, [key]: value }));
+    setFieldErrors((current) => {
+      const next = { ...current };
+      delete next[key as FieldKey];
+      return next;
+    });
+  }
+
+  function fieldClass(key: FieldKey, extra = "") {
+    return `${inputCls} ${fieldErrors[key] ? invalidCls : ""} ${extra}`;
   }
 
   function toggleDay(day: AvailableDay) {
@@ -218,7 +284,7 @@ export function QualificacaoPage() {
         ...p,
         availabilityPreset: preset.id,
         availableDays: preset.days,
-        availablePeriod: preset.period ?? p.availablePeriod,
+        availablePeriod: preset.period ?? "ambos",
       }));
     }
   }
@@ -236,40 +302,67 @@ export function QualificacaoPage() {
       desiredCourse: course,
       desiredHours: defaultHours != null ? String(defaultHours) : p.desiredHours,
       theoreticalExamDone: course === "Piloto Privado" ? (p.theoreticalExamDone ?? null) : null,
+      theoreticalStudyStatus: course === "Piloto Privado" ? p.theoreticalStudyStatus : "",
     }));
   }
 
   // ─── Validação ────────────────────────────────────────────────────────────
 
-  function validate(): string[] {
-    const errs: string[] = [];
-    if (!form.name.trim()) errs.push("Informe seu nome completo.");
-    if (!form.email.trim() || !form.email.includes("@")) errs.push("Informe um e-mail válido.");
-    if (form.birthDate && !isAtLeast16(form.birthDate))
-      errs.push("É necessário ter pelo menos 16 anos para se matricular.");
-    if (!form.desiredCourse) errs.push("Selecione o curso desejado.");
-    if (!form.desiredHours) errs.push("Informe quantas horas pretende fazer.");
-    if (!form.startPeriod) errs.push("Selecione quando deseja começar.");
-    if (!form.weeklyHours) errs.push("Selecione a quantidade de horas por semana.");
-    if (!form.noAnac) {
-      if (!form.anacCode.trim()) errs.push("Informe o código ANAC ou marque que ainda não possui.");
-      if (!form.birthDate) errs.push("Informe a data de nascimento para consultar a ANAC.");
-      if (onlyDigits(form.cpf).length !== 11) errs.push("Informe um CPF válido para consultar a ANAC.");
+  function validateStep(targetStep: 1 | 2 | 3): Partial<Record<FieldKey, string>> {
+    const next: Partial<Record<FieldKey, string>> = {};
+    if (targetStep === 1) {
+      if (!form.desiredCourse) next.desiredCourse = "Selecione o curso desejado.";
+      if (!form.desiredHours) next.desiredHours = "Informe quantas horas pretende fazer.";
+      if (!form.startPeriod) next.startPeriod = "Selecione quando deseja começar.";
+      if (!form.weeklyHours) next.weeklyHours = "Selecione as horas por semana.";
+      if (form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === null) {
+        next.theoreticalExamDone = "Informe se já realizou a banca teórica.";
+      }
+      if (form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === false && !form.theoreticalStudyStatus) {
+        next.theoreticalStudyStatus = "Informe se já está estudando para a banca.";
+      }
     }
-    if (form.heightCm && Number(form.heightCm) < 100)
-      errs.push("A altura deve ser de no mínimo 100 cm.");
-    if (form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === null)
-      errs.push("Informe se já realizou a banca teórica do Piloto Privado.");
-    return errs;
+    if (targetStep === 2) {
+      if (!form.availabilityPreset) next.availabilityPreset = "Escolha sua disponibilidade.";
+      if (form.availabilityPreset && !form.availablePeriod) next.availablePeriod = "Escolha o período preferido.";
+    }
+    if (targetStep === 3) {
+      if (!form.name.trim()) next.name = "Informe seu nome completo.";
+      if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) next.email = "Informe um e-mail válido.";
+      if (form.phone && onlyDigits(form.phone).length < 10) next.phone = "Informe um telefone válido.";
+      if (form.birthDate && !isAtLeast16(form.birthDate)) next.birthDate = "É necessário ter pelo menos 16 anos.";
+      if (!form.noAnac) {
+        if (!form.anacCode.trim()) next.anacCode = "Informe o código ANAC ou marque que ainda não possui.";
+        if (!form.birthDate) next.birthDate = "Informe a data de nascimento.";
+        if (!isValidCpf(form.cpf)) next.cpf = "Informe um CPF válido.";
+      }
+      if (form.heightCm && Number(form.heightCm) < 100) next.heightCm = "A altura mínima é 100 cm.";
+    }
+    return next;
+  }
+
+  function goNext() {
+    const nextErrors = validateStep(step);
+    if (Object.keys(nextErrors).length > 0) {
+      setFieldErrors(nextErrors);
+      setErrors(["Revise os campos destacados antes de continuar."]);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    setErrors([]);
+    setFieldErrors({});
+    setStep((current) => Math.min(3, current + 1) as 1 | 2 | 3);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   // ─── Submit ───────────────────────────────────────────────────────────────
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const errs = validate();
-    if (errs.length) {
-      setErrors(errs);
+    const nextErrors = validateStep(3);
+    if (Object.keys(nextErrors).length) {
+      setFieldErrors(nextErrors);
+      setErrors(["Revise os campos destacados antes de enviar."]);
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
@@ -281,11 +374,16 @@ export function QualificacaoPage() {
       email: form.email.trim().toLowerCase(),
       phone: form.phone.trim(),
       referrerUserId: referrerUserId || null,
+      referralSource,
       birthDate: form.birthDate || null,
       cpf: form.noAnac ? null : onlyDigits(form.cpf) || null,
       anacCode: form.noAnac ? "" : (form.anacCode.trim() || null),
       desiredCourse: form.desiredCourse || null,
       theoreticalExamDone: form.desiredCourse === "Piloto Privado" ? form.theoreticalExamDone : null,
+      theoreticalStudyStatus:
+        form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === false
+          ? form.theoreticalStudyStatus || null
+          : null,
       desiredHours: form.desiredHours ? Number(form.desiredHours) : null,
       startDate: form.startPeriod || null,
       weeklyHours: form.weeklyHours ? Number(form.weeklyHours) : null,
@@ -362,10 +460,10 @@ export function QualificacaoPage() {
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-4xl">
             ✈️
           </div>
-          <h2 className="mb-2 text-xl font-bold text-slate-100">Recebido!</h2>
+          <h2 className="mb-2 text-xl font-bold text-slate-100">Obrigado pelo seu interesse!</h2>
           <p className="text-sm leading-relaxed text-slate-400">
             Obrigado, <span className="font-semibold text-slate-200">{form.name.split(" ")[0]}</span>!
-            Suas informações foram recebidas e nossa equipe entrará em contato em breve para conversar sobre o seu treinamento.
+            Suas informações foram recebidas. Em breve, a equipe da EPEAC entrará em contato com você pelo WhatsApp.
           </p>
         </div>
       </div>
@@ -396,7 +494,25 @@ export function QualificacaoPage() {
 
       {/* Form */}
       <div className="mx-auto max-w-2xl px-4 py-8">
-        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-8">
+        <form onSubmit={(e) => void handleSubmit(e)} autoComplete="on" className="space-y-8">
+
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              [1, "Treinamento"],
+              [2, "Disponibilidade"],
+              [3, "Seus dados"],
+            ].map(([number, label]) => (
+              <div key={number} className={`rounded-lg border px-2 py-2 text-center text-xs font-medium ${
+                step === number
+                  ? "border-sky-500 bg-sky-500/15 text-sky-200"
+                  : Number(number) < step
+                    ? "border-emerald-700/50 bg-emerald-500/10 text-emerald-300"
+                    : "border-slate-800 text-slate-600"
+              }`}>
+                {number}. {label}
+              </div>
+            ))}
+          </div>
 
           {/* Erros */}
           {errors.length > 0 && (
@@ -408,36 +524,36 @@ export function QualificacaoPage() {
           )}
 
           {/* ── Seus dados ─────────────────────────────────────────────────── */}
-          <section>
+          {step === 3 && <section>
             <SectionTitle>Seus dados</SectionTitle>
             <div className="space-y-3">
               <div>
                 <FieldLabel>Nome completo</FieldLabel>
-                <input type="text" autoComplete="name" value={form.name}
+                <input type="text" name="name" autoComplete="name" value={form.name}
                   onChange={(e) => set("name", e.target.value)}
-                  placeholder="Como você se chama?" className={inputCls} />
+                  placeholder="Como você se chama?" className={fieldClass("name")} />
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <FieldLabel>E-mail</FieldLabel>
-                  <input type="email" autoComplete="email" value={form.email}
+                  <input type="email" name="email" autoComplete="email" value={form.email}
                     onChange={(e) => set("email", e.target.value)}
-                    placeholder="seu@email.com" className={inputCls} />
+                    placeholder="seu@email.com" className={fieldClass("email")} />
                 </div>
                 <div>
                   <FieldLabel optional>Telefone / WhatsApp</FieldLabel>
-                  <input type="tel" autoComplete="tel" value={form.phone}
-                    onChange={(e) => set("phone", e.target.value)}
-                    placeholder="(11) 99999-9999" className={inputCls} />
+                  <input type="tel" name="tel" inputMode="tel" autoComplete="tel" value={form.phone}
+                    onChange={(e) => set("phone", formatPhoneInput(e.target.value))}
+                    placeholder="(11) 99999-9999" className={fieldClass("phone")} />
                 </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <FieldLabel optional={form.noAnac}>Data de nascimento</FieldLabel>
-                  <input type="date" autoComplete="bday" value={form.birthDate}
-                    onChange={(e) => set("birthDate", e.target.value)} className={inputCls} />
+                  <input type="date" name="bday" autoComplete="bday" value={form.birthDate}
+                    onChange={(e) => set("birthDate", e.target.value)} className={fieldClass("birthDate")} />
                   {form.birthDate && !isAtLeast16(form.birthDate) && (
                     <p className="mt-1.5 text-xs text-red-400">
                       É necessário ter pelo menos 16 anos para se matricular.
@@ -447,10 +563,10 @@ export function QualificacaoPage() {
                 <div>
                   <FieldLabel optional={form.noAnac}>CPF</FieldLabel>
                   <input
-                    type="text" inputMode="numeric" autoComplete="off" value={form.cpf}
+                    type="text" name="cpf" inputMode="numeric" autoComplete="on" value={form.cpf}
                     onChange={(e) => set("cpf", formatCpfInput(e.target.value))}
                     placeholder="000.000.000-00" disabled={form.noAnac}
-                    className={`${inputCls} ${form.noAnac ? "opacity-40 cursor-not-allowed" : ""}`}
+                    className={fieldClass("cpf", form.noAnac ? "opacity-40 cursor-not-allowed" : "")}
                   />
                 </div>
               </div>
@@ -458,10 +574,10 @@ export function QualificacaoPage() {
               <div>
                 <FieldLabel optional={form.noAnac}>Código ANAC</FieldLabel>
                 <input
-                  type="text" inputMode="numeric" value={form.anacCode}
+                  type="text" name="anacCode" inputMode="numeric" autoComplete="on" value={form.anacCode}
                   onChange={(e) => set("anacCode", e.target.value.replace(/\D/g, ""))}
                   placeholder="Ex.: 264933" disabled={form.noAnac}
-                  className={`${inputCls} ${form.noAnac ? "opacity-40 cursor-not-allowed" : ""}`}
+                  className={fieldClass("anacCode", form.noAnac ? "opacity-40 cursor-not-allowed" : "")}
                 />
                 <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-slate-500">
                   <input type="checkbox" checked={form.noAnac}
@@ -471,8 +587,8 @@ export function QualificacaoPage() {
                         ...p,
                         noAnac: checked,
                         ...(checked
-                          ? { anacCode: "", cpf: "", desiredCourse: "Piloto Privado", theoreticalExamDone: false, isTransfer: false, transferSchool: "" }
-                          : { theoreticalExamDone: null }),
+                          ? { anacCode: "", cpf: "", desiredCourse: "Piloto Privado", theoreticalExamDone: false, theoreticalStudyStatus: "", isTransfer: false, transferSchool: "" }
+                          : { theoreticalExamDone: null, theoreticalStudyStatus: "" }),
                       }));
                     }}
                     className="h-3.5 w-3.5 rounded accent-sky-500" />
@@ -521,12 +637,12 @@ export function QualificacaoPage() {
                 </div>
               )}
             </div>
-          </section>
+          </section>}
 
-          <Divider />
+          {step === 3 && <Divider />}
 
           {/* ── Sobre o treinamento ────────────────────────────────────────── */}
-          <section>
+          {step === 1 && <section>
             <SectionTitle>Sobre o seu treinamento</SectionTitle>
             <div className="space-y-4">
 
@@ -536,7 +652,7 @@ export function QualificacaoPage() {
                   value={form.desiredCourse}
                   onChange={(e) => handleCourseChange(e.target.value)}
                   disabled={form.noAnac}
-                  className={`${inputCls} ${form.noAnac ? "opacity-60 cursor-not-allowed" : ""}`}
+                  className={fieldClass("desiredCourse", form.noAnac ? "opacity-60 cursor-not-allowed" : "")}
                 >
                   <option value="">Selecione um curso...</option>
                   {COURSES.map((c) => (
@@ -551,7 +667,7 @@ export function QualificacaoPage() {
               </div>
 
               {form.desiredCourse === "Piloto Privado" && (
-                <div className={`rounded-xl border border-sky-800/40 bg-sky-950/30 p-4 ${form.noAnac ? "opacity-60 pointer-events-none select-none" : ""}`}>
+                <div className={`rounded-xl border bg-sky-950/30 p-4 ${fieldErrors.theoreticalExamDone ? "border-red-500" : "border-sky-800/40"} ${form.noAnac ? "opacity-60 pointer-events-none select-none" : ""}`}>
                   <p className="mb-3 text-sm font-medium text-sky-200">
                     Você já realizou a banca teórica?
                     {!form.noAnac && <span className="ml-1 text-xs font-normal text-red-400">*</span>}
@@ -562,7 +678,10 @@ export function QualificacaoPage() {
                       { value: false, label: "Não, ainda não" },
                     ].map((opt) => (
                       <button key={String(opt.value)} type="button"
-                        onClick={() => set("theoreticalExamDone", opt.value)}
+                        onClick={() => {
+                          set("theoreticalExamDone", opt.value);
+                          if (opt.value) set("theoreticalStudyStatus", "");
+                        }}
                         className={`flex-1 rounded-xl border py-2.5 text-sm font-medium transition ${
                           form.theoreticalExamDone === opt.value
                             ? "border-sky-500 bg-sky-500/20 text-sky-200"
@@ -572,6 +691,31 @@ export function QualificacaoPage() {
                       </button>
                     ))}
                   </div>
+                  {form.theoreticalExamDone === false && (
+                    <div className={`mt-4 rounded-xl border p-3 ${fieldErrors.theoreticalStudyStatus ? "border-red-500 bg-red-950/20" : "border-slate-700 bg-slate-900/40"}`}>
+                      <p className="mb-2 text-sm font-medium text-slate-200">Você já está estudando para a banca?</p>
+                      <div className="grid gap-2">
+                        {[
+                          "Ainda não",
+                          "Estou estudando por conta própria",
+                          "Estou matriculado em um curso teórico",
+                        ].map((status) => (
+                          <button
+                            key={status}
+                            type="button"
+                            onClick={() => set("theoreticalStudyStatus", status)}
+                            className={`rounded-lg border px-3 py-2 text-left text-sm transition ${
+                              form.theoreticalStudyStatus === status
+                                ? "border-sky-500 bg-sky-500/20 text-sky-200"
+                                : "border-slate-700 text-slate-400 hover:border-slate-600"
+                            }`}
+                          >
+                            {status}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -580,11 +724,11 @@ export function QualificacaoPage() {
                   <FieldLabel>Quantas horas pretende fazer?</FieldLabel>
                   <input type="number" min={1} value={form.desiredHours}
                     onChange={(e) => set("desiredHours", e.target.value)}
-                    placeholder="Ex.: 50" className={inputCls} />
+                    placeholder="Ex.: 50" className={fieldClass("desiredHours")} />
                 </div>
                 <div>
                   <FieldLabel>Quantas horas deseja voar por semana em média?</FieldLabel>
-                  <div className="flex flex-wrap gap-2">
+                  <div className={`flex flex-wrap gap-2 rounded-xl ${fieldErrors.weeklyHours ? "ring-1 ring-red-500 p-2" : ""}`}>
                     {WEEKLY_HOURS.map((h) => (
                       <button key={h} type="button"
                         onClick={() => set("weeklyHours", form.weeklyHours === String(h) ? "" : String(h))}
@@ -603,7 +747,7 @@ export function QualificacaoPage() {
               {/* Quando quer começar — button group */}
               <div>
                 <FieldLabel>Quando quer começar?</FieldLabel>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className={`grid grid-cols-2 gap-2 rounded-xl sm:grid-cols-4 ${fieldErrors.startPeriod ? "ring-1 ring-red-500 p-2" : ""}`}>
                   {START_OPTIONS.map((opt) => (
                     <button
                       key={opt.value}
@@ -622,12 +766,10 @@ export function QualificacaoPage() {
               </div>
 
             </div>
-          </section>
-
-          <Divider />
+          </section>}
 
           {/* ── Dados físicos ──────────────────────────────────────────────── */}
-          <section>
+          {step === 3 && <section>
             <SectionTitle>Dados físicos</SectionTitle>
             <p className="mb-4 text-xs text-slate-500 leading-relaxed">
               A aviação possui limites de peso e altura para operar determinadas aeronaves. Essas informações nos ajudam a indicar a melhor opção para você.
@@ -645,43 +787,24 @@ export function QualificacaoPage() {
                   type="text" inputMode="numeric"
                   value={form.heightCm}
                   onChange={(e) => set("heightCm", e.target.value.replace(/[^\d]/g, ""))}
-                  placeholder="Ex.: 175" className={inputCls}
+                  placeholder="Ex.: 175" className={fieldClass("heightCm")}
                 />
                 {form.heightCm && Number(form.heightCm) < 100 && (
                   <p className="mt-1.5 text-xs text-red-400">A altura deve ser de no mínimo 100 cm.</p>
                 )}
               </div>
             </div>
-          </section>
-
-          <Divider />
-
-          {/* ── Detalhes ───────────────────────────────────────────────────── */}
-          <section>
-            <SectionTitle>Detalhes</SectionTitle>
-            <div>
-              <FieldLabel optional>Quer nos contar algo mais?</FieldLabel>
-              <textarea
-                value={form.notes}
-                onChange={(e) => set("notes", e.target.value)}
-                rows={3}
-                placeholder="Ex.: já tenho experiência com simuladores, tenho disponibilidade somente à tarde durante a semana, gostaria de saber sobre financiamento..."
-                className={`${inputCls} resize-none`}
-              />
-            </div>
-          </section>
-
-          <Divider />
+          </section>}
 
           {/* ── Disponibilidade ────────────────────────────────────────────── */}
-          <section>
+          {step === 2 && <section>
             <SectionTitle>Disponibilidade para voar</SectionTitle>
             <p className="mb-4 text-xs text-slate-500 leading-relaxed">
               Selecione os dias e horários que você costuma ter livres durante a semana. Isso nos ajuda a montar uma grade de voos que se encaixe na sua rotina.
             </p>
 
             {/* Grade de presets */}
-            <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
+            <div className={`mb-4 grid grid-cols-3 gap-2 rounded-xl sm:grid-cols-6 ${fieldErrors.availabilityPreset ? "ring-1 ring-red-500 p-2" : ""}`}>
               {AVAILABILITY_PRESETS.map((preset) => {
                 const isActive = form.availabilityPreset === preset.id;
                 return (
@@ -727,7 +850,7 @@ export function QualificacaoPage() {
                   </div>
                 </div>
 
-                <div>
+                <div className={fieldErrors.availablePeriod ? "rounded-lg ring-1 ring-red-500 p-2" : ""}>
                   <p className="mb-2 text-xs font-medium text-slate-400">Período preferido</p>
                   <div className="flex gap-2">
                     {(["manha", "tarde", "ambos"] as AvailablePeriod[]).map((p) => (
@@ -745,13 +868,56 @@ export function QualificacaoPage() {
                 </div>
               </div>
             )}
-          </section>
+
+            <div className="mt-6 border-t border-slate-800 pt-6">
+              <SectionTitle>Detalhes</SectionTitle>
+              <FieldLabel optional>Explique algum cenário específico seu e como podemos te ajudar...</FieldLabel>
+              <textarea
+                name="notes"
+                autoComplete="on"
+                value={form.notes}
+                onChange={(e) => set("notes", e.target.value)}
+                rows={4}
+                placeholder="Explique algum cenário específico seu e como podemos te ajudar..."
+                className={`${inputCls} resize-none`}
+              />
+            </div>
+          </section>}
 
           {/* ── CTA ────────────────────────────────────────────────────────── */}
-          <button type="submit" disabled={saving}
-            className="w-full rounded-xl bg-sky-600 py-4 text-base font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:bg-sky-500 active:scale-[0.98] disabled:opacity-50">
-            {saving ? "Enviando..." : "Quero voar →"}
-          </button>
+          <div className="flex gap-3">
+            {step > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setErrors([]);
+                  setFieldErrors({});
+                  setStep((current) => Math.max(1, current - 1) as 1 | 2 | 3);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                className="w-1/3 rounded-xl border border-slate-700 py-4 text-base font-semibold text-slate-300 hover:bg-slate-800"
+              >
+                Voltar
+              </button>
+            )}
+            {step < 3 ? (
+              <button
+                key="continue"
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  goNext();
+                }}
+                className="flex-1 rounded-xl bg-sky-600 py-4 text-base font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:bg-sky-500 active:scale-[0.98]">
+                Continuar →
+              </button>
+            ) : (
+              <button key="submit" type="submit" disabled={saving}
+                className="flex-1 rounded-xl bg-sky-600 py-4 text-base font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:bg-sky-500 active:scale-[0.98] disabled:opacity-50">
+                {saving ? "Enviando..." : "Quero voar →"}
+              </button>
+            )}
+          </div>
 
           <p className="pb-4 text-center text-xs text-slate-700">
             Suas informações são tratadas com sigilo e usadas exclusivamente para contato da escola.

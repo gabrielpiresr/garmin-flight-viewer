@@ -222,6 +222,22 @@ export async function getAdminUserDetail(userId: string): Promise<AdminUserDetai
   return response.user;
 }
 
+export async function createAdminUser(input: {
+  fullName: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  phone?: string;
+  cpf?: string;
+  birthDate?: string;
+  anacCode?: string;
+  isActive?: boolean;
+}): Promise<AdminUserDetail> {
+  const response = await executeAdminUsers({ action: "createUser", user: input });
+  if (!response.user) throw new Error(response.message || "Usuario nao retornado pela funcao.");
+  return response.user;
+}
+
 export async function listAdminFlightReports(params: AdminFlightReportParams = {}): Promise<AdminFlightReportPage> {
   const response = await executeAdminUsers({ action: "listFlightReports", ...params });
   return {

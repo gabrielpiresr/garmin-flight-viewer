@@ -128,6 +128,7 @@ export type CrmLead = {
   id: string;
   userId: string | null;
   referrerUserId: string | null;
+  referralSource: string | null;
   name: string;
   email: string;
   phone: string;
@@ -148,6 +149,7 @@ export type CrmLead = {
   cpf: string | null;
   sagaAnacJson: string | null;
   theoreticalExamDone: boolean | null; // PPL: já fez banca teórica?
+  theoreticalStudyStatus: string | null;
   transferSchool: string | null;       // escola de origem se for transferência
   // Proposta aceita
   acceptedProposalId: string | null;
@@ -172,6 +174,7 @@ export type CrmLeadInput = {
 
 export type CrmLeadQualInput = {
   referrerUserId?: string | null;
+  referralSource?: string | null;
   desiredCourse?: string | null;
   desiredHours?: number | null;
   weightKg?: number | null;
@@ -185,5 +188,6 @@ export type CrmLeadQualInput = {
   birthDate?: string | null;
   cpf?: string | null;
   theoreticalExamDone?: boolean | null;
+  theoreticalStudyStatus?: string | null;
   transferSchool?: string | null;
 };

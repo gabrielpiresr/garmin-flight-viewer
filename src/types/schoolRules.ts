@@ -51,6 +51,8 @@ export type PlatformThemeRules = {
 
 export type FlightScheduleRules = {
   mode: "booking" | "view" | "closed" | "intentions";
+  /** Quando true, a escala não é salva no sistema: o SAGA é o backend (leitura/edição direta dos eventos). */
+  sagaOnlySchedule: boolean;
   bufferBeforeMinutes: number;
   bufferAfterMinutes: number;
   slotMinutes: 15 | 30 | 45 | 60;
@@ -63,6 +65,13 @@ export type FlightScheduleRules = {
   weekendMaxHours: number;
   weekdayMaxFlightsPerDay: number | null;
   weekendMaxFlightsPerDay: number | null;
+  /** Limites semanais do aluno (somente horas de voo e quantidade de voos; null = sem limite). */
+  weeklyMaxFlightHours: number | null;
+  weeklyMaxFlights: number | null;
+  weekendMaxFlightHours: number | null;
+  weekendMaxFlights: number | null;
+  /** Permite 1h de voo com crédito entre 0 e -0,5h (aviso de reposição exibido ao aluno). */
+  allowZeroCreditOneHour: boolean;
   allowStudentFlightIntentions: boolean;
   requireCreditsForIntentions: boolean;
   requireCreditsForBooking: boolean;
@@ -145,6 +154,7 @@ export const DEFAULT_PLATFORM_THEME_RULES: PlatformThemeRules = {
 
 export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   mode: "intentions",
+  sagaOnlySchedule: false,
   bufferBeforeMinutes: 30,
   bufferAfterMinutes: 15,
   slotMinutes: 30,
@@ -157,6 +167,11 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   weekendMaxHours: 4,
   weekdayMaxFlightsPerDay: null,
   weekendMaxFlightsPerDay: null,
+  weeklyMaxFlightHours: null,
+  weeklyMaxFlights: null,
+  weekendMaxFlightHours: null,
+  weekendMaxFlights: null,
+  allowZeroCreditOneHour: false,
   allowStudentFlightIntentions: true,
   requireCreditsForIntentions: false,
   requireCreditsForBooking: false,
@@ -224,6 +239,12 @@ function normalizeNullableLimit(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
 }
 
+function normalizeNullableHours(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 2) / 2 : null;
+}
+
 export function normalizeSchoolRules(input: unknown): SchoolRules {
   const raw = input && typeof input === "object" ? (input as Partial<SchoolRules>) : {};
   const minRequestHours = Math.max(
@@ -263,6 +284,7 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       mode: ["booking", "view", "closed", "intentions"].includes(String(raw.schedule?.mode))
         ? raw.schedule!.mode
         : DEFAULT_FLIGHT_SCHEDULE_RULES.mode,
+      sagaOnlySchedule: Boolean(raw.schedule?.sagaOnlySchedule),
       bufferBeforeMinutes: normalizeInteger(raw.schedule?.bufferBeforeMinutes, 0, 360, 30),
       bufferAfterMinutes: normalizeInteger(raw.schedule?.bufferAfterMinutes, 0, 360, 15),
       slotMinutes: ([15, 30, 45, 60].includes(Number(raw.schedule?.slotMinutes))
@@ -279,6 +301,11 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       weekendMaxHours: normalizePositiveHours(raw.schedule?.weekendMaxHours, maxRequestHours),
       weekdayMaxFlightsPerDay: normalizeNullableLimit(raw.schedule?.weekdayMaxFlightsPerDay),
       weekendMaxFlightsPerDay: normalizeNullableLimit(raw.schedule?.weekendMaxFlightsPerDay),
+      weeklyMaxFlightHours: normalizeNullableHours(raw.schedule?.weeklyMaxFlightHours),
+      weeklyMaxFlights: normalizeNullableLimit(raw.schedule?.weeklyMaxFlights),
+      weekendMaxFlightHours: normalizeNullableHours(raw.schedule?.weekendMaxFlightHours),
+      weekendMaxFlights: normalizeNullableLimit(raw.schedule?.weekendMaxFlights),
+      allowZeroCreditOneHour: Boolean(raw.schedule?.allowZeroCreditOneHour),
       allowStudentFlightIntentions:
         raw.schedule?.allowStudentFlightIntentions ?? DEFAULT_FLIGHT_SCHEDULE_RULES.allowStudentFlightIntentions,
       requireCreditsForIntentions:

@@ -30,6 +30,8 @@
     "appwrite:setup-onboarding": "node scripts/setup-onboarding.mjs",
     "appwrite:setup-crm-public-create": "node scripts/setup-crm-public-create.mjs",
     "appwrite:setup-crm-followups": "node scripts/setup-crm-followups.mjs",
+    "appwrite:setup-crm-referral": "node scripts/setup-crm-referral-source.mjs",
+    "appwrite:setup-crm-theoretical-study": "node scripts/setup-crm-theoretical-study-status.mjs",
     "appwrite:cleanup-data": "node scripts/cleanup-data.mjs",
     "appwrite:cleanup-data:run": "node scripts/cleanup-data.mjs --run",
     "appwrite:sync-onboarding-env": "node scripts/sync-onboarding-env.mjs",

@@ -69,7 +69,7 @@ function LoadingState() {
 
 const EXTRA_SECTION_KEYS = new Set(["section_cash_revenue", "section_asset_variation"]);
 // Meta lines are DRE lines used internally (e.g. saved in closed snapshots) but not displayed in the table.
-const META_SECTION_KEYS = new Set(["meta_flown_hours", "meta_fuel_liters"]);
+const META_SECTION_KEYS = new Set(["meta_flown_hours", "meta_fuel_liters", "meta_students_flown"]);
 
 function detailGroupLabel(group: string): string {
   const labels: Record<string, string> = {

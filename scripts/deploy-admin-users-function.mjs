@@ -79,7 +79,7 @@ async function ensureFunction(functions) {
     execute: [sdk.Role.any()],
     events: [],
     schedule: process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 */12 * * *",
-    timeout: Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 300),
+    timeout: Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 900),
     enabled: true,
     logging: true,
     entrypoint: "src/main.js",

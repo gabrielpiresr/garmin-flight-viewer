@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
   .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID || "")
-  .setKey(process.env.APPWRITE_FUNCTION_API_KEY || process.env.APPWRITE_API_KEY || "");
+  .setKey(process.env.APPWRITE_API_KEY || "");
 const databases = new sdk.Databases(client);
 const functions = new sdk.Functions(client);
 
@@ -54,6 +54,7 @@ function integer(value, fallback, min = 0, max = 3650) {
 function defaultScheduleRules() {
   return {
     mode: "intentions",
+    sagaOnlySchedule: false,
     bufferBeforeMinutes: 30,
     bufferAfterMinutes: 15,
     slotMinutes: 30,
@@ -64,6 +65,11 @@ function defaultScheduleRules() {
     weekendMaxHours: 4,
     weekdayMaxFlightsPerDay: null,
     weekendMaxFlightsPerDay: null,
+    weeklyMaxFlightHours: null,
+    weeklyMaxFlights: null,
+    weekendMaxFlightHours: null,
+    weekendMaxFlights: null,
+    allowZeroCreditOneHour: false,
     requireCreditsForBooking: false,
     allowNightFlights: false,
     nightFlightStartHour: 18,
@@ -89,6 +95,7 @@ function normalizeRules(raw) {
     ...defaults,
     ...raw,
     mode,
+    sagaOnlySchedule: raw?.sagaOnlySchedule === true,
     slotMinutes: slot,
     nightFlightStartHour,
     bufferBeforeMinutes: integer(raw?.bufferBeforeMinutes, 30, 0, 360),
@@ -101,6 +108,11 @@ function normalizeRules(raw) {
     minBookingLeadDays: integer(raw?.minBookingLeadDays, 0),
     maxBookingLeadDays: integer(raw?.maxBookingLeadDays, 365),
     nightBookingWeekdays: Array.isArray(raw?.nightBookingWeekdays) ? raw.nightBookingWeekdays.map(Number) : [],
+    weeklyMaxFlightHours: number(raw?.weeklyMaxFlightHours, 0) > 0 ? number(raw.weeklyMaxFlightHours, 0) : null,
+    weeklyMaxFlights: number(raw?.weeklyMaxFlights, 0) > 0 ? Math.round(number(raw.weeklyMaxFlights, 0)) : null,
+    weekendMaxFlightHours: number(raw?.weekendMaxFlightHours, 0) > 0 ? number(raw.weekendMaxFlightHours, 0) : null,
+    weekendMaxFlights: number(raw?.weekendMaxFlights, 0) > 0 ? Math.round(number(raw.weekendMaxFlights, 0)) : null,
+    allowZeroCreditOneHour: raw?.allowZeroCreditOneHour === true,
   };
 }
 
@@ -210,6 +222,210 @@ async function triggerSagaSync(flightId) {
   }
 }
 
+// ─── Modo "escala somente no SAGA" ────────────────────────────────────────────
+// Quando rules.sagaOnlySchedule está ativo a escala não é persistida no sistema:
+// os eventos são lidos/criados/removidos diretamente na agenda do SAGA via a
+// function admin-users. As regras de agendamento continuam validadas aqui.
+
+async function execAdminUsers(payload) {
+  if (!ADMIN_USERS_FUNCTION_ID) fail("Função administrativa não configurada para o modo SAGA.", 500);
+  const execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
+  const body = parseJson(execution.responseBody, {});
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || body.ok === false) {
+    fail(body.message || "Falha na integração com a agenda SAGA.", 502);
+  }
+  return body;
+}
+
+async function listSagaEvents() {
+  const body = await execAdminUsers({ action: "sagaListSchedulesDirect", monthCount: 3 });
+  return Array.isArray(body.schedules) ? body.schedules : [];
+}
+
+function sagaLocalParts(value) {
+  const raw = clean(value);
+  let match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (match) return { date: `${match[1]}-${match[2]}-${match[3]}`, time: match[4] ? `${match[4]}:${match[5]}` : "" };
+  match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+  if (match) return { date: `${match[3]}-${match[2]}-${match[1]}`, time: match[4] ? `${match[4]}:${match[5]}` : "" };
+  return { date: "", time: "" };
+}
+
+function sagaEventIsCancelled(event) {
+  const status = clean(event?.status).toUpperCase();
+  if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(status)) return true;
+  return event?.active === false;
+}
+
+/** Status do evento SAGA traduzido para o vocabulário da escala (CANCELED/CONFIRMED/PENDING/PLANNED). */
+function sagaEventStatusLabel(event) {
+  if (sagaEventIsCancelled(event)) return "Cancelado";
+  const status = clean(event?.status).toUpperCase();
+  if (status === "PENDING") return "Pendente";
+  if (status === "PLANNED") return "Previsto";
+  return "Confirmado";
+}
+
+/**
+ * Datas/horários derivados de um evento SAGA, no vocabulário da escala local.
+ * O horário do SAGA é o BLOCO completo (com briefing/debriefing): saga 10–12 com
+ * buffers 30/15 → apresentação 10:00, acionamento 10:30, corte 11:45, encerramento
+ * 12:00, tempo de voo 1h15.
+ */
+function sagaEventTimes(event, rules) {
+  const start = sagaLocalParts(event.startAtRaw || event.startAt);
+  const end = sagaLocalParts(event.endAtRaw || event.endAt);
+  if (!start.date || !start.time) return null;
+  const blockStartMinute = parseClock(start.time);
+  let blockEndMinute = end.time ? parseClock(end.time) : blockStartMinute + 60;
+  if (end.date && end.date > start.date) blockEndMinute += 1440;
+  const startMinute = Math.min(blockEndMinute, blockStartMinute + rules.bufferBeforeMinutes); // acionamento
+  const cutoffMinute = Math.max(startMinute, blockEndMinute - rules.bufferAfterMinutes); // corte
+  const durationMinutes = Math.max(0, cutoffMinute - startMinute); // tempo de voo (acionamento→corte)
+  return {
+    flightDate: start.date,
+    startMinute,
+    durationMinutes,
+    blockDurationMinutes: Math.max(0, blockEndMinute - blockStartMinute),
+    presentationTime: clock(blockStartMinute),
+    startTime: clock(Math.min(1439, startMinute)),
+    cutoffTime: clock(Math.min(1439, cutoffMinute)),
+    endTime: clock(Math.min(1439, blockEndMinute)),
+    presentationMs: dateTimeMs(start.date, clock(blockStartMinute)),
+    occupiedStartMs: dateTimeMs(start.date, clock(blockStartMinute)),
+    occupiedEndMs: dateTimeMs(start.date, clock(Math.min(1439, blockEndMinute))),
+  };
+}
+
+function normalizeRegistration(value) {
+  return clean(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** ID SAGA numérico de um usuário local: perfil.saga_user_id ("70" ou "saga_70") ou user_id no padrão "saga_70". */
+function sagaUserIdOf(profile, userId) {
+  const raw = clean(profile?.saga_user_id);
+  const fromProfile = raw.match(/^saga[_-]?(\d+)$/i)?.[1] || raw;
+  if (fromProfile) return fromProfile;
+  return clean(userId).match(/^saga_(\d+)$/i)?.[1] || "";
+}
+
+function sagaEventBelongsTo(event, actorId, actorSagaId) {
+  const studentUserId = clean(event.studentUserId);
+  if (studentUserId && studentUserId === actorId) return true;
+  const studentSagaId = clean(event.studentSagaId);
+  if (!studentSagaId) return false;
+  if (actorSagaId && studentSagaId === actorSagaId) return true;
+  return actorId === `saga_${studentSagaId}`;
+}
+
+function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
+  const times = sagaEventTimes(event, rules);
+  if (!times) return null;
+  const cancelled = sagaEventIsCancelled(event);
+  // "Meu voo": aluno do evento — ou, para instrutores, eventos em que ele é o instrutor.
+  const ownAsInstructor = actorRole === "instrutor" && (
+    (clean(event.instructorUserId) && clean(event.instructorUserId) === actorId) ||
+    (Boolean(actorSagaId) && clean(event.instructorSagaId) === clean(actorSagaId))
+  );
+  const own = sagaEventBelongsTo(event, actorId, actorSagaId) || ownAsInstructor;
+  const privileged = actorRole === "admin" || actorRole === "instrutor";
+  const status = sagaEventStatusLabel(event);
+  return {
+    id: clean(event.id),
+    aircraftIdent: clean(event.aircraft).toUpperCase(),
+    aircraftModelId: null,
+    flightDate: times.flightDate,
+    // Bloco do SAGA = apresentação→encerramento; acionamento/corte derivados pelos buffers.
+    presentationTime: times.presentationTime,
+    startTime: times.startTime,
+    cutoffTime: times.cutoffTime,
+    endTime: times.endTime,
+    durationMinutes: times.durationMinutes,
+    status,
+    isOwn: own,
+    studentUserId: privileged || own ? clean(event.studentUserId) || (own ? actorId : null) : null,
+    instructorUserId: privileged || own ? clean(event.instructorUserId) || null : null,
+    studentName: privileged || own ? clean(event.studentName) : null,
+    instructorName: privileged || own ? clean(event.instructorName) : null,
+    notes: privileged || own ? clean(event.notes) || null : null,
+    canCancel: own && !cancelled,
+  };
+}
+
+function requireStudentSagaId(profile) {
+  const sagaId = sagaUserIdOf(profile, profile?.user_id);
+  if (!sagaId) fail("O aluno não possui ID do SAGA cadastrado no perfil. Fale com a secretaria.", 422);
+  return sagaId;
+}
+
+/** Conflito de aeronave contra os eventos ativos da agenda SAGA. */
+function validateSagaConflict(events, rules, registration, occupiedStartAt, occupiedEndAt, ignoreEventId = "") {
+  const requestedStart = Date.parse(occupiedStartAt);
+  const requestedEnd = Date.parse(occupiedEndAt);
+  const reg = normalizeRegistration(registration);
+  const conflict = events.some((event) => {
+    if (clean(event.id) === clean(ignoreEventId)) return false;
+    if (sagaEventIsCancelled(event)) return false;
+    if (normalizeRegistration(event.aircraft) !== reg) return false;
+    const times = sagaEventTimes(event, rules);
+    if (!times) return false;
+    return times.occupiedStartMs < requestedEnd && times.occupiedEndMs > requestedStart;
+  });
+  if (conflict) fail("A aeronave já possui um voo neste intervalo na agenda SAGA.", 409);
+}
+
+/** Horas de voo futuras já reservadas no SAGA pelo aluno para um modelo (acionamento→corte). */
+async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, ignoreEventId = "") {
+  if (!modelId || !studentSagaId) return 0;
+  const aircrafts = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.limit(500),
+  ]).catch(() => ({ documents: [] }));
+  const modelByReg = {};
+  for (const doc of aircrafts.documents) modelByReg[normalizeRegistration(doc.registration)] = doc.model_id;
+  const now = Date.now();
+  let minutes = 0;
+  for (const event of events) {
+    if (clean(event.id) === clean(ignoreEventId)) continue;
+    if (sagaEventIsCancelled(event)) continue;
+    if (clean(event.studentSagaId) !== clean(studentSagaId)) continue;
+    if (modelByReg[normalizeRegistration(event.aircraft)] !== modelId) continue;
+    const times = sagaEventTimes(event, rules);
+    if (!times || times.occupiedStartMs <= now) continue;
+    minutes += times.durationMinutes;
+  }
+  return minutes / 60;
+}
+
+async function findSagaEventOrFail(events, eventId) {
+  const event = events.find((row) => clean(row.id) === clean(eventId));
+  if (!event) fail("Evento não encontrado na agenda SAGA.", 404);
+  return event;
+}
+
+async function resolveLocalUserIdBySagaId(sagaUserId) {
+  const target = clean(sagaUserId);
+  if (!target) return null;
+  // Consulta indexada quando disponível; caso contrário varre os perfis em páginas.
+  const indexed = await databases.listDocuments(DATABASE_ID, PROFILES_ID, [
+    sdk.Query.equal("saga_user_id", [target]),
+    sdk.Query.limit(1),
+  ]).catch(() => null);
+  if (indexed) return indexed.documents[0]?.user_id || null;
+  let cursor = null;
+  for (let page = 0; page < 10; page += 1) {
+    const queries = [sdk.Query.limit(500)];
+    if (cursor) queries.push(sdk.Query.cursorAfter(cursor));
+    const result = await databases.listDocuments(DATABASE_ID, PROFILES_ID, queries).catch(() => null);
+    if (!result || result.documents.length === 0) return null;
+    const match = result.documents.find((doc) => clean(doc.saga_user_id) === target);
+    if (match) return match.user_id || null;
+    if (result.documents.length < 500) return null;
+    cursor = result.documents[result.documents.length - 1].$id;
+  }
+  return null;
+}
+
 async function validateBlockedSlot(aircraftId, date, startMinute, endMinute) {
   try {
     const result = await databases.listDocuments(DATABASE_ID, OP_WEEKS_ID, [
@@ -298,7 +514,61 @@ async function creditAvailable(studentId, modelId, isNight, requestedHours) {
       }
       return sum + number(doc.requested_duration_minutes, 0) / 60;
     }, 0);
-  return { availableHours: Math.max(0, purchased - penalties - used), sufficient: purchased - penalties - used + 0.0001 >= requestedHours };
+  return {
+    availableHours: Math.max(0, purchased - penalties - used),
+    // Saldo real (pode ser negativo) — usado pela exceção "1h com crédito zerado".
+    rawAvailableHours: purchased - penalties - used,
+    sufficient: purchased - penalties - used + 0.0001 >= requestedHours,
+  };
+}
+
+/**
+ * Exceção "1h com crédito zerado": quando ativa, aluno com saldo até -0,5h pode
+ * marcar um voo de até 1h (ele é avisado que precisa repor antes do voo).
+ */
+function zeroCreditExceptionApplies(rules, balanceHours, durationMinutes) {
+  return rules.allowZeroCreditOneHour === true && durationMinutes <= 60 && balanceHours >= -0.5;
+}
+
+/** Uso semanal do aluno na agenda SAGA (somente voos ativos; horas = acionamento→corte). */
+function sagaStudentWeekUsage(events, rules, studentSagaId, date, ignoreEventId = "") {
+  const wkStart = weekStart(date);
+  const wkEnd = addDays(wkStart, 6);
+  const usage = { flights: 0, hours: 0, weekendFlights: 0, weekendHours: 0 };
+  for (const event of events) {
+    if (clean(event.id) === clean(ignoreEventId)) continue;
+    if (sagaEventIsCancelled(event)) continue;
+    if (clean(event.studentSagaId) !== clean(studentSagaId)) continue;
+    const times = sagaEventTimes(event, rules);
+    if (!times || times.flightDate < wkStart || times.flightDate > wkEnd) continue;
+    usage.flights += 1;
+    usage.hours += times.durationMinutes / 60;
+    const day = dayOfWeek(times.flightDate);
+    if (day === 0 || day === 6) {
+      usage.weekendFlights += 1;
+      usage.weekendHours += times.durationMinutes / 60;
+    }
+  }
+  return usage;
+}
+
+/** Limites semanais do aluno (horas de voo e quantidade). Admin/instrutor não têm travas. */
+function validateWeeklyLimits(rules, usage, durationMinutes, isWeekendFlight) {
+  const newHours = durationMinutes / 60;
+  if (rules.weeklyMaxFlights && usage.flights + 1 > rules.weeklyMaxFlights) {
+    fail(`Limite de ${rules.weeklyMaxFlights} voo(s) por semana atingido.`);
+  }
+  if (rules.weeklyMaxFlightHours && usage.hours + newHours > rules.weeklyMaxFlightHours + 0.0001) {
+    fail(`Limite de ${rules.weeklyMaxFlightHours}h de voo por semana atingido.`);
+  }
+  if (isWeekendFlight) {
+    if (rules.weekendMaxFlights && usage.weekendFlights + 1 > rules.weekendMaxFlights) {
+      fail(`Limite de ${rules.weekendMaxFlights} voo(s) no fim de semana atingido.`);
+    }
+    if (rules.weekendMaxFlightHours && usage.weekendHours + newHours > rules.weekendMaxFlightHours + 0.0001) {
+      fail(`Limite de ${rules.weekendMaxFlightHours}h de voo no fim de semana atingido.`);
+    }
+  }
 }
 
 function lockId(registration, date, minute) {
@@ -435,14 +705,14 @@ function penaltyFor(hoursBefore, rules) {
   return 0;
 }
 
-async function handleCalendar(payload, actorId, actorRole, rules) {
+async function handleCalendar(payload, actorId, actorRole, rules, profile) {
   if (rules.mode === "closed" && actorRole === "aluno") return { mode: rules.mode, rules, aircrafts: [], flights: [] };
   const from = clean(payload.dateFrom);
   const to = clean(payload.dateTo);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) fail("Período inválido.");
   const wkStart = weekStart(from);
   const [flights, aircrafts, opWeeks] = await Promise.all([
-    listFlights(from, to),
+    rules.sagaOnlySchedule ? listSagaEvents() : listFlights(from, to),
     databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
       sdk.Query.equal("school_id", [SCHOOL_ID]),
       sdk.Query.equal("active", [true]),
@@ -489,11 +759,17 @@ async function handleCalendar(payload, actorId, actorRole, rules) {
     }
   }
 
+  const publicFlights = rules.sagaOnlySchedule
+    ? flights
+        .map((event) => publicSagaFlight(event, rules, actorId, actorRole, sagaUserIdOf(profile, actorId)))
+        .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
+    : flights.map((doc) => publicFlight(doc, actorId, actorRole));
+
   return {
     mode: rules.mode,
     rules,
     aircrafts: aircrafts.documents.map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null })),
-    flights: flights.map((doc) => publicFlight(doc, actorId, actorRole)),
+    flights: publicFlights,
     blockedSlots,
   };
 }
@@ -514,7 +790,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   if (durationMinutes % rules.slotMinutes !== 0) fail(`A duração precisa ser múltipla de ${rules.slotMinutes} minutos.`);
   if (durationMinutes < minHours * 60 || durationMinutes > maxHours * 60) fail(`A duração deve ficar entre ${minHours}h e ${maxHours}h.`);
   const startMinute = parseClock(payload.startTime);
-  if (startMinute % rules.slotMinutes !== 0) fail(`O início precisa respeitar slots de ${rules.slotMinutes} minutos.`);
+  // Admin/instrutor podem iniciar em meio-slot (ex.: slot 30min → passos de 15min).
+  const startStep = actorRole === "aluno" ? rules.slotMinutes : Math.max(5, Math.round(rules.slotMinutes / 2));
+  if (startMinute % startStep !== 0) fail(`O início precisa respeitar slots de ${startStep} minutos.`);
   const scheduleStartMinute = parseClock(rules.scheduleStartTime || "06:00");
   if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
@@ -525,20 +803,116 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
   await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+
+  if (rules.sagaOnlySchedule) {
+    // Mesmas regras, mas o evento vive apenas na agenda SAGA — nada é salvo no sistema.
+    const studentSagaId = requireStudentSagaId(student);
+    const events = await listSagaEvents();
+    validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
+    // Travas de quantidade/horas valem apenas para o aluno — admin e instrutor marcam livremente.
+    if (actorRole === "aluno") {
+      const dailyLimitSaga = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
+      if (dailyLimitSaga) {
+        const sameDay = events.filter((event) => {
+          if (sagaEventIsCancelled(event)) return false;
+          if (clean(event.studentSagaId) !== studentSagaId) return false;
+          const eventTimes = sagaEventTimes(event, rules);
+          return eventTimes?.flightDate === date;
+        });
+        if (sameDay.length >= dailyLimitSaga) fail("O limite diário de voos foi atingido.");
+      }
+      validateWeeklyLimits(rules, sagaStudentWeekUsage(events, rules, studentSagaId, date), durationMinutes, weekend);
+    }
+    if (rules.requireCreditsForBooking) {
+      const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules);
+      const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours - reservedHours, durationMinutes)) {
+        fail(`Crédito insuficiente. Disponível: ${Math.max(0, credit.availableHours - reservedHours).toFixed(2)}h.`);
+      }
+    }
+    // O evento no SAGA armazena o bloco completo (apresentação→encerramento).
+    // Solicitação de aluno entra como PENDING (pendente de confirmação da escola).
+    const sagaStatus = actorRole === "aluno" ? "PENDING" : "PLANNED";
+    const flexibilityMinutes = integer(payload.flexibilityMinutes, 0, 0, 8 * 60);
+    const observation = clean(payload.notes).slice(0, 180);
+    const bookingNotes = [
+      "Agendado via plataforma",
+      flexibilityMinutes > 0 ? `Flexibilidade: ±${clock(flexibilityMinutes)}` : "",
+      observation ? `Obs: ${observation}` : "",
+    ].filter(Boolean).join(" | ");
+    const result = await execAdminUsers({
+      action: "sagaUpsertScheduleDirect",
+      aircraftIdent: registration,
+      studentSagaId,
+      studentName: clean(student.full_name || student.email || "Aluno"),
+      instructorUserId: actorRole === "instrutor" ? actorId : null,
+      date,
+      startTime: times.presentationTime,
+      durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
+      sagaStatus,
+      notes: bookingNotes,
+    });
+    return {
+      flight: {
+        id: clean(result.scheduleId),
+        aircraftIdent: registration,
+        aircraftModelId: aircraft.model_id || null,
+        flightDate: date,
+        presentationTime: times.presentationTime,
+        startTime: times.startTime,
+        cutoffTime: times.cutoffTime,
+        endTime: times.endTime,
+        durationMinutes,
+        status: sagaStatus === "PENDING" ? "Pendente" : "Previsto",
+        isOwn: actorRole === "aluno",
+        studentUserId: studentId,
+        instructorUserId: actorRole === "instrutor" ? actorId : null,
+        canCancel: actorRole === "aluno",
+      },
+    };
+  }
+
   await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
-  const dailyLimit = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
-  if (dailyLimit) {
-    const daily = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
-      sdk.Query.equal("student_user_id", [studentId]),
-      sdk.Query.equal("flight_date", [date]),
-      sdk.Query.equal("flight_status", ACTIVE_STATUSES),
-      sdk.Query.limit(dailyLimit),
-    ]);
-    if (daily.total >= dailyLimit) fail("O limite diário de voos foi atingido.");
+  // Travas de quantidade/horas valem apenas para o aluno — admin e instrutor marcam livremente.
+  if (actorRole === "aluno") {
+    const dailyLimit = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
+    if (dailyLimit) {
+      const daily = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
+        sdk.Query.equal("student_user_id", [studentId]),
+        sdk.Query.equal("flight_date", [date]),
+        sdk.Query.equal("flight_status", ACTIVE_STATUSES),
+        sdk.Query.limit(dailyLimit),
+      ]);
+      if (daily.total >= dailyLimit) fail("O limite diário de voos foi atingido.");
+    }
+    if (rules.weeklyMaxFlights || rules.weeklyMaxFlightHours || rules.weekendMaxFlights || rules.weekendMaxFlightHours) {
+      const wkStart = weekStart(date);
+      const weekFlights = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
+        sdk.Query.equal("student_user_id", [studentId]),
+        sdk.Query.greaterThanEqual("flight_date", wkStart),
+        sdk.Query.lessThanEqual("flight_date", addDays(wkStart, 6)),
+        sdk.Query.equal("flight_status", ACTIVE_STATUSES),
+        sdk.Query.limit(200),
+      ]);
+      const usage = { flights: 0, hours: 0, weekendFlights: 0, weekendHours: 0 };
+      for (const doc of weekFlights.documents) {
+        const docHours = number(doc.requested_duration_minutes, 0) / 60;
+        usage.flights += 1;
+        usage.hours += docHours;
+        const docDay = dayOfWeek(doc.flight_date);
+        if (docDay === 0 || docDay === 6) {
+          usage.weekendFlights += 1;
+          usage.weekendHours += docHours;
+        }
+      }
+      validateWeeklyLimits(rules, usage, durationMinutes, weekend);
+    }
   }
   if (rules.requireCreditsForBooking) {
     const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60);
-    if (!credit.sufficient) fail(`Crédito insuficiente. Disponível: ${credit.availableHours.toFixed(2)}h.`);
+    if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours, durationMinutes)) {
+      fail(`Crédito insuficiente. Disponível: ${credit.availableHours.toFixed(2)}h.`);
+    }
   }
   const id = sdk.ID.unique();
   await acquireLocks(registration, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes, rules.slotMinutes, id, studentId);
@@ -598,12 +972,20 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   const startMinute = parseClock(payload.startTime);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
-  await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
-  const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60);
+  let reservedSagaHours = 0;
+  if (rules.sagaOnlySchedule) {
+    const events = await listSagaEvents();
+    validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
+    const profile = await getProfile(studentId);
+    reservedSagaHours = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraft.model_id, rules);
+  } else {
+    await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
+  }
+  const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedSagaHours);
   return {
     available: true,
-    creditAvailableHours: credit.availableHours,
+    creditAvailableHours: Math.max(0, credit.availableHours - reservedSagaHours),
     creditSufficient: credit.sufficient,
     presentationTime: times.presentationTime,
     startTime: times.startTime,
@@ -612,7 +994,8 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   };
 }
 
-async function handleConfirm(payload, actorId, actorRole) {
+async function handleConfirm(payload, actorId, actorRole, rules) {
+  if (rules?.sagaOnlySchedule) fail("No modo SAGA os eventos já entram confirmados na agenda; não há confirmação manual.");
   if (actorRole !== "admin" && actorRole !== "instrutor") fail("Sem permissão para confirmar.", 403);
   const id = clean(payload.flightId);
   const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_ID, id);
@@ -623,6 +1006,207 @@ async function handleConfirm(payload, actorId, actorRole) {
     confirmed_by: actorId,
   });
   return { flight: publicFlight(updated, actorId, actorRole) };
+}
+
+async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile) {
+  const id = clean(payload.flightId);
+  const events = await listSagaEvents();
+  const event = await findSagaEventOrFail(events, id);
+  const actorSagaId = sagaUserIdOf(profile, actorId);
+  const own = sagaEventBelongsTo(event, actorId, actorSagaId);
+  if (actorRole === "aluno" && !own) fail("Você só pode cancelar seus próprios voos.", 403);
+  if (sagaEventIsCancelled(event)) fail("Este voo não pode mais ser cancelado.");
+  const times = sagaEventTimes(event, rules);
+  if (!times) fail("Evento SAGA sem data ou horário válido.", 422);
+  if (actorRole === "aluno" && Date.now() >= times.presentationMs) fail("O prazo de cancelamento pelo aluno terminou.");
+
+  const hoursBefore = (times.presentationMs - Date.now()) / 3600000;
+  const penaltyPct = penaltyFor(hoursBefore, rules);
+  const penaltyHours = Number(((times.durationMinutes / 60) * penaltyPct / 100).toFixed(2));
+  const waive = actorRole !== "aluno" && Boolean(payload.waivePenalty);
+
+  const studentUserId =
+    clean(event.studentUserId) ||
+    (own ? actorId : await resolveLocalUserIdBySagaId(event.studentSagaId));
+  const aircraft = await getAircraft(clean(event.aircraft).toUpperCase()).catch(() => null);
+  // Multa e auditoria continuam registradas no sistema — apenas a escala vive no SAGA.
+  const shouldDebit = rules.autoDebitCancellationPenalty && !waive && penaltyHours > 0 && Boolean(studentUserId);
+  if (shouldDebit) {
+    await databases.createDocument(DATABASE_ID, ADJUSTMENTS_ID, `cancel-saga-${id}`.slice(0, 36), {
+      school_id: SCHOOL_ID,
+      student_user_id: studentUserId,
+      aircraft_model_id: aircraft?.model_id || "",
+      aircraft_ident: clean(event.aircraft).toUpperCase(),
+      flight_id: `saga-${id}`,
+      adjustment_type: "cancellation_penalty",
+      hours: -penaltyHours,
+      percentage: penaltyPct,
+      is_night: times.startMinute >= rules.nightFlightStartHour * 60,
+      reason: clean(payload.reason || "Cancelamento de voo"),
+      created_by: actorId,
+      occurred_at: new Date().toISOString(),
+    }, [
+      sdk.Permission.read(sdk.Role.user(studentUserId)),
+      sdk.Permission.read(sdk.Role.label("admin")),
+      sdk.Permission.read(sdk.Role.label("instrutor")),
+    ]).catch((error) => {
+      if (error?.code !== 409) throw error;
+    });
+  }
+  if (studentUserId) {
+    await databases.createDocument(DATABASE_ID, AUDIT_ID, `cancel-saga-${id}`.slice(0, 36), {
+      school_id: SCHOOL_ID,
+      flight_id: `saga-${id}`,
+      student_user_id: studentUserId,
+      event_type: "cancelled",
+      actor_user_id: actorId,
+      actor_role: actorRole,
+      reason: clean(payload.reason || "Cancelamento de voo").slice(0, 1024),
+      penalty_percentage: penaltyPct,
+      penalty_hours: shouldDebit ? penaltyHours : 0,
+      penalty_waived: waive,
+      occurred_at: new Date().toISOString(),
+    }, [
+      sdk.Permission.read(sdk.Role.user(studentUserId)),
+      sdk.Permission.read(sdk.Role.label("admin")),
+      sdk.Permission.read(sdk.Role.label("instrutor")),
+    ]).catch((error) => {
+      if (error?.code !== 409) throw error;
+    });
+  }
+
+  // O evento NÃO é excluído do SAGA: o status vira CANCELED e a nota registra quem cancelou.
+  const cancelNote = `Cancelado via plataforma (${actorRole})${clean(payload.reason) ? ` - ${clean(payload.reason)}` : ""}`;
+  try {
+    await execAdminUsers({
+      action: "sagaUpsertScheduleDirect",
+      scheduleId: id,
+      aircraftIdent: clean(event.aircraft).toUpperCase(),
+      studentSagaId: clean(event.studentSagaId),
+      studentName: clean(event.studentName),
+      ...(clean(event.instructorSagaId) && clean(event.instructorSagaId) !== "0"
+        ? { instructorSagaId: clean(event.instructorSagaId), instructorName: clean(event.instructorName) }
+        : {}),
+      date: times.flightDate,
+      startTime: times.presentationTime,
+      durationMinutes: times.blockDurationMinutes,
+      sagaStatus: "CANCELED",
+      rawNotes: [clean(event.notes), cancelNote].filter(Boolean).join(" | "),
+    });
+  } catch {
+    // Fallback: se o SAGA recusar a alteração de status, remove o evento para não deixar o voo ativo.
+    await execAdminUsers({ action: "sagaCancelScheduleDirect", scheduleId: id });
+  }
+
+  const flight = publicSagaFlight(event, rules, actorId, actorRole, actorSagaId);
+  return {
+    flight: { ...flight, status: "Cancelado", canCancel: false },
+    penaltyPct,
+    penaltyHours: shouldDebit ? penaltyHours : 0,
+  };
+}
+
+/**
+ * Alteração de um voo agendado (modo SAGA): mesmas regras de prazo do cancelamento
+ * para o aluno + validações completas de agendamento no novo horário. Sem multa —
+ * o evento é movido (PUT) na agenda SAGA preservando aluno/instrutor/status.
+ */
+async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, rules) {
+  if (rules.mode !== "booking") fail("A escala não está aberta para agendamento.");
+  const id = clean(payload.flightId);
+  const events = await listSagaEvents();
+  const event = await findSagaEventOrFail(events, id);
+  const actorSagaId = sagaUserIdOf(profile, actorId);
+  const own = sagaEventBelongsTo(event, actorId, actorSagaId);
+  if (actorRole === "aluno" && !own) fail("Você só pode alterar seus próprios voos.", 403);
+  if (sagaEventIsCancelled(event)) fail("Voos cancelados não podem ser alterados.");
+  const currentTimes = sagaEventTimes(event, rules);
+  if (!currentTimes) fail("Evento SAGA sem data ou horário válido.", 422);
+  if (actorRole === "aluno" && Date.now() >= currentTimes.presentationMs) {
+    fail("O prazo de alteração pelo aluno terminou.");
+  }
+
+  // Validações do novo horário — mesmas regras do agendamento
+  const date = clean(payload.flightDate);
+  const registration = clean(payload.aircraftIdent).toUpperCase();
+  const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
+  const aircraft = await getAircraft(registration);
+  const day = dayOfWeek(date);
+  const weekend = day === 0 || day === 6;
+  const minHours = weekend ? rules.weekendMinHours : rules.weekdayMinHours;
+  const maxHours = weekend ? rules.weekendMaxHours : rules.weekdayMaxHours;
+  if (durationMinutes % rules.slotMinutes !== 0) fail(`A duração precisa ser múltipla de ${rules.slotMinutes} minutos.`);
+  if (durationMinutes < minHours * 60 || durationMinutes > maxHours * 60) fail(`A duração deve ficar entre ${minHours}h e ${maxHours}h.`);
+  const startMinute = parseClock(payload.startTime);
+  const rescheduleStartStep = actorRole === "aluno" ? rules.slotMinutes : Math.max(5, Math.round(rules.slotMinutes / 2));
+  if (startMinute % rescheduleStartStep !== 0) fail(`O início precisa respeitar slots de ${rescheduleStartStep} minutos.`);
+  const scheduleStartMinute = parseClock(rules.scheduleStartTime || "06:00");
+  if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
+  const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
+  const presentationMs = Date.parse(times.occupiedStartAt);
+  const leadDays = (presentationMs - Date.now()) / 86400000;
+  if (leadDays < rules.minBookingLeadDays || leadDays > rules.maxBookingLeadDays + 1) fail("A data está fora da antecedência permitida.");
+  const isNight = startMinute >= rules.nightFlightStartHour * 60;
+  if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
+  await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt, id);
+  if (actorRole === "aluno") {
+    const studentSagaIdForLimits = clean(event.studentSagaId) || actorSagaId;
+    validateWeeklyLimits(
+      rules,
+      sagaStudentWeekUsage(events, rules, studentSagaIdForLimits, date, id),
+      durationMinutes,
+      weekend,
+    );
+  }
+  if (rules.requireCreditsForBooking) {
+    const studentSagaId = clean(event.studentSagaId) || actorSagaId;
+    const studentUserId = clean(event.studentUserId) || (own ? actorId : null);
+    const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules, id);
+    if (studentUserId) {
+      const credit = await creditAvailable(studentUserId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, credit.rawAvailableHours - reservedHours, durationMinutes)) {
+        fail(`Crédito insuficiente. Disponível: ${Math.max(0, credit.availableHours - reservedHours).toFixed(2)}h.`);
+      }
+    }
+  }
+
+  const currentStatus = clean(event.status).toUpperCase();
+  await execAdminUsers({
+    action: "sagaUpsertScheduleDirect",
+    scheduleId: id,
+    aircraftIdent: registration,
+    studentSagaId: clean(event.studentSagaId) || actorSagaId,
+    studentName: clean(event.studentName),
+    ...(clean(event.instructorSagaId) ? { instructorSagaId: clean(event.instructorSagaId), instructorName: clean(event.instructorName) } : {}),
+    date,
+    startTime: times.presentationTime,
+    durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
+    sagaStatus: ["PLANNED", "PENDING", "CONFIRMED"].includes(currentStatus) ? currentStatus : "PLANNED",
+    // Preserva as notas existentes (obs do aluno, flexibilidade) e registra a alteração.
+    ...(clean(event.notes)
+      ? { rawNotes: `${clean(event.notes)} | Alterado via plataforma` }
+      : { notes: "Alterado via plataforma" }),
+  });
+
+  return {
+    flight: {
+      id,
+      aircraftIdent: registration,
+      aircraftModelId: aircraft.model_id || null,
+      flightDate: date,
+      presentationTime: times.presentationTime,
+      startTime: times.startTime,
+      cutoffTime: times.cutoffTime,
+      endTime: times.endTime,
+      durationMinutes,
+      status: currentStatus === "CONFIRMED" ? "Confirmado" : currentStatus === "PENDING" ? "Pendente" : "Previsto",
+      isOwn: own,
+      studentUserId: clean(event.studentUserId) || (own ? actorId : null),
+      instructorUserId: clean(event.instructorUserId) || null,
+      canCancel: own,
+    },
+  };
 }
 
 async function handleCancel(payload, actorId, actorRole, rules) {
@@ -694,6 +1278,10 @@ module.exports = async ({ req, res, error }) => {
     if (!DATABASE_ID || !FLIGHTS_ID || !PROFILES_ID || !AIRCRAFTS_ID || !SETTINGS_ID) {
       return response(res, 500, { ok: false, message: "Configuração incompleta da função." });
     }
+    // A dynamic key (com os scopes da function, incl. executions.write para o modo
+    // SAGA) chega via header a cada request — não existe como variável de ambiente.
+    const dynamicKey = clean(req.headers["x-appwrite-key"]);
+    if (dynamicKey) client.setKey(dynamicKey);
     const actorId = clean(req.headers["x-appwrite-user-id"]);
     if (!actorId) return response(res, 401, { ok: false, message: "Não autenticado." });
     const payload = req.bodyJson || parseJson(req.body, {});
@@ -701,17 +1289,35 @@ module.exports = async ({ req, res, error }) => {
     const actorRole = clean(profile.role);
     const rules = await getRules();
     let data;
-    if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules);
+    if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
     else if (payload.action === "checkAvailability") data = await handleAvailability(payload, actorId, actorRole, rules);
     else if (payload.action === "requestFlight") data = await handleRequest(payload, actorId, actorRole, profile, rules);
-    else if (payload.action === "confirmFlight") data = await handleConfirm(payload, actorId, actorRole);
-    else if (payload.action === "cancelFlight") data = await handleCancel(payload, actorId, actorRole, rules);
-    else if (payload.action === "previewCancellation") {
-      const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_ID, clean(payload.flightId));
-      if (actorRole === "aluno" && doc.student_user_id !== actorId) fail("Sem permissão.", 403);
-      const hoursBefore = (dateTimeMs(doc.flight_date, doc.presentation_time || doc.start_time) - Date.now()) / 3600000;
-      const penaltyPct = penaltyFor(hoursBefore, rules);
-      data = { penaltyPct, penaltyHours: Number(((number(doc.requested_duration_minutes, 0) / 60) * penaltyPct / 100).toFixed(2)) };
+    else if (payload.action === "confirmFlight") data = await handleConfirm(payload, actorId, actorRole, rules);
+    else if (payload.action === "rescheduleFlight") {
+      if (!rules.sagaOnlySchedule) fail("Alteração de voo disponível apenas no modo SAGA.");
+      data = await handleRescheduleSagaOnly(payload, actorId, actorRole, profile, rules);
+    }
+    else if (payload.action === "cancelFlight") {
+      data = rules.sagaOnlySchedule
+        ? await handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
+        : await handleCancel(payload, actorId, actorRole, rules);
+    } else if (payload.action === "previewCancellation") {
+      if (rules.sagaOnlySchedule) {
+        const events = await listSagaEvents();
+        const event = await findSagaEventOrFail(events, clean(payload.flightId));
+        if (actorRole === "aluno" && !sagaEventBelongsTo(event, actorId, sagaUserIdOf(profile, actorId))) fail("Sem permissão.", 403);
+        const times = sagaEventTimes(event, rules);
+        if (!times) fail("Evento SAGA sem data ou horário válido.", 422);
+        const hoursBefore = (times.presentationMs - Date.now()) / 3600000;
+        const penaltyPct = penaltyFor(hoursBefore, rules);
+        data = { penaltyPct, penaltyHours: Number(((times.durationMinutes / 60) * penaltyPct / 100).toFixed(2)) };
+      } else {
+        const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_ID, clean(payload.flightId));
+        if (actorRole === "aluno" && doc.student_user_id !== actorId) fail("Sem permissão.", 403);
+        const hoursBefore = (dateTimeMs(doc.flight_date, doc.presentation_time || doc.start_time) - Date.now()) / 3600000;
+        const penaltyPct = penaltyFor(hoursBefore, rules);
+        data = { penaltyPct, penaltyHours: Number(((number(doc.requested_duration_minutes, 0) / 60) * penaltyPct / 100).toFixed(2)) };
+      }
     } else fail("Ação inválida.");
     return response(res, 200, { ok: true, ...data });
   } catch (err) {

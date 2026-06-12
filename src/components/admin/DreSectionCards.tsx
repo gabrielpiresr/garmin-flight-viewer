@@ -10,7 +10,7 @@ function fmt(value: number, type: FinancialDreValueType): string {
 }
 
 // Lines that are stored internally for snapshot purposes but should not appear as cards
-const META_KEYS = new Set(["meta_flown_hours", "meta_fuel_liters"]);
+const META_KEYS = new Set(["meta_flown_hours", "meta_fuel_liters", "meta_students_flown"]);
 
 // Seções em que valor crescendo é ruim (custos e deduções)
 const COST_KEYS = new Set([

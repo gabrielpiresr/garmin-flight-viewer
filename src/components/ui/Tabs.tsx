@@ -6,6 +6,10 @@ type TabItem<T extends string> = {
   id: T;
   label: string;
   icon?: ReactNode;
+  /** Aba visível porém inativa (não clicável). */
+  disabled?: boolean;
+  /** Motivo exibido no hover quando desabilitada. */
+  disabledTooltip?: string;
 };
 
 type TabsProps<T extends string> = {
@@ -42,11 +46,19 @@ export function Tabs<T extends string>({
               type="button"
               role="tab"
               aria-selected={isActive}
-              onClick={() => onChange(item.id)}
+              aria-disabled={item.disabled || undefined}
+              disabled={item.disabled}
+              title={item.disabled ? item.disabledTooltip : undefined}
+              onClick={() => {
+                if (item.disabled) return;
+                onChange(item.id);
+              }}
               className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
-                isActive
-                  ? ACTIVE_CLASSES[accent]
-                  : "border-transparent text-slate-400 hover:border-slate-600 hover:text-slate-200"
+                item.disabled
+                  ? "cursor-not-allowed border-transparent text-slate-600 opacity-60"
+                  : isActive
+                    ? ACTIVE_CLASSES[accent]
+                    : "border-transparent text-slate-400 hover:border-slate-600 hover:text-slate-200"
               }`}
             >
               {item.icon}

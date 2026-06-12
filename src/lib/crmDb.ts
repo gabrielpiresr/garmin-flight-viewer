@@ -43,10 +43,12 @@ type CrmLeadDoc = {
   cpf?: string | null;
   saga_anac_json?: string | null;
   theoretical_exam_done?: boolean | null;
+  theoretical_study_status?: string | null;
   transfer_school?: string | null;
   qual_token?: string | null;
   qual_filled_at?: string | null;
   referrer_user_id?: string | null;
+  referral_source?: string | null;
   accepted_proposal_id?: string | null;
   status_entered_at?: string | null;
   funnel_entered_at?: string | null;
@@ -163,6 +165,7 @@ function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
     id: doc.$id,
     userId: doc.user_id ?? null,
     referrerUserId: doc.referrer_user_id ?? null,
+    referralSource: doc.referral_source ?? null,
     name: doc.name ?? "",
     email: doc.email ?? "",
     phone: doc.phone ?? "",
@@ -181,6 +184,7 @@ function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
     cpf: doc.cpf ?? null,
     sagaAnacJson: doc.saga_anac_json ?? null,
     theoreticalExamDone: typeof doc.theoretical_exam_done === "boolean" ? doc.theoretical_exam_done : null,
+    theoreticalStudyStatus: doc.theoretical_study_status ?? null,
     transferSchool: doc.transfer_school ?? null,
     acceptedProposalId: doc.accepted_proposal_id ?? null,
     qualToken: doc.qual_token ?? null,
@@ -289,6 +293,7 @@ export async function updateLead(
     qualToken: string | null;
     qualFilledAt: string | null;
     referrerUserId: string | null;
+    referralSource: string | null;
     acceptedProposalId: string | null;
     statusEnteredAt: string | null;
     funnelEnteredAt: string | null;
@@ -308,6 +313,7 @@ export async function updateLead(
     if (updates.qualToken !== undefined) payload.qual_token = updates.qualToken;
     if (updates.qualFilledAt !== undefined) payload.qual_filled_at = updates.qualFilledAt;
     if (updates.referrerUserId !== undefined) payload.referrer_user_id = updates.referrerUserId;
+    if (updates.referralSource !== undefined) payload.referral_source = updates.referralSource;
     if (updates.desiredCourse !== undefined) payload.desired_course = updates.desiredCourse;
     if (updates.desiredHours !== undefined) payload.desired_hours = updates.desiredHours;
     if (updates.weightKg !== undefined) payload.weight_kg = updates.weightKg;
@@ -320,6 +326,7 @@ export async function updateLead(
     if (updates.anacCode !== undefined) payload.anac_code = updates.anacCode;
     if (updates.birthDate !== undefined) payload.birth_date = updates.birthDate;
     if (updates.theoreticalExamDone !== undefined) payload.theoretical_exam_done = updates.theoreticalExamDone;
+    if (updates.theoreticalStudyStatus !== undefined) payload.theoretical_study_status = updates.theoreticalStudyStatus;
     if (updates.transferSchool !== undefined) payload.transfer_school = updates.transferSchool;
     if (updates.acceptedProposalId !== undefined) payload.accepted_proposal_id = updates.acceptedProposalId;
     if (updates.statusEnteredAt !== undefined) payload.status_entered_at = updates.statusEnteredAt;
@@ -361,11 +368,14 @@ export async function upsertLeadByEmail(
     if (input.birthDate !== undefined) qualPayload.birth_date = input.birthDate;
     if (input.cpf !== undefined) qualPayload.cpf = input.cpf;
     if (input.theoreticalExamDone !== undefined) qualPayload.theoretical_exam_done = input.theoreticalExamDone;
+    if (input.theoreticalStudyStatus !== undefined) qualPayload.theoretical_study_status = input.theoreticalStudyStatus;
     if (input.transferSchool !== undefined) qualPayload.transfer_school = input.transferSchool;
     if (input.notes !== undefined) qualPayload.notes = input.notes;
     qualPayload.qual_filled_at = new Date().toISOString();
     const safeReferrer = input.referrerUserId?.trim() || null;
+    const safeReferralSource = input.referralSource?.trim().slice(0, 255) || null;
     if (safeReferrer) qualPayload.referrer_user_id = safeReferrer;
+    if (safeReferralSource) qualPayload.referral_source = safeReferralSource;
 
     let doc;
     if (res.total > 0 && res.documents[0]) {
@@ -376,6 +386,9 @@ export async function upsertLeadByEmail(
       }
       if (!existingDoc.referrer_user_id && safeReferrer) {
         qualPayload.referrer_user_id = safeReferrer;
+      }
+      if (!existingDoc.referral_source && safeReferralSource) {
+        qualPayload.referral_source = safeReferralSource;
       }
       doc = await databases!.updateDocument(DB_ID!, CRM_LEADS_COL_ID!, res.documents[0].$id, qualPayload);
     } else {
@@ -389,6 +402,7 @@ export async function upsertLeadByEmail(
           phone: input.phone ?? "",
           crm_status: "aguardando_proposta",
           referrer_user_id: safeReferrer,
+          referral_source: safeReferralSource,
           ...qualPayload,
         },
         publicLeadDocumentPermissions(),

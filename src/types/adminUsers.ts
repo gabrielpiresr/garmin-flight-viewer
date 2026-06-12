@@ -152,6 +152,7 @@ export type AdminUserSummary = {
 };
 
 export type AdminUserDetail = Omit<AdminUserSummary, "profile"> & {
+  referralSource?: string | null;
   profile: AdminUserProfileDetail;
   executedFlights: AdminUserFlight[];
   plannedFlights: AdminUserFlight[];

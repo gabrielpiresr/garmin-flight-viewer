@@ -7,7 +7,15 @@ import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from ".
 import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, type FlightStatus } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import { cancelScheduleFlight, confirmScheduleFlight } from "../../lib/scheduleBookingDb";
-import { syncSagaScheduleEvent, type SagaScheduleSyncMode, type SagaScheduleSyncResult } from "../../lib/sagaImportDb";
+import {
+  cancelSagaScheduleDirect,
+  listSagaSchedulesDirect,
+  syncSagaScheduleEvent,
+  upsertSagaScheduleDirect,
+  type SagaDirectScheduleItem,
+  type SagaScheduleSyncMode,
+  type SagaScheduleSyncResult,
+} from "../../lib/sagaImportDb";
 import {
   buildConflictsByFlightId,
   detectFlightConflicts,
@@ -24,6 +32,8 @@ import {
 } from "../../lib/scheduleGenerationDb";
 import { shortName } from "../../lib/flightDisplay";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
+import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
+import { loadAircraftBaseHours, type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
 import type { StudentCreditModelSummary } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
@@ -54,13 +64,13 @@ import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../Flight
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
 const AIRCRAFT_COLOR_CLASSES = [
-  "bg-sky-600/90 border-sky-400/70",
-  "bg-emerald-600/90 border-emerald-400/70",
-  "bg-violet-600/90 border-violet-400/70",
-  "bg-amber-600/90 border-amber-400/70",
-  "bg-cyan-600/90 border-cyan-400/70",
-  "bg-fuchsia-600/90 border-fuchsia-400/70",
-  "bg-rose-600/90 border-rose-400/70",
+  "bg-sky-600 border-sky-400/70",
+  "bg-emerald-600 border-emerald-400/70",
+  "bg-violet-600 border-violet-400/70",
+  "bg-amber-600 border-amber-400/70",
+  "bg-cyan-600 border-cyan-400/70",
+  "bg-fuchsia-600 border-fuchsia-400/70",
+  "bg-rose-600 border-rose-400/70",
 ];
 const INSTRUCTOR_BORDER_CLASSES = [
   "border-lime-300",
@@ -172,6 +182,71 @@ const FLIGHT_CANCELLATION_REASONS = [
   "Outro",
 ] as const;
 
+// ─── Escala somente no SAGA ───────────────────────────────────────────────────
+// Em modo saga-only os "voos" da escala são eventos da agenda SAGA: nada é salvo
+// no sistema — criar/editar/excluir age direto no SAGA via admin-users.
+
+const SAGA_EVENT_ID_PREFIX = "saga_evt_";
+const SAGA_STUDENT_ID_PREFIX = "saga:";
+
+function isSagaEventRowId(id: string): boolean {
+  return id.startsWith(SAGA_EVENT_ID_PREFIX);
+}
+
+function sagaDirectDateTimeParts(value: string): { date: string; time: string } {
+  const match = (value || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  if (match) return { date: match[1]!, time: match[2]! };
+  return { date: (value || "").slice(0, 10), time: "" };
+}
+
+function sagaEventIsCancelled(item: SagaDirectScheduleItem): boolean {
+  const status = (item.status || "").toUpperCase();
+  if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(status)) return true;
+  return item.active === false;
+}
+
+/** Status SAGA (CANCELED/CONFIRMED/PENDING/PLANNED) → vocabulário da escala. */
+function sagaEventStatusLabel(item: SagaDirectScheduleItem): FlightStatus {
+  if (sagaEventIsCancelled(item)) return "Cancelado";
+  const status = (item.status || "").toUpperCase();
+  if (status === "PENDING") return "Pendente";
+  if (status === "PLANNED") return "Previsto";
+  return "Confirmado";
+}
+
+/** Status da escala → status SAGA para o upsert direto. */
+function flightStatusToSagaStatus(status: FlightStatus | undefined): "PLANNED" | "PENDING" | "CONFIRMED" {
+  if (status === "Confirmado") return "CONFIRMED";
+  if (status === "Pendente") return "PENDING";
+  return "PLANNED";
+}
+
+function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingScheduledFlight | null {
+  const start = sagaDirectDateTimeParts(item.startAtRaw || item.startAt);
+  const end = sagaDirectDateTimeParts(item.endAtRaw || item.endAt);
+  if (!start.date || !start.time) return null;
+  const startMinutes = parseScheduleTimeToMinutes(start.time);
+  let endMinutes = end.time ? parseScheduleTimeToMinutes(end.time) : startMinutes + 60;
+  if (end.date && end.date > start.date) endMinutes += 1440;
+  return {
+    id: `${SAGA_EVENT_ID_PREFIX}${item.id}`,
+    demandId: `saga-${item.id}`,
+    studentId: item.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${item.studentSagaId}`,
+    studentLabel: item.studentName || null,
+    instructorId: item.instructorUserId || null,
+    instructorLabel: item.instructorName || null,
+    instructorAnac: null,
+    aircraftRegistration: (item.aircraft || "").toUpperCase() || null,
+    date: start.date,
+    startTime: start.time,
+    durationHours: Math.max(0.25, (endMinutes - startMinutes) / 60),
+    flightStatus: sagaEventStatusLabel(item),
+    sourceFilename: "saga-schedule",
+    sagaScheduleId: item.id,
+    isOutsideGenerator: false,
+  };
+}
+
 type FlightFormDraft = {
   id?: string;
   demandId: string;
@@ -205,6 +280,8 @@ export type CalendarFlightItem = {
   dayOfWeek: number;
   startHour: number;
   durationHours: number;
+  /** Tempo de voo líquido (sem briefing/debriefing) — usado nas somas de horas. */
+  flightHours?: number;
   flightStatus?: FlightStatus;
   startTime: string;
   endTime: string;
@@ -214,9 +291,23 @@ export type CalendarFlightItem = {
   isBlocked?: boolean;
 };
 
+/** Cores por status — fonte única usada na escala do admin e na visão do aluno. */
+export const FLIGHT_STATUS_CARD_COLOR: Record<string, string> = {
+  "Confirmado": "bg-emerald-600",
+  "Previsto": "bg-sky-600",
+  "Pendente": "bg-orange-600",
+  "Cancelado": "bg-red-700",
+  "Realizado": "bg-sky-600",
+};
+
 function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
-  if (item.flightStatus === "Cancelado") return "bg-red-700/90";
+  if (item.flightStatus === "Cancelado") return "bg-red-700";
   return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+}
+
+/** Cancelados ficam sempre em vermelho sólido — sem o estilo "sem instrutor" (opacidade/risco). */
+function calendarItemUnassigned(item: Pick<CalendarFlightItem, "instructorId" | "flightStatus">): boolean {
+  return !item.instructorId && item.flightStatus !== "Cancelado";
 }
 
 function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undefined): string {
@@ -368,6 +459,13 @@ function resolveInstructorDraft(
   };
 }
 
+/** Célula da linha de projeção de horas por aeronave (abaixo do Total da agenda). */
+type ProjectionCell = {
+  hours: number | null;
+  /** Nome da manutenção que vence neste dia (célula destacada em vermelho). */
+  maintenance?: string;
+};
+
 export type CalendarDropTarget = {
   dayOfWeek: number;
   startHour: number;
@@ -379,7 +477,9 @@ export type CalendarDropTarget = {
 
 function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
   const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
-  const strike = unassigned ? "line-through decoration-white/40 decoration-1 opacity-75" : "";
+  // Sem opacidade no card "sem instrutor": a transparência deixava eventos (ex.: PENDING
+  // do SAGA sem instrutor) praticamente invisíveis na agenda. O risco continua como marcador.
+  const strike = unassigned ? "line-through decoration-white/40 decoration-1" : "";
   const pointer = draggable ? "cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-white/60" : "hover:ring-1 hover:ring-white/60";
   return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
 }
@@ -396,6 +496,7 @@ export function CalendarGrid({
   nightStartHour,
   onItemClick,
   onItemDrop,
+  canDragItem,
   onEmptySlotClick,
   onPrevWeek,
   onNextWeek,
@@ -406,6 +507,8 @@ export function CalendarGrid({
   showGeneratorLegend = true,
   getItemColor,
   blockedSlots,
+  projectionRows,
+  projectionLoading = false,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -418,6 +521,8 @@ export function CalendarGrid({
   nightStartHour: number;
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
+  /** Quando definido, restringe quais cards podem ser arrastados (ex.: aluno só os próprios). */
+  canDragItem?: (item: CalendarFlightItem) => boolean;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
@@ -428,6 +533,10 @@ export function CalendarGrid({
   showGeneratorLegend?: boolean;
   getItemColor?: (item: CalendarFlightItem) => string;
   blockedSlots?: Array<{ dayOfWeek: number; startHour: number; endHour: number }>;
+  /** Horas totais projetadas por aeronave ao fim de cada dia (linhas extras abaixo do total). */
+  projectionRows?: Array<{ registration: string; hoursByDay: Partial<Record<number, ProjectionCell>> }>;
+  /** Horas-base da Frota ainda carregando: mostra skeleton no lugar das linhas de projeção. */
+  projectionLoading?: boolean;
 }) {
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
@@ -525,7 +634,7 @@ export function CalendarGrid({
       if (!calendarDays.includes(item.dayOfWeek)) continue;
       const row = byDay.get(item.dayOfWeek) ?? { flights: 0, hours: 0 };
       row.flights += 1;
-      row.hours += item.durationHours;
+      row.hours += item.flightHours ?? item.durationHours;
       byDay.set(item.dayOfWeek, row);
     }
     let cumFlights = 0;
@@ -642,7 +751,7 @@ export function CalendarGrid({
         <table className="w-full min-w-0 table-fixed border-separate border-spacing-0.5 sm:border-spacing-1">
           <thead>
             <tr>
-              <th className="w-12 pb-1 text-right text-[10px] font-medium text-slate-600" />
+              <th className="w-8 pb-1 text-right text-[10px] font-medium text-slate-600 sm:w-12" />
               {calendarDays.map((day) => {
                 const date = dayOfWeekToDate(weekStart, day);
                 const today = isDateToday(date);
@@ -659,10 +768,10 @@ export function CalendarGrid({
           </thead>
           <tbody>
             <tr>
-              <td className="align-top pr-2">
+              <td className="align-top pr-1 sm:pr-2">
                 <div className="relative" style={{ height: `${boardHeight}px` }}>
                   {calendarHours.map((hour, idx) => (
-                    <div key={hour} className="absolute right-0 text-right text-[11px] font-mono text-slate-600" style={{ top: `${idx * rowHeight}px`, width: "2.8rem" }}>
+                    <div key={hour} className="absolute right-0 w-7 text-right text-[11px] font-mono text-slate-600 sm:w-11" style={{ top: `${idx * rowHeight}px` }}>
                       {hour}h
                     </div>
                   ))}
@@ -730,6 +839,7 @@ export function CalendarGrid({
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
                       const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                      const itemDraggable = draggable && (canDragItem ? canDragItem(item) : true);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
                       return (
@@ -738,7 +848,7 @@ export function CalendarGrid({
                           role="button"
                           tabIndex={0}
                           onPointerDown={(e) => {
-                            if (!draggable) return;
+                            if (!itemDraggable) return;
                             e.preventDefault();
                             e.stopPropagation();
                             dragEndedRef.current = false;
@@ -765,7 +875,7 @@ export function CalendarGrid({
                             }
                             onItemClick(item);
                           }}
-                          className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
+                          className={`absolute ${eventStyleClasses(color, instructorBorder, !privacyMode && calendarItemUnassigned(item), itemDraggable)}`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
@@ -844,6 +954,53 @@ export function CalendarGrid({
                 );
               })}
             </tr> : null}
+            {showTotals && projectionLoading ? (
+              <tr>
+                <td className="pr-1 pt-1 sm:pr-2" />
+                {calendarDays.map((day) => (
+                  <td key={day} className="p-0 pt-1">
+                    <Skeleton className="h-6 w-full rounded" />
+                  </td>
+                ))}
+              </tr>
+            ) : null}
+            {showTotals && !projectionLoading && projectionRows && projectionRows.length > 0
+              ? projectionRows.map((row) => (
+                  <tr key={`proj-${row.registration}`}>
+                    <td className="pr-1 pt-1 text-right align-middle sm:pr-2">
+                      <span
+                        className="whitespace-nowrap font-mono text-[9px] text-slate-500"
+                        title={`Horas totais projetadas de ${row.registration} ao fim de cada dia (horas atuais da Frota + tempo de voo agendado)`}
+                      >
+                        {row.registration}
+                      </span>
+                    </td>
+                    {calendarDays.map((day) => {
+                      const cell = row.hoursByDay[day];
+                      const maintenance = cell?.maintenance;
+                      return (
+                        <td key={day} className="p-0 pt-1">
+                          <div
+                            className={`rounded border px-1 py-1 text-center text-[10px] tabular-nums ${
+                              maintenance
+                                ? "border-red-500/60 bg-red-500/15 font-semibold text-red-300"
+                                : "border-slate-800/60 bg-slate-950/40 text-slate-400"
+                            }`}
+                            title={maintenance ? `Manutenção vence neste dia: ${maintenance}` : undefined}
+                          >
+                            {cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}
+                            {maintenance ? (
+                              <span className="block truncate text-[9px] font-semibold leading-tight text-red-300">
+                                {maintenance}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))
+              : null}
           </tbody>
         </table>
       </div>
@@ -879,6 +1036,7 @@ function DailyCalendarGrid({
   hasNextWeek,
   backgroundSupply,
   clubMemberByStudentId,
+  getItemColor,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
@@ -886,6 +1044,7 @@ function DailyCalendarGrid({
   groupBy: "instructor" | "aircraft";
   nightStartHour: number;
   colorByAircraft: Map<string, string>;
+  getItemColor?: (item: CalendarFlightItem) => string;
   borderByInstructor: Map<string, string>;
   weekData: ScheduleWeekData;
   onItemClick: (item: CalendarFlightItem) => void;
@@ -1154,7 +1313,7 @@ function DailyCalendarGrid({
           >
             <thead>
               <tr>
-                <th className="w-12 pb-2" />
+                <th className="w-8 pb-2 sm:w-12" />
                 {columns.map((col) => (
                   <th key={col.key} className="pb-2 text-center">
                     <div className="flex items-center justify-center gap-1.5">
@@ -1173,10 +1332,10 @@ function DailyCalendarGrid({
             <tbody>
               {/* Main time board */}
               <tr>
-                <td className="align-top pr-2">
+                <td className="align-top pr-1 sm:pr-2">
                   <div className="relative" style={{ height: `${boardHeight}px` }}>
                     {calendarHours.map((hour, idx) => (
-                      <div key={hour} className="absolute right-0 text-right text-[11px] font-mono text-slate-600" style={{ top: `${idx * rowHeight}px`, width: "2.8rem" }}>
+                      <div key={hour} className="absolute right-0 w-7 text-right text-[11px] font-mono text-slate-600 sm:w-11" style={{ top: `${idx * rowHeight}px` }}>
                         {hour}h
                       </div>
                     ))}
@@ -1226,7 +1385,7 @@ function DailyCalendarGrid({
                           const item = entry.item;
                           const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                          const color = calendarItemColor(item, colorByAircraft);
+                          const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
                           const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
@@ -1255,7 +1414,7 @@ function DailyCalendarGrid({
                                 if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                 onItemClick(item);
                               }}
-                              className={`absolute ${eventStyleClasses(color, instructorBorder, !item.instructorId, draggable)}`}
+                              className={`absolute ${eventStyleClasses(color, instructorBorder, calendarItemUnassigned(item), draggable)}`}
                               style={{
                                 top: `${top}px`,
                                 height: `${height - 4}px`,
@@ -1338,6 +1497,258 @@ function DailyCalendarGrid({
   );
 }
 
+// ─── Linha do tempo horizontal (agenda "invertida") ──────────────────────────
+// Eixo do tempo na horizontal: uma linha por dia (semanal/3 dias) ou por
+// instrutor/avião (diária). Clique no voo abre a edição normalmente.
+
+type TimelineRow = { key: string; label: string; items: CalendarFlightItem[] };
+
+const TIMELINE_PX_PER_HOUR = 96;
+const TIMELINE_LANE_HEIGHT = 48;
+
+function HorizontalTimelineBoard({
+  rows,
+  title,
+  nightStartHour,
+  getItemColor,
+  borderByInstructor,
+  clubMemberByStudentId,
+  onItemClick,
+  daySelector,
+  onPrevWeek,
+  onNextWeek,
+  hasPrevWeek,
+  hasNextWeek,
+}: {
+  rows: TimelineRow[];
+  title: string;
+  nightStartHour: number;
+  getItemColor: (item: CalendarFlightItem) => string;
+  borderByInstructor: Map<string, string>;
+  clubMemberByStudentId?: Record<string, boolean>;
+  onItemClick: (item: CalendarFlightItem) => void;
+  daySelector?: { weekStart: string; selectedDay: number; onSelectDay: (day: number) => void };
+  onPrevWeek?: () => void;
+  onNextWeek?: () => void;
+  hasPrevWeek?: boolean;
+  hasNextWeek?: boolean;
+}) {
+  const allItems = useMemo(() => rows.flatMap((row) => row.items), [rows]);
+  const hours = useMemo(() => buildCalendarHours(allItems), [allItems]);
+  const startHour = hours[0] ?? CALENDAR_START_HOUR;
+  const endHour = (hours[hours.length - 1] ?? CALENDAR_START_HOUR) + 1;
+  const boardWidth = hours.length * TIMELINE_PX_PER_HOUR;
+
+  const layout = useMemo(
+    () =>
+      rows.map((row) => {
+        const sorted = [...row.items].sort((a, b) => {
+          const aStart = parseScheduleTimeToMinutes(a.startTime);
+          const bStart = parseScheduleTimeToMinutes(b.startTime);
+          if (aStart !== bStart) return aStart - bStart;
+          return a.durationHours - b.durationHours;
+        });
+        const active: Array<{ end: number; lane: number }> = [];
+        let laneCount = 1;
+        const entries = sorted.map((item) => {
+          const start = parseScheduleTimeToMinutes(item.startTime);
+          const end = start + Math.round(item.durationHours * 60);
+          for (let i = active.length - 1; i >= 0; i -= 1) {
+            if (active[i]!.end <= start) active.splice(i, 1);
+          }
+          let lane = 0;
+          while (active.some((node) => node.lane === lane)) lane += 1;
+          active.push({ end, lane });
+          laneCount = Math.max(laneCount, lane + 1);
+          return { item, lane };
+        });
+        return { row, entries, laneCount };
+      }),
+    [rows],
+  );
+
+  function handlePrevDay() {
+    if (!daySelector) return;
+    const idx = DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]);
+    if (idx > 0) {
+      daySelector.onSelectDay(DAY_ORDER[idx - 1]!);
+    } else if (hasPrevWeek && onPrevWeek) {
+      onPrevWeek();
+      daySelector.onSelectDay(DAY_ORDER[DAY_ORDER.length - 1]!);
+    }
+  }
+
+  function handleNextDay() {
+    if (!daySelector) return;
+    const idx = DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]);
+    if (idx < DAY_ORDER.length - 1) {
+      daySelector.onSelectDay(DAY_ORDER[idx + 1]!);
+    } else if (hasNextWeek && onNextWeek) {
+      onNextWeek();
+      daySelector.onSelectDay(DAY_ORDER[0]!);
+    }
+  }
+
+  return (
+    <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+        {!daySelector && (onPrevWeek || onNextWeek) ? (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onPrevWeek}
+              disabled={!hasPrevWeek}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Semana anterior"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={onNextWeek}
+              disabled={!hasNextWeek}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+              title="Próxima semana"
+            >
+              ›
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {daySelector ? (
+        <div className="mb-3 flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handlePrevDay}
+            disabled={DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]) === 0 && !hasPrevWeek}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+            title="Dia anterior"
+          >
+            ‹
+          </button>
+          <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1">
+          {DAY_ORDER.map((day) => {
+            const date = dayOfWeekToDate(daySelector.weekStart, day);
+            const today = isDateToday(date);
+            const selected = day === daySelector.selectedDay;
+            return (
+              <button
+                key={day}
+                type="button"
+                onClick={() => daySelector.onSelectDay(day)}
+                className={`flex min-w-0 flex-1 flex-col items-center rounded border px-0.5 py-1.5 text-[10px] transition-colors sm:rounded-lg sm:px-1.5 sm:text-[11px] ${
+                  selected
+                    ? "border-sky-500 bg-sky-600/20 text-sky-300"
+                    : today
+                    ? "border-slate-500 bg-slate-700/50 text-slate-200 hover:bg-slate-700"
+                    : "border-slate-700 bg-slate-800/30 text-slate-400 hover:bg-slate-800"
+                }`}
+              >
+                <span className="font-semibold">{DAY_LABEL[day]}</span>
+                <span className={today ? "text-sky-400" : ""}>{formatShortDate(date)}</span>
+              </button>
+            );
+          })}
+          </div>
+          <button
+            type="button"
+            onClick={handleNextDay}
+            disabled={DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]) === DAY_ORDER.length - 1 && !hasNextWeek}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+            title="Próximo dia"
+          >
+            ›
+          </button>
+        </div>
+      ) : null}
+      {rows.length === 0 ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
+          Nenhum voo no período.
+        </p>
+      ) : (
+        <div className="w-full overflow-x-auto">
+          <div style={{ minWidth: `${boardWidth + 120}px` }}>
+            {/* Régua de horas */}
+            <div className="flex">
+              <div className="w-14 shrink-0 sm:w-28" />
+              <div className="relative h-5" style={{ width: `${boardWidth}px` }}>
+                {hours.map((hour, idx) => (
+                  <span
+                    key={hour}
+                    className="absolute top-0 text-[10px] font-mono text-slate-500"
+                    style={{ left: `${idx * TIMELINE_PX_PER_HOUR}px` }}
+                  >
+                    {hour}h
+                  </span>
+                ))}
+              </div>
+            </div>
+            {layout.map(({ row, entries, laneCount }) => (
+              <div key={row.key} className="flex items-stretch border-t border-slate-800/60 py-1">
+                <div className="flex w-14 shrink-0 items-center justify-end pr-1 text-right text-[11px] font-semibold text-slate-400 sm:w-28 sm:pr-2">
+                  <span className="truncate">{row.label}</span>
+                </div>
+                <div
+                  className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40"
+                  style={{ width: `${boardWidth}px`, height: `${laneCount * TIMELINE_LANE_HEIGHT + 8}px` }}
+                >
+                  {nightStartHour < endHour && nightStartHour >= startHour ? (
+                    <div
+                      className="pointer-events-none absolute inset-y-0 right-0 bg-indigo-950/25"
+                      style={{ left: `${(nightStartHour - startHour) * TIMELINE_PX_PER_HOUR}px` }}
+                    />
+                  ) : null}
+                  {hours.map((hour, idx) => (
+                    <div
+                      key={`${row.key}-${hour}`}
+                      className="absolute inset-y-0 border-l border-slate-700/40"
+                      style={{ left: `${idx * TIMELINE_PX_PER_HOUR}px` }}
+                    />
+                  ))}
+                  {entries.map(({ item, lane }) => {
+                    const startMinutes = parseScheduleTimeToMinutes(item.startTime);
+                    const left = ((startMinutes - startHour * 60) / 60) * TIMELINE_PX_PER_HOUR;
+                    const width = Math.max(44, item.durationHours * TIMELINE_PX_PER_HOUR - 4);
+                    const color = getItemColor(item);
+                    const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
+                    return (
+                      <div
+                        key={item.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onItemClick(item);
+                        }}
+                        className={`absolute ${eventStyleClasses(color, instructorBorder, calendarItemUnassigned(item), false)}`}
+                        style={{
+                          left: `${Math.max(0, left) + 2}px`,
+                          top: `${lane * TIMELINE_LANE_HEIGHT + 4}px`,
+                          height: `${TIMELINE_LANE_HEIGHT - 8}px`,
+                          width: `${width}px`,
+                        }}
+                      >
+                        <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                          <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
+                          {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
+                        </p>
+                        <p className="truncate opacity-90">
+                          {item.startTime}–{item.endTime} · {item.aircraftRegistration}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 type ScheduleFlightsTabProps = {
   /** Semana a exibir após publicar escala no gerador. */
   focusWeekStart?: string | null;
@@ -1357,12 +1768,22 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [activeAircrafts, setActiveAircrafts] = useState<Aircraft[]>([]);
   const [loadingWeeks, setLoadingWeeks] = useState(true);
   const [loadingWeekData, setLoadingWeekData] = useState(false);
+  // Troca de semana com dados já carregados: atualiza em segundo plano (sem skeleton/scroll)
+  const [weekRefreshing, setWeekRefreshing] = useState(false);
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
-  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("weekly");
-  const [dailyGroupBy, setDailyGroupBy] = useState<"instructor" | "aircraft">("instructor");
+  // Mobile abre direto na visão diária; desktop na semanal.
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches ? "daily" : "weekly",
+  );
+  const [dailyGroupBy, setDailyGroupBy] = useState<"instructor" | "aircraft">("aircraft");
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
+  const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
+  const [invertedTimeline, setInvertedTimeline] = useState(false);
+  // Mobile: resumos recolhidos por padrão
+  const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
+  const [mobileInstructorSummaryOpen, setMobileInstructorSummaryOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<number>(() => new Date().getDay());
   const [error, setError] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<FlightFormDraft | null>(null);
@@ -1376,6 +1797,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const [formStudentCredits, setFormStudentCredits] = useState<StudentCreditModelSummary[] | null>(null);
   const [formStudentCreditsLoading, setFormStudentCreditsLoading] = useState(false);
+  const [formStudentFutureMinutesByModel, setFormStudentFutureMinutesByModel] = useState<Record<string, number> | null>(null);
+  const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean } | null>(null);
+  // Horas totais atuais por aeronave (mesmo cálculo da Frota) — base da projeção na agenda
+  const [aircraftBaseHours, setAircraftBaseHours] = useState<Map<string, AircraftBaseHours> | null>(null);
+  const aircraftBaseHoursRequestedRef = useRef(false);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
   const loadWeekRequestRef = useRef(0);
@@ -1388,7 +1814,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const actorRole = user?.role;
 
   const minGapMinutes = 30;
-  const hourOptions = useMemo(() => buildScheduleHourOptions(scheduleRules), [scheduleRules]);
+  // Admin/instrutor escolhem o início em meio-slot (slot 30min → opções de 15 em 15).
+  const hourOptions = useMemo(
+    () => buildScheduleHourOptions(scheduleRules, Math.max(5, (scheduleRules.slotMinutes || 30) / 2)),
+    [scheduleRules],
+  );
   const threeDayStartIndex = Math.min(
     Math.max(DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]), 0),
     DAY_ORDER.length - 3,
@@ -1453,19 +1883,53 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     [showToast],
   );
 
-  const loadWeek = useCallback(
-    async (weekStart: string, weekOverride?: ScheduleWeekOption, options?: { showSkeleton?: boolean }) => {
-      if (!actorUserId || !actorRole || !weekStart) return;
+  // Cache de semanas (+ eventos SAGA, que cobrem 3 meses numa chamada só). A semana
+  // anterior e a seguinte são pré-carregadas em segundo plano para troca instantânea.
+  const WEEK_BUNDLE_TTL_MS = 60_000;
+  type WeekBundle = {
+    at: number;
+    data: ScheduleWeekData;
+    rows: ExistingScheduledFlight[];
+    schedule: FlightScheduleRules;
+    aircraftRows: Aircraft[];
+  };
+  const weekBundleCacheRef = useRef(new Map<string, WeekBundle>());
+  const weekFetchInFlightRef = useRef(new Map<string, Promise<WeekBundle>>());
+  const sagaEventsCacheRef = useRef<{ at: number; events: SagaDirectScheduleItem[] } | null>(null);
+  const sagaEventsInFlightRef = useRef<Promise<SagaDirectScheduleItem[]> | null>(null);
+  // Opções de filtro já apresentadas — preserva a seleção do usuário entre semanas.
+  const seenFilterAircraftRef = useRef<Set<string>>(new Set());
+  const seenFilterInstructorsRef = useRef<Set<string>>(new Set());
 
-      const requestId = loadWeekRequestRef.current + 1;
-      loadWeekRequestRef.current = requestId;
-      const showSkeleton = options?.showSkeleton ?? weekDataRef.current === null;
+  // Busca de eventos SAGA com dedupe: uma chamada cobre 3 meses e é compartilhada
+  // entre navegação e prefetch (evita duas buscas lentas em paralelo).
+  const getSagaEvents = useCallback(async (force = false): Promise<SagaDirectScheduleItem[]> => {
+    const cache = sagaEventsCacheRef.current;
+    if (!force && cache && Date.now() - cache.at < WEEK_BUNDLE_TTL_MS) return cache.events;
+    if (!force && sagaEventsInFlightRef.current) return sagaEventsInFlightRef.current;
+    const promise = listSagaSchedulesDirect(3)
+      .then((events) => {
+        sagaEventsCacheRef.current = { at: Date.now(), events };
+        return events;
+      })
+      .finally(() => {
+        sagaEventsInFlightRef.current = null;
+      });
+    sagaEventsInFlightRef.current = promise;
+    return promise;
+  }, []);
 
-      if (showSkeleton) setLoadingWeekData(true);
-      setError(null);
+  const fetchWeekBundle = useCallback(
+    async (weekStart: string, weekOption?: ScheduleWeekOption, force = false): Promise<WeekBundle> => {
+      if (!actorUserId || !actorRole) throw new Error("Sessão indisponível.");
+      const cached = weekBundleCacheRef.current.get(weekStart);
+      if (!force && cached && Date.now() - cached.at < WEEK_BUNDLE_TTL_MS) return cached;
+      if (!force) {
+        const inflight = weekFetchInFlightRef.current.get(weekStart);
+        if (inflight) return inflight;
+      }
 
-      try {
-        const weekOption = weekOverride ?? weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+      const promise = (async (): Promise<WeekBundle> => {
         const [data, rules, aircraftRows] = await Promise.all([
           getScheduleWeekData({
             weekStart,
@@ -1477,37 +1941,153 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
           listAircrafts(schoolId).catch(() => []),
         ]);
-        if (loadWeekRequestRef.current !== requestId) return;
 
-        setScheduleRules(rules.schedule);
-        setWeekData(data);
-        const rows = [...data.existingGeneratedFlights].sort((a, b) => {
+        let weekFlights = data.existingGeneratedFlights;
+        if (rules.schedule.sagaOnlySchedule) {
+          // Escala somente no SAGA: uma busca cobre 3 meses — cache compartilhado entre semanas.
+          const events = await getSagaEvents(force);
+          const weekEnd = weekDateFromStart(weekStart, 0); // domingo da semana
+          weekFlights = events
+            .map(sagaEventToScheduledFlight)
+            .filter((row): row is ExistingScheduledFlight =>
+              Boolean(row && row.date >= weekStart && row.date <= weekEnd),
+            );
+        }
+
+        const rows = [...weekFlights].sort((a, b) => {
           if (a.date !== b.date) return a.date.localeCompare(b.date);
           return a.startTime.localeCompare(b.startTime);
         });
-        setFlights(rows);
-        setActiveAircrafts(aircraftRows.filter((aircraft) => aircraft.active !== false));
-        setVisibleAircraft(Array.from(new Set([
-          ...data.supplies.map((s) => s.aircraftRegistration),
-          ...aircraftRows.filter((aircraft) => aircraft.active !== false).map((aircraft) => aircraft.registration),
-          ...rows.map((row) => row.aircraftRegistration ?? "").filter(Boolean),
-        ])));
-        setVisibleInstructors(["__none__", ...data.instructors.map((s) => s.userId)]);
-      } catch (e) {
-        if (loadWeekRequestRef.current !== requestId) return;
-        setError((e as Error).message);
-        setWeekData(null);
-        setActiveAircrafts([]);
-        setFlights([]);
+        const bundle: WeekBundle = { at: Date.now(), data, rows, schedule: rules.schedule, aircraftRows };
+        weekBundleCacheRef.current.set(weekStart, bundle);
+        return bundle;
+      })();
+
+      weekFetchInFlightRef.current.set(weekStart, promise);
+      try {
+        return await promise;
       } finally {
-        if (loadWeekRequestRef.current === requestId) setLoadingWeekData(false);
+        weekFetchInFlightRef.current.delete(weekStart);
       }
     },
-    [actorRole, actorUserId],
+    [actorRole, actorUserId, getSagaEvents],
+  );
+
+  const prefetchAdjacentWeeks = useCallback(
+    (weekStart: string) => {
+      const options = weekOptionsRef.current;
+      const idx = options.findIndex((row) => row.weekStart === weekStart);
+      for (const neighborIdx of [idx - 1, idx + 1]) {
+        const neighbor = options[neighborIdx];
+        if (!neighbor) continue;
+        const cached = weekBundleCacheRef.current.get(neighbor.weekStart);
+        if (cached && Date.now() - cached.at < WEEK_BUNDLE_TTL_MS) continue;
+        void fetchWeekBundle(neighbor.weekStart, neighbor).catch(() => undefined);
+      }
+    },
+    [fetchWeekBundle],
+  );
+
+  // Aplica um bundle na tela preservando os filtros do usuário: opções novas
+  // entram visíveis, mas o que ele desmarcou continua desmarcado entre semanas.
+  const applyWeekBundle = useCallback((bundle: WeekBundle) => {
+    setScheduleRules(bundle.schedule);
+    setWeekData(bundle.data);
+    setFlights(bundle.rows);
+    const actives = bundle.aircraftRows.filter((aircraft) => aircraft.active !== false);
+    setActiveAircrafts(actives);
+
+    const aircraftOptionsAll = Array.from(new Set([
+      ...bundle.data.supplies.map((s) => s.aircraftRegistration),
+      ...actives.map((aircraft) => aircraft.registration),
+      ...bundle.rows.map((row) => row.aircraftRegistration ?? "").filter(Boolean),
+    ]));
+    if (seenFilterAircraftRef.current.size === 0) {
+      setVisibleAircraft(aircraftOptionsAll);
+    } else {
+      const fresh = aircraftOptionsAll.filter((registration) => !seenFilterAircraftRef.current.has(registration));
+      if (fresh.length > 0) setVisibleAircraft((prev) => Array.from(new Set([...prev, ...fresh])));
+    }
+    for (const registration of aircraftOptionsAll) seenFilterAircraftRef.current.add(registration);
+
+    const instructorOptionsAll = Array.from(new Set([
+      "__none__",
+      ...bundle.data.instructors.map((s) => s.userId),
+      ...bundle.rows.map((row) => row.instructorId ?? "").filter(Boolean),
+    ]));
+    if (seenFilterInstructorsRef.current.size === 0) {
+      setVisibleInstructors(instructorOptionsAll);
+    } else {
+      const fresh = instructorOptionsAll.filter((id) => !seenFilterInstructorsRef.current.has(id));
+      if (fresh.length > 0) setVisibleInstructors((prev) => Array.from(new Set([...prev, ...fresh])));
+    }
+    for (const id of instructorOptionsAll) seenFilterInstructorsRef.current.add(id);
+  }, []);
+
+  const loadWeek = useCallback(
+    async (weekStart: string, weekOverride?: ScheduleWeekOption, options?: { showSkeleton?: boolean; force?: boolean }) => {
+      if (!actorUserId || !actorRole || !weekStart) return;
+
+      const requestId = loadWeekRequestRef.current + 1;
+      loadWeekRequestRef.current = requestId;
+      const weekOption = weekOverride ?? weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+      const cached = options?.force ? undefined : weekBundleCacheRef.current.get(weekStart);
+      setError(null);
+
+      // Stale-while-revalidate: qualquer cache (mesmo vencido) entra na hora, sem
+      // esmaecer nem mexer no scroll; a atualização acontece em segundo plano.
+      if (cached) {
+        // Limpa indicadores de navegações anteriores que foram superadas (o guard de
+        // requestId delas impede que limpem sozinhas) — senão o opacity-60 fica preso.
+        setLoadingWeekData(false);
+        setWeekRefreshing(false);
+        applyWeekBundle(cached);
+        prefetchAdjacentWeeks(weekStart);
+        if (Date.now() - cached.at < WEEK_BUNDLE_TTL_MS) return;
+      } else if (options?.showSkeleton === true || weekDataRef.current === null) {
+        setLoadingWeekData(true);
+      } else {
+        setWeekRefreshing(true);
+      }
+
+      try {
+        const bundle = await fetchWeekBundle(weekStart, weekOption, options?.force === true);
+        if (loadWeekRequestRef.current !== requestId) return;
+        applyWeekBundle(bundle);
+        prefetchAdjacentWeeks(weekStart);
+      } catch (e) {
+        if (loadWeekRequestRef.current !== requestId) return;
+        if (!cached) {
+          setError((e as Error).message);
+          setWeekData(null);
+          setActiveAircrafts([]);
+          setFlights([]);
+        }
+      } finally {
+        if (loadWeekRequestRef.current === requestId) {
+          setLoadingWeekData(false);
+          setWeekRefreshing(false);
+        }
+      }
+    },
+    [actorRole, actorUserId, fetchWeekBundle, prefetchAdjacentWeeks, applyWeekBundle],
   );
 
   const loadWeekRef = useRef(loadWeek);
   loadWeekRef.current = loadWeek;
+
+  // Navega ±1 semana mantendo a página no lugar (refresh em segundo plano).
+  const goToWeekOffset = useCallback(
+    (offset: -1 | 1) => {
+      const options = weekOptionsRef.current;
+      const idx = options.findIndex((w) => w.weekStart === selectedWeekStart);
+      const target = options[idx + offset];
+      if (!target) return;
+      setSelectedWeekStart(target.weekStart);
+      void loadWeekRef.current(target.weekStart, target, { showSkeleton: false });
+    },
+    [selectedWeekStart],
+  );
 
   useEffect(() => {
     if (!actorUserId) {
@@ -1521,6 +2101,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     setFlights([]);
     setLoadingWeekData(false);
     lastErrorToastRef.current = null;
+    weekBundleCacheRef.current.clear();
+    sagaEventsCacheRef.current = null;
+    seenFilterAircraftRef.current.clear();
+    seenFilterInstructorsRef.current.clear();
   }, [actorUserId]);
 
   useEffect(() => {
@@ -1641,6 +2225,28 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [weekData]);
 
+  // Cores dos cards: por avião (padrão) ou por status. Cancelado é sempre vermelho.
+  const resolveItemColor = useCallback(
+    (item: CalendarFlightItem): string => {
+      if (item.flightStatus === "Cancelado") return "bg-red-700";
+      if (colorScheme === "status") {
+        return FLIGHT_STATUS_CARD_COLOR[item.flightStatus ?? ""] ?? "bg-slate-600";
+      }
+      return calendarItemColor(item, colorByAircraft);
+    },
+    [colorScheme, colorByAircraft],
+  );
+
+  // Tempo de voo líquido (acionamento→corte): linhas do SAGA carregam o bloco
+  // completo com briefing/debriefing, que não deve entrar nas somas de horas.
+  const netFlightHours = useCallback(
+    (row: ExistingScheduledFlight) => {
+      if (!isSagaEventRowId(row.id)) return row.durationHours;
+      return Math.max(0, row.durationHours - (scheduleRules.bufferBeforeMinutes + scheduleRules.bufferAfterMinutes) / 60);
+    },
+    [scheduleRules.bufferBeforeMinutes, scheduleRules.bufferAfterMinutes],
+  );
+
   const totalWeightByFlightId = useMemo(() => {
     const map = new Map<string, string>();
     if (!weekData) return map;
@@ -1678,14 +2284,68 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!formDraft || !studentId || !user?.id || !user?.role) {
       setFormStudentCredits(null);
       setFormStudentCreditsLoading(false);
+      setFormStudentFutureMinutesByModel(null);
       return;
     }
     let cancelled = false;
     setFormStudentCredits(null);
+    setFormStudentFutureMinutesByModel(null);
     setFormStudentCreditsLoading(true);
-    getStudentCreditStatement({ viewer: { userId: user.id, role: user.role }, studentUserId: studentId })
-      .then((stmt) => { if (!cancelled) { setFormStudentCredits(stmt.summaries); setFormStudentCreditsLoading(false); } })
-      .catch(() => { if (!cancelled) { setFormStudentCredits([]); setFormStudentCreditsLoading(false); } });
+    void (async () => {
+      try {
+        // Mesmo cálculo da aba Créditos: o flag nightHoursDifferentFromDay muda o modo do extrato.
+        if (!salesConfigFlagRef.current || Date.now() - salesConfigFlagRef.current.at > 5 * 60_000) {
+          const config = await getFlightCreditSalesConfig().catch(() => null);
+          salesConfigFlagRef.current = { at: Date.now(), nightDifferent: config?.nightHoursDifferentFromDay !== false };
+        }
+        const stmt = await getStudentCreditStatement({
+          viewer: { userId: user.id, role: user.role },
+          studentUserId: studentId,
+          nightHoursDifferentFromDay: salesConfigFlagRef.current.nightDifferent,
+        });
+        if (cancelled) return;
+        setFormStudentCredits(stmt.summaries);
+      } catch {
+        if (!cancelled) setFormStudentCredits([]);
+      } finally {
+        if (!cancelled) setFormStudentCreditsLoading(false);
+      }
+
+      // Horas de voo futuras já agendadas (modo SAGA): bloco − buffers, por modelo.
+      if (!scheduleRules.sagaOnlySchedule) return;
+      try {
+        let sagaCache = sagaEventsCacheRef.current;
+        if (!sagaCache || Date.now() - sagaCache.at > WEEK_BUNDLE_TTL_MS) {
+          const events = await listSagaSchedulesDirect(3);
+          sagaCache = { at: Date.now(), events };
+          sagaEventsCacheRef.current = sagaCache;
+        }
+        if (cancelled) return;
+        const modelByReg = new Map(activeAircrafts.map((aircraft) => [aircraft.registration.toUpperCase(), aircraft.model_id]));
+        const now = Date.now();
+        const minutesByModel: Record<string, number> = {};
+        for (const event of sagaCache.events) {
+          if (sagaEventIsCancelled(event)) continue;
+          if ((event.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${event.studentSagaId}`) !== studentId) continue;
+          if (formDraft.sagaScheduleId && event.id === formDraft.sagaScheduleId) continue; // não conta o próprio voo em edição
+          const start = sagaDirectDateTimeParts(event.startAtRaw || event.startAt);
+          const end = sagaDirectDateTimeParts(event.endAtRaw || event.endAt);
+          if (!start.date || !start.time) continue;
+          const startMs = new Date(`${start.date}T${start.time}:00`).getTime();
+          if (!Number.isFinite(startMs) || startMs <= now) continue;
+          const startMin = parseScheduleTimeToMinutes(start.time);
+          let endMin = end.time ? parseScheduleTimeToMinutes(end.time) : startMin + 60;
+          if (end.date && end.date > start.date) endMin += 1440;
+          const netMinutes = Math.max(0, endMin - startMin - scheduleRules.bufferBeforeMinutes - scheduleRules.bufferAfterMinutes);
+          const modelId = modelByReg.get((event.aircraft || "").toUpperCase());
+          if (!modelId) continue;
+          minutesByModel[modelId] = (minutesByModel[modelId] ?? 0) + netMinutes;
+        }
+        setFormStudentFutureMinutesByModel(minutesByModel);
+      } catch {
+        if (!cancelled) setFormStudentFutureMinutesByModel(null);
+      }
+    })();
     return () => { cancelled = true; };
   // formDraft?.demandId changes each time the modal opens (new demandId per session)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1706,7 +2366,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           return {
             id: row.id,
             studentId: row.studentId,
-            studentLabel: studentLabelMap.get(row.studentId) ?? row.studentId,
+            flightHours: netFlightHours(row),
+            studentLabel: studentLabelMap.get(row.studentId) ?? row.studentLabel ?? row.studentId,
             instructorId: row.instructorId,
             instructorLabel:
               row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null),
@@ -1722,13 +2383,129 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             isOutsideGenerator: row.isOutsideGenerator ?? false,
           };
         }),
-    [flights, hideCancelledFlights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors],
+    [flights, hideCancelledFlights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
   );
 
   const cancelledFlightCount = useMemo(
     () => flights.filter((row) => row.flightStatus === "Cancelado").length,
     [flights],
   );
+
+  // Carrega as horas-base das aeronaves uma vez (cálculo da Frota), em segundo plano.
+  useEffect(() => {
+    if (!actorUserId || aircraftBaseHoursRequestedRef.current) return;
+    aircraftBaseHoursRequestedRef.current = true;
+    void loadAircraftBaseHours(schoolId)
+      .then((rows) => setAircraftBaseHours(new Map(rows.map((row) => [row.registration.trim().toUpperCase(), row]))))
+      .catch(() => setAircraftBaseHours(new Map())); // falha: projeção mostra "—" em vez de skeleton eterno
+  }, [actorUserId]);
+
+  // Projeção de horas totais por aeronave (tipo avião) ao fim de cada dia da semana:
+  // horas atuais (Frota) + tempo de voo agendado (sem briefing/debriefing) até o dia.
+  const projectionRows = useMemo(() => {
+    if (!weekData || !aircraftBaseHours) return [];
+    const buffers = (scheduleRules.bufferBeforeMinutes + scheduleRules.bufferAfterMinutes) / 60;
+    const now = Date.now();
+    type ProjEvent = { reg: string; date: string; hours: number };
+    const events: ProjEvent[] = [];
+    const sagaEvents = scheduleRules.sagaOnlySchedule ? sagaEventsCacheRef.current?.events : null;
+    if (sagaEvents) {
+      for (const event of sagaEvents) {
+        if (sagaEventIsCancelled(event)) continue;
+        const start = sagaDirectDateTimeParts(event.startAtRaw || event.startAt);
+        if (!start.date || !start.time) continue;
+        const startMs = new Date(`${start.date}T${start.time}:00`).getTime();
+        if (!Number.isFinite(startMs) || startMs <= now) continue;
+        const end = sagaDirectDateTimeParts(event.endAtRaw || event.endAt);
+        const startMin = parseScheduleTimeToMinutes(start.time);
+        let endMin = end.time ? parseScheduleTimeToMinutes(end.time) : startMin + 60;
+        if (end.date && end.date > start.date) endMin += 1440;
+        events.push({
+          reg: (event.aircraft || "").trim().toUpperCase(),
+          date: start.date,
+          hours: Math.max(0, (endMin - startMin) / 60 - buffers),
+        });
+      }
+    } else {
+      for (const row of flights) {
+        if (row.flightStatus === "Cancelado" || row.flightStatus === "Realizado") continue;
+        const startMs = new Date(`${row.date}T${row.startTime}:00`).getTime();
+        if (!Number.isFinite(startMs) || startMs <= now) continue;
+        events.push({
+          reg: (row.aircraftRegistration ?? "").trim().toUpperCase(),
+          date: row.date,
+          hours: netFlightHours(row),
+        });
+      }
+    }
+    const baseWeekStart = weekData.week.weekStart;
+    return activeAircrafts
+      .filter((aircraft) => aircraft.type === "aviao")
+      .map((aircraft) => {
+        const reg = aircraft.registration.trim().toUpperCase();
+        const info = aircraftBaseHours.get(reg);
+        const base = info?.hours ?? null;
+        const dueList = info?.maintenanceDue ?? [];
+        const hoursByDay: Partial<Record<number, ProjectionCell>> = {};
+        if (base == null) {
+          for (const day of DAY_ORDER) hoursByDay[day] = { hours: null };
+        } else {
+          const regEvents = events.filter((event) => event.reg === reg);
+          // Acumulado anterior à semana (eventos futuros antes de segunda) para
+          // detectar em qual dia a projeção CRUZA o vencimento da manutenção.
+          let previous = base + regEvents
+            .filter((event) => event.date < baseWeekStart)
+            .reduce((sum, event) => sum + event.hours, 0);
+          for (const day of DAY_ORDER) {
+            const dayDate = weekDateFromStart(baseWeekStart, day);
+            const value = Number((base + regEvents
+              .filter((event) => event.date <= dayDate)
+              .reduce((sum, event) => sum + event.hours, 0)).toFixed(1));
+            // Quando mais de uma manutenção vence no mesmo dia (ex.: 600h também é
+            // múltiplo da 100h), prevalece a de MAIOR intervalo — menor frequência.
+            const hit = dueList
+              .filter((item) => previous < item.dueAtHours && value >= item.dueAtHours)
+              .sort((a, b) => b.intervalHours - a.intervalHours)[0];
+            hoursByDay[day] = { hours: value, maintenance: hit ? `${hit.code} · ${hit.title}` : undefined };
+            previous = value;
+          }
+        }
+        return { registration: aircraft.registration, hoursByDay };
+      });
+  }, [weekData, aircraftBaseHours, scheduleRules, flights, activeAircrafts, netFlightHours]);
+
+  // Linhas da agenda invertida (linha do tempo horizontal)
+  const timelineRows = useMemo<TimelineRow[]>(() => {
+    if (!invertedTimeline) return [];
+    if (agendaView === "daily") {
+      const dayItems = calendarItems.filter((item) => item.dayOfWeek === selectedDay);
+      if (dailyGroupBy === "instructor") {
+        const rows: TimelineRow[] = (weekData?.instructors ?? [])
+          .map((instructor) => ({
+            key: instructor.userId,
+            label: shortName(instructor.label, instructor.label),
+            items: dayItems.filter((item) => item.instructorId === instructor.userId),
+          }))
+          .filter((row) => row.items.length > 0);
+        const unassigned = dayItems.filter((item) => !item.instructorId);
+        if (unassigned.length > 0) rows.push({ key: "__none__", label: "Sem instrutor", items: unassigned });
+        return rows;
+      }
+      const registrations = Array.from(new Set(dayItems.map((item) => item.aircraftRegistration)));
+      return registrations.map((registration) => ({
+        key: registration,
+        label: registration,
+        items: dayItems.filter((item) => item.aircraftRegistration === registration),
+      }));
+    }
+    const days = agendaView === "three-day" ? threeDayWindow : DAY_ORDER;
+    const baseWeekStart = weekData?.week.weekStart ?? selectedWeekStart;
+    return days.map((day) => ({
+      key: `day-${day}`,
+      label: `${DAY_LABEL[day]} ${formatShortDate(dayOfWeekToDate(baseWeekStart, day))}`,
+      items: calendarItems.filter((item) => item.dayOfWeek === day),
+    }));
+  }, [invertedTimeline, agendaView, calendarItems, selectedDay, dailyGroupBy, weekData, threeDayWindow, selectedWeekStart]);
 
   const selectedSupplyForBackground = useMemo(() => {
     if (!weekData || visibleAircraft.length !== 1) return null;
@@ -1740,7 +2517,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (!weekData) return [];
     return aircraftOptions.map((aircraft) => {
       const rows = flights.filter((row) => row.aircraftRegistration === aircraft.registration);
-      const hours = rows.reduce((acc, row) => acc + row.durationHours, 0);
+      const hours = rows.reduce((acc, row) => acc + netFlightHours(row), 0);
       const students = new Set(rows.map((row) => row.studentId)).size;
       return {
         registration: aircraft.registration,
@@ -1750,25 +2527,25 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         students,
       };
     });
-  }, [aircraftOptions, flights, weekData]);
+  }, [aircraftOptions, flights, weekData, netFlightHours]);
 
   const totalSummary = useMemo(() => {
-    const hours = flights.reduce((acc, row) => acc + row.durationHours, 0);
+    const hours = flights.reduce((acc, row) => acc + netFlightHours(row), 0);
     return {
       flights: flights.length,
       hours: Number(hours.toFixed(1)),
       students: new Set(flights.map((row) => row.studentId)).size,
     };
-  }, [flights]);
+  }, [flights, netFlightHours]);
 
   const instructorSummary = useMemo(() => {
     if (!weekData) return [];
     return weekData.instructors.map((instructor) => {
       const rows = flights.filter((row) => row.instructorId === instructor.userId);
-      const hours = rows.reduce((acc, row) => acc + row.durationHours, 0);
+      const hours = rows.reduce((acc, row) => acc + netFlightHours(row), 0);
       return { instructor, flights: rows.length, hours: Number(hours.toFixed(1)) };
     });
-  }, [flights, weekData]);
+  }, [flights, weekData, netFlightHours]);
 
   const unassignedInstructorCount = useMemo(() => flights.filter((row) => !row.instructorId).length, [flights]);
 
@@ -1845,6 +2622,31 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   async function openEditModal(row: ExistingScheduledFlight) {
     if (!canEditFlight) return;
+    if (isSagaEventRowId(row.id)) {
+      // Evento da agenda SAGA: não há documento local para carregar.
+      setFormMode("edit");
+      setFormDraft({
+        id: row.id,
+        demandId: row.demandId,
+        studentId: row.studentId,
+        studentLabel: row.studentLabel ?? row.studentId,
+        instructorId: row.instructorId,
+        instructorLabel: row.instructorLabel,
+        instructorAnac: null,
+        aircraftRegistration: row.aircraftRegistration ?? "",
+        dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
+        startTime: row.startTime,
+        startHour: parseStartHour(row.startTime),
+        durationHours: row.durationHours,
+        isNight: row.isNight ?? false,
+        sagaScheduleId: row.sagaScheduleId ?? null,
+        flightStatus: row.flightStatus ?? "Confirmado",
+        waiveCancellationPenalty: true,
+      });
+      setFormConflicts([]);
+      setForceSaveWithConflict(false);
+      return;
+    }
     const full = await getSavedFlight(row.id);
     const decoded = full.data ? decodeFlightRecord(full.data.csv_text).meta : null;
     const existingCancellation = (decoded as Record<string, unknown> | null)?.cancellation as { reasonCode?: string; reasonText?: string } | undefined;
@@ -1877,6 +2679,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       flightStatus: full.data?.flight_status ?? "Confirmado",
       cancellationReason: existingCancellation?.reasonCode ?? "",
       cancellationReasonText: existingCancellation?.reasonText ?? "",
+      waiveCancellationPenalty: true,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -1902,6 +2705,46 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
     setFormSaving(true);
     try {
+      if (scheduleRules.sagaOnlySchedule) {
+        // Modo saga-only: cria/edita/cancela o evento direto na agenda SAGA,
+        // sem criar voo, notificação ou sincronização local.
+        const flightDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
+        const durationMinutes = Math.round(formDraft.durationHours * 60);
+        const existingStatus = formDraft.id ? flights.find((row) => row.id === formDraft.id)?.flightStatus : undefined;
+        if (formMode === "edit" && formDraft.flightStatus === "Cancelado" && existingStatus !== "Cancelado") {
+          if (!formDraft.sagaScheduleId) throw new Error("Evento sem ID da agenda SAGA.");
+          // Passa pela function de escala para aplicar multa/auditoria antes de remover no SAGA.
+          await cancelScheduleFlight(formDraft.sagaScheduleId, {
+            waivePenalty: formDraft.waiveCancellationPenalty,
+            reason: [formDraft.cancellationReason, formDraft.cancellationReasonText].filter(Boolean).join(": "),
+          });
+          showToast({ variant: "success", message: "Evento cancelado na agenda SAGA." });
+        } else {
+          const isSagaStudent = formDraft.studentId.startsWith(SAGA_STUDENT_ID_PREFIX);
+          const result = await upsertSagaScheduleDirect({
+            scheduleId: formMode === "edit" ? formDraft.sagaScheduleId ?? null : null,
+            aircraftIdent: formDraft.aircraftRegistration,
+            ...(isSagaStudent
+              ? {
+                  studentSagaId: formDraft.studentId.slice(SAGA_STUDENT_ID_PREFIX.length),
+                  studentName: formDraft.studentLabel || null,
+                }
+              : { studentUserId: formDraft.studentId }),
+            instructorUserId: formDraft.instructorId,
+            date: flightDate,
+            startTime: formDraft.startTime,
+            durationMinutes,
+            sagaStatus: flightStatusToSagaStatus(formDraft.flightStatus),
+          });
+          showToast({ variant: "success", message: result.message });
+        }
+        setFormDraft(null);
+        setFormConflicts([]);
+        setForceSaveWithConflict(false);
+        await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
+        return;
+      }
+
       const sourcePrefix =
         formDraft.sourceFilename?.startsWith(MANUAL_SOURCE_PREFIX) || formDraft.demandId.startsWith("manual-")
           ? MANUAL_SOURCE_PREFIX
@@ -1984,7 +2827,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       setFormDraft(null);
       setFormConflicts([]);
       setForceSaveWithConflict(false);
-      await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false });
+      await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1993,6 +2836,18 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   }
 
   async function handleDeleteFlight(row: ExistingScheduledFlight) {
+    if (isSagaEventRowId(row.id)) {
+      if (!window.confirm("Remover este evento da agenda SAGA?")) return;
+      setError(null);
+      try {
+        await cancelSagaScheduleDirect(row.sagaScheduleId ?? row.id.slice(SAGA_EVENT_ID_PREFIX.length));
+        showToast({ variant: "success", message: "Evento removido da agenda SAGA." });
+        if (selectedWeekStart) await loadWeek(selectedWeekStart, undefined, { showSkeleton: false, force: true });
+      } catch (e) {
+        setError((e as Error).message);
+      }
+      return;
+    }
     if (!window.confirm("Excluir este voo?")) return;
     setError(null);
     try {
@@ -2012,7 +2867,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         },
       });
       showToast({ variant: "success", message: "Voo excluído com sucesso." });
-      if (selectedWeekStart) await loadWeek(selectedWeekStart, undefined, { showSkeleton: false });
+      if (selectedWeekStart) await loadWeek(selectedWeekStart, undefined, { showSkeleton: false, force: true });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -2039,10 +2894,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 const prev = weekOptions[idx - 1];
                 if (!prev) return;
                 setSelectedWeekStart(prev.weekStart);
-                loadWeekRequestRef.current += 1;
-                setWeekData(null);
-                setFlights([]);
-                void loadWeek(prev.weekStart, prev, { showSkeleton: true });
+                void loadWeek(prev.weekStart, prev, { showSkeleton: false });
               }}
               className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
               title="Semana anterior"
@@ -2056,10 +2908,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 const value = e.target.value;
                 setSelectedWeekStart(value);
                 const week = weekOptions.find((row) => row.weekStart === value);
-                loadWeekRequestRef.current += 1;
-                setWeekData(null);
-                setFlights([]);
-                void loadWeek(value, week, { showSkeleton: true });
+                void loadWeek(value, week, { showSkeleton: false });
               }}
               className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500"
             >
@@ -2082,10 +2931,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 const next = weekOptions[idx + 1];
                 if (!next) return;
                 setSelectedWeekStart(next.weekStart);
-                loadWeekRequestRef.current += 1;
-                setWeekData(null);
-                setFlights([]);
-                void loadWeek(next.weekStart, next, { showSkeleton: true });
+                void loadWeek(next.weekStart, next, { showSkeleton: false });
               }}
               className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
               title="Próxima semana"
@@ -2141,7 +2987,17 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       ) : null}
 
       {weekData ? (
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        <section>
+          {/* Mobile: resumo recolhido por padrão */}
+          <button
+            type="button"
+            onClick={() => setMobileAircraftSummaryOpen((open) => !open)}
+            className="flex w-full items-center justify-between rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 md:hidden"
+          >
+            Resumo por avião
+            <span className="text-slate-500">{mobileAircraftSummaryOpen ? "▴" : "▾"}</span>
+          </button>
+          <div className={`${mobileAircraftSummaryOpen ? "mt-3 grid" : "hidden"} grid-cols-1 gap-3 md:mt-0 md:grid md:grid-cols-4`}>
           {aircraftSummary.map((row) => (
             <article key={row.registration} className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-3">
               <div className="mb-2 h-20 w-full overflow-hidden rounded-md bg-slate-800">
@@ -2164,28 +3020,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             <p className="text-xs text-violet-400">{totalSummary.flights} voos</p>
             <p className="text-xs text-violet-400">{totalSummary.students} alunos</p>
           </article>
+          </div>
         </section>
       ) : null}
 
       {weekData ? (
         <>
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Resumo por instrutor</p>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-              {instructorSummary.map((row) => (
-                <article key={row.instructor.userId} className={`rounded-xl border bg-slate-800/30 p-3 ${borderByInstructor.get(row.instructor.userId) ?? "border-slate-700"}`}>
-                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(row.instructor.label, row.instructor.label)}</p>
-                  <p className="mt-1 text-xs text-slate-400">{row.hours.toFixed(1)}h previstas</p>
-                  <p className="text-xs text-slate-500">{row.flights} voos</p>
-                </article>
-              ))}
-              <article className="rounded-xl border border-red-300 bg-amber-500/10 p-3">
-                <p className="text-sm font-semibold text-amber-400">Sem instrutor</p>
-                <p className="mt-1 text-xs text-amber-400">{unassignedInstructorCount} voos</p>
-              </article>
-            </div>
-          </section>
-
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Filtros</p>
             <div className="space-y-4">
@@ -2216,7 +3056,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         />
                         <span className={`h-3 w-3 rounded border ${color}`} />
                         {aircraft.registration}
-                        {!aircraft.hasSupply ? <span className="text-[10px] text-amber-300">sem disponibilidade</span> : null}
+                        {!aircraft.hasSupply && !scheduleRules.sagaOnlySchedule ? <span className="text-[10px] text-amber-300">sem disponibilidade</span> : null}
                       </label>
                     );
                   })}
@@ -2277,7 +3117,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           ) : null}
 
           {/* Calendar grid */}
-          <div className="space-y-0">
+          <div className={`space-y-0 transition-opacity ${weekRefreshing ? "pointer-events-none opacity-60" : ""}`}>
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <div className="flex flex-1 overflow-hidden rounded-lg border border-slate-700 sm:flex-none">
                 <button
@@ -2303,42 +3143,110 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 </button>
               </div>
               {agendaView === "daily" && (
-                <div className="flex w-full overflow-hidden rounded-lg border border-slate-700 sm:ml-auto sm:w-auto">
+                <div className="flex overflow-hidden rounded-lg border border-slate-700">
                   <button
                     type="button"
                     onClick={() => setDailyGroupBy("instructor")}
-                    className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                   >
                     Por instrutor
                   </button>
                   <button
                     type="button"
                     onClick={() => setDailyGroupBy("aircraft")}
-                    className={`flex-1 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                   >
                     Por avião
                   </button>
                 </div>
               )}
-              <label className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:ml-auto sm:w-auto">
-                <span>
-                  Ocultar cancelados
-                  {cancelledFlightCount > 0 ? <span className="ml-1 text-slate-500">({cancelledFlightCount})</span> : null}
-                </span>
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
                 <input
                   type="checkbox"
                   checked={hideCancelledFlights}
                   onChange={(event) => setHideCancelledFlights(event.target.checked)}
                   className="h-4 w-4 accent-sky-500"
                 />
+                <span>
+                  Ocultar cancelados
+                  {cancelledFlightCount > 0 ? <span className="ml-1 text-slate-500">({cancelledFlightCount})</span> : null}
+                </span>
+              </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cores</span>
+                <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setColorScheme("aircraft")}
+                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${colorScheme === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Por avião
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setColorScheme("status")}
+                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${colorScheme === "status" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Por status
+                  </button>
+                </div>
+                {colorScheme === "status" ? (
+                  <span className="hidden items-center gap-1.5 text-[10px] text-slate-400 lg:flex">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" /> Confirmado
+                    <span className="h-2.5 w-2.5 rounded-sm bg-sky-600" /> Planejado
+                    <span className="h-2.5 w-2.5 rounded-sm bg-orange-600" /> Pendente
+                    <span className="h-2.5 w-2.5 rounded-sm bg-red-700" /> Cancelado
+                  </span>
+                ) : null}
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
+                <input
+                  type="checkbox"
+                  checked={invertedTimeline}
+                  onChange={(event) => setInvertedTimeline(event.target.checked)}
+                  className="h-4 w-4 accent-sky-500"
+                />
+                <span>Invertida (tempo na horizontal)</span>
               </label>
             </div>
 
-            {agendaView !== "daily" ? (
+            {invertedTimeline ? (
+              <HorizontalTimelineBoard
+                rows={timelineRows}
+                title={
+                  agendaView === "daily"
+                    ? "Linha do tempo diária"
+                    : agendaView === "three-day"
+                      ? "Linha do tempo — 3 dias"
+                      : "Linha do tempo semanal"
+                }
+                nightStartHour={scheduleRules.nightFlightStartHour}
+                getItemColor={resolveItemColor}
+                borderByInstructor={borderByInstructor}
+                clubMemberByStudentId={clubMemberByStudentId}
+                daySelector={
+                  agendaView === "daily"
+                    ? { weekStart: weekData.week.weekStart, selectedDay, onSelectDay: setSelectedDay }
+                    : undefined
+                }
+                hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
+                hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                onPrevWeek={() => goToWeekOffset(-1)}
+                onNextWeek={() => goToWeekOffset(1)}
+                onItemClick={(item) => {
+                  if (!canEditFlight) return;
+                  const selected = flights.find((row) => row.id === item.id);
+                  if (selected) void openEditModal(selected);
+                }}
+              />
+            ) : agendaView !== "daily" ? (
               <CalendarGrid
                 items={calendarItems}
                 days={agendaView === "three-day" ? threeDayWindow : DAY_ORDER}
                 title={agendaView === "three-day" ? "Agenda de 3 dias" : "Agenda semanal"}
+                getItemColor={resolveItemColor}
+                projectionRows={projectionRows}
+                projectionLoading={aircraftBaseHours === null}
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
                 backgroundSupply={selectedSupplyForBackground}
@@ -2356,28 +3264,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     setSelectedDay(DAY_ORDER[Math.max(0, threeDayStartIndex - 1)]!);
                     return;
                   }
-                  const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
-                  const prev = weekOptions[idx - 1];
-                  if (!prev) return;
-                  setSelectedWeekStart(prev.weekStart);
-                  loadWeekRequestRef.current += 1;
-                  setWeekData(null);
-                  setFlights([]);
-                  void loadWeek(prev.weekStart, prev, { showSkeleton: true });
+                  goToWeekOffset(-1);
                 }}
                 onNextWeek={() => {
                   if (agendaView === "three-day") {
                     setSelectedDay(DAY_ORDER[Math.min(DAY_ORDER.length - 3, threeDayStartIndex + 1)]!);
                     return;
                   }
-                  const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
-                  const next = weekOptions[idx + 1];
-                  if (!next) return;
-                  setSelectedWeekStart(next.weekStart);
-                  loadWeekRequestRef.current += 1;
-                  setWeekData(null);
-                  setFlights([]);
-                  void loadWeek(next.weekStart, next, { showSkeleton: true });
+                  goToWeekOffset(1);
                 }}
                 onItemClick={(item) => {
                   if (!canEditFlight) return;
@@ -2410,6 +3304,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   weekStart={weekData.week.weekStart}
                   groupBy={dailyGroupBy}
                   nightStartHour={scheduleRules.nightFlightStartHour}
+                  getItemColor={resolveItemColor}
                   colorByAircraft={colorByAircraft}
                   borderByInstructor={borderByInstructor}
                   weekData={weekData}
@@ -2418,26 +3313,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
                   hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
                   onSelectDay={setSelectedDay}
-                  onPrevWeek={() => {
-                    const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
-                    const prev = weekOptions[idx - 1];
-                    if (!prev) return;
-                    setSelectedWeekStart(prev.weekStart);
-                    loadWeekRequestRef.current += 1;
-                    setWeekData(null);
-                    setFlights([]);
-                    void loadWeek(prev.weekStart, prev, { showSkeleton: true });
-                  }}
-                  onNextWeek={() => {
-                    const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
-                    const next = weekOptions[idx + 1];
-                    if (!next) return;
-                    setSelectedWeekStart(next.weekStart);
-                    loadWeekRequestRef.current += 1;
-                    setWeekData(null);
-                    setFlights([]);
-                    void loadWeek(next.weekStart, next, { showSkeleton: true });
-                  }}
+                  onPrevWeek={() => goToWeekOffset(-1)}
+                  onNextWeek={() => goToWeekOffset(1)}
                   onItemClick={(item) => {
                     if (!canEditFlight) return;
                     const selected = flights.find((row) => row.id === item.id);
@@ -2482,6 +3359,32 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               </section>
             )}
           </div>
+
+          {/* Resumo por instrutor — abaixo da agenda */}
+          <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+            <button
+              type="button"
+              onClick={() => setMobileInstructorSummaryOpen((open) => !open)}
+              className="flex w-full items-center justify-between text-left text-xs font-semibold uppercase tracking-wider text-slate-500 md:hidden"
+            >
+              Resumo por instrutor
+              <span className="text-slate-600">{mobileInstructorSummaryOpen ? "▴" : "▾"}</span>
+            </button>
+            <p className="mb-2 hidden text-xs font-semibold uppercase tracking-wider text-slate-500 md:block">Resumo por instrutor</p>
+            <div className={`${mobileInstructorSummaryOpen ? "mt-3 grid" : "hidden"} grid-cols-1 gap-3 md:mt-0 md:grid md:grid-cols-4`}>
+              {instructorSummary.map((row) => (
+                <article key={row.instructor.userId} className={`rounded-xl border bg-slate-800/30 p-3 ${borderByInstructor.get(row.instructor.userId) ?? "border-slate-700"}`}>
+                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(row.instructor.label, row.instructor.label)}</p>
+                  <p className="mt-1 text-xs text-slate-400">{row.hours.toFixed(1)}h previstas</p>
+                  <p className="text-xs text-slate-500">{row.flights} voos</p>
+                </article>
+              ))}
+              <article className="rounded-xl border border-red-300 bg-amber-500/10 p-3">
+                <p className="text-sm font-semibold text-amber-400">Sem instrutor</p>
+                <p className="mt-1 text-xs text-amber-400">{unassignedInstructorCount} voos</p>
+              </article>
+            </div>
+          </section>
 
           <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -2741,7 +3644,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       <label className="flex items-center gap-2 text-xs text-slate-300">
                         <input
                           type="checkbox"
-                          checked={formDraft.waiveCancellationPenalty ?? false}
+                          checked={formDraft.waiveCancellationPenalty ?? true}
                           onChange={(e) => setFormDraft((prev) => prev ? { ...prev, waiveCancellationPenalty: e.target.checked } : prev)}
                         />
                         Não descontar multa do aluno
@@ -2752,7 +3655,21 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               )}
               <StudentSearchSelect
                 label="Aluno"
-                students={weekData.students}
+                students={
+                  formDraft.studentId.startsWith(SAGA_STUDENT_ID_PREFIX)
+                    ? [
+                        {
+                          userId: formDraft.studentId,
+                          label: formDraft.studentLabel || "Aluno (SAGA)",
+                          email: null,
+                          anacCode: null,
+                          weightKg: null,
+                          heightCm: null,
+                        },
+                        ...weekData.students,
+                      ]
+                    : weekData.students
+                }
                 value={formDraft.studentId}
                 onChange={(student) =>
                   setFormDraft((prev) =>
@@ -2795,7 +3712,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 >
                   {aircraftOptions.map((aircraft) => (
                     <option key={aircraft.registration} value={aircraft.registration}>
-                      {aircraft.registration}{aircraft.hasSupply ? "" : " (sem disponibilidade)"}
+                      {aircraft.registration}{aircraft.hasSupply || scheduleRules.sagaOnlySchedule ? "" : " (sem disponibilidade)"}
                     </option>
                   ))}
                 </select>
@@ -2892,9 +3809,31 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               ) : (
                 <p className="text-xs text-slate-500">Nenhum crédito encontrado para este aluno.</p>
               )}
+              {(() => {
+                if (!formDraft || formStudentFutureMinutesByModel === null) return null;
+                const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
+                if (!modelId) return null;
+                const futureHours = (formStudentFutureMinutesByModel[modelId] ?? 0) / 60;
+                const creditHours = formStudentCredits?.find((row) => row.aircraftModelId === modelId)?.availableHours ?? 0;
+                const freeHours = creditHours - futureHours;
+                const fmt = (hours: number) => `${hours < 0 ? "-" : ""}${Math.floor(Math.abs(hours))}h${String(Math.round((Math.abs(hours) % 1) * 60)).padStart(2, "0")}`;
+                return (
+                  <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Horas futuras agendadas</span>
+                      <strong className="text-sky-300">{fmt(futureHours)}</strong>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Saldo livre para agendar</span>
+                      <strong className={freeHours > 0 ? "text-emerald-300" : "text-red-300"}>{fmt(freeHours)}</strong>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
-            {!selectedAircraftHasSupply ? (
+            {/* No modo SAGA a disponibilidade operacional local não se aplica. */}
+            {!selectedAircraftHasSupply && !scheduleRules.sagaOnlySchedule ? (
               <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
                 Esta aeronave não possui disponibilidade operacional cadastrada para esta semana. O voo será salvo mesmo assim.
               </div>
@@ -2965,3 +3904,4 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     </div>
   );
 }
+

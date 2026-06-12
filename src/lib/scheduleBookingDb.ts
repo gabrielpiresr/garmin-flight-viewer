@@ -23,6 +23,11 @@ export type PublicScheduleFlight = {
   isOwn: boolean;
   studentUserId: string | null;
   instructorUserId: string | null;
+  /** Preenchidos apenas no modo "escala somente no SAGA" (para o próprio aluno ou perfis privilegiados). */
+  studentName?: string | null;
+  instructorName?: string | null;
+  /** Notas do agendamento (SAGA) — visível para o próprio aluno e perfis privilegiados. */
+  notes?: string | null;
   canCancel: boolean;
 };
 
@@ -99,6 +104,7 @@ export async function requestScheduleFlight(input: {
   startTime: string;
   durationMinutes: number;
   flexibilityMinutes?: number;
+  notes?: string;
   studentUserId?: string;
 }) {
   const response = await execute({ action: "requestFlight", ...input });
@@ -123,6 +129,19 @@ export async function checkScheduleAvailability(input: {
     cutoffTime: response.cutoffTime ?? "",
     endTime: response.endTime ?? "",
   };
+}
+
+/** Alteração de voo no modo SAGA — mesmas regras de prazo do cancelamento + validações de agendamento. */
+export async function rescheduleScheduleFlight(input: {
+  flightId: string;
+  aircraftIdent: string;
+  flightDate: string;
+  startTime: string;
+  durationMinutes: number;
+}) {
+  const response = await execute({ action: "rescheduleFlight", ...input });
+  if (!response.flight) throw new Error("Alteração sem retorno.");
+  return response.flight;
 }
 
 export async function confirmScheduleFlight(flightId: string) {

@@ -17,3 +17,5 @@ video-helper/ffprobe.exe
 public/downloads/*.exe
 public/downloads/*.msi
 public/downloads/*.dmg
+video-helper-app/dist-release-*/
+video-helper-app/dist-release-*/**

@@ -16,15 +16,24 @@ const eventLabels: Record<string, string> = {
   openfinance_nubank_gerado: "Open Finance gerado",
   refund: "Reembolso",
   chargeback: "Chargeback",
+  saga_imported_receipt: "Recebimento importado (SAGA)",
+  saga_credit_created: "Crédito lançado (SAGA)",
 };
 const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const defaultEventTypes = ["purchase_approved", "saga_credit_created"];
 
-function PaymentLinkModal({ onClose }: { onClose: () => void }) {
+export function PaymentLinkModal({
+  onClose,
+  initialUser = null,
+}: {
+  onClose: () => void;
+  initialUser?: AdminUserSummary | null;
+}) {
   const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(initialUser);
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
   const [selectedPackageId, setSelectedPackageId] = useState("");
@@ -40,7 +49,8 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
         const config = await getFlightCreditSalesConfig();
         const active = config.packages.filter((p) => p.active);
         setPackages(active);
-        if (active.length > 0) setSelectedPackageId(active[0].id);
+        const defaultPackage = active.find((item) => item.isDefault) ?? active[0];
+        if (defaultPackage) setSelectedPackageId(defaultPackage.id);
       } catch (e) {
         showToast({ variant: "error", message: (e as Error).message });
       } finally {
@@ -178,7 +188,7 @@ function PaymentLinkModal({ onClose }: { onClose: () => void }) {
                 >
                   {packages.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.hours}h — {money(p.hours * p.hourPrice)} ({p.aircraftModelName || "—"})
+                      {p.hours}h — {money(p.hours * p.hourPrice)} ({p.aircraftModelName || "—"}){p.isDefault ? " - default" : ""}
                     </option>
                   ))}
                 </select>
@@ -253,7 +263,8 @@ export function CaktoReceiptsTab() {
   const { showToast } = useToast();
   const [page, setPage] = useState<CaktoReceiptPage>({ receipts: [], total: 0, limit: 25, offset: 0, summary: { approved: 0, refunded: 0, pending: 0 } });
   const [search, setSearch] = useState("");
-  const [eventType, setEventType] = useState("");
+  const [source, setSource] = useState<"all" | "cakto" | "saga">("all");
+  const [eventTypes, setEventTypes] = useState<string[]>(defaultEventTypes);
   const [paymentMethod, setPaymentMethod] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -265,15 +276,27 @@ export function CaktoReceiptsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setPage(await listCaktoReceipts({ search, eventType, paymentMethod, dateFrom, dateTo, limit: 25, offset }));
+      setPage(await listCaktoReceipts({ search, source, eventTypes, paymentMethod, dateFrom, dateTo, limit: 25, offset }));
     } catch (error) {
       showToast({ variant: "error", message: (error as Error).message });
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, eventType, offset, paymentMethod, search, showToast]);
+  }, [dateFrom, dateTo, eventTypes, offset, paymentMethod, search, showToast, source]);
 
   useEffect(() => { void load(); }, [load]);
+
+  function renderRowsSkeleton() {
+    return Array.from({ length: 6 }).map((_, idx) => (
+      <tr key={`sk-${idx}`} className="text-slate-300">
+        {Array.from({ length: 9 }).map((__, colIdx) => (
+          <td key={`sk-${idx}-${colIdx}`} className="px-3 py-3">
+            <div className="h-4 w-full animate-pulse rounded bg-slate-800/80" />
+          </td>
+        ))}
+      </tr>
+    ));
+  }
 
   const filterCls = "rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-200";
   return (
@@ -303,10 +326,26 @@ export function CaktoReceiptsTab() {
       </div>
       <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
         <input value={search} onChange={(e) => { setSearch(e.target.value); setOffset(0); }} placeholder="Cliente, e-mail, pedido ou oferta" className={`${filterCls} min-w-64 flex-1`} />
-        <select value={eventType} onChange={(e) => { setEventType(e.target.value); setOffset(0); }} className={filterCls}>
-          <option value="">Todos os eventos</option>
-          {Object.entries(eventLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        <select value={source} onChange={(e) => { setSource(e.target.value as "all" | "cakto" | "saga"); setOffset(0); }} className={filterCls}>
+          <option value="all">Todas as origens</option>
+          <option value="cakto">Somente Cakto</option>
+          <option value="saga">Somente SAGA</option>
         </select>
+        <div className={`${filterCls} min-w-64`}>
+          <p className="mb-1 text-[11px] text-slate-400">Eventos ({eventTypes.length})</p>
+          <select
+            multiple
+            value={eventTypes}
+            onChange={(e) => {
+              const selectedValues = Array.from(e.currentTarget.selectedOptions).map((option) => option.value);
+              setEventTypes(selectedValues);
+              setOffset(0);
+            }}
+            className="min-h-28 w-full rounded border border-slate-700 bg-slate-950/70 px-2 py-1 text-xs text-slate-200"
+          >
+            {Object.entries(eventLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </div>
         <input value={paymentMethod} onChange={(e) => { setPaymentMethod(e.target.value); setOffset(0); }} placeholder="Meio de pagamento" className={filterCls} />
         <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setOffset(0); }} className={filterCls} />
         <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setOffset(0); }} className={filterCls} />
@@ -314,12 +353,21 @@ export function CaktoReceiptsTab() {
       <div className="overflow-x-auto rounded-xl border border-slate-800">
         <table className="min-w-full text-xs">
           <thead className="bg-slate-900 text-slate-400"><tr>
-            {["Data", "Evento", "Cliente", "Pedido / oferta", "Pagamento", "Valor", "Creditos", ""].map((item) => <th key={item} className="px-3 py-3 text-left">{item}</th>)}
+            {["Data", "Origem", "Evento", "Cliente", "Pedido / oferta", "Pagamento", "Valor", "Creditos", ""].map((item) => <th key={item} className="px-3 py-3 text-left">{item}</th>)}
           </tr></thead>
           <tbody className="divide-y divide-slate-800">
-            {page.receipts.map((row) => (
+            {loading ? renderRowsSkeleton() : page.receipts.map((row) => (
               <tr key={row.id} className="text-slate-300">
                 <td className="whitespace-nowrap px-3 py-3">{new Date(row.eventAt || row.receivedAt).toLocaleString("pt-BR")}</td>
+                <td className="px-3 py-3">
+                  <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                    row.source === "saga"
+                      ? "border-violet-500/40 bg-violet-500/10 text-violet-300"
+                      : "border-sky-500/40 bg-sky-500/10 text-sky-300"
+                  }`}>
+                    {row.source === "saga" ? "SAGA" : "Cakto"}
+                  </span>
+                </td>
                 <td className="px-3 py-3"><p>{eventLabels[row.eventType] || row.eventType}</p><p className="text-slate-500">{row.status}</p></td>
                 <td className="px-3 py-3"><p>{row.customerName || "—"}</p><p className="text-slate-500">{row.customerEmail}</p></td>
                 <td className="px-3 py-3 font-mono"><p>{row.orderId || "—"}</p><p className="text-slate-500">{row.offerId || "—"}</p></td>
@@ -343,7 +391,7 @@ export function CaktoReceiptsTab() {
                 <td className="px-3 py-3"><button type="button" onClick={() => setSelected(row)} className="text-sky-400">Detalhes</button></td>
               </tr>
             ))}
-            {!loading && page.receipts.length === 0 ? <tr><td colSpan={8} className="px-3 py-8 text-center text-slate-500">Nenhum recebimento encontrado.</td></tr> : null}
+            {!loading && page.receipts.length === 0 ? <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-500">Nenhum recebimento encontrado.</td></tr> : null}
           </tbody>
         </table>
       </div>
