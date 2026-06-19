@@ -780,6 +780,7 @@ export type SagaAllUsersSyncJobResult = {
   forced?: boolean;
   importRunId?: string;
   origin?: "manual" | "cron" | string;
+  flightsOnly?: boolean;
   message?: string;
   usersCreated?: number;
   usersSkipped?: number;
@@ -885,6 +886,52 @@ export async function runSagaAllUsersSyncNow(
   }
   if (execution.status === "failed" || execution.responseStatusCode >= 400 || response.ok === false) {
     throw new Error(response.message || "Falha ao executar sincronizacao geral do SAGA.");
+  }
+  return response;
+}
+
+export async function runSagaAllUsersFlightsOnlyNow(
+  options: { onProgress?: (progress: SagaImportProgress) => void } = {},
+): Promise<SagaAllUsersSyncJobResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const importRunId = crypto.randomUUID();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaSyncAllUsersFlightsOnly", importRunId }),
+    true,
+  );
+  const execution = await waitForFunctionExecution(functionId, createdExecution.$id, 14 * 60 * 1000, {
+    progressRunId: importRunId,
+    onProgress: options.onProgress,
+  });
+  let response = parseJsonBody<SagaAllUsersSyncJobResult>(execution.responseBody, {
+    ok: false,
+    message: "Resposta da sincronizacao de voos SAGA nao estava em JSON valido.",
+    logs: [],
+  });
+  if (execution.status !== "failed" && execution.responseStatusCode < 400 && !response.importRunId) {
+    const historyEntry = (await fetchSagaSyncHistory().catch(() => []))
+      .find((entry) => entry.runId === importRunId);
+    if (historyEntry) {
+      response = {
+        ok: historyEntry.status === "completed",
+        importRunId: historyEntry.runId,
+        origin: historyEntry.origin,
+        flightsOnly: true,
+        message: historyEntry.message,
+        usersCreated: historyEntry.usersCreated,
+        usersSkipped: historyEntry.usersSkipped,
+        flightsCreated: historyEntry.flightsCreated,
+        flightsDeleted: historyEntry.flightsDeleted,
+        flightsSkipped: historyEntry.flightsSkipped,
+        creditsCreated: 0,
+        creditsSkipped: 0,
+        logs: [],
+      };
+    }
+  }
+  if (execution.status === "failed" || execution.responseStatusCode >= 400 || response.ok === false) {
+    throw new Error(response.message || "Falha ao sincronizar somente os voos do SAGA.");
   }
   return response;
 }

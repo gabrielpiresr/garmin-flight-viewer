@@ -1626,7 +1626,7 @@ async function sagaFetchUsers(payload) {
 
   const requestedOperationsDays = Math.round(Number(payload.operationsDays) || 0);
   const operationsRange = requestedOperationsDays > 0
-    ? sagaDateRangeDays(Math.max(1, Math.min(31, requestedOperationsDays)))
+    ? sagaDateRangeDays(Math.max(1, Math.min(365, requestedOperationsDays)))
     : sagaDateRangeMonths(24);
   const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
   logs.push(`GET /reports/operations: buscando voos em HTML (${operationsRange.startDate} a ${operationsRange.endDate}).`);
@@ -5406,7 +5406,7 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
   const testMode = payload.testMode !== false;
   const useEmailAlias = payload.useEmailAlias === true;
   const immutableSync = payload.immutableSync === true;
-  const syncWindowDays = Math.max(1, Math.min(31, Math.round(Number(payload.syncWindowDays) || 7)));
+  const syncWindowDays = Math.max(1, Math.min(365, Math.round(Number(payload.syncWindowDays) || 7)));
   const rawScope = payload.scope && typeof payload.scope === "object" ? payload.scope : {};
   const importScope = {
     users: rawScope.users !== false,
@@ -15441,6 +15441,8 @@ async function syncSagaScheduleFromImportSettings(actorUserId = "system", option
 async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) {
   const mapping = await loadSagaImportMapping();
   const forceRun = options.force === true;
+  const flightsOnly = options.flightsOnly === true;
+  const windowDays = flightsOnly ? 365 : 7;
   const origin = cleanString(options.origin) || (actorUserId === "system" ? "cron" : "manual");
   const minIntervalMs = 12 * 60 * 60 * 1000;
   const nowMs = Date.now();
@@ -15475,7 +15477,7 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     runId: importRunId,
     status: "running",
     stage: "Preparando sincronizacao",
-    message: "Conectando ao SAGA e carregando a janela dos ultimos 7 dias.",
+    message: `Conectando ao SAGA e carregando a janela dos ultimos ${windowDays} dias.`,
     current: 0,
     total: 1,
     logs: [],
@@ -15484,23 +15486,57 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     email: credentials.email,
     password: credentials.password,
     sendFlightsToSaga: mapping.sendFlightsToSaga === true,
-    operationsDays: 7,
+    operationsDays: windowDays,
     skipCreditPreview: true,
     skipSchedulePreview: true,
   });
   logs.push(...(Array.isArray(result.logs) ? result.logs : []));
 
+  let usersToImport = result.users || [];
+  let flightsToImport = result.flights || [];
+  if (flightsOnly) {
+    const allGroups = groupSagaFlightsById(Array.isArray(result.flights) ? result.flights : []);
+    const allDocIds = allGroups.map((group) => sagaDocId("saga_flight", group.key));
+    const existingIds = new Set();
+    const batchSize = 100;
+    for (let index = 0; index < allDocIds.length; index += batchSize) {
+      const chunk = allDocIds.slice(index, index + batchSize);
+      if (!chunk.length) continue;
+      const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+        sdk.Query.equal("$id", chunk),
+        sdk.Query.select(["$id"]),
+        sdk.Query.limit(chunk.length),
+      ]).catch(() => ({ documents: [] }));
+      for (const document of found.documents || []) existingIds.add(cleanString(document.$id));
+    }
+    const newGroups = allGroups.filter((group) => !existingIds.has(sagaDocId("saga_flight", group.key)));
+    const participantCanacs = new Set();
+    for (const group of newGroups) {
+      for (const leg of group.legs || []) {
+        const studentCanac = cleanString(leg.canacAluno);
+        const instructorCanac = cleanString(leg.canacInstrutor);
+        if (studentCanac) participantCanacs.add(studentCanac);
+        if (instructorCanac) participantCanacs.add(instructorCanac);
+      }
+    }
+    flightsToImport = newGroups.flatMap((group) => group.legs || []);
+    usersToImport = (result.users || []).filter((user) => participantCanacs.has(cleanString(user.codigoAnac)));
+    logs.push(
+      `Sync somente voos: ${newGroups.length}/${allGroups.length} voo(s) novo(s); ${usersToImport.length} participante(s) elegiveis para criacao se ausentes.`,
+    );
+  }
+
   const scope = {
     users: true,
     pastFlights: true,
     schedule: false,
-    credits: true,
+    credits: !flightsOnly,
   };
   const summaryResult = await sagaImportData(
     {
-      users: result.users || [],
-      flights: result.flights || [],
-      financialEntries: result.financialEntries || [],
+      users: usersToImport,
+      flights: flightsToImport,
+      financialEntries: flightsOnly ? [] : (result.financialEntries || []),
       mapping,
       scope,
       testMode: false,
@@ -15509,14 +15545,14 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
       password: credentials.password,
       importRunId,
       immutableSync: true,
-      syncWindowDays: 7,
+      syncWindowDays: windowDays,
     },
     actorUserId,
     null,
   );
 
   const summary = summaryResult?.summary || {};
-  const operationsRange = sagaDateRangeDays(7);
+  const operationsRange = sagaDateRangeDays(windowDays);
   const flightGroups = groupSagaFlightsById(Array.isArray(result.flights) ? result.flights : []);
   const staleCleanup = await purgeMissingSagaImportedFlightsForActor("system", flightGroups, operationsRange, logs);
   summary.flightsDeleted = staleCleanup.deletedFlights.length;
@@ -15529,7 +15565,9 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     stage: summaryResult?.ok === false ? "Falha" : "Concluido",
     message: summaryResult?.ok === false
       ? (summaryResult?.message || "A sincronizacao geral falhou.")
-      : `Concluido: ${Number(summary.usersCreated) || 0} usuarios, ${Number(summary.flightsCreated) || 0} voos e ${Number(summary.creditsCreated) || 0} creditos criados; ${Number(summary.flightsDeleted) || 0} voos removidos.`,
+      : flightsOnly
+        ? `Concluido: ${Number(summary.flightsCreated) || 0} voos criados, ${Number(summary.usersCreated) || 0} usuarios necessarios criados e ${Number(summary.flightsDeleted) || 0} voos removidos.`
+        : `Concluido: ${Number(summary.usersCreated) || 0} usuarios, ${Number(summary.flightsCreated) || 0} voos e ${Number(summary.creditsCreated) || 0} creditos criados; ${Number(summary.flightsDeleted) || 0} voos removidos.`,
     current: 1,
     total: 1,
     logs: [...logs.slice(-4), ...(Array.isArray(summary.logs) ? summary.logs.slice(-4) : [])],
@@ -15546,7 +15584,7 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     status: summaryResult?.ok === false ? "failed" : "completed",
     startedAt,
     completedAt: nowIso(),
-    windowDays: 7,
+    windowDays,
     usersCreated: summary.usersCreated,
     usersSkipped: summary.usersSkipped,
     flightsCreated: summary.flightsCreated,
@@ -15562,6 +15600,7 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     forced: forceRun,
     importRunId,
     origin,
+    flightsOnly,
     message: summaryResult?.message || "",
     usersCreated: Number(summary.usersCreated) || 0,
     usersSkipped: Number(summary.usersSkipped) || 0,
@@ -16115,7 +16154,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
   await saveSagaImportProgress({ runId, status: "running", stage: "fetch", message: "Buscando voos no SAGA...", current: 0, total: 0, logs });
 
-  const operationsRange = sagaDateRangeDays(7);
+  const operationsRange = sagaDateRangeDays(30);
   const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
   const operations = await sagaFetch(operationsPath, {
     method: "GET",
@@ -16127,7 +16166,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const myFlightRows = mappedFlightRows.filter(
     (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
   );
-  logs.push(`Voos filtrados por ANAC ${anac} (janela 7 dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
+  logs.push(`Voos filtrados por ANAC ${anac} (janela 30 dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
   logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados para ANAC ${anac}.`);
 
   await saveSagaImportProgress({ runId, status: "running", stage: "check", message: `${myFlightRows.length} voo(s) encontrado(s), verificando novos...`, current: 0, total: myFlightRows.length, logs });
@@ -17076,6 +17115,24 @@ module.exports = async ({ req, res, log, error }) => {
       };
       try {
         const result = await sagaImportAllUsersFromSaga(actorUserId || "system", syncInput);
+        return jsonResponse(res, 200, result);
+      } catch (err) {
+        await recordSagaAllUsersSyncFailure(syncInput, err);
+        throw err;
+      }
+    }
+
+    if (action === "sagaSyncAllUsersFlightsOnly") {
+      await requireAdmin(actorUserId);
+      const syncInput = {
+        force: true,
+        flightsOnly: true,
+        origin: "manual-flights-only",
+        importRunId: cleanString(payload.importRunId),
+        startedAt: nowIso(),
+      };
+      try {
+        const result = await sagaImportAllUsersFromSaga(actorUserId, syncInput);
         return jsonResponse(res, 200, result);
       } catch (err) {
         await recordSagaAllUsersSyncFailure(syncInput, err);

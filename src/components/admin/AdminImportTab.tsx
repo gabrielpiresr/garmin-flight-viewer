@@ -10,6 +10,7 @@ import {
   normalizeSagaCreditColumnMap,
   runSagaScheduleSyncNow,
   runSagaAllUsersSyncNow,
+  runSagaAllUsersFlightsOnlyNow,
   saveSagaImportMapping,
   type SagaImportScope,
   type SagaFinancialEntry,
@@ -867,6 +868,7 @@ export function AdminImportTab() {
   const [importScope, setImportScope] = useState<SagaImportScope>(DEFAULT_IMPORT_SCOPE);
   const [syncingScheduleNow, setSyncingScheduleNow] = useState(false);
   const [syncingAllUsersNow, setSyncingAllUsersNow] = useState(false);
+  const [syncingAllFlightsNow, setSyncingAllFlightsNow] = useState(false);
   const [syncHistory, setSyncHistory] = useState<SagaSyncHistoryEntry[]>([]);
   const [syncHistoryLoading, setSyncHistoryLoading] = useState(true);
   const {
@@ -947,10 +949,10 @@ export function AdminImportTab() {
   }, []);
 
   useEffect(() => {
-    if (!importing && !syncingAllUsersNow) return;
+    if (!importing && !syncingAllUsersNow && !syncingAllFlightsNow) return;
     const timer = window.setInterval(() => setProgressTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [importing, syncingAllUsersNow]);
+  }, [importing, syncingAllUsersNow, syncingAllFlightsNow]);
 
   async function refreshSyncHistory() {
     setSyncHistoryLoading(true);
@@ -1132,12 +1134,44 @@ export function AdminImportTab() {
     }
   }
 
+  async function handleSyncAllFlightsNow() {
+    setSyncingAllFlightsNow(true);
+    setError(null);
+    setImportStartedAt(Date.now());
+    setImportProgress({
+      runId: "",
+      status: "running",
+      stage: "Preparando sincronizacao",
+      message: "Buscando voos dos ultimos 365 dias no SAGA.",
+      current: 0,
+      total: 1,
+      logs: [],
+    });
+    try {
+      const result = await runSagaAllUsersFlightsOnlyNow({ onProgress: setImportProgress });
+      const usersCreated = Number(result.usersCreated || 0);
+      const flightsCreated = Number(result.flightsCreated || 0);
+      const flightsUpdated = Number(result.flightsUpdated || 0);
+      const flightsDeleted = Number(result.flightsDeleted || 0);
+      setError(
+        `Sincronizacao de voos concluida: ${flightsCreated} novos, ${flightsUpdated} atualizados, ${flightsDeleted} removidos e ${usersCreated} usuarios necessarios criados.`,
+      );
+      await refreshSyncHistory();
+    } catch (err) {
+      setImportProgress(null);
+      setError(err instanceof Error ? err.message : "Falha ao sincronizar somente os voos do SAGA.");
+    } finally {
+      setSyncingAllFlightsNow(false);
+      setImportStartedAt(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <SagaImportProgressOverlay
-        active={Boolean(importing) || syncingAllUsersNow || awaitingMission || importProgress?.status === "failed"}
+        active={Boolean(importing) || syncingAllUsersNow || syncingAllFlightsNow || awaitingMission || importProgress?.status === "failed"}
         awaitingMission={awaitingMission}
-        modeLabel={syncingAllUsersNow ? "Sincronizacao geral" : importModeLabel}
+        modeLabel={syncingAllFlightsNow ? "Somente voos - todos" : syncingAllUsersNow ? "Sincronizacao geral" : importModeLabel}
         importProgress={importProgress}
         importStartedAt={importStartedAt}
         progressTick={progressTick}
@@ -1259,6 +1293,22 @@ export function AdminImportTab() {
             </div>
             <div className="mt-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
               <div>
+                <span className="block text-sm font-semibold text-slate-100">Sincronizar somente voos (todos os usuarios)</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Repete a sincronizacao individual para todos na janela de 365 dias. Nao importa creditos nem usuarios sem voo novo; cria apenas aluno ou instrutor ausente que participe de um novo voo.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleSyncAllFlightsNow}
+                disabled={syncingAllFlightsNow || syncingAllUsersNow || loading || settingsLoading}
+                className="shrink-0 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {syncingAllFlightsNow ? "Sincronizando..." : "Sincronizar voos agora"}
+              </button>
+            </div>
+            <div className="mt-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3">
+              <div>
                 <span className="block text-sm font-semibold text-slate-100">Forcar sincronizacao geral agora (voos + creditos)</span>
                 <span className="mt-1 block text-xs leading-5 text-slate-500">
                   Executa imediatamente a rotina dos ultimos 7 dias para todos os usuarios, incluindo limpeza de voos apagados no SAGA.
@@ -1267,7 +1317,7 @@ export function AdminImportTab() {
               <button
                 type="button"
                 onClick={handleSyncAllUsersNow}
-                disabled={syncingAllUsersNow || loading || settingsLoading}
+                disabled={syncingAllUsersNow || syncingAllFlightsNow || loading || settingsLoading}
                 className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {syncingAllUsersNow ? "Sincronizando..." : "Sincronizar tudo agora"}
