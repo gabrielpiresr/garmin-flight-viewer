@@ -78,7 +78,7 @@ async function ensureFunction(functions) {
     runtime: sdk.Runtime.Node22,
     execute: [sdk.Role.any()],
     events: [],
-    schedule: process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 */12 * * *",
+    schedule: process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 * * * *",
     timeout: Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 900),
     enabled: true,
     logging: true,

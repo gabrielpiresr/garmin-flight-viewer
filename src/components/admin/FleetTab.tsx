@@ -6,6 +6,14 @@ import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flights
 import { flightAircraftHours } from "../../lib/flightHours";
 import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
+import {
+  listAircraftHorimeterCorrections,
+  createAircraftHorimeterCorrection,
+  updateAircraftHorimeterCorrection,
+  deleteAircraftHorimeterCorrection,
+  resolveEffectiveHoursBaseline,
+  type AircraftHorimeterCorrection,
+} from "../../lib/aircraftHorimeterCorrectionsDb";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import type { Aircraft, AircraftModel, AircraftType, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
@@ -348,15 +356,17 @@ function currentAircraftHoursFromBaseline(params: {
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
   metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
+  corrections?: AircraftHorimeterCorrection[];
 }): number | null {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
-  if (opening.ttaf == null) return null;
+  const { baselineMs, ttaf } = resolveEffectiveHoursBaseline(opening.baselineMs, opening.ttaf, params.corrections ?? []);
+  if (ttaf == null) return null;
   const now = Date.now();
   const flownHours = params.flights
-    .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
+    .filter((flight) => baselineMs === 0 || flightDateMs(flight) >= baselineMs)
     .filter((flight) => flightDateMs(flight) <= now)
     .reduce((sum, flight) => sum + flightDurationHours(flight, params.metaByFlightId), 0);
-  return Number((opening.ttaf + flownHours).toFixed(1));
+  return Number((ttaf + flownHours).toFixed(1));
 }
 
 function currentAircraftTotalsFromBaseline(params: {
@@ -364,12 +374,17 @@ function currentAircraftTotalsFromBaseline(params: {
   orders: MaintenanceWorkOrder[];
   flights: SavedFlightListItem[];
   metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>;
+  corrections?: AircraftHorimeterCorrection[];
 }): { hours: number | null; cycles: number | null; landings: number | null } {
   const opening = resolveAircraftOpening(params.aircraft, params.orders);
+  const { baselineMs, ttaf } = resolveEffectiveHoursBaseline(opening.baselineMs, opening.ttaf, params.corrections ?? []);
   const hours = currentAircraftHoursFromBaseline(params);
-  if (opening.ttaf == null) return { hours, cycles: null, landings: null };
+  const hasCorrection = (params.corrections ?? []).some((c) => new Date(c.corrected_at).getTime() <= Date.now());
+  if (ttaf == null) return { hours, cycles: null, landings: null };
+  // Quando há correção ativa, ciclos/pousos não têm base confiável
+  if (hasCorrection) return { hours, cycles: null, landings: null };
   const flown = params.flights
-    .filter((flight) => opening.baselineMs === 0 || flightDateMs(flight) >= opening.baselineMs)
+    .filter((flight) => baselineMs === 0 || flightDateMs(flight) >= baselineMs)
     .filter((flight) => flightDateMs(flight) <= Date.now());
   const additionalLandings = flown.reduce((sum, flight) => sum + (flight.landings ?? 0), 0);
   return {
@@ -409,6 +424,33 @@ function weightBalancePayload(form: AircraftForm) {
   };
 }
 
+function parseTtafInput(raw: string): number | null {
+  const parsed = Number(raw.trim().replace(",", "."));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function computeExpectedHoursAt(
+  targetMs: number,
+  opening: AircraftOpening,
+  otherCorrections: AircraftHorimeterCorrection[],
+  flights: SavedFlightListItem[],
+  metaByFlightId: ReadonlyMap<string, FlightRecordMeta | null>,
+): number | null {
+  // Effective baseline just before targetMs, ignoring the correction being evaluated
+  const { baselineMs, ttaf } = resolveEffectiveHoursBaseline(
+    opening.baselineMs,
+    opening.ttaf,
+    otherCorrections,
+    targetMs - 1,
+  );
+  if (ttaf == null) return null;
+  const flown = flights
+    .filter((f) => baselineMs === 0 || flightDateMs(f) >= baselineMs)
+    .filter((f) => flightDateMs(f) <= targetMs)
+    .reduce((sum, f) => sum + flightDurationHours(f, metaByFlightId), 0);
+  return Number((ttaf + flown).toFixed(1));
+}
+
 function WbNumberField({
   label,
   value,
@@ -444,11 +486,19 @@ export function FleetTab() {
   const [sagaSchedules, setSagaSchedules] = useState<SagaDirectScheduleItem[]>([]);
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [programItemsByModel, setProgramItemsByModel] = useState<Record<string, MaintenanceProgramItem[]>>({});
+  const [corrections, setCorrections] = useState<AircraftHorimeterCorrection[]>([]);
   const [loadingAircrafts, setLoadingAircrafts] = useState(true);
   const [loadingModels, setLoadingModels] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [typeTab, setTypeTab] = useState<AircraftType>("aviao");
   const [filter, setFilter] = useState<FilterState>("all");
+  const [openHorimeterForId, setOpenHorimeterForId] = useState<string | null>(null);
+  const [horimeterForm, setHorimeterForm] = useState({ date: "", time: "", ttaf: "", notes: "" });
+  const [savingHorimeter, setSavingHorimeter] = useState(false);
+  const [deletingCorrectionId, setDeletingCorrectionId] = useState<string | null>(null);
+  const [editingCorrectionId, setEditingCorrectionId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ date: "", time: "", ttaf: "", notes: "" });
+  const [savingEditCorrection, setSavingEditCorrection] = useState(false);
 
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
@@ -470,13 +520,15 @@ export function FleetTab() {
       listWorkOrders(),
       listAllSavedFlights({ userId: "admin", role: "admin" }, { pageSize: 100, maxItems: 5000 }),
       getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
+      listAircraftHorimeterCorrections(schoolId).catch(() => [] as AircraftHorimeterCorrection[]),
     ])
-      .then(async ([aircraftRows, modelRows, orderRows, flightRows, schoolRules]) => {
+      .then(async ([aircraftRows, modelRows, orderRows, flightRows, schoolRules, correctionRows]) => {
         setAircrafts(aircraftRows);
         setModels(modelRows);
         setWorkOrders(orderRows);
         setScheduleRules(schoolRules.schedule);
         setSagaSchedules(schoolRules.schedule.sagaOnlySchedule ? await listSagaSchedulesDirect(6) : []);
+        setCorrections(correctionRows);
         if (flightRows.error) throw flightRows.error;
         const flightList = flightRows.data ?? [];
         setFlights(flightList);
@@ -494,6 +546,95 @@ export function FleetTab() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const correctionsByAircraftId = useMemo(() => {
+    const grouped: Record<string, AircraftHorimeterCorrection[]> = {};
+    for (const c of corrections) {
+      (grouped[c.aircraft_id] ??= []).push(c);
+    }
+    return grouped;
+  }, [corrections]);
+
+  function openHorimeter(ac: Aircraft) {
+    setOpenHorimeterForId((prev) => (prev === ac.id ? null : ac.id));
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setHorimeterForm({
+      date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+      time: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+      ttaf: "",
+      notes: "",
+    });
+  }
+
+  async function handleSaveHorimeter(aircraftId: string) {
+    const { date, time, ttaf, notes } = horimeterForm;
+    const ttafNum = parseTtafInput(ttaf);
+    if (!date || !time || ttafNum == null) return;
+    setSavingHorimeter(true);
+    try {
+      const correctedAt = new Date(`${date}T${time}:00`).toISOString();
+      const created = await createAircraftHorimeterCorrection({
+        aircraft_id: aircraftId,
+        school_id: schoolId,
+        corrected_at: correctedAt,
+        ttaf_value: ttafNum,
+        notes: notes.trim() || null,
+      });
+      setCorrections((prev) => [created, ...prev]);
+      setHorimeterForm((f) => ({ ...f, ttaf: "", notes: "" }));
+      showToast({ variant: "success", message: "Horímetro registrado com sucesso." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSavingHorimeter(false);
+    }
+  }
+
+  function openEditCorrection(c: AircraftHorimeterCorrection) {
+    const dt = new Date(c.corrected_at);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setEditingCorrectionId(c.id);
+    setEditForm({
+      date: `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`,
+      time: `${pad(dt.getHours())}:${pad(dt.getMinutes())}`,
+      ttaf: String(c.ttaf_value),
+      notes: c.notes ?? "",
+    });
+  }
+
+  async function handleUpdateCorrection(id: string) {
+    const ttafNum = parseTtafInput(editForm.ttaf);
+    if (!editForm.date || !editForm.time || ttafNum == null) return;
+    setSavingEditCorrection(true);
+    try {
+      const correctedAt = new Date(`${editForm.date}T${editForm.time}:00`).toISOString();
+      const updated = await updateAircraftHorimeterCorrection(id, {
+        corrected_at: correctedAt,
+        ttaf_value: ttafNum,
+        notes: editForm.notes.trim() || null,
+      });
+      setCorrections((prev) => prev.map((c) => (c.id === id ? updated : c)));
+      setEditingCorrectionId(null);
+      showToast({ variant: "success", message: "Correção atualizada." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSavingEditCorrection(false);
+    }
+  }
+
+  async function handleDeleteCorrection(id: string) {
+    setDeletingCorrectionId(id);
+    try {
+      await deleteAircraftHorimeterCorrection(id);
+      setCorrections((prev) => prev.filter((c) => c.id !== id));
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setDeletingCorrectionId(null);
+    }
+  }
 
   function openCreate() {
     setForm({ ...emptyForm, type: typeTab, model_id: models[0]?.id ?? "" });
@@ -970,6 +1111,7 @@ export function FleetTab() {
             const aircraftOrders = workOrdersByAircraft[ac.id] ?? [];
             const registration = ac.registration.trim().toUpperCase();
             const aircraftFlightRows = flightsByAircraftIdent[registration] ?? [];
+            const aircraftCorrections = correctionsByAircraftId[ac.id] ?? [];
             const scheduledFlights = scheduleRules.sagaOnlySchedule
               ? sagaFlightsByAircraftIdent[registration] ?? []
               : scheduledAircraftFlights(aircraftFlightRows, emptyMetaByFlightId);
@@ -978,6 +1120,7 @@ export function FleetTab() {
               orders: aircraftOrders,
               flights: aircraftFlightRows,
               metaByFlightId: emptyMetaByFlightId,
+              corrections: aircraftCorrections,
             });
             const currentHours = totals.hours;
             const upcoming = buildUpcomingMaintenance({
@@ -1091,6 +1234,19 @@ export function FleetTab() {
                     >
                       Editar
                     </button>
+                    {ac.type === "aviao" && (
+                      <button
+                        type="button"
+                        onClick={() => openHorimeter(ac)}
+                        className={`flex-1 rounded-lg border py-1.5 text-xs transition ${
+                          openHorimeterForId === ac.id
+                            ? "border-sky-500/50 bg-sky-500/10 text-sky-300"
+                            : "border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                        }`}
+                      >
+                        Horímetro{aircraftCorrections.length > 0 ? ` (${aircraftCorrections.length})` : ""}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void handleToggleActive(ac)}
@@ -1103,6 +1259,242 @@ export function FleetTab() {
                       {ac.active ? "Desativar" : "Ativar"}
                     </button>
                   </div>
+                  {/* Painel de horímetro */}
+                  {ac.type === "aviao" && openHorimeterForId === ac.id && (() => {
+                    const opening = resolveAircraftOpening(ac, aircraftOrders);
+                    const sortedCorrections = [...aircraftCorrections].sort(
+                      (a, b) => new Date(b.corrected_at).getTime() - new Date(a.corrected_at).getTime(),
+                    );
+                    const activeId = sortedCorrections.find(
+                      (x) => new Date(x.corrected_at).getTime() <= Date.now(),
+                    )?.id;
+                    return (
+                      <div className="mt-3 rounded-lg border border-sky-800/40 bg-sky-950/20 p-3 space-y-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-sky-400">
+                          Correções de horímetro
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Registre o valor real do horímetro em uma data/hora. A partir desse ponto,
+                          todos os voos seguintes são somados sobre esse valor.
+                        </p>
+
+                        {/* Formulário de nova correção */}
+                        <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3 space-y-2">
+                          <p className="text-[11px] font-medium text-slate-300">Lançar novo horímetro</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="mb-1 block text-[10px] text-slate-500">Data *</label>
+                              <input
+                                type="date"
+                                value={horimeterForm.date}
+                                onChange={(e) => setHorimeterForm((f) => ({ ...f, date: e.target.value }))}
+                                className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="mb-1 block text-[10px] text-slate-500">Hora *</label>
+                              <input
+                                type="time"
+                                value={horimeterForm.time}
+                                onChange={(e) => setHorimeterForm((f) => ({ ...f, time: e.target.value }))}
+                                className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[10px] text-slate-500">
+                              Valor do horímetro (h) *
+                              {(() => {
+                                if (!horimeterForm.date || !horimeterForm.time) return null;
+                                const ms = new Date(`${horimeterForm.date}T${horimeterForm.time}:00`).getTime();
+                                if (!Number.isFinite(ms)) return null;
+                                const expected = computeExpectedHoursAt(ms, opening, aircraftCorrections, aircraftFlightRows, emptyMetaByFlightId);
+                                if (expected == null) return null;
+                                return (
+                                  <span className="ml-2 text-slate-500">
+                                    — sistema calcula {expected.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} h
+                                  </span>
+                                );
+                              })()}
+                            </label>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={horimeterForm.ttaf}
+                              onChange={(e) => setHorimeterForm((f) => ({ ...f, ttaf: e.target.value }))}
+                              placeholder="ex: 355.5 ou 355,5"
+                              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 placeholder-slate-600 outline-none focus:border-sky-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[10px] text-slate-500">Observação</label>
+                            <input
+                              type="text"
+                              value={horimeterForm.notes}
+                              onChange={(e) => setHorimeterForm((f) => ({ ...f, notes: e.target.value }))}
+                              placeholder="ex: Verificado no tacômetro após revisão"
+                              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 placeholder-slate-600 outline-none focus:border-sky-500"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            disabled={savingHorimeter || !horimeterForm.date || !horimeterForm.time || parseTtafInput(horimeterForm.ttaf) == null}
+                            onClick={() => void handleSaveHorimeter(ac.id)}
+                            className="w-full rounded-md bg-sky-600 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-50"
+                          >
+                            {savingHorimeter ? "Salvando…" : "Registrar horímetro"}
+                          </button>
+                        </div>
+
+                        {/* Histórico de correções */}
+                        <div>
+                          <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                            Histórico ({sortedCorrections.length})
+                          </p>
+                          {sortedCorrections.length === 0 ? (
+                            <p className="text-center text-[11px] text-slate-500 py-2">Nenhuma correção registrada.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {sortedCorrections.map((c) => {
+                                const isActive = c.id === activeId;
+                                const targetMs = new Date(c.corrected_at).getTime();
+                                const otherCorrections = aircraftCorrections.filter((x) => x.id !== c.id);
+                                const expected = computeExpectedHoursAt(targetMs, opening, otherCorrections, aircraftFlightRows, emptyMetaByFlightId);
+                                const isEditing = editingCorrectionId === c.id;
+                                return (
+                                  <div
+                                    key={c.id}
+                                    className={`rounded-md border ${isActive ? "border-sky-600/40 bg-sky-500/10" : "border-slate-700/50 bg-slate-800/30"}`}
+                                  >
+                                    {isEditing ? (
+                                      /* Formulário de edição inline */
+                                      <div className="p-2.5 space-y-2">
+                                        <p className="text-[10px] font-medium text-sky-300">Editar registro</p>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div>
+                                            <label className="mb-1 block text-[10px] text-slate-500">Data *</label>
+                                            <input
+                                              type="date"
+                                              value={editForm.date}
+                                              onChange={(e) => setEditForm((f) => ({ ...f, date: e.target.value }))}
+                                              className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="mb-1 block text-[10px] text-slate-500">Hora *</label>
+                                            <input
+                                              type="time"
+                                              value={editForm.time}
+                                              onChange={(e) => setEditForm((f) => ({ ...f, time: e.target.value }))}
+                                              className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                                            />
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <label className="mb-1 block text-[10px] text-slate-500">Horímetro (h) *</label>
+                                          <input
+                                            type="text"
+                                            inputMode="decimal"
+                                            value={editForm.ttaf}
+                                            onChange={(e) => setEditForm((f) => ({ ...f, ttaf: e.target.value }))}
+                                            placeholder="ex: 355.5"
+                                            className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="mb-1 block text-[10px] text-slate-500">Observação</label>
+                                          <input
+                                            type="text"
+                                            value={editForm.notes}
+                                            onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                                            className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                                          />
+                                        </div>
+                                        <div className="flex gap-2">
+                                          <button
+                                            type="button"
+                                            disabled={savingEditCorrection || !editForm.date || !editForm.time || parseTtafInput(editForm.ttaf) == null}
+                                            onClick={() => void handleUpdateCorrection(c.id)}
+                                            className="flex-1 rounded bg-sky-600 py-1 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-50"
+                                          >
+                                            {savingEditCorrection ? "Salvando…" : "Salvar"}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingCorrectionId(null)}
+                                            className="flex-1 rounded border border-slate-700 py-1 text-xs text-slate-400 transition hover:bg-slate-800"
+                                          >
+                                            Cancelar
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      /* Visualização do registro */
+                                      <div className="flex items-start gap-2 px-2.5 py-2">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className="text-xs font-semibold text-slate-100">
+                                              {c.ttaf_value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} h
+                                            </span>
+                                            <span className="text-[10px] text-slate-400">
+                                              em {new Date(c.corrected_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
+                                            </span>
+                                            {isActive && (
+                                              <span className="rounded-full bg-sky-500/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-400">
+                                                base ativa
+                                              </span>
+                                            )}
+                                          </div>
+                                          {expected != null && (
+                                            <p className="mt-0.5 text-[10px] text-slate-500">
+                                              Sistema calculava{" "}
+                                              <span className={`font-medium ${Math.abs(expected - c.ttaf_value) > 0.05 ? "text-amber-400" : "text-slate-400"}`}>
+                                                {expected.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} h
+                                              </span>
+                                              {Math.abs(expected - c.ttaf_value) > 0.05 && (
+                                                <span className="ml-1 text-slate-600">
+                                                  ({c.ttaf_value > expected ? "+" : ""}
+                                                  {(c.ttaf_value - expected).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} h)
+                                                </span>
+                                              )}
+                                            </p>
+                                          )}
+                                          {c.notes && <p className="mt-0.5 text-[10px] text-slate-500 italic">{c.notes}</p>}
+                                        </div>
+                                        <div className="flex shrink-0 gap-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => openEditCorrection(c)}
+                                            className="rounded p-1 text-slate-500 transition hover:bg-sky-500/10 hover:text-sky-400"
+                                            title="Editar"
+                                          >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                                              <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.474ZM4.75 13.5c-.69 0-1.25-.56-1.25-1.25V4.75c0-.69.56-1.25 1.25-1.25H8a.75.75 0 0 0 0-1.5H4.75A2.75 2.75 0 0 0 2 4.75v7.5A2.75 2.75 0 0 0 4.75 15h7.5A2.75 2.75 0 0 0 15 12.25V9a.75.75 0 0 0-1.5 0v3.25c0 .69-.56 1.25-1.25 1.25h-7.5Z" />
+                                            </svg>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={deletingCorrectionId === c.id}
+                                            onClick={() => void handleDeleteCorrection(c.id)}
+                                            className="rounded p-1 text-slate-500 transition hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"
+                                            title="Excluir"
+                                          >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                                              <path fillRule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5a.75.75 0 0 1 .786-.711Z" clipRule="evenodd" />
+                                            </svg>
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );

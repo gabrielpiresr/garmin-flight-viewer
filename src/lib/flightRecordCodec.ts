@@ -39,6 +39,7 @@ export type FlightRecordMeta = {
     demandId: string;
     allocationLayer?: string;
     relaxationLevel?: string;
+    notes?: string;
   };
   training?: {
     trackId?: string;

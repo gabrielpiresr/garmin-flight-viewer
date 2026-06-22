@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Varredura explícita de todo o src. Sem isso, o @tailwindcss/vite gera o CSS
+   de forma incremental a partir do grafo de módulos do Vite; como cada aba é
+   lazy (React.lazy + import dinâmico), um F5 numa rota interna pede o index.css
+   antes do chunk daquela rota carregar — e o CSS sai incompleto (cards/modais/
+   cores somem em todas as abas até um hard reload). O glob força a varredura
+   completa por disco, deixando a geração determinística. */
+@source "./**/*.{ts,tsx,js,jsx}";
+
 /* Não definir position aqui — o Tailwind usa absolute + inset no overlay. */
 .video-overlay-root {
   container-type: size;

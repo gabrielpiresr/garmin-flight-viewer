@@ -14890,7 +14890,7 @@ function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
   return "";
 }
 
-function sagaScheduleSummaryPayload(ctx, mapping) {
+function sagaScheduleSummaryPayload(ctx, mapping, payload = {}) {
   const { flight, studentUser, instructorUser, studentProfile, instructorProfile } = ctx;
   const aircraftIdent = normalizeAircraftIdent(flight.aircraft_ident);
   const aircraftId = resolveSagaScheduleAircraftId(flight.aircraft_ident, mapping);
@@ -14904,14 +14904,16 @@ function sagaScheduleSummaryPayload(ctx, mapping) {
   const { startAt, endAt } = sagaScheduleDateTimes(flight);
   const studentName = cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || "Aluno";
   const instructorName = cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name);
-  const notes = [
-    `GFV ${flight.$id}`,
-    `Aluno: ${studentName}`,
-    instructorName ? `Instrutor: ${instructorName}` : "",
-    aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
-    cleanString(flight.flight_date) ? `Data: ${cleanString(flight.flight_date)}` : "",
-    cleanString(flight.start_time) ? `Horario: ${cleanString(flight.start_time).slice(0, 5)}` : "",
-  ].filter(Boolean).join(" | ");
+  const notes = Object.prototype.hasOwnProperty.call(payload, "notes")
+    ? cleanString(payload.notes)
+    : [
+        `GFV ${flight.$id}`,
+        `Aluno: ${studentName}`,
+        instructorName ? `Instrutor: ${instructorName}` : "",
+        aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
+        cleanString(flight.flight_date) ? `Data: ${cleanString(flight.flight_date)}` : "",
+        cleanString(flight.start_time) ? `Horario: ${cleanString(flight.start_time).slice(0, 5)}` : "",
+      ].filter(Boolean).join(" | ");
   return {
     aircraft_id: aircraftId,
     student_id: studentSagaId,
@@ -14991,7 +14993,7 @@ async function syncSagaScheduleEvent(actorUserId, payload = {}) {
   try {
     const ctx = await getFlightCalendarContext(flightId);
     const cookieSession = await loadSagaAuthSession();
-    const requestPayload = sagaScheduleSummaryPayload(ctx, mapping);
+    const requestPayload = sagaScheduleSummaryPayload(ctx, mapping, payload);
     baseResult.requestPayload = requestPayload;
     const path = mode === "cancel"
       ? `/schedules/management/${encodeURIComponent(sagaScheduleId)}`
@@ -15260,13 +15262,15 @@ async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
 
   const { startAt, endAt } = sagaDirectScheduleDateTimes(payload.date, payload.startTime, payload.durationMinutes);
   // rawNotes substitui o texto inteiro (usado p/ preservar notas existentes em alteração/cancelamento).
-  const notes = cleanString(payload.rawNotes) || [
-    "GFV escala",
-    studentName ? `Aluno: ${studentName}` : "",
-    instructorName ? `Instrutor: ${instructorName}` : "",
-    aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
-    cleanString(payload.notes),
-  ].filter(Boolean).join(" | ");
+  const notes = Object.prototype.hasOwnProperty.call(payload, "rawNotes")
+    ? cleanString(payload.rawNotes)
+    : [
+        "GFV escala",
+        studentName ? `Aluno: ${studentName}` : "",
+        instructorName ? `Instrutor: ${instructorName}` : "",
+        aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
+        cleanString(payload.notes),
+      ].filter(Boolean).join(" | ");
 
   const requestPayload = {
     aircraft_id: aircraftId,
@@ -15444,7 +15448,7 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
   const flightsOnly = options.flightsOnly === true;
   const windowDays = flightsOnly ? 365 : 7;
   const origin = cleanString(options.origin) || (actorUserId === "system" ? "cron" : "manual");
-  const minIntervalMs = 12 * 60 * 60 * 1000;
+  const minIntervalMs = 55 * 60 * 1000;
   const nowMs = Date.now();
   if (!forceRun && mapping.syncAllUsersFromSaga !== true) {
     return { ok: true, skipped: true, message: "Sync geral SAGA desativado nas configuracoes.", logs: [] };
@@ -17067,6 +17071,40 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, mapping });
     }
 
+    if (action === "sagaSyncAllUsersFromSagaJob") {
+      const syncInput = {
+        force: payload.force === true,
+        origin: actorUserId ? "manual" : "cron",
+        importRunId: cleanString(payload.importRunId),
+        startedAt: nowIso(),
+      };
+      try {
+        const result = await sagaImportAllUsersFromSaga(actorUserId || "system", syncInput);
+        return jsonResponse(res, 200, result);
+      } catch (err) {
+        await recordSagaAllUsersSyncFailure(syncInput, err);
+        throw err;
+      }
+    }
+
+    if (action === "sagaSyncAllUsersFlightsOnly") {
+      await requireAdmin(actorUserId);
+      const syncInput = {
+        force: true,
+        flightsOnly: true,
+        origin: "manual-flights-only",
+        importRunId: cleanString(payload.importRunId),
+        startedAt: nowIso(),
+      };
+      try {
+        const result = await sagaImportAllUsersFromSaga(actorUserId, syncInput);
+        return jsonResponse(res, 200, result);
+      } catch (err) {
+        await recordSagaAllUsersSyncFailure(syncInput, err);
+        throw err;
+      }
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "createUser") {
@@ -17104,40 +17142,6 @@ module.exports = async ({ req, res, log, error }) => {
         force: payload.force === true,
       });
       return jsonResponse(res, 200, result);
-    }
-
-    if (action === "sagaSyncAllUsersFromSagaJob") {
-      const syncInput = {
-        force: payload.force === true,
-        origin: actorUserId ? "manual" : "cron",
-        importRunId: cleanString(payload.importRunId),
-        startedAt: nowIso(),
-      };
-      try {
-        const result = await sagaImportAllUsersFromSaga(actorUserId || "system", syncInput);
-        return jsonResponse(res, 200, result);
-      } catch (err) {
-        await recordSagaAllUsersSyncFailure(syncInput, err);
-        throw err;
-      }
-    }
-
-    if (action === "sagaSyncAllUsersFlightsOnly") {
-      await requireAdmin(actorUserId);
-      const syncInput = {
-        force: true,
-        flightsOnly: true,
-        origin: "manual-flights-only",
-        importRunId: cleanString(payload.importRunId),
-        startedAt: nowIso(),
-      };
-      try {
-        const result = await sagaImportAllUsersFromSaga(actorUserId, syncInput);
-        return jsonResponse(res, 200, result);
-      } catch (err) {
-        await recordSagaAllUsersSyncFailure(syncInput, err);
-        throw err;
-      }
     }
 
     if (action === "sagaFetchSchedules") {

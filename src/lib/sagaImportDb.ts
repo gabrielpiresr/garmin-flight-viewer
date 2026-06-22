@@ -725,7 +725,7 @@ export type SagaScheduleSyncResult = {
 export async function syncSagaScheduleEvent(
   flightId: string,
   mode: SagaScheduleSyncMode,
-  options: { allowCreate?: boolean; sagaScheduleId?: string | null } = {},
+  options: { allowCreate?: boolean; sagaScheduleId?: string | null; notes?: string } = {},
 ): Promise<SagaScheduleSyncResult> {
   const { functions: fn, functionId } = getAdminFunctionClient();
 
@@ -737,6 +737,7 @@ export async function syncSagaScheduleEvent(
       mode,
       allowCreate: options.allowCreate === true,
       sagaScheduleId: options.sagaScheduleId ?? null,
+      ...(options.notes !== undefined ? { notes: options.notes } : {}),
     }),
     async: false,
   });
@@ -997,6 +998,7 @@ export type SagaUpsertScheduleDirectInput = {
   /** Status do evento no SAGA. Default: PLANNED. */
   sagaStatus?: "PLANNED" | "PENDING" | "CONFIRMED";
   notes?: string;
+  rawNotes?: string;
 };
 
 /** Cria/atualiza um evento direto na agenda SAGA (modo escala somente no SAGA). */

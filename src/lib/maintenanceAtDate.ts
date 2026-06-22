@@ -138,7 +138,10 @@ function nextDueItemAt(params: {
     const rules = parseRecurrenceRules(item.recurrence_rules);
     if (rules.hours == null || rules.hours <= 0) continue;
     const itemOrders = params.aircraftOrders.filter(
-      (order) => order.maintenance_program_item_id === item.id && order.work_order_type !== "migration_baseline",
+      (order) =>
+        order.maintenance_program_item_id === item.id &&
+        order.work_order_type !== "migration_baseline" &&
+        (order.status === "completed" || order.status === "released"),
     );
     const latestPerformed = itemOrders.sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
     const dueAt = latestPerformed ? latestPerformed.aircraft_ttaf + rules.hours : Math.ceil((currentHours + 0.0001) / rules.hours) * rules.hours;

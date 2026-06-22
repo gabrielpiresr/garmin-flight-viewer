@@ -1269,7 +1269,7 @@ export function AdminImportTab() {
                 className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500"
               />
               <span>
-                <span className="block text-sm font-semibold text-slate-100">Sincronizar voos + creditos (todos usuários) a cada 12h</span>
+                <span className="block text-sm font-semibold text-slate-100">Sincronizar voos + creditos (todos usuários) a cada 1h</span>
                 <span className="mt-1 block text-xs leading-5 text-slate-500">
                   Quando ligado, o backend roda rotina automatica no mesmo fluxo de "Atualizar do SAGA", para todos os alunos, janela de 7 dias, incluindo exclusao local de voos removidos no SAGA.
                 </span>

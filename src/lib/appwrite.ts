@@ -37,6 +37,8 @@ export const MAINTENANCE_ATTACHMENTS_COL_ID =
   import.meta.env.VITE_APPWRITE_MAINTENANCE_ATTACHMENTS_COL_ID as string | undefined;
 export const FUELINGS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FUELINGS_COL_ID as string | undefined) ?? "aircraft_fuelings";
+export const AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID as string | undefined) ?? "aircraft_horimeter_corrections";
 export const OP_WEEKS_COL_ID = import.meta.env.VITE_APPWRITE_OP_WEEKS_COL_ID as string | undefined;
 
 // Student planning collections

@@ -2,18 +2,17 @@ import { listAircrafts } from "./aircraftDb";
 import { listProgramItemsByModel, listWorkOrders } from "./maintenanceDb";
 import { listAllSavedFlights, type SavedFlightListItem } from "./flightsDb";
 import { flightAircraftHours } from "./flightHours";
+import { listAircraftHorimeterCorrections, resolveEffectiveHoursBaseline, type AircraftHorimeterCorrection } from "./aircraftHorimeterCorrectionsDb";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../types/admin";
 
 // Horas totais atuais por aeronave — mesmo cálculo da aba Frota (FleetTab):
 // abertura do diário (logbook_ttaf) ou baseline de migração + horas voadas desde então.
-// Também expõe em quantas horas totais cada manutenção por horas "bate" (dueAtHours),
-// para a escala destacar o dia projetado em que isso acontece.
+// Também expõe os intervalos de cada manutenção por horas para a escala
+// destacar todo múltiplo projetado, sem depender do histórico de OS.
 
 export type AircraftMaintenanceDue = {
   code: string;
   title: string;
-  /** Horas totais da aeronave em que a manutenção vence. */
-  dueAtHours: number;
   /** Intervalo da recorrência (h). Quando várias vencem juntas, prevalece o maior intervalo (ex.: 600h engloba a 100h). */
   intervalHours: number;
 };
@@ -38,16 +37,23 @@ function latestBaseline(orders: MaintenanceWorkOrder[]): MaintenanceWorkOrder | 
     .sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())[0] ?? null;
 }
 
-function resolveOpening(aircraft: Aircraft, orders: MaintenanceWorkOrder[]): { baselineMs: number; ttaf: number | null } {
+function resolveOpening(
+  aircraft: Aircraft,
+  orders: MaintenanceWorkOrder[],
+  corrections: AircraftHorimeterCorrection[] = [],
+): { baselineMs: number; ttaf: number | null } {
+  let originalBaselineMs: number;
+  let originalTtaf: number | null;
   if (aircraft.logbook_ttaf != null) {
-    return {
-      baselineMs: aircraft.logbook_opening_date ? new Date(aircraft.logbook_opening_date).getTime() : 0,
-      ttaf: aircraft.logbook_ttaf,
-    };
+    originalBaselineMs = aircraft.logbook_opening_date ? new Date(aircraft.logbook_opening_date).getTime() : 0;
+    originalTtaf = aircraft.logbook_ttaf;
+  } else {
+    const baseline = latestBaseline(orders);
+    if (!baseline) return resolveEffectiveHoursBaseline(0, null, corrections);
+    originalBaselineMs = new Date(baseline.opened_at).getTime();
+    originalTtaf = baseline.aircraft_ttaf;
   }
-  const baseline = latestBaseline(orders);
-  if (!baseline) return { baselineMs: 0, ttaf: null };
-  return { baselineMs: new Date(baseline.opened_at).getTime(), ttaf: baseline.aircraft_ttaf };
+  return resolveEffectiveHoursBaseline(originalBaselineMs, originalTtaf, corrections);
 }
 
 function parseHoursInterval(value: string): number | null {
@@ -67,34 +73,24 @@ function isExcludedMaintenanceItem(item: MaintenanceProgramItem): boolean {
   return haystack.includes("transit") || haystack.includes("trânsito") || haystack.includes("diaria") || haystack.includes("diária");
 }
 
-/** Próximo vencimento por horas — mesma regra do FleetTab (nextDueHours), em horas absolutas. */
-function maintenanceDueList(
-  currentHours: number | null,
-  modelItems: MaintenanceProgramItem[],
-  aircraftOrders: MaintenanceWorkOrder[],
-): AircraftMaintenanceDue[] {
-  if (currentHours == null) return [];
+/** Recorrências por horas usadas na escala, independentes das OS realizadas. */
+function maintenanceDueList(modelItems: MaintenanceProgramItem[]): AircraftMaintenanceDue[] {
   const due: AircraftMaintenanceDue[] = [];
   for (const item of modelItems) {
     if (isExcludedMaintenanceItem(item)) continue;
     const interval = parseHoursInterval(item.recurrence_rules);
     if (interval == null) continue;
-    const latestPerformed = aircraftOrders
-      .filter((order) => order.maintenance_program_item_id === item.id && order.work_order_type !== "migration_baseline")
-      .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
-    const dueAt = latestPerformed
-      ? latestPerformed.aircraft_ttaf + interval
-      : Math.ceil((currentHours + 0.0001) / interval) * interval;
-    due.push({ code: item.code, title: item.title, dueAtHours: Number(dueAt.toFixed(1)), intervalHours: interval });
+    due.push({ code: item.code, title: item.title, intervalHours: interval });
   }
-  return due.sort((a, b) => a.dueAtHours - b.dueAtHours);
+  return due.sort((a, b) => b.intervalHours - a.intervalHours);
 }
 
 export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftBaseHours[]> {
-  const [aircrafts, orders, flightsResult] = await Promise.all([
+  const [aircrafts, orders, flightsResult, corrections] = await Promise.all([
     listAircrafts(schoolId),
     listWorkOrders().catch(() => [] as MaintenanceWorkOrder[]),
     listAllSavedFlights({ userId: "admin", role: "admin" }, { pageSize: 100, maxItems: 5000 }),
+    listAircraftHorimeterCorrections(schoolId).catch(() => [] as AircraftHorimeterCorrection[]),
   ]);
   if (flightsResult.error) throw flightsResult.error;
   const flights = flightsResult.data ?? [];
@@ -122,10 +118,18 @@ export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftB
     ordersByAircraftId.set(order.aircraft_id, rows);
   }
 
+  const correctionsByAircraftId = new Map<string, AircraftHorimeterCorrection[]>();
+  for (const correction of corrections) {
+    const rows = correctionsByAircraftId.get(correction.aircraft_id) ?? [];
+    rows.push(correction);
+    correctionsByAircraftId.set(correction.aircraft_id, rows);
+  }
+
   const now = Date.now();
   return aircrafts.map((aircraft) => {
     const aircraftOrders = ordersByAircraftId.get(aircraft.id) ?? [];
-    const opening = resolveOpening(aircraft, aircraftOrders);
+    const aircraftCorrections = correctionsByAircraftId.get(aircraft.id) ?? [];
+    const opening = resolveOpening(aircraft, aircraftOrders, aircraftCorrections);
     if (opening.ttaf == null) {
       return { registration: aircraft.registration, type: aircraft.type, hours: null, maintenanceDue: [] };
     }
@@ -138,7 +142,7 @@ export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftB
       registration: aircraft.registration,
       type: aircraft.type,
       hours,
-      maintenanceDue: maintenanceDueList(hours, programItemsByModel.get(aircraft.model_id) ?? [], aircraftOrders),
+      maintenanceDue: maintenanceDueList(programItemsByModel.get(aircraft.model_id) ?? []),
     };
   });
 }

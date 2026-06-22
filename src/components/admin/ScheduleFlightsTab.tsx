@@ -240,8 +240,14 @@ function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingSched
     flightStatus: sagaEventStatusLabel(item),
     sourceFilename: "saga-schedule",
     sagaScheduleId: item.id,
+    notes: item.notes || null,
     isOutsideGenerator: false,
   };
+}
+
+/** Tempo efetivo acionamento→corte dentro do bloco completo armazenado no SAGA. */
+function sagaEffectiveFlightMinutes(blockMinutes: number, rules: FlightScheduleRules): number {
+  return Math.max(0, blockMinutes - rules.bufferBeforeMinutes - rules.bufferAfterMinutes);
 }
 
 type FlightFormDraft = {
@@ -264,6 +270,7 @@ type FlightFormDraft = {
   cancellationReason?: string;
   cancellationReasonText?: string;
   waiveCancellationPenalty?: boolean;
+  notes: string;
 };
 
 export type CalendarFlightItem = {
@@ -394,6 +401,7 @@ function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: I
       version: "AUTO_SCHEDULE_V1",
       weekStart,
       demandId: draft.demandId,
+      notes: draft.notes.trim(),
     },
     header: {
       studentUserId: draft.studentId,
@@ -832,7 +840,7 @@ export function CalendarGrid({
                     })}
                     {(layoutByDay.get(day) ?? []).map((entry) => {
                       const item = entry.item;
-                      if (dragState?.item.id === item.id) return null;
+                      if (dragState?.hasMoved && dragState.item.id === item.id) return null;
                       const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
@@ -897,7 +905,7 @@ export function CalendarGrid({
                         </div>
                       );
                     })}
-                    {dragState && dragState.preview.dayOfWeek === day ? (() => {
+                    {dragState?.hasMoved && dragState.preview.dayOfWeek === day ? (() => {
                       const item = dragState.item;
                       const entry = (layoutByDay.get(day) ?? []).find((e) => e.item.id === item.id) ?? {
                         item,
@@ -1379,7 +1387,7 @@ function DailyCalendarGrid({
                           <div key={`${col.key}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                         ))}
                         {entries.map((entry) => {
-                          if (dragState?.item.id === entry.item.id) return null;
+                          if (dragState?.hasMoved && dragState.item.id === entry.item.id) return null;
                           const item = entry.item;
                           const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
@@ -1435,7 +1443,7 @@ function DailyCalendarGrid({
                           );
                         })}
                         {/* Drag preview */}
-                        {dragState && (() => {
+                        {dragState?.hasMoved && (() => {
                           const item = dragState.item;
                           const entry = entries.find((e) => e.item.id === item.id) ?? { item, columnIndex: 0, columnCount: 1 };
                           const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
@@ -1830,7 +1838,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   }, [error, showToast]);
 
   const runSagaScheduleSync = useCallback(
-    async (flightId: string, mode: SagaScheduleSyncMode, options: { allowCreate?: boolean; sagaScheduleId?: string | null } = {}) => {
+    async (
+      flightId: string,
+      mode: SagaScheduleSyncMode,
+      options: { allowCreate?: boolean; sagaScheduleId?: string | null; notes?: string } = {},
+    ) => {
       const result = await syncSagaScheduleEvent(flightId, mode, options).catch((error) => ({
         ok: false,
         mode,
@@ -2241,9 +2253,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const netFlightHours = useCallback(
     (row: ExistingScheduledFlight) => {
       if (!isSagaEventRowId(row.id)) return row.durationHours;
-      return Math.max(0, row.durationHours - (scheduleRules.bufferBeforeMinutes + scheduleRules.bufferAfterMinutes) / 60);
+      return sagaEffectiveFlightMinutes(row.durationHours * 60, scheduleRules) / 60;
     },
-    [scheduleRules.bufferBeforeMinutes, scheduleRules.bufferAfterMinutes],
+    [scheduleRules],
   );
 
   const totalWeightByFlightId = useMemo(() => {
@@ -2335,7 +2347,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           const startMin = parseScheduleTimeToMinutes(start.time);
           let endMin = end.time ? parseScheduleTimeToMinutes(end.time) : startMin + 60;
           if (end.date && end.date > start.date) endMin += 1440;
-          const netMinutes = Math.max(0, endMin - startMin - scheduleRules.bufferBeforeMinutes - scheduleRules.bufferAfterMinutes);
+          const netMinutes = sagaEffectiveFlightMinutes(endMin - startMin, scheduleRules);
           const modelId = modelByReg.get((event.aircraft || "").toUpperCase());
           if (!modelId) continue;
           minutesByModel[modelId] = (minutesByModel[modelId] ?? 0) + netMinutes;
@@ -2463,7 +2475,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             // Quando mais de uma manutenção vence no mesmo dia (ex.: 600h também é
             // múltiplo da 100h), prevalece a de MAIOR intervalo — menor frequência.
             const hit = dueList
-              .filter((item) => previous < item.dueAtHours && value >= item.dueAtHours)
+              .filter((item) => {
+                const nextMultiple = (Math.floor(previous / item.intervalHours) + 1) * item.intervalHours;
+                return nextMultiple <= value + 1e-9;
+              })
               .sort((a, b) => b.intervalHours - a.intervalHours)[0];
             hoursByDay[day] = { hours: value, maintenance: hit ? `${hit.code} · ${hit.title}` : undefined };
             previous = value;
@@ -2614,6 +2629,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       durationHours: 1,
       flightStatus: "Confirmado",
       isNight: false,
+      notes: "",
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -2641,6 +2657,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         sagaScheduleId: row.sagaScheduleId ?? null,
         flightStatus: row.flightStatus ?? "Confirmado",
         waiveCancellationPenalty: true,
+        notes: row.notes ?? "",
       });
       setFormConflicts([]);
       setForceSaveWithConflict(false);
@@ -2679,6 +2696,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       cancellationReason: existingCancellation?.reasonCode ?? "",
       cancellationReasonText: existingCancellation?.reasonText ?? "",
       waiveCancellationPenalty: true,
+      notes:
+        decoded?.schedule?.notes ??
+        (typeof (decoded?.header as Record<string, unknown> | undefined)?.notes === "string"
+          ? String((decoded?.header as Record<string, unknown>).notes)
+          : decoded?.preFlight.objectiveMd ?? ""),
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
@@ -2734,6 +2756,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             startTime: formDraft.startTime,
             durationMinutes,
             sagaStatus: flightStatusToSagaStatus(formDraft.flightStatus),
+            rawNotes: formDraft.notes,
           });
           showToast({ variant: "success", message: result.message });
         }
@@ -2786,7 +2809,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           if (result.error) throw result.error;
         }
         void syncFlightCalendarEvent(formDraft.id, "upsert");
-        void runSagaScheduleSync(formDraft.id, "upsert", { sagaScheduleId: formDraft.sagaScheduleId ?? null });
+        void runSagaScheduleSync(formDraft.id, "upsert", {
+          sagaScheduleId: formDraft.sagaScheduleId ?? null,
+          notes: formDraft.notes,
+        });
         void dispatchNotificationEvent({
           eventType: "flight.updated",
           flightId: formDraft.id,
@@ -2806,7 +2832,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         if (result.error) throw result.error;
         if (result.id) {
           void syncFlightCalendarEvent(result.id, "upsert");
-          void runSagaScheduleSync(result.id, "upsert", { allowCreate: true });
+          void runSagaScheduleSync(result.id, "upsert", { allowCreate: true, notes: formDraft.notes });
           void dispatchNotificationEvent({
             eventType: "flight.scheduled",
             flightId: result.id,
@@ -3732,7 +3758,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 </select>
               </label>
               <label className="text-xs text-slate-400">
-                Hora
+                {scheduleRules.sagaOnlySchedule ? "Início do bloco SAGA" : "Hora"}
                 <select
                   value={hourSelectValue(formDraft.isNight, formDraft.startTime, formDraft.startHour)}
                   onChange={(e) => {
@@ -3758,7 +3784,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 </select>
               </label>
               <label className="text-xs text-slate-400">
-                Duração (h)
+                {scheduleRules.sagaOnlySchedule ? "Duração do bloco SAGA (h)" : "Duração (h)"}
                 <input
                   type="number"
                   min={0.5}
@@ -3769,21 +3795,42 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 />
               </label>
+              <label className="text-xs text-slate-400 md:col-span-2">
+                Observações
+                <textarea
+                  value={formDraft.notes}
+                  onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, notes: e.target.value.slice(0, 255) } : prev))}
+                  rows={3}
+                  maxLength={255}
+                  placeholder="Observações do voo"
+                  className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-violet-500"
+                />
+                <span className="mt-1 block text-right text-[10px] text-slate-500">{formDraft.notes.length}/255</span>
+              </label>
             </div>
 
-            {/* 4-time summary (Apresentação / Acionamento / Corte / Encerramento) */}
+            {/* Resumo operacional; no SAGA o horário editado representa o bloco completo. */}
             {(() => {
               const startMin = parseScheduleTimeToMinutes(formDraft.startTime);
               const durMin = Math.round(formDraft.durationHours * 60);
-              const presentation = minutesToScheduleHHMM(startMin - scheduleRules.bufferBeforeMinutes);
-              const cutoff = minutesToScheduleHHMM(startMin + durMin);
-              const end = minutesToScheduleHHMM(startMin + durMin + scheduleRules.bufferAfterMinutes);
+              const isSagaBlock = scheduleRules.sagaOnlySchedule;
+              const blockEndMin = startMin + durMin;
+              const engineStartMin = isSagaBlock ? startMin + scheduleRules.bufferBeforeMinutes : startMin;
+              const cutoffMin = isSagaBlock
+                ? Math.max(engineStartMin, blockEndMin - scheduleRules.bufferAfterMinutes)
+                : startMin + durMin;
+              const presentation = minutesToScheduleHHMM(isSagaBlock ? startMin : startMin - scheduleRules.bufferBeforeMinutes);
+              const engineStart = minutesToScheduleHHMM(engineStartMin);
+              const cutoff = minutesToScheduleHHMM(cutoffMin);
+              const end = minutesToScheduleHHMM(isSagaBlock ? blockEndMin : cutoffMin + scheduleRules.bufferAfterMinutes);
+              const effectiveFlightTime = hoursToHHMM(sagaEffectiveFlightMinutes(durMin, scheduleRules) / 60);
               return (
-                <div className="mx-4 mb-3 grid grid-cols-2 gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100 sm:grid-cols-4">
+                <div className={`mx-4 mb-3 grid grid-cols-2 gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100 ${isSagaBlock ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
                   <div><p className="text-sky-300">Apresentação</p><strong>{presentation}</strong></div>
-                  <div><p className="text-sky-300">Acionamento</p><strong>{formDraft.startTime}</strong></div>
+                  <div><p className="text-sky-300">Acionamento</p><strong>{engineStart}</strong></div>
                   <div><p className="text-sky-300">Corte</p><strong>{cutoff}</strong></div>
                   <div><p className="text-sky-300">Encerramento</p><strong>{end}</strong></div>
+                  {isSagaBlock ? <div><p className="text-sky-300">Tempo de voo</p><strong>{effectiveFlightTime}</strong></div> : null}
                 </div>
               );
             })()}
@@ -3905,4 +3952,3 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     </div>
   );
 }
-

@@ -95,6 +95,7 @@ export type ExistingScheduledFlight = {
   sagaScheduleId?: string | null;
   sagaScheduleSyncStatus?: string | null;
   sagaScheduleSyncedAt?: string | null;
+  notes?: string | null;
   /** Voo agendado fora do gerador de escala (não usa prefixo auto/manual-scale). */
   isOutsideGenerator?: boolean;
 };
