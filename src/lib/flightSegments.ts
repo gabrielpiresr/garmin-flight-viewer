@@ -119,6 +119,30 @@ function hasRecentAirborne(data: ChartRow[], idx: number): boolean {
   return false;
 }
 
+function hasFutureAirborne(data: ChartRow[], idx: number, within = 90): boolean {
+  for (let i = idx + 1; i <= Math.min(data.length - 1, idx + within); i++) {
+    const agl = get(data[i]!, "heightAglFt");
+    if (agl !== null && agl > 50) return true;
+  }
+  return false;
+}
+
+function findAirborneAfterLiftoff(data: ChartRow[], liftoffIdx: number, minAglFt = 50): number | null {
+  for (let i = liftoffIdx + 1; i < Math.min(data.length, liftoffIdx + 180); i++) {
+    const agl = get(data[i]!, "heightAglFt");
+    if (agl !== null && agl > minAglFt) return i;
+  }
+  return null;
+}
+
+function slowsBelowGroundSpeed(data: ChartRow[], idx: number, thresholdKt: number, within = 60): boolean {
+  for (let i = idx; i <= Math.min(data.length - 1, idx + within); i++) {
+    const gs = get(data[i]!, "gsKt");
+    if (gs !== null && gs < thresholdKt) return true;
+  }
+  return false;
+}
+
 function minVerticalSpeed(data: ChartRow[], startIdx: number, endIdx: number): number | null {
   let min: number | null = null;
   for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
@@ -180,6 +204,35 @@ function isTouchAndGoRecoveryTouchdown(data: ChartRow[], idx: number): boolean {
   );
 }
 
+function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
+  if (idx < 1 || idx + 2 >= data.length) return false;
+
+  const agl = get(data[idx]!, "heightAglFt");
+  const gs = get(data[idx]!, "gsKt");
+  const gsNext = get(data[idx + 1]!, "gsKt");
+  const aglIndicatesGround = agl === 0;
+  const aglDroppedOut = agl === null;
+  if ((!aglIndicatesGround && !aglDroppedOut) || gs === null || gs < 20 || gsNext === null) return false;
+
+  let previousAirborneIdx: number | null = null;
+  for (let i = idx - 1; i >= Math.max(0, idx - 45); i--) {
+    const previousAgl = get(data[i]!, "heightAglFt");
+    if (previousAgl !== null && previousAgl > 50) {
+      previousAirborneIdx = i;
+      break;
+    }
+  }
+  if (previousAirborneIdx === null) return false;
+
+  const previousGs = get(data[previousAirborneIdx]!, "gsKt");
+  const decelerating = previousGs !== null ? gs <= previousGs + 5 : true;
+  const futureAirborne = hasFutureAirborne(data, idx);
+  const rollout = gsNext <= gs || !futureAirborne;
+  const missingAglRollout = aglDroppedOut && !futureAirborne && (gs <= 25 || slowsBelowGroundSpeed(data, idx, 10));
+
+  return decelerating && (aglIndicatesGround ? rollout : missingAglRollout);
+}
+
 /**
  * Index of TOUCHDOWN.
  *
@@ -201,6 +254,8 @@ export function findTouchdown(data: ChartRow[], after: number, end?: number): nu
       }
       return i;
     }
+
+    if (isAglTransitionTouchdown(data, i)) return i;
   }
   return null;
 }
@@ -541,7 +596,7 @@ export function detectFlightSegments(
       touchdowns.push({ tdIdx });
       searchFrom = tdIdx + 5;
     } else {
-      searchFrom = liftIdx + 1;
+      searchFrom = Math.max(liftIdx + 1, findAirborneAfterLiftoff(data, liftIdx) ?? liftIdx + 1);
     }
   }
 
