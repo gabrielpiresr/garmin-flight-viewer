@@ -107,10 +107,7 @@ export function UserEmailWithRoleSwitcher({
 
   if (header) {
     return (
-      <div className="hidden max-w-64 items-center gap-2 lg:flex">
-        <RoleSwitcher compact />
-        <span className="max-w-48 truncate text-xs text-slate-600">{email}</span>
-      </div>
+      <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:inline">{email}</span>
     );
   }
 
