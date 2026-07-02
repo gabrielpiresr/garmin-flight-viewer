@@ -530,10 +530,11 @@ function StatusSettingsModal({
 }
 
 function LeadModal({
-  lead, initialStatus, onClose, onSaved,
+  lead, initialStatus, statusSettings, onClose, onSaved,
 }: {
   lead: CrmLead | null;
   initialStatus: CrmStatus;
+  statusSettings: CrmStatusSetting[];
   onClose: () => void;
   onSaved: (lead: CrmLead) => void;
 }) {
@@ -555,7 +556,18 @@ function LeadModal({
       if (err) { setError(err.message); setSaving(false); return; }
       onSaved({ ...lead, name, email, phone, crmStatus: status });
     } else {
-      const { data, error: err } = await createLead({ name, email, phone, crmStatus: status });
+      const enteredAt = new Date().toISOString();
+      const setting = getStatusSetting(statusSettings, status);
+      const followups = buildFollowupsForStatus(status, enteredAt, setting.followups);
+      const { data, error: err } = await createLead({
+        name,
+        email,
+        phone,
+        crmStatus: status,
+        statusEnteredAt: enteredAt,
+        funnelEnteredAt: enteredAt,
+        followups,
+      });
       if (err || !data) { setError(err?.message ?? "Erro ao criar."); setSaving(false); return; }
       void notifyCrmLeadEvent("crm.lead_registered", { leadId: data.id, name: data.name, email: data.email });
       onSaved(data);
@@ -2719,6 +2731,7 @@ export function CrmTab() {
         <LeadModal
           lead={editModal.lead}
           initialStatus={editModal.initialStatus}
+          statusSettings={statusSettings}
           onClose={() => setEditModal(null)}
           onSaved={handleSaved}
         />

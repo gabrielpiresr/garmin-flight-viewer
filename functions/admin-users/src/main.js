@@ -6,6 +6,7 @@ const { buildEnrollmentFormPdf } = require("./enrollmentFormPdf");
 const { Resend } = require("resend");
 const webpush = require("web-push");
 const pdfParse = require("pdf-parse");
+const { createStudentAutomationService } = require("./studentAutomations");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -114,6 +115,16 @@ const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS
 const NOTIFICATION_DELIVERIES_COLLECTION_ID = process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID;
 const BROADCAST_SEGMENTS_COLLECTION_ID = process.env.APPWRITE_BROADCAST_SEGMENTS_COLLECTION_ID;
 const BROADCAST_MESSAGES_COLLECTION_ID = process.env.APPWRITE_BROADCAST_MESSAGES_COLLECTION_ID;
+const STUDENT_AUTOMATIONS_COLLECTION_ID = process.env.APPWRITE_STUDENT_AUTOMATIONS_COLLECTION_ID || "student_automations";
+const AUTOMATION_STATES_COLLECTION_ID = process.env.APPWRITE_AUTOMATION_STATES_COLLECTION_ID || "student_automation_states";
+const AUTOMATION_RUNS_COLLECTION_ID = process.env.APPWRITE_AUTOMATION_RUNS_COLLECTION_ID || "student_automation_runs";
+const AUTOMATION_STEP_RUNS_COLLECTION_ID = process.env.APPWRITE_AUTOMATION_STEP_RUNS_COLLECTION_ID || "student_automation_step_runs";
+const AUTOMATION_JOBS_COLLECTION_ID = process.env.APPWRITE_AUTOMATION_JOBS_COLLECTION_ID || "student_automation_jobs";
+const AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID = process.env.APPWRITE_AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID || "student_automation_email_templates";
+const STUDENT_CRM_STATUSES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID || "student_crm_statuses";
+const STUDENT_CRM_PROFILES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || "student_crm_profiles";
+const INSTRUCTOR_STUDENTS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
+const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users";
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
 const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
@@ -11378,6 +11389,7 @@ const ONBOARDING_SETTINGS_KEY = "onboarding";
 const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const CAKTO_SETTINGS_KEY = "cakto";
+const WPP_SETTINGS_KEY = "wpp";
 const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
@@ -11961,24 +11973,36 @@ async function getPublicFlightReviewShare(payload = {}) {
   };
 }
 
-async function requireVideoUploader(actorUserId, flightId) {
+async function requireVideoUploader(actorUserId, flightId, { studentExport = false } = {}) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
   if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
   const [profile, actor] = await Promise.all([getProfileByUserId(actorUserId), users.get({ userId: actorUserId })]);
   const profileRole = normalizeRole(profile?.role);
   const labelRole = deriveRoleFromLabels(actor?.labels || []);
   const role = profileRole === "aluno" ? labelRole : profileRole;
-  if (role !== "admin" && role !== "instrutor") {
-    throw Object.assign(new Error("Apenas admin ou instrutor pode enviar videos."), { status: 403 });
-  }
   if (role === "admin") return;
-  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
-  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, [
-    sdk.Query.select(["instructor_user_id"]),
-  ]);
-  if (flight.instructor_user_id !== actorUserId) {
-    throw Object.assign(new Error("Instrutor nao vinculado a este voo."), { status: 403 });
+  if (role === "instrutor") {
+    if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+    const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, [
+      sdk.Query.select(["instructor_user_id"]),
+    ]);
+    if (flight.instructor_user_id !== actorUserId) {
+      throw Object.assign(new Error("Instrutor nao vinculado a este voo."), { status: 403 });
+    }
+    return;
   }
+  // Aluno: somente para gravar o MP4 exportado (chave *-telemetry-<ts>.mp4)
+  // do proprio voo — nunca para enviar/substituir os videos originais.
+  if (studentExport) {
+    if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+    const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, [
+      sdk.Query.select(["student_user_id", "user_id"]),
+    ]);
+    const studentUserId = flight.student_user_id || flight.user_id || null;
+    if (studentUserId === actorUserId) return;
+    throw Object.assign(new Error("Aluno nao vinculado a este voo."), { status: 403 });
+  }
+  throw Object.assign(new Error("Apenas admin ou instrutor pode enviar videos."), { status: 403 });
 }
 
 async function getVideoWorkerConfig(actorUserId, payload) {
@@ -11987,7 +12011,6 @@ async function getVideoWorkerConfig(actorUserId, payload) {
   }
   const mode = cleanString(payload.mode);
   const flightId = cleanString(payload.flightId);
-  await requireVideoUploader(actorUserId, flightId);
 
   const now = Math.floor(Date.now() / 1000);
   const base = {
@@ -12007,6 +12030,8 @@ async function getVideoWorkerConfig(actorUserId, payload) {
     if (!rawKey.startsWith(expectedPrefix)) {
       throw Object.assign(new Error("Chave de video fora do escopo do voo."), { status: 400 });
     }
+    const isStudentExportKey = /-telemetry-\d+\.mp4$/.test(rawKey);
+    await requireVideoUploader(actorUserId, flightId, { studentExport: isStudentExportKey });
     return {
       workerUrl: CF_WORKER_URL,
       uploadToken: signWorkerToken({ ...base, action: "upload", key: `flights/${rawKey}` }),
@@ -12014,6 +12039,7 @@ async function getVideoWorkerConfig(actorUserId, payload) {
   }
 
   if (mode === "list") {
+    await requireVideoUploader(actorUserId, flightId);
     const prefix = cleanString(payload.prefix);
     const expectedPrefix = `flights/flight-${flightId}-`;
     if (!prefix || prefix !== expectedPrefix) {
@@ -12495,6 +12521,253 @@ async function getSettingDoc(key) {
     sdk.Query.limit(1),
   ]);
   return res.documents[0] || null;
+}
+
+function defaultWppSettings() {
+  return {
+    wabaId: "",
+    phoneNumberId: "",
+    graphApiVersion: "v23.0",
+    apiKey: "",
+    businessName: null,
+    verifiedName: null,
+    displayPhoneNumber: null,
+    connectionStatus: "not_tested",
+    lastTestAt: null,
+    lastError: null,
+  };
+}
+
+function normalizeWppApiVersion(value) {
+  const version = cleanString(value).toLowerCase();
+  return /^v\d{1,2}\.\d{1,2}$/.test(version) ? version : "v23.0";
+}
+
+function publicWppSettings(settings, updatedAt) {
+  const safe = settings && typeof settings === "object" ? settings : defaultWppSettings();
+  return {
+    wabaId: cleanString(safe.wabaId),
+    phoneNumberId: cleanString(safe.phoneNumberId),
+    graphApiVersion: normalizeWppApiVersion(safe.graphApiVersion),
+    apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
+    businessName: cleanString(safe.businessName) || null,
+    verifiedName: cleanString(safe.verifiedName) || null,
+    displayPhoneNumber: cleanString(safe.displayPhoneNumber) || null,
+    connectionStatus: ["connected", "error"].includes(safe.connectionStatus) ? safe.connectionStatus : "not_tested",
+    lastTestAt: cleanString(safe.lastTestAt) || null,
+    lastError: cleanString(safe.lastError).slice(0, 1024) || null,
+    updatedAt: updatedAt || null,
+  };
+}
+
+async function loadWppSettings() {
+  const doc = await getSettingDoc(WPP_SETTINGS_KEY);
+  const settings = doc ? parseJsonObject(doc.settings_json, defaultWppSettings()) : defaultWppSettings();
+  return { settings: { ...defaultWppSettings(), ...settings }, doc };
+}
+
+async function persistWppSettings(settings, currentDoc = null) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Coleção platform_settings não configurada no Appwrite."), { status: 500 });
+  }
+  const data = { key: WPP_SETTINGS_KEY, settings_json: JSON.stringify(settings) };
+  const doc = currentDoc || await getSettingDoc(WPP_SETTINGS_KEY);
+  return doc
+    ? databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, doc.$id, data)
+    : databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+}
+
+async function saveWppSettings(input) {
+  const { settings: current, doc } = await loadWppSettings();
+  const raw = input && typeof input === "object" ? input : {};
+  const next = {
+    ...current,
+    wabaId: cleanString(raw.wabaId).slice(0, 128),
+    phoneNumberId: cleanString(raw.phoneNumberId).slice(0, 128),
+    graphApiVersion: normalizeWppApiVersion(raw.graphApiVersion),
+    apiKey: cleanString(raw.apiKey) || cleanString(current.apiKey),
+    connectionStatus: "not_tested",
+    lastError: null,
+  };
+  if (!next.wabaId || !next.phoneNumberId || !next.apiKey) {
+    throw Object.assign(new Error("Informe WABA ID, Phone Number ID e token de acesso."), { status: 400 });
+  }
+  const saved = await persistWppSettings(next, doc);
+  return publicWppSettings(next, saved.$updatedAt || nowIso());
+}
+
+function requireWppCredentials(settings) {
+  if (!cleanString(settings?.apiKey) || !cleanString(settings?.wabaId) || !cleanString(settings?.phoneNumberId)) {
+    throw Object.assign(new Error("Conecte a conta do WhatsApp antes de continuar."), { status: 400 });
+  }
+}
+
+async function wppGraphRequest(settings, pathOrUrl, options = {}) {
+  requireWppCredentials(settings);
+  const base = `https://graph.facebook.com/${normalizeWppApiVersion(settings.graphApiVersion)}`;
+  const url = String(pathOrUrl || "").startsWith("https://") ? new URL(pathOrUrl) : new URL(`${base}/${String(pathOrUrl || "").replace(/^\//, "")}`);
+  if (url.hostname !== "graph.facebook.com") throw Object.assign(new Error("Destino inválido para a API do WhatsApp."), { status: 400 });
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers: {
+      Authorization: `Bearer ${settings.apiKey}`,
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const providerMessage = cleanString(data?.error?.error_user_msg || data?.error?.message || data?.message);
+    const isInvalidWabaId = Number(data?.error?.code) === 100 && /message_templates|nonexisting field/i.test(providerMessage);
+    const message = isInvalidWabaId
+      ? "O WABA ID informado não é uma Conta do WhatsApp Business. Ele parece ser um App ID ou Business Manager ID. Na Meta Business Suite, abra Configurações > Contas > Contas do WhatsApp, selecione a conta e copie o ID exibido no painel lateral."
+      : providerMessage || `WhatsApp API retornou HTTP ${response.status}.`;
+    throw Object.assign(new Error(message), { status: response.status >= 500 ? 502 : 422 });
+  }
+  return data;
+}
+
+async function testWppConnection() {
+  const { settings, doc } = await loadWppSettings();
+  requireWppCredentials(settings);
+  try {
+    const [business, phone] = await Promise.all([
+      wppGraphRequest(settings, `${encodeURIComponent(settings.wabaId)}?fields=id,name`),
+      wppGraphRequest(settings, `${encodeURIComponent(settings.phoneNumberId)}?fields=id,display_phone_number,verified_name,quality_rating`),
+      // Valida o tipo do ID e a permissão whatsapp_business_management.
+      // IDs de App/Business também respondem a fields=id,name, mas não possuem esta edge.
+      wppGraphRequest(settings, `${encodeURIComponent(settings.wabaId)}/message_templates?limit=1&fields=id`),
+    ]);
+    const next = {
+      ...settings,
+      businessName: cleanString(business?.name) || null,
+      verifiedName: cleanString(phone?.verified_name) || null,
+      displayPhoneNumber: cleanString(phone?.display_phone_number) || null,
+      connectionStatus: "connected",
+      lastTestAt: nowIso(),
+      lastError: null,
+    };
+    const saved = await persistWppSettings(next, doc);
+    return publicWppSettings(next, saved.$updatedAt || nowIso());
+  } catch (err) {
+    const next = { ...settings, connectionStatus: "error", lastTestAt: nowIso(), lastError: cleanString(err?.message).slice(0, 1024) };
+    await persistWppSettings(next, doc).catch(() => null);
+    throw err;
+  }
+}
+
+function normalizeWppTemplate(template) {
+  const quality = template?.quality_score;
+  return {
+    id: cleanString(template?.id),
+    name: cleanString(template?.name),
+    status: cleanString(template?.status) || "PENDING",
+    category: cleanString(template?.category) || "UTILITY",
+    language: cleanString(template?.language) || "pt_BR",
+    components: Array.isArray(template?.components) ? template.components : [],
+    qualityScore: cleanString(typeof quality === "object" ? quality?.score : quality) || null,
+    rejectedReason: cleanString(template?.rejected_reason) || null,
+  };
+}
+
+async function listWppTemplates() {
+  const { settings, doc } = await loadWppSettings();
+  requireWppCredentials(settings);
+  try {
+    const fields = "id,name,status,category,language,components,quality_score,rejected_reason";
+    let nextUrl = `${settings.wabaId}/message_templates?limit=100&fields=${encodeURIComponent(fields)}`;
+    const templates = [];
+    for (let page = 0; nextUrl && page < 10; page += 1) {
+      const response = await wppGraphRequest(settings, nextUrl);
+      templates.push(...(Array.isArray(response?.data) ? response.data.map(normalizeWppTemplate) : []));
+      nextUrl = cleanString(response?.paging?.next);
+    }
+    return templates.sort((a, b) => a.name.localeCompare(b.name));
+  } catch (err) {
+    const next = { ...settings, connectionStatus: "error", lastTestAt: nowIso(), lastError: cleanString(err?.message).slice(0, 1024) };
+    await persistWppSettings(next, doc).catch(() => null);
+    throw err;
+  }
+}
+
+function wppTemplateComponents(input) {
+  const headerText = cleanString(input?.headerText).slice(0, 60);
+  const bodyText = cleanString(input?.bodyText).slice(0, 1024);
+  const footerText = cleanString(input?.footerText).slice(0, 60);
+  if (!bodyText) throw Object.assign(new Error("Informe o conteúdo da mensagem."), { status: 400 });
+  const components = [];
+  if (headerText) {
+    const header = { type: "HEADER", format: "TEXT", text: headerText };
+    const headerVars = [...headerText.matchAll(/\{\{(\d+)\}\}/g)];
+    if (headerVars.length) header.example = { header_text: headerVars.map((_, index) => `Exemplo ${index + 1}`) };
+    components.push(header);
+  }
+  const body = { type: "BODY", text: bodyText };
+  const indexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+  const count = indexes.length ? Math.max(...indexes) : 0;
+  if (count) body.example = { body_text: [Array.from({ length: count }, (_, index) => `Exemplo ${index + 1}`)] };
+  components.push(body);
+  if (footerText) components.push({ type: "FOOTER", text: footerText });
+  const buttons = Array.isArray(input?.buttons) ? input.buttons.filter((button) => button && typeof button === "object").slice(0, 10) : [];
+  if (buttons.length) components.push({ type: "BUTTONS", buttons });
+  return components;
+}
+
+function sanitizeWppTemplateInput(input) {
+  const name = cleanString(input?.name).toLowerCase();
+  if (!/^[a-z0-9_]+$/.test(name)) throw Object.assign(new Error("Nome de template inválido."), { status: 400 });
+  const category = ["MARKETING", "UTILITY", "AUTHENTICATION"].includes(input?.category) ? input.category : "UTILITY";
+  const language = cleanString(input?.language) || "pt_BR";
+  return { id: cleanString(input?.id), name, category, language, components: wppTemplateComponents(input) };
+}
+
+async function createWppTemplate(input) {
+  const { settings } = await loadWppSettings();
+  const template = sanitizeWppTemplateInput(input);
+  const response = await wppGraphRequest(settings, `${settings.wabaId}/message_templates`, {
+    method: "POST",
+    body: { name: template.name, language: template.language, category: template.category, components: template.components },
+  });
+  return normalizeWppTemplate({ ...template, ...response, id: response?.id || template.id, status: response?.status || "PENDING" });
+}
+
+async function updateWppTemplate(input) {
+  const { settings } = await loadWppSettings();
+  const template = sanitizeWppTemplateInput(input);
+  if (!template.id) throw Object.assign(new Error("Identificador do template não informado."), { status: 400 });
+  const response = await wppGraphRequest(settings, template.id, {
+    method: "POST",
+    body: { category: template.category, components: template.components },
+  });
+  return normalizeWppTemplate({ ...template, ...response, id: template.id, status: response?.status || "PENDING" });
+}
+
+async function deleteWppTemplate(name) {
+  const { settings } = await loadWppSettings();
+  const cleanName = cleanString(name);
+  if (!cleanName) throw Object.assign(new Error("Template não informado."), { status: 400 });
+  return wppGraphRequest(settings, `${settings.wabaId}/message_templates?name=${encodeURIComponent(cleanName)}`, { method: "DELETE" });
+}
+
+async function sendWppTemplateTest(input) {
+  const { settings } = await loadWppSettings();
+  const to = cleanString(input?.to).replace(/\D/g, "");
+  const name = cleanString(input?.templateName);
+  const language = cleanString(input?.language) || "pt_BR";
+  if (!name || to.length < 10) throw Object.assign(new Error("Informe o template e um telefone válido com DDI."), { status: 400 });
+  const headerParameters = (Array.isArray(input?.headerParameters) ? input.headerParameters : []).map((value) => ({ type: "text", text: cleanString(value) }));
+  const parameters = (Array.isArray(input?.bodyParameters) ? input.bodyParameters : []).map((value) => ({ type: "text", text: cleanString(value) }));
+  const template = { name, language: { code: language } };
+  const components = [];
+  if (headerParameters.length) components.push({ type: "header", parameters: headerParameters });
+  if (parameters.length) components.push({ type: "body", parameters });
+  if (components.length) template.components = components;
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template", template },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
 }
 
 async function loadEmailSettings() {
@@ -16109,6 +16382,72 @@ async function sendTestEmail(to, templateType) {
   if (result.status !== "sent") throw Object.assign(new Error(result.reason || "Email de teste nao enviado."), { status: 400 });
 }
 
+async function sendAutomationHtmlEmail({ email, subject, html }) {
+  const { settings } = await loadEmailSettings();
+  const apiKey = cleanString(settings.resendApiKey);
+  const fromEmail = cleanString(settings.fromEmail);
+  if (!settings.enabled) return { status: "skipped", reason: "Email desabilitado." };
+  if (!apiKey || !fromEmail) return { status: "skipped", reason: "Resend não configurado." };
+  if (!cleanString(email)) return { status: "skipped", reason: "Destinatário sem email." };
+  const resend = new Resend(apiKey);
+  const fromName = cleanString(settings.fromName);
+  const result = await sendResendEmail(() => resend.emails.send({
+    from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
+    to: [cleanString(email)],
+    replyTo: cleanString(settings.replyTo) || undefined,
+    subject: cleanString(subject).slice(0, 255),
+    html: sanitizeHtml(String(html || "")),
+  }));
+  if (result?.error) throw Object.assign(new Error(result.error.message || "Falha no Resend."), { status: 502 });
+  return { status: "sent", providerMessageId: result?.data?.id || null };
+}
+
+async function sendAutomationWpp(input) {
+  const messageId = await sendWppTemplateTest(input);
+  return { status: "sent", providerMessageId: messageId };
+}
+
+let cachedStudentAutomationService = null;
+function studentAutomationService() {
+  if (cachedStudentAutomationService) return cachedStudentAutomationService;
+  cachedStudentAutomationService = createStudentAutomationService({
+    sdk,
+    databases,
+    users,
+    functions,
+    databaseId: DATABASE_ID,
+    schoolId: SCHOOL_ID,
+    schoolName: "Escola",
+    functionId: ADMIN_USERS_FUNCTION_ID,
+    appUrl: APP_URL,
+    timezone: process.env.SCHOOL_TIMEZONE || "America/Sao_Paulo",
+    adminPerms: ADMIN_DOC_PERMS,
+    requireAdmin,
+    getStudentsProgress,
+    listAdminUserIds,
+    sendEmail: sendAutomationHtmlEmail,
+    sendPush: sendPushToUser,
+    sendWpp: sendAutomationWpp,
+    collections: {
+      automations: STUDENT_AUTOMATIONS_COLLECTION_ID,
+      states: AUTOMATION_STATES_COLLECTION_ID,
+      runs: AUTOMATION_RUNS_COLLECTION_ID,
+      stepRuns: AUTOMATION_STEP_RUNS_COLLECTION_ID,
+      jobs: AUTOMATION_JOBS_COLLECTION_ID,
+      templates: AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID,
+      crmStatuses: STUDENT_CRM_STATUSES_COLLECTION_ID,
+      crmProfiles: STUDENT_CRM_PROFILES_COLLECTION_ID,
+      profiles: PROFILES_COLLECTION_ID,
+      flights: FLIGHTS_COLLECTION_ID,
+      studentTracks: STUDENT_TRACKS_COLLECTION_ID,
+      credits: STUDENT_CREDITS_COLLECTION_ID,
+      pushSubscriptions: PUSH_SUBSCRIPTIONS_COLLECTION_ID,
+      instructorStudents: INSTRUCTOR_STUDENTS_COLLECTION_ID,
+    },
+  });
+  return cachedStudentAutomationService;
+}
+
 async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null, options = {}) {
   const logLine = (msg) => { if (typeof runtimeLog === "function") runtimeLog(msg); };
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
@@ -16756,12 +17095,20 @@ module.exports = async ({ req, res, log, error }) => {
     const actorUserId = await resolveActorUserId(req);
     const payload = parseFunctionPayload(req);
     const action = String(payload.action || "listSummaries");
+    const appwriteEvent = cleanString(req?.headers?.["x-appwrite-event"]);
+    const appwriteTrigger = cleanString(req?.headers?.["x-appwrite-trigger"]);
     log(`[action=${action}] userId=${actorUserId || "(none)"}`);
 
+    if (appwriteEvent && appwriteTrigger === "event") {
+      const result = await studentAutomationService().processEvent(appwriteEvent, payload);
+      return jsonResponse(res, 200, { ok: true, automationEvent: appwriteEvent, ...result });
+    }
+
     if (!actorUserId && action === "listSummaries") {
-      const [reminderResult, scheduleResult] = await Promise.all([
+      const [reminderResult, scheduleResult, automationScan] = await Promise.all([
         runFlightReminderScan("system"),
         syncSagaScheduleFromImportSettings("system").catch((err) => ({ ok: false, message: String(err?.message || err) })),
+        studentAutomationService().periodicScan().catch((err) => ({ ok: false, message: String(err?.message || err) })),
       ]);
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
@@ -16773,7 +17120,113 @@ module.exports = async ({ req, res, log, error }) => {
         ...reminderResult,
         sagaScheduleSync: scheduleResult,
         sagaAllUsersSync: allUsersSyncResult,
+        automationScan,
       });
+    }
+
+    if (action === "resumeStudentAutomation") {
+      const result = await studentAutomationService().resume(payload.jobId, payload.token);
+      return jsonResponse(res, 200, { ok: true, result });
+    }
+
+    if (action === "listStudentAutomations") {
+      const automations = await studentAutomationService().listAutomations(actorUserId);
+      return jsonResponse(res, 200, { automations });
+    }
+
+    if (action === "getStudentAutomation") {
+      const automation = await studentAutomationService().getAutomation(actorUserId, payload.id);
+      return jsonResponse(res, 200, { automation });
+    }
+
+    if (action === "saveStudentAutomation") {
+      const automation = await studentAutomationService().saveAutomation(actorUserId, payload.id, payload.automation);
+      return jsonResponse(res, 200, { automation });
+    }
+
+    if (action === "duplicateStudentAutomation") {
+      const automation = await studentAutomationService().duplicateAutomation(actorUserId, payload.id);
+      return jsonResponse(res, 200, { automation });
+    }
+
+    if (action === "setStudentAutomationStatus") {
+      const automation = await studentAutomationService().setAutomationStatus(actorUserId, payload.id, payload.status);
+      return jsonResponse(res, 200, { automation });
+    }
+
+    if (action === "deleteStudentAutomation") {
+      await studentAutomationService().deleteAutomation(actorUserId, payload.id);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "simulateStudentAutomation") {
+      const simulation = await studentAutomationService().simulation(actorUserId, payload.id, payload.studentUserId);
+      return jsonResponse(res, 200, { simulation });
+    }
+
+    if (action === "testStudentAutomation") {
+      await studentAutomationService().testAutomation(actorUserId, payload.id, payload.studentUserId);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "listAutomationEmailTemplates") {
+      const templates = await studentAutomationService().listTemplates(actorUserId);
+      return jsonResponse(res, 200, { templates });
+    }
+
+    if (action === "saveAutomationEmailTemplate") {
+      const template = await studentAutomationService().saveTemplate(actorUserId, payload.id, payload.template);
+      return jsonResponse(res, 200, { template });
+    }
+
+    if (action === "duplicateAutomationEmailTemplate") {
+      const template = await studentAutomationService().duplicateTemplate(actorUserId, payload.id);
+      return jsonResponse(res, 200, { template });
+    }
+
+    if (action === "deleteAutomationEmailTemplate") {
+      await studentAutomationService().deleteTemplate(actorUserId, payload.id);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "sendAutomationEmailTemplateTest") {
+      await studentAutomationService().sendTemplateTest(actorUserId, payload.id, payload.email);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "listStudentCrmStatuses") {
+      const statuses = await studentAutomationService().listStatuses(actorUserId);
+      return jsonResponse(res, 200, { statuses });
+    }
+
+    if (action === "saveStudentCrmStatus") {
+      const status = await studentAutomationService().saveStatus(actorUserId, payload.id, payload.crmStatus);
+      return jsonResponse(res, 200, { status });
+    }
+
+    if (action === "archiveStudentCrmStatus") {
+      await studentAutomationService().archiveStatus(actorUserId, payload.id);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "listStudentCrmProfiles") {
+      const crmProfiles = await studentAutomationService().listCrmProfiles(actorUserId);
+      return jsonResponse(res, 200, { crmProfiles });
+    }
+
+    if (action === "setStudentCrmProfileStatus") {
+      await studentAutomationService().setCrmProfileStatus(actorUserId, payload.studentUserId, payload.statusId);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "listAutomationRuns") {
+      const result = await studentAutomationService().listRuns(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getAutomationRunDetail") {
+      const runDetail = await studentAutomationService().runDetail(actorUserId, payload.id);
+      return jsonResponse(res, 200, { runDetail });
     }
 
     if (action === "registerPushSubscription") {
@@ -17264,6 +17717,54 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getGoogleCalendarSettings") {
       const { publicSettings } = await loadGoogleCalendarSettings();
       return jsonResponse(res, 200, { googleCalendarSettings: publicSettings });
+    }
+
+    if (action === "getWppSettings") {
+      await requireAdmin(actorUserId);
+      const { settings, doc } = await loadWppSettings();
+      return jsonResponse(res, 200, { settings: publicWppSettings(settings, doc?.$updatedAt || null) });
+    }
+
+    if (action === "saveWppSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await saveWppSettings(payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "testWppConnection") {
+      await requireAdmin(actorUserId);
+      const settings = await testWppConnection();
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "listWppTemplates") {
+      await requireAdmin(actorUserId);
+      const templates = await listWppTemplates();
+      return jsonResponse(res, 200, { templates });
+    }
+
+    if (action === "createWppTemplate") {
+      await requireAdmin(actorUserId);
+      const template = await createWppTemplate(payload.template);
+      return jsonResponse(res, 200, { template });
+    }
+
+    if (action === "updateWppTemplate") {
+      await requireAdmin(actorUserId);
+      const template = await updateWppTemplate(payload.template);
+      return jsonResponse(res, 200, { template });
+    }
+
+    if (action === "deleteWppTemplate") {
+      await requireAdmin(actorUserId);
+      await deleteWppTemplate(payload.name);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "sendWppTemplateTest") {
+      await requireAdmin(actorUserId);
+      const messageId = await sendWppTemplateTest(payload.test);
+      return jsonResponse(res, 200, { ok: true, messageId });
     }
 
     if (action === "saveGoogleCalendarSettings") {

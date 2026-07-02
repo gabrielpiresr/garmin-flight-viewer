@@ -42,6 +42,7 @@ import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
 import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
 import { AdminImportTab } from "./AdminImportTab";
+import { WppSettingsPanel } from "./WppSettingsPanel";
 
 const RolesSettingsTab = lazy(() =>
   import("./RolesSettingsTab").then((m) => ({ default: m.RolesSettingsTab })),
@@ -58,6 +59,7 @@ export type SettingsSubTab =
   | "indique-ganhe"
   | "roles"
   | "propostas"
+  | "wpp"
   | "importacoes";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
@@ -153,6 +155,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
+    id: "wpp" as SettingsSubTab,
+    label: "WPP",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10.03 1.75a8.2 8.2 0 00-7.05 12.39L1.67 18.4l4.4-1.29a8.32 8.32 0 103.96-15.36zm4.8 11.48c-.2.58-1.21 1.12-1.68 1.18-.43.07-.98.09-1.58-.1-.37-.12-.84-.28-1.44-.53-2.53-1.1-4.18-3.64-4.3-3.8-.12-.17-1.03-1.37-1.03-2.6 0-1.24.65-1.85.88-2.1.22-.25.5-.31.66-.31h.48c.15 0 .36-.06.56.43.2.5.7 1.7.76 1.83.06.12.1.27.02.44-.08.16-.12.27-.25.42-.12.15-.26.32-.37.43-.13.12-.25.26-.1.5.14.26.64 1.07 1.38 1.73.96.85 1.76 1.1 2.01 1.23.25.12.4.1.54-.06.15-.17.63-.73.8-.98.16-.25.33-.2.56-.12.23.08 1.46.69 1.71.81.25.13.41.19.48.3.06.1.06.6-.15 1.18z" />
+      </svg>
+    ),
+  },
+  {
     id: "importacoes" as SettingsSubTab,
     label: "Importações",
     icon: (
@@ -179,6 +190,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   "indique-ganhe": "settings.indique-ganhe",
   roles:       "settings.roles",
   propostas:   "settings.propostas",
+  wpp:         "settings.wpp",
   importacoes: "import",
 };
 
@@ -879,6 +891,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("propostas") ? (
         <div hidden={activeSubTab !== "propostas"}>
           <ProposalSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("wpp") ? (
+        <div hidden={activeSubTab !== "wpp"}>
+          <WppSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("importacoes") ? (

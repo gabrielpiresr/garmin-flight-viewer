@@ -150,6 +150,24 @@ export const CRM_PROPOSALS_COL_ID =
 export const CRM_LEAD_COMMENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CRM_LEAD_COMMENTS_COL_ID as string | undefined) ?? "crm_lead_comments";
 
+// CRM de alunos e automações
+export const STUDENT_AUTOMATIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_STUDENT_AUTOMATIONS_COL_ID as string | undefined) ?? "student_automations";
+export const AUTOMATION_STATES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUTOMATION_STATES_COL_ID as string | undefined) ?? "student_automation_states";
+export const AUTOMATION_RUNS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUTOMATION_RUNS_COL_ID as string | undefined) ?? "student_automation_runs";
+export const AUTOMATION_STEP_RUNS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUTOMATION_STEP_RUNS_COL_ID as string | undefined) ?? "student_automation_step_runs";
+export const AUTOMATION_JOBS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUTOMATION_JOBS_COL_ID as string | undefined) ?? "student_automation_jobs";
+export const AUTOMATION_EMAIL_TEMPLATES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_AUTOMATION_EMAIL_TEMPLATES_COL_ID as string | undefined) ?? "student_automation_email_templates";
+export const STUDENT_CRM_STATUSES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_STUDENT_CRM_STATUSES_COL_ID as string | undefined) ?? "student_crm_statuses";
+export const STUDENT_CRM_PROFILES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_STUDENT_CRM_PROFILES_COL_ID as string | undefined) ?? "student_crm_profiles";
+
 // Flight Review
 export const MANEUVER_TEMPLATES_COL_ID =
   (import.meta.env.VITE_APPWRITE_MANEUVER_TEMPLATES_COL_ID as string | undefined) ?? "maneuver_templates";

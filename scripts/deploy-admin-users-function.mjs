@@ -112,11 +112,11 @@ async function waitForDeployment(functions, deploymentId) {
   return functions.getDeployment({ functionId, deploymentId });
 }
 
-async function buildArchiveFromSource() {
+async function buildArchiveFromSource(envOverrides = {}) {
   const { spawnSync } = await import("node:child_process");
   const result = spawnSync(process.execPath, ["scripts/deploy-admin-function.mjs"], {
     cwd: root,
-    env: process.env,
+    env: { ...process.env, ...envOverrides },
     stdio: "inherit",
   });
   if (result.status !== 0) {
@@ -125,12 +125,18 @@ async function buildArchiveFromSource() {
 }
 
 async function main() {
-  await buildArchiveFromSource();
   const env = parseEnvFile(envPath);
   const endpoint = process.env.APPWRITE_ENDPOINT || env.VITE_APPWRITE_ENDPOINT;
   const projectId = process.env.APPWRITE_PROJECT_ID || env.VITE_APPWRITE_PROJECT_ID;
   const apiKey = process.env.APPWRITE_API_KEY || env.APPWRITE_API_KEY;
   const databaseId = process.env.APPWRITE_DATABASE_ID || env.VITE_APPWRITE_DATABASE_ID;
+  await buildArchiveFromSource({
+    APPWRITE_ENDPOINT: endpoint,
+    APPWRITE_PROJECT_ID: projectId,
+    APPWRITE_API_KEY: apiKey,
+    APPWRITE_DATABASE_ID: databaseId,
+    ADMIN_USERS_BUILD_ONLY: "1",
+  });
   const profilesCollectionId = process.env.APPWRITE_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_PROFILES_COLLECTION_ID;
   const profileDocumentsCollectionId =
     process.env.APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID ||
@@ -244,6 +250,15 @@ async function main() {
     process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID || env.VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID;
   const notificationDeliveriesCollectionId =
     process.env.APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID || env.VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID;
+  const studentAutomationsCollectionId = process.env.APPWRITE_STUDENT_AUTOMATIONS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_AUTOMATIONS_COL_ID || "student_automations";
+  const automationStatesCollectionId = process.env.APPWRITE_AUTOMATION_STATES_COLLECTION_ID || env.VITE_APPWRITE_AUTOMATION_STATES_COL_ID || "student_automation_states";
+  const automationRunsCollectionId = process.env.APPWRITE_AUTOMATION_RUNS_COLLECTION_ID || env.VITE_APPWRITE_AUTOMATION_RUNS_COL_ID || "student_automation_runs";
+  const automationStepRunsCollectionId = process.env.APPWRITE_AUTOMATION_STEP_RUNS_COLLECTION_ID || env.VITE_APPWRITE_AUTOMATION_STEP_RUNS_COL_ID || "student_automation_step_runs";
+  const automationJobsCollectionId = process.env.APPWRITE_AUTOMATION_JOBS_COLLECTION_ID || env.VITE_APPWRITE_AUTOMATION_JOBS_COL_ID || "student_automation_jobs";
+  const automationEmailTemplatesCollectionId = process.env.APPWRITE_AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID || env.VITE_APPWRITE_AUTOMATION_EMAIL_TEMPLATES_COL_ID || "student_automation_email_templates";
+  const studentCrmStatusesCollectionId = process.env.APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CRM_STATUSES_COL_ID || "student_crm_statuses";
+  const studentCrmProfilesCollectionId = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CRM_PROFILES_COL_ID || "student_crm_profiles";
+  const instructorStudentsCollectionId = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
   const webPushPublicKey = process.env.WEB_PUSH_PUBLIC_KEY || env.VITE_WEB_PUSH_PUBLIC_KEY;
   const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
   const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
@@ -258,6 +273,7 @@ async function main() {
     process.env.GOOGLE_CALENDAR_PRIVATE_KEY || env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
+  const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
 
   const missing = [];
   if (!endpoint) missing.push("VITE_APPWRITE_ENDPOINT");
@@ -341,6 +357,16 @@ async function main() {
   }
   await upsertVariable(functions, "APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID", pushSubscriptionsCollectionId);
   await upsertVariable(functions, "APPWRITE_NOTIFICATION_DELIVERIES_COLLECTION_ID", notificationDeliveriesCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_AUTOMATIONS_COLLECTION_ID", studentAutomationsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUTOMATION_STATES_COLLECTION_ID", automationStatesCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUTOMATION_RUNS_COLLECTION_ID", automationRunsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUTOMATION_STEP_RUNS_COLLECTION_ID", automationStepRunsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUTOMATION_JOBS_COLLECTION_ID", automationJobsCollectionId);
+  await upsertVariable(functions, "APPWRITE_AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID", automationEmailTemplatesCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID", studentCrmStatusesCollectionId);
+  await upsertVariable(functions, "APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID", studentCrmProfilesCollectionId);
+  await upsertVariable(functions, "APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID", instructorStudentsCollectionId);
+  await upsertVariable(functions, "APPWRITE_ADMIN_USERS_FUNCTION_ID", functionId);
   if (webPushPublicKey) await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
   if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
@@ -357,6 +383,7 @@ async function main() {
     await upsertVariable(functions, "GOOGLE_CALENDAR_PRIVATE_KEY", googleCalendarPrivateKey, true);
   }
   await upsertVariable(functions, "SCHOOL_ID", schoolId);
+  await upsertVariable(functions, "SCHOOL_TIMEZONE", schoolTimezone);
 
   const buffer = fs.readFileSync(archivePath);
   const code = new File([buffer], "admin-users-function.tar.gz", { type: "application/gzip" });
@@ -388,6 +415,34 @@ async function main() {
     console.error(`Deployment did not reach 'ready' status (got '${finalStatus}'). Skipping activation.`);
     process.exit(1);
   }
+
+  const functionInfo = await functions.get({ functionId });
+  const eventCollections = [
+    [flightsCollectionId, ["create", "update"]],
+    [profilesCollectionId, ["create"]],
+    [studentTracksCollectionId, ["create", "update"]],
+    [studentCreditsCollectionId, ["create", "update", "delete"]],
+    [studentCrmProfilesCollectionId, ["create", "update"]],
+  ];
+  const requiredEvents = eventCollections.flatMap(([collectionId, verbs]) =>
+    verbs.map((verb) => `databases.${databaseId}.collections.${collectionId}.documents.*.${verb}`),
+  );
+  const mergedEvents = Array.from(new Set([...(functionInfo.events || []), ...requiredEvents]));
+  await functions.update({
+    functionId,
+    name: functionInfo.name || "Admin Users",
+    runtime: functionInfo.runtime || sdk.Runtime.Node22,
+    execute: functionInfo.execute || [sdk.Role.any()],
+    events: mergedEvents,
+    schedule: functionInfo.schedule || process.env.ADMIN_USERS_FUNCTION_SCHEDULE || "0 * * * *",
+    timeout: functionInfo.timeout || Number(process.env.ADMIN_USERS_FUNCTION_TIMEOUT || 900),
+    enabled: functionInfo.enabled !== false,
+    logging: functionInfo.logging !== false,
+    entrypoint: functionInfo.entrypoint || "src/main.js",
+    commands: functionInfo.commands || "npm install",
+    scopes: functionInfo.scopes || [],
+  });
+  console.log(`Automation database events configured: ${requiredEvents.length}`);
 
   upsertEnvLine(envPath, "VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID", functionId);
   console.log("Updated .env.local with VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");

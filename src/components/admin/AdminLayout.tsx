@@ -19,7 +19,7 @@ import type { AtualizacoesSubTab } from "./AtualizacoesAdminTab";
 import type { AdminTabKey } from "../../types/rolePermissions";
 
 const AdminHome = lazy(() => import("./AdminHome").then((module) => ({ default: module.AdminHome })));
-const AdminStudentsTab = lazy(() => import("./AdminStudentsTab").then((module) => ({ default: module.AdminStudentsTab })));
+const AdminStudentsWorkspace = lazy(() => import("./AdminStudentsWorkspace").then((module) => ({ default: module.AdminStudentsWorkspace })));
 const AdminUsersTab = lazy(() => import("./AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
 const FleetTab = lazy(() => import("./FleetTab").then((module) => ({ default: module.FleetTab })));
 const FlightReportsTab = lazy(() => import("./FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })));
@@ -516,6 +516,7 @@ const SETTINGS_ROUTES = [
   { id: "indique-ganhe", path: "/admin/configuracoes/indique-ganhe" },
   { id: "roles", path: "/admin/configuracoes/roles" },
   { id: "propostas", path: "/admin/configuracoes/propostas" },
+  { id: "wpp", path: "/admin/configuracoes/wpp" },
   { id: "importacoes", path: "/admin/configuracoes/importacoes", aliases: ["/admin/import"] },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
@@ -556,6 +557,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   "indique-ganhe": "Indique e ganhe",
   roles: "Roles",
   propostas: "Propostas",
+  wpp: "WPP",
   importacoes: "Importações",
 };
 
@@ -950,7 +952,7 @@ export function AdminLayout() {
             </div>
           )}
           {openedSections.has("students") && (
-            <div hidden={section !== "students"}><LazyTab><AdminStudentsTab /></LazyTab></div>
+            <div hidden={section !== "students"}><LazyTab><AdminStudentsWorkspace /></LazyTab></div>
           )}
           {openedSections.has("users") && (
             <div hidden={section !== "users"}><LazyTab><AdminUsersTab /></LazyTab></div>

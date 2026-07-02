@@ -170,6 +170,10 @@ export type CrmLeadInput = {
   email: string;
   phone: string;
   crmStatus?: CrmStatus;
+  statusEnteredAt?: string | null;
+  funnelEnteredAt?: string | null;
+  followups?: CrmLeadFollowup[];
+  payInPerson?: boolean;
 };
 
 export type CrmLeadQualInput = {

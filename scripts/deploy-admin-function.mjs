@@ -124,6 +124,11 @@ mkdirSync(join(ROOT, ".tmp"), { recursive: true });
 writeFileSync(archivePath, gzBuf);
 console.log(`    Saved: ${archivePath}`);
 
+if (process.env.ADMIN_USERS_BUILD_ONLY === "1") {
+  console.log("✅  Build-only concluído; upload delegado ao orquestrador de deploy.");
+  process.exit(0);
+}
+
 // Upload to Appwrite
 const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
 const functions = new Functions(client);

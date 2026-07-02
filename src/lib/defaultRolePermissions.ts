@@ -25,7 +25,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "crm",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
-  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas",
+  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp",
   "atualizacoes", "atualizacoes.agendamentos",
 ];
 
@@ -33,6 +33,8 @@ const ALL_ACTIONS: ActionKey[] = [
   "fueling.launch", "fueling.edit", "os.create", "flight.create", "flight.edit", "flight.delete",
   "content.edit", "credit.launch", "credit.edit", "credit.delete",
   "users.manage", "schedule.generate", "onboarding.edit",
+  "students.automations.view", "students.automations.manage", "students.templates.manage",
+  "students.history.view", "students.statuses.manage",
 ];
 
 export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {

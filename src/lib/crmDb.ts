@@ -259,6 +259,7 @@ export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead |
   if (!configured()) return { data: null, error: new Error("CRM não configurado.") };
   try {
     const now = new Date().toISOString();
+    const statusEnteredAt = input.statusEnteredAt ?? now;
     const doc = await databases!.createDocument(
       DB_ID!,
       CRM_LEADS_COL_ID!,
@@ -269,10 +270,10 @@ export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead |
         email: input.email,
         phone: input.phone,
         crm_status: input.crmStatus ?? "qualificacao",
-        status_entered_at: now,
-        funnel_entered_at: now,
-        followups_json: "[]",
-        pay_in_person: false,
+        status_entered_at: statusEnteredAt,
+        funnel_entered_at: input.funnelEnteredAt ?? statusEnteredAt,
+        followups_json: JSON.stringify(input.followups ?? []),
+        pay_in_person: input.payInPerson ?? false,
       },
       publicLeadDocumentPermissions(),
     );

@@ -50,6 +50,7 @@ export type AdminTabKey =
   | "settings.indique-ganhe"
   | "settings.roles"
   | "settings.propostas"
+  | "settings.wpp"
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
@@ -114,7 +115,12 @@ export type ActionKey =
   | "credit.delete"     // Excluir crédito
   | "users.manage"      // Gerenciar usuários (criar, editar, alterar role)
   | "schedule.generate" // Gerar escala automática
-  | "onboarding.edit";  // Editar apresentação de onboarding
+  | "onboarding.edit"   // Editar apresentação de onboarding
+  | "students.automations.view"
+  | "students.automations.manage"
+  | "students.templates.manage"
+  | "students.history.view"
+  | "students.statuses.manage";
 
 /** Labels em português para cada ação */
 export const ACTION_LABELS: Record<ActionKey, string> = {
@@ -131,6 +137,11 @@ export const ACTION_LABELS: Record<ActionKey, string> = {
   "users.manage": "Gerenciar usuários",
   "schedule.generate": "Gerar escala automática",
   "onboarding.edit": "Editar apresentação de onboarding",
+  "students.automations.view": "Visualizar automações de alunos",
+  "students.automations.manage": "Gerenciar automações de alunos",
+  "students.templates.manage": "Gerenciar templates de automações",
+  "students.history.view": "Visualizar histórico de automações",
+  "students.statuses.manage": "Gerenciar status CRM de alunos",
 };
 
 /** Conjunto de permissões de um role */
@@ -211,6 +222,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.indique-ganhe": "Configurações › Indique e ganhe",
   "settings.roles": "Configurações › Roles",
   "settings.propostas": "Configurações › Propostas",
+  "settings.wpp": "Configurações › WPP",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",
