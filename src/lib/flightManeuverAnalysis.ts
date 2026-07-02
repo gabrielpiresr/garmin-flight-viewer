@@ -95,9 +95,11 @@ function compareOperator(a: number, op: StepEndCondition & { type: "parameter" }
 
 function deriveStepStatus(params: AnalyzedParameter[]): ReviewStatus {
   if (params.length === 0) return "unavailable";
+  const available = params.filter((p) => p.status !== "unavailable");
+  if (available.length === 0) return "unavailable";
   let hasCritical = false;
   let hasAttention = false;
-  for (const p of params) {
+  for (const p of available) {
     if (p.status === "out_of_range") {
       if (p.severity === "critical") hasCritical = true;
       else hasAttention = true;
@@ -171,7 +173,7 @@ function analyzeParameter(
       expected_max: maxStart ?? null,
       ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
       ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
-      status: "ok",
+      status: "unavailable",
       time_out_of_range_seconds: 0,
       severity: paramCfg.severity,
       data_points: [],

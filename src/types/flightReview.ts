@@ -107,7 +107,7 @@ export type AnalyzedParameter = {
   expected_min_end?: number | null;
   /** Valor do limite máximo no fim da etapa (presente apenas quando há interpolação). */
   expected_max_end?: number | null;
-  status: "ok" | "warning" | "out_of_range";
+  status: "ok" | "warning" | "out_of_range" | "unavailable";
   time_out_of_range_seconds: number;
   severity: ParameterSeverity;
   data_points: Array<{ t: number; v: number }>;

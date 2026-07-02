@@ -109,8 +109,11 @@ export async function autoBuildFlightReviewManeuvers(
         // aeronave não encontrada — usa todos os templates ativos
       }
     }
-    const [activeTemplates, allTemplates, existing] = await Promise.all([
-      listManeuverTemplates({ activeOnly: true, ...(aircraftModelId ? { aircraftModelId } : {}) }),
+    const [aircraftTemplates, activeTemplates, allTemplates, existing] = await Promise.all([
+      aircraftModelId
+        ? listManeuverTemplates({ activeOnly: true, aircraftModelId })
+        : listManeuverTemplates({ activeOnly: true }),
+      listManeuverTemplates({ activeOnly: true }),
       listManeuverTemplates(),
       listFlightManeuvers(input.flightId),
     ]);
@@ -121,7 +124,9 @@ export async function autoBuildFlightReviewManeuvers(
 
     for (const seg of relevant) {
       const category = SEG_CATEGORY_MAP[seg.type]!;
-      const tmpl = activeTemplates.find((t) => t.category === category && t.is_active);
+      const tmpl =
+        aircraftTemplates.find((t) => t.category === category && t.is_active) ??
+        activeTemplates.find((t) => t.category === category && t.is_active);
       if (!tmpl) continue;
 
       const segStartMs = chartTimeBaseMs + seg.startX;

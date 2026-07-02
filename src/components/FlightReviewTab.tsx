@@ -166,6 +166,8 @@ const REVIEW_STATUS_CONFIG: Record<
   attention: { label: "Atenção", badgeClass: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
   critical: { label: "Crítico", badgeClass: "bg-red-500/10 text-red-400 border-red-500/20" },
   unavailable: { label: "Indisponível", badgeClass: "bg-slate-500/10 text-slate-400 border-slate-600/30" },
+  warning: { label: "Atenção", badgeClass: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
+  out_of_range: { label: "Fora", badgeClass: "bg-red-500/10 text-red-400 border-red-500/20" },
   draft: { label: "Rascunho", badgeClass: "bg-sky-500/10 text-sky-400 border-sky-500/20" },
   analyzed: { label: "Analisada", badgeClass: "bg-violet-500/10 text-violet-400 border-violet-500/20" },
 };
@@ -2625,6 +2627,16 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   }, [flightId, publicData, showToast]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (publicData) return undefined;
+    const onManeuversUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ flightId?: string }>).detail;
+      if (detail?.flightId === flightId) void load();
+    };
+    window.addEventListener("flight-review-maneuvers-updated", onManeuversUpdated);
+    return () => window.removeEventListener("flight-review-maneuvers-updated", onManeuversUpdated);
+  }, [flightId, load, publicData]);
 
   /** Parsed CSV for reconstructing chart data_points at render time (charts survive page reload). */
   useEffect(() => {

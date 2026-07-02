@@ -241,6 +241,64 @@ function minVerticalSpeed(data: ChartRow[], startIdx: number, endIdx: number): n
   return min;
 }
 
+function averageMetric(data: ChartRow[], startIdx: number, endIdx: number, key: string): number | null {
+  let sum = 0;
+  let count = 0;
+  for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
+    const value = get(data[i]!, key);
+    if (value !== null) {
+      sum += value;
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : null;
+}
+
+function minMetric(data: ChartRow[], startIdx: number, endIdx: number, key: string): number | null {
+  let min: number | null = null;
+  for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
+    const value = get(data[i]!, key);
+    if (value !== null) min = min === null ? value : Math.min(min, value);
+  }
+  return min;
+}
+
+function hasTouchdownSpeedSignature(
+  data: ChartRow[],
+  idx: number,
+  mode: "tgl" | "landing",
+): boolean {
+  const preGs = averageMetric(data, idx - 30, idx - 10, "gsKt");
+  const touchdownGs = averageMetric(data, idx - 3, idx + 3, "gsKt");
+  const postGs = averageMetric(data, idx + 5, idx + 25, "gsKt");
+  const preIas = averageMetric(data, idx - 30, idx - 10, "iasKt");
+  const touchdownIas = averageMetric(data, idx - 3, idx + 3, "iasKt");
+  const postIas = averageMetric(data, idx + 5, idx + 25, "iasKt");
+  const minGs = minMetric(data, idx - 20, idx + 20, "gsKt");
+  const minIas = minMetric(data, idx - 20, idx + 20, "iasKt");
+  const rolloutStop = slowsBelowGroundSpeed(data, idx, 10, 180);
+
+  const touchdownSpeed =
+    (touchdownGs !== null && touchdownGs <= 70) ||
+    (touchdownIas !== null && touchdownIas <= 70) ||
+    (minGs !== null && minGs <= 62) ||
+    (minIas !== null && minIas <= 62) ||
+    rolloutStop;
+
+  const decelerated =
+    (preGs !== null && touchdownGs !== null && preGs - touchdownGs >= 5) ||
+    (preIas !== null && touchdownIas !== null && preIas - touchdownIas >= 5) ||
+    rolloutStop;
+
+  if (!touchdownSpeed || !decelerated) return false;
+  if (mode === "landing") return rolloutStop || slowsBelowGroundSpeed(data, idx, 25, 120);
+
+  const recovered =
+    (postGs !== null && touchdownGs !== null && postGs - touchdownGs >= 4) ||
+    (postIas !== null && touchdownIas !== null && postIas - touchdownIas >= 4);
+  return recovered;
+}
+
 function findAltitudeClimbAfterTouchdown(
   data: ChartRow[],
   touchdownIdx: number,
@@ -286,9 +344,11 @@ function isAltitudeValleyTouchdown(data: ChartRow[], idx: number): boolean {
   const descentFt = previousHigh.value - alt;
   const climbFt = futureHigh.value !== null ? futureHigh.value - alt : 0;
   const rolloutStop = slowsBelowGroundSpeed(data, idx, 10, 180);
+  const speedSignature = hasTouchdownSpeedSignature(data, idx, rolloutStop ? "landing" : "tgl");
 
   if (descentFt < 250) return false;
   if (!rolloutStop && climbFt < 100) return false;
+  if (!speedSignature) return false;
 
   const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
   const touchdownLikeSpeed =
@@ -299,66 +359,11 @@ function isAltitudeValleyTouchdown(data: ChartRow[], idx: number): boolean {
   return touchdownLikeSpeed;
 }
 
-function findLevelClimbTouchdown(data: ChartRow[], climbIdx: number): number | null {
-  const climbX = data[climbIdx]?.x;
-  if (climbX === undefined) return null;
-
-  const futureHigh = smoothedAltExtreme(data, climbIdx + 30, climbIdx + 240, "max");
-  const climbAlt = smoothedGpsAltFt(data, climbIdx);
-  if (futureHigh.value === null || climbAlt === null || futureHigh.value - climbAlt < 300) return null;
-
-  const lowWindowStart = Math.max(0, climbIdx - 150);
-  const lowWindowEnd = Math.max(0, climbIdx - 5);
-  const low = smoothedAltExtreme(data, lowWindowStart, lowWindowEnd, "min");
-  if (low.idx === null || low.value === null) return null;
-
-  const stableWindow = data.slice(Math.max(0, low.idx - 120), low.idx + 1);
-  const stableAltitudes = stableWindow
-    .map((row) => get(row, "gpsAltFt"))
-    .filter((value): value is number => value !== null);
-  if (stableAltitudes.length < 60) return null;
-
-  const stableSpread = Math.max(...stableAltitudes) - Math.min(...stableAltitudes);
-  const lowGs = get(data[low.idx]!, "gsKt");
-  if (stableSpread > 120 || lowGs === null || lowGs < 55) return null;
-
-  return low.idx;
-}
-
 function collectAltitudeTouchdowns(data: ChartRow[]): number[] {
   const candidates: number[] = [];
 
   for (let i = 30; i < data.length - 5; i++) {
     if (isAltitudeValleyTouchdown(data, i)) candidates.push(i);
-  }
-
-  const unreliableAgl = hasUnreliableAgl(data);
-  if (unreliableAgl && candidates.length >= 3) {
-    for (let i = 30; i < data.length - 240; i++) {
-      const velU = get(data[i]!, "velUMps");
-      const vs = get(data[i]!, "vertSpeedFpm");
-      const pitch = get(data[i]!, "pitchDeg");
-      const gs = get(data[i]!, "gsKt");
-      if (
-        gs !== null &&
-        gs > 55 &&
-        pitch !== null &&
-        pitch > 1.2 &&
-        ((velU !== null && velU > 1.0) || (vs !== null && vs > 200))
-      ) {
-        const tdIdx = findLevelClimbTouchdown(data, i);
-        const previousPatternTouchdowns = tdIdx !== null
-          ? candidates.filter((seen) => data[tdIdx]!.x - data[seen]!.x > 180_000).length
-          : 0;
-        if (
-          tdIdx !== null &&
-          previousPatternTouchdowns >= 3 &&
-          !candidates.some((seen) => Math.abs(data[seen]!.x - data[tdIdx]!.x) < 180_000)
-        ) {
-          candidates.push(tdIdx);
-        }
-      }
-    }
   }
 
   candidates.sort((a, b) => a - b);

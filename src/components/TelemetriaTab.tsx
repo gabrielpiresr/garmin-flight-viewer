@@ -449,9 +449,20 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       // Feedback do auto-build do Flight Review (roda em segundo plano)
       void result.reviewAutoBuild?.then((build) => {
         if (build.added > 0) {
+          window.dispatchEvent(new CustomEvent("flight-review-maneuvers-updated", { detail: { flightId } }));
           showToast({
             variant: "success",
             message: `${build.added} manobra${build.added > 1 ? "s" : ""} (decolagem/pouso/TGL) adicionada${build.added > 1 ? "s" : ""} ao Flight Review${build.analyzed > 0 ? " e analisada" + (build.analyzed > 1 ? "s" : "") : ""}.`,
+          });
+        } else if (build.detected > 0 && build.skipped > 0) {
+          showToast({
+            variant: "info",
+            message: "As manobras detectadas ja existiam no Flight Review.",
+          });
+        } else if (build.detected > 0) {
+          showToast({
+            variant: "warning",
+            message: "Segmentos detectados, mas nenhum template ativo compativel foi encontrado para o Flight Review.",
           });
         } else if (build.error) {
           showToast({
