@@ -130,6 +130,33 @@ export async function renderOverlayVideo(
   return { blob, frameCount: totalFrames, fps: RENDER_FPS, durationSec };
 }
 
+/**
+ * Overlay JFRS com um único frame transparente — usado para exportar corte,
+ * rotação e formato vertical em vídeos sem telemetria. O ffmpeg do helper
+ * repete o último frame do overlay até o vídeo-base terminar, então um frame
+ * basta e o upload fica em poucos bytes.
+ */
+export async function buildBlankOverlay(durationSec: number): Promise<RenderedOverlay> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 2;
+  canvas.height = 2;
+  // Canvas nasce transparente — nenhum draw necessário.
+  const frame = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
+  );
+  const frameData = await frame.arrayBuffer();
+
+  const headerBuf = new ArrayBuffer(8);
+  const hv = new DataView(headerBuf);
+  hv.setUint32(0, MAGIC, false);
+  hv.setUint32(4, 1, false);
+  const sizeBuf = new ArrayBuffer(4);
+  new DataView(sizeBuf).setUint32(0, frameData.byteLength, false);
+
+  const blob = new Blob([headerBuf, sizeBuf, frameData], { type: "application/octet-stream" });
+  return { blob, frameCount: 1, fps: 1, durationSec };
+}
+
 // ─── Upload overlay to helper ────────────────────────────────────────────────
 
 export interface CompositeParams {

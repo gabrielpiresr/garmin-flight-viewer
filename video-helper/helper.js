@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.3.3",
+      version: "1.3.4",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,
@@ -1674,10 +1674,28 @@ async function compositeOverlay(
   try {
     sendProgress(jobId, { stage: "process", percent: 2 });
 
-    // Download source video
+    // Download source video — streaming para disco (vídeos de vários GB não
+    // cabem num ArrayBuffer) com progresso mapeado em 2%→12%.
     const response = await fetch(videoUrl);
     if (!response.ok) throw new Error(`Download do vídeo falhou: ${response.status}`);
-    fs.writeFileSync(path.join(tmpDir, "input.mp4"), Buffer.from(await response.arrayBuffer()));
+    const totalBytes = Number(response.headers.get("content-length")) || 0;
+    const inputStream = fs.createWriteStream(path.join(tmpDir, "input.mp4"));
+    let receivedBytes = 0;
+    let lastDownloadPct = 2;
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      receivedBytes += chunk.length;
+      if (!inputStream.write(chunk)) {
+        await new Promise((resolve) => inputStream.once("drain", resolve));
+      }
+      if (totalBytes > 0) {
+        const pct = 2 + Math.min(10, Math.floor((receivedBytes / totalBytes) * 10));
+        if (pct !== lastDownloadPct) {
+          lastDownloadPct = pct;
+          sendProgress(jobId, { stage: "process", percent: pct });
+        }
+      }
+    }
+    await new Promise((resolve, reject) => inputStream.end((err) => (err ? reject(err) : resolve())));
 
     sendProgress(jobId, { stage: "process", percent: 12 });
 

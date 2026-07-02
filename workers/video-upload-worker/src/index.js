@@ -122,6 +122,10 @@ export default {
       return handleList(request, env);
     }
 
+    if (url.pathname === "/download" && (request.method === "GET" || request.method === "HEAD")) {
+      return handleDownload(request, env, url);
+    }
+
     return new Response("Not found", { status: 404, headers: corsHeaders(request, env) });
   },
 };
@@ -170,6 +174,37 @@ async function handleComplete(request, env) {
 
   const fileUrl = `${env.R2_PUBLIC_URL}/${key}`;
   return json(request, env, { fileUrl });
+}
+
+// Download com Content-Disposition: attachment. O bucket já é público para
+// leitura (R2_PUBLIC_URL), então esta rota não amplia o acesso — só força o
+// browser a salvar o arquivo em vez de reproduzir inline.
+async function handleDownload(request, env, url) {
+  const key = String(url.searchParams.get("key") || "");
+  if (!key.startsWith("flights/") || key.includes("..")) {
+    return err(request, env, "Chave invalida", 400);
+  }
+
+  const filename = (key.split("/").pop() || "video.mp4").replace(/["\\]/g, "");
+  const baseHeaders = {
+    ...corsHeaders(request, env),
+    "Content-Type": videoContentType(key),
+    "Content-Disposition": `attachment; filename="${filename}"`,
+  };
+
+  if (request.method === "HEAD") {
+    const head = await env.FLIGHT_VIDEOS.head(key);
+    if (!head) return err(request, env, "Nao encontrado", 404);
+    return new Response(null, {
+      headers: { ...baseHeaders, "Content-Length": String(head.size) },
+    });
+  }
+
+  const object = await env.FLIGHT_VIDEOS.get(key);
+  if (!object) return err(request, env, "Nao encontrado", 404);
+  return new Response(object.body, {
+    headers: { ...baseHeaders, "Content-Length": String(object.size) },
+  });
 }
 
 async function handleList(request, env) {

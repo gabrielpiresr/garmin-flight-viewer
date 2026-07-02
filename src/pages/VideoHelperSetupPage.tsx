@@ -3,9 +3,10 @@ import { useState } from "react";
 
 const HELPER_RELEASE_URL = "https://github.com/gabrielpiresr/garmin-flight-viewer/releases/tag/helper";
 const HELPER_DOWNLOAD_URL =
-  "https://sfo.cloud.appwrite.io/v1/storage/buckets/video-helper-releases/files/6a28474930a45bebbbae/download?project=6a01ac8a0009fbf94f05";
+  "https://sfo.cloud.appwrite.io/v1/storage/buckets/video-helper-releases/files/6a468b4700085150e797/download?project=6a01ac8a0009fbf94f05";
 const HELPER_HEALTH_URL = "http://127.0.0.1:7842/health";
 const HELPER_MIN_VERSION = "1.3.3";
+const HELPER_RECOMMENDED_VERSION = "1.3.4";
 
 type HelperTestStatus = "idle" | "checking" | "online" | "outdated" | "offline";
 
@@ -75,7 +76,7 @@ export function VideoHelperSetupPage() {
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
             O sistema usa um aplicativo local para enviar vídeos, concatenar gravações e gerar downloads com corte e instrumentos. A versão mínima necessária é a <strong>{HELPER_MIN_VERSION}</strong>.
           </p>
-          <p className="mt-2 text-xs text-slate-500">Versão recomendada: {HELPER_MIN_VERSION}</p>
+          <p className="mt-2 text-xs text-slate-500">Versão recomendada: {HELPER_RECOMMENDED_VERSION}</p>
           <div className="mt-5 flex flex-wrap gap-3">
             <a
               href={HELPER_DOWNLOAD_URL}
@@ -83,7 +84,7 @@ export function VideoHelperSetupPage() {
               rel="noopener noreferrer"
               className="inline-flex rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
             >
-              Baixar instalador {HELPER_MIN_VERSION} para Windows
+              Baixar instalador {HELPER_RECOMMENDED_VERSION} para Windows
             </a>
             <button
               type="button"
@@ -99,18 +100,18 @@ export function VideoHelperSetupPage() {
         </section>
 
         <section className="mt-6 rounded-lg border border-sky-500/25 bg-sky-950/20 p-4 text-sm text-sky-100">
-          <p className="font-semibold">Novidades da versão {HELPER_MIN_VERSION}</p>
+          <p className="font-semibold">Novidades da versão {HELPER_RECOMMENDED_VERSION}</p>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sky-100/90">
+            <li>Download com corte agora mostra o progresso enquanto baixa o vídeo original (antes ficava parado em 2%).</li>
+            <li>Suporte a vídeos grandes (vários GB) no download com corte, sem estourar a memória.</li>
             <li>Upload de vários vídeos sem concatenar localmente (modo “concatenar só no player”).</li>
-            <li>Menos uso de disco e menos risco de falha por falta de espaço no FFmpeg.</li>
-            <li>Download com corte e instrumentos continua disponível no computador.</li>
           </ul>
         </section>
 
         <section className="mt-6 space-y-4">
           <Step number="1" title="Baixe o instalador mais recente">
             <p>
-              Baixe o <strong>Flight Video Helper {HELPER_MIN_VERSION}</strong>. Se você já tinha uma versão antiga instalada, reinstale por cima ou desinstale antes para garantir a atualização.
+              Baixe o <strong>Flight Video Helper {HELPER_RECOMMENDED_VERSION}</strong>. Se você já tinha uma versão antiga instalada, reinstale por cima ou desinstale antes para garantir a atualização.
             </p>
             <a
               href={HELPER_DOWNLOAD_URL}
@@ -118,7 +119,7 @@ export function VideoHelperSetupPage() {
               rel="noopener noreferrer"
               className="mt-3 inline-flex rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
             >
-              Baixar instalador {HELPER_MIN_VERSION} para Windows
+              Baixar instalador {HELPER_RECOMMENDED_VERSION} para Windows
             </a>
             <a
               href={HELPER_RELEASE_URL}
@@ -170,7 +171,7 @@ export function VideoHelperSetupPage() {
             Essa ferramenta funciona apenas em computador. Celular e tablet podem assistir e baixar os arquivos, mas não conseguem gerar o vídeo com corte e instrumentos.
           </p>
           <p className="mt-2 text-amber-200/85">
-            Se o upload em “concatenar só no player” retornar erro de rota ou job não encontrado, quase sempre é helper desatualizado. Reinstale a versão {HELPER_MIN_VERSION}.
+            Se o upload em “concatenar só no player” retornar erro de rota ou job não encontrado, quase sempre é helper desatualizado. Reinstale a versão {HELPER_RECOMMENDED_VERSION}.
           </p>
         </section>
       </div>
@@ -205,7 +206,7 @@ function HelperTestResult({
     return (
       <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
         <p>
-          O helper está rodando, mas a versão detectada{detectedVersion ? ` (${detectedVersion})` : ""} é antiga. Instale a versão {HELPER_MIN_VERSION} para usar upload sem concatenação local.
+          O helper está rodando, mas a versão detectada{detectedVersion ? ` (${detectedVersion})` : ""} é antiga. Instale a versão {HELPER_RECOMMENDED_VERSION} para usar upload sem concatenação local.
         </p>
         <a
           href={HELPER_DOWNLOAD_URL}
@@ -213,7 +214,7 @@ function HelperTestResult({
           rel="noopener noreferrer"
           className="mt-3 inline-flex rounded-md bg-amber-500/20 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/30"
         >
-          Baixar instalador {HELPER_MIN_VERSION}
+          Baixar instalador {HELPER_RECOMMENDED_VERSION}
         </a>
       </div>
     );
@@ -221,7 +222,7 @@ function HelperTestResult({
 
   return (
     <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
-      Não consegui encontrar o helper rodando neste computador. Baixe e abra o Flight Video Helper {HELPER_MIN_VERSION}, depois teste novamente.
+      Não consegui encontrar o helper rodando neste computador. Baixe e abra o Flight Video Helper {HELPER_RECOMMENDED_VERSION}, depois teste novamente.
     </div>
   );
 }

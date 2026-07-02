@@ -8,7 +8,8 @@
   type RefObject,
 } from "react";
 import { ExportModal, type ExportProgress } from "./ExportModal";
-import { renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
+import { buildBlankOverlay, renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
+import { downloadVideoFile } from "../lib/videoDownload";
 import { useAuth } from "../contexts/AuthContext";
 import { account } from "../lib/appwrite";
 import { getCachedBrandSettings, getEmailBrandSettings } from "../lib/notificationsDb";
@@ -63,6 +64,11 @@ import {
 
 
 const HELPER_URL = "http://127.0.0.1:7842";
+
+// Corte/formato e download com overlay ocultos por ora — o fluxo baixa o vídeo
+// original inteiro no helper e fica lento para arquivos grandes. Reativar
+// quando o processamento remoto por trecho estiver pronto.
+const SHOW_VIDEO_EDIT_TOOLS = false;
 const HELPER_SETUP_PATH = "/video-helper";
 const HELPER_MIN_VERSION = "1.3.3";
 
@@ -999,7 +1005,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
           </ul>
         ) : videos.length > 0 ? (
           <div className="space-y-3">
-            <QueuedVideosPlayer videos={videos} />
+            <QueuedVideosPlayer videos={videos} publicMode={publicMode} />
             <ul className="space-y-2">
               {videos.map((v) => (
                 <VideoCard
@@ -1494,7 +1500,17 @@ function useVideoStageSize(
   return size;
 }
 
-function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVideo; publicMode?: boolean }) {
+function TelemetryVideoPlayer({
+  video,
+  publicMode = false,
+  onEnded,
+  autoPlay = false,
+}: {
+  video: FlightVideo;
+  publicMode?: boolean;
+  onEnded?: () => void;
+  autoPlay?: boolean;
+}) {
   const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const videoStageParentRef = useRef<HTMLDivElement>(null);
@@ -1543,6 +1559,8 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
   const [brand, setBrand] = useState(() => getCachedVideoBrand());
   const verticalDragRef = useRef<{ startX: number; startCrop: number; moved: boolean } | null>(null);
   const currentTimeRef = useRef(0);
+  const onEndedRef = useRef(onEnded);
+  onEndedRef.current = onEnded;
 
   const verticalSpeedFpm = useMemo(
     () => verticalSpeedFpmAtTime(points, currentTimeSec),
@@ -1647,6 +1665,7 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
       syncPlaybackState(el);
     };
     const update = () => syncPlaybackState(el);
+    const handleEnded = () => onEndedRef.current?.();
 
     if (el.readyState >= 1) restoreAndSync();
     else update();
@@ -1657,6 +1676,7 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
     el.addEventListener("timeupdate", update);
     el.addEventListener("seeked", update);
     el.addEventListener("play", update);
+    el.addEventListener("ended", handleEnded);
     return () => {
       el.removeEventListener("loadedmetadata", restoreAndSync);
       el.removeEventListener("loadeddata", restoreAndSync);
@@ -1664,6 +1684,7 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
       el.removeEventListener("timeupdate", update);
       el.removeEventListener("seeked", update);
       el.removeEventListener("play", update);
+      el.removeEventListener("ended", handleEnded);
     };
   }, [orientation, syncPlaybackState, video.id]);
 
@@ -1788,12 +1809,16 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
 
   async function handleRenderedDownload() {
     const exportWidgets = enabledWidgets.filter((w) => w !== "route");
-    if (exportWidgets.length === 0) {
+    if (hasTelemetry && exportWidgets.length === 0) {
       setExportError("Selecione altitude, velocidade ou rumo para gerar o MP4.");
       return;
     }
+    const fallbackEndSec =
+      points.length > 0
+        ? points[points.length - 1].timeMs / 1000
+        : video.duration_sec ?? videoRef.current?.duration ?? 0;
     const startSec = trimStartSec ?? 0;
-    const endSec = trimEndSec ?? (points.length > 0 ? points[points.length - 1].timeMs / 1000 : 0);
+    const endSec = trimEndSec ?? fallbackEndSec;
     if (endSec <= startSec) {
       setExportError("Trecho inválido — marque início antes do fim.");
       return;
@@ -1824,23 +1849,27 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
       const playerWidth = overlayEl?.clientWidth ?? containerRef.current?.clientWidth ?? 1280;
       const playerHeight = overlayEl?.clientHeight ?? containerRef.current?.clientHeight ?? 720;
       const videoEl = videoRef.current;
-      const overlay = await renderOverlayVideo({
-        points,
-        chartPoints,
-        widgets: enabledWidgets,
-        startSec,
-        endSec,
-        orientation,
-        brand: brand?.schoolName ?? "",
-        playerWidth,
-        playerHeight,
-        overlayStyle,
-        airspeedArcs,
-        routeMap: enabledWidgets.includes("route") ? routeMap : null,
-        onProgress: (stage, pct) => {
-          if (stage === "render") upd({ stage: "render", renderPct: pct });
-        },
-      });
+      // Sem telemetria o overlay é um frame transparente — o helper só aplica
+      // corte, rotação e formato ao vídeo original.
+      const overlay = hasTelemetry
+        ? await renderOverlayVideo({
+            points,
+            chartPoints,
+            widgets: enabledWidgets,
+            startSec,
+            endSec,
+            orientation,
+            brand: brand?.schoolName ?? "",
+            playerWidth,
+            playerHeight,
+            overlayStyle,
+            airspeedArcs,
+            routeMap: enabledWidgets.includes("route") ? routeMap : null,
+            onProgress: (stage, pct) => {
+              if (stage === "render") upd({ stage: "render", renderPct: pct });
+            },
+          })
+        : await buildBlankOverlay(endSec - startSec);
 
       // Stage 2 — upload overlay to helper + start composite job
       upd({ stage: "upload", renderPct: 1 });
@@ -1929,6 +1958,7 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
                   src={video.file_url}
                   preload="metadata"
                   playsInline
+                  autoPlay={autoPlay}
                   className="absolute inset-0 h-full w-full bg-black object-cover"
                   style={{
                     objectPosition: `${verticalCropPct}% center`,
@@ -1997,6 +2027,7 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
                   src={video.file_url}
                   preload="metadata"
                   playsInline
+                  autoPlay={autoPlay}
                   className="absolute inset-0 h-full w-full bg-black object-cover"
                   style={videoRotationStyle(videoRotationDeg)}
                 />
@@ -2114,8 +2145,19 @@ function TelemetryVideoPlayer({ video, publicMode = false }: { video: FlightVide
         )}
       </div>
 
+      {/* Botão de download — sempre visível (baixa o arquivo completo) */}
+      {!publicMode && !SHOW_VIDEO_EDIT_TOOLS && (
+        <button
+          type="button"
+          onClick={() => void downloadVideoFile(video.file_url!)}
+          className="self-start rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700"
+        >
+          ↓ Baixar
+        </button>
+      )}
+
       {/* Seleção de trecho + orientação */}
-      {!publicMode && (
+      {!publicMode && SHOW_VIDEO_EDIT_TOOLS && (
       <div className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-950/35 p-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Botões de orientação — à esquerda, junto dos botões de corte */}
@@ -2279,7 +2321,7 @@ function expandAvailableTelemetryWidgets(available: VideoTelemetryWidget[], poin
   return Array.from(set);
 }
 
-function QueuedVideosPlayer({ videos }: { videos: FlightVideo[] }) {
+function QueuedVideosPlayer({ videos, publicMode = false }: { videos: FlightVideo[]; publicMode?: boolean }) {
   const ordered = useMemo(
     () =>
       sortVideosByCreatedAtAsc(
@@ -2288,36 +2330,36 @@ function QueuedVideosPlayer({ videos }: { videos: FlightVideo[] }) {
     [videos],
   );
   const [activeIndex, setActiveIndex] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [autoPlayActive, setAutoPlayActive] = useState(false);
 
   useEffect(() => {
     if (activeIndex >= ordered.length) setActiveIndex(0);
   }, [activeIndex, ordered.length]);
 
-  useEffect(() => {
-    if (ordered.length === 0) return;
-    const current = ordered[activeIndex];
-    if (!current) return;
-    const el = videoRef.current;
-    if (!el) return;
-    el.load();
-  }, [activeIndex, ordered]);
-
   const onEnded = useCallback(() => {
     if (ordered.length <= 1) return;
-    setActiveIndex((prev) => (prev + 1) % ordered.length);
+    setActiveIndex((prev) => {
+      if (prev + 1 >= ordered.length) return prev;
+      setAutoPlayActive(true);
+      return prev + 1;
+    });
   }, [ordered.length]);
 
   const handleDownloadAll = useCallback(async () => {
     for (const item of ordered) {
       if (!item.file_url) continue;
-      window.open(item.file_url, "_blank", "noopener,noreferrer");
+      await downloadVideoFile(item.file_url);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }, [ordered]);
 
   if (ordered.length === 0) return null;
   const active = ordered[Math.min(activeIndex, ordered.length - 1)];
+
+  if (ordered.length === 1) {
+    return <TelemetryVideoPlayer video={active} publicMode={publicMode} />;
+  }
+
   const totalDuration = ordered.reduce((sum, item) => sum + (item.duration_sec ?? 0), 0);
 
   return (
@@ -2334,22 +2376,15 @@ function QueuedVideosPlayer({ videos }: { videos: FlightVideo[] }) {
           Baixar todos
         </button>
       </div>
-      <div className="overflow-hidden rounded-lg border border-slate-800 bg-black">
-        <video
-          ref={videoRef}
-          src={active.file_url}
-          controls
-          preload="metadata"
-          className="w-full"
-          onEnded={onEnded}
-        />
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
         {ordered.map((item, idx) => (
           <button
             key={item.id}
             type="button"
-            onClick={() => setActiveIndex(idx)}
+            onClick={() => {
+              setAutoPlayActive(false);
+              setActiveIndex(idx);
+            }}
             className={`rounded-md px-2 py-1 text-[11px] ${
               idx === activeIndex ? "bg-sky-500/20 text-sky-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
             }`}
@@ -2357,7 +2392,19 @@ function QueuedVideosPlayer({ videos }: { videos: FlightVideo[] }) {
             Parte {idx + 1}
           </button>
         ))}
+        <span className="text-[10px] text-slate-500">
+          {SHOW_VIDEO_EDIT_TOOLS
+            ? "Corte, rotação e download aplicam-se à parte selecionada."
+            : "Rotação e download aplicam-se à parte selecionada."}
+        </span>
       </div>
+      <TelemetryVideoPlayer
+        key={active.id}
+        video={active}
+        publicMode={publicMode}
+        onEnded={onEnded}
+        autoPlay={autoPlayActive}
+      />
     </div>
   );
 }
@@ -2559,6 +2606,7 @@ function DownloadChoiceModal({
   onDownloadWithWidgets: () => void;
 }) {
   const enhancedDisabled = exporting || Boolean(enhancedDownloadBlockedReason);
+  const [downloadingOriginal, setDownloadingOriginal] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -2568,32 +2616,39 @@ function DownloadChoiceModal({
       >
         <p className="mb-4 text-sm font-semibold text-slate-100">Como deseja baixar?</p>
         <div className="flex flex-col gap-3">
-          <a
-            href={videoUrl}
-            download
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-700"
-            onClick={onClose}
+          <button
+            type="button"
+            disabled={downloadingOriginal}
+            className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60"
+            onClick={() => {
+              setDownloadingOriginal(true);
+              void downloadVideoFile(videoUrl).finally(() => {
+                setDownloadingOriginal(false);
+                onClose();
+              });
+            }}
           >
             <span className="text-lg">🎬</span>
-            <div>
-              <p className="font-medium">Vídeo completo</p>
+            <div className="text-left">
+              <p className="font-medium">{downloadingOriginal ? "Preparando download…" : "Vídeo completo"}</p>
               <p className="text-xs text-slate-500">Sem instrumentos e sem corte</p>
             </div>
-          </a>
-          {hasTelemetry && (
-            <div className="space-y-2">
+          </button>
+          <div className="space-y-2">
               <button
                 type="button"
                 disabled={enhancedDisabled}
                 onClick={onDownloadWithWidgets}
                 className="flex w-full items-center gap-3 rounded-lg border border-sky-700/50 bg-sky-950/40 px-4 py-3 text-sm text-sky-200 hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:border-slate-700 disabled:bg-slate-800/50 disabled:text-slate-500"
               >
-                <span className="text-lg">📊</span>
+                <span className="text-lg">{hasTelemetry ? "📊" : "✂️"}</span>
                 <div className="text-left">
-                  <p className="font-medium">Vídeo com corte e instrumentos</p>
-                  <p className="text-xs text-sky-400/70">Aplica trecho e overlay de telemetria</p>
+                  <p className="font-medium">{hasTelemetry ? "Vídeo com corte e instrumentos" : "Vídeo com corte e edição"}</p>
+                  <p className="text-xs text-sky-400/70">
+                    {hasTelemetry
+                      ? "Aplica trecho e overlay de telemetria"
+                      : "Aplica trecho, rotação e formato vertical"}
+                  </p>
                 </div>
               </button>
               {enhancedDownloadBlockedReason && (
@@ -2620,8 +2675,7 @@ function DownloadChoiceModal({
                   )}
                 </div>
               )}
-            </div>
-          )}
+          </div>
         </div>
         <button
           type="button"
