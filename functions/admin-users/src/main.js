@@ -139,6 +139,10 @@ const GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_OAUTH_CL
 // Identificador único da escola — usado para isolar dados em ambiente multi-tenant.
 const SYNC_ANAC_FUNCTION_ID = process.env.APPWRITE_SYNC_ANAC_FUNCTION_ID || process.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID || "sync-anac-profile";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
+const TENANT_ROLES_COLLECTION_ID =
+  process.env.APPWRITE_TENANT_ROLES_COLLECTION_ID ||
+  process.env.VITE_APPWRITE_TENANT_ROLES_COL_ID ||
+  "6a106ec200312c19cc06";
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"]);
 const SCHEDULED_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto"]);
@@ -216,6 +220,11 @@ const PROFILE_SELECT = [
   "anac_sync_error",
   "anac_last_sync_at",
   "custom_role_slug",
+  "roles",
+  "active_role",
+  "role_custom_slugs_json",
+  "assigned_role_slugs",
+  "active_role_slug",
   "saga_user_id",
   "rg",
   "rg_orgao_expedidor",
@@ -6189,6 +6198,134 @@ function deriveRoleFromLabels(labels) {
   return "aluno";
 }
 
+const ROLE_PRIORITY = ["admin", "instrutor", "aluno"];
+
+function getEffectiveRole(profile) {
+  const active = cleanString(profile?.active_role);
+  const legacy = cleanString(profile?.role);
+  return normalizeRole(active || legacy);
+}
+
+function normalizeRoleList(value, fallback = "aluno") {
+  if (Array.isArray(value)) {
+    const roles = value
+      .map((item) => normalizeRole(String(item)))
+      .filter((role, index, arr) => arr.indexOf(role) === index);
+    if (roles.length > 0) return roles;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [normalizeRole(value)];
+  }
+  return [normalizeRole(fallback)];
+}
+
+function pickDefaultActiveRole(roles) {
+  for (const role of ROLE_PRIORITY) {
+    if (roles.includes(role)) return role;
+  }
+  return roles[0] || "aluno";
+}
+
+function parseProfileRoles(profile) {
+  const legacyRole = normalizeRole(profile?.role);
+  const roles = Array.isArray(profile?.roles) && profile.roles.length > 0
+    ? normalizeRoleList(profile.roles, legacyRole)
+    : [legacyRole];
+  const activeCandidate = getEffectiveRole(profile);
+  const activeRole = roles.includes(activeCandidate) ? activeCandidate : pickDefaultActiveRole(roles);
+  return { roles, activeRole };
+}
+
+function parseRoleCustomSlugsJson(profile) {
+  const raw = profile?.role_custom_slugs_json;
+  if (!raw || typeof raw !== "string") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function customSlugForRole(profile, role) {
+  const slug = parseRoleCustomSlugsJson(profile)?.[role];
+  return slug && typeof slug === "string" ? cleanString(slug) || null : null;
+}
+
+function normalizeSlugList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => cleanString(item))
+    .filter(Boolean)
+    .filter((slug, index, arr) => arr.indexOf(slug) === index);
+}
+
+function parseAssignedRoleSlugs(profile) {
+  if (Array.isArray(profile?.assigned_role_slugs) && profile.assigned_role_slugs.length > 0) {
+    return normalizeSlugList(profile.assigned_role_slugs);
+  }
+  if (Array.isArray(profile?.roles) && profile.roles.length > 0) {
+    const slugs = normalizeSlugList(profile.roles);
+    if (slugs.length > 0) return slugs;
+  }
+  const { roles, activeRole } = parseProfileRoles(profile);
+  const slugsMap = parseRoleCustomSlugsJson(profile);
+  return roles.map((portal) => slugsMap[portal] || portal);
+}
+
+function parseActiveRoleSlug(profile, assignedSlugs) {
+  const explicit = cleanString(profile?.active_role_slug);
+  if (explicit && assignedSlugs.includes(explicit)) return explicit;
+  const activePortal = getEffectiveRole(profile);
+  const slugsMap = parseRoleCustomSlugsJson(profile);
+  const mapped = slugsMap[activePortal];
+  if (mapped && assignedSlugs.includes(mapped)) return mapped;
+  if (assignedSlugs.includes(activePortal)) return activePortal;
+  return pickDefaultActiveSlug(assignedSlugs);
+}
+
+function pickDefaultActiveSlug(slugs) {
+  for (const portal of ROLE_PRIORITY) {
+    const match = slugs.find((slug) => slug === portal);
+    if (match) return match;
+  }
+  return slugs[0] || "aluno";
+}
+
+async function resolvePortalTypeForSlug(slug) {
+  const safeSlug = cleanString(slug);
+  if (VALID_ROLES.has(safeSlug)) return safeSlug;
+  if (!TENANT_ROLES_COLLECTION_ID || !DATABASE_ID) return "aluno";
+  try {
+    const res = await databases.listDocuments(DATABASE_ID, TENANT_ROLES_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.equal("slug", [safeSlug]),
+      sdk.Query.limit(1),
+    ]);
+    const portal = cleanString(res.documents[0]?.portal_type);
+    return VALID_ROLES.has(portal) ? portal : "aluno";
+  } catch {
+    return "aluno";
+  }
+}
+
+function resolveCustomRoleSlugForActive(activeSlug, portalType) {
+  if (activeSlug === "admin" && portalType === "admin") return null;
+  return activeSlug;
+}
+
+async function syncUserRoleLabel(userId, activeRole) {
+  const user = await users.get({ userId });
+  const labels = Array.from(
+    new Set([
+      ...(user.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())),
+      activeRole,
+    ]),
+  );
+  await users.updateLabels({ userId, labels });
+  return labels;
+}
+
 function normalizeSearch(value) {
   return String(value || "")
     .normalize("NFD")
@@ -6767,12 +6904,22 @@ async function getInstructorPreferenceByUserId(userId) {
   return res.documents[0] || null;
 }
 
+async function resolveProfilePortal(profile) {
+  if (!profile) return "";
+  const assigned = parseAssignedRoleSlugs(profile);
+  const activeSlug = parseActiveRoleSlug(profile, assigned);
+  if (activeSlug === "admin") return "admin";
+  const fromSlug = await resolvePortalTypeForSlug(activeSlug);
+  if (fromSlug) return fromSlug;
+  return getEffectiveRole(profile);
+}
+
 async function requireAdmin(actorUserId) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
   const [profile, actor] = await Promise.all([getProfileByUserId(actorUserId), users.get({ userId: actorUserId })]);
-  const profileRole = normalizeRole(profile?.role);
+  const profilePortal = await resolveProfilePortal(profile);
   const labelRole = deriveRoleFromLabels(actor?.labels || []);
-  if (profileRole !== "admin" && labelRole !== "admin") {
+  if (profilePortal !== "admin" && labelRole !== "admin") {
     throw Object.assign(new Error("Apenas administradores podem acessar usuarios."), { status: 403 });
   }
   return actor;
@@ -6781,9 +6928,9 @@ async function requireAdmin(actorUserId) {
 async function requireInstructorOrAdmin(actorUserId) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
   const [profile, actor] = await Promise.all([getProfileByUserId(actorUserId), users.get({ userId: actorUserId })]);
-  const profileRole = normalizeRole(profile?.role);
+  const profilePortal = await resolveProfilePortal(profile);
   const labelRole = deriveRoleFromLabels(actor?.labels || []);
-  if (!["admin", "instrutor"].includes(profileRole) && !["admin", "instrutor"].includes(labelRole)) {
+  if (!["admin", "instrutor"].includes(profilePortal) && !["admin", "instrutor"].includes(labelRole)) {
     throw Object.assign(new Error("Apenas administradores ou instrutores podem consultar voos do SAGA."), { status: 403 });
   }
   return actor;
@@ -8180,7 +8327,11 @@ function summarizeFlights(flights, plans, profilesByUserId = new Map()) {
 }
 
 function toUserRecord(user, profile, preference, flights, plans, trainingTracks = [], profilesByUserId = new Map(), documents = {}) {
-  const role = VALID_ROLES.has(profile?.role) ? profile.role : deriveRoleFromLabels(user.labels || []);
+  const assignedRoleSlugs = parseAssignedRoleSlugs(profile);
+  const activeRoleSlug = parseActiveRoleSlug(profile, assignedRoleSlugs);
+  const activeRole = getEffectiveRole(profile);
+  const roleCustomSlugs = parseRoleCustomSlugsJson(profile);
+  const customRoleSlug = resolveCustomRoleSlugForActive(activeRoleSlug, activeRole) ?? profile?.custom_role_slug ?? null;
   const profilePayload = toProfile(profile, preference, documents);
   const summary = summarizeFlights(flights, plans, profilesByUserId);
 
@@ -8188,8 +8339,13 @@ function toUserRecord(user, profile, preference, flights, plans, trainingTracks 
     userId: user.$id,
     email: user.email || profile?.email || "",
     name: user.name || "",
-    role,
-    customRoleSlug: profile?.custom_role_slug || null,
+    role: activeRole,
+    roles: assignedRoleSlugs,
+    activeRole,
+    assignedRoleSlugs,
+    activeRoleSlug,
+    customRoleSlug,
+    roleCustomSlugs,
     labels: user.labels || [],
     emailVerification: Boolean(user.emailVerification),
     createdAt: user.$createdAt || "",
@@ -8213,6 +8369,10 @@ function toUserSummary(user, profile, preference, flights, plans, trainingTracks
     email: detail.email,
     name: detail.name,
     role: detail.role,
+    roles: detail.assignedRoleSlugs ?? detail.roles,
+    activeRole: detail.activeRole,
+    assignedRoleSlugs: detail.assignedRoleSlugs ?? detail.roles,
+    activeRoleSlug: detail.activeRoleSlug,
     customRoleSlug: detail.customRoleSlug,
     labels: detail.labels,
     emailVerification: detail.emailVerification,
@@ -9789,15 +9949,35 @@ async function getUserDetail(targetUserId) {
   return record;
 }
 
-async function upsertProfile(userId, email, role, customRoleSlug = null) {
+async function upsertProfile(userId, email, role, customRoleSlug = null, options = {}) {
   const existing = await getProfileByUserId(userId);
+  const assignedSlugs = normalizeSlugList(
+    options.assignedRoleSlugs ||
+      (Array.isArray(options.roles) ? options.roles : null) ||
+      parseAssignedRoleSlugs(existing || { role }),
+  );
+  const safeAssigned = assignedSlugs.length > 0 ? assignedSlugs : [normalizeRole(role)];
+  let activeSlug = cleanString(options.activeRoleSlug) || parseActiveRoleSlug(existing || { role }, safeAssigned);
+  if (!safeAssigned.includes(activeSlug)) {
+    activeSlug = pickDefaultActiveSlug(safeAssigned);
+  }
+  const portalType = options.activeRole || normalizeRole(role);
+  const resolvedPortal = await resolvePortalTypeForSlug(activeSlug);
+  const safeActive = resolvedPortal || portalType;
+  const slugForActive = resolveCustomRoleSlugForActive(activeSlug, safeActive);
+  const roleCustomSlugs = options.roleCustomSlugs || parseRoleCustomSlugsJson(existing);
   const data = {
     user_id: userId,
     email,
-    role,
+    role: safeActive,
+    roles: safeAssigned,
+    assigned_role_slugs: safeAssigned,
+    active_role: safeActive,
+    active_role_slug: activeSlug,
+    role_custom_slugs_json: JSON.stringify(roleCustomSlugs),
     school_id: SCHOOL_ID,
     is_active: existing?.is_active !== false,
-    custom_role_slug: customRoleSlug || null,
+    custom_role_slug: slugForActive || null,
   };
 
   if (existing) {
@@ -9864,27 +10044,63 @@ async function createAdminUser(actorUserId, payload = {}) {
   return getUserDetail(authUser.$id);
 }
 
-async function updateRole(actorUserId, targetUserId, role, customRoleSlug = null) {
-  if (!VALID_ROLES.has(role)) {
+async function updateRole(actorUserId, targetUserId, roleOrRoles, customRoleSlug = null, roleCustomSlugs = null) {
+  await requireAdmin(actorUserId);
+  const assignedRoleSlugs = normalizeSlugList(
+    Array.isArray(roleOrRoles) ? roleOrRoles : [String(roleOrRoles || "")],
+  );
+  if (assignedRoleSlugs.length === 0) {
     throw Object.assign(new Error("Permissao invalida."), { status: 400 });
   }
   if (!targetUserId) {
     throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
   }
-  if (actorUserId === targetUserId && role !== "admin") {
+
+  const existing = await getProfileByUserId(targetUserId);
+  let activeSlug = parseActiveRoleSlug(existing, assignedRoleSlugs);
+  if (!assignedRoleSlugs.includes(activeSlug)) {
+    activeSlug = pickDefaultActiveSlug(assignedRoleSlugs);
+  }
+  const portalType = await resolvePortalTypeForSlug(activeSlug);
+
+  const hasAdminAssignment = assignedRoleSlugs.includes("admin") ||
+    (await Promise.all(assignedRoleSlugs.map((slug) => resolvePortalTypeForSlug(slug)))).includes("admin");
+  if (actorUserId === targetUserId && !hasAdminAssignment) {
     throw Object.assign(new Error("Nao e permitido remover sua propria permissao de admin."), { status: 400 });
   }
 
   const user = await users.get({ userId: targetUserId });
-  const labels = Array.from(
-    new Set([...(user.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), role]),
-  );
-  await users.updateLabels({ userId: targetUserId, labels });
-  // custom_role_slug: store only if role is admin/instrutor (aluno system roles don't use custom slugs here)
-  const slugToStore = customRoleSlug && typeof customRoleSlug === "string" ? customRoleSlug.trim() || null : null;
-  await upsertProfile(targetUserId, user.email || "", role, slugToStore);
+  await syncUserRoleLabel(targetUserId, portalType);
+  await upsertProfile(targetUserId, user.email || "", portalType, null, {
+    assignedRoleSlugs,
+    activeRoleSlug: activeSlug,
+    activeRole: portalType,
+  });
 
   return getUserDetail(targetUserId);
+}
+
+async function switchActiveRole(actorUserId, targetRoleSlug) {
+  const safeSlug = cleanString(targetRoleSlug);
+  const profile = await getProfileByUserId(actorUserId);
+  if (!profile?.$id) {
+    throw Object.assign(new Error("Perfil nao encontrado."), { status: 404 });
+  }
+  const assignedRoleSlugs = parseAssignedRoleSlugs(profile);
+  if (!assignedRoleSlugs.includes(safeSlug)) {
+    throw Object.assign(new Error("Role nao permitido para este usuario."), { status: 403 });
+  }
+
+  const portalType = await resolvePortalTypeForSlug(safeSlug);
+  const user = await users.get({ userId: actorUserId });
+  await syncUserRoleLabel(actorUserId, portalType);
+  await upsertProfile(actorUserId, user.email || profile.email || "", portalType, null, {
+    assignedRoleSlugs,
+    activeRoleSlug: safeSlug,
+    activeRole: portalType,
+  });
+
+  return getUserDetail(actorUserId);
 }
 
 function profileStringEqual(next, current) {
@@ -11689,13 +11905,10 @@ function randomShareToken() {
 
 async function getActorRole(actorUserId) {
   if (!actorUserId) return "";
-  const [profile, actor] = await Promise.all([
-    getProfileByUserId(actorUserId).catch(() => null),
-    users.get({ userId: actorUserId }).catch(() => null),
-  ]);
-  const profileRole = normalizeRole(profile?.role);
-  const labelRole = deriveRoleFromLabels(actor?.labels || []);
-  return profileRole === "aluno" && labelRole ? labelRole : profileRole || labelRole;
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  if (profile) return resolveProfilePortal(profile);
+  const actor = await users.get({ userId: actorUserId }).catch(() => null);
+  return deriveRoleFromLabels(actor?.labels || []);
 }
 
 function publicFlightFields(doc, csvText) {
@@ -13758,6 +13971,93 @@ async function notifyCaktoSaleToAdmins(sale) {
     recipientUserIds: adminIds,
     data: safeSale,
   });
+}
+
+/** E-mail (e push) aos admins quando o ALUNO solicita/altera/cancela um voo pela plataforma. */
+async function notifyStudentScheduleEventToAdmins(kind, data) {
+  const safe = data && typeof data === "object" ? data : {};
+  const toBr = (iso) => {
+    const match = cleanString(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : cleanString(iso);
+  };
+  const toHHMM = (minutes) => {
+    const value = Number(minutes);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(Math.round(value) % 60).padStart(2, "0")}`;
+  };
+  const student = cleanString(safe.studentName) || "Aluno";
+  const aircraft = cleanString(safe.aircraft) || "aeronave a definir";
+  const when = [toBr(safe.flightDate), cleanString(safe.startTime)].filter(Boolean).join(" às ") || "data a definir";
+  const duration = toHHMM(safe.durationMinutes);
+  const notes = cleanString(safe.notes);
+  const reason = cleanString(safe.reason);
+  const penaltyHours = Number(safe.penaltyHours);
+  const baseDetails = [
+    ["Aluno", student],
+    ["Aeronave", aircraft],
+    ["Data e horário (acionamento)", when],
+    duration ? ["Tempo de voo", duration] : null,
+  ];
+
+  let message;
+  if (kind === "requested") {
+    message = {
+      eyebrow: "Escala",
+      title: "Nova solicitação de voo",
+      intro: "Um aluno solicitou um voo pela plataforma.",
+      body: `${student} solicitou um voo em ${aircraft} para ${when}. A solicitação está pendente de confirmação da escola.`,
+      details: [...baseDetails, notes ? ["Observações", notes] : null].filter(Boolean),
+      ctaLabel: "Abrir escala",
+      url: APP_URL,
+    };
+  } else if (kind === "rescheduled") {
+    const previousWhen = [toBr(safe.previousFlightDate), cleanString(safe.previousStartTime)].filter(Boolean).join(" às ");
+    const previousAircraft = cleanString(safe.previousAircraft);
+    message = {
+      eyebrow: "Escala",
+      title: "Voo alterado pelo aluno",
+      intro: "Um aluno alterou um voo agendado pela plataforma.",
+      body: `${student} alterou o voo em ${previousAircraft || aircraft} de ${previousWhen || "?"} para ${when} (${aircraft}).${safe.statusReverted ? " O voo voltou para Pendente e precisa ser reconfirmado." : ""}`,
+      details: [
+        ...baseDetails,
+        previousWhen ? ["Horário anterior", `${previousWhen}${previousAircraft && previousAircraft !== aircraft ? ` (${previousAircraft})` : ""}`] : null,
+        safe.statusReverted ? ["Status", "Voltou para Pendente — reconfirmar"] : null,
+      ].filter(Boolean),
+      ctaLabel: "Abrir escala",
+      url: APP_URL,
+    };
+  } else {
+    message = {
+      eyebrow: "Escala",
+      title: "Voo cancelado pelo aluno",
+      intro: "Um aluno cancelou um voo pela plataforma.",
+      body: `${student} cancelou o voo em ${aircraft} de ${when}.`,
+      details: [
+        ...baseDetails,
+        reason ? ["Motivo", reason] : null,
+        Number.isFinite(penaltyHours) && penaltyHours > 0 ? ["Multa debitada", toHHMM(penaltyHours * 60) || `${penaltyHours}h`] : null,
+      ].filter(Boolean),
+      ctaLabel: "Abrir escala",
+      url: APP_URL,
+    };
+  }
+
+  const [{ settings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+  const adminIds = await listAdminUserIds();
+  for (const adminId of adminIds) {
+    try {
+      const user = await users.get({ userId: adminId });
+      if (settings.enabled && user?.email) {
+        await sendEmailToUser(settings, brand, user, message);
+      }
+      await sendPushToUser(adminId, message);
+    } catch {
+      // skip user on failure
+    }
+  }
 }
 
 const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h"]);
@@ -17247,6 +17547,17 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true });
     }
 
+    if (action === "notifyStudentScheduleEvent") {
+      // Chamada interna da function schedule-booking (via API key, sem actorUserId)
+      // — mesmo padrão das actions saga*Direct. Com actorUserId, exige admin.
+      if (actorUserId) await requireAdmin(actorUserId);
+      const validKinds = new Set(["requested", "rescheduled", "cancelled"]);
+      const kind = cleanString(payload.kind);
+      if (!validKinds.has(kind)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
+      await notifyStudentScheduleEventToAdmins(kind, payload.data);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
     if (action === "notifyCaktoSaleEvent") {
       // Chamada interna da function cakto-webhook — autenticada pelo token do webhook.
       const expectedToken = await loadCaktoWebhookToken();
@@ -17495,6 +17806,13 @@ module.exports = async ({ req, res, log, error }) => {
       await requireInstructorOrAdmin(actorUserId);
       const studentsProgress = await getStudentsProgress(payload);
       return jsonResponse(res, 200, { studentsProgress });
+    }
+
+    if (action === "switchActiveRole") {
+      if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+      const roleSlug = String(payload.roleSlug || payload.role || "");
+      const user = await switchActiveRole(actorUserId, roleSlug);
+      return jsonResponse(res, 200, { user });
     }
 
     if (action === "getDetail") {
@@ -17820,8 +18138,12 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "updateRole") {
-      const customRoleSlug = payload.customRoleSlug ? String(payload.customRoleSlug) : null;
-      const user = await updateRole(actorUserId, String(payload.userId || ""), String(payload.role || ""), customRoleSlug);
+      const assignedRoleSlugs = Array.isArray(payload.assignedRoleSlugs)
+        ? payload.assignedRoleSlugs.map((item) => String(item))
+        : Array.isArray(payload.roles)
+          ? payload.roles.map((item) => String(item))
+          : [String(payload.role || "")];
+      const user = await updateRole(actorUserId, String(payload.userId || ""), assignedRoleSlugs);
       return jsonResponse(res, 200, { user });
     }
 

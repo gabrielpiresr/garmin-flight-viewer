@@ -64,11 +64,12 @@ const ROLE_LABEL: Record<UserRole, string> = {
 };
 
 const ROLE_OPTIONS: UserRole[] = ["aluno", "instrutor", "admin"];
-type UserSubTab = "profile" | "flights" | "finance" | "observations" | "import";
+type UserSubTab = "profile" | "flights" | "finance" | "permissions" | "observations" | "import";
 const USER_SUB_TABS: Array<{ id: UserSubTab; label: string }> = [
   { id: "profile", label: "Perfil" },
   { id: "flights", label: "Voos" },
   { id: "finance", label: "Financeiro" },
+  { id: "permissions", label: "Permissões" },
   { id: "observations", label: "Observacoes" },
   { id: "import", label: "Import" },
 ];
@@ -149,12 +150,34 @@ function isExpiredDate(value: string): boolean {
   return date.getTime() < today.getTime();
 }
 
+function slugHasPortal(slug: string, portal: UserRole, tenantRoles: TenantRole[]): boolean {
+  if (slug === portal) return true;
+  const match = tenantRoles.find((role) => role.slug === slug);
+  return match?.portalType === portal;
+}
+
+function roleSlugLabel(slug: string, tenantRoles: TenantRole[]): string {
+  if (slug === "admin") return "Admin (acesso total)";
+  const match = tenantRoles.find((role) => role.slug === slug);
+  return match?.name ?? ROLE_LABEL[slug as UserRole] ?? slug;
+}
+
 function detailToSummary(detail: AdminUserDetail): AdminUserSummary {
+  const assigned = detail.assignedRoleSlugs?.length
+    ? detail.assignedRoleSlugs
+    : detail.roles?.length
+      ? detail.roles
+      : [detail.role];
   return {
     userId: detail.userId,
     email: detail.email,
     name: detail.name,
     role: detail.role,
+    roles: assigned,
+    activeRole: detail.activeRole ?? detail.role,
+    assignedRoleSlugs: assigned,
+    activeRoleSlug: detail.activeRoleSlug,
+    customRoleSlug: detail.customRoleSlug ?? null,
     labels: detail.labels,
     emailVerification: detail.emailVerification,
     createdAt: detail.createdAt,
@@ -371,8 +394,7 @@ export function AdminUsersTab() {
   const [savingInstructorPrefs, setSavingInstructorPrefs] = useState(false);
   const [savingTrack, setSavingTrack] = useState(false);
   const [deletingUser, setDeletingUser] = useState(false);
-  const [roleDraft, setRoleDraft] = useState<UserRole>("aluno");
-  const [customRoleSlugDraft, setCustomRoleSlugDraft] = useState<string | null>(null);
+  const [assignedSlugsDraft, setAssignedSlugsDraft] = useState<string[]>(["aluno"]);
   const [tenantRoles, setTenantRoles] = useState<TenantRole[]>([]);
   const [trackDraft, setTrackDraft] = useState("");
   const [tracksCatalog, setTracksCatalog] = useState<TrainingTrack[]>([]);
@@ -526,13 +548,37 @@ export function AdminUsersTab() {
     });
   }, []);
 
+  const assignableRoles = useMemo(() => {
+    const bySlug = new Map<string, TenantRole>();
+    for (const role of tenantRoles) {
+      if (role.slug && !bySlug.has(role.slug)) bySlug.set(role.slug, role);
+    }
+    if (!bySlug.has("admin")) {
+      bySlug.set("admin", {
+        $id: "virtual-admin",
+        schoolId: authUser?.schoolId ?? "",
+        name: "Admin (acesso total)",
+        slug: "admin",
+        portalType: "admin",
+        isSystem: true,
+        permissions: { tabs: {}, actions: {} },
+        createdAt: "",
+        updatedAt: "",
+      });
+    }
+    return [...bySlug.values()].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [tenantRoles, authUser?.schoolId]);
+
+  const visibleUserSubTabs = useMemo(
+    () => USER_SUB_TABS.filter((tab) => tab.id !== "permissions" || canAction("users.manage")),
+    [canAction],
+  );
+
   useEffect(() => {
     if (!authUser?.schoolId) return;
     void listTenantRoles(authUser.schoolId).then((roles) => {
       setTenantRoles(roles);
-    }).catch(() => {
-      // Tenant roles are optional — don't break the page if the collection doesn't exist yet
-    });
+    }).catch(() => undefined);
   }, [authUser?.schoolId]);
 
   useEffect(() => {
@@ -550,10 +596,14 @@ export function AdminUsersTab() {
         const tracks = detail.role === "aluno" ? detail.trainingTracks ?? [] : [];
         const detailWithTracks = { ...detail, trainingTracks: tracks };
         setSelectedDetail(detailWithTracks);
-        setApprovalStatus(null); // reset enquanto busca
-        setRoleDraft(detail.role);
-        setCustomRoleSlugDraft(detail.customRoleSlug ?? null);
-        if (detail.role === "aluno") {
+        setApprovalStatus(null);
+        const assigned = detail.assignedRoleSlugs?.length
+          ? detail.assignedRoleSlugs
+          : detail.roles?.length
+            ? detail.roles
+            : [detail.role];
+        setAssignedSlugsDraft(assigned);
+        if (assigned.some((slug) => slugHasPortal(slug, "aluno", tenantRoles)) || detail.role === "aluno") {
           void getApprovalStatus(detail.userId).then((status) => {
             if (!cancelled) setApprovalStatus(status);
           });
@@ -582,10 +632,39 @@ export function AdminUsersTab() {
     setUsers((prev) => prev.map((row) => (row.userId === summary.userId ? summary : row)));
   }
 
-  const roleDraftChanged =
-    !!selectedDetail &&
-    (roleDraft !== selectedDetail.role ||
-      (customRoleSlugDraft ?? null) !== (selectedDetail.customRoleSlug ?? null));
+  const assignedDraftKey = assignedSlugsDraft.slice().sort().join("|");
+  const selectedAssignedKey = (
+    selectedDetail?.assignedRoleSlugs?.length
+      ? selectedDetail.assignedRoleSlugs
+      : selectedDetail?.roles?.length
+        ? selectedDetail.roles
+        : selectedDetail
+          ? [selectedDetail.role]
+          : []
+  )
+    .slice()
+    .sort()
+    .join("|");
+
+  const roleDraftChanged = !!selectedDetail && assignedDraftKey !== selectedAssignedKey;
+
+  function toggleAssignedSlug(slug: string) {
+    setAssignedSlugsDraft((prev) => {
+      if (prev.includes(slug)) {
+        const next = prev.filter((item) => item !== slug);
+        return next.length > 0 ? next : prev;
+      }
+      return [...prev, slug];
+    });
+  }
+
+  const draftHasAlunoPortal = assignedSlugsDraft.some((slug) => slugHasPortal(slug, "aluno", tenantRoles));
+  const draftHasInstrutorPortal = assignedSlugsDraft.some((slug) => slugHasPortal(slug, "instrutor", tenantRoles));
+  const detailHasInstrutorPortal = selectedDetail
+    ? (selectedDetail.assignedRoleSlugs ?? selectedDetail.roles ?? [selectedDetail.role]).some((slug) =>
+        slugHasPortal(slug, "instrutor", tenantRoles),
+      ) || selectedDetail.role === "instrutor"
+    : false;
 
   async function handleSaveProfile(payload: AdminUserProfileUpdateInput) {
     if (!selectedDetail) return;
@@ -633,13 +712,11 @@ export function AdminUsersTab() {
     setError(null);
     setSuccess(null);
     try {
-      const updated = await updateAdminUserRole(selectedDetail.userId, roleDraft, customRoleSlugDraft);
+      const updated = await updateAdminUserRole(selectedDetail.userId, assignedSlugsDraft);
       setSelectedDetail(updated);
       replaceSummary(updated);
-      const roleLabel = customRoleSlugDraft
-        ? (tenantRoles.find((r) => r.slug === customRoleSlugDraft)?.name ?? customRoleSlugDraft)
-        : ROLE_LABEL[updated.role];
-      setSuccess(`Permissao de ${displayName(updated)} atualizada para ${roleLabel}.`);
+      const labels = assignedSlugsDraft.map((slug) => roleSlugLabel(slug, tenantRoles)).join(", ");
+      setSuccess(`Permissoes de ${displayName(updated)} atualizadas: ${labels}.`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1167,69 +1244,6 @@ export function AdminUsersTab() {
                     </div>
                     {canAction("users.manage") ? (
                     <div className="flex flex-wrap items-end gap-2">
-                      <label className="text-xs font-medium text-slate-400">
-                        Permissao
-                        <select
-                          value={customRoleSlugDraft ? `${roleDraft}:${customRoleSlugDraft}` : roleDraft}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const colonIdx = val.indexOf(":");
-                            if (colonIdx > -1) {
-                              setRoleDraft(val.slice(0, colonIdx) as UserRole);
-                              setCustomRoleSlugDraft(val.slice(colonIdx + 1));
-                            } else {
-                              setRoleDraft(val as UserRole);
-                              setCustomRoleSlugDraft(null);
-                            }
-                          }}
-                          className="mt-1 block rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
-                        >
-                          <optgroup label="Roles do sistema">
-                            {ROLE_OPTIONS.map((role) => (
-                              <option key={role} value={role}>
-                                {ROLE_LABEL[role]}
-                              </option>
-                            ))}
-                          </optgroup>
-                          {tenantRoles.filter((r) => !r.isSystem).length > 0 ? (
-                            <optgroup label="Roles customizados">
-                              {tenantRoles
-                                .filter((r) => !r.isSystem)
-                                .map((r) => (
-                                  <option key={r.$id} value={`${r.portalType}:${r.slug}`}>
-                                    {r.name} ({ROLE_LABEL[r.portalType]})
-                                  </option>
-                                ))}
-                            </optgroup>
-                          ) : null}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => void handleUpdateRole()}
-                        disabled={savingRole || !roleDraftChanged || deletingUser}
-                        className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
-                      >
-                        {savingRole ? "Salvando..." : "Alterar permissao"}
-                      </button>
-                      {selectedDetail.role === "aluno" && approvalStatus === "pending" && (
-                        <button
-                          type="button"
-                          onClick={() => void handleApproveAccess()}
-                          disabled={approvingAccess}
-                          className="rounded-lg border border-emerald-700/60 bg-emerald-950/30 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-950/60 disabled:opacity-50"
-                        >
-                          {approvingAccess ? "Liberando..." : "Liberar acesso"}
-                        </button>
-                      )}
-                      {selectedDetail.role === "aluno" && approvalStatus === "approved" && (
-                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-3 py-2 text-xs font-medium text-emerald-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
-                            <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 01.208 1.04l-5 7.5a.75.75 0 01-1.154.114l-3-3a.75.75 0 011.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 011.04-.207z" clipRule="evenodd" />
-                          </svg>
-                          Acesso liberado
-                        </span>
-                      )}
                       <button
                         type="button"
                         onClick={() => void handleToggleActiveState()}
@@ -1268,7 +1282,7 @@ export function AdminUsersTab() {
                   </div>
 
                   <div className="mt-4 border-t border-slate-800 pt-2">
-                    <Tabs items={USER_SUB_TABS} value={activeSubTab} onChange={setActiveSubTab} ariaLabel="Detalhes do usuario" accent="cyan" />
+                    <Tabs items={visibleUserSubTabs} value={activeSubTab} onChange={setActiveSubTab} ariaLabel="Detalhes do usuario" accent="cyan" />
                   </div>
 
                   <div className={`transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
@@ -1463,7 +1477,7 @@ export function AdminUsersTab() {
                   </>
                 ) : null}
 
-                {(roleDraft === "instrutor" || selectedDetail.role === "instrutor") ? (
+                {(draftHasInstrutorPortal || detailHasInstrutorPortal) ? (
                   <>
                     <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
                       <InstructorCostsSection instructorUserId={selectedDetail.userId} />
@@ -1552,6 +1566,69 @@ export function AdminUsersTab() {
                 <div className={`transition-opacity duration-200 ${activeSubTab === "finance" ? "opacity-100" : "hidden opacity-0"}`}>
                   <UserSalesSection userId={selectedDetail.userId} />
                 </div>
+
+                {canAction("users.manage") ? (
+                  <section className={`rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 transition-opacity duration-200 ${activeSubTab === "permissions" ? "opacity-100" : "hidden opacity-0"}`}>
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Permissoes</p>
+                      <h3 className="text-sm font-semibold text-slate-200">Roles atribuidos</h3>
+                      <p className="mt-1 text-xs text-slate-600">
+                        Selecione os roles que o usuario pode alternar. A visao ativa e escolhida pelo botao ao lado do e-mail apos login.
+                      </p>
+                    </div>
+                    <fieldset className="text-xs font-medium text-slate-400">
+                      <div className="flex max-h-56 flex-wrap gap-x-4 gap-y-2 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-3">
+                        {assignableRoles.map((role) => (
+                          <label key={role.slug} className="inline-flex items-center gap-1.5 text-sm text-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={assignedSlugsDraft.includes(role.slug)}
+                              onChange={() => toggleAssignedSlug(role.slug)}
+                              className="rounded border-slate-600 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
+                            />
+                            <span title={role.slug}>{role.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    {selectedDetail.activeRoleSlug ? (
+                      <p className="mt-3 text-xs text-slate-500">
+                        Visao ativa no momento:{" "}
+                        <span className="font-medium text-slate-300">
+                          {roleSlugLabel(selectedDetail.activeRoleSlug, tenantRoles)}
+                        </span>
+                      </p>
+                    ) : null}
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleUpdateRole()}
+                        disabled={savingRole || !roleDraftChanged || deletingUser}
+                        className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+                      >
+                        {savingRole ? "Salvando..." : "Salvar roles"}
+                      </button>
+                      {draftHasAlunoPortal && approvalStatus === "pending" && (
+                        <button
+                          type="button"
+                          onClick={() => void handleApproveAccess()}
+                          disabled={approvingAccess}
+                          className="rounded-lg border border-emerald-700/60 bg-emerald-950/30 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-950/60 disabled:opacity-50"
+                        >
+                          {approvingAccess ? "Liberando..." : "Liberar acesso"}
+                        </button>
+                      )}
+                      {draftHasAlunoPortal && approvalStatus === "approved" && (
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-3 py-2 text-xs font-medium text-emerald-400">
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                            <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 01.208 1.04l-5 7.5a.75.75 0 01-1.154.114l-3-3a.75.75 0 011.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 011.04-.207z" clipRule="evenodd" />
+                          </svg>
+                          Acesso liberado
+                        </span>
+                      )}
+                    </div>
+                  </section>
+                ) : null}
 
                 <section className={`rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 transition-opacity duration-200 ${activeSubTab === "import" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="flex flex-wrap items-start justify-between gap-3">

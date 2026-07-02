@@ -9,6 +9,7 @@ import { getOnboardingPublic } from "../lib/onboardingDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
+import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
 import { PushNotificationsToggle } from "./PushNotificationsToggle";
 import { InstallPwaButton } from "./InstallPwaButton";
 import type { StudentTabKey } from "../types/rolePermissions";
@@ -465,7 +466,7 @@ export function MainLayout() {
           </div>
         ) : null}
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
-          {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
+          <UserEmailWithRoleSwitcher email={user?.email} sidebarCollapsed={sidebarCollapsed} />
           <button
             type="button"
             onClick={() => void signOut()}
@@ -493,7 +494,7 @@ export function MainLayout() {
             <div className="flex items-center gap-3">
               <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
-              <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
+              <UserEmailWithRoleSwitcher email={user?.email} header />
               <button
                 type="button"
                 onClick={() => void signOut()}

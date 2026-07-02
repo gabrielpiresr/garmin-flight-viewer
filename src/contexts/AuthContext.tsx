@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { account, ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
-import { deriveRoleFromLabels, ensureProfile, getApprovalStatus, getUserRoleInfo, type ApprovalStatus, type UserRole } from "../lib/rbac";
+import { switchActiveRole as requestSwitchActiveRole } from "../lib/adminUsersDb";
+import { ensureProfile, getApprovalStatus, getUserRoleInfo, type ApprovalStatus, type UserRole } from "../lib/rbac";
 import { ensureSystemRoles } from "../lib/tenantRolesDb";
 import { createLead, getLeadByEmail, updateLead } from "../lib/crmDb";
 import { parseRootAccessLogin, requestRootAccessSession } from "../lib/rootAccess";
@@ -10,8 +11,14 @@ type AppwriteUser = {
   id: string;
   email: string;
   name: string;
+  /** Portal efetivo (admin/instrutor/aluno) derivado do role ativo. */
   role: UserRole;
-  /** Slug do role customizado atribuído (ex: "chefe-de-oficina"). Null = role padrão do portal. */
+  /** Slugs dos tenant roles atribuídos ao usuário. */
+  assignedRoleSlugs: string[];
+  /** Slug do tenant role ativo no momento. */
+  activeRoleSlug: string;
+  /** Alias legado de assignedRoleSlugs. */
+  roles: string[];
   customRoleSlug: string | null;
   schoolId: string;
   approvalStatus: ApprovalStatus;
@@ -45,6 +52,7 @@ type AuthState = {
     profile: SignUpProfileInput,
   ) => Promise<{ error: Error | null; anacSyncPending: boolean }>;
   signOut: () => Promise<void>;
+  switchRole: (roleSlug: string) => Promise<{ error: Error | null }>;
   configured: boolean;
 };
 
@@ -56,12 +64,9 @@ async function resolveUser(u: {
   name: string;
   labels?: unknown;
 }): Promise<AppwriteUser> {
-  const { role: profileRole, customRoleSlug } = await getUserRoleInfo(u.$id);
-  const labelRole = deriveRoleFromLabels((u.labels as string[] | undefined) ?? []);
-  const role = profileRole === "aluno" ? labelRole : profileRole;
+  const { role, assignedRoleSlugs, activeRoleSlug, customRoleSlug } = await getUserRoleInfo(u.$id);
   await ensureProfile(u.$id, u.email, role);
 
-  // Para admins, garantir que roles sistema existam no tenant
   if (role === "admin") {
     void ensureSystemRoles(DEFAULT_SCHOOL_ID);
   }
@@ -73,6 +78,9 @@ async function resolveUser(u: {
     email: u.email,
     name: u.name,
     role,
+    assignedRoleSlugs,
+    activeRoleSlug,
+    roles: assignedRoleSlugs,
     customRoleSlug,
     schoolId: DEFAULT_SCHOOL_ID,
     approvalStatus,
@@ -202,11 +210,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      // Criar ou vincular lead no CRM (best-effort)
       void (async () => {
         const { data: existing } = await getLeadByEmail(u.email);
         if (existing) {
-          // Lead já existe (veio do form de qualificação ou cadastro) — só vincula userId
           void updateLead(existing.id, { userId: u.$id });
         } else {
           void createLead({ userId: u.$id, name: profile.fullName, email: u.email, phone: profile.phone, crmStatus: "novo_lead" });
@@ -218,6 +224,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email: u.email,
         name: u.name,
         role: "aluno",
+        assignedRoleSlugs: ["aluno"],
+        activeRoleSlug: "aluno",
+        roles: ["aluno"],
         customRoleSlug: null,
         schoolId: DEFAULT_SCHOOL_ID,
         approvalStatus: "pending",
@@ -238,6 +247,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const switchRole = useCallback(async (roleSlug: string) => {
+    if (!account || !user) return { error: new Error("Usuário não autenticado") };
+    if (!user.assignedRoleSlugs.includes(roleSlug) || user.activeRoleSlug === roleSlug) return { error: null };
+    try {
+      await requestSwitchActiveRole(roleSlug);
+      const u = await account.get();
+      const resolved = await resolveUser(u);
+      setUser(resolved);
+      return { error: null };
+    } catch (e) {
+      return { error: e as Error };
+    }
+  }, [user]);
+
   const value = useMemo<AuthState>(
     () => ({
       user,
@@ -248,9 +271,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       completePasswordReset,
       signUp,
       signOut,
+      switchRole,
       configured: isAppwriteConfigured,
     }),
-    [user, isRoot, loading, signIn, requestPasswordReset, completePasswordReset, signUp, signOut],
+    [user, isRoot, loading, signIn, requestPasswordReset, completePasswordReset, signUp, signOut, switchRole],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -23,6 +23,15 @@ const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 const PROFILES_COL_ID = import.meta.env.VITE_APPWRITE_PROFILES_COLLECTION_ID as string | undefined;
 
 export type UserRole = "admin" | "instrutor" | "aluno";
+export type RoleCustomSlugs = Partial<Record<UserRole, string>>;
+
+export const ROLE_DISPLAY_LABELS: Record<UserRole, string> = {
+  admin: "Admin",
+  instrutor: "Instrutor",
+  aluno: "Aluno",
+};
+
+const ROLE_PRIORITY: UserRole[] = ["admin", "instrutor", "aluno"];
 export type AnacSyncStatus = "pending" | "success" | "error";
 export type ApprovalStatus = "pending" | "approved";
 export type PilotRating = { habilitacao: string; validade: string };
@@ -115,6 +124,12 @@ type ProfileDoc = {
   user_id?: string;
   is_active?: boolean;
   role?: string;
+  roles?: string[];
+  active_role?: string;
+  assigned_role_slugs?: string[];
+  active_role_slug?: string;
+  role_custom_slugs_json?: string;
+  custom_role_slug?: string;
   email?: string;
   full_name?: string;
   cpf?: string;
@@ -395,6 +410,84 @@ export function deriveRoleFromLabels(labels: string[] | undefined): UserRole {
   return "aluno";
 }
 
+export function normalizeUserRoles(value: unknown, fallback?: UserRole): UserRole[] {
+  if (Array.isArray(value)) {
+    const roles = value
+      .map((item) => normalizeUserRole(String(item)))
+      .filter((role, index, arr) => arr.indexOf(role) === index);
+    if (roles.length > 0) return roles;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [normalizeUserRole(value)];
+  }
+  return [fallback ?? "aluno"];
+}
+
+export function pickDefaultActiveRole(roles: UserRole[]): UserRole {
+  for (const role of ROLE_PRIORITY) {
+    if (roles.includes(role)) return role;
+  }
+  return roles[0] ?? "aluno";
+}
+
+export function getEffectiveRole(profile: { active_role?: string; role?: string } | null | undefined): UserRole {
+  return normalizeUserRole(profile?.active_role || profile?.role);
+}
+
+export function parseRoleCustomSlugsJson(value: unknown): RoleCustomSlugs {
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const result: RoleCustomSlugs = {};
+    for (const role of ROLE_PRIORITY) {
+      const slug = parsed[role];
+      if (typeof slug === "string" && slug.trim()) result[role] = slug.trim();
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function parseAssignedRoleSlugs(
+  profile: ProfileDoc | null | undefined,
+): string[] {
+  if (profile?.assigned_role_slugs?.length) {
+    return [...new Set(profile.assigned_role_slugs.map((item) => String(item).trim()).filter(Boolean))];
+  }
+  if (profile?.roles?.length) {
+    const slugs = profile.roles.map((item) => String(item).trim()).filter(Boolean);
+    if (slugs.length > 0) return [...new Set(slugs)];
+  }
+  const { roles } = resolveProfileRoles(profile);
+  const roleCustomSlugs = parseRoleCustomSlugsJson(profile?.role_custom_slugs_json);
+  return roles.map((portal) => roleCustomSlugs[portal] || portal);
+}
+
+export function parseActiveRoleSlug(profile: ProfileDoc | null | undefined, assignedSlugs: string[]): string {
+  const explicit = profile?.active_role_slug?.trim();
+  if (explicit && assignedSlugs.includes(explicit)) return explicit;
+  const activePortal = getEffectiveRole(profile);
+  const roleCustomSlugs = parseRoleCustomSlugsJson(profile?.role_custom_slugs_json);
+  const mapped = roleCustomSlugs[activePortal];
+  if (mapped && assignedSlugs.includes(mapped)) return mapped;
+  if (assignedSlugs.includes(activePortal)) return activePortal;
+  return assignedSlugs.find((slug) => slug === "admin")
+    ?? assignedSlugs.find((slug) => slug === "instrutor")
+    ?? assignedSlugs[0]
+    ?? "aluno";
+}
+
+export function resolveProfileRoles(
+  profile: ProfileDoc | null | undefined,
+): { roles: UserRole[]; activeRole: UserRole } {
+  const legacyRole = normalizeUserRole(profile?.role);
+  const roles = profile?.roles?.length ? normalizeUserRoles(profile.roles, legacyRole) : [legacyRole];
+  const activeCandidate = getEffectiveRole(profile);
+  const activeRole = roles.includes(activeCandidate) ? activeCandidate : pickDefaultActiveRole(roles);
+  return { roles, activeRole };
+}
+
 export async function getUserRole(userId: string): Promise<UserRole> {
   if (!isAppwriteConfigured || !databases || !hasRbacCollections() || !DB_ID || !PROFILES_COL_ID) {
     return "aluno";
@@ -406,16 +499,32 @@ export async function getUserRole(userId: string): Promise<UserRole> {
       Query.limit(1),
     ]);
     const doc = (res.documents[0] ?? {}) as ProfileDoc;
-    return normalizeUserRole(doc.role);
+    return resolveProfileRoles(doc).activeRole;
   } catch {
     return "aluno";
   }
 }
 
-/** Retorna role + custom_role_slug do perfil em uma única query */
-export async function getUserRoleInfo(userId: string): Promise<{ role: UserRole; customRoleSlug: string | null }> {
+/** Retorna roles, role ativo e custom_role_slug do perfil em uma única query */
+export async function getUserRoleInfo(userId: string): Promise<{
+  role: UserRole;
+  roles: string[];
+  activeRole: UserRole;
+  assignedRoleSlugs: string[];
+  activeRoleSlug: string;
+  customRoleSlug: string | null;
+  roleCustomSlugs: RoleCustomSlugs;
+}> {
   if (!isAppwriteConfigured || !databases || !hasRbacCollections() || !DB_ID || !PROFILES_COL_ID) {
-    return { role: "aluno", customRoleSlug: null };
+    return {
+      role: "aluno",
+      roles: ["aluno"],
+      activeRole: "aluno",
+      assignedRoleSlugs: ["aluno"],
+      activeRoleSlug: "aluno",
+      customRoleSlug: null,
+      roleCustomSlugs: {},
+    };
   }
 
   try {
@@ -423,13 +532,33 @@ export async function getUserRoleInfo(userId: string): Promise<{ role: UserRole;
       Query.equal("user_id", [userId]),
       Query.limit(1),
     ]);
-    const doc = (res.documents[0] ?? {}) as ProfileDoc & { custom_role_slug?: string };
+    const doc = (res.documents[0] ?? {}) as ProfileDoc;
+    const assignedRoleSlugs = parseAssignedRoleSlugs(doc);
+    const activeRoleSlug = parseActiveRoleSlug(doc, assignedRoleSlugs);
+    const activeRole = getEffectiveRole(doc);
+    const roleCustomSlugs = parseRoleCustomSlugsJson(doc.role_custom_slugs_json);
+    const customRoleSlug = activeRoleSlug === "admin" && activeRole === "admin"
+      ? null
+      : doc.custom_role_slug ?? roleCustomSlugs[activeRole] ?? (activeRoleSlug !== activeRole ? activeRoleSlug : null);
     return {
-      role: normalizeUserRole(doc.role),
-      customRoleSlug: doc.custom_role_slug ?? null,
+      role: activeRole,
+      roles: assignedRoleSlugs,
+      activeRole,
+      assignedRoleSlugs,
+      activeRoleSlug,
+      customRoleSlug,
+      roleCustomSlugs,
     };
   } catch {
-    return { role: "aluno", customRoleSlug: null };
+    return {
+      role: "aluno",
+      roles: ["aluno"],
+      activeRole: "aluno",
+      assignedRoleSlugs: ["aluno"],
+      activeRoleSlug: "aluno",
+      customRoleSlug: null,
+      roleCustomSlugs: {},
+    };
   }
 }
 
@@ -719,17 +848,22 @@ export async function ensureProfile(
       Query.limit(1),
     ]);
 
-    const effectiveRole = (() => {
-      if (existing.total > 0 && existing.documents[0]) {
-        return normalizeUserRole((existing.documents[0].role as string | undefined) ?? null) || role;
-      }
-      return role;
-    })();
+    const effectiveRole = existing.total > 0 && existing.documents[0]
+      ? resolveProfileRoles(existing.documents[0] as ProfileDoc).activeRole
+      : role;
 
     if (existing.total > 0 && existing.documents[0]) {
+      const doc = existing.documents[0] as ProfileDoc;
+      const assignedRoleSlugs = parseAssignedRoleSlugs(doc);
+      const activeRoleSlug = parseActiveRoleSlug(doc, assignedRoleSlugs);
+      const activeRole = getEffectiveRole(doc);
       await databases.updateDocument(DB_ID, PROFILES_COL_ID, existing.documents[0].$id, {
         email,
-        role: effectiveRole,
+        role: activeRole,
+        active_role: activeRole,
+        roles: assignedRoleSlugs,
+        assigned_role_slugs: assignedRoleSlugs,
+        active_role_slug: activeRoleSlug,
         school_id: DEFAULT_SCHOOL_ID,
         ...updates,
       });
@@ -742,6 +876,11 @@ export async function ensureProfile(
           user_id: userId,
           email,
           role,
+          roles: [role],
+          active_role: role,
+          assigned_role_slugs: [role],
+          active_role_slug: role,
+          role_custom_slugs_json: "{}",
           school_id: DEFAULT_SCHOOL_ID,
           is_active: true,
           approval_status: role === "aluno" ? "pending" : "approved",

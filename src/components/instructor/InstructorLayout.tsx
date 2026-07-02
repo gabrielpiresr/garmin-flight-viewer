@@ -6,6 +6,7 @@ import { getReferAndEarnPublic, programConfigForRole } from "../../lib/referAndE
 import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab";
 import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
+import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 import { InstallPwaButton } from "../InstallPwaButton";
 import type { InstructorTabKey } from "../../types/rolePermissions";
@@ -384,7 +385,7 @@ export function InstructorLayout() {
           </div>
         ) : null}
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
-          {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
+          <UserEmailWithRoleSwitcher email={user?.email} sidebarCollapsed={sidebarCollapsed} />
           <button
             type="button"
             onClick={() => void signOut()}
@@ -412,7 +413,7 @@ export function InstructorLayout() {
             <div className="flex items-center gap-3">
               <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
-              <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
+              <UserEmailWithRoleSwitcher email={user?.email} header />
               <button
                 type="button"
                 onClick={() => void signOut()}

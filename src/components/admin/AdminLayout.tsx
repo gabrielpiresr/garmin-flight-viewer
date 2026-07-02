@@ -10,6 +10,7 @@ import {
   type TabRoute,
 } from "../../lib/routedTabs";
 import { PortalShellHeader } from "../PortalShellHeader";
+import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
 import { PushNotificationsToggle } from "../PushNotificationsToggle";
 import { InstallPwaButton } from "../InstallPwaButton";
 import { Tabs } from "../ui/Tabs";
@@ -831,7 +832,7 @@ export function AdminLayout() {
         </nav>
 
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
-          {!sidebarCollapsed ? <p className="truncate text-xs text-slate-500">{user?.email}</p> : null}
+          <UserEmailWithRoleSwitcher email={user?.email} sidebarCollapsed={sidebarCollapsed} />
           <button
             type="button"
             onClick={() => void signOut()}
@@ -860,7 +861,7 @@ export function AdminLayout() {
             <div className="flex items-center gap-3">
               <InstallPwaButton className="hidden sm:block" />
               <PushNotificationsToggle />
-              <span className="hidden max-w-48 truncate text-xs text-slate-600 sm:block">{user?.email}</span>
+              <UserEmailWithRoleSwitcher email={user?.email} header />
               <button
                 type="button"
                 onClick={() => void signOut()}

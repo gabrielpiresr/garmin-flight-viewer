@@ -67,7 +67,9 @@ function mondayIso(date = new Date()): string {
   const next = new Date(date);
   const day = next.getDay();
   next.setDate(next.getDate() + (day === 0 ? -6 : 1 - day));
-  return next.toISOString().slice(0, 10);
+  // toLocalIso, não toISOString: em UTC-3, após as 21h o toISOString já devolve o
+  // dia seguinte e a semana inteira ficava deslocada (weekStart caía na terça).
+  return toLocalIso(next);
 }
 
 function addDays(value: string, days: number): string {
@@ -1377,6 +1379,20 @@ export function StudentScheduleTab() {
     const newStart = addMinutes(target.startTime, rules.bufferBeforeMinutes);
     const newAircraft = target.targetAircraftRegistration || flight.aircraftIdent;
     if (newDate === flight.flightDate && newStart === flight.startTime && newAircraft === flight.aircraftIdent) return;
+    // Mesmas regras do formulário: antecedência mínima e horário dentro da grade
+    // (início da escala, cadência de slot, noturno só no horário/dia permitido) —
+    // sem isso o servidor rejeitava depois do modal de confirmação.
+    if (newDate < minBookingDate) {
+      showToast({
+        variant: "error",
+        message: `Antecedência mínima de ${rules.minBookingLeadDays} dia${rules.minBookingLeadDays !== 1 ? "s" : ""} — escolha a partir de ${formatDate(minBookingDate)}.`,
+      });
+      return;
+    }
+    if (!buildStartSlotOptions(rules, newDate).some((opt) => opt.value === newStart)) {
+      showToast({ variant: "error", message: "Horário fora da grade de agendamento. Solte o voo em um horário válido." });
+      return;
+    }
     const duration = flight.durationMinutes || 60;
     const intervals = getOccupiedIntervals(newAircraft, newDate, flight.id);
     if (!slotFitsIntervals(intervals, rules, newDate, timeToMinutes(newStart), duration)) {

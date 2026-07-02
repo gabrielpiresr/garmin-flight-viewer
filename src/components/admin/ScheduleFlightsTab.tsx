@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import { listAircrafts } from "../../lib/aircraftDb";
@@ -293,6 +293,7 @@ export type CalendarFlightItem = {
   isOutsideGenerator?: boolean;
   isOwn?: boolean;
   isBlocked?: boolean;
+  notes?: string | null;
 };
 
 /** Cores por status — fonte única usada na escala do admin e na visão do aluno. */
@@ -393,6 +394,12 @@ function useCalendarRowHeight(mobileHeight: number, desktopHeight: number): numb
   return rowHeight;
 }
 
+function nextSingleFocusSelection(prev: string[], value: string, allValues: string[]): string[] {
+  const allSelected = allValues.length > 0 && allValues.every((option) => prev.includes(option));
+  if (allSelected) return [value];
+  return Array.from(new Set([...prev, value]));
+}
+
 function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: InstructorIdentity | null): FlightRecordMeta {
   const weekDate = weekDateFromStart(weekStart, draft.dayOfWeek);
   const engineCut = minutesToScheduleHHMM(parseScheduleTimeToMinutes(draft.startTime) + Math.round(draft.durationHours * 60));
@@ -472,6 +479,27 @@ type ProjectionCell = {
   maintenance?: string;
 };
 
+type AircraftProjectionRow = {
+  registration: string;
+  hoursByDay: Partial<Record<number, ProjectionCell>>;
+};
+
+type AircraftColumn = {
+  registration: string;
+  colorClass: string;
+};
+
+type ScheduleGroupBy = "aircraft" | "instructor" | "none";
+
+type ScheduleColumn = {
+  key: string;
+  label: string;
+  colorClass: string;
+  groupBy: ScheduleGroupBy;
+  aircraftRegistration?: string;
+  instructorId?: string | null;
+};
+
 export type CalendarDropTarget = {
   dayOfWeek: number;
   startHour: number;
@@ -481,21 +509,159 @@ export type CalendarDropTarget = {
   targetAircraftRegistration?: string;
 };
 
-function eventStyleClasses(color: string, instructorBorder: string | null, unassigned: boolean, draggable: boolean): string {
-  const border = unassigned ? "border-white/25" : (instructorBorder ?? "border-white/80");
+function eventStyleClasses(color: string, unassigned: boolean, draggable: boolean): string {
   // Sem opacidade no card "sem instrutor": a transparência deixava eventos (ex.: PENDING
   // do SAGA sem instrutor) praticamente invisíveis na agenda. O risco continua como marcador.
   const strike = unassigned ? "line-through decoration-white/40 decoration-1" : "";
   const pointer = draggable ? "cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-white/60" : "hover:ring-1 hover:ring-white/60";
-  return `overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${color} ${border} ${strike} ${pointer}`;
+  return `overflow-hidden rounded px-1.5 py-1 text-left text-[10px] text-white ${color} ${strike} ${pointer}`;
+}
+
+function aircraftProjectionCellClass(maintenance?: string): string {
+  return maintenance
+    ? "border-red-500/60 bg-red-500/15 font-semibold text-red-300"
+    : "border-slate-800/60 bg-slate-950/40 text-slate-400";
+}
+
+function AircraftProjectionCell({ cell }: { cell?: ProjectionCell }) {
+  const maintenance = cell?.maintenance;
+  return (
+    <div
+      className={`rounded border px-1 py-1 text-center text-xs font-semibold tabular-nums ${aircraftProjectionCellClass(maintenance)}`}
+    >
+      {cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}
+      {maintenance ? (
+        <span className="block truncate text-[9px] font-semibold leading-tight text-red-300">
+          {maintenance}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function scheduleColumnItemMatches(item: CalendarFlightItem, column: ScheduleColumn): boolean {
+  if (column.groupBy === "none") return true;
+  if (column.groupBy === "aircraft") return item.aircraftRegistration === column.aircraftRegistration;
+  return (item.instructorId ?? "__none__") === (column.instructorId ?? "__none__");
+}
+
+function scheduleColumnTarget(column: ScheduleColumn): Partial<CalendarDropTarget> {
+  if (column.groupBy === "aircraft") return { targetAircraftRegistration: column.aircraftRegistration };
+  if (column.groupBy === "none") return {};
+  return { targetInstructorId: column.instructorId ?? null };
+}
+
+type ScheduleTooltipState = {
+  item: CalendarFlightItem;
+  x: number;
+  y: number;
+} | null;
+
+function ScheduleItemTooltipCard({ state }: { state: ScheduleTooltipState }) {
+  if (!state) return null;
+  const item = state.item;
+  const notes = item.notes?.trim();
+  const left = typeof window === "undefined" ? state.x + 14 : Math.min(state.x + 14, window.innerWidth - 292);
+  const top = typeof window === "undefined" ? state.y + 14 : Math.min(state.y + 14, window.innerHeight - 220);
+  return (
+    <div
+      className="pointer-events-none fixed z-[80] w-72 rounded-lg border border-slate-500/55 bg-slate-950/70 p-3 text-left text-xs text-slate-200 shadow-2xl shadow-slate-950/70 ring-1 ring-white/10 backdrop-blur-xl"
+      style={{ left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px` }}
+    >
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-white">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</p>
+          <p className="font-mono text-[11px] text-sky-300">{DAY_LABEL[item.dayOfWeek]} {item.startTime}-{item.endTime}</p>
+        </div>
+        <span className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300">
+          {item.flightStatus || "Status"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+        <span className="text-slate-500">Aeronave</span>
+        <span className="truncate text-right font-medium text-slate-200">{item.aircraftRegistration}</span>
+        <span className="text-slate-500">Instrutor</span>
+        <span className="truncate text-right font-medium text-slate-200">{shortName(item.instructorLabel) || "Sem instrutor"}</span>
+        <span className="text-slate-500">Horas</span>
+        <span className="text-right font-medium text-slate-200">{(item.flightHours ?? item.durationHours).toFixed(1)}h</span>
+        <span className="text-slate-500">Peso</span>
+        <span className="text-right font-medium text-slate-200">{item.totalWeightLabel}</span>
+      </div>
+      {notes ? (
+        <div className="mt-2 border-t border-slate-800 pt-2">
+          <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Observacoes</p>
+          <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-slate-300">{notes}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function scheduleTooltipHandlers(
+  item: CalendarFlightItem,
+  setTooltip: Dispatch<SetStateAction<ScheduleTooltipState>>,
+) {
+  return {
+    onMouseEnter: (event: MouseEvent<HTMLElement>) => setTooltip({ item, x: event.clientX, y: event.clientY }),
+    onMouseMove: (event: MouseEvent<HTMLElement>) => setTooltip({ item, x: event.clientX, y: event.clientY }),
+    onMouseLeave: () => setTooltip(null),
+  };
+}
+
+function ScheduleLegend({
+  colorScheme,
+  groupBy,
+  aircraftColumns,
+  instructorColumns,
+}: {
+  colorScheme: "aircraft" | "status";
+  groupBy: ScheduleGroupBy;
+  aircraftColumns: AircraftColumn[];
+  instructorColumns: ScheduleColumn[];
+}) {
+  if (colorScheme === "status") {
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-400">
+        <span className="font-semibold uppercase tracking-wider text-slate-500">Legenda</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" /> Confirmado</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-sky-600" /> Planejado</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-orange-600" /> Pendente</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-red-700" /> Cancelado</span>
+      </div>
+    );
+  }
+  const rows = aircraftColumns.map((aircraft) => ({
+    key: aircraft.registration,
+    label: aircraft.registration,
+    colorClass: aircraft.colorClass,
+  }));
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-400">
+      <span className="font-semibold uppercase tracking-wider text-slate-500">Legenda</span>
+      {rows.map((row) => (
+        <span key={row.key} className="inline-flex items-center gap-1">
+          <span className={`h-2.5 w-2.5 rounded border ${aircraftCardColor(row.colorClass)}`} />
+          {row.label}
+        </span>
+      ))}
+      {groupBy === "instructor" && instructorColumns.length > 0 ? (
+        <span className="text-slate-600">| Bordas: instrutores</span>
+      ) : null}
+    </div>
+  );
 }
 
 export function CalendarGrid({
   items,
   days = DAY_ORDER,
   title = "Agenda semanal",
+  groupBy = "aircraft",
+  columns,
+  colorScheme = "aircraft",
+  aircraftColumns,
+  instructorColumns,
   colorByAircraft,
-  borderByInstructor,
   backgroundSupply,
   clubMemberByStudentId,
   weekStart,
@@ -509,7 +675,6 @@ export function CalendarGrid({
   hasPrevWeek,
   hasNextWeek,
   privacyMode = false,
-  showTotals = true,
   showGeneratorLegend = true,
   getItemColor,
   blockedSlots,
@@ -519,6 +684,11 @@ export function CalendarGrid({
   items: CalendarFlightItem[];
   days?: readonly number[];
   title?: string;
+  groupBy?: ScheduleGroupBy;
+  columns?: ScheduleColumn[];
+  colorScheme?: "aircraft" | "status";
+  aircraftColumns?: AircraftColumn[];
+  instructorColumns?: ScheduleColumn[];
   colorByAircraft: Map<string, string>;
   borderByInstructor: Map<string, string>;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
@@ -535,12 +705,12 @@ export function CalendarGrid({
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   privacyMode?: boolean;
-  showTotals?: boolean;
   showGeneratorLegend?: boolean;
+  showTotals?: boolean;
   getItemColor?: (item: CalendarFlightItem) => string;
   blockedSlots?: Array<{ dayOfWeek: number; startHour: number; endHour: number }>;
   /** Horas totais projetadas por aeronave ao fim de cada dia (linhas extras abaixo do total). */
-  projectionRows?: Array<{ registration: string; hoursByDay: Partial<Record<number, ProjectionCell>> }>;
+  projectionRows?: AircraftProjectionRow[];
   /** Horas-base da Frota ainda carregando: mostra skeleton no lugar das linhas de projeção. */
   projectionLoading?: boolean;
 }) {
@@ -549,27 +719,61 @@ export function CalendarGrid({
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
   const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
   const boardHeight = calendarHours.length * rowHeight;
-  const byDay = useMemo(() => {
-    const map = new Map<number, CalendarFlightItem[]>();
-    for (const day of calendarDays) map.set(day, []);
+  const aircraftCols = aircraftColumns ?? [];
+  const instructorCols = instructorColumns ?? [];
+  const baseColumns = useMemo<ScheduleColumn[]>(() => {
+    if (columns?.length) return columns;
+    const registrations = Array.from(new Set(items.map((item) => item.aircraftRegistration)));
+    return registrations.map((registration) => ({
+      key: registration,
+      label: registration,
+      colorClass: colorByAircraft.get(registration) ?? AIRCRAFT_COLOR_CLASSES[0]!,
+      groupBy: "aircraft",
+      aircraftRegistration: registration,
+    }));
+  }, [colorByAircraft, columns, items]);
+  const gridColumns = useMemo(
+    () =>
+      calendarDays.flatMap((day) =>
+        baseColumns
+          .filter((column) => items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)))
+          .map((column) => ({ day, column })),
+      ),
+    [baseColumns, calendarDays, items],
+  );
+  const columnsByDay = useMemo(() => {
+    const map = new Map<number, ScheduleColumn[]>();
+    for (const day of calendarDays) {
+      map.set(day, gridColumns.filter((entry) => entry.day === day).map((entry) => entry.column));
+    }
+    return map;
+  }, [calendarDays, gridColumns]);
+  const byCell = useMemo(() => {
+    const map = new Map<string, CalendarFlightItem[]>();
+    for (const day of calendarDays) {
+      for (const column of columnsByDay.get(day) ?? []) map.set(`${day}|${column.key}`, []);
+    }
     for (const item of items) {
       if (!calendarDays.includes(item.dayOfWeek)) continue;
-      const rows = map.get(item.dayOfWeek) ?? [];
+      const column = columnsByDay.get(item.dayOfWeek)?.find((candidate) => scheduleColumnItemMatches(item, candidate));
+      if (!column) continue;
+      const key = `${item.dayOfWeek}|${column.key}`;
+      const rows = map.get(key) ?? [];
       rows.push(item);
-      map.set(item.dayOfWeek, rows);
+      map.set(key, rows);
     }
-    for (const day of calendarDays) {
+    for (const key of map.keys()) {
       map.set(
-        day,
-        (map.get(day) ?? []).sort((a, b) => parseScheduleTimeToMinutes(a.startTime) - parseScheduleTimeToMinutes(b.startTime)),
+        key,
+        (map.get(key) ?? []).sort((a, b) => parseScheduleTimeToMinutes(a.startTime) - parseScheduleTimeToMinutes(b.startTime)),
       );
     }
     return map;
-  }, [calendarDays, items]);
+  }, [calendarDays, columnsByDay, items]);
 
-  const layoutByDay = useMemo(() => {
+  const layoutByCell = useMemo(() => {
     const out = new Map<
-      number,
+      string,
       Array<{
         item: CalendarFlightItem;
         columnIndex: number;
@@ -577,8 +781,9 @@ export function CalendarGrid({
       }>
     >();
 
-    for (const day of calendarDays) {
-      const sorted = [...(byDay.get(day) ?? [])].sort((a, b) => {
+    for (const { day, column } of gridColumns) {
+      const key = `${day}|${column.key}`;
+      const sorted = [...(byCell.get(key) ?? [])].sort((a, b) => {
         const aStart = parseScheduleTimeToMinutes(a.startTime);
         const bStart = parseScheduleTimeToMinutes(b.startTime);
         if (aStart !== bStart) return aStart - bStart;
@@ -627,35 +832,30 @@ export function CalendarGrid({
           });
         }
       }
-      out.set(day, entries);
+      out.set(key, entries);
     }
 
     return out;
-  }, [byDay, calendarDays]);
+  }, [byCell, gridColumns]);
 
-  const dayTotals = useMemo(() => {
-    const byDay = new Map<number, { flights: number; hours: number }>();
-    for (const day of calendarDays) byDay.set(day, { flights: 0, hours: 0 });
+  const cellTotals = useMemo(() => {
+    const byCell = new Map<string, { flights: number; hours: number }>();
+    for (const { day, column } of gridColumns) byCell.set(`${day}|${column.key}`, { flights: 0, hours: 0 });
     for (const item of items) {
       if (!calendarDays.includes(item.dayOfWeek)) continue;
-      const row = byDay.get(item.dayOfWeek) ?? { flights: 0, hours: 0 };
+      const column = columnsByDay.get(item.dayOfWeek)?.find((candidate) => scheduleColumnItemMatches(item, candidate));
+      if (!column) continue;
+      const key = `${item.dayOfWeek}|${column.key}`;
+      const row = byCell.get(key);
+      if (!row) continue;
       row.flights += 1;
       row.hours += item.flightHours ?? item.durationHours;
-      byDay.set(item.dayOfWeek, row);
+      byCell.set(key, row);
     }
-    let cumFlights = 0;
-    let cumHours = 0;
-    const cumulative = new Map<number, { flights: number; hours: number }>();
-    for (const day of calendarDays) {
-      const d = byDay.get(day) ?? { flights: 0, hours: 0 };
-      cumFlights += d.flights;
-      cumHours += d.hours;
-      cumulative.set(day, { flights: cumFlights, hours: Number(cumHours.toFixed(1)) });
-    }
-    return { byDay, cumulative };
-  }, [calendarDays, items]);
+    return byCell;
+  }, [calendarDays, columnsByDay, gridColumns, items]);
 
-  const dayBoardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const cellBoardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [dragState, setDragState] = useState<{
     item: CalendarFlightItem;
     preview: CalendarDropTarget;
@@ -665,13 +865,15 @@ export function CalendarGrid({
   } | null>(null);
   const dragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
+  const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
   const draggable = Boolean(onItemDrop);
   const dragThresholdPx = 5;
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
-      for (const day of calendarDays) {
-        const board = dayBoardRefs.current.get(day);
+      for (const { day, column } of gridColumns) {
+        const key = `${day}|${column.key}`;
+        const board = cellBoardRefs.current.get(key);
         if (!board) continue;
         const r = board.getBoundingClientRect();
         if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
@@ -681,11 +883,12 @@ export function CalendarGrid({
           startHour: startMinute / 60,
           startTime: minutesToScheduleHHMM(startMinute),
           isNight: startMinute >= nightStartHour * 60,
+          ...scheduleColumnTarget(column),
         };
       }
       return null;
     },
-    [calendarDays, calendarEndHour, nightStartHour, rowHeight],
+    [calendarEndHour, gridColumns, nightStartHour, rowHeight],
   );
 
   useEffect(() => {
@@ -720,8 +923,16 @@ export function CalendarGrid({
 
   return (
     <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+          <ScheduleLegend
+            colorScheme={colorScheme}
+            groupBy={groupBy}
+            aircraftColumns={aircraftCols}
+            instructorColumns={instructorCols}
+          />
+        </div>
         {(onPrevWeek || onNextWeek) && (
           <div className="flex items-center gap-1">
             <button
@@ -753,21 +964,56 @@ export function CalendarGrid({
           <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
         </p>
       ) : null}
-      <div className="w-full overflow-x-auto">
-        <table className="w-full min-w-0 table-fixed border-separate border-spacing-0.5 sm:border-spacing-1">
+      {gridColumns.length === 0 ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
+          Nenhum voo no período.
+        </p>
+      ) : (
+      <div className="w-full overflow-hidden">
+        <table
+          className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
+        >
           <thead>
             <tr>
               <th className="w-8 pb-1 text-right text-[10px] font-medium text-slate-600 sm:w-12" />
               {calendarDays.map((day) => {
+                const dayColumns = columnsByDay.get(day) ?? [];
+                if (dayColumns.length === 0) return null;
                 const date = dayOfWeekToDate(weekStart, day);
                 const today = isDateToday(date);
                 return (
-                  <th key={day} className="pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs">
+                  <th key={day} colSpan={dayColumns.length} className="rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs">
                     <span className="block uppercase">{DAY_LABEL[day]}</span>
                     <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
                       {date.getDate()}
                     </span>
                   </th>
+                );
+              })}
+            </tr>
+            <tr>
+              <th className="w-8 pb-1 text-right text-[10px] font-medium text-slate-600 sm:w-12" />
+              {gridColumns.map(({ day, column }) => {
+                const key = `${day}|${column.key}`;
+                const totals = cellTotals.get(key) ?? { flights: 0, hours: 0 };
+                const projectionCell = groupBy === "aircraft" ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day] : undefined;
+                const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
+                return (
+                <th key={`${day}-${column.key}`} className={`bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""}`}>
+                  <div className="flex items-center justify-center gap-1">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
+                    <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
+                  </div>
+                  <p className="truncate text-[10px] font-normal text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
+                  {projectionLoading && groupBy === "aircraft" ? (
+                    <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
+                  ) : projectionCell ? (
+                    <p className={`mx-auto mt-1 truncate rounded border px-1 py-0.5 text-[11px] font-semibold ${aircraftProjectionCellClass(projectionCell.maintenance)}`}>
+                      {projectionCell.hours == null ? "—" : `${projectionCell.hours.toFixed(1)}h`}
+                      {projectionCell.maintenance ? ` · ${projectionCell.maintenance}` : ""}
+                    </p>
+                  ) : null}
+                </th>
                 );
               })}
             </tr>
@@ -783,12 +1029,15 @@ export function CalendarGrid({
                   ))}
                 </div>
               </td>
-              {calendarDays.map((day) => (
-                <td key={day} className="align-top p-0">
+              {gridColumns.map(({ day, column }) => {
+                const cellKey = `${day}|${column.key}`;
+                const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
+                return (
+                <td key={cellKey} className={`align-top p-0 ${isFirstDayColumn ? "border-l-2 border-sky-500/30 pl-0.5" : ""}`}>
                   <div
                     ref={(node) => {
-                      if (node) dayBoardRefs.current.set(day, node);
-                      else dayBoardRefs.current.delete(day);
+                      if (node) cellBoardRefs.current.set(cellKey, node);
+                      else cellBoardRefs.current.delete(cellKey);
                     }}
                     className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md"
                     style={{ height: `${boardHeight}px` }}
@@ -838,13 +1087,12 @@ export function CalendarGrid({
                         </div>
                       );
                     })}
-                    {(layoutByDay.get(day) ?? []).map((entry) => {
+                    {(layoutByCell.get(cellKey) ?? []).map((entry) => {
                       const item = entry.item;
                       if (dragState?.hasMoved && dragState.item.id === item.id) return null;
                       const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
-                      const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                       const itemDraggable = draggable && (canDragItem ? canDragItem(item) : true);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
@@ -853,6 +1101,7 @@ export function CalendarGrid({
                           key={item.id}
                           role="button"
                           tabIndex={0}
+                          {...scheduleTooltipHandlers(item, setTooltip)}
                           onPointerDown={(e) => {
                             if (!itemDraggable) return;
                             e.preventDefault();
@@ -881,7 +1130,7 @@ export function CalendarGrid({
                             }
                             onItemClick(item);
                           }}
-                          className={`absolute ${eventStyleClasses(color, instructorBorder, !privacyMode && calendarItemUnassigned(item), itemDraggable)}`}
+                          className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable)}`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
@@ -905,9 +1154,13 @@ export function CalendarGrid({
                         </div>
                       );
                     })}
-                    {dragState?.hasMoved && dragState.preview.dayOfWeek === day ? (() => {
+                    {dragState?.hasMoved && dragState.preview.dayOfWeek === day && scheduleColumnItemMatches({
+                      ...dragState.item,
+                      aircraftRegistration: dragState.preview.targetAircraftRegistration ?? dragState.item.aircraftRegistration,
+                      instructorId: dragState.preview.targetInstructorId !== undefined ? dragState.preview.targetInstructorId : dragState.item.instructorId,
+                    }, column) ? (() => {
                       const item = dragState.item;
-                      const entry = (layoutByDay.get(day) ?? []).find((e) => e.item.id === item.id) ?? {
+                      const entry = (layoutByCell.get(cellKey) ?? []).find((e) => e.item.id === item.id) ?? {
                         item,
                         columnIndex: 0,
                         columnCount: 1,
@@ -935,81 +1188,14 @@ export function CalendarGrid({
                     })() : null}
                   </div>
                 </td>
-              ))}
-            </tr>
-            {showTotals ? <tr>
-              <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                Total
-              </td>
-              {calendarDays.map((day) => {
-                const d = dayTotals.byDay.get(day) ?? { flights: 0, hours: 0 };
-                const cum = dayTotals.cumulative.get(day) ?? { flights: 0, hours: 0 };
-                return (
-                  <td key={day} className="p-0 pt-2">
-                    <div className="rounded-md border border-slate-700/50 bg-slate-800/40 px-2 py-2 text-center text-xs leading-snug text-slate-300">
-                      <p>
-                        <span className="text-sm font-semibold text-slate-100">{d.flights}</span> voos ·{" "}
-                        <span className="text-sm font-semibold text-slate-100">{d.hours.toFixed(1)}</span>h
-                      </p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        Σ <span className="font-medium text-slate-200">{cum.flights}</span> ·{" "}
-                        <span className="font-medium text-slate-200">{cum.hours.toFixed(1)}</span>h
-                      </p>
-                    </div>
-                  </td>
                 );
               })}
-            </tr> : null}
-            {showTotals && projectionLoading ? (
-              <tr>
-                <td className="pr-1 pt-1 sm:pr-2" />
-                {calendarDays.map((day) => (
-                  <td key={day} className="p-0 pt-1">
-                    <Skeleton className="h-6 w-full rounded" />
-                  </td>
-                ))}
-              </tr>
-            ) : null}
-            {showTotals && !projectionLoading && projectionRows && projectionRows.length > 0
-              ? projectionRows.map((row) => (
-                  <tr key={`proj-${row.registration}`}>
-                    <td className="pr-1 pt-1 text-right align-middle sm:pr-2">
-                      <span
-                        className="whitespace-nowrap font-mono text-[9px] text-slate-500"
-                        title={`Horas totais projetadas de ${row.registration} ao fim de cada dia (horas atuais da Frota + tempo de voo agendado)`}
-                      >
-                        {row.registration}
-                      </span>
-                    </td>
-                    {calendarDays.map((day) => {
-                      const cell = row.hoursByDay[day];
-                      const maintenance = cell?.maintenance;
-                      return (
-                        <td key={day} className="p-0 pt-1">
-                          <div
-                            className={`rounded border px-1 py-1 text-center text-[10px] tabular-nums ${
-                              maintenance
-                                ? "border-red-500/60 bg-red-500/15 font-semibold text-red-300"
-                                : "border-slate-800/60 bg-slate-950/40 text-slate-400"
-                            }`}
-                            title={maintenance ? `Manutenção vence neste dia: ${maintenance}` : undefined}
-                          >
-                            {cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}
-                            {maintenance ? (
-                              <span className="block truncate text-[9px] font-semibold leading-tight text-red-300">
-                                {maintenance}
-                              </span>
-                            ) : null}
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))
-              : null}
+            </tr>
           </tbody>
         </table>
       </div>
+      )}
+      <ScheduleItemTooltipCard state={tooltip} />
     </section>
   );
 }
@@ -1020,6 +1206,7 @@ type DailyCol = {
   key: string;
   label: string;
   colorClass: string;
+  column: ScheduleColumn;
   items: CalendarFlightItem[];
 };
 
@@ -1028,10 +1215,12 @@ function DailyCalendarGrid({
   selectedDay,
   weekStart,
   groupBy,
+  columns: inputColumns,
+  colorScheme,
+  aircraftColumns,
+  instructorColumns,
   nightStartHour,
   colorByAircraft,
-  borderByInstructor,
-  weekData,
   onItemClick,
   onItemDrop,
   onEmptySlotClick,
@@ -1043,16 +1232,21 @@ function DailyCalendarGrid({
   backgroundSupply,
   clubMemberByStudentId,
   getItemColor,
+  projectionRows,
+  projectionLoading = false,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
   weekStart: string;
-  groupBy: "instructor" | "aircraft";
+  groupBy: ScheduleGroupBy;
+  columns: ScheduleColumn[];
+  colorScheme: "aircraft" | "status";
+  aircraftColumns?: AircraftColumn[];
+  instructorColumns?: ScheduleColumn[];
   nightStartHour: number;
   colorByAircraft: Map<string, string>;
   getItemColor?: (item: CalendarFlightItem) => string;
   borderByInstructor: Map<string, string>;
-  weekData: ScheduleWeekData;
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
@@ -1063,6 +1257,8 @@ function DailyCalendarGrid({
   hasNextWeek?: boolean;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   clubMemberByStudentId?: Record<string, boolean>;
+  projectionRows?: AircraftProjectionRow[];
+  projectionLoading?: boolean;
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
@@ -1076,41 +1272,16 @@ function DailyCalendarGrid({
   );
 
   const columns = useMemo<DailyCol[]>(() => {
-    if (groupBy === "instructor") {
-      const result: DailyCol[] = [];
-      for (const instructor of weekData.instructors) {
-        const colItems = dayItems.filter((i) => i.instructorId === instructor.userId);
-        if (colItems.length === 0) continue;
-        result.push({
-          key: instructor.userId,
-          label: shortName(instructor.label, instructor.label),
-          colorClass: borderByInstructor.get(instructor.userId) ?? "border-white/80",
-          items: colItems,
-        });
-      }
-      const unassigned = dayItems.filter((i) => !i.instructorId);
-      if (unassigned.length > 0) {
-        result.push({ key: "__none__", label: "Sem instrutor", colorClass: "border-red-300", items: unassigned });
-      }
-      return result;
-    } else {
-      const seen = new Set<string>();
-      const result: DailyCol[] = [];
-      for (const item of dayItems) {
-        const reg = item.aircraftRegistration;
-        if (!seen.has(reg)) {
-          seen.add(reg);
-          result.push({
-            key: reg,
-            label: reg,
-            colorClass: colorByAircraft.get(reg) ?? AIRCRAFT_COLOR_CLASSES[0]!,
-            items: dayItems.filter((i) => i.aircraftRegistration === reg),
-          });
-        }
-      }
-      return result;
-    }
-  }, [dayItems, groupBy, weekData.instructors, borderByInstructor, colorByAircraft]);
+    return inputColumns
+      .map((column) => ({
+        key: column.key,
+        label: column.label,
+        colorClass: column.colorClass,
+        column,
+        items: dayItems.filter((item) => scheduleColumnItemMatches(item, column)),
+      }))
+      .filter((column) => column.items.length > 0);
+  }, [dayItems, inputColumns]);
 
   const layoutByCol = useMemo(() => {
     const out = new Map<string, Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }>>();
@@ -1174,6 +1345,7 @@ function DailyCalendarGrid({
   } | null>(null);
   const dragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
+  const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
   const dragThresholdPx = 5;
 
   const resolveDropTarget = useCallback(
@@ -1190,13 +1362,11 @@ function DailyCalendarGrid({
           startTime: minutesToScheduleHHMM(startMinute),
           isNight: startMinute >= nightStartHour * 60,
         };
-        return groupBy === "instructor"
-          ? { ...base, targetInstructorId: col.key === "__none__" ? null : col.key }
-          : { ...base, targetAircraftRegistration: col.key };
+        return { ...base, ...scheduleColumnTarget(col.column) };
       }
       return null;
     },
-    [calendarEndHour, columns, groupBy, nightStartHour, selectedDay],
+    [calendarEndHour, columns, nightStartHour, selectedDay],
   );
 
   useEffect(() => {
@@ -1230,27 +1400,15 @@ function DailyCalendarGrid({
   }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
 
   function handlePrevDay() {
-    const idx = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]);
-    if (idx > 0) {
-      onSelectDay(DAY_ORDER[idx - 1]!);
-    } else if (hasPrevWeek && onPrevWeek) {
-      onPrevWeek();
-      onSelectDay(DAY_ORDER[DAY_ORDER.length - 1]!);
-    }
+    if (hasPrevWeek && onPrevWeek) onPrevWeek();
   }
 
   function handleNextDay() {
-    const idx = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]);
-    if (idx < DAY_ORDER.length - 1) {
-      onSelectDay(DAY_ORDER[idx + 1]!);
-    } else if (hasNextWeek && onNextWeek) {
-      onNextWeek();
-      onSelectDay(DAY_ORDER[0]!);
-    }
+    if (hasNextWeek && onNextWeek) onNextWeek();
   }
 
-  const prevDayDisabled = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]) === 0 && !hasPrevWeek;
-  const nextDayDisabled = DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]) === DAY_ORDER.length - 1 && !hasNextWeek;
+  const prevDayDisabled = !hasPrevWeek;
+  const nextDayDisabled = !hasNextWeek;
 
   return (
     <>
@@ -1261,7 +1419,7 @@ function DailyCalendarGrid({
           onClick={handlePrevDay}
           disabled={prevDayDisabled}
           className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-          title="Dia anterior"
+          title="Semana anterior"
         >
           ‹
         </button>
@@ -1294,7 +1452,7 @@ function DailyCalendarGrid({
           onClick={handleNextDay}
           disabled={nextDayDisabled}
           className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-          title="Próximo dia"
+          title="Proxima semana"
         >
           ›
         </button>
@@ -1303,6 +1461,15 @@ function DailyCalendarGrid({
       {draggable ? (
         <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
       ) : null}
+      <div className="mb-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda diária</p>
+        <ScheduleLegend
+          colorScheme={colorScheme}
+          groupBy={groupBy}
+          aircraftColumns={aircraftColumns ?? []}
+          instructorColumns={instructorColumns ?? []}
+        />
+      </div>
       <p className="mb-2 text-[11px] text-slate-600">
         <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
       </p>
@@ -1312,10 +1479,9 @@ function DailyCalendarGrid({
           Nenhum voo neste dia.
         </p>
       ) : (
-        <div className="w-full overflow-x-auto">
+        <div className="w-full overflow-hidden">
           <table
             className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
-            style={{ minWidth: columns.length > 1 ? `${Math.max(520, columns.length * 180 + 48)}px` : "100%" }}
           >
             <thead>
               <tr>
@@ -1323,14 +1489,17 @@ function DailyCalendarGrid({
                 {columns.map((col) => (
                   <th key={col.key} className="pb-2 text-center">
                     <div className="flex items-center justify-center gap-1.5">
-                      {groupBy === "instructor" ? (
-                        <span className={`h-2.5 w-2.5 rounded-full border-2 ${col.colorClass} bg-slate-800 flex-shrink-0`} />
-                      ) : (
-                        <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${aircraftCardColor(col.colorClass)}`} />
-                      )}
+                      <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${groupBy === "instructor" ? `${col.colorClass} border-2 bg-slate-800` : aircraftCardColor(col.colorClass)}`} />
                       <span className="text-xs font-semibold text-slate-300">{col.label}</span>
                     </div>
-                    <p className="text-[10px] text-slate-500">{col.items.length} voo{col.items.length !== 1 ? "s" : ""}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {col.items.length} voo{col.items.length !== 1 ? "s" : ""} · {col.items.reduce((s, i) => s + (i.flightHours ?? i.durationHours), 0).toFixed(1)}h
+                    </p>
+                    {groupBy === "aircraft" && projectionLoading ? (
+                      <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
+                    ) : groupBy === "aircraft" ? (
+                      <AircraftProjectionCell cell={projectionRows?.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]} />
+                    ) : null}
                   </th>
                 ))}
               </tr>
@@ -1392,7 +1561,6 @@ function DailyCalendarGrid({
                           const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                           const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
-                          const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
                           return (
@@ -1400,6 +1568,7 @@ function DailyCalendarGrid({
                               key={item.id}
                               role="button"
                               tabIndex={0}
+                              {...scheduleTooltipHandlers(item, setTooltip)}
                               onPointerDown={(e) => {
                                 if (!draggable) return;
                                 e.preventDefault();
@@ -1420,7 +1589,7 @@ function DailyCalendarGrid({
                                 if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                 onItemClick(item);
                               }}
-                              className={`absolute ${eventStyleClasses(color, instructorBorder, calendarItemUnassigned(item), draggable)}`}
+                              className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable)}`}
                               style={{
                                 top: `${top}px`,
                                 height: `${height - 4}px`,
@@ -1433,11 +1602,7 @@ function DailyCalendarGrid({
                                 {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                               </p>
                               <p className="truncate opacity-90">{item.startTime}–{item.endTime}</p>
-                              {groupBy === "aircraft" ? (
-                                <p className="truncate opacity-80">{shortName(item.instructorLabel) || "Sem instrutor"}</p>
-                              ) : (
-                                <p className="truncate opacity-80">{item.aircraftRegistration}</p>
-                              )}
+                              <p className="truncate opacity-80">{groupBy === "instructor" ? item.aircraftRegistration : shortName(item.instructorLabel) || "Sem instrutor"}</p>
                               <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
                             </div>
                           );
@@ -1451,12 +1616,12 @@ function DailyCalendarGrid({
                           const color = calendarItemColor(item, colorByAircraft);
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
-                          const previewCol = groupBy === "instructor"
-                            ? (dragState.preview.targetInstructorId !== undefined
-                                ? (dragState.preview.targetInstructorId ?? "__none__")
-                                : col.key)
-                            : (dragState.preview.targetAircraftRegistration ?? col.key);
-                          if (previewCol !== col.key) return null;
+                          const previewItem = {
+                            ...item,
+                            aircraftRegistration: dragState.preview.targetAircraftRegistration ?? item.aircraftRegistration,
+                            instructorId: dragState.preview.targetInstructorId !== undefined ? dragState.preview.targetInstructorId : item.instructorId,
+                          };
+                          if (!scheduleColumnItemMatches(previewItem, col.column)) return null;
                           return (
                             <div
                               key="preview"
@@ -1478,27 +1643,11 @@ function DailyCalendarGrid({
                   );
                 })}
               </tr>
-              {/* Totals */}
-              <tr>
-                <td className="pr-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-500">Total</td>
-                {columns.map((col) => {
-                  const hours = col.items.reduce((s, i) => s + i.durationHours, 0);
-                  return (
-                    <td key={col.key} className="p-0 pt-2">
-                      <div className="rounded-md border border-slate-700/50 bg-slate-800/40 px-2 py-2 text-center text-xs leading-snug text-slate-300">
-                        <p>
-                          <span className="text-sm font-semibold text-slate-100">{col.items.length}</span> voos ·{" "}
-                          <span className="text-sm font-semibold text-slate-100">{hours.toFixed(1)}</span>h
-                        </p>
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
             </tbody>
           </table>
         </div>
       )}
+      <ScheduleItemTooltipCard state={tooltip} />
     </>
   );
 }
@@ -1507,43 +1656,69 @@ function DailyCalendarGrid({
 // Eixo do tempo na horizontal: uma linha por dia (semanal/3 dias) ou por
 // instrutor/avião (diária). Clique no voo abre a edição normalmente.
 
-type TimelineRow = { key: string; label: string; items: CalendarFlightItem[] };
+type TimelineRow = {
+  key: string;
+  label: string;
+  items: CalendarFlightItem[];
+  kind?: "day" | "group";
+  dayOfWeek?: number;
+  column?: ScheduleColumn;
+  dayLabel?: string;
+  summaryLabel?: string;
+  projectionCell?: ProjectionCell;
+};
 
-const TIMELINE_PX_PER_HOUR = 96;
+const TIMELINE_MIN_PX_PER_HOUR = Math.round(96 * 0.8);
 const TIMELINE_LANE_HEIGHT = 48;
+const TIMELINE_DESKTOP_LANE_HEIGHT = Math.round(TIMELINE_LANE_HEIGHT * 1.3);
 
 function HorizontalTimelineBoard({
   rows,
   title,
+  groupBy,
+  colorScheme,
+  aircraftColumns,
+  instructorColumns,
   nightStartHour,
   getItemColor,
-  borderByInstructor,
   clubMemberByStudentId,
   onItemClick,
+  onEmptySlotClick,
   daySelector,
   onPrevWeek,
   onNextWeek,
   hasPrevWeek,
   hasNextWeek,
+  showDayInItems = false,
 }: {
   rows: TimelineRow[];
   title: string;
+  groupBy: ScheduleGroupBy;
+  colorScheme: "aircraft" | "status";
+  aircraftColumns: AircraftColumn[];
+  instructorColumns: ScheduleColumn[];
   nightStartHour: number;
   getItemColor: (item: CalendarFlightItem) => string;
   borderByInstructor: Map<string, string>;
   clubMemberByStudentId?: Record<string, boolean>;
   onItemClick: (item: CalendarFlightItem) => void;
+  onEmptySlotClick?: (target: CalendarDropTarget) => void;
   daySelector?: { weekStart: string; selectedDay: number; onSelectDay: (day: number) => void };
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
+  showDayInItems?: boolean;
 }) {
   const allItems = useMemo(() => rows.flatMap((row) => row.items), [rows]);
   const hours = useMemo(() => buildCalendarHours(allItems), [allItems]);
   const startHour = hours[0] ?? CALENDAR_START_HOUR;
   const endHour = (hours[hours.length - 1] ?? CALENDAR_START_HOUR) + 1;
-  const boardWidth = hours.length * TIMELINE_PX_PER_HOUR;
+  const totalMinutes = Math.max(60, (endHour - startHour) * 60);
+  const boardMinWidth = hours.length * TIMELINE_MIN_PX_PER_HOUR;
+  const laneHeight = useCalendarRowHeight(TIMELINE_LANE_HEIGHT, TIMELINE_DESKTOP_LANE_HEIGHT);
+  const rowBoardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
 
   const layout = useMemo(
     () =>
@@ -1573,32 +1748,50 @@ function HorizontalTimelineBoard({
     [rows],
   );
 
+  const resolveDropTarget = useCallback(
+    (row: TimelineRow, clientX: number): CalendarDropTarget | null => {
+      if (row.kind === "day" || row.dayOfWeek == null) return null;
+      const board = rowBoardRefs.current.get(row.key);
+      if (!board) return null;
+      const rect = board.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right) return null;
+      const minutesFromOrigin = ((clientX - rect.left) / Math.max(1, rect.width)) * totalMinutes;
+      const snapped = Math.round(minutesFromOrigin / 30) * 30;
+      const maxOffset = Math.max(0, totalMinutes - 30);
+      const startMinute = startHour * 60 + Math.min(Math.max(0, snapped), maxOffset);
+      return {
+        dayOfWeek: row.dayOfWeek,
+        startHour: startMinute / 60,
+        startTime: minutesToScheduleHHMM(startMinute),
+        isNight: startMinute >= nightStartHour * 60,
+        ...(row.column ? scheduleColumnTarget(row.column) : {}),
+      };
+    },
+    [nightStartHour, startHour, totalMinutes],
+  );
+
   function handlePrevDay() {
     if (!daySelector) return;
-    const idx = DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]);
-    if (idx > 0) {
-      daySelector.onSelectDay(DAY_ORDER[idx - 1]!);
-    } else if (hasPrevWeek && onPrevWeek) {
-      onPrevWeek();
-      daySelector.onSelectDay(DAY_ORDER[DAY_ORDER.length - 1]!);
-    }
+    if (hasPrevWeek && onPrevWeek) onPrevWeek();
   }
 
   function handleNextDay() {
     if (!daySelector) return;
-    const idx = DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]);
-    if (idx < DAY_ORDER.length - 1) {
-      daySelector.onSelectDay(DAY_ORDER[idx + 1]!);
-    } else if (hasNextWeek && onNextWeek) {
-      onNextWeek();
-      daySelector.onSelectDay(DAY_ORDER[0]!);
-    }
+    if (hasNextWeek && onNextWeek) onNextWeek();
   }
 
   return (
     <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+          <ScheduleLegend
+            colorScheme={colorScheme}
+            groupBy={groupBy}
+            aircraftColumns={aircraftColumns}
+            instructorColumns={instructorColumns}
+          />
+        </div>
         {!daySelector && (onPrevWeek || onNextWeek) ? (
           <div className="flex items-center gap-1">
             <button
@@ -1627,9 +1820,9 @@ function HorizontalTimelineBoard({
           <button
             type="button"
             onClick={handlePrevDay}
-            disabled={DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]) === 0 && !hasPrevWeek}
+            disabled={!hasPrevWeek}
             className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-            title="Dia anterior"
+            title="Semana anterior"
           >
             ‹
           </button>
@@ -1660,9 +1853,9 @@ function HorizontalTimelineBoard({
           <button
             type="button"
             onClick={handleNextDay}
-            disabled={DAY_ORDER.indexOf(daySelector.selectedDay as (typeof DAY_ORDER)[number]) === DAY_ORDER.length - 1 && !hasNextWeek}
+            disabled={!hasNextWeek}
             className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-            title="Próximo dia"
+            title="Proxima semana"
           >
             ›
           </button>
@@ -1674,65 +1867,85 @@ function HorizontalTimelineBoard({
         </p>
       ) : (
         <div className="w-full overflow-x-auto">
-          <div style={{ minWidth: `${boardWidth + 120}px` }}>
+          <div style={{ minWidth: `${boardMinWidth + 148}px`, width: "100%" }}>
             {/* Régua de horas */}
-            <div className="flex">
-              <div className="w-14 shrink-0 sm:w-28" />
-              <div className="relative h-5" style={{ width: `${boardWidth}px` }}>
-                {hours.map((hour, idx) => (
-                  <span
-                    key={hour}
-                    className="absolute top-0 text-[10px] font-mono text-slate-500"
-                    style={{ left: `${idx * TIMELINE_PX_PER_HOUR}px` }}
-                  >
-                    {hour}h
-                  </span>
-                ))}
-              </div>
-            </div>
             {layout.map(({ row, entries, laneCount }) => (
+              row.kind === "day" ? (
+                <div key={row.key} className="mt-2 flex items-stretch rounded border border-sky-500/20 bg-sky-500/10 text-xs font-semibold uppercase tracking-wider text-sky-200">
+                  <div className="flex w-24 shrink-0 items-center px-3 py-2 sm:w-36">
+                    {row.dayLabel ?? row.label}
+                  </div>
+                  <div className="relative min-w-0 flex-1" style={{ minWidth: `${boardMinWidth}px` }}>
+                    {hours.map((hour, idx) => (
+                      <span
+                        key={`${row.key}-scale-${hour}`}
+                        className="absolute top-1/2 -translate-y-1/2 text-[10px] font-mono text-sky-100/80"
+                        style={{ left: `${(idx / Math.max(1, hours.length)) * 100}%` }}
+                      >
+                        {hour}h
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : (
               <div key={row.key} className="flex items-stretch border-t border-slate-800/60 py-1">
-                <div className="flex w-14 shrink-0 items-center justify-end pr-1 text-right text-[11px] font-semibold text-slate-400 sm:w-28 sm:pr-2">
-                  <span className="truncate">{row.label}</span>
+                <div className="flex w-24 shrink-0 flex-col items-end justify-center pr-1 text-right sm:w-36 sm:pr-2">
+                  <span className="max-w-full truncate text-[11px] font-semibold text-slate-300">{row.label}</span>
+                  {row.summaryLabel ? <span className="max-w-full truncate text-[10px] font-normal text-slate-500">{row.summaryLabel}</span> : null}
+                  {row.projectionCell ? (
+                    <span className={`mt-0.5 max-w-full truncate rounded border px-1 py-0.5 text-xs font-semibold tabular-nums ${aircraftProjectionCellClass(row.projectionCell.maintenance)}`}>
+                      {row.projectionCell.hours == null ? "—" : `${row.projectionCell.hours.toFixed(1)}h`}
+                      {row.projectionCell.maintenance ? ` · ${row.projectionCell.maintenance}` : ""}
+                    </span>
+                  ) : null}
                 </div>
                 <div
-                  className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40"
-                  style={{ width: `${boardWidth}px`, height: `${laneCount * TIMELINE_LANE_HEIGHT + 8}px` }}
+                  ref={(node) => {
+                    if (node) rowBoardRefs.current.set(row.key, node);
+                    else rowBoardRefs.current.delete(row.key);
+                  }}
+                  className="relative min-w-0 flex-1 overflow-hidden rounded border border-slate-700/60 bg-slate-950/40"
+                  style={{ minWidth: `${boardMinWidth}px`, height: `${laneCount * laneHeight + 8}px` }}
+                  onClick={(event) => {
+                    if (!onEmptySlotClick) return;
+                    const target = resolveDropTarget(row, event.clientX);
+                    if (target) onEmptySlotClick(target);
+                  }}
                 >
                   {nightStartHour < endHour && nightStartHour >= startHour ? (
                     <div
                       className="pointer-events-none absolute inset-y-0 right-0 bg-indigo-950/25"
-                      style={{ left: `${(nightStartHour - startHour) * TIMELINE_PX_PER_HOUR}px` }}
+                      style={{ left: `${(((nightStartHour - startHour) * 60) / totalMinutes) * 100}%` }}
                     />
                   ) : null}
                   {hours.map((hour, idx) => (
                     <div
                       key={`${row.key}-${hour}`}
                       className="absolute inset-y-0 border-l border-slate-700/40"
-                      style={{ left: `${idx * TIMELINE_PX_PER_HOUR}px` }}
+                      style={{ left: `${(idx / Math.max(1, hours.length)) * 100}%` }}
                     />
                   ))}
                   {entries.map(({ item, lane }) => {
                     const startMinutes = parseScheduleTimeToMinutes(item.startTime);
-                    const left = ((startMinutes - startHour * 60) / 60) * TIMELINE_PX_PER_HOUR;
-                    const width = Math.max(44, item.durationHours * TIMELINE_PX_PER_HOUR - 4);
+                    const leftPercent = ((startMinutes - startHour * 60) / totalMinutes) * 100;
+                    const widthPercent = ((item.durationHours * 60) / totalMinutes) * 100;
                     const color = getItemColor(item);
-                    const instructorBorder = item.instructorId ? borderByInstructor.get(item.instructorId) ?? null : null;
                     return (
                       <div
                         key={item.id}
                         role="button"
                         tabIndex={0}
+                        {...scheduleTooltipHandlers(item, setTooltip)}
                         onClick={(e) => {
                           e.stopPropagation();
                           onItemClick(item);
                         }}
-                        className={`absolute ${eventStyleClasses(color, instructorBorder, calendarItemUnassigned(item), false)}`}
+                        className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), false)}`}
                         style={{
-                          left: `${Math.max(0, left) + 2}px`,
-                          top: `${lane * TIMELINE_LANE_HEIGHT + 4}px`,
-                          height: `${TIMELINE_LANE_HEIGHT - 8}px`,
-                          width: `${width}px`,
+                          left: `calc(${Math.max(0, leftPercent)}% + 2px)`,
+                          top: `${lane * laneHeight + 4}px`,
+                          height: `${laneHeight - 8}px`,
+                          width: `max(44px, calc(${widthPercent}% - 4px))`,
                         }}
                       >
                         <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
@@ -1740,17 +1953,19 @@ function HorizontalTimelineBoard({
                           {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                         </p>
                         <p className="truncate opacity-90">
-                          {item.startTime}–{item.endTime} · {item.aircraftRegistration}
+                          {showDayInItems ? `${DAY_LABEL[item.dayOfWeek]} ` : ""}{item.startTime}–{item.endTime} · {shortName(item.instructorLabel) || "Sem instrutor"}
                         </p>
                       </div>
                     );
                   })}
                 </div>
               </div>
+              )
             ))}
           </div>
         </div>
       )}
+      <ScheduleItemTooltipCard state={tooltip} />
     </section>
   );
 }
@@ -1779,14 +1994,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
-  // Mobile abre direto na visão diária; desktop na semanal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">(() =>
-    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches ? "daily" : "weekly",
-  );
-  const [dailyGroupBy, setDailyGroupBy] = useState<"instructor" | "aircraft">("aircraft");
+  // Padrao da aba Escala: diaria, por aviao, cores por status e timeline invertida.
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("daily");
+  const [scheduleGroupBy, setScheduleGroupBy] = useState<ScheduleGroupBy>("aircraft");
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
-  const [invertedTimeline, setInvertedTimeline] = useState(false);
+  const [invertedTimeline, setInvertedTimeline] = useState(true);
   // Mobile: resumos recolhidos por padrão
   const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
   const [mobileInstructorSummaryOpen, setMobileInstructorSummaryOpen] = useState(false);
@@ -1827,9 +2040,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   );
   const threeDayStartIndex = Math.min(
     Math.max(DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]), 0),
-    DAY_ORDER.length - 3,
+    DAY_ORDER.length - 1,
   );
   const threeDayWindow = DAY_ORDER.slice(threeDayStartIndex, threeDayStartIndex + 3);
+  const selectedWeekIndex = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
+  const hasPreviousWeek = selectedWeekIndex > 0;
+  const hasNextWeek = selectedWeekIndex >= 0 && selectedWeekIndex < weekOptions.length - 1;
 
   useEffect(() => {
     if (!error || error === lastErrorToastRef.current) return;
@@ -2099,6 +2315,30 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     [selectedWeekStart],
   );
 
+  const goToPreviousThreeDayPeriod = useCallback(() => {
+    const targetIndex = threeDayStartIndex - 3;
+    if (targetIndex >= 0) {
+      setSelectedDay(DAY_ORDER[targetIndex]!);
+      return;
+    }
+    if (hasPreviousWeek) {
+      setSelectedDay(DAY_ORDER[Math.max(0, DAY_ORDER.length - 3)]!);
+      goToWeekOffset(-1);
+    }
+  }, [goToWeekOffset, hasPreviousWeek, threeDayStartIndex]);
+
+  const goToNextThreeDayPeriod = useCallback(() => {
+    const targetIndex = threeDayStartIndex + 3;
+    if (targetIndex < DAY_ORDER.length) {
+      setSelectedDay(DAY_ORDER[targetIndex]!);
+      return;
+    }
+    if (hasNextWeek) {
+      setSelectedDay(DAY_ORDER[0]!);
+      goToWeekOffset(1);
+    }
+  }, [goToWeekOffset, hasNextWeek, threeDayStartIndex]);
+
   useEffect(() => {
     if (!actorUserId) {
       prevActorUserIdRef.current = undefined;
@@ -2227,6 +2467,15 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [aircraftOptions]);
 
+  const calendarAircraftColumns = useMemo<AircraftColumn[]>(
+    () =>
+      visibleAircraft.map((registration) => ({
+        registration,
+        colorClass: colorByAircraft.get(registration) ?? AIRCRAFT_COLOR_CLASSES[0]!,
+      })),
+    [colorByAircraft, visibleAircraft],
+  );
+
   const borderByInstructor = useMemo(() => {
     const map = new Map<string, string>();
     (weekData?.instructors ?? []).forEach((instructor, index) =>
@@ -2234,6 +2483,51 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     );
     return map;
   }, [weekData]);
+
+  const calendarInstructorColumns = useMemo<ScheduleColumn[]>(() => {
+    const rows: ScheduleColumn[] = (weekData?.instructors ?? [])
+      .filter((instructor) => visibleInstructors.includes(instructor.userId))
+      .map((instructor) => ({
+        key: instructor.userId,
+        label: shortName(instructor.label, instructor.label),
+        colorClass: borderByInstructor.get(instructor.userId) ?? "border-white/80",
+        groupBy: "instructor",
+        instructorId: instructor.userId,
+      }));
+    if (visibleInstructors.includes("__none__")) {
+      rows.push({
+        key: "__none__",
+        label: "Sem instrutor",
+        colorClass: "border-red-300",
+        groupBy: "instructor",
+        instructorId: null,
+      });
+    }
+    return rows;
+  }, [borderByInstructor, visibleInstructors, weekData]);
+
+  const scheduleColumns = useMemo<ScheduleColumn[]>(
+    () => {
+      if (scheduleGroupBy === "none") {
+        return [{
+          key: "__day__",
+          label: "Dia",
+          colorClass: "border-slate-500",
+          groupBy: "none",
+        }];
+      }
+      return scheduleGroupBy === "aircraft"
+        ? calendarAircraftColumns.map((aircraft) => ({
+            key: aircraft.registration,
+            label: aircraft.registration,
+            colorClass: aircraft.colorClass,
+            groupBy: "aircraft",
+            aircraftRegistration: aircraft.registration,
+          }))
+        : calendarInstructorColumns;
+    },
+    [calendarAircraftColumns, calendarInstructorColumns, scheduleGroupBy],
+  );
 
   // Cores dos cards: por avião (padrão) ou por status. Cancelado é sempre vermelho.
   const resolveItemColor = useCallback(
@@ -2392,6 +2686,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             endTime: hoursToHHMM(startHour + row.durationHours),
             isNight: row.isNight ?? false,
             isOutsideGenerator: row.isOutsideGenerator ?? false,
+            notes: row.notes ?? null,
           };
         }),
     [flights, hideCancelledFlights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
@@ -2480,7 +2775,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 return nextMultiple <= value + 1e-9;
               })
               .sort((a, b) => b.intervalHours - a.intervalHours)[0];
-            hoursByDay[day] = { hours: value, maintenance: hit ? `${hit.code} · ${hit.title}` : undefined };
+            hoursByDay[day] = { hours: value, maintenance: hit ? hit.code : undefined };
             previous = value;
           }
         }
@@ -2491,35 +2786,42 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   // Linhas da agenda invertida (linha do tempo horizontal)
   const timelineRows = useMemo<TimelineRow[]>(() => {
     if (!invertedTimeline) return [];
-    if (agendaView === "daily") {
-      const dayItems = calendarItems.filter((item) => item.dayOfWeek === selectedDay);
-      if (dailyGroupBy === "instructor") {
-        const rows: TimelineRow[] = (weekData?.instructors ?? [])
-          .map((instructor) => ({
-            key: instructor.userId,
-            label: shortName(instructor.label, instructor.label),
-            items: dayItems.filter((item) => item.instructorId === instructor.userId),
-          }))
-          .filter((row) => row.items.length > 0);
-        const unassigned = dayItems.filter((item) => !item.instructorId);
-        if (unassigned.length > 0) rows.push({ key: "__none__", label: "Sem instrutor", items: unassigned });
-        return rows;
-      }
-      const registrations = Array.from(new Set(dayItems.map((item) => item.aircraftRegistration)));
-      return registrations.map((registration) => ({
-        key: registration,
-        label: registration,
-        items: dayItems.filter((item) => item.aircraftRegistration === registration),
-      }));
-    }
     const days = agendaView === "three-day" ? threeDayWindow : DAY_ORDER;
+    const activeDays: number[] = agendaView === "daily" ? [selectedDay] : [...days];
     const baseWeekStart = weekData?.week.weekStart ?? selectedWeekStart;
-    return days.map((day) => ({
-      key: `day-${day}`,
-      label: `${DAY_LABEL[day]} ${formatShortDate(dayOfWeekToDate(baseWeekStart, day))}`,
-      items: calendarItems.filter((item) => item.dayOfWeek === day),
-    }));
-  }, [invertedTimeline, agendaView, calendarItems, selectedDay, dailyGroupBy, weekData, threeDayWindow, selectedWeekStart]);
+    const rows: TimelineRow[] = [];
+    for (const day of activeDays) {
+      const dayItems = calendarItems.filter((item) => item.dayOfWeek === day);
+      if (dayItems.length === 0) continue;
+      const dayLabel = `${DAY_LABEL[day]} ${formatShortDate(dayOfWeekToDate(baseWeekStart, day))}`;
+      rows.push({
+        key: `day-${day}`,
+        label: dayLabel,
+        dayLabel,
+        kind: "day",
+        items: [],
+      });
+      const columnsForDay = scheduleGroupBy === "none" ? scheduleColumns.slice(0, 1) : scheduleColumns;
+      for (const column of columnsForDay) {
+        const rowItems = scheduleGroupBy === "none" ? dayItems : dayItems.filter((item) => scheduleColumnItemMatches(item, column));
+        if (rowItems.length === 0) continue;
+        const hours = rowItems.reduce((sum, item) => sum + (item.flightHours ?? item.durationHours), 0);
+        rows.push({
+          key: `${day}-${column.key}`,
+          label: column.label,
+          kind: "group",
+          dayOfWeek: day,
+          column,
+          items: rowItems,
+          summaryLabel: `${rowItems.length} voo${rowItems.length === 1 ? "" : "s"} · ${hours.toFixed(1)}h`,
+          projectionCell: scheduleGroupBy === "aircraft"
+            ? projectionRows.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]
+            : undefined,
+        });
+      }
+    }
+    return rows;
+  }, [invertedTimeline, agendaView, calendarItems, selectedDay, threeDayWindow, weekData, selectedWeekStart, scheduleColumns, scheduleGroupBy, projectionRows]);
 
   const selectedSupplyForBackground = useMemo(() => {
     if (!weekData || visibleAircraft.length !== 1) return null;
@@ -2614,14 +2916,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       setError("Cadastre uma aeronave ativa para criar voos.");
       return;
     }
-    const firstStudent = weekData.students[0];
-    const firstInstructor = weekData.instructors[0] ?? null;
     setFormMode("create");
     setFormDraft({
       demandId: `manual-${crypto.randomUUID()}`,
-      studentId: firstStudent?.userId ?? "",
-      studentLabel: firstStudent?.label ?? "",
-      ...resolveInstructorDraft(weekData.instructors, firstInstructor?.userId ?? null),
+      studentId: "",
+      studentLabel: "",
+      ...resolveInstructorDraft(weekData.instructors, null),
       aircraftRegistration: firstAircraft.registration,
       dayOfWeek: 1,
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
@@ -2899,7 +3199,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   }
 
   return (
-    <div className="w-full space-y-5">
+    <div className="flex w-full flex-col gap-5">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala</h2>
         <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
@@ -3012,7 +3312,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       ) : null}
 
       {weekData ? (
-        <section>
+        <section className="order-5">
           {/* Mobile: resumo recolhido por padrão */}
           <button
             type="button"
@@ -3051,7 +3351,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
       {weekData ? (
         <>
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+          <section className="order-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Filtros</p>
             <div className="space-y-4">
               <div>
@@ -3071,12 +3371,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={(e) => {
-                            setVisibleAircraft((prev) =>
-                              e.target.checked
-                                ? [...new Set([...prev, aircraft.registration])]
-                                : prev.filter((reg) => reg !== aircraft.registration),
-                            );
+                          onChange={() => {
+                            const allAircraft = aircraftOptions.map((option) => option.registration);
+                            setVisibleAircraft((prev) => nextSingleFocusSelection(prev, aircraft.registration, allAircraft));
                           }}
                         />
                         <span className={`h-3 w-3 rounded border ${color}`} />
@@ -3100,9 +3397,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     <input
                       type="checkbox"
                       checked={visibleInstructors.includes("__none__")}
-                      onChange={(e) =>
+                      onChange={() =>
                         setVisibleInstructors((prev) =>
-                          e.target.checked ? [...new Set([...prev, "__none__"])] : prev.filter((id) => id !== "__none__"),
+                          nextSingleFocusSelection(prev, "__none__", ["__none__", ...weekData.instructors.map((option) => option.userId)]),
                         )
                       }
                     />
@@ -3117,11 +3414,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={(e) =>
+                          onChange={() =>
                             setVisibleInstructors((prev) =>
-                              e.target.checked
-                                ? [...new Set([...prev, instructor.userId])]
-                                : prev.filter((id) => id !== instructor.userId),
+                              nextSingleFocusSelection(prev, instructor.userId, ["__none__", ...weekData.instructors.map((option) => option.userId)]),
                             )
                           }
                         />
@@ -3136,13 +3431,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           </section>
 
           {unassignedInstructorCount > 0 ? (
-            <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+            <section className="order-6 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
               {unassignedInstructorCount} voo(s) nesta escala estão sem instrutor.
             </section>
           ) : null}
 
           {/* Calendar grid */}
-          <div className={`space-y-0 transition-opacity ${weekRefreshing ? "pointer-events-none opacity-60" : ""}`}>
+          <div className={`order-3 space-y-0 transition-opacity ${weekRefreshing ? "pointer-events-none opacity-60" : ""}`}>
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <div className="flex flex-1 overflow-hidden rounded-lg border border-slate-700 sm:flex-none">
                 <button
@@ -3167,24 +3462,29 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   Diária
                 </button>
               </div>
-              {agendaView === "daily" && (
-                <div className="flex overflow-hidden rounded-lg border border-slate-700">
-                  <button
-                    type="button"
-                    onClick={() => setDailyGroupBy("instructor")}
-                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${dailyGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Por instrutor
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDailyGroupBy("aircraft")}
-                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${dailyGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Por avião
-                  </button>
-                </div>
-              )}
+              <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setScheduleGroupBy("aircraft")}
+                  className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  Por avião
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScheduleGroupBy("instructor")}
+                  className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  Por instrutor
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScheduleGroupBy("none")}
+                  className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "none" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                >
+                  Nenhum
+                </button>
+              </div>
               <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
                 <input
                   type="checkbox"
@@ -3215,14 +3515,6 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     Por status
                   </button>
                 </div>
-                {colorScheme === "status" ? (
-                  <span className="hidden items-center gap-1.5 text-[10px] text-slate-400 lg:flex">
-                    <span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" /> Confirmado
-                    <span className="h-2.5 w-2.5 rounded-sm bg-sky-600" /> Planejado
-                    <span className="h-2.5 w-2.5 rounded-sm bg-orange-600" /> Pendente
-                    <span className="h-2.5 w-2.5 rounded-sm bg-red-700" /> Cancelado
-                  </span>
-                ) : null}
               </div>
               <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
                 <input
@@ -3245,23 +3537,48 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       ? "Linha do tempo — 3 dias"
                       : "Linha do tempo semanal"
                 }
+                groupBy={scheduleGroupBy}
+                colorScheme={colorScheme}
+                aircraftColumns={calendarAircraftColumns}
+                instructorColumns={calendarInstructorColumns}
                 nightStartHour={scheduleRules.nightFlightStartHour}
                 getItemColor={resolveItemColor}
                 borderByInstructor={borderByInstructor}
                 clubMemberByStudentId={clubMemberByStudentId}
+                showDayInItems={false}
                 daySelector={
                   agendaView === "daily"
                     ? { weekStart: weekData.week.weekStart, selectedDay, onSelectDay: setSelectedDay }
                     : undefined
                 }
-                hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
-                hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
-                onPrevWeek={() => goToWeekOffset(-1)}
-                onNextWeek={() => goToWeekOffset(1)}
+                hasPrevWeek={agendaView === "three-day" ? threeDayStartIndex > 0 || hasPreviousWeek : hasPreviousWeek}
+                hasNextWeek={agendaView === "three-day" ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek : hasNextWeek}
+                onPrevWeek={agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1)}
+                onNextWeek={agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1)}
                 onItemClick={(item) => {
                   if (!canEditFlight) return;
                   const selected = flights.find((row) => row.id === item.id);
                   if (selected) void openEditModal(selected);
+                }}
+                onEmptySlotClick={(target) => {
+                  if (!canCreateFlight) return;
+                  openCreateModal();
+                  setFormDraft((prev) => {
+                    if (!prev) return prev;
+                    const base = {
+                      ...prev,
+                      dayOfWeek: target.dayOfWeek,
+                      startHour: target.startHour,
+                      startTime: target.startTime,
+                      isNight: target.isNight,
+                      aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
+                    };
+                    if (target.targetInstructorId !== undefined) {
+                      const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+                      return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
+                    }
+                    return base;
+                  });
                 }}
               />
             ) : agendaView !== "daily" ? (
@@ -3269,8 +3586,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 items={calendarItems}
                 days={agendaView === "three-day" ? threeDayWindow : DAY_ORDER}
                 title={agendaView === "three-day" ? "Agenda de 3 dias" : "Agenda semanal"}
+                groupBy={scheduleGroupBy}
+                columns={scheduleColumns}
+                colorScheme={colorScheme}
+                aircraftColumns={calendarAircraftColumns}
+                instructorColumns={calendarInstructorColumns}
                 getItemColor={resolveItemColor}
-                projectionRows={projectionRows}
+                projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
                 projectionLoading={aircraftBaseHours === null}
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
@@ -3279,21 +3601,21 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 weekStart={weekData.week.weekStart}
                 nightStartHour={scheduleRules.nightFlightStartHour}
                 hasPrevWeek={agendaView === "three-day"
-                  ? threeDayStartIndex > 0
-                  : weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
+                  ? threeDayStartIndex > 0 || hasPreviousWeek
+                  : hasPreviousWeek}
                 hasNextWeek={agendaView === "three-day"
-                  ? threeDayStartIndex < DAY_ORDER.length - 3
-                  : weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                  ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek
+                  : hasNextWeek}
                 onPrevWeek={() => {
                   if (agendaView === "three-day") {
-                    setSelectedDay(DAY_ORDER[Math.max(0, threeDayStartIndex - 1)]!);
+                    goToPreviousThreeDayPeriod();
                     return;
                   }
                   goToWeekOffset(-1);
                 }}
                 onNextWeek={() => {
                   if (agendaView === "three-day") {
-                    setSelectedDay(DAY_ORDER[Math.min(DAY_ORDER.length - 3, threeDayStartIndex + 1)]!);
+                    goToNextThreeDayPeriod();
                     return;
                   }
                   goToWeekOffset(1);
@@ -3308,17 +3630,43 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   if (!selected) return;
                   void (async () => {
                     await openEditModal(selected);
-                    setFormDraft((prev) =>
-                      prev ? { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight } : prev,
-                    );
+                    setFormDraft((prev) => {
+                      if (!prev) return prev;
+                      const base = {
+                        ...prev,
+                        dayOfWeek: target.dayOfWeek,
+                        startHour: target.startHour,
+                        startTime: target.startTime,
+                        isNight: target.isNight,
+                        aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
+                      };
+                      if (target.targetInstructorId !== undefined) {
+                        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+                        return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
+                      }
+                      return base;
+                    });
                   })();
                 } : undefined}
                 onEmptySlotClick={(target) => {
                   if (!canCreateFlight) return;
                   openCreateModal();
-                  setFormDraft((prev) =>
-                    prev ? { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight } : prev,
-                  );
+                  setFormDraft((prev) => {
+                    if (!prev) return prev;
+                    const base = {
+                      ...prev,
+                      dayOfWeek: target.dayOfWeek,
+                      startHour: target.startHour,
+                      startTime: target.startTime,
+                      isNight: target.isNight,
+                      aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
+                    };
+                    if (target.targetInstructorId !== undefined) {
+                      const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+                      return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
+                    }
+                    return base;
+                  });
                 }}
               />
             ) : (
@@ -3327,16 +3675,21 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   items={calendarItems}
                   selectedDay={selectedDay}
                   weekStart={weekData.week.weekStart}
-                  groupBy={dailyGroupBy}
+                  groupBy={scheduleGroupBy}
+                  columns={scheduleColumns}
+                  colorScheme={colorScheme}
+                  aircraftColumns={calendarAircraftColumns}
+                  instructorColumns={calendarInstructorColumns}
                   nightStartHour={scheduleRules.nightFlightStartHour}
                   getItemColor={resolveItemColor}
                   colorByAircraft={colorByAircraft}
                   borderByInstructor={borderByInstructor}
-                  weekData={weekData}
                   backgroundSupply={selectedSupplyForBackground}
                   clubMemberByStudentId={clubMemberByStudentId}
-                  hasPrevWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) > 0}
-                  hasNextWeek={weekOptions.findIndex((w) => w.weekStart === selectedWeekStart) < weekOptions.length - 1}
+                  projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
+                  projectionLoading={aircraftBaseHours === null}
+                  hasPrevWeek={hasPreviousWeek}
+                  hasNextWeek={hasNextWeek}
                   onSelectDay={setSelectedDay}
                   onPrevWeek={() => goToWeekOffset(-1)}
                   onNextWeek={() => goToWeekOffset(1)}
@@ -3386,7 +3739,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           </div>
 
           {/* Resumo por instrutor — abaixo da agenda */}
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+          <section className="order-7 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <button
               type="button"
               onClick={() => setMobileInstructorSummaryOpen((open) => !open)}
@@ -3411,7 +3764,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+          <section className="order-8 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Preview + edição manual</p>
               <button
@@ -3489,7 +3842,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             </div>
           </section>
 
-          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <section className="order-9 grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Alunos atendidos</p>
               <div className="space-y-2">

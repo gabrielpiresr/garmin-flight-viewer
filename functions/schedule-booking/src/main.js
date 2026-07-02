@@ -135,6 +135,13 @@ async function getProfile(userId) {
   return profile;
 }
 
+function getEffectiveRole(profile) {
+  const active = clean(profile?.active_role);
+  const legacy = clean(profile?.role);
+  const role = active || legacy;
+  return role === "admin" || role === "instrutor" || role === "aluno" ? role : "aluno";
+}
+
 function dateTimeMs(date, time) {
   const parsed = Date.parse(`${date}T${time}:00-03:00`);
   if (!Number.isFinite(parsed)) fail("Data ou horário inválido.");
@@ -219,6 +226,38 @@ async function triggerSagaSync(flightId) {
     );
   } catch {
     // SAGA sync failure is non-fatal; the booking was already confirmed.
+  }
+}
+
+function brDate(iso) {
+  const match = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : String(iso || "");
+}
+
+/** Aviso aos admins quando o ALUNO solicita/altera/cancela um voo (fire-and-forget). */
+function notifyAdminsStudentAction(kind, data) {
+  if (!ADMIN_USERS_FUNCTION_ID) return;
+  functions.createExecution(
+    ADMIN_USERS_FUNCTION_ID,
+    JSON.stringify({ action: "notifyStudentScheduleEvent", kind, data }),
+    true, // async — a notificação nunca bloqueia nem derruba a ação do aluno
+  ).catch(() => {});
+}
+
+/**
+ * Antecedência mínima/máxima em NÍVEL DE DATA — mesmo critério da trava do
+ * formulário do aluno (que valida por data, não por horas corridas).
+ */
+function validateBookingLeadDates(date, presentationMs, rules) {
+  if (presentationMs <= Date.now()) fail("O horário selecionado já passou.");
+  const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const minDate = addDays(today, rules.minBookingLeadDays);
+  if (date < minDate) {
+    fail(`Antecedência mínima de ${rules.minBookingLeadDays} dia(s): escolha a partir de ${brDate(minDate)}.`);
+  }
+  const maxDate = addDays(today, rules.maxBookingLeadDays);
+  if (date > maxDate) {
+    fail(`Agendamento permitido até ${brDate(maxDate)} (${rules.maxBookingLeadDays} dias de antecedência).`);
   }
 }
 
@@ -372,7 +411,9 @@ function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
     studentName: privileged || own ? clean(event.studentName) : null,
     instructorName: privileged || own ? clean(event.instructorName) : null,
     notes: privileged || own ? clean(event.notes) || null : null,
-    canCancel: own && !cancelled,
+    // Voo já apresentado não pode mais ser cancelado/alterado pelo aluno — sem o
+    // check a UI mostrava os botões e o servidor rejeitava depois.
+    canCancel: own && !cancelled && times.presentationMs > Date.now(),
   };
 }
 
@@ -396,6 +437,22 @@ function validateSagaConflict(events, rules, registration, occupiedStartAt, occu
     return times.occupiedStartMs < requestedEnd && times.occupiedEndMs > requestedStart;
   });
   if (conflict) fail("A aeronave já possui um voo neste intervalo na agenda SAGA.", 409);
+}
+
+/** O aluno não pode ter outro voo ativo (em qualquer aeronave) no mesmo intervalo. */
+function validateSagaStudentOverlap(events, rules, studentSagaId, occupiedStartAt, occupiedEndAt, ignoreEventId = "") {
+  if (!studentSagaId) return;
+  const requestedStart = Date.parse(occupiedStartAt);
+  const requestedEnd = Date.parse(occupiedEndAt);
+  const conflict = events.some((event) => {
+    if (clean(event.id) === clean(ignoreEventId)) return false;
+    if (sagaEventIsCancelled(event)) return false;
+    if (!sameSagaUserId(event.studentSagaId, studentSagaId)) return false;
+    const times = sagaEventTimes(event, rules);
+    if (!times) return false;
+    return times.occupiedStartMs < requestedEnd && times.occupiedEndMs > requestedStart;
+  });
+  if (conflict) fail("O aluno já possui outro voo agendado neste intervalo.", 409);
 }
 
 /** Horas de voo futuras já reservadas no SAGA pelo aluno para um modelo (acionamento→corte). */
@@ -494,6 +551,23 @@ async function validateFlightConflict(registration, date, occupiedStartAt, occup
     return occupied.start < requestedEnd && occupied.end > requestedStart;
   });
   if (conflict) fail("A aeronave já possui um voo neste intervalo.", 409);
+}
+
+/** O aluno não pode ter outro voo ativo (em qualquer aeronave) no mesmo intervalo. */
+async function validateStudentFlightOverlap(studentId, date, occupiedStartAt, occupiedEndAt) {
+  const result = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
+    sdk.Query.equal("student_user_id", [studentId]),
+    sdk.Query.equal("flight_date", [date]),
+    sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Previsto"]),
+    sdk.Query.limit(100),
+  ]);
+  const requestedStart = Date.parse(occupiedStartAt);
+  const requestedEnd = Date.parse(occupiedEndAt);
+  const conflict = result.documents.some((doc) => {
+    const occupied = occupiedRange(doc);
+    return occupied.start < requestedEnd && occupied.end > requestedStart;
+  });
+  if (conflict) fail("O aluno já possui outro voo agendado neste intervalo.", 409);
 }
 
 function adjustmentHours(doc) {
@@ -710,6 +784,12 @@ function publicFlight(doc, actorId, actorRole) {
     : null;
   const status = normalizeScheduleFlightStatus(doc.flight_status);
   const cancelStatus = status === "Previsto" ? "Confirmado" : status;
+  let presentationMs = 0;
+  try {
+    presentationMs = dateTimeMs(doc.flight_date, doc.presentation_time || doc.start_time);
+  } catch {
+    presentationMs = 0;
+  }
   return {
     id: doc.$id,
     aircraftIdent: doc.aircraft_ident || "",
@@ -724,7 +804,8 @@ function publicFlight(doc, actorId, actorRole) {
     isOwn: own,
     studentUserId: privileged ? doc.student_user_id : own ? actorId : null,
     instructorUserId: privileged || own ? doc.instructor_user_id || null : null,
-    canCancel: own && ACTIVE_STATUSES.includes(cancelStatus),
+    // Voo já apresentado não pode mais ser cancelado pelo aluno.
+    canCancel: own && ACTIVE_STATUSES.includes(cancelStatus) && presentationMs > Date.now(),
   };
 }
 
@@ -828,9 +909,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
-  const now = Date.now();
-  const leadDays = (presentationMs - now) / 86400000;
-  if (leadDays < rules.minBookingLeadDays || leadDays > rules.maxBookingLeadDays + 1) fail("A data está fora da antecedência permitida.");
+  validateBookingLeadDates(date, presentationMs, rules);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
   await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
@@ -840,6 +919,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     const studentSagaId = requireStudentSagaId(student);
     const events = await listSagaEvents();
     validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
+    validateSagaStudentOverlap(events, rules, studentSagaId, times.occupiedStartAt, times.occupiedEndAt);
     // Travas de quantidade/horas valem apenas para o aluno — admin e instrutor marcam livremente.
     if (actorRole === "aluno") {
       const dailyLimitSaga = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
@@ -872,18 +952,39 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       flexibilityMinutes > 0 ? `Flexibilidade: ±${clock(flexibilityMinutes)}` : "",
       observation ? `Obs: ${observation}` : "",
     ].filter(Boolean).join(" | ");
-    const result = await execAdminUsers({
-      action: "sagaUpsertScheduleDirect",
-      aircraftIdent: registration,
-      studentSagaId,
-      studentName: clean(student.full_name || student.email || "Aluno"),
-      instructorUserId: actorRole === "instrutor" ? actorId : null,
-      date,
-      startTime: times.presentationTime,
-      durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
-      sagaStatus,
-      notes: bookingNotes,
-    });
+    let result;
+    try {
+      result = await execAdminUsers({
+        action: "sagaUpsertScheduleDirect",
+        aircraftIdent: registration,
+        studentSagaId,
+        studentName: clean(student.full_name || student.email || "Aluno"),
+        instructorUserId: actorRole === "instrutor" ? actorId : null,
+        date,
+        startTime: times.presentationTime,
+        durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
+        sagaStatus,
+        notes: bookingNotes,
+      });
+    } catch (sagaError) {
+      // O SAGA é a fonte da verdade: se ele recusar (ex.: o horário acabou de ser
+      // reservado por outra pessoa), o voo NÃO foi criado.
+      const detail = clean(sagaError?.message);
+      fail(
+        `Não foi possível criar o voo na agenda SAGA${detail ? ` — ${detail}` : ""}. Atualize a agenda e tente novamente.`,
+        409,
+      );
+    }
+    if (actorRole === "aluno") {
+      notifyAdminsStudentAction("requested", {
+        studentName: clean(student.full_name || student.email || "Aluno"),
+        aircraft: registration,
+        flightDate: date,
+        startTime: times.startTime,
+        durationMinutes,
+        notes: observation,
+      });
+    }
     return {
       flight: {
         id: clean(result.scheduleId),
@@ -905,6 +1006,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   }
 
   await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
+  await validateStudentFlightOverlap(studentId, date, times.occupiedStartAt, times.occupiedEndAt);
   // Travas de quantidade/horas valem apenas para o aluno — admin e instrutor marcam livremente.
   if (actorRole === "aluno") {
     const dailyLimit = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
@@ -987,6 +1089,15 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       is_night: isNight,
     }, flightPermissions(studentId, actorRole === "instrutor" ? actorId : null));
     void triggerSagaSync(id); // fire-and-forget — errors caught internally
+    if (actorRole === "aluno") {
+      notifyAdminsStudentAction("requested", {
+        studentName: clean(student.full_name || student.email || "Aluno"),
+        aircraft: registration,
+        flightDate: date,
+        startTime: times.startTime,
+        durationMinutes,
+      });
+    }
     return { flight: publicFlight(doc, actorId, actorRole) };
   } catch (err) {
     await releaseLocks(id);
@@ -1138,6 +1249,18 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
     await execAdminUsers({ action: "sagaCancelScheduleDirect", scheduleId: id });
   }
 
+  if (actorRole === "aluno") {
+    notifyAdminsStudentAction("cancelled", {
+      studentName: clean(event.studentName) || clean(profile.full_name || profile.email || "Aluno"),
+      aircraft: clean(event.aircraft).toUpperCase(),
+      flightDate: times.flightDate,
+      startTime: times.startTime,
+      durationMinutes: times.durationMinutes,
+      reason: clean(payload.reason),
+      penaltyHours: shouldDebit ? penaltyHours : 0,
+    });
+  }
+
   const flight = publicSagaFlight(event, rules, actorId, actorRole, actorSagaId);
   return {
     flight: { ...flight, status: "Cancelado", canCancel: false },
@@ -1184,14 +1307,31 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
-  const leadDays = (presentationMs - Date.now()) / 86400000;
-  if (leadDays < rules.minBookingLeadDays || leadDays > rules.maxBookingLeadDays + 1) fail("A data está fora da antecedência permitida.");
+  validateBookingLeadDates(date, presentationMs, rules);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
   await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
   validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt, id);
+  validateSagaStudentOverlap(
+    events,
+    rules,
+    clean(event.studentSagaId) || actorSagaId,
+    times.occupiedStartAt,
+    times.occupiedEndAt,
+    id,
+  );
   if (actorRole === "aluno") {
     const studentSagaIdForLimits = clean(event.studentSagaId) || actorSagaId;
+    const dailyLimit = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
+    if (dailyLimit) {
+      const sameDay = events.filter((row) => {
+        if (clean(row.id) === clean(id)) return false;
+        if (sagaEventIsCancelled(row)) return false;
+        if (!sameSagaUserId(row.studentSagaId, studentSagaIdForLimits)) return false;
+        return sagaEventTimes(row, rules)?.flightDate === date;
+      });
+      if (sameDay.length >= dailyLimit) fail("O limite diário de voos foi atingido.");
+    }
     validateWeeklyLimits(
       rules,
       sagaStudentWeekUsage(events, rules, studentSagaIdForLimits, date, id),
@@ -1213,6 +1353,10 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   }
 
   const currentStatus = clean(event.status).toUpperCase();
+  const keepStatus = ["PLANNED", "PENDING", "CONFIRMED"].includes(currentStatus) ? currentStatus : "PLANNED";
+  // Alteração feita pelo aluno volta para "Pendente": a escola precisa reconfirmar
+  // o novo horário (antes o voo seguia Confirmado sem ninguém revisar).
+  const nextStatus = actorRole === "aluno" && keepStatus === "CONFIRMED" ? "PENDING" : keepStatus;
   await execAdminUsers({
     action: "sagaUpsertScheduleDirect",
     scheduleId: id,
@@ -1223,12 +1367,26 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     date,
     startTime: times.presentationTime,
     durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
-    sagaStatus: ["PLANNED", "PENDING", "CONFIRMED"].includes(currentStatus) ? currentStatus : "PLANNED",
+    sagaStatus: nextStatus,
     // Preserva as notas existentes (obs do aluno, flexibilidade) e registra a alteração.
     ...(clean(event.notes)
       ? { rawNotes: `${clean(event.notes)} | Alterado via plataforma` }
       : { notes: "Alterado via plataforma" }),
   });
+
+  if (actorRole === "aluno") {
+    notifyAdminsStudentAction("rescheduled", {
+      studentName: clean(event.studentName) || clean(profile.full_name || profile.email || "Aluno"),
+      aircraft: registration,
+      flightDate: date,
+      startTime: times.startTime,
+      durationMinutes,
+      previousAircraft: clean(event.aircraft).toUpperCase(),
+      previousFlightDate: currentTimes.flightDate,
+      previousStartTime: currentTimes.startTime,
+      statusReverted: nextStatus !== keepStatus,
+    });
+  }
 
   return {
     flight: {
@@ -1241,7 +1399,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
       cutoffTime: times.cutoffTime,
       endTime: times.endTime,
       durationMinutes,
-      status: currentStatus === "CONFIRMED" ? "Confirmado" : currentStatus === "PENDING" ? "Pendente" : "Previsto",
+      status: nextStatus === "CONFIRMED" ? "Confirmado" : nextStatus === "PENDING" ? "Pendente" : "Previsto",
       isOwn: own,
       studentUserId: clean(event.studentUserId) || (own ? actorId : null),
       instructorUserId: clean(event.instructorUserId) || null,
@@ -1250,7 +1408,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   };
 }
 
-async function handleCancel(payload, actorId, actorRole, rules) {
+async function handleCancel(payload, actorId, actorRole, rules, profile) {
   const id = clean(payload.flightId);
   const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_ID, id);
   const own = doc.student_user_id === actorId;
@@ -1313,6 +1471,17 @@ async function handleCancel(payload, actorId, actorRole, rules) {
     cancelled_at: new Date().toISOString(),
   });
   await releaseLocks(id);
+  if (actorRole === "aluno") {
+    notifyAdminsStudentAction("cancelled", {
+      studentName: clean(profile?.full_name || profile?.email || "Aluno"),
+      aircraft: clean(doc.aircraft_ident).toUpperCase(),
+      flightDate: doc.flight_date,
+      startTime: doc.start_time,
+      durationMinutes: number(doc.requested_duration_minutes, 0),
+      reason: clean(payload.reason),
+      penaltyHours: shouldDebit ? penaltyHours : 0,
+    });
+  }
   return { flight: publicFlight(updated, actorId, actorRole), penaltyPct, penaltyHours: shouldDebit ? penaltyHours : 0 };
 }
 
@@ -1329,7 +1498,7 @@ module.exports = async ({ req, res, error }) => {
     if (!actorId) return response(res, 401, { ok: false, message: "Não autenticado." });
     const payload = req.bodyJson || parseJson(req.body, {});
     const profile = await getProfile(actorId);
-    const actorRole = clean(profile.role);
+    const actorRole = getEffectiveRole(profile);
     const rules = await getRules();
     let data;
     if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
@@ -1343,7 +1512,7 @@ module.exports = async ({ req, res, error }) => {
     else if (payload.action === "cancelFlight") {
       data = rules.sagaOnlySchedule
         ? await handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
-        : await handleCancel(payload, actorId, actorRole, rules);
+        : await handleCancel(payload, actorId, actorRole, rules, profile);
     } else if (payload.action === "previewCancellation") {
       if (rules.sagaOnlySchedule) {
         const events = await listSagaEvents();

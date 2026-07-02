@@ -5,19 +5,9 @@ import { getDefaultPermissionsForPortal } from "../lib/defaultRolePermissions";
 import type { ActionKey, AnyTabKey, RolePermissions } from "../types/rolePermissions";
 
 type PermissionsState = {
-  /** Permissões ativas para o usuário logado */
   permissions: RolePermissions | null;
-  /** true enquanto carrega as permissões do Appwrite */
   isLoading: boolean;
-  /**
-   * Verifica se o usuário pode acessar uma aba.
-   * Admin sem customRole sempre retorna true.
-   */
   canTab: (tabKey: AnyTabKey) => boolean;
-  /**
-   * Verifica se o usuário pode executar uma ação.
-   * Admin sem customRole sempre retorna true.
-   */
   canAction: (actionKey: ActionKey) => boolean;
 };
 
@@ -34,23 +24,19 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Admin puro (sem role customizado) = acesso total, sem necessidade de fetch
-    if (user.role === "admin" && !user.customRoleSlug) {
-      setPermissions(null); // null = acesso total para admin
+    const activeSlug = user.activeRoleSlug || user.role;
+    if (activeSlug === "admin") {
+      setPermissions(null);
       setIsLoading(false);
       return;
     }
 
-    // Para roles customizados ou roles padrão (instrutor/aluno): carregar do Appwrite
-    const slugToFetch = user.customRoleSlug ?? user.role;
     setIsLoading(true);
-
-    getTenantRoleBySlug(slugToFetch, user.schoolId)
+    getTenantRoleBySlug(activeSlug, user.schoolId)
       .then((role) => {
         if (role) {
           setPermissions(role.permissions);
         } else {
-          // Role não encontrado → usar defaults do portal
           setPermissions(getDefaultPermissionsForPortal(user.role));
         }
       })
@@ -58,19 +44,17 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
         setPermissions(getDefaultPermissionsForPortal(user.role));
       })
       .finally(() => setIsLoading(false));
-  }, [user?.id, user?.role, user?.customRoleSlug, user?.schoolId]);
+  }, [user?.id, user?.role, user?.activeRoleSlug, user?.schoolId]);
 
   const canTab = useMemo(
     () =>
       (tabKey: AnyTabKey): boolean => {
         if (!user) return false;
-        // Admin sem role customizado tem acesso total
-        if (user.role === "admin" && !user.customRoleSlug) return true;
-        // Enquanto carrega permissões, ocultar para evitar flash de acesso não autorizado
+        if ((user.activeRoleSlug || user.role) === "admin") return true;
         if (isLoading) return false;
-        if (!permissions) return true; // sem permissões definidas = acesso padrão do portal
+        if (!permissions) return true;
         const val = permissions.tabs[tabKey];
-        return val !== false; // undefined = permitido por padrão
+        return val !== false;
       },
     [permissions, user, isLoading],
   );
@@ -79,13 +63,11 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
     () =>
       (actionKey: ActionKey): boolean => {
         if (!user) return false;
-        // Admin sem role customizado tem acesso total
-        if (user.role === "admin" && !user.customRoleSlug) return true;
-        // Enquanto carrega permissões, bloquear ações
+        if ((user.activeRoleSlug || user.role) === "admin") return true;
         if (isLoading) return false;
-        if (!permissions) return true; // sem permissões definidas = acesso padrão do portal
+        if (!permissions) return true;
         const val = permissions.actions[actionKey];
-        return val !== false; // undefined = permitido por padrão
+        return val !== false;
       },
     [permissions, user, isLoading],
   );

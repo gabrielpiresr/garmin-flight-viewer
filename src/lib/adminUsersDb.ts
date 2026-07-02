@@ -289,16 +289,23 @@ export async function updateAdminUserProfile(
 
 export async function updateAdminUserRole(
   userId: string,
-  role: UserRole,
-  customRoleSlug?: string | null,
+  assignedRoleSlugs: string[],
 ): Promise<AdminUserDetail> {
   const response = await executeAdminUsers({
     action: "updateRole",
     userId,
-    role,
-    customRoleSlug: customRoleSlug ?? null,
+    assignedRoleSlugs,
   });
   if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
+  return response.user;
+}
+
+export async function switchActiveRole(roleSlug: string): Promise<AdminUserDetail> {
+  const response = await executeAdminUsers({
+    action: "switchActiveRole",
+    roleSlug,
+  });
+  if (!response.user) throw new Error(response.message || "Não foi possível trocar o role ativo.");
   return response.user;
 }
 

@@ -31,6 +31,13 @@ async function getProfileByUserId(userId) {
   return res.documents[0] || null;
 }
 
+function getEffectiveRole(profile) {
+  const active = String(profile?.active_role || "").trim();
+  const legacy = String(profile?.role || "").trim();
+  const role = active || legacy;
+  return VALID_ROLES.has(role) ? role : "aluno";
+}
+
 async function hasInstructorStudentRelation(instructorUserId, studentUserId) {
   const res = await databases.listDocuments(DATABASE_ID, INSTRUCTOR_STUDENTS_COLLECTION_ID, [
     sdk.Query.equal("instructor_user_id", instructorUserId),
@@ -215,7 +222,7 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     const actorProfile = await getProfileByUserId(userId);
-    const actorRole = actorProfile?.role;
+    const actorRole = getEffectiveRole(actorProfile);
     if (!VALID_ROLES.has(actorRole)) {
       return jsonResponse(res, 403, { message: "User role is not allowed." });
     }
