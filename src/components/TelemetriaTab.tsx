@@ -29,6 +29,12 @@ import {
   type TelemetryCsvFileMeta,
   type TelemetryCsvGap,
 } from "../lib/telemetryCsvMerge";
+import {
+  findSegmentedTelemetryFlights,
+  formatSegmentDuration,
+  isSegmentedTelemetryAircraft,
+  type TelemetryCsvSegment,
+} from "../lib/telemetryCsvSegments";
 import { propertyLabel, propertyUnit, type TelemetryAlertProperty } from "../lib/telemetryAlerts";
 import type { ChartRow } from "../lib/telemetryCharts";
 import type { FlightPoint, FlightSegment, FlightSummary } from "../types/flight";
@@ -77,6 +83,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
   const [fileName, setFileName] = useState<string | null>(null);
   const [telemetryCharCount, setTelemetryCharCount] = useState(0);
   const [telemetrySources, setTelemetrySources] = useState<FlightRecordTelemetryFile[]>([]);
+  const [telemetrySegmentCandidates, setTelemetrySegmentCandidates] = useState<TelemetryCsvSegment[]>([]);
+  const [selectedTelemetrySegmentIds, setSelectedTelemetrySegmentIds] = useState<string[]>([]);
   const [telemetryFileMetas, setTelemetryFileMetas] = useState<TelemetryCsvFileMeta[]>([]);
   const [telemetryGapSec, setTelemetryGapSec] = useState<number | null>(null);
   const [telemetryGaps, setTelemetryGaps] = useState<TelemetryCsvGap[]>([]);
@@ -231,6 +239,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     if (!parsedResult) return;
     applyResult(parsedResult, "voo importado");
     setTelemetrySources([]);
+    setTelemetrySegmentCandidates([]);
+    setSelectedTelemetrySegmentIds([]);
     setTelemetryFileMetas([]);
     setTelemetryGapSec(null);
     setTelemetryGaps([]);
@@ -244,6 +254,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     workerRef.current?.terminate();
     setLoading(true);
     setLoadError(null);
+    setFlightMeta(null);
 
     void getSavedFlight(flightId).then(({ data, error }) => {
       if (error || !data) {
@@ -252,13 +263,15 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
         return;
       }
       const decoded = decodeFlightRecord(data.csv_text);
-      if (decoded.meta) setFlightMeta(decoded.meta);
+      setFlightMeta(decoded.meta ?? null);
       const telemetryText = decoded.meta ? decoded.telemetryCsv : data.csv_text;
       if (!telemetryText.trim()) {
         setLoading(false);
         setFileName(null);
         setTelemetryCharCount(0);
         setTelemetrySources([]);
+        setTelemetrySegmentCandidates([]);
+        setSelectedTelemetrySegmentIds([]);
         setTelemetryFileMetas([]);
         setTelemetryGapSec(null);
         setTelemetryGaps([]);
@@ -288,6 +301,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
         }
       }
       setTelemetrySources(loadedSources);
+      setTelemetrySegmentCandidates([]);
+      setSelectedTelemetrySegmentIds([]);
       setTelemetryFileMetas(loadedFileMetas);
       setTelemetryGapSec(loadedGapSec);
       setTelemetryGaps(loadedGaps);
@@ -318,7 +333,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     if (files.length === 0 || !flightId || !user || !canEditTelemetry) return;
-    if (telemetrySources.length + files.length > MAX_TELEMETRY_CSV_FILES) {
+    const remainingSlots = MAX_TELEMETRY_CSV_FILES - telemetrySources.length;
+    if (files.length > remainingSlots) {
       showToast({ variant: "error", message: `Selecione no máximo ${MAX_TELEMETRY_CSV_FILES} CSVs por voo.` });
       return;
     }
@@ -331,7 +347,28 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
           text: await file.text(),
         })),
       );
+
+      if (isSegmentedTelemetryAircraft(flightMeta?.header.aircraft)) {
+        const segments = nextSources.flatMap((source) => findSegmentedTelemetryFlights(source));
+        if (!segments.length) {
+          showToast({
+            variant: "error",
+            message: "Não foi possível encontrar data/hora nas linhas deste CSV do PS-DZA.",
+          });
+          return;
+        }
+        setTelemetrySegmentCandidates(segments);
+        setSelectedTelemetrySegmentIds([]);
+        showToast({
+          variant: "success",
+          message: `${segments.length} voo(s) encontrado(s). Selecione até ${remainingSlots} para adicionar.`,
+        });
+        return;
+      }
+
       setTelemetrySources((current) => [...current, ...nextSources]);
+      setTelemetrySegmentCandidates([]);
+      setSelectedTelemetrySegmentIds([]);
       setTelemetryDirty(true);
       showToast({ variant: "success", message: "CSV adicionado. Clique em Processar telemetria para validar." });
     } catch (err) {
@@ -342,6 +379,40 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
   const removeTelemetrySource = (index: number) => {
     setTelemetrySources((current) => current.filter((_, i) => i !== index));
     setTelemetryDirty(true);
+  };
+
+  const toggleTelemetrySegment = (segmentId: string) => {
+    const remainingSlots = MAX_TELEMETRY_CSV_FILES - telemetrySources.length;
+    setSelectedTelemetrySegmentIds((current) => {
+      if (current.includes(segmentId)) return current.filter((id) => id !== segmentId);
+      if (current.length >= remainingSlots) {
+        showToast({ variant: "error", message: `Selecione no máximo ${remainingSlots} voo(s) desta lista.` });
+        return current;
+      }
+      return [...current, segmentId];
+    });
+  };
+
+  const addSelectedTelemetrySegments = () => {
+    if (!selectedTelemetrySegmentIds.length) {
+      showToast({ variant: "error", message: "Selecione pelo menos um voo encontrado." });
+      return;
+    }
+    const selected = telemetrySegmentCandidates.filter((segment) => selectedTelemetrySegmentIds.includes(segment.id));
+    if (!selected.length) return;
+    if (telemetrySources.length + selected.length > MAX_TELEMETRY_CSV_FILES) {
+      showToast({ variant: "error", message: `Selecione no máximo ${MAX_TELEMETRY_CSV_FILES} CSVs por voo.` });
+      return;
+    }
+
+    setTelemetrySources((current) => [...current, ...selected.map(({ name, text }) => ({ name, text }))]);
+    setTelemetrySegmentCandidates([]);
+    setSelectedTelemetrySegmentIds([]);
+    setTelemetryDirty(true);
+    showToast({
+      variant: "success",
+      message: `${selected.length} voo(s) do PS-DZA adicionado(s). Clique em Processar telemetria para salvar.`,
+    });
   };
 
   const handleProcessTelemetry = async () => {
@@ -483,6 +554,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
 
   const processedTelemetryFileCount = telemetryFileMetas.length || (fileName ? 1 : 0);
   const canAddTelemetryFiles = canEditTelemetry && telemetrySources.length < MAX_TELEMETRY_CSV_FILES;
+  const isDzaTelemetryFlight = isSegmentedTelemetryAircraft(flightMeta?.header.aircraft);
+  const remainingTelemetrySlots = Math.max(0, MAX_TELEMETRY_CSV_FILES - telemetrySources.length);
 
   const uploadPanel = showTelemetryManagement ? (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">
@@ -533,6 +606,73 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
           </p>
         ) : null}
 
+        {telemetrySegmentCandidates.length > 0 ? (
+          <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-sky-100">
+                  Voos encontrados no CSV do PS-DZA ({telemetrySegmentCandidates.length})
+                </p>
+                <p className="mt-1 text-xs text-sky-200/70">
+                  Selecione até {remainingTelemetrySlots} voo(s). Os demais trechos serão ignorados no upload.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addSelectedTelemetrySegments}
+                disabled={!selectedTelemetrySegmentIds.length || savingTelemetry}
+                className="inline-flex items-center justify-center rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                Adicionar selecionados ({selectedTelemetrySegmentIds.length})
+              </button>
+            </div>
+
+            <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+              {telemetrySegmentCandidates.map((segment) => {
+                const selected = selectedTelemetrySegmentIds.includes(segment.id);
+                const disabled = !selected && selectedTelemetrySegmentIds.length >= remainingTelemetrySlots;
+                return (
+                  <label
+                    key={segment.id}
+                    className={`grid cursor-pointer gap-2 rounded-lg border p-3 transition sm:grid-cols-[auto_minmax(0,1fr)] ${
+                      selected
+                        ? "border-emerald-500/50 bg-emerald-500/10"
+                        : disabled
+                          ? "border-slate-800 bg-slate-950/30 opacity-60"
+                          : "border-slate-700 bg-slate-950/45 hover:border-sky-500/50"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={disabled || savingTelemetry}
+                      onChange={() => toggleTelemetrySegment(segment.id)}
+                      className="mt-1 h-4 w-4 accent-sky-500"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-100">{segment.dateLabel}</p>
+                        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
+                          {formatSegmentDuration(segment.durationSec)}
+                        </span>
+                        <span className="text-[11px] text-slate-500">{segment.rowCount.toLocaleString("pt-BR")} linhas</span>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-xs text-slate-300 md:grid-cols-2">
+                        <p>
+                          <span className="text-slate-500">Zulu:</span> {segment.startZuluLabel} - {segment.endZuluLabel}
+                        </p>
+                        <p>
+                          <span className="text-slate-500">Local:</span> {segment.startLocalLabel} - {segment.endLocalLabel}
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         {canEditTelemetry && (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             <label
@@ -540,7 +680,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
                 canAddTelemetryFiles && !savingTelemetry ? "cursor-pointer hover:bg-slate-800" : "cursor-not-allowed opacity-50"
               }`}
             >
-              Adicionar CSVs
+              {isDzaTelemetryFlight ? "Selecionar CSV do PS-DZA" : "Adicionar CSVs"}
               <input
                 type="file"
                 multiple
