@@ -19,3 +19,4 @@ public/downloads/*.msi
 public/downloads/*.dmg
 video-helper-app/dist-release-*/
 video-helper-app/dist-release-*/**
+.vercel
