@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { getAdminDashboardSummary } from "../../lib/adminUsersDb";
-import { formatDuration } from "../../lib/flightStats";
-import { TELEMETRY_ALERT_SEVERITIES, type TelemetryAlertSeverity } from "../../lib/telemetryAlerts";
-import type {
-  AdminDashboardAircraftForecast,
-  AdminDashboardAircraftUtilization,
-  AdminDashboardAlert,
-  AdminDashboardData,
-  AdminDashboardFlight,
-} from "../../types/adminDashboard";
-import { TelemetriaTab } from "../TelemetriaTab";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
+import { listAircrafts } from "../../lib/aircraftDb";
+import { getAdminDashboardSummary, listAdminFlightReports, listAdminUserSummaries } from "../../lib/adminUsersDb";
+import { loadAircraftBaseHours, type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
+import { getPublicSchedule, type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
+import { useAuth } from "../../contexts/AuthContext";
+import type { AdminDashboardAircraftUtilization, AdminDashboardData } from "../../types/adminDashboard";
+import type { AdminFlightReportRow } from "../../types/adminFlightReports";
+import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
-
-type PeriodPresetKey = "all" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "custom";
 
 type Props = {
   onOpenReports: () => void;
@@ -20,76 +17,92 @@ type Props = {
   onOpenNoTelemetry: () => void;
 };
 
-const PERIOD_PRESETS: Array<{ key: PeriodPresetKey; label: string }> = [
-  { key: "thisMonth", label: "Mês atual" },
-  { key: "thisWeek", label: "Semana" },
-  { key: "last30", label: "Últimos 30 dias" },
-  { key: "thisYear", label: "Ano" },
-  { key: "all", label: "Todos" },
-  { key: "custom", label: "Custom" },
-];
-
-const SEVERITY_ORDER: TelemetryAlertSeverity[] = ["risco", "atencao", "leve"];
-
-const SEVERITY_CLASS: Record<TelemetryAlertSeverity, string> = {
-  leve: "border-sky-500/40 bg-sky-500/10 text-sky-300",
-  atencao: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  risco: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+type ProjectionDay = {
+  date: string;
+  scheduledHours: number;
+  projectedHours: number | null;
+  maintenanceCode: string | null;
 };
 
-const AIRCRAFT_TAG_PALETTES = [
-  "border-sky-500/40 bg-sky-500/10 text-sky-300",
-  "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-  "border-violet-500/40 bg-violet-500/10 text-violet-300",
-  "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  "border-rose-500/40 bg-rose-500/10 text-rose-300",
-  "border-cyan-500/40 bg-cyan-500/10 text-cyan-300",
-  "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300",
-  "border-lime-500/40 bg-lime-500/10 text-lime-300",
-] as const;
+type ScheduledAircraftFlight = {
+  dateMs: number;
+  hours: number;
+};
+
+type UpcomingMaintenance = {
+  id: string;
+  code: string;
+  title: string;
+  intervalHours: number | null;
+  dueAtHours: number | null;
+  remainingHours: number | null;
+  forecast: string;
+};
+
+type AircraftHomeCard = {
+  aircraft: Aircraft;
+  modelName: string;
+  baseHours: AircraftBaseHours | null;
+  nextMaintenance: UpcomingMaintenance | null;
+  projectionDays: ProjectionDay[];
+};
+
+type InstructorMonthSummary = {
+  key: string;
+  label: string;
+  flights: number;
+  hours: number;
+};
+
+type AdminHomeState = {
+  dashboard: AdminDashboardData;
+  aircraftCards: AircraftHomeCard[];
+  instructorSummary: InstructorMonthSummary[];
+};
+
+type RecurrenceRules = {
+  hours: number | null;
+  days: number | null;
+};
+
+const EMPTY_ALERT_LIMIT = 1;
+const FLIGHT_REPORT_PAGE_SIZE = 200;
+const DONUT_COLORS = ["#34d399", "#38bdf8", "#f59e0b", "#a78bfa", "#fb7185", "#22d3ee", "#84cc16", "#f472b6"];
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function startOfIsoWeek(dateText: string): string {
-  const date = new Date(`${dateText.slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return dateText.slice(0, 10);
-  const day = date.getDay() || 7;
-  date.setDate(date.getDate() - day + 1);
+function addDaysIso(dateText: string, days: number): string {
+  const date = new Date(`${dateText}T12:00:00`);
+  date.setDate(date.getDate() + days);
   return isoDate(date);
 }
 
-function endOfIsoWeek(dateText: string): string {
-  const date = new Date(`${startOfIsoWeek(dateText)}T00:00:00`);
-  date.setDate(date.getDate() + 6);
-  return isoDate(date);
-}
-
-function periodForPreset(key: PeriodPresetKey): { fromDate: string; toDate: string } {
-  const today = new Date();
-  const todayIso = isoDate(today);
-  if (key === "all" || key === "custom") return { fromDate: "", toDate: "" };
-  if (key === "thisWeek") return { fromDate: startOfIsoWeek(todayIso), toDate: endOfIsoWeek(todayIso) };
-  if (key === "thisMonth") return { fromDate: `${todayIso.slice(0, 8)}01`, toDate: todayIso };
-  if (key === "last30") {
-    const from = new Date(today);
-    from.setDate(from.getDate() - 29);
-    return { fromDate: isoDate(from), toDate: todayIso };
-  }
-  return { fromDate: `${todayIso.slice(0, 4)}-01-01`, toDate: todayIso };
+function currentMonthPeriod(): { fromDate: string; toDate: string } {
+  const today = isoDate(new Date());
+  return { fromDate: `${today.slice(0, 8)}01`, toDate: today };
 }
 
 function fmtNumber(value: number | null | undefined, digits = 1): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "0";
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("pt-BR", { maximumFractionDigits: digits })
+    : "0";
 }
 
 function fmtInt(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value).toLocaleString("pt-BR") : "0";
 }
 
-function fmtCurrency(value: number | null | undefined): string {
-  return (value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+function fmtHours(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "sem horímetro";
+  return `${fmtNumber(value, 1)} h`;
+}
+
+function fmtRemainingHours(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "sem previsão por horas";
+  if (value < 0) return `vencida ${fmtNumber(Math.abs(value), 1)} h`;
+  return `em ${fmtNumber(value, 1)} h`;
 }
 
 function fmtDate(value: string | null | undefined): string {
@@ -98,81 +111,368 @@ function fmtDate(value: string | null | undefined): string {
   return year && month && day ? `${day}/${month}/${year}` : value;
 }
 
-function fmtDateTimeKey(value: string | null | undefined): string {
-  if (!value) return "Sem previsão";
-  const [date, time] = value.split("T");
-  return `${fmtDate(date)}${time ? ` ${time.slice(0, 5)}` : ""}`;
+function fmtDateMs(value: number): string {
+  return fmtDate(new Date(value).toISOString().slice(0, 10));
 }
 
-function fmtTime(value: string | null | undefined): string {
-  return value ? value.slice(0, 5) : "--:--";
+function fmtWeekday(value: string): string {
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return fmtDate(value);
+  return date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(".", "");
 }
 
-function fmtDayMonth(value: string | null | undefined): string {
-  if (!value) return "—";
-  const date = new Date(`${value.slice(0, 10)}T12:00:00`);
-  return Number.isNaN(date.getTime())
-    ? "—"
-    : date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+function aircraftName(aircraft: Aircraft, modelName?: string): string {
+  return [aircraft.registration, aircraft.nickname, modelName].filter(Boolean).join(" · ");
 }
 
-function flightDurationLabel(flight: AdminDashboardFlight): string {
-  if (flight.durationSec != null && flight.durationSec > 0) return formatDuration(flight.durationSec);
-  if (flight.hours > 0) return `${fmtNumber(flight.hours, 1)} h`;
-  return "—";
+function normalizeRegistration(value: string | null | undefined): string {
+  return String(value ?? "").trim().toUpperCase();
 }
 
-function aircraftTagClass(ident: string | null | undefined): string {
-  const key = (ident || "sem").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-  let hash = 0;
-  for (let index = 0; index < key.length; index += 1) hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
-  return AIRCRAFT_TAG_PALETTES[hash % AIRCRAFT_TAG_PALETTES.length];
+function parseRecurrenceRules(value: string): RecurrenceRules {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return { hours: null, days: null };
+    const hoursRule = parsed.find((rule) => (rule as { type?: string })?.type === "hours") as { value?: number } | undefined;
+    const calendarRule = parsed.find((rule) => {
+      const typed = rule as { type?: string; unit?: string };
+      return typed.type === "calendar" && typed.unit === "days";
+    }) as { value?: number } | undefined;
+    return {
+      hours: typeof hoursRule?.value === "number" ? hoursRule.value : null,
+      days: typeof calendarRule?.value === "number" ? calendarRule.value : null,
+    };
+  } catch {
+    return { hours: null, days: null };
+  }
 }
 
-function severityLabel(value: TelemetryAlertSeverity): string {
-  return TELEMETRY_ALERT_SEVERITIES.find((severity) => severity.key === value)?.label ?? value;
+function isExcludedMaintenanceItem(item: MaintenanceProgramItem): boolean {
+  const haystack = `${item.code} ${item.title}`.toLowerCase();
+  return haystack.includes("transit") || haystack.includes("trânsito") || haystack.includes("diaria") || haystack.includes("diária");
 }
 
-function aircraftLabel(row: { aircraftIdent: string | null; aircraftNickname?: string | null }): string {
-  return [row.aircraftIdent || "Sem avião", row.aircraftNickname].filter(Boolean).join(" · ");
+function isCompletedMaintenance(order: MaintenanceWorkOrder): boolean {
+  return order.work_order_type !== "migration_baseline"
+    && order.status !== "canceled"
+    && (order.status === "completed" || order.status === "released" || order.aircraft_released);
 }
 
-export function AdminHome({ onOpenReports, onOpenAlerts, onOpenNoTelemetry }: Props) {
-  const initialPeriod = useMemo(() => periodForPreset("thisMonth"), []);
-  const [periodPreset, setPeriodPreset] = useState<PeriodPresetKey>("thisMonth");
-  const [fromDate, setFromDate] = useState(initialPeriod.fromDate);
-  const [toDate, setToDate] = useState(initialPeriod.toDate);
-  const [dashboard, setDashboard] = useState<AdminDashboardData | null>(null);
-  const [selectedAlert, setSelectedAlert] = useState<AdminDashboardAlert | null>(null);
+function intervalIncludes(parentInterval: number | null, childInterval: number | null): boolean {
+  if (parentInterval == null || childInterval == null || parentInterval < childInterval || childInterval <= 0) return false;
+  const ratio = parentInterval / childInterval;
+  return Math.abs(ratio - Math.round(ratio)) < 0.0001;
+}
+
+function nextDueHours(params: {
+  currentHours: number | null;
+  interval: number | null;
+  encompassingOrders: MaintenanceWorkOrder[];
+}): { remaining: number | null; dueAt: number | null } {
+  const { currentHours, interval, encompassingOrders } = params;
+  if (interval == null || interval <= 0 || currentHours == null) return { remaining: null, dueAt: null };
+  const latestPerformed = encompassingOrders
+    .filter(isCompletedMaintenance)
+    .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
+  const dueAt = latestPerformed
+    ? latestPerformed.aircraft_ttaf + interval
+    : Math.ceil((currentHours - 0.0001) / interval) * interval;
+  return {
+    remaining: Number((dueAt - currentHours).toFixed(1)),
+    dueAt,
+  };
+}
+
+function buildNextMaintenance(params: {
+  modelItems: MaintenanceProgramItem[];
+  aircraftOrders: MaintenanceWorkOrder[];
+  currentHours: number | null;
+  scheduledFlights: ScheduledAircraftFlight[];
+}): UpcomingMaintenance | null {
+  const itemsWithRules = params.modelItems
+    .filter((item) => !isExcludedMaintenanceItem(item))
+    .map((item) => ({ item, rules: parseRecurrenceRules(item.recurrence_rules) }))
+    .filter(({ rules }) => rules.hours != null && rules.hours > 0);
+
+  const rows = itemsWithRules
+    .map(({ item, rules }) => {
+      const encompassingItemIds = new Set(
+        itemsWithRules
+          .filter(({ rules: candidateRules }) => intervalIncludes(candidateRules.hours, rules.hours))
+          .map(({ item: candidate }) => candidate.id),
+      );
+      const encompassingOrders = params.aircraftOrders.filter(
+        (order) => order.maintenance_program_item_id != null && encompassingItemIds.has(order.maintenance_program_item_id),
+      );
+      const hoursDue = nextDueHours({
+        currentHours: params.currentHours,
+        interval: rules.hours,
+        encompassingOrders,
+      });
+      return {
+        id: item.id,
+        code: item.code,
+        title: item.title,
+        intervalHours: rules.hours,
+        dueAtHours: hoursDue.dueAt,
+        remainingHours: hoursDue.remaining,
+        forecast: predictByScheduledFlights(hoursDue.remaining, params.scheduledFlights),
+      };
+    })
+    .filter((candidate, _, allRows) => !allRows.some((other) =>
+      other.id !== candidate.id
+      && candidate.dueAtHours != null
+      && other.dueAtHours != null
+      && Math.abs(other.dueAtHours - candidate.dueAtHours) < 0.05
+      && intervalIncludes(other.intervalHours, candidate.intervalHours)
+      && (other.intervalHours ?? 0) > (candidate.intervalHours ?? 0),
+    ))
+    .sort((a, b) => (a.remainingHours ?? Number.POSITIVE_INFINITY) - (b.remainingHours ?? Number.POSITIVE_INFINITY));
+
+  return rows[0] ?? null;
+}
+
+function maintenanceTone(item: UpcomingMaintenance | null): string {
+  const value = item?.remainingHours;
+  if (value == null || !Number.isFinite(value)) return "border-slate-800 bg-slate-950/30 text-slate-300";
+  if (value < 5) return "border-red-500/40 bg-red-500/10 text-red-200";
+  if (value < 20) return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  return "border-slate-800 bg-slate-950/30 text-slate-300";
+}
+
+function isCancelledScheduleFlight(flight: PublicScheduleFlight): boolean {
+  return flight.status === "Cancelado";
+}
+
+function scheduledAircraftFlights(params: {
+  aircraft: Aircraft;
+  scheduleFlights: PublicScheduleFlight[];
+  nowMs: number;
+}): ScheduledAircraftFlight[] {
+  const registration = normalizeRegistration(params.aircraft.registration);
+  return params.scheduleFlights
+    .filter((flight) => !isCancelledScheduleFlight(flight))
+    .filter((flight) => normalizeRegistration(flight.aircraftIdent) === registration)
+    .map((flight) => {
+      const dateMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
+      return {
+        dateMs,
+        hours: Math.max(0, flight.durationMinutes / 60),
+      };
+    })
+    .filter((flight) => Number.isFinite(flight.dateMs) && flight.dateMs > params.nowMs && flight.hours > 0)
+    .sort((a, b) => a.dateMs - b.dateMs);
+}
+
+function predictByScheduledFlights(remainingHours: number | null, scheduledFlights: ScheduledAircraftFlight[]): string {
+  if (remainingHours == null || !Number.isFinite(remainingHours)) return "sem previsão por horas";
+  if (remainingHours <= 0) return "atingida agora";
+  let accumulated = 0;
+  let lastFlightMs: number | null = null;
+  for (let index = 0; index < scheduledFlights.length; index += 1) {
+    const flight = scheduledFlights[index]!;
+    lastFlightMs = flight.dateMs;
+    accumulated += flight.hours;
+    if (accumulated >= remainingHours) {
+      return `prevista no ${index + 1}º voo agendado (${fmtDateMs(flight.dateMs)})`;
+    }
+  }
+  if (!lastFlightMs) return "sem voos programados";
+  const missingHours = Math.max(0, remainingHours - accumulated);
+  return `${scheduledFlights.length} voo${scheduledFlights.length === 1 ? "" : "s"} agendado${scheduledFlights.length === 1 ? "" : "s"} até ${fmtDateMs(lastFlightMs)}; faltam ${fmtHours(missingHours)}`;
+}
+
+function buildProjectionDays(params: {
+  aircraft: Aircraft;
+  baseHours: AircraftBaseHours | null;
+  scheduleFlights: PublicScheduleFlight[];
+  today: string;
+  nowMs: number;
+}): ProjectionDay[] {
+  const registration = normalizeRegistration(params.aircraft.registration);
+  const dayHours = new Map<string, number>();
+  for (const flight of params.scheduleFlights) {
+    if (isCancelledScheduleFlight(flight)) continue;
+    if (normalizeRegistration(flight.aircraftIdent) !== registration) continue;
+    const startMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
+    if (Number.isFinite(startMs) && startMs < params.nowMs) continue;
+    const hours = Math.max(0, flight.durationMinutes / 60);
+    dayHours.set(flight.flightDate, (dayHours.get(flight.flightDate) ?? 0) + hours);
+  }
+
+  let previous = params.baseHours?.hours ?? null;
+  return Array.from({ length: 7 }).map((_, index) => {
+    const date = addDaysIso(params.today, index);
+    const scheduledHours = Number((dayHours.get(date) ?? 0).toFixed(1));
+    const previousHours = previous;
+    const projectedHours = previousHours == null ? null : Number((previousHours + scheduledHours).toFixed(1));
+    const maintenance = projectedHours == null || previousHours == null
+      ? null
+      : (params.baseHours?.maintenanceDue ?? [])
+        .filter((item) => {
+          const nextMultiple = (Math.floor(previousHours / item.intervalHours) + 1) * item.intervalHours;
+          return nextMultiple <= projectedHours + 1e-9;
+        })
+        .sort((a, b) => b.intervalHours - a.intervalHours)[0] ?? null;
+    previous = projectedHours;
+    return {
+      date,
+      scheduledHours,
+      projectedHours,
+      maintenanceCode: maintenance?.code ?? null,
+    };
+  });
+}
+
+async function listAllMonthReports(fromDate: string, toDate: string): Promise<AdminFlightReportRow[]> {
+  const rows: AdminFlightReportRow[] = [];
+  let cursor: string | null = null;
+  for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+    const page = await listAdminFlightReports({
+      fromDate,
+      toDate,
+      status: "Realizado",
+      limit: FLIGHT_REPORT_PAGE_SIZE,
+      cursor,
+    });
+    rows.push(...page.flights);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return rows;
+}
+
+async function loadInstructorNicknames(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+
+  for (let offset = 0; offset < 1000; offset += 200) {
+    const page = await listAdminUserSummaries({ search: "", limit: 200, offset, role: "instrutor" });
+    for (const instructor of page.users) {
+      map.set(instructor.userId, instructor.profile.nickname || instructor.profile.fullName || instructor.name || instructor.email);
+    }
+    if (offset + page.users.length >= page.total || page.users.length === 0) break;
+  }
+
+  for (let offset = 0; offset < 1000; offset += 200) {
+    const page = await listAdminUserSummaries({ search: "", limit: 200, offset });
+    const instructors = page.users.filter((user) =>
+      (user.assignedRoleSlugs ?? user.roles ?? []).includes("instrutor")
+    );
+    for (const instructor of instructors) {
+      map.set(instructor.userId, instructor.profile.nickname || instructor.profile.fullName || instructor.name || instructor.email);
+    }
+    if (offset + page.users.length >= page.total || page.users.length === 0) break;
+  }
+  return map;
+}
+
+function buildInstructorSummary(rows: AdminFlightReportRow[], nicknameByUserId: ReadonlyMap<string, string>): InstructorMonthSummary[] {
+  const map = new Map<string, InstructorMonthSummary>();
+  for (const row of rows.filter((item) => item.status === "Realizado")) {
+    const key = row.instructorUserId || row.instructorName || "sem-instrutor";
+    const current = map.get(key) ?? {
+      key,
+      label: (row.instructorUserId ? nicknameByUserId.get(row.instructorUserId) : null) || row.instructorName || "Sem instrutor",
+      flights: 0,
+      hours: 0,
+    };
+    current.flights += 1;
+    current.hours += row.hours || 0;
+    map.set(key, current);
+  }
+  return Array.from(map.values())
+    .map((row) => ({ ...row, hours: Number(row.hours.toFixed(1)) }))
+    .sort((a, b) => b.hours - a.hours || b.flights - a.flights || a.label.localeCompare(b.label));
+}
+
+function aircraftSummaryRows(rows: AdminDashboardAircraftUtilization[]): AdminDashboardAircraftUtilization[] {
+  return rows
+    .filter((row) => row.executedFlights > 0 || row.executedHours > 0)
+    .sort((a, b) => b.executedHours - a.executedHours || b.executedFlights - a.executedFlights || a.aircraftIdent.localeCompare(b.aircraftIdent));
+}
+
+export function AdminHome(_props: Props) {
+  const { user } = useAuth();
+  const monthPeriod = useMemo(() => currentMonthPeriod(), []);
+  const scheduleEnd = useMemo(() => addDaysIso(monthPeriod.toDate, 179), [monthPeriod.toDate]);
+  const [data, setData] = useState<AdminHomeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const schoolId = user?.schoolId || "escola_principal";
     setLoading(true);
     setError(null);
     try {
-      const next = await getAdminDashboardSummary({ fromDate, toDate, upcomingLimit: 12, alertLimit: 6 });
-      setDashboard(next);
+      const [dashboard, aircrafts, baseHoursRows, workOrders, schedule, reportRows, instructorNicknames] = await Promise.all([
+        getAdminDashboardSummary({ ...monthPeriod, upcomingLimit: 1, alertLimit: EMPTY_ALERT_LIMIT }),
+        listAircrafts(schoolId),
+        loadAircraftBaseHours(schoolId),
+        listWorkOrders().catch(() => [] as MaintenanceWorkOrder[]),
+        getPublicSchedule(monthPeriod.toDate, scheduleEnd).catch(() => ({ flights: [] as PublicScheduleFlight[] })),
+        listAllMonthReports(monthPeriod.fromDate, monthPeriod.toDate),
+        loadInstructorNicknames().catch(() => new Map<string, string>()),
+      ]);
+
+      const airplaneRows = aircrafts.filter((aircraft) => aircraft.type === "aviao");
+      const uniqueModelIds = [...new Set(airplaneRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
+      const programEntries = await Promise.all(
+        uniqueModelIds.map(async (modelId) => [modelId, await listProgramItemsByModel(modelId).catch(() => [])] as const),
+      );
+      const programItemsByModel = new Map(programEntries);
+      const baseByRegistration = new Map(baseHoursRows.map((row) => [normalizeRegistration(row.registration), row]));
+      const utilizationByRegistration = new Map(dashboard.aircraftUtilization.map((row) => [normalizeRegistration(row.aircraftIdent), row]));
+      const workOrdersByAircraftId = new Map<string, MaintenanceWorkOrder[]>();
+      for (const order of workOrders) {
+        const rows = workOrdersByAircraftId.get(order.aircraft_id) ?? [];
+        rows.push(order);
+        workOrdersByAircraftId.set(order.aircraft_id, rows);
+      }
+
+      const nowMs = Date.now();
+      const aircraftCards = airplaneRows
+        .map((aircraft) => {
+          const baseHours = baseByRegistration.get(normalizeRegistration(aircraft.registration)) ?? null;
+          const modelName = utilizationByRegistration.get(normalizeRegistration(aircraft.registration))?.modelName ?? "";
+          const modelItems = programItemsByModel.get(aircraft.model_id) ?? [];
+          const aircraftOrders = workOrdersByAircraftId.get(aircraft.id) ?? [];
+          const aircraftScheduledFlights = scheduledAircraftFlights({ aircraft, scheduleFlights: schedule.flights, nowMs });
+          return {
+            aircraft,
+            modelName,
+            baseHours,
+            nextMaintenance: buildNextMaintenance({
+              modelItems,
+              aircraftOrders,
+              currentHours: baseHours?.hours ?? null,
+              scheduledFlights: aircraftScheduledFlights,
+            }),
+            projectionDays: buildProjectionDays({
+              aircraft,
+              baseHours,
+              scheduleFlights: schedule.flights,
+              today: monthPeriod.toDate,
+              nowMs,
+            }),
+          };
+        })
+        .sort((a, b) => Number(b.aircraft.active) - Number(a.aircraft.active) || a.aircraft.registration.localeCompare(b.aircraft.registration));
+
+      setData({
+        dashboard,
+        aircraftCards,
+        instructorSummary: buildInstructorSummary(reportRows, instructorNicknames),
+      });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Falha ao carregar dashboard.");
+      setError(e instanceof Error ? e.message : "Falha ao carregar a Home admin.");
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate]);
+  }, [monthPeriod, scheduleEnd, user?.schoolId]);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  function setPresetPeriod(key: PeriodPresetKey) {
-    setPeriodPreset(key);
-    if (key === "custom") return;
-    const next = periodForPreset(key);
-    setFromDate(next.fromDate);
-    setToDate(next.toDate);
-  }
-
-  const periodLabel = fromDate || toDate ? `${fromDate || "início"} até ${toDate || "hoje"}` : "Todos os períodos";
 
   return (
     <div className="space-y-4">
@@ -182,48 +482,17 @@ export function AdminHome({ onOpenReports, onOpenAlerts, onOpenNoTelemetry }: Pr
             <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400">Home admin</p>
             <h2 className="mt-1 text-xl font-semibold text-slate-100">Dashboard operacional</h2>
             <p className="mt-1 text-sm text-slate-400">
-              Visão rápida de voos, alertas, frota e receita. Período: {periodLabel}.
+              Horímetros, manutenções e resumo do mês ({fmtDate(monthPeriod.fromDate)} até {fmtDate(monthPeriod.toDate)}).
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={periodPreset}
-              onChange={(event) => setPresetPeriod(event.target.value as PeriodPresetKey)}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
-            >
-              {PERIOD_PRESETS.map((item) => (
-                <option key={item.key} value={item.key}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(event) => {
-                setFromDate(event.target.value);
-                setPeriodPreset("custom");
-              }}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
-            />
-            <input
-              type="date"
-              value={toDate}
-              onChange={(event) => {
-                setToDate(event.target.value);
-                setPeriodPreset("custom");
-              }}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
-            />
-            <button
-              type="button"
-              onClick={() => void load()}
-              disabled={loading}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
-            >
-              {loading ? "Atualizando..." : "Atualizar"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="w-fit rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+          >
+            {loading ? "Atualizando..." : "Atualizar"}
+          </button>
         </div>
       </section>
 
@@ -231,383 +500,229 @@ export function AdminHome({ onOpenReports, onOpenAlerts, onOpenNoTelemetry }: Pr
         <p className="rounded-xl border border-rose-500/30 bg-rose-950/20 px-4 py-3 text-sm text-rose-200">{error}</p>
       ) : null}
 
-      {loading && !dashboard ? <DashboardSkeleton /> : dashboard ? (
+      {loading && !data ? <AdminHomeSkeleton /> : data ? (
         <>
-          <SummaryGrid dashboard={dashboard} onOpenNoTelemetry={onOpenNoTelemetry} />
-          <div className="grid gap-4 xl:grid-cols-12">
-            <UpcomingFlightsBoard flights={dashboard.upcomingFlights.items} onOpenReports={onOpenReports} />
-            <AlertsBoard dashboard={dashboard} onOpenAlerts={onOpenAlerts} onOpenAlert={setSelectedAlert} />
-            <AircraftForecastBoard rows={dashboard.aircraftForecast} />
-            <AircraftUtilizationBoard rows={dashboard.aircraftUtilization} />
-          </div>
-          {selectedAlert ? <TelemetryAlertFlightModal alert={selectedAlert} onClose={() => setSelectedAlert(null)} /> : null}
+          <AircraftCards cards={data.aircraftCards} />
+          <MonthSummary
+            aircraftRows={aircraftSummaryRows(data.dashboard.aircraftUtilization)}
+            instructorRows={data.instructorSummary}
+          />
         </>
       ) : null}
     </div>
   );
 }
 
-function DashboardSkeleton() {
+function AdminHomeSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {Array.from({ length: 8 }).map((_, index) => (
-          <Skeleton key={index} className="h-28 rounded-2xl" />
+      <div className="grid gap-4 xl:grid-cols-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <Skeleton key={index} className="h-80 rounded-2xl" />
         ))}
       </div>
-      <div className="grid gap-4 xl:grid-cols-12">
-        <Skeleton className="h-80 rounded-2xl xl:col-span-4" />
-        <Skeleton className="h-80 rounded-2xl xl:col-span-8" />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Skeleton className="h-72 rounded-2xl" />
+        <Skeleton className="h-72 rounded-2xl" />
       </div>
     </div>
   );
 }
 
-function SummaryGrid({
-  dashboard,
-  onOpenNoTelemetry,
-}: {
-  dashboard: AdminDashboardData;
-  onOpenNoTelemetry: () => void;
-}) {
-  const { summary, finance } = dashboard;
+function AircraftCards({ cards }: { cards: AircraftHomeCard[] }) {
   return (
-    <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-      <MetricCard label="Voos executados" value={fmtInt(summary.executedFlights)} detail={`${fmtInt(summary.landings)} pousos no período`} />
-      <MetricCard label="Horas voadas" value={`${fmtNumber(summary.executedHours, 1)} h`} detail="Executadas no período" />
-      <MetricCard label="Voos futuros" value={fmtInt(summary.futureFlights)} detail={`${fmtNumber(summary.plannedHours, 1)} h planejadas`} />
-      <MetricCard label="Sem instrutor" value={fmtInt(summary.futureFlightsWithoutInstructor)} detail="Voos futuros sem INVA" tone="amber" />
-      <MetricCard label="Alunos ativos" value={fmtInt(summary.studentsActive)} detail={`${fmtInt(summary.instructorsActive)} instrutores`} />
-      <MetricCard label="Receita" value={fmtCurrency(finance.amountPaid)} detail={`${fmtNumber(finance.purchasedHours, 1)} h compradas`} />
-      <MetricCard label="Alertas críticos" value={fmtInt(summary.alerts.risco)} detail={`${fmtInt(summary.alerts.atencao)} atenção · ${fmtInt(summary.alerts.leve)} leves`} tone="rose" />
-      <MetricCard
-        label="Sem telemetria"
-        value={fmtInt(summary.flightsWithoutTelemetry)}
-        detail={`${fmtInt(summary.telemetryFlights)} voos com telemetria`}
-        tone="amber"
-        onClick={onOpenNoTelemetry}
-      />
+    <section className="grid gap-4 xl:grid-cols-2">
+      {cards.length ? cards.map((card) => <AircraftCard key={card.aircraft.id} card={card} />) : (
+        <EmptyState text="Nenhum avião cadastrado na frota." />
+      )}
     </section>
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  detail,
-  tone = "emerald",
-  onClick,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "emerald" | "amber" | "rose";
-  onClick?: () => void;
-}) {
-  const toneClass = tone === "rose" ? "text-rose-300" : tone === "amber" ? "text-amber-300" : "text-emerald-300";
-  const body = (
-    <>
-      <p className="line-clamp-2 text-[10px] font-medium uppercase leading-snug tracking-wide text-slate-500 sm:text-[11px] sm:tracking-wider">
-        {label}
-      </p>
-      <p className={`mt-2 break-words text-lg font-semibold leading-tight sm:text-xl lg:text-2xl ${toneClass}`}>{value}</p>
-      <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-slate-400 sm:text-xs">{detail}</p>
-    </>
-  );
-  const className =
-    "flex min-h-[7.25rem] min-w-0 flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/50 p-3 sm:min-h-[7.75rem] sm:p-4";
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className={`${className} cursor-pointer text-left transition hover:border-amber-500/40 hover:bg-slate-900/80`}
-      >
-        {body}
-      </button>
-    );
-  }
-  return <div className={className}>{body}</div>;
-}
-
-function UpcomingFlightsBoard({ flights, onOpenReports }: { flights: AdminDashboardFlight[]; onOpenReports: () => void }) {
+function AircraftCard({ card }: { card: AircraftHomeCard }) {
   return (
-    <Board className="xl:col-span-4" title="Próximos voos" subtitle="Agenda global dos próximos voos futuros." actionLabel="Ver relatórios" onAction={onOpenReports}>
-      {flights.length ? (
-        <div className="divide-y divide-slate-800">
-          {flights.map((flight) => (
-            <div key={flight.id} className="py-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold capitalize text-slate-100">{fmtDayMonth(flight.flightDate)}</span>
-                  <span className="text-xs font-medium text-sky-400">{fmtTime(flight.startTime)}</span>
-                  {flightDurationLabel(flight) !== "—" ? <span className="text-xs text-slate-600">{flightDurationLabel(flight)}</span> : null}
-                </div>
-                <span className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-xs font-semibold ${aircraftTagClass(flight.aircraftIdent)}`}>
-                  {flight.aircraftIdent || "—"}
-                </span>
-              </div>
-              <p className="mt-0.5 truncate text-xs text-slate-400">
-                {flight.studentName || "Aluno não informado"} · {flight.instructorName || "Instrutor não informado"}
-              </p>
-            </div>
-          ))}
+    <article className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-lg font-semibold text-slate-100">{aircraftName(card.aircraft, card.modelName)}</p>
+          <p className="mt-0.5 text-xs text-slate-500">{card.aircraft.active ? "Ativo" : "Inativo"}</p>
         </div>
-      ) : (
-        <EmptyState text="Nenhum voo futuro encontrado." />
-      )}
-    </Board>
-  );
-}
-
-function AlertsBoard({
-  dashboard,
-  onOpenAlerts,
-  onOpenAlert,
-}: {
-  dashboard: AdminDashboardData;
-  onOpenAlerts: () => void;
-  onOpenAlert: (alert: AdminDashboardAlert) => void;
-}) {
-  return (
-    <Board className="xl:col-span-8" title="Alertas recentes" subtitle="Últimos disparos separados por gravidade." actionLabel="Ver alertas" onAction={onOpenAlerts}>
-      <div className="grid gap-3 lg:grid-cols-3">
-        {SEVERITY_ORDER.map((severity) => {
-          const bucket = dashboard.alertsBySeverity[severity];
-          return (
-            <div key={severity} className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[severity]}`}>
-                  {severityLabel(severity)}
-                </span>
-                <span className="text-xs text-slate-500">{fmtInt(bucket.total)} total</span>
-              </div>
-              <div className="space-y-2">
-                {bucket.items.length ? bucket.items.map((alert) => <AlertItem key={alert.id} alert={alert} onOpen={() => onOpenAlert(alert)} />) : <EmptyState text="Sem alertas." compact />}
-              </div>
-            </div>
-          );
-        })}
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-right">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-emerald-300">Horímetro</p>
+          <p className="mt-1 text-2xl font-semibold text-emerald-100">{fmtHours(card.baseHours?.hours)}</p>
+        </div>
       </div>
-    </Board>
-  );
-}
 
-function AlertItem({ alert, onOpen }: { alert: AdminDashboardAlert; onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="block w-full rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-left transition hover:border-sky-500/50 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-    >
-      <span className="block truncate text-xs font-semibold text-slate-100">{alert.ruleName || "Regra sem nome"}</span>
-      <span className="mt-1 block truncate text-[11px] text-slate-500">{aircraftLabel(alert)} · {fmtDate(alert.flightDate)}</span>
-      <span className="mt-1 flex items-center justify-between gap-2">
-        <span className="min-w-0 truncate text-[11px] text-slate-400">{alert.studentName || "Aluno não informado"}</span>
-        <span className="shrink-0 text-[11px] font-medium text-sky-300">Telemetria</span>
-      </span>
-    </button>
-  );
-}
-
-function AircraftForecastBoard({ rows }: { rows: AdminDashboardAircraftForecast[] }) {
-  const [mode, setMode] = useState<"hours" | "flights">("hours");
-  const visibleRows = rows.filter((row) => row.active || row.hoursNext7Days > 0).slice(0, 12);
-  const valueFor = (row: AdminDashboardAircraftForecast, window: "today" | "2d" | "5d" | "7d") => {
-    if (mode === "flights") {
-      const value =
-        window === "today"
-          ? row.futureFlightsToday
-          : window === "2d"
-            ? row.futureFlightsNext2Days
-            : window === "5d"
-              ? row.futureFlightsNext5Days
-              : row.futureFlights7Days;
-      return fmtInt(value);
-    }
-    const value =
-      window === "today"
-        ? row.hoursToday
-        : window === "2d"
-          ? row.hoursNext2Days
-          : window === "5d"
-            ? row.hoursNext5Days
-            : row.hoursNext7Days;
-    return fmtNumber(value, 1);
-  };
-  return (
-    <Board
-      className="xl:col-span-6"
-      title="Previsão por avião"
-      subtitle={`Janelas acumuladas de hoje até os próximos 7 dias em ${mode === "hours" ? "horas" : "voos"}.`}
-      action={
-        <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-slate-700 bg-slate-950 p-0.5 text-xs">
-          <button
-            type="button"
-            onClick={() => setMode("hours")}
-            className={`rounded-md px-3 py-1.5 font-medium transition ${mode === "hours" ? "bg-emerald-500/20 text-emerald-200" : "text-slate-400 hover:bg-slate-800"}`}
-          >
-            Horas
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("flights")}
-            className={`rounded-md px-3 py-1.5 font-medium transition ${mode === "flights" ? "bg-emerald-500/20 text-emerald-200" : "text-slate-400 hover:bg-slate-800"}`}
-          >
-            Voos
-          </button>
+      <div className={`mt-4 rounded-xl border px-3 py-3 ${maintenanceTone(card.nextMaintenance)}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide opacity-75">Próxima manutenção</p>
+          <p className="text-sm font-semibold">{fmtRemainingHours(card.nextMaintenance?.remainingHours)}</p>
         </div>
-      }
-    >
-      {visibleRows.length ? (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-widest text-slate-500">
-              <tr>
-                <th className="px-2 py-2">Avião</th>
-                <th className="px-2 py-2 text-right">Hoje</th>
-                <th className="px-2 py-2 text-right">2d</th>
-                <th className="px-2 py-2 text-right">5d</th>
-                <th className="px-2 py-2 text-right">7d</th>
-                <th className="px-2 py-2">Próximo</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {visibleRows.map((row) => (
-                <tr key={row.aircraftIdent}>
-                  <td className="px-2 py-3">
-                    <p className="font-medium text-slate-100">{aircraftLabel(row)}</p>
-                    <p className="text-xs text-slate-500">{row.modelName || "Sem modelo"}</p>
-                  </td>
-                  <td className="px-2 py-3 text-right font-semibold text-slate-200">{valueFor(row, "today")}</td>
-                  <td className="px-2 py-3 text-right font-semibold text-slate-200">{valueFor(row, "2d")}</td>
-                  <td className="px-2 py-3 text-right font-semibold text-slate-200">{valueFor(row, "5d")}</td>
-                  <td className="px-2 py-3 text-right font-semibold text-emerald-300">{valueFor(row, "7d")}</td>
-                  <td className="px-2 py-3 text-xs text-slate-500">{fmtDateTimeKey(row.nextFlightAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <EmptyState text="Sem previsão de uso nos próximos 7 dias." />
-      )}
-    </Board>
-  );
-}
+        {card.nextMaintenance ? (
+          <>
+            <p className="mt-1 truncate text-sm">
+              {card.nextMaintenance.title}
+            </p>
+            <p className="mt-1 text-[11px] opacity-80">{card.nextMaintenance.forecast}</p>
+          </>
+        ) : (
+          <p className="mt-1 text-sm opacity-80">Nenhuma manutenção por horas cadastrada.</p>
+        )}
+      </div>
 
-function AircraftUtilizationBoard({ rows }: { rows: AdminDashboardAircraftUtilization[] }) {
-  const visibleRows = rows
-    .filter((row) => row.executedFlights > 0 || row.futureFlights > 0 || row.alertCounts.risco > 0 || row.alertCounts.atencao > 0)
-    .slice(0, 10);
-  return (
-    <Board className="xl:col-span-6" title="Utilização e risco" subtitle="Resumo por avião no período filtrado.">
-      {visibleRows.length ? (
-        <div className="space-y-3">
-          {visibleRows.map((row) => (
-            <div key={row.aircraftIdent} className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-100">{aircraftLabel(row)}</p>
-                  <p className="truncate text-xs text-slate-500">{row.modelName || "Sem modelo"}</p>
-                </div>
-                <p className="text-sm font-semibold text-emerald-300">{fmtNumber(row.executedHours, 1)} h</p>
-              </div>
-              <div className="mt-3 grid grid-cols-4 gap-2 text-center">
-                <MiniMetric label="Voos" value={fmtInt(row.executedFlights)} />
-                <MiniMetric label="Pousos" value={fmtInt(row.landings)} />
-                <MiniMetric label="Duros" value={fmtInt(row.hardLandingCount)} />
-                <MiniMetric label="Risco" value={fmtInt(row.alertCounts.risco)} />
-              </div>
+      <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Próximos 7 dias</p>
+        <div className="mt-2 divide-y divide-slate-800">
+          {card.projectionDays.map((day) => (
+            <div key={day.date} className="grid grid-cols-[5rem_1fr_auto] items-center gap-2 py-1.5 text-sm">
+              <span className="text-xs font-medium capitalize text-slate-400">{fmtWeekday(day.date)}</span>
+              <span className="text-xs text-slate-500">+{fmtNumber(day.scheduledHours, 1)} h</span>
+              <span className={`rounded border px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                day.maintenanceCode
+                  ? "border-red-500/60 bg-red-500/15 text-red-300"
+                  : "border-slate-800 bg-slate-900/70 text-slate-200"
+              }`}>
+                {day.projectedHours == null ? "—" : `${fmtNumber(day.projectedHours, 1)} h`}
+                {day.maintenanceCode ? ` · ${day.maintenanceCode}` : ""}
+              </span>
             </div>
           ))}
         </div>
-      ) : (
-        <EmptyState text="Sem utilização no período selecionado." />
-      )}
-    </Board>
+      </div>
+    </article>
   );
 }
 
-function MiniMetric({ label, value }: { label: string; value: string }) {
+function MonthSummary({
+  aircraftRows,
+  instructorRows,
+}: {
+  aircraftRows: AdminDashboardAircraftUtilization[];
+  instructorRows: InstructorMonthSummary[];
+}) {
   return (
-    <div className="rounded-lg bg-slate-900/70 px-2 py-2">
-      <p className="text-xs font-semibold text-slate-200">{value}</p>
-      <p className="text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
-    </div>
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-4">
+        <h3 className="text-base font-semibold text-slate-100">Resumo do mês</h3>
+        <p className="mt-1 text-sm text-slate-500">Quantidade de voos e horas executadas.</p>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <SummaryTable
+          title="Por avião"
+          emptyText="Nenhum voo realizado por avião neste mês."
+          rows={aircraftRows.map((row) => ({
+            key: row.aircraftId || row.aircraftIdent,
+            label: [row.aircraftIdent || "Sem avião", row.aircraftNickname].filter(Boolean).join(" · "),
+            flights: row.executedFlights,
+            hours: row.executedHours,
+          }))}
+        />
+        <SummaryTable
+          title="Por instrutor"
+          emptyText="Nenhum voo realizado por instrutor neste mês."
+          rows={instructorRows}
+        />
+      </div>
+    </section>
   );
 }
 
-function Board({
+function SummaryTable({
   title,
-  subtitle,
-  actionLabel,
-  onAction,
-  action,
-  className = "",
-  children,
+  rows,
+  emptyText,
 }: {
   title: string;
-  subtitle: string;
-  actionLabel?: string;
-  onAction?: () => void;
-  action?: ReactNode;
-  className?: string;
-  children: ReactNode;
+  rows: Array<{ key: string; label: string; flights: number; hours: number }>;
+  emptyText: string;
 }) {
-  return (
-    <section className={`rounded-2xl border border-slate-800 bg-slate-900/40 p-4 ${className}`}>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-slate-100">{title}</h3>
-          <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
-        </div>
-        {action ?? (actionLabel && onAction ? (
-          <button type="button" onClick={onAction} className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-            {actionLabel}
-          </button>
-        ) : null)}
-      </div>
-      {children}
-    </section>
-  );
-}
+  const totalFlights = rows.reduce((sum, row) => sum + row.flights, 0);
+  const totalHours = rows.reduce((sum, row) => sum + row.hours, 0);
+  const percent = (value: number, total: number) => (total > 0 ? `${fmtNumber((value / total) * 100, 0)}%` : "0%");
+  const donutRows = rows
+    .filter((row) => row.hours > 0)
+    .map((row) => ({ name: row.label, value: row.hours }));
 
-function TelemetryAlertFlightModal({ alert, onClose }: { alert: AdminDashboardAlert; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 p-3 backdrop-blur-sm sm:p-5" role="dialog" aria-modal="true">
-      <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[alert.severity]}`}>
-                {severityLabel(alert.severity)}
-              </span>
-              <h3 className="truncate text-sm font-semibold text-slate-100">{alert.ruleName || "Regra sem nome"}</h3>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              {alert.studentName || "Aluno não informado"} · {alert.instructorName || "Sem INVA"} · {aircraftLabel(alert)} · {fmtDate(alert.flightDate)}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 transition hover:bg-slate-800"
-          >
-            Fechar
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <TelemetriaTab flightId={alert.flightId} />
-        </div>
+    <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-100">{title}</p>
+        {rows.length ? <p className="text-xs text-slate-500">{fmtNumber(totalHours, 1)} h</p> : null}
       </div>
+      {rows.length ? (
+        <div className="mt-3 space-y-3">
+          <div className="grid gap-3 sm:grid-cols-[11rem_1fr]">
+            <div className="relative h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={donutRows}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius="58%"
+                    outerRadius="82%"
+                    paddingAngle={2}
+                    stroke="none"
+                    isAnimationActive={false}
+                  >
+                    {donutRows.map((row, index) => (
+                      <Cell key={row.name} fill={DONUT_COLORS[index % DONUT_COLORS.length]} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-lg font-semibold text-slate-100">{fmtNumber(totalHours, 1)}</span>
+                <span className="text-[10px] uppercase tracking-widest text-slate-500">horas</span>
+              </div>
+            </div>
+            <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+              {donutRows.slice(0, 8).map((row, index) => (
+                <div key={row.name} className="flex items-center justify-between gap-2 rounded-lg bg-slate-900/50 px-2 py-1.5 text-xs">
+                  <span className="flex min-w-0 items-center gap-2 text-slate-300">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: DONUT_COLORS[index % DONUT_COLORS.length] }} />
+                    <span className="truncate">{row.name}</span>
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums text-slate-200">{percent(row.value, totalHours)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase tracking-widest text-slate-500">
+                <tr>
+                  <th className="px-2 py-2">Nome</th>
+                  <th className="px-2 py-2 text-right">Voos (%)</th>
+                  <th className="px-2 py-2 text-right">Horas (%)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {rows.map((row) => (
+                  <tr key={row.key}>
+                    <td className="max-w-0 truncate px-2 py-2 font-medium text-slate-200">{row.label}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-300">
+                      {fmtInt(row.flights)} <span className="text-slate-500">({percent(row.flights, totalFlights)})</span>
+                    </td>
+                    <td className="px-2 py-2 text-right font-semibold tabular-nums text-emerald-300">
+                      {fmtNumber(row.hours, 1)} h <span className="font-normal text-slate-500">({percent(row.hours, totalHours)})</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-6 text-center text-sm text-slate-500">{emptyText}</p>
+      )}
     </div>
   );
 }
 
-function EmptyState({ text, compact = false }: { text: string; compact?: boolean }) {
+function EmptyState({ text }: { text: string }) {
   return (
-    <p className={`rounded-lg border border-slate-800 bg-slate-950/40 text-center text-sm text-slate-500 ${compact ? "px-2 py-3" : "px-4 py-8"}`}>
+    <p className="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500 xl:col-span-2">
       {text}
     </p>
   );
