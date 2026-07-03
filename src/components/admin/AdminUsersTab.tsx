@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   assignAdminUserTrainingTrack,
   createAdminUser,
@@ -35,6 +35,7 @@ import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
+import { consumePendingAdminUserSelection, subscribeAdminUserSelection } from "../../lib/adminUserSelection";
 import {
   fetchSagaImportProgress,
   fetchSagaUsers,
@@ -507,7 +508,18 @@ export function AdminUsersTab() {
     return storage.getFileView(BUCKET_ID, selectedDetail.profile.anacPhotoFileId).toString();
   }, [selectedDetail?.profile.anacPhotoFileId]);
 
-  async function loadPage(nextOffset = offset, nextSearch = search, nextRoleFilter = roleFilter) {
+  // Descarta respostas fora de ordem quando dois loadPage correm em paralelo
+  // (ex.: seleção vinda da busca global durante o load inicial).
+  const loadSeqRef = useRef(0);
+  const initialLoadRef = useRef(false);
+
+  async function loadPage(
+    nextOffset = offset,
+    nextSearch = search,
+    nextRoleFilter = roleFilter,
+    pinnedUserId?: string,
+  ) {
+    const seq = ++loadSeqRef.current;
     const [role, customRoleSlug] = nextRoleFilter.includes(":")
       ? nextRoleFilter.split(":", 2)
       : [nextRoleFilter, null];
@@ -521,25 +533,49 @@ export function AdminUsersTab() {
         role: (role || "") as UserRole | "",
         customRoleSlug,
       });
+      if (seq !== loadSeqRef.current) return;
       setUsers(page.users);
       setTotal(page.total);
       setOffset(page.offset);
       setSelectedId((current) =>
-        current && page.users.some((row) => row.userId === current) ? current : page.users[0]?.userId ?? null,
+        current && (current === pinnedUserId || page.users.some((row) => row.userId === current))
+          ? current
+          : page.users[0]?.userId ?? null,
       );
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       setError((e as Error).message);
       setUsers([]);
       setTotal(0);
       setSelectedId(null);
       setSelectedDetail(null);
     } finally {
-      setLoadingList(false);
+      if (seq === loadSeqRef.current) setLoadingList(false);
     }
   }
 
   useEffect(() => {
-    void loadPage(0, "", "");
+    const applyPendingSelection = () => {
+      const pending = consumePendingAdminUserSelection();
+      if (!pending) return false;
+      initialLoadRef.current = true;
+      setSearch(pending.email);
+      setRoleFilter("");
+      setSelectedId(pending.userId);
+      setShowUserList(false);
+      void loadPage(0, pending.email, "", pending.userId);
+      return true;
+    };
+    // initialLoadRef evita que a 2ª execução do efeito em StrictMode (dev)
+    // dispare o load default por cima do load da seleção pendente (o pending
+    // já foi consumido na 1ª execução).
+    if (!applyPendingSelection() && !initialLoadRef.current) {
+      initialLoadRef.current = true;
+      void loadPage(0, "", "");
+    }
+    return subscribeAdminUserSelection(() => {
+      void applyPendingSelection();
+    });
   }, []);
 
   useEffect(() => {

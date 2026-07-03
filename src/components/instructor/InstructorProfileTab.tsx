@@ -4,6 +4,7 @@ import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { getProfile, type PilotProfile } from "../../lib/rbac";
 import type { SchedulePeriod } from "../../types/schedule";
 import { PilotProfilePanel } from "../PilotProfilePanel";
+import { ProfileAppControls } from "../ProfileAppControls";
 
 const DAYS = [1, 2, 3, 4, 5, 6] as const;
 const DAY_LABEL: Record<number, string> = { 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -64,7 +65,9 @@ export function InstructorProfileTab() {
   }
 
   return (
-    <PilotProfilePanel
+    <div className="space-y-4">
+      <ProfileAppControls />
+      <PilotProfilePanel
       profile={profile}
       photoUrl={photoUrl}
       photoAlt="Foto do instrutor ANAC"
@@ -116,6 +119,7 @@ export function InstructorProfileTab() {
           </div>
         </section>
       }
-    />
+      />
+    </div>
   );
 }

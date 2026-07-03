@@ -483,8 +483,12 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
         validity_days: validityDays,
         hours,
         expires_at: addDaysIso(purchaseDate, validityDays),
-        notes: `Compra online Cakto. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
+        notes: [
+          `Compra online Cakto. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
+          snapshot.weekdayOnly === true ? "Modalidade: somente dias de semana." : "",
+        ].filter(Boolean).join(" "),
         is_night: false,
+        weekday_only: snapshot.weekdayOnly === true,
         created_by: "cakto-webhook",
         updated_by: "cakto-webhook",
         ...(costSnapshotJson ? { cost_snapshot_json: costSnapshotJson } : {}),

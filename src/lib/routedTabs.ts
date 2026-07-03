@@ -11,6 +11,8 @@ type SetRouteOptions = {
   path?: string;
 };
 
+export const FLIGHT_CREDIT_PURCHASE_PATH = "/aluno/creditos/comprar";
+
 function normalizePath(path: string): string {
   const pathname = path.split(/[?#]/, 1)[0] ?? "/";
   const withoutTrailingSlash = pathname.replace(/\/+$/, "");
@@ -37,6 +39,21 @@ function navigateToPath(path: string, replace = false): void {
   const nextUrl = `${normalized}${window.location.search}${window.location.hash}`;
   const method = replace ? "replaceState" : "pushState";
   window.history[method](null, "", nextUrl);
+}
+
+/**
+ * Navegação programática entre abas a partir de qualquer componente (ex.: CTAs
+ * "Adicionar créditos" / "Agendar novo voo"): empurra a rota e dispara popstate
+ * para os useRoutedTab dos layouts sincronizarem a aba ativa.
+ */
+export function navigateToTab(path: string): void {
+  if (typeof window === "undefined") return;
+  navigateToPath(path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+export function isFlightCreditPurchasePath(path = currentPath()): boolean {
+  return normalizePath(path) === FLIGHT_CREDIT_PURCHASE_PATH;
 }
 
 export function routeMatches<T extends string>(routes: readonly TabRoute<T>[], path = currentPath()): boolean {

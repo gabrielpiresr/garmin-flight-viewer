@@ -49,6 +49,7 @@ import {
   type PublicScheduleFlight,
 } from "../lib/scheduleBookingDb";
 import { getSchoolRules } from "../lib/schoolRulesDb";
+import { navigateToTab } from "../lib/routedTabs";
 import type { FlightScheduleRules } from "../types/schoolRules";
 import { CancellationModal, FlightDetailModal } from "./StudentScheduleTab";
 import { FlightsAgendaBoard } from "./FlightsAgendaBoard";
@@ -436,11 +437,13 @@ export function MeusVoosTab() {
     let cancelled = false;
     void getSchoolRules()
       .then(async (rules) => {
-        if (cancelled || !rules.schedule.sagaOnlySchedule) return;
+        if (cancelled) return;
+        // Aba Escala visível p/ o aluno (regra da escola E permissão da role) — controla
+        // o modal reaproveitado da Escala e o botão "Agendar novo voo".
+        setScheduleTabEnabled(rules.studentTabs.schedule === true && canTab("schedule"));
+        if (!rules.schedule.sagaOnlySchedule) return;
         setSagaOnlySchedule(true);
         setScheduleRules(rules.schedule);
-        // Só abre o modal da Escala se o aluno tiver acesso à aba (regra da escola E permissão da role).
-        setScheduleTabEnabled(rules.studentTabs.schedule === true && canTab("schedule"));
         const { from, to } = sagaUpcomingRange();
         const data = await getPublicSchedule(from, to);
         if (cancelled) return;
@@ -461,8 +464,8 @@ export function MeusVoosTab() {
   }, [user, isStudentView, refreshKey, canTab]);
 
   // Cancelamento a partir do modal da Escala reaproveitado nos voos futuros
-  const executeSagaCancel = async (flight: PublicScheduleFlight) => {
-    await cancelScheduleFlight(flight.id);
+  const executeSagaCancel = async (flight: PublicScheduleFlight, reason: string) => {
+    await cancelScheduleFlight(flight.id, { reason });
     showToast({ variant: "success", message: "Voo cancelado." });
     setSagaCancelFlight(null);
     setSagaDetailFlight(null);
@@ -811,12 +814,6 @@ export function MeusVoosTab() {
     });
   }, [items, infoById, instructorFilter, aircraftFilter, dateFrom, dateTo]);
 
-  useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'flight-list-debug',hypothesisId:'H7',location:'MeusVoosTab.tsx:filteredItems',message:'meus voos filtered snapshot',data:{userId:user?.id||null,role:user?.role||null,rawCount:items.length,filteredCount:filteredItems.length,dateFrom,dateTo,instructorFilter,aircraftFilter,rawIds:items.map((item)=>item.id).slice(0,120),filteredIds:filteredItems.map((item)=>item.id).slice(0,120)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [items, filteredItems, user?.id, user?.role, dateFrom, dateTo, instructorFilter, aircraftFilter]);
-
   const groups = useMemo(() => groupFlights(filteredItems, infoById), [filteredItems, infoById]);
   const futureGroups = useMemo(() => {
     const future = filteredItems.filter((item) => isScheduledFlightStatus(item, infoById[item.id]));
@@ -1064,6 +1061,15 @@ export function MeusVoosTab() {
                   Sincronizar do SAGA
                 </>
               )}
+            </button>
+          )}
+          {isStudentView && scheduleTabEnabled && (
+            <button
+              type="button"
+              onClick={() => navigateToTab("/aluno/escala")}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-sky-600/60 bg-sky-900/30 px-4 py-2 text-sm font-medium text-sky-300 transition hover:bg-sky-800/40 sm:w-auto"
+            >
+              + Agendar novo voo
             </button>
           )}
           {canManageFlights && (
@@ -1752,7 +1758,7 @@ export function MeusVoosTab() {
           flight={sagaCancelFlight}
           rules={scheduleRules}
           onClose={() => setSagaCancelFlight(null)}
-          onConfirm={() => executeSagaCancel(sagaCancelFlight)}
+          onConfirm={(reason) => executeSagaCancel(sagaCancelFlight, reason)}
         />
       )}
       {studentSuggestionFlightId && studentSuggestionFlight && (

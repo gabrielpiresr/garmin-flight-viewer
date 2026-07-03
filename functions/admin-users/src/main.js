@@ -146,6 +146,9 @@ const TENANT_ROLES_COLLECTION_ID =
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"]);
 const SCHEDULED_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto"]);
+const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
+const SAGA_CREDIT_TYPE = process.env.SAGA_CREDIT_TYPE || "GENERIC";
+const SAGA_CREDIT_AIRCRAFT_ICAO = process.env.SAGA_CREDIT_AIRCRAFT_ICAO || "MC01";
 
 function isScheduledFlightStatusValue(value) {
   return SCHEDULED_FLIGHT_STATUSES.has(cleanString(value));
@@ -337,6 +340,7 @@ const CREDIT_SELECT = [
   "expires_at",
   "notes",
   "is_night",
+  "weekday_only",
   "created_by",
   "updated_by",
 ];
@@ -3468,6 +3472,116 @@ function buildSagaUnsegmentedCredits(purchases) {
       );
     })
     .filter(Boolean);
+}
+
+async function loadSagaCreditCookieJar(logs = []) {
+  const credentials = await loadSagaImportCredentials().catch(() => ({ email: "", password: "" }));
+  try {
+    const session = await loadSagaAuthSession();
+    await assertSagaAuthSessionAlive(session.cookieJar);
+    return { cookieJar: session.cookieJar, loginEmail: session.loginEmail || credentials.email || "" };
+  } catch (err) {
+    if (!credentials.email || !credentials.password) throw err;
+    logs.push(`Sessao SAGA indisponivel; tentando login com credenciais salvas (${credentials.email}).`);
+    const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
+    return { cookieJar, loginEmail: credentials.email };
+  }
+}
+
+async function sagaCreditPage(cookieJar, sagaStudentId) {
+  const page = await sagaFetchHtmlFollow(
+    `/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`,
+    {
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        referer: `${SAGA_BASE_URL}/credits/create`,
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(page)) {
+    throw Object.assign(new Error("Sessao SAGA expirada ao abrir a tela de creditos."), { status: 401 });
+  }
+  return page;
+}
+
+function resolveSagaCreditAircraftIcaoForLocalModel(mapping, modelId) {
+  const candidates = Object.entries(mapping?.creditAircraftBySaga || {})
+    .filter(([, localModelId]) => cleanString(localModelId) === cleanString(modelId))
+    .map(([sagaModel]) => cleanString(sagaModel))
+    .filter(Boolean);
+  return candidates.find((sagaModel) => sagaModel === SAGA_CREDIT_AIRCRAFT_ICAO) ||
+    candidates.find((sagaModel) => !/^\d+$/.test(sagaModel)) ||
+    SAGA_CREDIT_AIRCRAFT_ICAO;
+}
+
+async function createManualSagaCredit(localCreditDoc, logs = []) {
+  const userId = cleanString(localCreditDoc?.user_id);
+  if (!userId) return { ok: false, status: "skipped", message: "Aluno nao informado para lancamento no SAGA." };
+  const profile = await getProfileByUserId(userId).catch(() => null);
+  const sagaStudentId = cleanString(profile?.saga_user_id) || cleanString(userId).match(/^saga_(\d+)$/)?.[1] || "";
+  if (!sagaStudentId) {
+    return { ok: false, status: "skipped", message: "Aluno sem saga_user_id vinculado no perfil." };
+  }
+
+  const { cookieJar, loginEmail } = await loadSagaCreditCookieJar(logs);
+  const marker = `GFV-MANUAL:${localCreditDoc.$id}`;
+  let page = await sagaCreditPage(cookieJar, sagaStudentId);
+  if (String(page.html || "").includes(marker)) {
+    await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+    return { ok: true, status: "already_exists", marker, sagaStudentId };
+  }
+
+  const csrfToken = resolveSagaCsrfToken(page.html, cookieJar);
+  if (!csrfToken) {
+    throw Object.assign(new Error("Token CSRF do formulario de creditos do SAGA nao encontrado."), { status: 502 });
+  }
+  const mapping = await loadSagaImportMapping().catch(() => defaultSagaImportMapping());
+  const aircraftIcao = resolveSagaCreditAircraftIcaoForLocalModel(mapping, localCreditDoc.aircraft_model_id);
+  const form = new URLSearchParams({
+    _token: csrfToken,
+    student_id: sagaStudentId,
+    created_at: asIsoDate(localCreditDoc.purchase_date),
+    aircraft_icao: aircraftIcao,
+    type: SAGA_CREDIT_TYPE,
+    hours: String(positiveNumber(localCreditDoc.hours)),
+    value: String(Math.round(positiveNumber(localCreditDoc.amount_paid) * 100) / 100),
+    bank_id: SAGA_CREDIT_BANK_ID,
+    expiration_at: asIsoDate(localCreditDoc.expires_at || addDaysIso(localCreditDoc.purchase_date, localCreditDoc.validity_days)),
+    notes: [
+      `Credito manual Flight Viewer. ${marker}`,
+      cleanString(localCreditDoc.payment_method) ? `Pagamento: ${cleanString(localCreditDoc.payment_method)}` : "",
+      cleanString(localCreditDoc.notes),
+    ].filter(Boolean).join(" "),
+  });
+
+  const post = await sagaFetch(
+    "/credits",
+    {
+      method: "POST",
+      body: form.toString(),
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: SAGA_BASE_URL,
+        referer: `${SAGA_BASE_URL}/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`,
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(post)) {
+    throw Object.assign(new Error("Sessao SAGA expirou ao lancar o credito."), { status: 401 });
+  }
+
+  page = await sagaCreditPage(cookieJar, sagaStudentId);
+  if (!String(page.html || "").includes(marker)) {
+    const location = cleanString(post.response.headers.get("location"));
+    throw Object.assign(new Error(`SAGA nao confirmou o credito (HTTP ${post.response.status}, redirect ${location || "ausente"}).`), {
+      status: 502,
+    });
+  }
+  await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+  return { ok: true, status: "completed", marker, sagaStudentId };
 }
 
 async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode = false, createOnly = false } = {}) {
@@ -6679,6 +6793,7 @@ function sanitizeCreditInput(value) {
     expires_at: addDaysIso(purchaseDate, validityDays),
     notes: String(credit.notes || "").trim() || null,
     is_night: Boolean(credit.isNight ?? false),
+    weekday_only: Boolean(credit.weekdayOnly ?? false),
   };
 
   if (!data.user_id) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
@@ -10241,10 +10356,11 @@ async function createCredit(actorUserId, creditInput) {
   }
   const data = sanitizeCreditInput(creditInput);
   await users.get({ userId: data.user_id });
+  const creditId = sdk.ID.unique();
   const doc = await databases.createDocument(
     DATABASE_ID,
     STUDENT_CREDITS_COLLECTION_ID,
-    sdk.ID.unique(),
+    creditId,
     {
       ...data,
       school_id: SCHOOL_ID,
@@ -10253,7 +10369,21 @@ async function createCredit(actorUserId, creditInput) {
     },
     creditPermissions(data.user_id),
   );
-  return doc;
+  const sagaLogs = [];
+  try {
+    const saga = await createManualSagaCredit(doc, sagaLogs);
+    return { doc, creditSaga: { ...saga, logs: sagaLogs.slice(-5) } };
+  } catch (err) {
+    return {
+      doc,
+      creditSaga: {
+        ok: false,
+        status: "failed",
+        message: err?.message || String(err),
+        logs: sagaLogs.slice(-5),
+      },
+    };
+  }
 }
 
 async function updateCredit(actorUserId, creditId, creditInput) {
@@ -12541,6 +12671,87 @@ function sanitizeHours(value, fallback) {
   return Math.round(parsed * 2) / 2;
 }
 
+const SCHEDULE_SYSTEM_FAQ_IDS = [
+  "how-it-works",
+  "how-to-book",
+  "how-to-view",
+  "intentions-mode",
+  "flight-duration",
+  "booking-window",
+  "weekly-limits",
+  "credits",
+  "night-flights",
+  "cancellation",
+  "status-colors",
+  "views",
+];
+
+function emptyRichDoc() {
+  return { type: "doc", content: [{ type: "paragraph" }] };
+}
+
+function sanitizeScheduleStudentHelp(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaultEnabled = Object.fromEntries(SCHEDULE_SYSTEM_FAQ_IDS.map((id) => [id, true]));
+  const systemFaqEnabled =
+    raw.systemFaqEnabled && typeof raw.systemFaqEnabled === "object"
+      ? { ...defaultEnabled, ...raw.systemFaqEnabled }
+      : defaultEnabled;
+
+  const onboardingSteps = (Array.isArray(raw.onboardingSteps) ? raw.onboardingSteps : [])
+    .map((step, index) => {
+      if (!step || typeof step !== "object") return null;
+      const title = cleanString(step.title).slice(0, 200);
+      const descriptionJson = parseStoredRichJsonField(step.descriptionJson) || emptyRichDoc();
+      if (!title) return null;
+      return {
+        id: cleanString(step.id || `step-${index}`).slice(0, 64),
+        title,
+        descriptionJson,
+        sortOrder: Number.isFinite(Number(step.sortOrder)) ? Number(step.sortOrder) : index,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .slice(0, 5);
+
+  const customFaqs = (Array.isArray(raw.customFaqs) ? raw.customFaqs : [])
+    .map((faq, index) => {
+      if (!faq || typeof faq !== "object") return null;
+      const title = cleanString(faq.title).slice(0, 200);
+      const answerJson = parseStoredRichJsonField(faq.answerJson) || emptyRichDoc();
+      if (!title) return null;
+      return {
+        id: cleanString(faq.id || `faq-${index}`).slice(0, 64),
+        title,
+        answerJson,
+        sortOrder: Number.isFinite(Number(faq.sortOrder)) ? Number(faq.sortOrder) : index,
+        enabled: faq.enabled !== false,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .slice(0, 10);
+
+  const systemFaqTitles = (() => {
+    if (!raw.systemFaqTitles || typeof raw.systemFaqTitles !== "object") return {};
+    const result = {};
+    for (const id of SCHEDULE_SYSTEM_FAQ_IDS) {
+      const value = cleanString(raw.systemFaqTitles[id]).slice(0, 200);
+      if (value) result[id] = value;
+    }
+    return result;
+  })();
+
+  return {
+    onboardingEnabled: raw.onboardingEnabled !== false,
+    onboardingSteps,
+    customFaqs,
+    systemFaqEnabled,
+    systemFaqTitles,
+  };
+}
+
 function publicSchoolRules(settings, updatedAt) {
   const defaults = defaultSchoolRules();
   const minRequestHours = Math.max(0.5, sanitizeHours(settings?.schedule?.minRequestHours, defaults.schedule.minRequestHours));
@@ -12625,6 +12836,7 @@ function publicSchoolRules(settings, updatedAt) {
       minBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.minBookingLeadDays) || 0)),
       maxBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.maxBookingLeadDays ?? 365))),
     },
+    scheduleStudentHelp: (() => sanitizeScheduleStudentHelp(settings?.scheduleStudentHelp))(),
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [
         eventType,
@@ -14646,8 +14858,16 @@ function defaultFlightCreditSalesConfig() {
   return {
     studentPurchasesEnabled: false,
     nightHoursDifferentFromDay: true,
+    weekdayDiscountPct: null,
     packages: [],
   };
+}
+
+function parseWeekdayDiscountPct(value) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 100) return null;
+  return Number(parsed.toFixed(2));
 }
 
 function publicFlightCreditSalesConfig(settings, updatedAt = null, activeOnly = false) {
@@ -14656,6 +14876,7 @@ function publicFlightCreditSalesConfig(settings, updatedAt = null, activeOnly = 
   return {
     studentPurchasesEnabled: Boolean(source.studentPurchasesEnabled),
     nightHoursDifferentFromDay: source.nightHoursDifferentFromDay !== false,
+    weekdayDiscountPct: parseWeekdayDiscountPct(source.weekdayDiscountPct),
     packages: packages
       .filter((item) => !activeOnly || item.active === true)
       .map((item) => ({
@@ -14755,9 +14976,14 @@ async function saveFlightCreditSalesConfig(input) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
   }
   const current = await loadFlightCreditSalesConfig();
+  const weekdayDiscountPct = parseWeekdayDiscountPct(input?.weekdayDiscountPct);
+  if (input?.weekdayDiscountPct != null && input.weekdayDiscountPct !== "" && weekdayDiscountPct == null) {
+    throw Object.assign(new Error("Percentual de desconto seg-sex invalido (use valor entre 0 e 100, exclusivo)."), { status: 400 });
+  }
   const settings = {
     studentPurchasesEnabled: Boolean(input?.studentPurchasesEnabled),
     nightHoursDifferentFromDay: input?.nightHoursDifferentFromDay !== false,
+    weekdayDiscountPct,
     packages: await sanitizeFlightCreditPackages(input?.packages),
   };
   const data = {
@@ -15034,7 +15260,7 @@ async function createCaktoProposal(input) {
   }
 }
 
-async function createFlightCreditCheckout(actorUserId, packageId, customHoursInput = null) {
+async function createFlightCreditCheckout(actorUserId, packageId, customHoursInput = null, weekdayOnlyInput = false) {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const role = await getActorRole(actorUserId);
   if (role !== "aluno") {
@@ -15043,6 +15269,11 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
   const { settings } = await loadFlightCreditSalesConfig();
   if (!settings?.studentPurchasesEnabled) {
     throw Object.assign(new Error("A compra de horas pelo aluno esta desabilitada."), { status: 403 });
+  }
+  const weekdayOnly = weekdayOnlyInput === true;
+  const weekdayDiscountPct = parseWeekdayDiscountPct(settings?.weekdayDiscountPct);
+  if (weekdayOnly && !weekdayDiscountPct) {
+    throw Object.assign(new Error("Modalidade somente seg-sex indisponivel."), { status: 403 });
   }
   const packages = (Array.isArray(settings.packages) ? settings.packages : []).filter((item) => item?.active === true);
   const selected = packages.find((item) => cleanString(item?.id) === cleanString(packageId));
@@ -15064,13 +15295,20 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
 
   const actor = await users.get({ userId: actorUserId });
   const profile = await getProfileByUserId(actorUserId).catch(() => null);
-  const totalValue = Math.round(finalHours * referencePackage.hourPrice * 100) / 100;
+  const baseHourPrice = referencePackage.hourPrice;
+  const effectiveHourPrice = weekdayOnly
+    ? Math.round(baseHourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
+    : baseHourPrice;
+  const totalValue = Math.round(finalHours * effectiveHourPrice * 100) / 100;
   const snapshot = {
     packageId: normalized.id,
     referencePackageId: referencePackage.id,
     customHours: hasCustomHours ? finalHours : null,
     hours: finalHours,
-    hourPrice: referencePackage.hourPrice,
+    hourPrice: effectiveHourPrice,
+    baseHourPrice,
+    weekdayOnly,
+    weekdayDiscountPct: weekdayOnly ? weekdayDiscountPct : null,
     totalValue,
     validityDays: referencePackage.validityDays,
     aircraftModelId: referencePackage.aircraftModelId,
@@ -15088,7 +15326,7 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
       lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
       lead_email: cleanString(actor.email),
       hours: finalHours,
-      hour_price: referencePackage.hourPrice,
+      hour_price: effectiveHourPrice,
       total_value: totalValue,
       products_json: JSON.stringify({
         kind: "student_credit_package",
@@ -15127,13 +15365,18 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
   }
 }
 
-async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null) {
+async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null, weekdayOnlyInput = false) {
   await requireAdmin(actorUserId);
   const safeTargetUserId = cleanString(targetUserId);
   if (!safeTargetUserId) throw Object.assign(new Error("Usuário de destino não informado."), { status: 400 });
   const safePackageId = cleanString(packageId);
   if (!safePackageId) throw Object.assign(new Error("Pacote não informado."), { status: 400 });
   const { settings } = await loadFlightCreditSalesConfig();
+  const weekdayOnly = weekdayOnlyInput === true;
+  const weekdayDiscountPct = parseWeekdayDiscountPct(settings?.weekdayDiscountPct);
+  if (weekdayOnly && !weekdayDiscountPct) {
+    throw Object.assign(new Error("Modalidade somente seg-sex indisponivel."), { status: 403 });
+  }
   const packages = (Array.isArray(settings.packages) ? settings.packages : []).filter((item) => item?.active === true);
   const selected = packages.find((item) => cleanString(item?.id) === safePackageId);
   const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
@@ -15146,6 +15389,9 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     ? Math.round(requestedCustomHourPrice * 100) / 100
     : null;
   const hasCustomHourPrice = customHourPrice !== null && customHourPrice > 0;
+  if (weekdayOnly && hasCustomHourPrice) {
+    throw Object.assign(new Error("Desconto seg-sex nao se aplica com valor de hora personalizado."), { status: 400 });
+  }
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
     .sort((a, b) => a.hours - b.hours);
   const referencePackage = hasCustomHours
@@ -15158,7 +15404,10 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   }
   const targetUser = await users.get({ userId: safeTargetUserId });
   const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
-  const finalHourPrice = hasCustomHourPrice ? customHourPrice : referencePackage.hourPrice;
+  const baseHourPrice = hasCustomHourPrice ? customHourPrice : referencePackage.hourPrice;
+  const finalHourPrice = weekdayOnly
+    ? Math.round(baseHourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
+    : baseHourPrice;
   const totalValue = Math.round(finalHours * finalHourPrice * 100) / 100;
   const snapshot = {
     packageId: normalized.id,
@@ -15167,6 +15416,9 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     customHourPrice: hasCustomHourPrice ? finalHourPrice : null,
     hours: finalHours,
     hourPrice: finalHourPrice,
+    baseHourPrice,
+    weekdayOnly,
+    weekdayDiscountPct: weekdayOnly ? weekdayDiscountPct : null,
     totalValue,
     validityDays: referencePackage.validityDays,
     aircraftModelId: referencePackage.aircraftModelId,
@@ -17763,7 +18015,7 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "createFlightCreditCheckout") {
-      const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId, payload.customHours);
+      const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId, payload.customHours, payload.weekdayOnly === true);
       return jsonResponse(res, 200, { checkout });
     }
 
@@ -17774,6 +18026,7 @@ module.exports = async ({ req, res, log, error }) => {
         payload.packageId,
         payload.customHours,
         payload.customHourPrice,
+        payload.weekdayOnly === true,
       );
       return jsonResponse(res, 200, { checkout });
     }
@@ -18162,8 +18415,8 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "createCredit") {
-      await createCredit(actorUserId, payload.credit);
-      return jsonResponse(res, 200, { ok: true });
+      const created = await createCredit(actorUserId, payload.credit);
+      return jsonResponse(res, 200, { ok: true, creditSaga: created.creditSaga });
     }
 
     if (action === "updateCredit") {

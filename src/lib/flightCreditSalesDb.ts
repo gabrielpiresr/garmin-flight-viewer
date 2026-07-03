@@ -48,11 +48,16 @@ export async function getAvailableFlightCreditPackages(): Promise<FlightCreditSa
   return response.config;
 }
 
-export async function createFlightCreditCheckout(packageId: string, customHours?: number): Promise<FlightCreditCheckout> {
+export async function createFlightCreditCheckout(
+  packageId: string,
+  customHours?: number,
+  weekdayOnly?: boolean,
+): Promise<FlightCreditCheckout> {
   const response = await execute({
     action: "createFlightCreditCheckout",
     packageId,
     ...(Number.isFinite(customHours) ? { customHours } : {}),
+    ...(weekdayOnly === true ? { weekdayOnly: true } : {}),
   });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;
@@ -63,6 +68,7 @@ export async function adminCreateFlightCreditCheckout(
   packageId: string,
   customHours?: number,
   customHourPrice?: number,
+  weekdayOnly?: boolean,
 ): Promise<FlightCreditCheckout> {
   const response = await execute({
     action: "adminCreateFlightCreditCheckout",
@@ -70,6 +76,7 @@ export async function adminCreateFlightCreditCheckout(
     packageId,
     ...(Number.isFinite(customHours) ? { customHours } : {}),
     ...(Number.isFinite(customHourPrice) ? { customHourPrice } : {}),
+    ...(weekdayOnly === true ? { weekdayOnly: true } : {}),
   });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;

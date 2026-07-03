@@ -52,6 +52,7 @@ export function FlightCreditPackagesPanel() {
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [nightHoursDifferentFromDay, setNightHoursDifferentFromDay] = useState(true);
+  const [weekdayDiscountPct, setWeekdayDiscountPct] = useState("");
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -67,6 +68,11 @@ export function FlightCreditPackagesPanel() {
       ]);
       setEnabled(config.studentPurchasesEnabled);
       setNightHoursDifferentFromDay(config.nightHoursDifferentFromDay !== false);
+      setWeekdayDiscountPct(
+        config.weekdayDiscountPct != null && config.weekdayDiscountPct > 0
+          ? String(config.weekdayDiscountPct)
+          : "",
+      );
       setPackages(config.packages);
       setModels(availableModels);
     } catch (error) {
@@ -168,10 +174,16 @@ export function FlightCreditPackagesPanel() {
       const config = await saveFlightCreditSalesConfig({
         studentPurchasesEnabled: enabled,
         nightHoursDifferentFromDay,
+        weekdayDiscountPct: weekdayDiscountPct.trim() ? parseNumber(weekdayDiscountPct) : null,
         packages,
       });
       setEnabled(config.studentPurchasesEnabled);
       setNightHoursDifferentFromDay(config.nightHoursDifferentFromDay !== false);
+      setWeekdayDiscountPct(
+        config.weekdayDiscountPct != null && config.weekdayDiscountPct > 0
+          ? String(config.weekdayDiscountPct)
+          : "",
+      );
       setPackages(config.packages);
       showToast({ variant: "success", message: "Pacotes de horas salvos." });
     } catch (error) {
@@ -216,6 +228,26 @@ export function FlightCreditPackagesPanel() {
             Quando desativado, todos os creditos sao debitados sem distinção entre dia e noite.
           </span>
         </span>
+      </label>
+
+      <label className="mt-2 block rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+        <span className="block text-sm font-medium text-slate-200">Desconto para modalidade &quot;somente seg–sex&quot;</span>
+        <span className="mt-1 block text-xs text-slate-500">
+          Percentual global aplicado a todos os pacotes na compra com restrição de dias de semana. Deixe vazio para desligar.
+        </span>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="number"
+            min="0.01"
+            max="99.99"
+            step="0.1"
+            value={weekdayDiscountPct}
+            onChange={(event) => setWeekdayDiscountPct(event.target.value)}
+            placeholder="Ex.: 15"
+            className="w-28 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+          />
+          <span className="text-sm text-slate-400">%</span>
+        </div>
       </label>
 
       <label className="mt-2 flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
@@ -328,7 +360,13 @@ export function FlightCreditPackagesPanel() {
       <div className="mt-4 space-y-2">
         {packages.length === 0 ? (
           <p className="rounded-lg border border-dashed border-slate-700 px-3 py-5 text-center text-sm text-slate-500">Nenhum pacote cadastrado.</p>
-        ) : packages.map((item) => (
+        ) : packages.map((item) => {
+          const discountPct = parseNumber(weekdayDiscountPct);
+          const hasWeekdayDiscount = discountPct > 0 && discountPct < 100;
+          const weekdayHourPrice = hasWeekdayDiscount
+            ? Number((item.hourPrice * (1 - discountPct / 100)).toFixed(2))
+            : null;
+          return (
           <div key={item.id} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-3 ${item.active ? "border-slate-700/60 bg-slate-800/30" : "border-slate-800 bg-slate-950/20 opacity-60"}`}>
             <div>
               <p className="text-sm font-medium text-slate-100">{item.hours}h de {item.aircraftModelName}</p>
@@ -336,6 +374,11 @@ export function FlightCreditPackagesPanel() {
               <p className="text-xs text-slate-500">
                 {formatBrl(item.hourPrice)}/h · {formatBrl(item.hours * item.hourPrice)} · validade de {item.validityDays} dias
               </p>
+              {hasWeekdayDiscount && weekdayHourPrice != null ? (
+                <p className="mt-1 text-xs text-sky-300">
+                  Seg–sex: {formatBrl(weekdayHourPrice)}/h · {formatBrl(item.hours * weekdayHourPrice)} (−{discountPct}%)
+                </p>
+              ) : null}
               {item.eligibility && item.eligibility.type !== "all" && (
                 <p className="mt-1 text-xs text-amber-400">
                   {item.eligibility.type === "saga_id_range" && (
@@ -365,7 +408,8 @@ export function FlightCreditPackagesPanel() {
               <button type="button" onClick={() => setPackages((current) => current.filter((entry) => entry.id !== item.id))} className="rounded px-2 py-1 text-xs text-red-400 hover:bg-red-900/30">Excluir</button>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="mt-4 flex justify-end">

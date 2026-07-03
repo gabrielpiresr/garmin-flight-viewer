@@ -47,6 +47,7 @@ type AdminUsersResponse = {
   createdContracts?: number;
   nextStatus?: string;
   saga?: EnrollmentSagaResult;
+  creditSaga?: CreditSagaResult;
   data?: SagaAnacPerson;
   ok?: boolean;
 };
@@ -56,6 +57,15 @@ export type EnrollmentSagaResult = {
   skipped?: boolean;
   sagaUserId?: string;
   message?: string;
+};
+
+export type CreditSagaResult = {
+  ok: boolean;
+  status?: "completed" | "already_exists" | "skipped" | "failed" | string;
+  marker?: string;
+  sagaStudentId?: string;
+  message?: string;
+  logs?: string[];
 };
 
 export type AdminUserDeletionSummary = {
@@ -372,8 +382,9 @@ export async function setAdminUserFlightReviewClubMembership(
   return response.user;
 }
 
-export async function createAdminUserCredit(input: StudentCreditInput): Promise<void> {
-  await executeAdminUsers({ action: "createCredit", credit: input });
+export async function createAdminUserCredit(input: StudentCreditInput): Promise<CreditSagaResult | null> {
+  const response = await executeAdminUsers({ action: "createCredit", credit: input });
+  return response.creditSaga ?? null;
 }
 
 export async function updateAdminUserCredit(creditId: string, input: StudentCreditInput): Promise<void> {

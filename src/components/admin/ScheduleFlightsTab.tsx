@@ -32,10 +32,11 @@ import {
 } from "../../lib/scheduleGenerationDb";
 import { shortName } from "../../lib/flightDisplay";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
+import { freeBalanceForDateFromPools, isWeekendDate } from "../../lib/creditWeekday";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { loadAircraftBaseHours, type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
-import type { StudentCreditModelSummary } from "../../types/credits";
+import type { StudentCreditModelSummary, StudentCreditStatement } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
   buildScheduleHourOptions,
@@ -63,7 +64,8 @@ import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../Flight
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
-const AIRCRAFT_COLOR_CLASSES = [
+// Exportada: a visão do aluno usa a mesma paleta (mesma ordem = mesmas cores).
+export const AIRCRAFT_COLOR_CLASSES = [
   "bg-sky-600 border-sky-400/70",
   "bg-emerald-600 border-emerald-400/70",
   "bg-violet-600 border-violet-400/70",
@@ -2015,6 +2017,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const [formStudentCredits, setFormStudentCredits] = useState<StudentCreditModelSummary[] | null>(null);
+  const [formStudentCreditTotals, setFormStudentCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [formStudentCreditsLoading, setFormStudentCreditsLoading] = useState(false);
   const [formStudentFutureMinutesByModel, setFormStudentFutureMinutesByModel] = useState<Record<string, number> | null>(null);
   const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean } | null>(null);
@@ -2588,12 +2591,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     const studentId = formDraft?.studentId;
     if (!formDraft || !studentId || !user?.id || !user?.role) {
       setFormStudentCredits(null);
+      setFormStudentCreditTotals(null);
       setFormStudentCreditsLoading(false);
       setFormStudentFutureMinutesByModel(null);
       return;
     }
     let cancelled = false;
     setFormStudentCredits(null);
+    setFormStudentCreditTotals(null);
     setFormStudentFutureMinutesByModel(null);
     setFormStudentCreditsLoading(true);
     void (async () => {
@@ -2610,8 +2615,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         });
         if (cancelled) return;
         setFormStudentCredits(stmt.summaries);
+        setFormStudentCreditTotals(stmt.totals);
       } catch {
-        if (!cancelled) setFormStudentCredits([]);
+        if (!cancelled) {
+          setFormStudentCredits([]);
+          setFormStudentCreditTotals(null);
+        }
       } finally {
         if (!cancelled) setFormStudentCreditsLoading(false);
       }
@@ -4197,10 +4206,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 <div className="space-y-1">
                   {formStudentCredits.map((row) => (
                     <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300">{row.aircraftModelName}</span>
+                      <span className="text-slate-300">
+                        {row.aircraftModelName}
+                        {(row.weekdayOnlyAvailableHours ?? 0) > 0.001 ? (
+                          <span className="ml-1 text-sky-400">· dos quais só seg–sex: {(row.weekdayOnlyAvailableHours ?? 0).toFixed(1)}h</span>
+                        ) : null}
+                      </span>
                       <span className="text-slate-400">
-                        Disponível: <strong className={row.availableHours > 0 ? "text-emerald-300" : "text-red-300"}>
-                          {Math.floor(row.availableHours)}h{String(Math.round((row.availableHours % 1) * 60)).padStart(2, "0")}
+                        {/* Saldo cru (pode ser negativo) — mesma conta da aba Créditos. */}
+                        Disponível: <strong className={row.balanceHours > 0 ? "text-emerald-300" : "text-red-300"}>
+                          {row.balanceHours < 0 ? "-" : ""}{Math.floor(Math.abs(row.balanceHours))}h{String(Math.round((Math.abs(row.balanceHours) % 1) * 60)).padStart(2, "0")}
                         </strong>
                       </span>
                     </div>
@@ -4213,9 +4228,26 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 if (!formDraft || formStudentFutureMinutesByModel === null) return null;
                 const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
                 if (!modelId) return null;
-                const futureHours = (formStudentFutureMinutesByModel[modelId] ?? 0) / 60;
-                const creditHours = formStudentCredits?.find((row) => row.aircraftModelId === modelId)?.availableHours ?? 0;
-                const freeHours = creditHours - futureHours;
+                const modelSummary = formStudentCredits?.find((row) => row.aircraftModelId === modelId);
+                const flightDate = weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "";
+                const futureHours = Object.values(formStudentFutureMinutesByModel ?? {}).reduce(
+                  (acc, minutes) => acc + minutes / 60,
+                  0,
+                );
+                const globalBalanceHours = formStudentCreditTotals?.balanceHours
+                  ?? (formStudentCreditTotals
+                    ? Number(
+                        (
+                          formStudentCreditTotals.purchasedHours
+                          - formStudentCreditTotals.consumedHours
+                          - (formStudentCreditTotals.penaltyHours ?? 0)
+                        ).toFixed(2),
+                      )
+                    : modelSummary?.balanceHours ?? 0);
+                const applicableHours = formStudentCreditTotals && flightDate
+                  ? freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours
+                  : globalBalanceHours;
+                const freeHours = applicableHours - futureHours;
                 const fmt = (hours: number) => `${hours < 0 ? "-" : ""}${Math.floor(Math.abs(hours))}h${String(Math.round((Math.abs(hours) % 1) * 60)).padStart(2, "0")}`;
                 return (
                   <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
@@ -4224,9 +4256,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       <strong className="text-sky-300">{fmt(futureHours)}</strong>
                     </div>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Saldo livre para agendar</span>
+                      <span className="text-slate-400">
+                        Saldo aplicável ao dia{flightDate && isWeekendDate(flightDate) ? " (fds)" : ""}
+                      </span>
                       <strong className={freeHours > 0 ? "text-emerald-300" : "text-red-300"}>{fmt(freeHours)}</strong>
                     </div>
+                    {formStudentCreditTotals && flightDate ? (
+                      <p className="text-[11px] text-slate-500">
+                        Antes de reservas futuras: {fmt(freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours)}
+                      </p>
+                    ) : null}
                   </div>
                 );
               })()}

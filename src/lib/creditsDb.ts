@@ -24,6 +24,8 @@ import type {
   StudentCreditPurchase,
   StudentCreditStatement,
 } from "../types/credits";
+import { getAvailableFlightCreditPackages } from "./flightCreditSalesDb";
+import { isWeekendDate } from "./creditWeekday";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 const EPSILON = 0.0001;
@@ -44,6 +46,7 @@ type CreditDoc = {
   expires_at?: string;
   notes?: string;
   is_night?: boolean;
+  weekday_only?: boolean;
   created_by?: string;
   updated_by?: string;
 };
@@ -66,6 +69,11 @@ function isReady(): boolean {
 
 function roundHours(value: number): number {
   return Number(Math.max(0, value).toFixed(2));
+}
+
+/** Arredonda SEM clampar em zero — para saldos que podem ficar negativos (aluno devendo). */
+function roundSignedHours(value: number): number {
+  return Number(value.toFixed(2));
 }
 
 function todayIso(): string {
@@ -116,6 +124,7 @@ function toCredit(doc: CreditDoc): StudentCreditPurchase {
     expiresAt: doc.expires_at || addDaysIso(purchaseDate, validityDays),
     notes: doc.notes || "",
     isNight: doc.is_night ?? false,
+    weekdayOnly: Boolean(doc.weekday_only),
     createdAt: doc.$createdAt || "",
     updatedAt: doc.$updatedAt || "",
     createdBy: doc.created_by || null,
@@ -142,6 +151,7 @@ function toPayload(input: StudentCreditInput, actorUserId?: string) {
     hours: parsePositiveNumber(Number(input.hours)),
     notes: input.notes?.trim() || null,
     is_night: input.isNight ?? false,
+    weekday_only: input.weekdayOnly ?? false,
     updated_by: actorUserId || null,
   };
 }
@@ -222,26 +232,9 @@ function buildFlightSource(item: SavedFlightListItem, full: SavedFlightFull | nu
     item.total_flight_minutes ||
     (typeof item.duration_sec === "number" ? Math.round(item.duration_sec / 60) : 0);
   const totalMinutes = blockMinutes ?? legSumMinutes;
-  const landings =
-    meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ??
-    item.landings ??
-    0;
   const hours = roundHours(totalMinutes / 60);
   const isScheduled = isCreditStatementScheduledFlight(item);
-  if (hours <= 0 || isScheduled) {
-    if (item.id === "saga_flight_739" || String(item.id || "").startsWith("saga_flight_")) {
-      // #region agent log
-      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildFlightSource',message:'flight excluded from credit statement source',data:{flightId:item.id,flightDate,itemLandings:item.landings,metaLandings:meta?.legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0) ?? null,hours,totalMinutes,blockTimeMinutes:item.block_time_minutes ?? null,totalFlightMinutes:item.total_flight_minutes ?? null,durationSec:item.duration_sec ?? null,isNight:meta?.header.isNight ?? item.is_night ?? false,flightStatus:item.flight_status ?? null,isScheduled,sourceFilename:item.source_filename},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
-    return null;
-  }
-
-  if (item.id === "saga_flight_739") {
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildFlightSource',message:'flight included in credit statement source',data:{flightId:item.id,flightDate,hours,landings,isNight:meta?.header.isNight ?? item.is_night ?? false},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }
+  if (hours <= 0 || isScheduled) return null;
 
   return {
     id: item.id,
@@ -260,9 +253,6 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
   if (flightsResult.error) throw flightsResult.error;
 
   const items = flightsResult.data ?? [];
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H11',location:'creditsDb.ts:listFlightSourcesForStudent',message:'raw flight items before source mapping',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,studentUserId,itemsCount:items.length,sample:items.slice(0,25).map((item)=>({id:item.id,flightDate:item.flight_date,status:item.flight_status,landings:item.landings,blockTime:item.block_time_minutes,totalFlight:item.total_flight_minutes,durationSec:item.duration_sec}))},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   const fullFlights = await mapWithConcurrency(items, 4, async (item) => {
     const hasMaterializedSource =
       ((typeof item.block_time_minutes === "number" && item.block_time_minutes > 0) ||
@@ -278,10 +268,213 @@ async function listFlightSourcesForStudent(viewer: { userId: string; role: UserR
     .map(([item, full]) => buildFlightSource(item, full))
     .filter((source): source is FlightSource => Boolean(source))
     .sort((a, b) => a.flightDate.localeCompare(b.flightDate));
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H11',location:'creditsDb.ts:listFlightSourcesForStudent',message:'mapped flight sources for credit statement',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,studentUserId,sourcesCount:mappedSources.length,has739:mappedSources.some((source)=>source.id==='saga_flight_739'),sample:mappedSources.slice(0,25)},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   return mappedSources;
+}
+
+/** Última compra primeiro; se esgotar, passa para a compra imediatamente anterior. */
+function creditLifoSort(a: MutableCredit, b: MutableCredit): number {
+  return b.purchaseDate.localeCompare(a.purchaseDate) || b.expiresAt.localeCompare(a.expiresAt);
+}
+
+function creditEligibleForFlight(credit: MutableCredit, flight: FlightSource, simplified: boolean): boolean {
+  if (credit.remainingHours <= EPSILON) return false;
+  if (!simplified) {
+    if (credit.expiresAt < flight.flightDate) return false;
+    if (credit.isNight !== flight.isNight) return false;
+  }
+  return true;
+}
+
+function totalPenaltyHours(adjustments: StudentCreditStatement["adjustments"]): number {
+  return roundHours(
+    adjustments.reduce((acc, adj) => acc + Math.abs(Math.min(0, adj.hours)), 0),
+  );
+}
+
+function applyGlobalPenaltiesToPools(
+  pools: { weekdayOnly: number; anyDay: number },
+  adjustments: StudentCreditStatement["adjustments"],
+): { weekdayOnly: number; anyDay: number } {
+  let result = pools;
+  for (const adj of adjustments) {
+    const penalty = Math.abs(Math.min(0, adj.hours));
+    if (penalty <= EPSILON) continue;
+    result = applyPenaltyToPools(result, penalty, adj.flightDate);
+  }
+  return result;
+}
+
+type LedgerReplay = {
+  mutableCredits: MutableCredit[];
+  debits: StudentCreditFlightDebit[];
+  debtHours: number;
+};
+
+/** Replay cronológico: compras ativam crédito; voos debitam LIFO; dívida é coberta por compras futuras. */
+function replayCreditLedger(params: {
+  purchases: StudentCreditPurchase[];
+  flights: FlightSource[];
+  aircrafts: Aircraft[];
+  modelsById: Map<string, AircraftModel>;
+  simplified: boolean;
+}): LedgerReplay {
+  const aircraftByRegistration = new Map(
+    params.aircrafts.map((aircraft) => [normalizeRegistration(aircraft.registration), aircraft]),
+  );
+  const mutableCredits: MutableCredit[] = params.purchases.map((purchase) => ({
+    ...purchase,
+    remainingHours: 0,
+  }));
+  const creditsById = new Map(mutableCredits.map((credit) => [credit.id, credit]));
+
+  type TimelineEvent =
+    | { kind: "purchase"; date: string; creditId: string }
+    | { kind: "flight"; date: string; flight: FlightSource };
+
+  const events: TimelineEvent[] = [
+    ...params.purchases.map((purchase) => ({
+      kind: "purchase" as const,
+      date: purchase.purchaseDate,
+      creditId: purchase.id,
+    })),
+    ...params.flights.map((flight) => ({
+      kind: "flight" as const,
+      date: flight.flightDate,
+      flight,
+    })),
+  ].sort((a, b) => {
+    const byDate = a.date.localeCompare(b.date);
+    if (byDate !== 0) return byDate;
+    if (a.kind === "purchase" && b.kind === "flight") return -1;
+    if (a.kind === "flight" && b.kind === "purchase") return 1;
+    return 0;
+  });
+
+  const debits: StudentCreditFlightDebit[] = [];
+  let debtHours = 0;
+
+  for (const event of events) {
+    if (event.kind === "purchase") {
+      const credit = creditsById.get(event.creditId);
+      if (!credit) continue;
+      let incoming = credit.hours;
+      if (debtHours > EPSILON) {
+        const cover = Math.min(debtHours, incoming);
+        debtHours = roundHours(debtHours - cover);
+        incoming = roundHours(incoming - cover);
+      }
+      credit.remainingHours = incoming;
+      continue;
+    }
+
+    const flight = event.flight;
+    const aircraft = aircraftByRegistration.get(normalizeRegistration(flight.aircraftIdent));
+    const aircraftModelId = aircraft?.model_id || null;
+    const eligibleCredits = mutableCredits
+      .filter((credit) => creditEligibleForFlight(credit, flight, params.simplified))
+      .sort(creditLifoSort);
+
+    let remainingDebit = flight.hours;
+    const allocations = [];
+    for (const credit of eligibleCredits) {
+      if (remainingDebit <= EPSILON) break;
+      const used = Math.min(credit.remainingHours, remainingDebit);
+      credit.remainingHours = roundHours(credit.remainingHours - used);
+      remainingDebit = roundHours(remainingDebit - used);
+      allocations.push({ creditId: credit.id, hours: roundHours(used) });
+    }
+
+    if (remainingDebit > EPSILON) {
+      debtHours = roundHours(debtHours + remainingDebit);
+    }
+
+    const allocatedHours = roundHours(flight.hours - remainingDebit);
+    debits.push({
+      id: flight.id,
+      flightId: flight.id,
+      flightDate: flight.flightDate,
+      aircraftIdent: flight.aircraftIdent,
+      isNight: flight.isNight,
+      aircraftModelId,
+      aircraftModelName: modelName(aircraftModelId, params.modelsById),
+      hours: flight.hours,
+      allocatedHours,
+      unallocatedHours: roundHours(remainingDebit),
+      allocations,
+    });
+  }
+
+  return { mutableCredits, debits, debtHours };
+}
+
+function poolHoursFromCredits(
+  credits: MutableCredit[],
+  generatedDate: string,
+  simplified: boolean,
+): { weekdayOnly: number; anyDay: number } {
+  const active = credits.filter((credit) => simplified || credit.expiresAt >= generatedDate);
+  let weekdayOnly = 0;
+  let anyDay = 0;
+  for (const credit of active) {
+    if (credit.remainingHours <= EPSILON) continue;
+    if (credit.weekdayOnly) weekdayOnly += credit.remainingHours;
+    else anyDay += credit.remainingHours;
+  }
+  return { weekdayOnly: roundHours(weekdayOnly), anyDay: roundHours(anyDay) };
+}
+
+function applyPenaltyToPools(
+  pools: { weekdayOnly: number; anyDay: number },
+  penaltyHours: number,
+  flightDate: string | null,
+): { weekdayOnly: number; anyDay: number } {
+  if (penaltyHours <= EPSILON) return pools;
+  if (!flightDate || isWeekendDate(flightDate)) {
+    let anyDay = roundSignedHours(pools.anyDay - penaltyHours);
+    if (anyDay < -EPSILON && pools.weekdayOnly > EPSILON) {
+      const spill = Math.min(pools.weekdayOnly, Math.abs(anyDay));
+      return {
+        weekdayOnly: roundHours(pools.weekdayOnly - spill),
+        anyDay: roundSignedHours(anyDay + spill),
+      };
+    }
+    return { weekdayOnly: pools.weekdayOnly, anyDay };
+  }
+  const fromWeekday = Math.min(pools.weekdayOnly, penaltyHours);
+  const remainder = penaltyHours - fromWeekday;
+  let anyDay = roundSignedHours(pools.anyDay - remainder);
+  if (anyDay < -EPSILON && pools.weekdayOnly - fromWeekday > EPSILON) {
+    const spill = Math.min(pools.weekdayOnly - fromWeekday, Math.abs(anyDay));
+    return {
+      weekdayOnly: roundHours(pools.weekdayOnly - fromWeekday - spill),
+      anyDay: roundSignedHours(anyDay + spill),
+    };
+  }
+  return {
+    weekdayOnly: roundHours(pools.weekdayOnly - fromWeekday),
+    anyDay,
+  };
+}
+
+function finalizePoolSummary(
+  pools: { weekdayOnly: number; anyDay: number },
+  simplified: boolean,
+): { weekdayOnlyAvailableHours: number; anyDayAvailableHours: number } {
+  if (!simplified) {
+    return {
+      weekdayOnlyAvailableHours: roundHours(Math.max(0, pools.weekdayOnly)),
+      // Pool livre pode ficar negativo (dívida); seg–sex usa restrito + livre na semana.
+      anyDayAvailableHours: roundSignedHours(pools.anyDay),
+    };
+  }
+  const total = pools.weekdayOnly + pools.anyDay;
+  if (total >= 0) {
+    return {
+      weekdayOnlyAvailableHours: roundHours(pools.weekdayOnly),
+      anyDayAvailableHours: roundHours(pools.anyDay),
+    };
+  }
+  return { weekdayOnlyAvailableHours: 0, anyDayAvailableHours: roundSignedHours(total) };
 }
 
 function summarizeModel(
@@ -293,7 +486,11 @@ function summarizeModel(
   simplified = false,
 ): StudentCreditModelSummary {
   const purchasedHours = purchases.reduce((acc, credit) => acc + credit.hours, 0);
-  const consumedHours = debits.reduce((acc, debit) => acc + debit.allocatedHours, 0);
+  const creditConsumedHours = purchases.reduce(
+    (acc, credit) => acc + Math.max(0, credit.hours - credit.remainingHours),
+    0,
+  );
+  const modelFlownHours = debits.reduce((acc, debit) => acc + debit.hours, 0);
   if (simplified) {
     // No modo simplificado: soma TODAS as horas voadas (incluindo parciais),
     // permitindo saldo negativo quando o aluno voou mais do que comprou.
@@ -305,7 +502,10 @@ function summarizeModel(
       consumedHours: roundHours(totalFlownHours),
       expiredHours: 0,
       availableHours: roundHours(purchasedHours - totalFlownHours),
+      balanceHours: roundSignedHours(purchasedHours - totalFlownHours),
       unallocatedFlightHours: 0,
+      weekdayOnlyAvailableHours: 0,
+      anyDayAvailableHours: roundHours(purchasedHours - totalFlownHours),
     };
   }
   const expiredHours = purchases
@@ -319,11 +519,30 @@ function summarizeModel(
     aircraftModelId: modelId,
     aircraftModelName: modelLabel,
     purchasedHours: roundHours(purchasedHours),
-    consumedHours: roundHours(consumedHours),
+    consumedHours: roundHours(creditConsumedHours),
     expiredHours: roundHours(expiredHours),
     availableHours: roundHours(availableHours),
+    balanceHours: roundSignedHours(purchasedHours - modelFlownHours),
     unallocatedFlightHours: roundHours(unallocatedFlightHours),
+    weekdayOnlyAvailableHours: 0,
+    anyDayAvailableHours: roundHours(availableHours),
   };
+}
+
+function summarizeGlobalBalance(
+  purchasedHours: number,
+  flownHours: number,
+  penaltyHours: number,
+  remainingHours: number,
+  debtHours: number,
+): number {
+  const ledgerBalance = roundSignedHours(purchasedHours - flownHours - penaltyHours);
+  const poolBalance = roundSignedHours(remainingHours - debtHours - penaltyHours);
+  if (Math.abs(ledgerBalance - poolBalance) <= 0.05) return ledgerBalance;
+  // Saldo devedor: comprado − voado é a referência do card (21,1 − 21,3 = −0,2).
+  if (ledgerBalance < -EPSILON || debtHours > EPSILON) return ledgerBalance;
+  // Créditos vencidos / restrições de alocação: confia no pool remanescente.
+  return poolBalance;
 }
 
 export function buildStudentCreditStatement(params: {
@@ -336,68 +555,24 @@ export function buildStudentCreditStatement(params: {
   adjustments?: StudentCreditStatement["adjustments"];
   nightHoursDifferentFromDay?: boolean;
 }): StudentCreditStatement {
+  // LIFO global (última compra primeiro) — espelha computeCreditPools em schedule-booking.
   const simplified = params.nightHoursDifferentFromDay === false;
   const generatedDate = asIsoDate(params.generatedAt || todayIso());
   const modelsById = new Map(params.models.map((model) => [model.id, model]));
-  const aircraftByRegistration = new Map(params.aircrafts.map((aircraft) => [normalizeRegistration(aircraft.registration), aircraft]));
-  const mutableCredits: MutableCredit[] = params.purchases
-    .map((purchase) => ({ ...purchase, remainingHours: purchase.hours }))
-    .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate));
-
-  const debits: StudentCreditFlightDebit[] = params.flights.map((flight) => {
-    const aircraft = aircraftByRegistration.get(normalizeRegistration(flight.aircraftIdent));
-    const aircraftModelId = aircraft?.model_id || null;
-    const candidateCredits = mutableCredits.filter(
-      (credit) => credit.aircraftModelId === aircraftModelId && credit.remainingHours > EPSILON,
-    );
-    const eligibleCredits = simplified
-      ? mutableCredits
-          .filter(
-            (credit) => credit.aircraftModelId === aircraftModelId && credit.remainingHours > EPSILON,
-          )
-          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate))
-      : mutableCredits
-          .filter(
-            (credit) =>
-              credit.aircraftModelId === aircraftModelId &&
-              credit.expiresAt >= flight.flightDate &&
-              credit.remainingHours > EPSILON &&
-              credit.isNight === flight.isNight,
-          )
-          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.purchaseDate.localeCompare(b.purchaseDate));
-
-    let remainingDebit = flight.hours;
-    const allocations = [];
-    for (const credit of eligibleCredits) {
-      if (remainingDebit <= EPSILON) break;
-      const used = Math.min(credit.remainingHours, remainingDebit);
-      credit.remainingHours = roundHours(credit.remainingHours - used);
-      remainingDebit = roundHours(remainingDebit - used);
-      allocations.push({ creditId: credit.id, hours: roundHours(used) });
-    }
-
-    const allocatedHours = roundHours(flight.hours - remainingDebit);
-    const unallocatedHours = roundHours(remainingDebit);
-    if (unallocatedHours > 0 || flight.id === "saga_flight_773") {
-      // #region agent log
-      fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-debit-debug',hypothesisId:'H9',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit debit allocation snapshot',data:{userId:params.userId,flightId:flight.id,flightDate:flight.flightDate,flightHours:flight.hours,flightAircraftIdent:flight.aircraftIdent,flightModelId:aircraftModelId,flightIsNight:flight.isNight,candidateCredits:candidateCredits.map((credit)=>({id:credit.id,modelId:credit.aircraftModelId,isNight:credit.isNight,purchaseDate:credit.purchaseDate,expiresAt:credit.expiresAt,remainingHours:credit.remainingHours})).slice(0,20),eligibleCredits:eligibleCredits.map((credit)=>({id:credit.id,remainingHours:credit.remainingHours,isNight:credit.isNight,purchaseDate:credit.purchaseDate,expiresAt:credit.expiresAt})).slice(0,20),allocations,allocatedHours,unallocatedHours},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
-
-    return {
-      id: flight.id,
-      flightId: flight.id,
-      flightDate: flight.flightDate,
-      aircraftIdent: flight.aircraftIdent,
-      isNight: flight.isNight,
-      aircraftModelId,
-      aircraftModelName: modelName(aircraftModelId, modelsById),
-      hours: flight.hours,
-      allocatedHours,
-      unallocatedHours,
-      allocations,
-    };
+  const { mutableCredits, debits: replayDebits, debtHours } = replayCreditLedger({
+    purchases: params.purchases,
+    flights: params.flights,
+    aircrafts: params.aircrafts,
+    modelsById,
+    simplified,
   });
+  const debits = simplified
+    ? replayDebits.map((debit) => ({
+        ...debit,
+        allocatedHours: debit.hours,
+        unallocatedHours: 0,
+      }))
+    : replayDebits;
 
   const modelIds = new Set<string>();
   for (const credit of mutableCredits) modelIds.add(credit.aircraftModelId);
@@ -405,11 +580,15 @@ export function buildStudentCreditStatement(params: {
 
   const adjustments = params.adjustments ?? [];
   const adjustmentsByModel = new Map<string, number>();
+  const adjustmentRowsByModel = new Map<string, StudentCreditStatement["adjustments"]>();
   for (const adj of adjustments) {
     const modelId = String(adj.aircraftModelId || "").trim() || "unresolved";
     const penalty = Math.abs(Math.min(0, adj.hours));
     if (penalty <= EPSILON) continue;
     adjustmentsByModel.set(modelId, roundHours((adjustmentsByModel.get(modelId) ?? 0) + penalty));
+    const rows = adjustmentRowsByModel.get(modelId) ?? [];
+    rows.push(adj);
+    adjustmentRowsByModel.set(modelId, rows);
     modelIds.add(modelId);
   }
 
@@ -430,23 +609,53 @@ export function buildStudentCreditStatement(params: {
         simplified,
       );
       const penaltyHours = adjustmentsByModel.get(modelId) ?? 0;
-      if (penaltyHours <= EPSILON) return summary;
+      let pools = poolHoursFromCredits(
+        mutableCredits.filter((credit) => credit.aircraftModelId === modelId),
+        generatedDate,
+        simplified,
+      );
+      for (const adj of adjustmentRowsByModel.get(modelId) ?? []) {
+        const penalty = Math.abs(Math.min(0, adj.hours));
+        if (penalty <= EPSILON) continue;
+        pools = applyPenaltyToPools(pools, penalty, adj.flightDate);
+      }
+      const poolSummary = finalizePoolSummary(pools, simplified);
+      if (penaltyHours <= EPSILON) {
+        return { ...summary, ...poolSummary };
+      }
       return {
         ...summary,
+        ...poolSummary,
         consumedHours: roundHours(summary.consumedHours + penaltyHours),
         availableHours: simplified
           ? roundHours(summary.availableHours - penaltyHours)
           : roundHours(Math.max(0, summary.availableHours - penaltyHours)),
+        balanceHours: roundSignedHours(summary.balanceHours - penaltyHours),
       };
     })
     .sort((a, b) => a.aircraftModelName.localeCompare(b.aircraftModelName, "pt-BR"));
 
-  const debit739 = debits.find((debit) => debit.flightId === "saga_flight_739");
-  // #region agent log
-  fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'credit-consumed-debug',hypothesisId:'H10',location:'creditsDb.ts:buildStudentCreditStatement',message:'credit statement totals snapshot',data:{userId:params.userId,debitsCount:debits.length,has739:!!debit739,debit739:debit739?{hours:debit739.hours,allocatedHours:debit739.allocatedHours,unallocatedHours:debit739.unallocatedHours,isNight:debit739.isNight}:null,consumedHours:roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),unallocatedHours:roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0))},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-
-  const totalAvailableHours = roundHours(summaries.reduce((acc, item) => acc + item.availableHours, 0));
+  const globalPools = applyGlobalPenaltiesToPools(
+    poolHoursFromCredits(mutableCredits, generatedDate, simplified),
+    adjustments,
+  );
+  const penalties = totalPenaltyHours(adjustments);
+  const totalPurchasedHours = roundHours(params.purchases.reduce((acc, item) => acc + item.hours, 0));
+  const totalFlownHours = roundHours(debits.reduce((acc, item) => acc + item.hours, 0));
+  const totalRemainingHours = roundSignedHours(
+    mutableCredits
+      .filter((credit) => simplified || credit.expiresAt >= generatedDate)
+      .reduce((acc, credit) => acc + credit.remainingHours, 0),
+  );
+  const globalPoolSummary = finalizePoolSummary(globalPools, simplified);
+  const balanceHours = summarizeGlobalBalance(
+    totalPurchasedHours,
+    totalFlownHours,
+    penalties,
+    totalRemainingHours,
+    debtHours,
+  );
+  const outstandingDebtHours = roundHours(Math.max(debtHours, totalFlownHours - totalPurchasedHours));
   return {
     userId: params.userId,
     generatedAt: generatedDate,
@@ -455,11 +664,16 @@ export function buildStudentCreditStatement(params: {
     adjustments,
     summaries,
     totals: {
-      purchasedHours: roundHours(summaries.reduce((acc, item) => acc + item.purchasedHours, 0)),
-      consumedHours: roundHours(summaries.reduce((acc, item) => acc + item.consumedHours, 0)),
+      purchasedHours: totalPurchasedHours,
+      consumedHours: totalFlownHours,
       expiredHours: roundHours(summaries.reduce((acc, item) => acc + item.expiredHours, 0)),
-      availableHours: simplified ? totalAvailableHours : roundHours(Math.max(0, totalAvailableHours)),
-      unallocatedFlightHours: roundHours(summaries.reduce((acc, item) => acc + item.unallocatedFlightHours, 0)),
+      availableHours: roundHours(Math.max(0, balanceHours)),
+      balanceHours,
+      penaltyHours: penalties,
+      weekdayOnlyAvailableHours: globalPoolSummary.weekdayOnlyAvailableHours,
+      anyDayAvailableHours: globalPoolSummary.anyDayAvailableHours,
+      unallocatedFlightHours: outstandingDebtHours,
+      debtHours: roundHours(debtHours),
       amountPaid: Number(params.purchases.reduce((acc, item) => acc + item.amountPaid, 0).toFixed(2)),
     },
   };
@@ -598,6 +812,12 @@ export async function getStudentCreditStatement(params: {
     throw new Error("Aluno so pode consultar seus proprios creditos.");
   }
 
+  let nightHoursDifferentFromDay = params.nightHoursDifferentFromDay;
+  if (nightHoursDifferentFromDay === undefined) {
+    const config = await getAvailableFlightCreditPackages().catch(() => null);
+    nightHoursDifferentFromDay = config?.nightHoursDifferentFromDay !== false;
+  }
+
   const [purchases, flights, aircrafts, models, adjustmentDocs] = await Promise.all([
     listStudentCredits(params.studentUserId),
     listFlightSourcesForStudent(params.viewer, params.studentUserId),
@@ -620,7 +840,7 @@ export async function getStudentCreditStatement(params: {
     flights,
     aircrafts,
     models,
-    nightHoursDifferentFromDay: params.nightHoursDifferentFromDay,
+    nightHoursDifferentFromDay,
     adjustments,
   });
 }

@@ -11,19 +11,25 @@ import {
   type PublicScheduleFlight,
 } from "../lib/scheduleBookingDb";
 import { getStudentCreditStatement } from "../lib/creditsDb";
+import { freeBalanceForDateFromPools, isWeekendDate } from "../lib/creditWeekday";
 import { getAvailableFlightCreditPackages } from "../lib/flightCreditSalesDb";
-import type { StudentCreditModelSummary } from "../types/credits";
-import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../types/schoolRules";
+import type { StudentCreditModelSummary, StudentCreditStatement } from "../types/credits";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES, DEFAULT_SCHOOL_RULES, type FlightScheduleRules } from "../types/schoolRules";
+import type { ScheduleStudentHelpConfig } from "../types/scheduleStudentHelp";
+import { getSchoolRules } from "../lib/schoolRulesDb";
 import { normalizeScheduleFlightStatus, type FlightStatus } from "../lib/flightsDb";
 import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
 import {
+  AIRCRAFT_COLOR_CLASSES,
   CalendarGrid,
   FLIGHT_STATUS_CARD_COLOR,
   type CalendarDropTarget,
   type CalendarFlightItem,
 } from "./admin/ScheduleFlightsTab";
+import { navigateToTab } from "../lib/routedTabs";
 import { useToast } from "./ui/ToastProvider";
+import { ScheduleStudentChrome } from "./schedule/ScheduleStudentChrome";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -120,6 +126,27 @@ function minutesToHHMM(minutes: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function formatDecimalHours(hours: number): string {
+  return `${hours.toFixed(2)}h`;
+}
+
+function hasAnyCreditPools(totals: StudentCreditStatement["totals"] | null): boolean {
+  if (!totals) return false;
+  const weekday = totals.weekdayOnlyAvailableHours ?? 0;
+  const anyDay = totals.anyDayAvailableHours ?? 0;
+  return weekday > 0.001 || anyDay > 0.001;
+}
+
+function canUseZeroCreditOneHourException(
+  rules: FlightScheduleRules,
+  durationMinutes: number,
+  freeHours: number,
+  creditTotals: StudentCreditStatement["totals"] | null,
+): boolean {
+  if (!rules.allowZeroCreditOneHour || durationMinutes > 60 || freeHours < -0.001) return false;
+  return !hasAnyCreditPools(creditTotals);
+}
+
 function toLocalIso(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -196,6 +223,18 @@ function minDurationFor(rules: FlightScheduleRules, flightDate: string): number 
   return Math.round((weekend ? rules.weekendMinHours : rules.weekdayMinHours) * 60);
 }
 
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return isMobile;
+}
+
 // ─── Skeleton da agenda (carregamento inicial e troca de semana) ──────────────
 
 function ScheduleSkeleton() {
@@ -247,6 +286,7 @@ function StudentAircraftBoard({
   onPrevDay,
   onNextDay,
   showDayPicker,
+  headerDays,
 }: {
   days: readonly number[];
   items: CalendarFlightItem[];
@@ -262,7 +302,21 @@ function StudentAircraftBoard({
   onPrevDay?: () => void;
   onNextDay?: () => void;
   showDayPicker?: boolean;
+  /** Dias exibidos no seletor do topo (no mobile: janela de 3 dias). */
+  headerDays?: readonly number[];
 }) {
+  const isMobile = useIsMobile();
+  // Colunas mais estreitas no mobile (160 → 120 → 96) + calha de horas reduzida.
+  const colWidthPx = isMobile ? 96 : 160;
+  const hoursGutterPx = isMobile ? 30 : 48;
+  // Mesma paleta e ordem da escala do admin: cor estável por aeronave.
+  const colorByAircraft = useMemo(
+    () => new Map(aircrafts.map((aircraft, index) => [
+      aircraft.registration,
+      AIRCRAFT_COLOR_CLASSES[index % AIRCRAFT_COLOR_CLASSES.length]!,
+    ])),
+    [aircrafts],
+  );
   const maxEndMinute = items.reduce((m, item) => {
     const end = timeToMinutes(item.endTime || item.startTime);
     return Math.max(m, end);
@@ -339,7 +393,7 @@ function StudentAircraftBoard({
         <div className="flex items-center gap-1">
           <button type="button" onClick={onPrevDay} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">‹</button>
           <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1">
-            {DAY_ORDER.map((day) => {
+            {(headerDays ?? DAY_ORDER).map((day) => {
               const date = dayOfWeekToDate(weekStart, day);
               const today = isDateToday(date);
               const selected = day === selectedDay;
@@ -393,14 +447,19 @@ function StudentAircraftBoard({
               <div className="overflow-x-auto">
                 <table
                   className="w-full table-fixed border-separate border-spacing-0.5"
-                  style={{ minWidth: `${cols.length * 160 + 48}px` }}
+                  style={{ minWidth: `${cols.length * colWidthPx + hoursGutterPx}px` }}
                 >
                   <thead>
                     <tr>
-                      <th className="w-10" />
+                      <th className="w-7 sm:w-10" />
                       {cols.map((col) => (
                         <th key={col.registration} className="pb-1 text-center">
-                          <span className="text-xs font-semibold text-slate-300">{col.registration}</span>
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                            <span
+                              className={`h-2 w-2 shrink-0 rounded-full ${(colorByAircraft.get(col.registration) ?? AIRCRAFT_COLOR_CLASSES[0]!).split(" ")[0]}`}
+                            />
+                            {col.registration}
+                          </span>
                           <p className="text-[10px] font-normal text-slate-500">{col.items.length} voo{col.items.length !== 1 ? "s" : ""}</p>
                         </th>
                       ))}
@@ -411,7 +470,7 @@ function StudentAircraftBoard({
                       <td className="align-top pr-1">
                         <div className="relative" style={{ height: `${boardHeight}px` }}>
                           {hours.map((h, idx) => (
-                            <div key={h} className="absolute right-0 text-right text-[10px] font-mono text-slate-600" style={{ top: `${idx * CAL_ROW_HEIGHT}px`, width: "2.2rem" }}>
+                            <div key={h} className="absolute right-0 w-6 text-right text-[10px] font-mono text-slate-600 sm:w-9" style={{ top: `${idx * CAL_ROW_HEIGHT}px` }}>
                               {h}h
                             </div>
                           ))}
@@ -599,7 +658,7 @@ export type FlightEditConfig = {
   rules: FlightScheduleRules;
   /** Intervalos ocupados (apresentação→encerramento, em minutos) da aeronave na data, sem o próprio voo. */
   getOccupiedIntervals?: (aircraftIdent: string, flightDate: string, ignoreFlightId: string) => OccupiedInterval[];
-  onSubmit: (changes: { aircraftIdent: string; flightDate: string; startTime: string; durationMinutes: number }) => Promise<void>;
+  onSubmit: (changes: { aircraftIdent: string; flightDate: string; startTime: string; durationMinutes: number; reason: string }) => Promise<void>;
 };
 
 // Mesmas regras do modal de solicitação: só horários livres, noturno fixo no início,
@@ -610,6 +669,7 @@ function FlightEditForm({ flight, config, onDone }: { flight: PublicScheduleFlig
   const [flightDate, setFlightDate] = useState(flight.flightDate);
   const [startTime, setStartTime] = useState(flight.startTime);
   const [durationMinutes, setDurationMinutes] = useState(flight.durationMinutes || 60);
+  const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const rules = config.rules;
 
@@ -642,10 +702,13 @@ function FlightEditForm({ flight, config, onDone }: { flight: PublicScheduleFlig
     return !slotFitsIntervals(intervals, rules, flightDate, timeToMinutes(startTime), durationMinutes);
   }, [startTime, flightDate, timeSlotOptions, intervals, rules, durationMinutes]);
 
+  // Dia sem nenhum horário livre nesta aeronave: data em vermelho e campos abaixo inativos.
+  const noSlotsForDay = Boolean(flightDate) && availableTimeSlots.length === 0;
+
   async function submit() {
     setSaving(true);
     try {
-      await config.onSubmit({ aircraftIdent, flightDate, startTime, durationMinutes });
+      await config.onSubmit({ aircraftIdent, flightDate, startTime, durationMinutes, reason: reason.trim() });
       onDone();
     } catch (error) {
       showToast({ variant: "error", message: (error as Error).message });
@@ -667,13 +730,19 @@ function FlightEditForm({ flight, config, onDone }: { flight: PublicScheduleFlig
           </select>
         </label>
         <label className="text-xs text-slate-400">Data
-          <input type="date" value={flightDate} onChange={(e) => setFlightDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white" />
+          <input
+            type="date"
+            value={flightDate}
+            onChange={(e) => setFlightDate(e.target.value)}
+            className={`mt-1 w-full rounded-lg border px-2 py-1.5 text-sm text-white ${noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
+          />
         </label>
         <label className="text-xs text-slate-400">Acionamento
           <select
             value={startTime}
             onChange={(e) => setStartTime(e.target.value)}
-            className={`mt-1 w-full rounded-lg border px-2 py-1.5 text-sm text-white ${startTimeInvalid ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
+            disabled={noSlotsForDay}
+            className={`mt-1 w-full rounded-lg border px-2 py-1.5 text-sm text-white disabled:opacity-50 ${startTimeInvalid && !noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
           >
             {!availableTimeSlots.some((opt) => opt.value === startTime) && <option value={startTime}>{startTime}</option>}
             {dayTimeOptions.length > 0 && (
@@ -689,20 +758,48 @@ function FlightEditForm({ flight, config, onDone }: { flight: PublicScheduleFlig
           </select>
         </label>
         <label className="text-xs text-slate-400">Tempo de voo
-          <select value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white">
+          <select
+            value={durationMinutes}
+            onChange={(e) => setDurationMinutes(Number(e.target.value))}
+            disabled={noSlotsForDay}
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white disabled:opacity-50"
+          >
             {durationOptions.length === 0 && <option value={durationMinutes}>{minutesToHHMM(durationMinutes)}</option>}
             {durationOptions.map((minutes) => <option key={minutes} value={minutes}>{minutesToHHMM(minutes)}</option>)}
           </select>
         </label>
       </div>
-      {startTimeInvalid && (
+      {noSlotsForDay && (
         <p className="text-[11px] font-medium text-red-400">
-          Este horário não comporta o tempo de voo selecionado (ou já está ocupado). Escolha outro horário.
+          Não há nenhum horário disponível neste avião para este dia.
         </p>
       )}
+      {startTimeInvalid && !noSlotsForDay && (
+        <p className="text-[11px] font-medium text-red-400">
+          Este horário não comporta o tempo de voo selecionado (ou já está ocupado). Escolha outro horário
+          ou reduza o tempo de voo.
+        </p>
+      )}
+      {/* Motivo obrigatório — registrado nas observações do voo */}
+      <label className="block text-xs text-slate-400">Motivo da alteração
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          maxLength={180}
+          disabled={noSlotsForDay}
+          placeholder="Ex.: compromisso no horário original; prefiro voar mais cedo..."
+          className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
+        />
+      </label>
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onDone} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Voltar</button>
-        <button type="button" disabled={saving || startTimeInvalid || durationOptions.length === 0} onClick={() => void submit()} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+        <button
+          type="button"
+          disabled={saving || startTimeInvalid || noSlotsForDay || durationOptions.length === 0 || !reason.trim()}
+          onClick={() => void submit()}
+          className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+        >
           {saving ? "Salvando..." : "Salvar alteração"}
         </button>
       </div>
@@ -816,12 +913,14 @@ export function CancellationModal({
   flight: PublicScheduleFlight;
   rules: FlightScheduleRules;
   onClose: () => void;
-  onConfirm: () => Promise<void>;
+  /** Recebe o motivo digitado pelo aluno — obrigatório; salvo nas observações do voo. */
+  onConfirm: (reason: string) => Promise<void>;
 }) {
   const [loading, setLoading] = useState(true);
   const [penaltyPct, setPenaltyPct] = useState(0);
   const [penaltyHours, setPenaltyHours] = useState(0);
   const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState("");
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -840,7 +939,7 @@ export function CancellationModal({
   async function handleConfirm() {
     setConfirming(true);
     try {
-      await onConfirm();
+      await onConfirm(reason.trim());
     } finally {
       setConfirming(false);
     }
@@ -885,13 +984,25 @@ export function CancellationModal({
           </div>
         )}
 
+        {/* Motivo obrigatório — vai para as observações do voo */}
+        <label className="block text-xs text-slate-400">Motivo do cancelamento
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={2}
+            maxLength={180}
+            placeholder="Ex.: imprevisto no trabalho; condição meteorológica..."
+            className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-600"
+          />
+        </label>
+
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
             Voltar
           </button>
           <button
             type="button"
-            disabled={loading || confirming}
+            disabled={loading || confirming || !reason.trim()}
             onClick={() => void handleConfirm()}
             className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:opacity-50"
           >
@@ -910,8 +1021,10 @@ type WeekBundle = Awaited<ReturnType<typeof getPublicSchedule>>;
 export function StudentScheduleTab() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const isMobile = useIsMobile();
   const [weekStart, setWeekStart] = useState(mondayIso);
   const [rules, setRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
+  const [helpConfig, setHelpConfig] = useState<ScheduleStudentHelpConfig>(DEFAULT_SCHOOL_RULES.scheduleStudentHelp);
   const [mode, setMode] = useState<FlightScheduleRules["mode"]>("intentions");
   const [aircrafts, setAircrafts] = useState<PublicScheduleAircraft[]>([]);
   const [flights, setFlights] = useState<PublicScheduleFlight[]>([]);
@@ -920,6 +1033,8 @@ export function StudentScheduleTab() {
   const [weekLoading, setWeekLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [bookingOpen, setBookingOpen] = useState(false);
+  // Solicitação em 2 etapas: 1 = voo (aeronave/data/horário), 2 = flexibilidade/obs/ciência.
+  const [bookingStep, setBookingStep] = useState<1 | 2>(1);
   const [saving, setSaving] = useState(false);
   const [aircraftIdent, setAircraftIdent] = useState("");
   const [flightDate, setFlightDate] = useState("");
@@ -941,6 +1056,7 @@ export function StudentScheduleTab() {
 
   // Credits from creditsDb
   const [creditSummaries, setCreditSummaries] = useState<StudentCreditModelSummary[]>([]);
+  const [creditTotals, setCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [creditsLoading, setCreditsLoading] = useState(false);
 
   // Escala futura (mês atual + 2): carregada UMA vez no primeiro acesso ao modal e
@@ -961,6 +1077,8 @@ export function StudentScheduleTab() {
     startTime: string;
   } | null>(null);
   const [proposedSaving, setProposedSaving] = useState(false);
+  // Motivo da alteração proposta pelo arrasto — obrigatório, vai para as observações.
+  const [proposedReason, setProposedReason] = useState("");
   // Aviso da exceção "1h com crédito zerado"
   const [zeroCreditConfirmOpen, setZeroCreditConfirmOpen] = useState(false);
 
@@ -975,6 +1093,12 @@ export function StudentScheduleTab() {
       .finally(() => { weekFetchRef.current.delete(ws); });
     weekFetchRef.current.set(ws, promise);
     return promise;
+  }, []);
+
+  useEffect(() => {
+    void getSchoolRules()
+      .then((schoolRules) => setHelpConfig(schoolRules.scheduleStudentHelp))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1033,8 +1157,10 @@ export function StudentScheduleTab() {
           nightHoursDifferentFromDay: config?.nightHoursDifferentFromDay !== false,
         });
         setCreditSummaries(stmt.summaries);
+        setCreditTotals(stmt.totals);
       } catch {
         setCreditSummaries([]);
+        setCreditTotals(null);
       } finally {
         setCreditsLoading(false);
       }
@@ -1079,36 +1205,50 @@ export function StudentScheduleTab() {
     });
   }, [futureFlights]);
 
-  // Saldo do modelo da aeronave selecionada: créditos - horas futuras já agendadas
+  // Saldo global (LIFO entre modelos): pools − horas futuras de todos os modelos.
   const selectedModelBalance = useMemo(() => {
     const modelId = aircrafts.find((aircraft) => aircraft.registration === aircraftIdent)?.modelId ?? null;
-    if (!modelId) return null;
-    const modelIdByRegistration = new Map(aircrafts.map((aircraft) => [aircraft.registration, aircraft.modelId]));
-    const futureMinutes = futureOwnFlights
-      .filter((flight) => modelIdByRegistration.get(flight.aircraftIdent) === modelId)
-      .reduce((acc, flight) => acc + (flight.durationMinutes || 0), 0);
-    const creditHours = creditSummaries.find((row) => row.aircraftModelId === modelId)?.availableHours ?? 0;
-    const futureHours = futureMinutes / 60;
+    const modelSummary = modelId ? creditSummaries.find((row) => row.aircraftModelId === modelId) : null;
+    const globalBalanceHours = creditTotals?.balanceHours
+      ?? (creditTotals
+        ? Number((creditTotals.purchasedHours - creditTotals.consumedHours - (creditTotals.penaltyHours ?? 0)).toFixed(2))
+        : 0);
+    const allFutureFlights = futureOwnFlights.map((flight) => ({
+      flightDate: flight.flightDate,
+      hours: (flight.durationMinutes || 0) / 60,
+    }));
+    const futureHours = allFutureFlights.reduce((acc, flight) => acc + flight.hours, 0);
+    const futureWeekdayHours = allFutureFlights
+      .filter((flight) => !isWeekendDate(flight.flightDate))
+      .reduce((acc, flight) => acc + flight.hours, 0);
+    const futureWeekendHours = futureHours - futureWeekdayHours;
+    const pools = creditTotals
+      ? freeBalanceForDateFromPools(creditTotals, flightDate, allFutureFlights)
+      : { freeHours: 0, weekdayOnlyRemaining: 0, anyDayRemaining: 0 };
     return {
       modelId,
-      modelName: creditSummaries.find((row) => row.aircraftModelId === modelId)?.aircraftModelName ?? aircraftIdent,
-      creditHours,
+      modelName: modelSummary?.aircraftModelName ?? aircraftIdent,
+      creditHours: globalBalanceHours,
       futureHours,
-      freeHours: creditHours - futureHours,
+      futureWeekdayHours,
+      futureWeekendHours,
+      freeHours: pools.freeHours,
+      weekdayOnlyRemaining: pools.weekdayOnlyRemaining,
+      anyDayRemaining: pools.anyDayRemaining,
     };
-  }, [aircrafts, aircraftIdent, futureOwnFlights, creditSummaries]);
+  }, [aircrafts, aircraftIdent, flightDate, futureOwnFlights, creditSummaries, creditTotals]);
 
   // Créditos: bloqueia envio no modal quando saldo livre não cobre o voo (inclui exceção "1h zerado").
   const bookingCreditCheck = useMemo(() => {
-    const clear = { blocked: false, message: null as string | null, needsZeroCreditConfirm: false };
+    const clear = { blocked: false, message: null as string | null, needsZeroCreditConfirm: false, showCreditsCta: false };
     if (!bookingOpen || !rules.requireCreditsForBooking) return clear;
     if (creditsLoading || futureLoading) {
-      return { blocked: true, message: null, needsZeroCreditConfirm: false };
+      return { blocked: true, message: null, needsZeroCreditConfirm: false, showCreditsCta: false };
     }
 
     const modelId = aircrafts.find((aircraft) => aircraft.registration === aircraftIdent)?.modelId ?? null;
     if (!modelId) {
-      return { blocked: true, message: "Aeronave sem modelo configurado — não é possível verificar créditos.", needsZeroCreditConfirm: false };
+      return { blocked: true, message: "Aeronave sem modelo configurado — não é possível verificar créditos.", needsZeroCreditConfirm: false, showCreditsCta: false };
     }
 
     const freeHours = selectedModelBalance?.freeHours ?? 0;
@@ -1116,22 +1256,37 @@ export function StudentScheduleTab() {
 
     if (freeHours + 0.001 >= requestedHours) return clear;
 
-    if (rules.allowZeroCreditOneHour && durationMinutes <= 60 && freeHours >= -0.001) {
-      return { blocked: false, message: null, needsZeroCreditConfirm: true };
+    if (canUseZeroCreditOneHourException(rules, durationMinutes, freeHours, creditTotals)) {
+      return { blocked: false, message: null, needsZeroCreditConfirm: true, showCreditsCta: false };
+    }
+
+    if (
+      isWeekendDate(flightDate) &&
+      (selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001 &&
+      (selectedModelBalance?.anyDayRemaining ?? 0) + 0.001 < requestedHours
+    ) {
+      return {
+        blocked: true,
+        message: `Crédito insuficiente para fim de semana. Você possui ${(selectedModelBalance?.weekdayOnlyRemaining ?? 0).toFixed(2)}h válidas apenas de segunda a sexta…`,
+        needsZeroCreditConfirm: false,
+        showCreditsCta: true,
+      };
     }
 
     if (freeHours < -0.001) {
       return {
         blocked: true,
-        message: `Você já tem horas agendadas sem crédito suficiente. Saldo livre para agendar: −${minutesToHHMM(Math.round(Math.abs(freeHours) * 60))}. Não é possível marcar outro voo nesta condição.`,
+        message: `Seu saldo de créditos está negativo. Saldo livre para agendar: ${formatDecimalHours(freeHours)}. Não é possível marcar um voo nesta condição.`,
         needsZeroCreditConfirm: false,
+        showCreditsCta: true,
       };
     }
 
     return {
       blocked: true,
-      message: `Crédito insuficiente. Saldo livre para agendar: ${minutesToHHMM(Math.round(Math.max(0, freeHours) * 60))}; este voo precisa de ${minutesToHHMM(durationMinutes)}.`,
+      message: `Crédito insuficiente. Saldo livre para agendar: ${formatDecimalHours(Math.max(0, freeHours))}; este voo precisa de ${formatDecimalHours(durationMinutes / 60)}.`,
       needsZeroCreditConfirm: false,
+      showCreditsCta: true,
     };
   }, [
     bookingOpen,
@@ -1141,7 +1296,11 @@ export function StudentScheduleTab() {
     futureLoading,
     aircrafts,
     aircraftIdent,
+    flightDate,
     selectedModelBalance?.freeHours,
+    selectedModelBalance?.weekdayOnlyRemaining,
+    selectedModelBalance?.anyDayRemaining,
+    creditTotals,
     durationMinutes,
   ]);
 
@@ -1221,6 +1380,9 @@ export function StudentScheduleTab() {
   }, [rules.minBookingLeadDays]);
   const dateTooEarly = Boolean(flightDate) && flightDate < minBookingDate;
 
+  // Dia sem nenhum horário livre nesta aeronave: data em vermelho e campos abaixo inativos.
+  const noSlotsForDay = Boolean(flightDate) && !dateTooEarly && availableTimeSlots.length === 0;
+
   // Flexibility options (item 5)
   const flexibilityOptions = useMemo(
     () => [1, 2, 3, 4].map((mult) => ({ value: rules.slotMinutes * mult, label: minutesToHHMM(rules.slotMinutes * mult) })),
@@ -1299,6 +1461,20 @@ export function StudentScheduleTab() {
       ? [DAY_ORDER[selectedDayIndex]!]
       : DAY_ORDER; // list uses all
 
+  // Mobile: o seletor da visão diária mostra uma janela de 3 dias em torno do dia
+  // selecionado; as setas avançam/recuam a janela (3 dias por clique).
+  const headerDays: readonly number[] = isMobile
+    ? DAY_ORDER.slice(
+        Math.max(0, Math.min(selectedDayIndex - 1, DAY_ORDER.length - 3)),
+        Math.max(0, Math.min(selectedDayIndex - 1, DAY_ORDER.length - 3)) + 3,
+      )
+    : DAY_ORDER;
+
+  // A visão semanal não existe no mobile.
+  useEffect(() => {
+    if (isMobile && agendaView === "weekly") setAgendaView("daily");
+  }, [isMobile, agendaView]);
+
   // Calendar-level blocked slots (aggregate — kept for CalendarGrid overlay)
   const calendarBlockedSlots = useMemo(
     () => blockedSlots.map(({ dayOfWeek, startHour, endHour }) => ({ dayOfWeek, startHour, endHour })),
@@ -1307,10 +1483,15 @@ export function StudentScheduleTab() {
 
   function openBookingAt(target?: CalendarDropTarget) {
     setBookingAck(false);
+    setBookingStep(1);
     if (target) {
       setFlightDate(addDays(weekStart, target.dayOfWeek === 0 ? 6 : target.dayOfWeek - 1));
       setStartTime(addMinutes(target.startTime, rules.bufferBeforeMinutes));
       if (target.targetAircraftRegistration) setAircraftIdent(target.targetAircraftRegistration);
+    } else if (agendaView === "daily") {
+      // Na visão diária o default é o dia selecionado (se a antecedência permitir).
+      const selectedDate = addDays(weekStart, selectedDay === 0 ? 6 : selectedDay - 1);
+      setFlightDate(selectedDate >= minBookingDate ? selectedDate : resolveDefaultBookingDate(rules.minBookingLeadDays));
     } else {
       setFlightDate(resolveDefaultBookingDate(rules.minBookingLeadDays));
     }
@@ -1322,7 +1503,13 @@ export function StudentScheduleTab() {
       setWeekStart((current) => addDays(current, direction * 7));
       return;
     }
-    const nextIndex = selectedDayIndex + direction;
+    // Diária no desktop: as setas trocam a SEMANA inteira (mantendo o dia da semana).
+    if (!isMobile) {
+      setWeekStart((current) => addDays(current, direction * 7));
+      return;
+    }
+    // Mobile: as setas pulam para os 3 dias seguintes/anteriores.
+    const nextIndex = selectedDayIndex + direction * 3;
     if (nextIndex >= 0 && nextIndex < DAY_ORDER.length) {
       setSelectedDay(DAY_ORDER[nextIndex]!);
       return;
@@ -1337,8 +1524,8 @@ export function StudentScheduleTab() {
     if (flight) setDetailFlight(flight);
   }
 
-  async function executeCancelFlight(flight: PublicScheduleFlight) {
-    await cancelScheduleFlight(flight.id);
+  async function executeCancelFlight(flight: PublicScheduleFlight, reason: string) {
+    await cancelScheduleFlight(flight.id, { reason });
     showToast({ variant: "success", message: "Voo cancelado." });
     setCancelFlight(null);
     setDetailFlight(null);
@@ -1399,6 +1586,7 @@ export function StudentScheduleTab() {
       showToast({ variant: "error", message: "Horário indisponível: já existe um voo nesse intervalo ou o horário não comporta este voo." });
       return;
     }
+    setProposedReason("");
     setProposedChange({ flight, aircraftIdent: newAircraft, flightDate: newDate, startTime: newStart });
   }
 
@@ -1412,6 +1600,7 @@ export function StudentScheduleTab() {
         flightDate: proposedChange.flightDate,
         startTime: proposedChange.startTime,
         durationMinutes: proposedChange.flight.durationMinutes || 60,
+        reason: proposedReason.trim(),
       });
       showToast({ variant: "success", message: "Voo alterado." });
       setProposedChange(null);
@@ -1438,13 +1627,12 @@ export function StudentScheduleTab() {
         const freeHours =
           availability.creditFreeHours ??
           selectedModelBalance?.freeHours;
-        const canUseZeroCreditException =
-          rules.allowZeroCreditOneHour &&
-          durationMinutes <= 60 &&
-          (availability.zeroCreditExceptionAvailable === true ||
-            (availability.zeroCreditExceptionAvailable !== false &&
-              freeHours !== undefined &&
-              freeHours >= -0.001));
+        const canUseZeroCreditException = canUseZeroCreditOneHourException(
+          rules,
+          durationMinutes,
+          freeHours ?? -1,
+          creditTotals,
+        );
         if (canUseZeroCreditException) {
           setZeroCreditConfirmOpen(true);
           return;
@@ -1473,72 +1661,86 @@ export function StudentScheduleTab() {
   // Skeleton até a primeira resposta — evita o flash de "sem escala" antes da agenda.
   if (!initialLoaded) {
     return (
-      <div className="space-y-4">
+      <ScheduleStudentChrome rules={rules} helpConfig={helpConfig} mode={mode}>
         <div className="h-8 w-64 animate-pulse rounded-lg bg-slate-800" />
         <ScheduleSkeleton />
-      </div>
+      </ScheduleStudentChrome>
     );
   }
-  if (mode === "intentions") return <AgendamentoTab />;
+  if (mode === "intentions") {
+    return (
+      <ScheduleStudentChrome rules={rules} helpConfig={helpConfig} mode={mode}>
+        <AgendamentoTab />
+      </ScheduleStudentChrome>
+    );
+  }
   if (mode === "closed") {
-    return <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-8 text-center text-sm text-slate-400">A escala está fechada no momento.</div>;
+    return (
+      <ScheduleStudentChrome rules={rules} helpConfig={helpConfig} mode={mode}>
+        <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-8 text-center text-sm text-slate-400">
+          A escala está fechada no momento.
+        </div>
+      </ScheduleStudentChrome>
+    );
   }
 
   const isNonWeekly = agendaView === "daily";
 
   return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* View selector */}
-        <div className="flex overflow-hidden rounded-lg border border-slate-700">
-          {([
-            ["weekly", "Semanal"],
-            ["daily", "Diária"],
-            ["list", "Lista"],
-          ] as const).map(([value, label]) => (
+    <ScheduleStudentChrome
+      rules={rules}
+      helpConfig={helpConfig}
+      mode={mode}
+      toolbarLeading={
+        <>
+          <div className="flex overflow-hidden rounded-lg border border-slate-700">
+            {([
+              ["weekly", "Semanal"],
+              ["daily", "Diária"],
+              ["list", "Lista"],
+            ] as const).filter(([value]) => !(isMobile && value === "weekly")).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setAgendaView(value)}
+                className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors last:border-r-0 sm:py-1.5 ${
+                  agendaView === value ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {agendaView !== "list" && (
             <button
-              key={value}
               type="button"
-              onClick={() => setAgendaView(value)}
-              className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors last:border-r-0 sm:py-1.5 ${
-                agendaView === value ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
+              onClick={() => setOnlyMyFlights((v) => !v)}
+              className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                onlyMyFlights ? "border-sky-500 bg-sky-600/20 text-sky-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"
               }`}
             >
-              {label}
+              {onlyMyFlights ? "Todos os voos" : "Somente meus voos"}
             </button>
-          ))}
-        </div>
-
-        {/* "Only my flights" toggle (only in non-list views) */}
-        {agendaView !== "list" && (
-          <button
-            type="button"
-            onClick={() => setOnlyMyFlights((v) => !v)}
-            className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-              onlyMyFlights ? "border-sky-500 bg-sky-600/20 text-sky-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"
-            }`}
-          >
-            {onlyMyFlights ? "Todos os voos" : "Somente meus voos"}
-          </button>
-        )}
-
-        <p className="ml-auto text-xs font-medium text-slate-400">
-          {formatDate(weekStart)} a {formatDate(addDays(weekStart, 6))}
-        </p>
-
-        {/* Week navigation */}
-        <div className="flex gap-1">
-          <button type="button" onClick={() => moveCalendar(-1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">‹</button>
-          <button type="button" onClick={() => moveCalendar(1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">›</button>
-        </div>
-
-        {mode === "booking" && (
-          <button type="button" onClick={() => openBookingAt()} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500">
-            Marcar voo
-          </button>
-        )}
-      </div>
+          )}
+        </>
+      }
+      toolbarTrailing={
+        <>
+          {agendaView === "list" && (
+            <div className="flex gap-1">
+              <button type="button" onClick={() => moveCalendar(-1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">‹</button>
+              <button type="button" onClick={() => moveCalendar(1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">›</button>
+            </div>
+          )}
+          {mode === "booking" && (
+            <button type="button" onClick={() => openBookingAt()} className="inline-flex h-9 shrink-0 items-center rounded-lg bg-sky-600 px-3 text-xs font-semibold text-white hover:bg-sky-500 sm:h-[38px] sm:px-4 sm:text-sm">
+              + Marcar voo
+            </button>
+          )}
+        </>
+      }
+    >
 
       {/* Status legend (not in list view) */}
       {agendaView !== "list" && (
@@ -1605,13 +1807,10 @@ export function StudentScheduleTab() {
                 onSelectDay={setSelectedDay}
                 onPrevDay={() => moveCalendar(-1)}
                 onNextDay={() => moveCalendar(1)}
+                headerDays={headerDays}
                 onItemClick={handleItemClick}
                 onEmptySlotClick={mode === "booking" ? openBookingAt : undefined}
               />
-              <div className="mt-3 flex justify-end gap-1">
-                <button type="button" onClick={() => moveCalendar(-1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">‹ Semana ant.</button>
-                <button type="button" onClick={() => moveCalendar(1)} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">Próx. semana ›</button>
-              </div>
             </div>
           )}
         </>
@@ -1663,6 +1862,17 @@ export function StudentScheduleTab() {
               <span className="text-slate-300">{proposedChange.flight.aircraftIdent}</span>
               <span className="font-semibold text-sky-200">{proposedChange.aircraftIdent}</span>
             </div>
+            {/* Motivo obrigatório — registrado nas observações do voo */}
+            <label className="block text-xs text-slate-400">Motivo da alteração
+              <textarea
+                value={proposedReason}
+                onChange={(e) => setProposedReason(e.target.value)}
+                rows={2}
+                maxLength={180}
+                placeholder="Ex.: compromisso no horário original; prefiro voar mais cedo..."
+                className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-600"
+              />
+            </label>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -1673,7 +1883,7 @@ export function StudentScheduleTab() {
               </button>
               <button
                 type="button"
-                disabled={proposedSaving}
+                disabled={proposedSaving || !proposedReason.trim()}
                 onClick={() => void confirmProposedChange()}
                 className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
@@ -1690,7 +1900,7 @@ export function StudentScheduleTab() {
           flight={cancelFlight}
           rules={rules}
           onClose={() => setCancelFlight(null)}
-          onConfirm={() => executeCancelFlight(cancelFlight)}
+          onConfirm={(reason) => executeCancelFlight(cancelFlight, reason)}
         />
       )}
 
@@ -1736,48 +1946,104 @@ export function StudentScheduleTab() {
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
             <div>
               <h3 className="font-semibold text-slate-100">Solicitar voo</h3>
-              <p className="text-xs text-slate-500">O pedido ficará Pendente até confirmação.</p>
+              <p className="text-xs text-slate-500">
+                Etapa {bookingStep} de 2 · {bookingStep === 1 ? "Escolha aeronave, dia e horário." : "Revise e confirme a solicitação."}
+              </p>
             </div>
 
+            {bookingStep === 1 && (<>
             {/* Credits by model (real data from creditsDb) */}
-            {!creditsLoading && creditSummaries.length > 0 && (
+            {bookingStep === 1 && rules.requireCreditsForBooking ? (
               <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-3">
                 <p className="mb-2 text-xs font-semibold text-slate-300">Seus créditos disponíveis</p>
-                <div className="space-y-1">
-                  {creditSummaries.map((row) => (
-                    <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300">{row.aircraftModelName}</span>
-                      <span className="text-slate-400">
-                        Disponível: <strong className={row.availableHours > 0 ? "text-emerald-300" : "text-red-300"}>{minutesToHHMM(Math.round(row.availableHours * 60))}</strong>
-                      </span>
+                {creditsLoading ? (
+                  <p className="text-xs text-slate-500 animate-pulse">Carregando créditos…</p>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-400">Livre</span>
+                        <strong
+                          className={
+                            (selectedModelBalance?.anyDayRemaining ?? 0) > 0.001
+                              ? "text-emerald-300"
+                              : "text-slate-300"
+                          }
+                        >
+                          {formatDecimalHours(selectedModelBalance?.anyDayRemaining ?? 0)}
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-400">Dia de semana</span>
+                        <strong
+                          className={
+                            (selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001
+                              ? "text-sky-300"
+                              : "text-slate-300"
+                          }
+                        >
+                          {formatDecimalHours(selectedModelBalance?.weekdayOnlyRemaining ?? 0)}
+                        </strong>
+                      </div>
                     </div>
-                  ))}
-                </div>
-                {selectedModelBalance && (
-                  <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Horas futuras agendadas ({selectedModelBalance.modelName})</span>
-                      <strong className="text-sky-300">
-                        {futureLoading ? "..." : minutesToHHMM(Math.round(selectedModelBalance.futureHours * 60))}
-                      </strong>
+                    <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-400">Horas futuras agendadas</span>
+                        <strong className="text-sky-300">
+                          {futureLoading ? "…" : formatDecimalHours(selectedModelBalance?.futureHours ?? 0)}
+                        </strong>
+                      </div>
+                      {(selectedModelBalance?.futureWeekdayHours ?? 0) > 0.001 ||
+                      (selectedModelBalance?.futureWeekendHours ?? 0) > 0.001 ? (
+                        <div className="flex flex-wrap justify-end gap-x-3 text-[11px] text-slate-500">
+                          {(selectedModelBalance?.futureWeekdayHours ?? 0) > 0.001 ? (
+                            <span>dia de semana: {formatDecimalHours(selectedModelBalance?.futureWeekdayHours ?? 0)}</span>
+                          ) : null}
+                          {(selectedModelBalance?.futureWeekendHours ?? 0) > 0.001 ? (
+                            <span>fds: {formatDecimalHours(selectedModelBalance?.futureWeekendHours ?? 0)}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-400">
+                          Saldo aplicável ao dia{isWeekendDate(flightDate) ? " (fds)" : ""}
+                        </span>
+                        <strong className={(selectedModelBalance?.freeHours ?? 0) > 0.001 ? "text-emerald-300" : "text-red-300"}>
+                          {futureLoading ? "…" : formatDecimalHours(selectedModelBalance?.freeHours ?? 0)}
+                        </strong>
+                      </div>
+                      {(selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001 && isWeekendDate(flightDate) ? (
+                        <p className="text-[11px] text-amber-300">
+                          Você tem {formatDecimalHours(selectedModelBalance?.weekdayOnlyRemaining ?? 0)} válidas só em dia de semana; não valem neste dia.
+                        </p>
+                      ) : null}
                     </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Saldo livre para agendar</span>
-                      <strong className={selectedModelBalance.freeHours > 0 ? "text-emerald-300" : "text-red-300"}>
-                        {futureLoading
-                          ? "..."
-                          : `${selectedModelBalance.freeHours < 0 ? "-" : ""}${minutesToHHMM(Math.round(Math.abs(selectedModelBalance.freeHours) * 60))}`}
-                      </strong>
-                    </div>
-                  </div>
+                  </>
                 )}
               </div>
-            )}
+            ) : null}
 
             {bookingCreditCheck.message && (
-              <div className="flex items-start gap-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
-                <span className="mt-0.5 shrink-0">⚠</span>
-                <span>{bookingCreditCheck.message}</span>
+              <div className="space-y-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 shrink-0">⚠</span>
+                  <span>{bookingCreditCheck.message}</span>
+                </div>
+                {bookingCreditCheck.showCreditsCta && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-red-800/40 pt-2">
+                    <span className="text-red-200/90">Para adicionar mais créditos acesse a aba Créditos.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBookingOpen(false);
+                        navigateToTab("/aluno/creditos");
+                      }}
+                      className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                    >
+                      Adicionar créditos
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1812,11 +2078,16 @@ export function StudentScheduleTab() {
                   value={flightDate}
                   min={minBookingDate}
                   onChange={(e) => setFlightDate(e.target.value)}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white ${dateTooEarly ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white ${dateTooEarly || noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
                 />
                 {dateTooEarly && (
                   <span className="mt-1 block text-[11px] font-medium text-red-400">
                     Antecedência mínima de {rules.minBookingLeadDays} dia{rules.minBookingLeadDays !== 1 ? "s" : ""} — escolha a partir de {formatDate(minBookingDate)}.
+                  </span>
+                )}
+                {noSlotsForDay && (
+                  <span className="mt-1 block text-[11px] font-medium text-red-400">
+                    Não há nenhum horário disponível neste avião para este dia.
                   </span>
                 )}
               </label>
@@ -1826,7 +2097,8 @@ export function StudentScheduleTab() {
                 <select
                   value={startTime}
                   onChange={(e) => setStartTime(e.target.value)}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white ${startTimeInvalid ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
+                  disabled={noSlotsForDay}
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white disabled:opacity-50 ${startTimeInvalid && !noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
                 >
                   {/* O horário escolhido permanece selecionável mesmo se deixar de caber (item 5) */}
                   {!availableTimeSlots.some((opt) => opt.value === startTime) && (
@@ -1843,25 +2115,54 @@ export function StudentScheduleTab() {
                     </optgroup>
                   )}
                 </select>
-                {startTimeInvalid && (
-                  <span className="mt-1 block text-[11px] font-medium text-red-400">
-                    Este horário não comporta o tempo de voo selecionado (ou já está ocupado). Escolha outro horário.
-                  </span>
+                {!noSlotsForDay && (
+                  <span className="mt-1 block text-[10px] text-slate-500">Mostrando somente horários disponíveis</span>
                 )}
-                {!startTimeInvalid && availableTimeSlots.length === 0 && (
-                  <span className="mt-1 block rounded-lg border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200">
-                    Nenhum horário livre nesta aeronave para esta data. Tente outra data ou aeronave.
+                {startTimeInvalid && !noSlotsForDay && (
+                  <span className="mt-1 block text-[11px] font-medium text-red-400">
+                    Este horário não comporta o tempo de voo selecionado (ou já está ocupado). Escolha outro horário
+                    ou reduza o tempo de voo.
                   </span>
                 )}
               </label>
 
-              {/* Tempo de voo em HH:MM — opções já limitadas pelo início do noturno */}
+              {/* Tempo de voo em HH:MM — opções já limitadas pelo início do noturno.
+                  Fica ativo mesmo com acionamento inválido: reduzir a duração pode
+                  fazer o horário escolhido voltar a caber. */}
               <label className="text-xs text-slate-400">Tempo de voo
-                <select value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white">
+                <select
+                  value={durationMinutes}
+                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
+                  disabled={noSlotsForDay}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+                >
                   {durationOptions.length === 0 && <option value={durationMinutes}>{minutesToHHMM(durationMinutes)}</option>}
                   {durationOptions.map((minutes) => <option key={minutes} value={minutes}>{minutesToHHMM(minutes)}</option>)}
                 </select>
               </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100 sm:grid-cols-4">
+              <div><p className="text-sky-300">Apresentação</p><strong>{preview.presentation}</strong></div>
+              <div><p className="text-sky-300">Acionamento</p><strong>{preview.start}</strong></div>
+              <div><p className="text-sky-300">Corte</p><strong>{preview.cutoff}</strong></div>
+              <div><p className="text-sky-300">Encerramento</p><strong>{preview.end}</strong></div>
+            </div>
+            </>)}
+
+            {bookingStep === 2 && (<>
+            {/* Resumo do voo escolhido na etapa 1 */}
+            <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-200">{aircraftIdent}</span>
+                <span className="text-slate-400">{flightDate ? formatLongDate(flightDate) : ""}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div><p className="text-slate-500">Apresentação</p><strong className="text-slate-200">{preview.presentation}</strong></div>
+                <div><p className="text-slate-500">Acionamento</p><strong className="text-slate-200">{preview.start}</strong></div>
+                <div><p className="text-slate-500">Corte</p><strong className="text-slate-200">{preview.cutoff}</strong></div>
+                <div><p className="text-slate-500">Encerramento</p><strong className="text-slate-200">{preview.end}</strong></div>
+              </div>
             </div>
 
             {/* Flexibilidade de horário */}
@@ -1899,53 +2200,71 @@ export function StudentScheduleTab() {
                 className="mt-1 w-full resize-none rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-600"
               />
             </label>
-
-            <div className="grid grid-cols-2 gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100 sm:grid-cols-4">
-              <div><p className="text-sky-300">Apresentação</p><strong>{preview.presentation}</strong></div>
-              <div><p className="text-sky-300">Acionamento</p><strong>{preview.start}</strong></div>
-              <div><p className="text-sky-300">Corte</p><strong>{preview.cutoff}</strong></div>
-              <div><p className="text-sky-300">Encerramento</p><strong>{preview.end}</strong></div>
-            </div>
+            </>)}
 
             </div>
 
-            {/* Footer fixo: checkbox de ciência + ações (no mobile fica flutuante na base) */}
+            {/* Footer fixo: navegação das etapas (no mobile fica flutuante na base) */}
             <div className="space-y-3 border-t border-slate-800 bg-slate-900 p-4 sm:rounded-b-2xl">
-              <label className="flex items-start gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={bookingAck}
-                  onChange={(e) => setBookingAck(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-800 accent-sky-500"
-                />
-                <span>
-                  Estou ciente que isto é apenas uma <strong>solicitação</strong> e a escola irá confirmar ou não este
-                  voo entre <strong>48h e 12h</strong> antes do horário planejado.
-                </span>
-              </label>
+              {bookingStep === 2 && (
+                <label className="flex items-start gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={bookingAck}
+                    onChange={(e) => setBookingAck(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-800 accent-sky-500"
+                  />
+                  <span>
+                    Estou ciente que isto é apenas uma <strong>solicitação</strong> e a escola irá confirmar ou não este
+                    voo entre <strong>48h e 12h</strong> antes do horário planejado.
+                  </span>
+                </label>
+              )}
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setBookingOpen(false)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
-                <button
-                  type="button"
-                  disabled={
-                    saving ||
-                    !aircraftIdent ||
-                    !bookingAck ||
-                    dateTooEarly ||
-                    startTimeInvalid ||
-                    durationOptions.length === 0 ||
-                    bookingCreditCheck.blocked
-                  }
-                  onClick={() => void submitBooking()}
-                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                >
-                  {saving ? "Enviando..." : "Solicitar"}
-                </button>
+                {bookingStep === 1 ? (
+                  <>
+                    <button type="button" onClick={() => setBookingOpen(false)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
+                    <button
+                      type="button"
+                      disabled={
+                        !aircraftIdent ||
+                        dateTooEarly ||
+                        noSlotsForDay ||
+                        startTimeInvalid ||
+                        durationOptions.length === 0 ||
+                        bookingCreditCheck.blocked
+                      }
+                      onClick={() => setBookingStep(2)}
+                      className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      Continuar
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" onClick={() => setBookingStep(1)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
+                    <button
+                      type="button"
+                      disabled={
+                        saving ||
+                        !bookingAck ||
+                        dateTooEarly ||
+                        noSlotsForDay ||
+                        startTimeInvalid ||
+                        bookingCreditCheck.blocked
+                      }
+                      onClick={() => void submitBooking()}
+                      className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      {saving ? "Enviando..." : "Solicitar"}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </ScheduleStudentChrome>
   );
 }

@@ -10,15 +10,15 @@ import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
-import { PushNotificationsToggle } from "./PushNotificationsToggle";
-import { InstallPwaButton } from "./InstallPwaButton";
 import type { StudentTabKey } from "../types/rolePermissions";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
 const AlunoProfileDashboard = lazy(() =>
   import("./AlunoProfileDashboard").then((module) => ({ default: module.AlunoProfileDashboard })),
 );
-const CreditosTab = lazy(() => import("./CreditosTab").then((module) => ({ default: module.CreditosTab })));
+const CreditosSectionRouter = lazy(() =>
+  import("./CreditosSectionRouter").then((module) => ({ default: module.CreditosSectionRouter })),
+);
 const FuelingsTab = lazy(() => import("./FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const HelpCenterTab = lazy(() => import("./HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
 const JornadaTab = lazy(() => import("./JornadaTab").then((module) => ({ default: module.JornadaTab })));
@@ -209,7 +209,7 @@ const SECTION_ROUTES = [
   { id: "meus-voos", path: "/aluno/meus-voos" },
   { id: "agendamento", path: "/aluno/agendamento" },
   { id: "schedule", path: "/aluno/escala" },
-  { id: "creditos", path: "/aluno/creditos" },
+  { id: "creditos", path: "/aluno/creditos", aliases: ["/aluno/creditos/comprar"] },
   { id: "avisos", path: "/aluno/avisos" },
   { id: "manuais", path: "/aluno/manuais" },
   { id: "manobras", path: "/aluno/manobras" },
@@ -492,9 +492,9 @@ export function MainLayout() {
               title={activeNav.label}
             />
             <div className="flex items-center gap-3">
-              <InstallPwaButton className="hidden sm:block" />
-              <PushNotificationsToggle />
-              <UserEmailWithRoleSwitcher email={user?.email} header />
+              <div className="lg:hidden">
+                <UserEmailWithRoleSwitcher email={user?.email} header />
+              </div>
               <button
                 type="button"
                 onClick={() => void signOut()}
@@ -549,7 +549,7 @@ export function MainLayout() {
           {openedSections.has("creditos") && (
             <div hidden={section !== "creditos"}>
               <LazyTab>
-                <CreditosTab />
+                <CreditosSectionRouter />
               </LazyTab>
             </div>
           )}

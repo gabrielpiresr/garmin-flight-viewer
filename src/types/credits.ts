@@ -12,6 +12,7 @@ export type StudentCreditPurchase = {
   expiresAt: string;
   notes: string;
   isNight: boolean;
+  weekdayOnly: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string | null;
@@ -44,7 +45,17 @@ export type StudentCreditModelSummary = {
   consumedHours: number;
   expiredHours: number;
   availableHours: number;
+  /**
+   * Saldo cru do modelo (compradas − consumidas, PODE ser negativo) — mesma conta
+   * do card "Saldo disponível" da aba Créditos. `availableHours` é o saldo alocável
+   * (clampado em ≥ 0 no modo por alocação) e diverge quando o aluno está devendo.
+   */
+  balanceHours: number;
   unallocatedFlightHours: number;
+  /** Horas restantes em créditos restritos a seg–sex (após alocação FIFO). */
+  weekdayOnlyAvailableHours: number;
+  /** Horas restantes em créditos válidos em qualquer dia (após alocação FIFO). */
+  anyDayAvailableHours: number;
 };
 
 export type StudentCreditStatement = {
@@ -70,7 +81,14 @@ export type StudentCreditStatement = {
     consumedHours: number;
     expiredHours: number;
     availableHours: number;
+    /** Saldo líquido após voos e multas (pode ser negativo). */
+    balanceHours: number;
+    penaltyHours: number;
     unallocatedFlightHours: number;
+    /** Dívida histórica ainda não coberta por compras (deve ser 0 quando comprado ≥ voado). */
+    debtHours?: number;
+    weekdayOnlyAvailableHours: number;
+    anyDayAvailableHours: number;
     amountPaid: number;
   };
 };
@@ -87,4 +105,5 @@ export type StudentCreditInput = {
   hours: number;
   notes?: string;
   isNight?: boolean;
+  weekdayOnly?: boolean;
 };

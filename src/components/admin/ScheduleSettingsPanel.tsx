@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
 import { DEFAULT_SCHOOL_RULES, type FlightScheduleRules, type SchoolRules } from "../../types/schoolRules";
+import { ScheduleStudentHelpSection } from "./ScheduleStudentHelpSection";
 import { useToast } from "../ui/ToastProvider";
 
 // Convert decimal hours (18.5) to HH:MM string ("18:30")
@@ -118,6 +119,10 @@ export function ScheduleSettingsPanel() {
     setRules((current) => ({ ...current, schedule: { ...current.schedule, ...patch } }));
   }
 
+  function setHelpConfig(next: typeof rules.scheduleStudentHelp) {
+    setRules((current) => ({ ...current, scheduleStudentHelp: next }));
+  }
+
   const schedule = rules.schedule;
 
   function numberField(
@@ -184,6 +189,7 @@ export function ScheduleSettingsPanel() {
         },
         emailNotifications: rules.emailNotifications,
         flightReviewClub: rules.flightReviewClub,
+        scheduleStudentHelp: rules.scheduleStudentHelp,
       });
       setRules(saved);
       showToast({ variant: "success", message: "Configurações da escala salvas." });
@@ -369,6 +375,12 @@ export function ScheduleSettingsPanel() {
           />
         </div>
       </Section>
+
+      <ScheduleStudentHelpSection
+        schedule={schedule}
+        helpConfig={rules.scheduleStudentHelp}
+        onChange={setHelpConfig}
+      />
 
       <div className="flex justify-end">
         <button

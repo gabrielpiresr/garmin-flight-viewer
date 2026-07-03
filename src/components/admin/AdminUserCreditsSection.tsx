@@ -34,6 +34,7 @@ type CreditForm = {
   hours: string;
   notes: string;
   isNight: boolean;
+  weekdayOnly: boolean;
 };
 
 const PAYMENT_METHODS = ["Cartão de crédito à vista", "Parcelado", "PIX"] as const;
@@ -48,6 +49,7 @@ const emptyForm: CreditForm = {
   hours: "",
   notes: "",
   isNight: false,
+  weekdayOnly: false,
 };
 
 function parseNumber(value: string): number {
@@ -138,6 +140,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
       hours: parseNumber(form.hours),
       notes: form.notes,
       isNight: form.isNight,
+      weekdayOnly: form.weekdayOnly,
     };
   }
 
@@ -153,6 +156,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
       hours: formatNumber(purchase.hours),
       notes: purchase.notes,
       isNight: purchase.isNight,
+      weekdayOnly: purchase.weekdayOnly,
     });
     setModalOpen(true);
   }
@@ -179,8 +183,18 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
         await updateAdminUserCredit(editingCreditId, input);
         showToast({ variant: "success", message: "Crédito atualizado." });
       } else {
-        await createAdminUserCredit(input);
-        showToast({ variant: "success", message: "Crédito adicionado." });
+        const saga = await createAdminUserCredit(input);
+        if (saga?.ok) {
+          showToast({
+            variant: "success",
+            message: saga.status === "already_exists" ? "Crédito adicionado; SAGA já tinha esse lançamento." : "Crédito adicionado e lançado no SAGA.",
+          });
+        } else {
+          showToast({
+            variant: "warning",
+            message: `Crédito adicionado no sistema, mas não foi lançado no SAGA${saga?.message ? `: ${saga.message}` : "."}`,
+          });
+        }
       }
       cancelEdit();
       await load();
@@ -337,6 +351,15 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
                   className="h-4 w-4 accent-indigo-500"
                 />
                 Hora noturna
+              </label>
+              <label className="flex items-center gap-3 rounded-lg border border-sky-700/40 bg-sky-950/20 p-3 text-sm text-slate-200 md:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.weekdayOnly}
+                  onChange={(e) => setForm((prev) => ({ ...prev, weekdayOnly: e.target.checked }))}
+                  className="h-4 w-4 accent-sky-500"
+                />
+                Vale somente em dias de semana (seg–sex)
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-2">

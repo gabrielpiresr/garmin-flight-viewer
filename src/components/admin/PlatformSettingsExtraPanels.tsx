@@ -45,6 +45,7 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
     studentTabs: { ...settings.studentTabs },
     theme: { ...settings.theme },
     schedule: { ...settings.schedule },
+    scheduleStudentHelp: { ...settings.scheduleStudentHelp },
     flightReviewClub: { ...settings.flightReviewClub },
     emailNotifications: Object.fromEntries(
       EMAIL_NOTIFICATION_EVENT_OPTIONS.map((item) => [item.id, { ...settings.emailNotifications[item.id] }]),

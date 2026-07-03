@@ -457,7 +457,7 @@ function validateSagaStudentOverlap(events, rules, studentSagaId, occupiedStartA
 
 /** Horas de voo futuras já reservadas no SAGA pelo aluno para um modelo (acionamento→corte). */
 async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, ignoreEventId = "") {
-  if (!modelId || !studentSagaId) return 0;
+  if (!modelId || !studentSagaId) return { weekdayHours: 0, weekendHours: 0 };
   const aircrafts = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
     sdk.Query.limit(500),
@@ -465,7 +465,8 @@ async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, 
   const modelByReg = {};
   for (const doc of aircrafts.documents) modelByReg[normalizeRegistration(doc.registration)] = doc.model_id;
   const now = Date.now();
-  let minutes = 0;
+  let weekdayMinutes = 0;
+  let weekendMinutes = 0;
   for (const event of events) {
     if (clean(event.id) === clean(ignoreEventId)) continue;
     if (sagaEventIsCancelled(event)) continue;
@@ -473,9 +474,11 @@ async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, 
     if (modelByReg[normalizeRegistration(event.aircraft)] !== modelId) continue;
     const times = sagaEventTimes(event, rules);
     if (!times || dateTimeMs(times.flightDate, times.startTime) <= now) continue;
-    minutes += times.durationMinutes;
+    const day = dayOfWeek(times.flightDate);
+    if (day === 0 || day === 6) weekendMinutes += times.durationMinutes;
+    else weekdayMinutes += times.durationMinutes;
   }
-  return minutes / 60;
+  return { weekdayHours: weekdayMinutes / 60, weekendHours: weekendMinutes / 60 };
 }
 
 async function findSagaEventOrFail(events, eventId) {
@@ -574,49 +577,237 @@ function adjustmentHours(doc) {
   return Math.abs(number(doc.hours, 0));
 }
 
-async function creditAvailable(studentId, modelId, isNight, requestedHours) {
+function isWeekendDate(date) {
+  const day = dayOfWeek(date);
+  return day === 0 || day === 6;
+}
+
+function flightCreditHours(doc) {
+  if (doc.flight_status === "Realizado") {
+    return number(doc.block_time_minutes || doc.total_flight_minutes, 0) / 60;
+  }
+  return number(doc.requested_duration_minutes, 0) / 60;
+}
+
+function creditPurchaseDate(doc) {
+  const raw = clean(doc.purchase_date);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+}
+
+/** Última compra primeiro; se esgotar, passa para a compra imediatamente anterior. */
+function creditLifoSort(a, b) {
+  return b.purchaseDate.localeCompare(a.purchaseDate) || a.expiresAt.localeCompare(b.expiresAt);
+}
+
+function creditEligibleForFlight(credit, flight, isNight) {
+  if (credit.remainingHours <= 0.0001) return false;
+  if (credit.isNight !== isNight) return false;
+  if (credit.expiresAt < flight.flightDate) return false;
+  return true;
+}
+
+function adjustmentPenaltyHours(doc) {
+  return Math.abs(Math.min(0, number(doc.hours, 0)));
+}
+
+function applyPenaltyToPools(pools, penaltyHours, flightDate) {
+  if (penaltyHours <= 0.0001) return pools;
+  if (!flightDate || isWeekendDate(flightDate)) {
+    let anyDay = pools.anyDay - penaltyHours;
+    if (anyDay < -0.0001 && pools.weekdayOnly > 0.0001) {
+      const spill = Math.min(pools.weekdayOnly, Math.abs(anyDay));
+      return {
+        weekdayOnly: Number((pools.weekdayOnly - spill).toFixed(2)),
+        anyDay: Number((anyDay + spill).toFixed(2)),
+      };
+    }
+    return { weekdayOnly: pools.weekdayOnly, anyDay: Number(anyDay.toFixed(2)) };
+  }
+  const fromWeekday = Math.min(pools.weekdayOnly, penaltyHours);
+  const remainder = penaltyHours - fromWeekday;
+  let anyDay = pools.anyDay - remainder;
+  const weekdayLeft = pools.weekdayOnly - fromWeekday;
+  if (anyDay < -0.0001 && weekdayLeft > 0.0001) {
+    const spill = Math.min(weekdayLeft, Math.abs(anyDay));
+    return {
+      weekdayOnly: Number((weekdayLeft - spill).toFixed(2)),
+      anyDay: Number((anyDay + spill).toFixed(2)),
+    };
+  }
+  return {
+    weekdayOnly: Number((pools.weekdayOnly - fromWeekday).toFixed(2)),
+    anyDay: Number(anyDay.toFixed(2)),
+  };
+}
+
+/** Replay cronológico + LIFO — espelha replayCreditLedger em src/lib/creditsDb.ts */
+function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight) {
+  const mutable = creditDocs.map((doc) => ({
+    id: clean(doc.$id),
+    purchaseDate: creditPurchaseDate(doc),
+    expiresAt: clean(doc.expires_at),
+    isNight: Boolean(doc.is_night),
+    weekdayOnly: Boolean(doc.weekday_only),
+    totalHours: number(doc.hours, 0),
+    remainingHours: 0,
+  }));
+  const creditsById = new Map(mutable.map((credit) => [credit.id, credit]));
+
+  const flights = flightDocs
+    .map((doc) => ({
+      flightDate: clean(doc.flight_date),
+      hours: flightCreditHours(doc),
+      isNight: Boolean(doc.is_night),
+    }))
+    .filter((flight) => flight.flightDate);
+
+  const events = [
+    ...mutable
+      .filter((credit) => credit.purchaseDate)
+      .map((credit) => ({ kind: "purchase", date: credit.purchaseDate, creditId: credit.id })),
+    ...flights.map((flight) => ({ kind: "flight", date: flight.flightDate, flight })),
+  ].sort((a, b) => {
+    const byDate = a.date.localeCompare(b.date);
+    if (byDate !== 0) return byDate;
+    if (a.kind === "purchase" && b.kind === "flight") return -1;
+    if (a.kind === "flight" && b.kind === "purchase") return 1;
+    return 0;
+  });
+
+  let debtHours = 0;
+  for (const event of events) {
+    if (event.kind === "purchase") {
+      const credit = creditsById.get(event.creditId);
+      if (!credit) continue;
+      let incoming = credit.totalHours;
+      if (debtHours > 0.0001) {
+        const cover = Math.min(debtHours, incoming);
+        debtHours = Number((debtHours - cover).toFixed(2));
+        incoming = Number((incoming - cover).toFixed(2));
+      }
+      credit.remainingHours = incoming;
+      continue;
+    }
+    const flight = event.flight;
+    if (flight.isNight !== isNight) continue;
+    const eligible = mutable
+      .filter((credit) => creditEligibleForFlight(credit, flight, isNight))
+      .sort(creditLifoSort);
+    let remainingDebit = flight.hours;
+    for (const credit of eligible) {
+      if (remainingDebit <= 0.0001) break;
+      const used = Math.min(credit.remainingHours, remainingDebit);
+      credit.remainingHours = Number((credit.remainingHours - used).toFixed(2));
+      remainingDebit = Number((remainingDebit - used).toFixed(2));
+    }
+    if (remainingDebit > 0.0001) {
+      debtHours = Number((debtHours + remainingDebit).toFixed(2));
+    }
+  }
+
+  let pools = { weekdayOnly: 0, anyDay: 0 };
+  for (const credit of mutable) {
+    if (credit.remainingHours <= 0.0001) continue;
+    if (credit.weekdayOnly) pools.weekdayOnly += credit.remainingHours;
+    else pools.anyDay += credit.remainingHours;
+  }
+  pools = {
+    weekdayOnly: Number(pools.weekdayOnly.toFixed(2)),
+    anyDay: Number(pools.anyDay.toFixed(2)),
+  };
+
+  for (const doc of adjustmentDocs) {
+    if (Boolean(doc.is_night) !== isNight) continue;
+    const penalty = adjustmentPenaltyHours(doc);
+    if (penalty <= 0.0001) continue;
+    pools = applyPenaltyToPools(pools, penalty, clean(doc.flight_date) || null);
+  }
+
+  return {
+    availWk: Math.max(0, pools.weekdayOnly),
+    rawAny: pools.anyDay,
+  };
+}
+
+/**
+ * Saldo livre para agendar na data — espelha buildStudentCreditStatement em src/lib/creditsDb.ts.
+ * Reserva SAGA de semana consome availWk primeiro; excedente vaza pro pool livre; fds consome só o livre.
+ */
+function freeBalanceForDate(pools, reserved, flightDate) {
+  const availWk = number(pools.availWk, 0);
+  const rawAny = number(pools.rawAny, 0);
+  let remainingAny = rawAny;
+  remainingAny -= number(reserved.weekendHours, 0);
+  const weekdayReserve = number(reserved.weekdayHours, 0);
+  const wkOverflow = Math.max(0, weekdayReserve - availWk);
+  const remainingWk = Math.max(0, availWk - weekdayReserve);
+  remainingAny -= wkOverflow;
+  if (isWeekendDate(flightDate)) return remainingAny;
+  return remainingWk + remainingAny;
+}
+
+function creditInsufficientMessage(freeBalance, flightHours, flightDate, availWk, sagaReserved) {
+  if (freeBalance + 0.0001 >= flightHours) return null;
+  if (isWeekendDate(flightDate)) {
+    const restrictedLeft = Math.max(0, availWk - number(sagaReserved?.weekdayHours, 0));
+    if (restrictedLeft > 0.001) {
+      return `Crédito insuficiente para fim de semana. Você possui ${restrictedLeft.toFixed(2)}h válidas apenas de segunda a sexta…`;
+    }
+  }
+  return `Crédito insuficiente. Disponível: ${Math.max(0, freeBalance).toFixed(2)}h.`;
+}
+
+async function creditAvailable(studentId, modelId, isNight, flightHours, flightDate, sagaReserved = { weekdayHours: 0, weekendHours: 0 }) {
   // Bug 5 guard: if aircraft has no model configured, credits can't be verified
-  if (!modelId) return { availableHours: 0, sufficient: false };
+  if (!modelId) {
+    return {
+      availableHours: 0,
+      sufficient: false,
+      rawAvailableHours: 0,
+      weekdayOnlyAvailableHours: 0,
+      anyDayAvailableHours: 0,
+      grossWeekdayPoolHours: 0,
+      grossAnyDayPoolHours: 0,
+    };
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const [credits, adjustments, flights] = await Promise.all([
     databases.listDocuments(DATABASE_ID, CREDITS_ID, [
       sdk.Query.equal("user_id", [studentId]),
-      sdk.Query.equal("aircraft_model_id", [modelId]),
       sdk.Query.greaterThanEqual("expires_at", today),
       sdk.Query.limit(500),
     ]),
     databases.listDocuments(DATABASE_ID, ADJUSTMENTS_ID, [
       sdk.Query.equal("student_user_id", [studentId]),
-      sdk.Query.equal("aircraft_model_id", [modelId]),
       sdk.Query.limit(500),
     ]).catch(() => ({ documents: [] })),
     databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
       sdk.Query.equal("student_user_id", [studentId]),
-      sdk.Query.equal("aircraft_model_id", [modelId]),
       sdk.Query.equal("flight_status", ["Pendente", "Confirmado", "Previsto", "Realizado"]),
       sdk.Query.limit(5000),
     ]),
   ]);
-  const purchased = credits.documents
-    .filter((doc) => Boolean(doc.is_night) === isNight)
-    .reduce((sum, doc) => sum + number(doc.hours, 0), 0);
-  const penalties = adjustments.documents
-    .filter((doc) => Boolean(doc.is_night) === isNight)
-    .reduce((sum, doc) => sum + adjustmentHours(doc), 0);
-  const used = flights.documents
-    .filter((doc) => Boolean(doc.is_night) === isNight)
-    .reduce((sum, doc) => {
-      if (doc.flight_status === "Realizado") {
-        return sum + number(doc.block_time_minutes || doc.total_flight_minutes, 0) / 60;
-      }
-      return sum + number(doc.requested_duration_minutes, 0) / 60;
-    }, 0);
+
+  const nightCredits = credits.documents.filter((doc) => Boolean(doc.is_night) === isNight);
+  const pools = computeCreditPools(nightCredits, flights.documents, adjustments.documents, isNight);
+  const { availWk, rawAny } = pools;
+  const freeBalance = freeBalanceForDate(pools, sagaReserved, flightDate);
+  const weekdayReserve = number(sagaReserved.weekdayHours, 0);
+  const weekendReserve = number(sagaReserved.weekendHours, 0);
+  const weekdayOnlyAvailableHours = Math.max(0, availWk - weekdayReserve);
+  const wkOverflowReserve = Math.max(0, weekdayReserve - availWk);
+  const anyDayAvailableHours = rawAny - weekendReserve - wkOverflowReserve;
+
   return {
-    availableHours: Math.max(0, purchased - penalties - used),
-    // Saldo real (pode ser negativo) — usado pela exceção "1h com crédito zerado".
-    rawAvailableHours: purchased - penalties - used,
-    sufficient: purchased - penalties - used + 0.0001 >= requestedHours,
+    availableHours: Math.max(0, freeBalance),
+    rawAvailableHours: freeBalance,
+    weekdayOnlyAvailableHours,
+    anyDayAvailableHours,
+    grossWeekdayPoolHours: availWk,
+    grossAnyDayPoolHours: rawAny,
+    sufficient: freeBalance + 0.0001 >= flightHours,
+    insufficientMessage: creditInsufficientMessage(freeBalance, flightHours, flightDate, availWk, sagaReserved),
   };
 }
 
@@ -629,8 +820,14 @@ function schedulingFreeBalance(rawAvailableHours, reservedHours = 0) {
  * Exceção "1h com crédito zerado": quando ativa, aluno sem saldo livre negativo pode
  * marcar um voo de até 1h (ele é avisado que precisa repor antes do voo).
  */
-function zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes) {
-  return rules.allowZeroCreditOneHour === true && durationMinutes <= 60 && freeBalanceHours >= -0.001;
+function zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit = null) {
+  if (rules.allowZeroCreditOneHour !== true || durationMinutes > 60 || freeBalanceHours < -0.001) return false;
+  if (credit) {
+    const weekday = number(credit.grossWeekdayPoolHours, 0);
+    const anyDay = number(credit.grossAnyDayPoolHours, 0);
+    if (weekday > 0.0001 || anyDay > 0.0001) return false;
+  }
+  return true;
 }
 
 /** Uso semanal do aluno na agenda SAGA (somente voos ativos; horas = acionamento→corte). */
@@ -935,11 +1132,11 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       validateWeeklyLimits(rules, sagaStudentWeekUsage(events, rules, studentSagaId, date), durationMinutes, weekend);
     }
     if (rules.requireCreditsForBooking) {
-      const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules);
-      const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
-      const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedHours);
-      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
-        fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
+      const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules);
+      const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, reserved);
+      const freeBalanceHours = credit.rawAvailableHours;
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
+        fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
       }
     }
     // O evento no SAGA armazena o bloco completo (apresentação→encerramento).
@@ -1043,10 +1240,10 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
   }
   if (rules.requireCreditsForBooking) {
-    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60);
-    const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours);
-    if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
-      fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
+    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date);
+    const freeBalanceHours = credit.rawAvailableHours;
+    if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
+      fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
     }
   }
   const id = sdk.ID.unique();
@@ -1117,24 +1314,26 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
-  let reservedSagaHours = 0;
+  let reservedSaga = { weekdayHours: 0, weekendHours: 0 };
   if (rules.sagaOnlySchedule) {
     const events = await listSagaEvents();
     validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
     const profile = await getProfile(studentId);
-    reservedSagaHours = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraft.model_id, rules);
+    reservedSaga = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraft.model_id, rules);
   } else {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
-  const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60 + reservedSagaHours);
-  const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedSagaHours);
+  const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, reservedSaga);
+  const freeBalanceHours = credit.rawAvailableHours;
   const zeroCreditExceptionAvailable =
-    rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes);
+    rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit);
   return {
     available: true,
-    creditAvailableHours: Math.max(0, credit.availableHours - reservedSagaHours),
+    creditAvailableHours: credit.availableHours,
     creditFreeHours: freeBalanceHours,
     creditSufficient: credit.sufficient,
+    weekdayOnlyAvailableHours: credit.weekdayOnlyAvailableHours,
+    anyDayAvailableHours: credit.anyDayAvailableHours,
     zeroCreditExceptionAvailable,
     presentationTime: times.presentationTime,
     startTime: times.startTime,
@@ -1165,6 +1364,7 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
   const own = sagaEventBelongsTo(event, actorId, actorSagaId);
   if (actorRole === "aluno" && !own) fail("Você só pode cancelar seus próprios voos.", 403);
   if (sagaEventIsCancelled(event)) fail("Este voo não pode mais ser cancelado.");
+  if (actorRole === "aluno" && !clean(payload.reason)) fail("Informe o motivo do cancelamento.");
   const times = sagaEventTimes(event, rules);
   if (!times) fail("Evento SAGA sem data ou horário válido.", 422);
   if (actorRole === "aluno" && Date.now() >= times.presentationMs) fail("O prazo de cancelamento pelo aluno terminou.");
@@ -1342,15 +1542,20 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   if (rules.requireCreditsForBooking) {
     const studentSagaId = clean(event.studentSagaId) || actorSagaId;
     const studentUserId = clean(event.studentUserId) || (own ? actorId : null);
-    const reservedHours = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules, id);
+    const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules, id);
     if (studentUserId) {
-      const credit = await creditAvailable(studentUserId, aircraft.model_id, isNight, durationMinutes / 60 + reservedHours);
-      const freeBalanceHours = schedulingFreeBalance(credit.rawAvailableHours, reservedHours);
-      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes)) {
-        fail(`Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
+      const credit = await creditAvailable(studentUserId, aircraft.model_id, isNight, durationMinutes / 60, date, reserved);
+      const freeBalanceHours = credit.rawAvailableHours;
+      if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
+        fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
       }
     }
   }
+
+  // Motivo da alteração: obrigatório para o aluno e registrado nas observações.
+  const rescheduleReason = clean(payload.reason).slice(0, 180);
+  if (actorRole === "aluno" && !rescheduleReason) fail("Informe o motivo da alteração.");
+  const rescheduleNote = `Alterado via plataforma${rescheduleReason ? ` - ${rescheduleReason}` : ""}`;
 
   const currentStatus = clean(event.status).toUpperCase();
   const keepStatus = ["PLANNED", "PENDING", "CONFIRMED"].includes(currentStatus) ? currentStatus : "PLANNED";
@@ -1370,8 +1575,8 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     sagaStatus: nextStatus,
     // Preserva as notas existentes (obs do aluno, flexibilidade) e registra a alteração.
     ...(clean(event.notes)
-      ? { rawNotes: `${clean(event.notes)} | Alterado via plataforma` }
-      : { notes: "Alterado via plataforma" }),
+      ? { rawNotes: `${clean(event.notes)} | ${rescheduleNote}` }
+      : { notes: rescheduleNote }),
   });
 
   if (actorRole === "aluno") {
@@ -1385,6 +1590,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
       previousFlightDate: currentTimes.flightDate,
       previousStartTime: currentTimes.startTime,
       statusReverted: nextStatus !== keepStatus,
+      reason: rescheduleReason,
     });
   }
 
@@ -1415,6 +1621,7 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
   if (actorRole === "aluno" && !own) fail("Você só pode cancelar seus próprios voos.", 403);
   const currentStatus = doc.flight_status === "Previsto" ? "Confirmado" : doc.flight_status;
   if (!ACTIVE_STATUSES.includes(currentStatus)) fail("Este voo não pode mais ser cancelado.");
+  if (actorRole === "aluno" && !clean(payload.reason)) fail("Informe o motivo do cancelamento.");
   const presentationMs = dateTimeMs(doc.flight_date, doc.presentation_time || doc.start_time);
   if (actorRole === "aluno" && Date.now() >= presentationMs) fail("O prazo de cancelamento pelo aluno terminou.");
   const hoursBefore = (presentationMs - Date.now()) / 3600000;

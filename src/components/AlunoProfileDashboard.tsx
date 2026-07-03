@@ -5,6 +5,7 @@ import { BUCKET_ID, storage } from "../lib/appwrite";
 import { getProfile, updateProfileFields, type PilotProfile } from "../lib/rbac";
 import { Skeleton } from "./ui/Skeleton";
 import { PilotProfilePanel } from "./PilotProfilePanel";
+import { ProfileAppControls } from "./ProfileAppControls";
 import { useToast } from "./ui/ToastProvider";
 
 type EditForm = { phone: string; weight_kg: string; height_cm: string };
@@ -133,6 +134,7 @@ export function AlunoProfileDashboard() {
 
   return (
     <div className="space-y-4">
+      <ProfileAppControls />
       {editing && (
         <div className="rounded-xl border border-sky-700/40 bg-sky-950/30 p-4">
           <p className="mb-3 text-sm font-semibold text-sky-300">Editar dados pessoais</p>

@@ -142,6 +142,8 @@ export async function rescheduleScheduleFlight(input: {
   flightDate: string;
   startTime: string;
   durationMinutes: number;
+  /** Motivo da alteração — obrigatório para o aluno; registrado nas observações do evento. */
+  reason?: string;
 }) {
   const response = await execute({ action: "rescheduleFlight", ...input });
   if (!response.flight) throw new Error("Alteração sem retorno.");

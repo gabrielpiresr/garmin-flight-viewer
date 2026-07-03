@@ -1,4 +1,4 @@
-const CACHE_NAME = "gfv-app-shell-v4";
+const CACHE_NAME = "gfv-app-shell-v5";
 const APP_SHELL_URLS = [
   "/",
   "/offline/diario-bordo",
@@ -45,6 +45,18 @@ async function networkFirstWithShellFallback(request) {
   }
 }
 
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request);
+    if (response.ok) await cache.put(request, response.clone());
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    return cached || Response.error();
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -56,8 +68,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/assets/") || url.pathname.endsWith(".js") || url.pathname.endsWith(".css")) {
+  // Só /assets/ tem hash no nome do arquivo (imutável) — cache-first é seguro.
+  if (url.pathname.startsWith("/assets/")) {
     event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  // Demais .js/.css têm URL fixa (ex.: o CSS do Tailwind no servidor de dev):
+  // cache-first servia versão velha a cada F5 e a tela carregava "sem cores".
+  if (url.pathname.endsWith(".js") || url.pathname.endsWith(".css")) {
+    event.respondWith(networkFirst(request));
     return;
   }
 

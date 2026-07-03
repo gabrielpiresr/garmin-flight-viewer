@@ -18,6 +18,8 @@ export type FlightCreditPackage = {
 export type FlightCreditSalesConfig = {
   studentPurchasesEnabled: boolean;
   nightHoursDifferentFromDay: boolean;
+  /** Percentual de desconto para modalidade "somente seg–sex"; null/0 = desligado. */
+  weekdayDiscountPct: number | null;
   packages: FlightCreditPackage[];
   updatedAt: string | null;
 };

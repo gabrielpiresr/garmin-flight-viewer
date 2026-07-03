@@ -122,6 +122,7 @@ async function configureCredits(databaseId, collectionId) {
   await attr(() => db.createStringAttribute(databaseId, collectionId, "created_by", 64, false), "created_by");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "updated_by", 64, false), "updated_by");
   await attr(() => db.createBooleanAttribute(databaseId, collectionId, "is_night", false, false), "is_night");
+  await attr(() => db.createBooleanAttribute(databaseId, collectionId, "weekday_only", false, false), "weekday_only");
   await attr(() => db.createStringAttribute(databaseId, collectionId, "cost_snapshot_json", 4096, false), "cost_snapshot_json");
 
   await idx(databaseId, collectionId, "credits_school_idx", ["school_id"]);

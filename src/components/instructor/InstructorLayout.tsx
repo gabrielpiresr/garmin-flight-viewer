@@ -3,12 +3,11 @@ import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
 import { getReferAndEarnPublic, programConfigForRole } from "../../lib/referAndEarnDb";
+import { getOnboardingPublic } from "../../lib/onboardingDb";
 import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab";
 import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
-import { PushNotificationsToggle } from "../PushNotificationsToggle";
-import { InstallPwaButton } from "../InstallPwaButton";
 import type { InstructorTabKey } from "../../types/rolePermissions";
 
 const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
@@ -233,6 +232,24 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
+  "home",
+  "flights",
+  "schedule",
+  "students",
+  "maneuvers",
+  "manuals",
+  "manuais-internos",
+  "reports",
+  "notices",
+  "contratos",
+  "profile",
+];
+
+const INSTRUCTOR_MENU_POSITION = new Map(
+  INSTRUCTOR_MENU_ORDER.map((id, index) => [id, index]),
+);
+
 const SECTION_ROUTES = [
   { id: "home", path: "/instrutor" },
   { id: "journey", path: "/instrutor/jornada" },
@@ -272,6 +289,7 @@ export function InstructorLayout() {
   const openedSections = useOpenedTabs(section);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [referProgramActive, setReferProgramActive] = useState(false);
+  const [onboardingInMenu, setOnboardingInMenu] = useState(false);
   const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
 
   useEffect(() => {
@@ -290,6 +308,22 @@ export function InstructorLayout() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void getOnboardingPublic()
+      .then(({ onboarding }) => {
+        if (cancelled) return;
+        setOnboardingInMenu(Boolean(onboarding.showInStudentMenu));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOnboardingInMenu(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const visibleScheduleTabs = useMemo<ScheduleSubTab[]>(() => {
     const out: ScheduleSubTab[] = [];
     if (canTab("schedule.voos")) out.push("flights");
@@ -300,12 +334,15 @@ export function InstructorLayout() {
 
   const visibleNavItems = useMemo(
     () =>
-      NAV_ITEMS.filter((item) => {
-        if (!canTab(item.id as InstructorTabKey)) return false;
-        if (item.id === "indique-ganhe") return referProgramActive;
-        if (item.id === "schedule") return visibleScheduleTabs.length > 0;
-        return true;
-      }),
+      NAV_ITEMS
+        .filter((item) => {
+          if (!INSTRUCTOR_MENU_POSITION.has(item.id)) return false;
+          if (!canTab(item.id as InstructorTabKey)) return false;
+          if (item.id === "indique-ganhe") return referProgramActive;
+          if (item.id === "schedule") return visibleScheduleTabs.length > 0;
+          return true;
+        })
+        .sort((a, b) => INSTRUCTOR_MENU_POSITION.get(a.id)! - INSTRUCTOR_MENU_POSITION.get(b.id)!),
     [canTab, referProgramActive, visibleScheduleTabs],
   );
   const helpNavItem = visibleNavItems.find((item) => item.id === "help") ?? null;
@@ -362,6 +399,25 @@ export function InstructorLayout() {
               </button>
             );
           })}
+          {onboardingInMenu ? (
+            <a
+              href="/apresentacao"
+              target="_blank"
+              rel="noopener noreferrer"
+              title={sidebarCollapsed ? "Manual do Aluno" : undefined}
+              aria-label={sidebarCollapsed ? "Manual do Aluno" : undefined}
+              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+            >
+              <span className="opacity-70 group-hover:opacity-100">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                  <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                </svg>
+              </span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">Manual do Aluno</p>
+              </div>
+            </a>
+          ) : null}
         </nav>
 
         {helpNavItem ? (
@@ -411,9 +467,9 @@ export function InstructorLayout() {
               title={activeNav.label}
             />
             <div className="flex items-center gap-3">
-              <InstallPwaButton className="hidden sm:block" />
-              <PushNotificationsToggle />
-              <UserEmailWithRoleSwitcher email={user?.email} header />
+              <div className="lg:hidden">
+                <UserEmailWithRoleSwitcher email={user?.email} header />
+              </div>
               <button
                 type="button"
                 onClick={() => void signOut()}
@@ -547,6 +603,21 @@ export function InstructorLayout() {
 
         <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
+            {onboardingInMenu ? (
+              <a
+                href="/apresentacao"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium text-cyan-400 transition hover:text-cyan-300"
+              >
+                <span className="h-4 w-4">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                    <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <span className="max-w-full truncate">Manual</span>
+              </a>
+            ) : null}
             {visibleNavItems.map((item) => {
               const isActive = section === item.id;
               return (

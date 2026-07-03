@@ -693,9 +693,6 @@ export async function listSavedFlights(
   }
   const toPage = (res: { documents: Array<{ [key: string]: unknown; $id: string; $createdAt: string }>; total: number }): SavedFlightsPage => {
     const data = res.documents.map(toSavedFlightListItem);
-    // #region agent log
-    fetch('http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8edc56'},body:JSON.stringify({sessionId:'8edc56',runId:'flight-list-debug',hypothesisId:'H6',location:'flightsDb.ts:listSavedFlights',message:'listSavedFlights page loaded',data:{viewerUserId:viewer.userId,viewerRole:viewer.role,total:res.total,pageCount:data.length,cursor:options.cursor||null,ids:data.map((item)=>item.id).slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return {
       data,
       error: null,

@@ -1,4 +1,7 @@
 import type { NotificationEventType } from "./notification";
+import type { ScheduleStudentHelpConfig } from "./scheduleStudentHelp";
+import { defaultScheduleStudentHelp } from "../lib/scheduleStudentHelpDefaults";
+import { normalizeScheduleStudentHelp } from "../lib/scheduleStudentHelp";
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
@@ -96,6 +99,7 @@ export type SchoolRules = {
   studentTabs: Record<StudentPortalTab, boolean>;
   theme: PlatformThemeRules;
   schedule: FlightScheduleRules;
+  scheduleStudentHelp: ScheduleStudentHelpConfig;
   emailNotifications: Record<NotificationEventType, EmailNotificationRule>;
   flightReviewClub: FlightReviewClubRules;
   updatedAt: string | null;
@@ -204,10 +208,15 @@ export const DEFAULT_EMAIL_NOTIFICATION_RULES: Record<NotificationEventType, Ema
     {} as Record<NotificationEventType, EmailNotificationRule>,
   );
 
+export const DEFAULT_SCHEDULE_STUDENT_HELP: ScheduleStudentHelpConfig = defaultScheduleStudentHelp(
+  DEFAULT_FLIGHT_SCHEDULE_RULES.mode,
+);
+
 export const DEFAULT_SCHOOL_RULES: SchoolRules = {
   studentTabs: DEFAULT_STUDENT_TABS,
   theme: DEFAULT_PLATFORM_THEME_RULES,
   schedule: DEFAULT_FLIGHT_SCHEDULE_RULES,
+  scheduleStudentHelp: DEFAULT_SCHEDULE_STUDENT_HELP,
   emailNotifications: DEFAULT_EMAIL_NOTIFICATION_RULES,
   flightReviewClub: DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   updatedAt: null,
@@ -329,6 +338,12 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       minBookingLeadDays: normalizeInteger(raw.schedule?.minBookingLeadDays, 0, 3650, 0),
       maxBookingLeadDays: normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
     },
+    scheduleStudentHelp: normalizeScheduleStudentHelp(
+      raw.scheduleStudentHelp,
+      ["booking", "view", "closed", "intentions"].includes(String(raw.schedule?.mode))
+        ? (raw.schedule!.mode as FlightScheduleRules["mode"])
+        : DEFAULT_FLIGHT_SCHEDULE_RULES.mode,
+    ),
     emailNotifications: EMAIL_NOTIFICATION_EVENT_OPTIONS.reduce(
       (acc, item) => ({
         ...acc,

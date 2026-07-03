@@ -10,9 +10,8 @@ import {
   type TabRoute,
 } from "../../lib/routedTabs";
 import { PortalShellHeader } from "../PortalShellHeader";
+import { AdminCommandBar } from "./AdminCommandBar";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
-import { PushNotificationsToggle } from "../PushNotificationsToggle";
-import { InstallPwaButton } from "../InstallPwaButton";
 import { Tabs } from "../ui/Tabs";
 import type { SettingsSubTab } from "./PlatformSettingsTab";
 import type { ScheduleSubTab } from "./ScheduleAdminTab";
@@ -858,10 +857,13 @@ export function AdminLayout() {
               roleBadgeClassName="bg-amber-500/20 text-amber-400"
               title={pageTitle}
             />
+            <div className="hidden min-w-0 flex-1 justify-center md:flex">
+              <AdminCommandBar className="w-full max-w-md" />
+            </div>
             <div className="flex items-center gap-3">
-              <InstallPwaButton className="hidden sm:block" />
-              <PushNotificationsToggle />
-              <UserEmailWithRoleSwitcher email={user?.email} header />
+              <div className="lg:hidden">
+                <UserEmailWithRoleSwitcher email={user?.email} header />
+              </div>
               <button
                 type="button"
                 onClick={() => void signOut()}
@@ -870,6 +872,9 @@ export function AdminLayout() {
                 Sair
               </button>
             </div>
+          </div>
+          <div className="px-4 pb-3 md:hidden">
+            <AdminCommandBar className="w-full" hotkey={false} />
           </div>
         </header>
 

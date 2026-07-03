@@ -68,7 +68,37 @@ export function CreditStatementView({
   renderPurchaseActions,
 }: Props) {
   const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0 || statement.adjustments.length > 0;
-  const studentBalanceHours = statement.totals.purchasedHours - statement.totals.consumedHours;
+  const totalPenaltyHours = statement.totals.penaltyHours ?? statement.adjustments.reduce(
+    (acc, adj) => acc + Math.abs(Math.min(0, adj.hours)),
+    0,
+  );
+  const studentBalanceHours = statement.totals.balanceHours
+    ?? Number((statement.totals.purchasedHours - statement.totals.consumedHours - totalPenaltyHours).toFixed(2));
+  const weekdayOnlyTotal = statement.totals.weekdayOnlyAvailableHours ?? 0;
+  const anyDayTotal = statement.totals.anyDayAvailableHours ?? 0;
+  const weekdayOnlyForHint =
+    anyDayTotal <= 0.001
+      ? Math.min(weekdayOnlyTotal, Math.max(0, studentBalanceHours))
+      : weekdayOnlyTotal;
+  const weekdayApplicableHours = Number((weekdayOnlyForHint + anyDayTotal).toFixed(1));
+  const weekdayOnlyPurchased = statement.purchases
+    .filter((purchase) => purchase.weekdayOnly)
+    .reduce((acc, purchase) => acc + purchase.hours, 0);
+  const showWeekdayPools = weekdayOnlyTotal > 0.001 || weekdayOnlyPurchased > 0.001;
+  const weekdayPoolHint = (() => {
+    if (!showWeekdayPools) return undefined;
+    if (weekdayOnlyTotal <= 0.001 && weekdayOnlyPurchased > 0.001) {
+      return `0h só seg–sex restantes (${formatHours(weekdayOnlyPurchased)} compradas seg–sex já alocadas)`;
+    }
+    if (weekdayOnlyForHint <= 0.001) return undefined;
+    if (Math.abs(weekdayApplicableHours - studentBalanceHours) <= 0.15) {
+      if (anyDayTotal < -0.001) {
+        return `Na semana: ${formatHours(weekdayApplicableHours)} (${formatHours(weekdayOnlyForHint)} seg–sex + ${formatHours(anyDayTotal)} pool livre)`;
+      }
+      return `dos quais ${formatHours(weekdayOnlyForHint)} só seg–sex`;
+    }
+    return `dos quais ${formatHours(weekdayOnlyForHint)} só seg–sex`;
+  })();
 
   return (
     <section className="space-y-4">
@@ -90,6 +120,7 @@ export function CreditStatementView({
         <MetricCard
           label="Saldo disponível"
           value={formatHours(studentBalanceHours)}
+          hint={weekdayPoolHint}
           valueClassName={studentBalanceHours < 0 ? "text-red-300" : "text-emerald-300"}
         />
         <MetricCard label="Horas compradas" value={formatHours(statement.totals.purchasedHours)} />
@@ -98,9 +129,17 @@ export function CreditStatementView({
         <MetricCard label="Valor pago" value={formatCurrency(statement.totals.amountPaid)} />
       </div>
 
-      {statement.totals.unallocatedFlightHours > 0 ? (
+      {statement.totals.unallocatedFlightHours > 0.001 ? (
         <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
-          {formatHours(statement.totals.unallocatedFlightHours)} de voos ainda não encontraram crédito válido do mesmo modelo.
+          {formatHours(statement.totals.unallocatedFlightHours)} de voos ainda não foram cobertos por compras (saldo devedor).
+        </p>
+      ) : null}
+
+      {showWeekdayPools && anyDayTotal < -0.001 ? (
+        <p className="rounded-lg border border-slate-700/80 bg-slate-950/30 px-3 py-2 text-xs text-slate-400">
+          Há {formatHours(Math.abs(anyDayTotal))} de dívida no pool &quot;qualquer dia&quot;. Em dias úteis o saldo líquido é{" "}
+          {formatHours(weekdayApplicableHours)} (restrito seg–sex + pool livre). No fim de semana só vale o pool livre (
+          {formatHours(anyDayTotal)}).
         </p>
       ) : null}
 
@@ -111,6 +150,7 @@ export function CreditStatementView({
               <tr>
                 <th className="px-3 py-2 font-medium">Modelo</th>
                 <th className="px-3 py-2 font-medium">Disponível</th>
+                {showWeekdayPools ? <th className="px-3 py-2 font-medium">seg–sex</th> : null}
                 <th className="px-3 py-2 font-medium">Compradas</th>
                 <th className="px-3 py-2 font-medium">Saídas</th>
                 <th className="px-3 py-2 font-medium">Vencidas</th>
@@ -122,6 +162,9 @@ export function CreditStatementView({
             <tr key={summary.aircraftModelId} className="text-slate-300">
               <td className="px-3 py-2 font-medium text-slate-100">{summary.aircraftModelName}</td>
               <td className="px-3 py-2 text-emerald-300">{formatHours(summary.availableHours)}</td>
+              {showWeekdayPools ? (
+                <td className="px-3 py-2 text-sky-300">{formatHours(summary.weekdayOnlyAvailableHours)}</td>
+              ) : null}
               <td className="px-3 py-2">{formatHours(summary.purchasedHours)}</td>
               <td className="px-3 py-2">{formatHours(summary.consumedHours)}</td>
               <td className="px-3 py-2">{formatHours(summary.expiredHours)}</td>
@@ -170,6 +213,9 @@ export function CreditStatementView({
                             {purchase.isNight && (
                               <span className="ml-2 rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">Noturno</span>
                             )}
+                            {purchase.weekdayOnly && (
+                              <span className="ml-2 rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">seg-sex</span>
+                            )}
                           </td>
                           <td className="px-3 py-2">{payment}</td>
                           <td className="px-3 py-2">{formatCurrency(purchase.amountPaid)}</td>
@@ -195,7 +241,7 @@ export function CreditStatementView({
               {statement.flightDebits.length === 0 ? (
                 <p className="px-3 py-4 text-sm text-slate-500">Nenhuma saída por voo encontrada.</p>
               ) : (
-                <table className="w-full min-w-[900px] text-left text-sm">
+                <table className="w-full min-w-[640px] text-left text-sm">
                   <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 font-medium">Data</th>
@@ -203,9 +249,6 @@ export function CreditStatementView({
                       <th className="px-3 py-2 font-medium">Período</th>
                       <th className="px-3 py-2 font-medium">Modelo</th>
                       <th className="px-3 py-2 font-medium">Horas</th>
-                      <th className="px-3 py-2 font-medium">Debitado</th>
-                      <th className="px-3 py-2 font-medium">Pendente</th>
-                      <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
@@ -216,11 +259,6 @@ export function CreditStatementView({
                         <td className="px-3 py-2">{debit.isNight ? "Noturno" : "Diurno"}</td>
                         <td className="px-3 py-2">{debit.aircraftModelName}</td>
                         <td className="px-3 py-2">{formatHours(debit.hours)}</td>
-                        <td className="px-3 py-2">{formatHours(debit.allocatedHours)}</td>
-                        <td className="px-3 py-2">{formatHours(debit.unallocatedHours)}</td>
-                        <td className={debit.unallocatedHours > 0 ? "px-3 py-2 text-amber-300" : "px-3 py-2 text-sky-300"}>
-                          {debit.unallocatedHours > 0 ? "Parcial" : "Debitado"}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
