@@ -306,7 +306,9 @@ export function analyzeFlightManeuver(
     // da janela da manobra encontrava o toque do circuito anterior quando os
     // circuitos eram curtos (< 5 min), gerando pernas erradas/no lugar errado.
     const segments =
-      context?.segments ?? detectFlightSegments(chartData, chartTimeBaseMs, parsed.points);
+      context?.segments ?? detectFlightSegments(chartData, chartTimeBaseMs, parsed.points, {
+        aircraftIdent: parsed.aircraftIdent,
+      });
     let bestOverlapMs = 0;
     for (const seg of segments) {
       if ((seg.type !== "landing" && seg.type !== "tgl") || !seg.trafficPattern) continue;

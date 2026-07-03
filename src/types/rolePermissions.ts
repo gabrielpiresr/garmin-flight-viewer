@@ -187,7 +187,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "reports.all-flights": "Relatórios › Todos os Voos",
   "reports.relatorios": "Relatórios › Relatórios",
   "reports.assinaturas": "Relatórios › Assinaturas",
-  "reports.sem-telemetria": "Relatórios › Sem Telemetria",
+  "reports.sem-telemetria": "Relatórios › Flight Review",
   "reports.alertas": "Relatórios › Alertas",
   "fleet": "Frota",
   "fleet.avioes": "Frota › Aviões",

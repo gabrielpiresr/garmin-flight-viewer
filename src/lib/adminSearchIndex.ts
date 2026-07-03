@@ -26,7 +26,7 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-reports-all-flights", kind: "page", label: "Todos os voos", group: "Relatórios", path: "/admin/todos-os-voos", requiredTab: "reports.all-flights", keywords: ["historico de voos", "telemetria", "voos executados"] },
   { id: "page-reports-flight-reports", kind: "page", label: "Relatórios de voo", group: "Relatórios", path: "/admin/relatorios", requiredTab: "reports.relatorios", keywords: ["relatorio", "debrief", "ficha"] },
   { id: "page-reports-signatures", kind: "page", label: "Assinaturas", group: "Relatórios", path: "/admin/assinaturas", requiredTab: "reports.assinaturas", keywords: ["assinar", "pendencias", "pendente"] },
-  { id: "page-reports-no-telemetry", kind: "page", label: "Sem telemetria", group: "Relatórios", path: "/admin/sem-telemetria", requiredTab: "reports.sem-telemetria", keywords: ["sem dados", "voo manual"] },
+  { id: "page-reports-no-telemetry", kind: "page", label: "Flight Review", group: "Relatórios", path: "/admin/sem-telemetria", requiredTab: "reports.sem-telemetria", keywords: ["sem dados", "voo manual", "telemetria", "video", "flight review"] },
   { id: "page-reports-alerts", kind: "page", label: "Alertas", group: "Relatórios", path: "/admin/alertas", requiredTab: "reports.alertas", keywords: ["excedencia", "alerta de telemetria"] },
   { id: "page-contents-maneuvers", kind: "page", label: "Manobras", group: "Conteúdos", path: "/admin/conteudos/manobras", requiredTab: "contents.manobras", keywords: ["manobra", "secoes", "artigos"] },
   { id: "page-contents-manuals", kind: "page", label: "Manuais", group: "Conteúdos", path: "/admin/conteudos/manuais", requiredTab: "contents.manuais", keywords: ["apostila", "documento", "pdf"] },

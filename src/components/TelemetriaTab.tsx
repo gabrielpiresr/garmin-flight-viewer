@@ -480,9 +480,11 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
 
   const segments = useMemo(
     () => chartData.length > 0 && hasChartTime
-      ? detectFlightSegments(chartData, chartTimeBaseMs, points)
+      ? detectFlightSegments(chartData, chartTimeBaseMs, points, {
+          aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
+        })
       : [],
-    [chartData, hasChartTime, chartTimeBaseMs, points],
+    [chartData, flightMeta?.header.aircraft, hasChartTime, chartTimeBaseMs, parsedResult?.aircraftIdent, points],
   );
 
   const selectedSegment = useMemo(

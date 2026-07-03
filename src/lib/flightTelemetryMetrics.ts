@@ -254,7 +254,9 @@ export function buildFlightTelemetryMetrics(params: {
   const summary = summarizeFlight(params.parsed.points);
   const durationSec = chartDurationSec(params.parsed.chartData, params.parsed.hasChartTime) ?? summary.durationSec;
   const segments = params.parsed.chartData.length > 0 && params.parsed.hasChartTime
-    ? detectFlightSegments(params.parsed.chartData, params.parsed.chartTimeBaseMs, params.parsed.points)
+    ? detectFlightSegments(params.parsed.chartData, params.parsed.chartTimeBaseMs, params.parsed.points, {
+        aircraftIdent: params.identity.aircraftIdent ?? params.parsed.aircraftIdent ?? null,
+      })
     : [];
   const landings = segments
     .map((segment, index) => toLandingMetric(segment, index + 1, params.identity, params.parsed.chartTimeBaseMs))

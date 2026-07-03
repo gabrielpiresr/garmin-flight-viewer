@@ -1355,6 +1355,61 @@ export async function importSelfFlightsFromSaga(
   return summary;
 }
 
+export async function importAllInstructorFlightsFromSaga(
+  options: { onProgress?: (progress: SagaImportProgress) => void } = {},
+): Promise<SagaImportSummary> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const importRunId = crypto.randomUUID();
+  const createdExecution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaImportAllInstructorFlights", importRunId }),
+    true,
+  );
+  let execution: Awaited<ReturnType<typeof waitForFunctionExecution>> | null = null;
+  let timedOut = false;
+  try {
+    execution = await waitForFunctionExecution(functionId, createdExecution.$id, 280000, {
+      progressRunId: importRunId,
+      onProgress: options.onProgress,
+    });
+  } catch (error) {
+    if (!isSagaExecutionTimeoutError(error)) throw error;
+    timedOut = true;
+  }
+
+  const shouldWaitForTerminalProgress =
+    timedOut ||
+    !execution ||
+    execution.status === "processing" ||
+    execution.status === "waiting";
+  const terminalProgress = shouldWaitForTerminalProgress
+    ? await waitForSagaRunCompletion(importRunId, {
+        onProgress: options.onProgress,
+        timeoutMs: 3 * 60 * 1000,
+      }).catch(() => null)
+    : null;
+  if (terminalProgress && String(terminalProgress.status || "").toLowerCase() === "failed") {
+    throw new Error(terminalProgress.message || "Falha ao sincronizar voos do SAGA.");
+  }
+
+  const response = execution
+    ? parseJsonBody<{ ok?: boolean; summary?: SagaImportSummary; message?: string }>(execution.responseBody, {})
+    : {};
+  if (execution && (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400)) {
+    if (!terminalProgress || String(terminalProgress.status || "").toLowerCase() !== "completed") {
+      throw new Error(response.message || terminalProgress?.message || "Falha ao sincronizar voos do SAGA.");
+    }
+  }
+  const lastSummary = await fetchLastSagaImportSummary().catch(() => null);
+  const summary = summaryMatchesRunId(response.summary ?? null, importRunId)
+    ? (response.summary ?? null)
+    : summaryMatchesRunId(lastSummary, importRunId)
+      ? lastSummary
+      : response.summary ?? lastSummary;
+  if (!summary) throw new Error(response.message || terminalProgress?.message || "Falha ao sincronizar voos do SAGA: tente novamente.");
+  return summary;
+}
+
 export async function reloadSagaFlightFromSource(params: {
   flightId: string;
   sagaFlightId?: string;

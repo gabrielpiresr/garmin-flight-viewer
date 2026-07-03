@@ -94,7 +94,9 @@ export async function autoBuildFlightReviewManeuvers(
     const { chartData, chartTimeBaseMs, points } = parsed;
     if (!chartTimeBaseMs || chartData.length === 0) return result;
 
-    const segments = detectFlightSegments(chartData, chartTimeBaseMs, points);
+    const segments = detectFlightSegments(chartData, chartTimeBaseMs, points, {
+      aircraftIdent: flightInfo.aircraft_ident ?? parsed.aircraftIdent ?? null,
+    });
     const relevant = segments.filter((seg) => SEG_CATEGORY_MAP[seg.type]);
     result.detected = relevant.length;
     if (relevant.length === 0) return result;

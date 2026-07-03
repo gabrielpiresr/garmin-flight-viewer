@@ -17000,23 +17000,57 @@ function studentAutomationService() {
   return cachedStudentAutomationService;
 }
 
+async function loadSchoolInstructorAnacs() {
+  const profiles = await safeListAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery(["$id", "user_id", "anac_code", "role", "roles", "active_role"]),
+  ]);
+  const anacs = new Set();
+  const userIds = new Set();
+  for (const profile of profiles) {
+    const { roles } = parseProfileRoles(profile);
+    if (!roles.includes("instrutor")) continue;
+    const anac = cleanString(profile.anac_code);
+    const userId = cleanString(profile.user_id);
+    if (anac) anacs.add(anac);
+    if (userId) userIds.add(userId);
+  }
+  return { anacs, userIds };
+}
+
 async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null, options = {}) {
   const logLine = (msg) => { if (typeof runtimeLog === "function") runtimeLog(msg); };
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
 
+  const allInstructors = options.allInstructors === true;
+  const operationsDays = Number(options.operationsDays) > 0 ? Number(options.operationsDays) : (allInstructors ? 7 : 30);
+  if (allInstructors) await requireAdmin(actorUserId);
+
   const runId = importRunId || crypto.randomUUID();
   await saveSagaImportProgress({ runId, status: "running", stage: "login", message: "Conectando ao SAGA...", current: 0, total: 0, logs: [] });
 
-  const profile = await getProfileByUserId(actorUserId);
-  const anac = cleanString(profile?.anac_code);
-  if (!anac) throw Object.assign(new Error("Codigo ANAC nao encontrado no perfil. Atualize seu cadastro antes de sincronizar."), { status: 400 });
+  let anac = "";
+  let instructorAnacs = null;
+  let instructorUserIds = null;
+  if (allInstructors) {
+    const instructors = await loadSchoolInstructorAnacs();
+    instructorAnacs = instructors.anacs;
+    instructorUserIds = instructors.userIds;
+    if (!instructorAnacs.size) {
+      throw Object.assign(new Error("Nenhum instrutor com codigo ANAC encontrado na escola."), { status: 400 });
+    }
+  } else {
+    const profile = await getProfileByUserId(actorUserId);
+    anac = cleanString(profile?.anac_code);
+    if (!anac) throw Object.assign(new Error("Codigo ANAC nao encontrado no perfil. Atualize seu cadastro antes de sincronizar."), { status: 400 });
+  }
 
   const { credentials, mapping } = await loadSagaImportSettings();
   if (!credentials.email || !credentials.password) {
     throw Object.assign(new Error("Credenciais SAGA nao configuradas pelo administrador."), { status: 400 });
   }
 
-  logLine(`[sagaImportSelfFlights] ANAC=${anac} userId=${actorUserId}`);
+  logLine(`[sagaImportSelfFlights] ANAC=${anac || "all-instructors"} userId=${actorUserId} days=${operationsDays}`);
   const logs = [];
 
   const makeSummary = (overrides = {}) => ({
@@ -17049,7 +17083,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const cookieJar = await sagaLoginSession(credentials.email, credentials.password, logs);
   await saveSagaImportProgress({ runId, status: "running", stage: "fetch", message: "Buscando voos no SAGA...", current: 0, total: 0, logs });
 
-  const operationsRange = sagaDateRangeDays(30);
+  const operationsRange = sagaDateRangeDays(operationsDays);
   const operationsPath = `/reports/operations?start_date=${operationsRange.startDate}&end_date=${operationsRange.endDate}`;
   const operations = await sagaFetch(operationsPath, {
     method: "GET",
@@ -17058,11 +17092,17 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const allFlightRows = translateSagaFlightRows(operations.html);
   const mappedFlightRows = applySagaFlightColumnMap(allFlightRows.rows, mapping.flightColumnMap);
 
-  const myFlightRows = mappedFlightRows.filter(
-    (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
+  const myFlightRows = allInstructors
+    ? mappedFlightRows.filter((row) => instructorAnacs.has(cleanString(row.canacInstrutor)))
+    : mappedFlightRows.filter(
+      (row) => cleanString(row.canacAluno) === anac || cleanString(row.canacInstrutor) === anac,
+    );
+  logs.push(
+    allInstructors
+      ? `Voos filtrados por instrutores da escola (janela ${operationsDays} dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`
+      : `Voos filtrados por ANAC ${anac} (janela ${operationsDays} dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`,
   );
-  logs.push(`Voos filtrados por ANAC ${anac} (janela 30 dias): ${myFlightRows.length}/${mappedFlightRows.length} voo(s).`);
-  logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados para ANAC ${anac}.`);
+  logLine(`[sagaImportSelfFlights] ${myFlightRows.length} voo(s) filtrados.`);
 
   await saveSagaImportProgress({ runId, status: "running", stage: "check", message: `${myFlightRows.length} voo(s) encontrado(s), verificando novos...`, current: 0, total: myFlightRows.length, logs });
 
@@ -17103,7 +17143,13 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes.`);
 
   const summary = makeSummary({ requestedFlightGroups: groups.length, flightsSkipped: skippedCount });
-  const staleCleanup = await purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs);
+  const staleCleanup = await purgeMissingSagaImportedFlightsForActor(
+    actorUserId,
+    groups,
+    operationsRange,
+    logs,
+    allInstructors ? { linkedUserIds: instructorUserIds } : {},
+  );
   summary.flightsDeleted = staleCleanup.deletedFlights.length;
   summary.deletedFlights = staleCleanup.deletedFlights;
   summary.staleCleanup = staleCleanup.diagnostics;
@@ -17175,7 +17221,8 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   return { ok: true, summary };
 }
 
-async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs = []) {
+async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs = [], options = {}) {
+  const linkedUserIds = options.linkedUserIds instanceof Set ? options.linkedUserIds : null;
   const sagaKeysPresent = new Set((groups || []).map((group) => cleanString(group?.key)).filter(Boolean));
   const startDate = cleanString(operationsRange?.startDate);
   const endDate = cleanString(operationsRange?.endDate);
@@ -17203,10 +17250,15 @@ async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, oper
   ]);
   diagnostics.totalSchoolDocs = schoolDocs.length;
   const docs = schoolDocs.filter((doc) => {
-    if (actorUserId === "system") return true;
+    if (actorUserId === "system" && !linkedUserIds) return true;
     const studentUserId = cleanString(doc?.student_user_id || doc?.user_id);
     const legacyUserId = cleanString(doc?.user_id);
     const instructorUserId = cleanString(doc?.instructor_user_id);
+    if (linkedUserIds) {
+      return (studentUserId && linkedUserIds.has(studentUserId))
+        || (legacyUserId && linkedUserIds.has(legacyUserId))
+        || (instructorUserId && linkedUserIds.has(instructorUserId));
+    }
     return studentUserId === actorUserId || legacyUserId === actorUserId || instructorUserId === actorUserId;
   });
   diagnostics.actorLinkedDocs = docs.length;
@@ -17955,6 +18007,16 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "sagaImportSelfFlights") {
       if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
       const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "sagaImportAllInstructorFlights") {
+      if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
+      await requireAdmin(actorUserId);
+      const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null, {
+        allInstructors: true,
+        operationsDays: 7,
+      });
       return jsonResponse(res, 200, result);
     }
 

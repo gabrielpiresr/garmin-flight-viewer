@@ -368,7 +368,7 @@ const REPORTS_TABS = [
   },
   {
     id: "no-telemetry",
-    label: "Sem telemetria",
+    label: "Flight Review",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
         <path d="M12 2.25a.75.75 0 01.75.75v2.25a7.5 7.5 0 017.5 7.5H21a.75.75 0 010 1.5h-.75a7.5 7.5 0 01-7.5 7.5v2.25a.75.75 0 01-1.5 0v-2.25a7.5 7.5 0 01-7.5-7.5H3a.75.75 0 010-1.5h.75a7.5 7.5 0 017.5-7.5V3a.75.75 0 01.75-.75z" />

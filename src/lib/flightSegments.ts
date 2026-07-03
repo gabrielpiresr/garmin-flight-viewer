@@ -478,6 +478,15 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
  * @param end  Optional upper bound (inclusive). Defaults to `data.length - 4`.
  */
 export function findTouchdown(data: ChartRow[], after: number, end?: number): number | null {
+  return findTouchdownWithOptions(data, after, { end });
+}
+
+function findTouchdownWithOptions(
+  data: ChartRow[],
+  after: number,
+  options: { end?: number; allowAltitudeTouchdown?: boolean } = {},
+): number | null {
+  const { end, allowAltitudeTouchdown = true } = options;
   const limit = end !== undefined ? Math.min(end, data.length - 4) : data.length - 4;
   for (let i = after + 1; i <= limit; i++) {
     if (isStableRolloutTouchdown(data, i)) return i;
@@ -491,7 +500,7 @@ export function findTouchdown(data: ChartRow[], after: number, end?: number): nu
 
     if (isAglTransitionTouchdown(data, i)) return i;
 
-    if (isAltitudeValleyTouchdown(data, i)) return i;
+    if (allowAltitudeTouchdown && isAltitudeValleyTouchdown(data, i)) return i;
   }
   return null;
 }
@@ -799,22 +808,62 @@ const COLORS: Record<string, string> = {
   touchdown: "#f87171",
 };
 
-const TOUCHDOWN_DEDUPE_MS = 45_000;
+const TOUCHDOWN_DEDUPE_MS = 75_000;
 const TGL_TAKEOFF_WINDOW_MS = 90_000;
+
+interface TakeoffGroup { rotIdx: number; liftIdx: number; ftIdx: number | null; }
+interface TouchdownGroup { tdIdx: number; }
+
+function normalizeAircraftIdent(value: string | null | undefined): string {
+  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+
+function hasAglSamples(data: ChartRow[]): boolean {
+  return data.some((row) => get(row, "heightAglFt") !== null);
+}
+
+function isKnownReliableAglAircraft(aircraftIdent: string | null | undefined): boolean {
+  const normalized = normalizeAircraftIdent(aircraftIdent);
+  return Boolean(normalized && normalized !== "PSDZA");
+}
+
+function chooseTouchdownRepresentative(
+  data: ChartRow[],
+  takeoffs: TakeoffGroup[],
+  a: TouchdownGroup,
+  b: TouchdownGroup,
+): TouchdownGroup {
+  const takeoffBetweenCandidates = takeoffs.some(
+    (takeoff) =>
+      takeoff.rotIdx > a.tdIdx &&
+      takeoff.rotIdx < b.tdIdx &&
+      data[takeoff.rotIdx]!.x - data[a.tdIdx]!.x <= TGL_TAKEOFF_WINDOW_MS,
+  );
+  if (takeoffBetweenCandidates) return a;
+
+  const aGs = get(data[a.tdIdx]!, "gsKt");
+  const bGs = get(data[b.tdIdx]!, "gsKt");
+  if (aGs !== null && bGs !== null && bGs <= aGs - 5) return b;
+  if (aGs === null && bGs !== null) return b;
+  return a;
+}
 
 export function detectFlightSegments(
   data: ChartRow[],
   chartTimeBaseMs: number | null,
   points: FlightPoint[],
+  options: { aircraftIdent?: string | null } = {},
 ): FlightSegment[] {
   if (data.length < 10 || chartTimeBaseMs === null) return [];
 
   const segments: FlightSegment[] = [];
   const SAMPLE_MS = estimateSampleIntervalMs(data);
-  const aglIsUnreliable = hasUnreliableAgl(data);
-
-  interface TakeoffGroup { rotIdx: number; liftIdx: number; ftIdx: number | null; }
-  interface TouchdownGroup { tdIdx: number; }
+  const aircraftIdent = options.aircraftIdent ?? null;
+  const reliableAglAircraft = isKnownReliableAglAircraft(aircraftIdent);
+  const aglAvailable = hasAglSamples(data);
+  const aglIsUnreliable = reliableAglAircraft ? false : hasUnreliableAgl(data);
+  const allowAltitudeFallback = !reliableAglAircraft && (aglIsUnreliable || !aglAvailable);
+  const requireAglForTgl = reliableAglAircraft && aglAvailable;
 
   const takeoffs: TakeoffGroup[] = [];
   const touchdowns: TouchdownGroup[] = [];
@@ -832,7 +881,9 @@ export function detectFlightSegments(
 
     takeoffs.push({ rotIdx, liftIdx, ftIdx });
 
-    const tdIdx = findTouchdown(data, liftIdx + 1);
+    const tdIdx = findTouchdownWithOptions(data, liftIdx + 1, {
+      allowAltitudeTouchdown: allowAltitudeFallback,
+    });
     if (tdIdx !== null) {
       touchdowns.push({ tdIdx });
       searchFrom = tdIdx + 5;
@@ -843,26 +894,37 @@ export function detectFlightSegments(
 
   let touchdownSearchFrom = 0;
   while (touchdownSearchFrom < data.length) {
-    const tdIdx = findTouchdown(data, touchdownSearchFrom);
+    const tdIdx = findTouchdownWithOptions(data, touchdownSearchFrom, {
+      allowAltitudeTouchdown: allowAltitudeFallback,
+    });
     if (tdIdx === null) break;
     if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
       touchdowns.push({ tdIdx });
     }
     touchdownSearchFrom = tdIdx + 5;
   }
-  for (const tdIdx of collectAltitudeTouchdowns(data)) {
-    if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
-      touchdowns.push({ tdIdx });
+  if (allowAltitudeFallback) {
+    for (const tdIdx of collectAltitudeTouchdowns(data)) {
+      if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
+        touchdowns.push({ tdIdx });
+      }
     }
   }
   touchdowns.sort((a, b) => a.tdIdx - b.tdIdx);
   const uniqueTouchdowns: TouchdownGroup[] = [];
   touchdowns.forEach((td) => {
-    const duplicate = uniqueTouchdowns.some(
+    const duplicateIndex = uniqueTouchdowns.findIndex(
       (seen) => Math.abs(data[td.tdIdx]!.x - data[seen.tdIdx]!.x) < TOUCHDOWN_DEDUPE_MS,
     );
-    if (!duplicate) {
+    if (duplicateIndex < 0) {
       uniqueTouchdowns.push(td);
+    } else {
+      uniqueTouchdowns[duplicateIndex] = chooseTouchdownRepresentative(
+        data,
+        takeoffs,
+        uniqueTouchdowns[duplicateIndex]!,
+        td,
+      );
     }
   });
   touchdowns.length = 0;
@@ -924,8 +986,12 @@ export function detectFlightSegments(
       nextLiftIdx !== null
         ? get(data[nextLiftIdx]!, "gpsAltFt") ?? get(data[tdIdx]!, "gpsAltFt") ?? 0
         : get(data[tdIdx]!, "gpsAltFt") ?? 0;
-    const nextFtIdx =
-      nextLiftIdx !== null ? find50ft(data, nextLiftIdx, nextAlt) ?? climbAfterTouchdownIdx : climbAfterTouchdownIdx;
+    const altitude50Idx = nextLiftIdx !== null ? find50ft(data, nextLiftIdx, nextAlt) : null;
+    const climbIdxAfterLift =
+      nextLiftIdx !== null && climbAfterTouchdownIdx !== null && climbAfterTouchdownIdx >= nextLiftIdx
+        ? climbAfterTouchdownIdx
+        : null;
+    const nextFtIdx = nextLiftIdx !== null ? altitude50Idx ?? climbIdxAfterLift : climbAfterTouchdownIdx;
     const segmentEndIdx = nextLiftIdx ?? climbAfterTouchdownIdx ?? tdIdx;
 
     const startX = Math.max(0, data[tdIdx]!.x - 300 * SAMPLE_MS);
@@ -977,14 +1043,22 @@ export function detectFlightSegments(
         data[takeoff.rotIdx]!.x - data[td.tdIdx]!.x <= TGL_TAKEOFF_WINDOW_MS,
     );
     const nextTglTakeoff = nextTakeoffIdx >= 0 ? takeoffs[nextTakeoffIdx] : undefined;
-    const fallbackLiftIdx = nextTglTakeoff === undefined ? findLiftoff(data, td.tdIdx) : null;
+    const fallbackLiftIdx =
+      nextTglTakeoff === undefined && !requireAglForTgl ? findLiftoff(data, td.tdIdx) : null;
     const climbAfterTouchdownIdx =
       (aglIsUnreliable ? null : findAglClimbAfterTouchdown(data, td.tdIdx)) ??
-      findAltitudeClimbAfterTouchdown(data, td.tdIdx);
+      (allowAltitudeFallback ? findAltitudeClimbAfterTouchdown(data, td.tdIdx) : null);
     const isTgl = nextTglTakeoff !== undefined || fallbackLiftIdx !== null || climbAfterTouchdownIdx !== null;
 
     if (isTgl) {
-      if (nextTakeoffIdx >= 0) tglTakeoffs.add(nextTakeoffIdx);
+      takeoffs.forEach((takeoff, takeoffIdx) => {
+        if (
+          takeoff.rotIdx > td.tdIdx &&
+          data[takeoff.rotIdx]!.x - data[td.tdIdx]!.x <= TGL_TAKEOFF_WINDOW_MS
+        ) {
+          tglTakeoffs.add(takeoffIdx);
+        }
+      });
       pushTglSegment(`tgl-${idx}`, td.tdIdx, nextTglTakeoff, climbAfterTouchdownIdx);
     } else {
       pushLandingSegment(`landing-${idx}`, td.tdIdx);

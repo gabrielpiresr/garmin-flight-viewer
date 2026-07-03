@@ -301,7 +301,9 @@ export function evaluateTelemetryAlerts(params: {
 }): TriggeredTelemetryAlert[] {
   const segments =
     params.parsed.chartData.length > 0 && params.parsed.hasChartTime
-      ? detectFlightSegments(params.parsed.chartData, params.parsed.chartTimeBaseMs, params.parsed.points)
+      ? detectFlightSegments(params.parsed.chartData, params.parsed.chartTimeBaseMs, params.parsed.points, {
+          aircraftIdent: params.parsed.aircraftIdent,
+        })
       : [];
 
   return params.rules

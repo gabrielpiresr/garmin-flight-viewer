@@ -82,6 +82,8 @@ type Props = {
   backLabel?: string;
   fichaInitialStepId?: NovoVooStepId;
   hideFichaStepMenu?: boolean;
+  initialSubTab?: SubTab;
+  allowedSubTabs?: SubTab[];
 };
 
 export function FlightDetailView({
@@ -92,12 +94,15 @@ export function FlightDetailView({
   backLabel = "Meus voos",
   fichaInitialStepId,
   hideFichaStepMenu = false,
+  initialSubTab,
+  allowedSubTabs,
 }: Props) {
   const { user } = useAuth();
   const { enabled: clubEnabled, isClubMember } = useFlightReviewClub();
   const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember;
-  const [activeSubTab, setActiveSubTab] = useState<SubTab>("ficha");
-  const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set(["ficha"]));
+  const defaultSubTab = initialSubTab ?? "ficha";
+  const [activeSubTab, setActiveSubTab] = useState<SubTab>(defaultSubTab);
+  const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set([defaultSubTab]));
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [publicShareBusy, setPublicShareBusy] = useState(false);
   const [publicShareStatus, setPublicShareStatus] = useState<string | null>(null);
@@ -156,8 +161,10 @@ export function FlightDetailView({
     tabs.push(buildTab("videos"));
     if (canSeeStudentContext && studentUserId) tabs.push(buildTab("aluno"));
     if (canSeeAuditLog) tabs.push(buildTab("auditoria"));
-    return tabs;
-  }, [canSeeAuditLog, canSeeStudentContext, studentUserId]);
+    if (!allowedSubTabs?.length) return tabs;
+    const allowed = new Set(allowedSubTabs);
+    return tabs.filter((tab) => allowed.has(tab.id));
+  }, [allowedSubTabs, canSeeAuditLog, canSeeStudentContext, flightId, studentUserId]);
 
   const handleSignFromFicha = async () => {
     if (!user || !flightId) return;

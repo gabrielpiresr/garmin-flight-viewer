@@ -50,7 +50,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "reports.all-flights", label: "Todos os Voos" },
       { key: "reports.relatorios", label: "Relatórios" },
       { key: "reports.assinaturas", label: "Assinaturas" },
-      { key: "reports.sem-telemetria", label: "Sem Telemetria" },
+      { key: "reports.sem-telemetria", label: "Flight Review" },
       { key: "reports.alertas", label: "Alertas" },
     ],
   },

@@ -333,7 +333,9 @@ export function PublicFlightReviewPage() {
 function FlightLegsPanel({ parsedTelemetry }: { parsedTelemetry: ParseResult }) {
   const segments =
     parsedTelemetry.chartData.length > 0 && parsedTelemetry.hasChartTime
-      ? detectFlightSegments(parsedTelemetry.chartData, parsedTelemetry.chartTimeBaseMs, parsedTelemetry.points)
+      ? detectFlightSegments(parsedTelemetry.chartData, parsedTelemetry.chartTimeBaseMs, parsedTelemetry.points, {
+          aircraftIdent: parsedTelemetry.aircraftIdent,
+        })
       : [];
 
   if (segments.length === 0) return null;

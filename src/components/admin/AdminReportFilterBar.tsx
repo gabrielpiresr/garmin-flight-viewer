@@ -1,9 +1,10 @@
-export type PeriodPresetKey = "custom" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "lastYear" | "all";
+export type PeriodPresetKey = "custom" | "last3" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "lastYear" | "all";
 
 export type MultiFilterKey = "instructors" | "students" | "aircrafts";
 
 export const PERIOD_PRESETS: Array<{ key: PeriodPresetKey; label: string }> = [
   { key: "custom", label: "Personalizado" },
+  { key: "last3", label: "Últimos 3 dias" },
   { key: "thisWeek", label: "Essa semana" },
   { key: "thisMonth", label: "Esse mês" },
   { key: "last30", label: "Últimos 30 dias" },
@@ -36,6 +37,11 @@ export function periodForPreset(key: PeriodPresetKey): { fromDate: string; toDat
   if (key === "all" || key === "custom") return { fromDate: "", toDate: "" };
   if (key === "thisWeek") return { fromDate: startOfIsoWeek(todayIso), toDate: endOfIsoWeek(todayIso) };
   if (key === "thisMonth") return { fromDate: `${todayIso.slice(0, 8)}01`, toDate: todayIso };
+  if (key === "last3") {
+    const from = new Date(today);
+    from.setDate(from.getDate() - 2);
+    return { fromDate: isoDate(from), toDate: todayIso };
+  }
   if (key === "last30") {
     const from = new Date(today);
     from.setDate(from.getDate() - 29);
