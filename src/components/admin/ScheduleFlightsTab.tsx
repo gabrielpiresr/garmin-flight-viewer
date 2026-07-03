@@ -1996,12 +1996,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
-  // Padrao da aba Escala: diaria, por aviao, cores por status e timeline invertida.
-  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("daily");
+  // Padrao da aba Escala: semanal, por aviao, cores por status e timeline normal.
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("weekly");
   const [scheduleGroupBy, setScheduleGroupBy] = useState<ScheduleGroupBy>("aircraft");
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
-  const [invertedTimeline, setInvertedTimeline] = useState(true);
+  const [invertedTimeline, setInvertedTimeline] = useState(false);
   // Mobile: resumos recolhidos por padrão
   const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
   const [mobileInstructorSummaryOpen, setMobileInstructorSummaryOpen] = useState(false);
