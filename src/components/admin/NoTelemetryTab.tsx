@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAdminFlightReports } from "../../lib/adminUsersDb";
+import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
+import { getSavedFlight } from "../../lib/flightsDb";
+import { localTimeToUtcHhMm } from "../../lib/flightLogbookTimes";
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
 import { importAllInstructorFlightsFromSaga, type SagaImportProgress } from "../../lib/sagaImportDb";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
@@ -18,6 +21,67 @@ function fmtDate(value: string | null | undefined): string {
   if (!value) return "—";
   const [year, month, day] = value.slice(0, 10).split("-");
   return year && month && day ? `${day}/${month}/${year}` : value;
+}
+
+function fmtNumber(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("pt-BR", { maximumFractionDigits: 0 })
+    : "â€”";
+}
+
+function parseDurationToMinutes(value: string | null | undefined): number {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (match) return Number(match[1]) * 60 + Number(match[2]);
+  const decimal = Number(raw.replace(",", "."));
+  return Number.isFinite(decimal) && decimal > 0 ? Math.round(decimal * 60) : 0;
+}
+
+function fmtMinutes(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "â€”";
+  const minutes = Math.round(value);
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return hours > 0 ? `${hours}h${String(rest).padStart(2, "0")}` : `${rest} min`;
+}
+
+function firstNonEmpty(values: Array<string | null | undefined>): string {
+  return values.map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+}
+
+function summaryFromMeta(row: AdminFlightReportRow, meta: FlightRecordMeta | null) {
+  const legs = meta?.legs ?? [];
+  const landings = legs.length
+    ? legs.reduce((acc, leg) => acc + Math.max(0, Math.round(leg.landings || 0)), 0)
+    : row.landings;
+  const flightMinutesFromLegs = legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.flightTime), 0);
+  const fallbackFlightMinutes = row.hours > 0
+    ? Math.round(row.hours * 60)
+    : typeof row.durationSec === "number" && row.durationSec > 0
+      ? Math.round(row.durationSec / 60)
+      : null;
+  const flightMinutes = flightMinutesFromLegs > 0 ? flightMinutesFromLegs : fallbackFlightMinutes;
+  const engineStartLocal = firstNonEmpty([
+    ...legs.map((leg) => leg.engineStart),
+    meta?.header.departureTimeUtc,
+    meta?.header.startTime,
+    row.startTime,
+  ]);
+  const engineCutLocal = firstNonEmpty([
+    ...[...legs].reverse().map((leg) => leg.engineCut),
+    meta?.header.engineCutoffTimeUtc,
+  ]);
+  const flightDate = meta?.header.date || row.flightDate || "";
+  const toZulu = (local: string) => local ? localTimeToUtcHhMm(flightDate, local) : "â€”";
+
+  return {
+    landings,
+    flightMinutes,
+    engineStartLocal: engineStartLocal || "â€”",
+    engineStartZulu: toZulu(engineStartLocal),
+    engineCutLocal: engineCutLocal || "â€”",
+    engineCutZulu: toZulu(engineCutLocal),
+  };
 }
 
 function hasTelemetry(row: AdminFlightReportRow): boolean {
@@ -44,6 +108,16 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
+function SummaryMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="min-w-[140px] rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-base font-semibold text-slate-100">{value}</p>
+      {detail ? <p className="mt-0.5 text-xs text-slate-500">{detail}</p> : null}
+    </div>
+  );
+}
+
 function FlightReviewFlightModal({
   row,
   telemetryOk,
@@ -58,19 +132,38 @@ function FlightReviewFlightModal({
   onSaved: () => void;
 }) {
   const initialSubTab = resolveInitialSubTab(telemetryOk, videoOk);
+  const [flightMeta, setFlightMeta] = useState<FlightRecordMeta | null>(null);
+  const [metaLoading, setMetaLoading] = useState(true);
+  const summary = useMemo(() => summaryFromMeta(row, flightMeta), [flightMeta, row]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMetaLoading(true);
+    void getSavedFlight(row.id)
+      .then(({ data }) => {
+        if (!cancelled) setFlightMeta(data ? decodeFlightRecord(data.csv_text).meta : null);
+      })
+      .finally(() => {
+        if (!cancelled) setMetaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [row.id]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/85 p-3 backdrop-blur-sm sm:p-5" role="dialog" aria-modal="true">
       <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
-          <div className="min-w-0">
+        <div className="border-b border-slate-800 px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
             <h3 className="text-sm font-semibold text-slate-100">Completar Flight Review</h3>
             <p className="mt-1 text-xs text-slate-500">
               {fmtDate(row.flightDate)} {row.startTime || "—"} · {row.studentName} · {row.instructorName || "Sem INVA"} ·{" "}
               {row.aircraftIdent ?? "—"} · {row.route || "—"}
             </p>
-          </div>
-          <div className="flex gap-2">
+            </div>
+            <div className="flex gap-2">
             <button
               type="button"
               onClick={onSaved}
@@ -85,6 +178,29 @@ function FlightReviewFlightModal({
             >
               Fechar
             </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <SummaryMetric label="Pousos" value={metaLoading ? "..." : fmtNumber(summary.landings)} detail="Importado da ficha" />
+            <SummaryMetric label="Tempo de voo" value={metaLoading ? "..." : fmtMinutes(summary.flightMinutes)} detail="Soma das pernas" />
+            <SummaryMetric
+              label="Acionamento local"
+              value={metaLoading ? "..." : summary.engineStartLocal}
+              detail={`Zulu ${metaLoading ? "..." : summary.engineStartZulu}`}
+            />
+            <SummaryMetric
+              label="Corte local"
+              value={metaLoading ? "..." : summary.engineCutLocal}
+              detail={`Zulu ${metaLoading ? "..." : summary.engineCutZulu}`}
+            />
+            <div className="min-w-[140px] rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pendências</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <StatusBadge ok={telemetryOk} label="Telemetria" />
+                <StatusBadge ok={videoOk} label="Vídeo" />
+              </div>
+            </div>
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -94,7 +210,7 @@ function FlightReviewFlightModal({
             backLabel="Fechar"
             showStudentTab={false}
             initialSubTab={initialSubTab}
-            allowedSubTabs={["telemetria", "flight-review", "videos"]}
+            allowedSubTabs={["ficha", "telemetria", "flight-review", "videos"]}
           />
         </div>
       </div>

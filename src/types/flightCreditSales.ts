@@ -12,6 +12,8 @@ export type FlightCreditPackage = {
   aircraftModelName: string;
   active: boolean;
   isDefault: boolean;
+  /** Quando false, o pacote não entra na modalidade com desconto seg–sex. */
+  weekdayDiscountEligible: boolean;
   eligibility: PackageEligibility;
 };
 

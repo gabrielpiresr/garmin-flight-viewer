@@ -16,6 +16,7 @@ type PackageDraft = {
   aircraftModelId: string;
   active: boolean;
   isDefault: boolean;
+  weekdayDiscountEligible: boolean;
   eligibilityType: "all" | "saga_id_range" | "created_date_range";
   sagaIdMin: string;
   sagaIdMax: string;
@@ -30,6 +31,7 @@ const emptyDraft: PackageDraft = {
   aircraftModelId: "",
   active: true,
   isDefault: false,
+  weekdayDiscountEligible: true,
   eligibilityType: "all",
   sagaIdMin: "",
   sagaIdMax: "",
@@ -102,6 +104,7 @@ export function FlightCreditPackagesPanel() {
       aircraftModelId: item.aircraftModelId,
       active: item.active,
       isDefault: item.isDefault,
+      weekdayDiscountEligible: item.weekdayDiscountEligible !== false,
       eligibilityType: el.type,
       sagaIdMin: el.type === "saga_id_range" ? String(el.min ?? "") : "",
       sagaIdMax: el.type === "saga_id_range" ? String(el.max ?? "") : "",
@@ -155,6 +158,7 @@ export function FlightCreditPackagesPanel() {
       aircraftModelName: model.name,
       active: draft.isDefault ? true : draft.active,
       isDefault: draft.isDefault,
+      weekdayDiscountEligible: draft.weekdayDiscountEligible,
       eligibility,
     };
     setPackages((current) => {
@@ -233,7 +237,7 @@ export function FlightCreditPackagesPanel() {
       <label className="mt-2 block rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
         <span className="block text-sm font-medium text-slate-200">Desconto para modalidade &quot;somente seg–sex&quot;</span>
         <span className="mt-1 block text-xs text-slate-500">
-          Percentual global aplicado a todos os pacotes na compra com restrição de dias de semana. Deixe vazio para desligar.
+          Percentual global aplicado aos pacotes marcados para desconto seg–sex. Deixe vazio para desligar.
         </span>
         <div className="mt-2 flex items-center gap-2">
           <input
@@ -350,6 +354,15 @@ export function FlightCreditPackagesPanel() {
             <input type="checkbox" checked={draft.isDefault} onChange={(e) => setDraft((value) => ({ ...value, isDefault: e.target.checked }))} className="accent-amber-500" />
             Pacote default para propostas e links administrativos
           </label>
+          <label className="mt-2 flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={draft.weekdayDiscountEligible}
+              onChange={(e) => setDraft((value) => ({ ...value, weekdayDiscountEligible: e.target.checked }))}
+              className="accent-sky-500"
+            />
+            Participa do desconto seg–sex
+          </label>
           <div className="mt-3 flex gap-2">
             <button type="button" onClick={applyDraft} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Aplicar</button>
             <button type="button" onClick={closeForm} className="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400">Cancelar</button>
@@ -363,9 +376,10 @@ export function FlightCreditPackagesPanel() {
         ) : packages.map((item) => {
           const discountPct = parseNumber(weekdayDiscountPct);
           const hasWeekdayDiscount = discountPct > 0 && discountPct < 100;
-          const weekdayHourPrice = hasWeekdayDiscount
-            ? Number((item.hourPrice * (1 - discountPct / 100)).toFixed(2))
-            : null;
+          const weekdayHourPrice =
+            hasWeekdayDiscount && item.weekdayDiscountEligible !== false
+              ? Number((item.hourPrice * (1 - discountPct / 100)).toFixed(2))
+              : null;
           return (
           <div key={item.id} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-3 ${item.active ? "border-slate-700/60 bg-slate-800/30" : "border-slate-800 bg-slate-950/20 opacity-60"}`}>
             <div>
@@ -400,7 +414,24 @@ export function FlightCreditPackagesPanel() {
                 </p>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-1.5 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={item.weekdayDiscountEligible !== false}
+                  onChange={() =>
+                    setPackages((current) =>
+                      current.map((entry) =>
+                        entry.id === item.id
+                          ? { ...entry, weekdayDiscountEligible: entry.weekdayDiscountEligible === false }
+                          : entry,
+                      ),
+                    )
+                  }
+                  className="accent-sky-500"
+                />
+                Desconto seg–sex
+              </label>
               <button type="button" onClick={() => openEdit(item)} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-700">Editar</button>
               <button type="button" onClick={() => setPackages((current) => current.map((entry) => entry.id === item.id ? { ...entry, active: !entry.active } : entry))} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-700">
                 {item.active ? "Desativar" : "Ativar"}

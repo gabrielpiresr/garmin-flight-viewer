@@ -8,6 +8,23 @@ function isReady(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && MAINTENANCE_RULES_COL_ID);
 }
 
+function adminScopedPermissions(): string[] {
+  return Array.from(
+    new Set([
+      Permission.read(Role.label("admin")),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
+      ...(ADMIN_USER_ID
+        ? [
+            Permission.read(Role.user(ADMIN_USER_ID)),
+            Permission.update(Role.user(ADMIN_USER_ID)),
+            Permission.delete(Role.user(ADMIN_USER_ID)),
+          ]
+        : []),
+    ]),
+  );
+}
+
 function toRule(doc: Record<string, unknown>): MaintenanceRule {
   return {
     id: doc.$id as string,
@@ -59,11 +76,7 @@ export async function createRule(data: {
       estimated_downtime_days: data.estimated_downtime_days ?? null,
       estimated_cost: data.estimated_cost ?? null,
     },
-    [
-      Permission.read(Role.user(ADMIN_USER_ID!)),
-      Permission.update(Role.user(ADMIN_USER_ID!)),
-      Permission.delete(Role.user(ADMIN_USER_ID!)),
-    ],
+    adminScopedPermissions(),
   );
   return toRule(doc as unknown as Record<string, unknown>);
 }

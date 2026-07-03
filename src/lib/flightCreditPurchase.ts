@@ -22,11 +22,22 @@ export function effectiveHourPrice(
   basePrice: number,
   availability: CreditAvailability,
   discountPct: number | null,
+  weekdayDiscountEligible = true,
 ): number {
-  if (availability === "weekday" && discountPct != null && discountPct > 0 && discountPct < 100) {
+  if (
+    availability === "weekday" &&
+    weekdayDiscountEligible &&
+    discountPct != null &&
+    discountPct > 0 &&
+    discountPct < 100
+  ) {
     return Number((basePrice * (1 - discountPct / 100)).toFixed(2));
   }
   return basePrice;
+}
+
+export function isWeekdayDiscountEligible(pkg: FlightCreditPackage): boolean {
+  return pkg.weekdayDiscountEligible !== false;
 }
 
 export function renderCheckoutLoading(target: Window) {

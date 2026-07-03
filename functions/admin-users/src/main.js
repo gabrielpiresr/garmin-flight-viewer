@@ -14888,6 +14888,7 @@ function publicFlightCreditSalesConfig(settings, updatedAt = null, activeOnly = 
         aircraftModelName: cleanString(item.aircraftModelName),
         active: item.active === true,
         isDefault: item.isDefault === true,
+        weekdayDiscountEligible: item.weekdayDiscountEligible !== false,
         eligibility: sanitizeEligibility(item.eligibility),
       }))
       .filter((item) => item.id && item.hours > 0 && item.hourPrice > 0 && item.validityDays > 0 && item.aircraftModelId),
@@ -14964,6 +14965,7 @@ async function sanitizeFlightCreditPackages(rawPackages) {
       aircraftModelName: cleanString(model.name) || aircraftModelId,
       active: raw?.isDefault === true ? true : raw?.active !== false,
       isDefault: raw?.isDefault === true && !defaultAssigned,
+      weekdayDiscountEligible: raw?.weekdayDiscountEligible !== false,
       eligibility: sanitizeEligibility(raw?.eligibility),
     });
     if (raw?.isDefault === true && !defaultAssigned) defaultAssigned = true;
@@ -15279,10 +15281,14 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
   const selected = packages.find((item) => cleanString(item?.id) === cleanString(packageId));
   const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
   if (!normalized) throw Object.assign(new Error("Pacote indisponivel para compra."), { status: 404 });
+  if (weekdayOnly && normalized.weekdayDiscountEligible === false) {
+    throw Object.assign(new Error("Este pacote nao participa do desconto seg-sex."), { status: 403 });
+  }
   const requestedCustomHours = Number(customHoursInput);
   const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
   const hasCustomHours = customHours !== null && customHours > 0;
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
+    .filter((pkg) => !weekdayOnly || pkg.weekdayDiscountEligible !== false)
     .sort((a, b) => a.hours - b.hours);
   const referencePackage = hasCustomHours
     ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
@@ -15381,6 +15387,9 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   const selected = packages.find((item) => cleanString(item?.id) === safePackageId);
   const normalized = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages: selected ? [selected] : [] }, null, true).packages[0];
   if (!normalized) throw Object.assign(new Error("Pacote indisponível ou inativo."), { status: 404 });
+  if (weekdayOnly && normalized.weekdayDiscountEligible === false) {
+    throw Object.assign(new Error("Este pacote nao participa do desconto seg-sex."), { status: 403 });
+  }
   const requestedCustomHours = Number(customHoursInput);
   const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
   const hasCustomHours = customHours !== null && customHours > 0;
@@ -15393,6 +15402,7 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     throw Object.assign(new Error("Desconto seg-sex nao se aplica com valor de hora personalizado."), { status: 400 });
   }
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
+    .filter((pkg) => !weekdayOnly || pkg.weekdayDiscountEligible !== false)
     .sort((a, b) => a.hours - b.hours);
   const referencePackage = hasCustomHours
     ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]

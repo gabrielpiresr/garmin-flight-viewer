@@ -8,6 +8,23 @@ function isReady(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && AIRCRAFT_MODELS_COL_ID);
 }
 
+function adminScopedPermissions(): string[] {
+  return Array.from(
+    new Set([
+      Permission.read(Role.label("admin")),
+      Permission.update(Role.label("admin")),
+      Permission.delete(Role.label("admin")),
+      ...(ADMIN_USER_ID
+        ? [
+            Permission.read(Role.user(ADMIN_USER_ID)),
+            Permission.update(Role.user(ADMIN_USER_ID)),
+            Permission.delete(Role.user(ADMIN_USER_ID)),
+          ]
+        : []),
+    ]),
+  );
+}
+
 function toModel(doc: Record<string, unknown>): AircraftModel {
   return {
     id: doc.$id as string,
@@ -160,11 +177,7 @@ export async function createModel(data: {
       op_best_climb_after_takeoff_kt: data.op_best_climb_after_takeoff_kt ?? null,
       deleted_at: null,
     },
-    [
-      Permission.read(Role.user(ADMIN_USER_ID!)),
-      Permission.update(Role.user(ADMIN_USER_ID!)),
-      Permission.delete(Role.user(ADMIN_USER_ID!)),
-    ],
+    adminScopedPermissions(),
   );
   return toModel(doc as unknown as Record<string, unknown>);
 }

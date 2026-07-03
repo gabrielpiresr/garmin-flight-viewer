@@ -27,6 +27,7 @@
     "appwrite:fix-flight-schedule-permissions": "node scripts/fix-flight-schedule-permissions.mjs",
     "appwrite:setup-admin": "node scripts/setup-admin-collections.mjs",
     "appwrite:fix-admin-perms": "node scripts/fix-admin-collection-permissions.mjs",
+    "appwrite:repair-admin-perms": "node scripts/repair-admin-permissions.mjs",
     "appwrite:setup-planning": "node scripts/setup-planning-collections.mjs",
     "appwrite:setup-credits": "node scripts/setup-student-credits-collection.mjs",
     "appwrite:setup-notices": "node scripts/setup-notices-collections.mjs",

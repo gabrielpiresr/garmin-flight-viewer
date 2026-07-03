@@ -5,6 +5,7 @@ import {
   effectiveHourPrice,
   formatHoursLabel,
   formatPurchaseCurrency,
+  isWeekdayDiscountEligible,
   packageReferenceForCustomHours,
   renderCheckoutLoading,
   type CreditAvailability,
@@ -55,8 +56,14 @@ export function FlightCreditPurchasePage() {
   }, []);
 
   const discountPct = config?.weekdayDiscountPct ?? null;
-  const hasWeekdayDiscount = discountPct != null && discountPct > 0 && discountPct < 100;
-  const weekdayDiscountLabel = hasWeekdayDiscount ? Math.round(discountPct) : 10;
+  const globalWeekdayDiscount =
+    discountPct != null && discountPct > 0 && discountPct < 100;
+  const weekdayEligiblePackages = useMemo(
+    () => (config ? config.packages.filter(isWeekdayDiscountEligible) : []),
+    [config],
+  );
+  const hasWeekdayDiscount = globalWeekdayDiscount && weekdayEligiblePackages.length > 0;
+  const weekdayDiscountLabel = globalWeekdayDiscount ? Math.round(discountPct!) : 10;
 
   const aircraftOptions = useMemo(() => {
     if (!config) return [];
@@ -72,13 +79,14 @@ export function FlightCreditPurchasePage() {
       config
         ? [...config.packages]
             .filter((pkg) => !selectedModelId || pkg.aircraftModelId === selectedModelId)
+            .filter((pkg) => availability !== "weekday" || isWeekdayDiscountEligible(pkg))
             .sort((a, b) => a.hours - b.hours)
         : [],
-    [config, selectedModelId],
+    [config, selectedModelId, availability],
   );
 
   const hourPriceFor = (pkg: FlightCreditPackage) =>
-    effectiveHourPrice(pkg.hourPrice, availability, discountPct);
+    effectiveHourPrice(pkg.hourPrice, availability, discountPct, isWeekdayDiscountEligible(pkg));
 
   const selectedPackage = modelPackages.find((pkg) => pkg.id === selectedPackageId) ?? null;
 
@@ -112,6 +120,21 @@ export function FlightCreditPurchasePage() {
       current && modelPackages.some((pkg) => pkg.id === current) ? current : modelPackages[0].id,
     );
   }, [modelPackages, selectionMode]);
+
+  useEffect(() => {
+    if (!hasWeekdayDiscount && availability === "weekday") {
+      setAvailability("any");
+    }
+  }, [hasWeekdayDiscount, availability]);
+
+  useEffect(() => {
+    if (!config || availability !== "weekday" || !selectedModelId) return;
+    const allForModel = config.packages.filter((pkg) => pkg.aircraftModelId === selectedModelId);
+    const eligibleForModel = allForModel.filter(isWeekdayDiscountEligible);
+    if (allForModel.length > 0 && eligibleForModel.length === 0) {
+      setAvailability("any");
+    }
+  }, [config, availability, selectedModelId]);
 
   useEffect(() => {
     if (availability !== "weekday") {
@@ -311,7 +334,7 @@ export function FlightCreditPurchasePage() {
                 Segunda a sexta — {weekdayDiscountLabel}% off
               </p>
               <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                Receba desconto em qualquer pacote. Esses créditos só poderão ser usados em voos de segunda a
+                Receba desconto nos pacotes elegíveis. Esses créditos só poderão ser usados em voos de segunda a
                 sexta-feira.
               </p>
             </button>
@@ -415,7 +438,7 @@ export function FlightCreditPurchasePage() {
               <p>
                 <span className="text-slate-500">Uso dos créditos:</span> {availabilityLabel}
               </p>
-              {availability === "weekday" && hasWeekdayDiscount ? (
+              {availability === "weekday" && hasWeekdayDiscount && isWeekdayDiscountEligible(summaryPackage) ? (
                 <p>
                   <span className="text-slate-500">Desconto aplicado:</span> {weekdayDiscountLabel}%
                 </p>
