@@ -31,7 +31,8 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-contents-maneuvers", kind: "page", label: "Manobras", group: "Conteúdos", path: "/admin/conteudos/manobras", requiredTab: "contents.manobras", keywords: ["manobra", "secoes", "artigos"] },
   { id: "page-contents-manuals", kind: "page", label: "Manuais", group: "Conteúdos", path: "/admin/conteudos/manuais", requiredTab: "contents.manuais", keywords: ["apostila", "documento", "pdf"] },
   { id: "page-contents-manuais-internos", kind: "page", label: "Manuais internos", group: "Conteúdos", path: "/admin/conteudos/manuais-internos", requiredTab: "contents.manuais-internos", keywords: ["procedimentos", "interno"] },
-  { id: "page-contents-help", kind: "page", label: "Central de Ajuda", group: "Conteúdos", path: "/admin/conteudos/central-ajuda", requiredTab: "contents.ajuda", keywords: ["faq", "suporte", "duvidas", "ajuda"] },
+  { id: "page-contents-help", kind: "page", label: "Central de Ajuda", group: "Conteúdos", path: "/admin/conteudos/central-ajuda", requiredTab: "contents.ajuda", keywords: ["faq", "suporte", "duvidas", "ajuda", "aluno"] },
+  { id: "page-contents-instructor-help", kind: "page", label: "Manual do Instrutor", group: "Conteúdos", path: "/admin/conteudos/manual-instrutor", requiredTab: "contents.ajuda-instrutor", keywords: ["manual do instrutor", "guia do instrutor", "inva", "procedimentos instrutor", "rotina instrutor"] },
   { id: "page-contents-exercises", kind: "page", label: "Critérios", group: "Conteúdos", path: "/admin/conteudos/exercicios", requiredTab: "contents.exercicios", keywords: ["criterios de avaliacao", "exercicios", "notas"] },
   { id: "page-flight-review", kind: "page", label: "Flight Review", group: "Conteúdos", path: "/admin/conteudos/flight-review", requiredTab: "flight-review", keywords: ["revisao de voo", "avaliacao"] },
   { id: "page-students", kind: "page", label: "Alunos", group: "Operação", path: "/admin/alunos", requiredTab: "students", keywords: ["aluno", "evolucao", "ritmo de voo", "estudante", "turma"] },
@@ -110,6 +111,7 @@ const ACTION_ENTRIES: AdminSearchEntry[] = [
   // Conteúdos
   { id: "action-edit-maneuver", kind: "action", label: "Editar manobra", group: "Ações", path: "/admin/conteudos/manobras", requiredTab: "contents.manobras", keywords: ["editar manobra", "artigo de manobra", "nova manobra", "secao de manobra"] },
   { id: "action-edit-help", kind: "action", label: "Editar central de ajuda", group: "Ações", path: "/admin/conteudos/central-ajuda", requiredTab: "contents.ajuda", keywords: ["editar faq", "artigo de ajuda", "nova pergunta"] },
+  { id: "action-edit-instructor-help", kind: "action", label: "Editar manual do instrutor", group: "Ações", path: "/admin/conteudos/manual-instrutor", requiredTab: "contents.ajuda-instrutor", keywords: ["editar manual instrutor", "artigo instrutor", "guia inva", "procedimento instrutor"] },
   { id: "action-edit-track", kind: "action", label: "Criar ou editar trilha", group: "Ações", path: "/admin/configuracoes/trilhas", requiredTab: "settings.trilhas", keywords: ["nova trilha", "editar trilha", "nova missao", "criar missao", "fases da trilha", "curso do aluno"] },
   // Comunicação
   { id: "action-send-notice", kind: "action", label: "Enviar aviso", group: "Ações", path: "/admin/disparos/avisos", requiredTab: "disparos.avisos", keywords: ["novo aviso", "publicar comunicado", "avisar alunos", "mural"] },

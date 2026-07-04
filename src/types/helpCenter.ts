@@ -1,3 +1,5 @@
+export type HelpCenterAudience = "student" | "instructor";
+
 export type HelpRichContent = Record<string, unknown>;
 
 export type HelpSection = {

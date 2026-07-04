@@ -46,6 +46,8 @@ const collectionEnvByName = {
   help_sections: "VITE_APPWRITE_HELP_SECTIONS_COL_ID",
   help_subsections: "VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID",
   help_articles: "VITE_APPWRITE_HELP_ARTICLES_COL_ID",
+  instructor_help_sections: "VITE_APPWRITE_INSTRUCTOR_HELP_SECTIONS_COL_ID",
+  instructor_help_articles: "VITE_APPWRITE_INSTRUCTOR_HELP_ARTICLES_COL_ID",
   platform_settings: "VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID",
   push_subscriptions: "VITE_APPWRITE_PUSH_SUBSCRIPTIONS_COL_ID",
   notification_deliveries: "VITE_APPWRITE_NOTIFICATION_DELIVERIES_COL_ID",

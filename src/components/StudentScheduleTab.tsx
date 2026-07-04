@@ -26,7 +26,7 @@ import {
   FLIGHT_STATUS_CARD_COLOR,
   type CalendarDropTarget,
   type CalendarFlightItem,
-} from "./admin/ScheduleFlightsTab";
+} from "./schedule/CalendarGrid";
 import { navigateToTab } from "../lib/routedTabs";
 import { useToast } from "./ui/ToastProvider";
 import { ScheduleStudentChrome } from "./schedule/ScheduleStudentChrome";
@@ -1078,6 +1078,8 @@ export function StudentScheduleTab() {
   const [creditSummaries, setCreditSummaries] = useState<StudentCreditModelSummary[]>([]);
   const [creditTotals, setCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [creditsLoading, setCreditsLoading] = useState(false);
+  const creditsLoadedRef = useRef(false);
+  const creditsFetchingRef = useRef(false);
 
   // Escala futura (mês atual + 2): carregada UMA vez no primeiro acesso ao modal e
   // reaproveitada — só recarrega após solicitar/alterar/cancelar um voo.
@@ -1134,6 +1136,12 @@ export function StudentScheduleTab() {
       setFlightDate((current) => current || weekStart);
       setInitialLoaded(true);
       setWeekLoading(false);
+      const nextWeekStart = addDays(weekStart, 7);
+      if (!weekCacheRef.current.has(nextWeekStart)) {
+        window.setTimeout(() => {
+          if (!cancelled) void fetchWeek(nextWeekStart).catch(() => {});
+        }, 0);
+      }
     };
     const cached = weekCacheRef.current.get(weekStart);
     if (cached) {
@@ -1150,15 +1158,13 @@ export function StudentScheduleTab() {
         });
     }
     // Prefetch da próxima semana em segundo plano (não recarrega o que já está no cache).
-    if (!weekCacheRef.current.has(addDays(weekStart, 7))) {
-      void fetchWeek(addDays(weekStart, 7)).catch(() => {});
-    }
     return () => { cancelled = true; };
   }, [weekStart, reloadKey, fetchWeek, showToast]);
 
   // Após qualquer mutação (solicitar/alterar/cancelar) o cache é descartado e tudo recarrega.
   const invalidateAndReload = useCallback(() => {
     weekCacheRef.current.clear();
+    creditsLoadedRef.current = false;
     futureLoadedRef.current = false;
     setReloadKey((value) => value + 1);
   }, []);
@@ -1166,7 +1172,8 @@ export function StudentScheduleTab() {
   // Load credits from creditsDb — mesmo cálculo da aba Créditos (inclusive o
   // modo simplificado via nightHoursDifferentFromDay da config de pacotes).
   useEffect(() => {
-    if (!user?.id || !user.role) return;
+    if (!bookingOpen || !user?.id || !user.role || creditsLoadedRef.current || creditsFetchingRef.current) return;
+    creditsFetchingRef.current = true;
     setCreditsLoading(true);
     void (async () => {
       try {
@@ -1178,14 +1185,17 @@ export function StudentScheduleTab() {
         });
         setCreditSummaries(stmt.summaries);
         setCreditTotals(stmt.totals);
+        creditsLoadedRef.current = true;
       } catch {
         setCreditSummaries([]);
         setCreditTotals(null);
+        creditsLoadedRef.current = false;
       } finally {
+        creditsFetchingRef.current = false;
         setCreditsLoading(false);
       }
     })();
-  }, [user?.id, user?.role, reloadKey]);
+  }, [bookingOpen, user?.id, user?.role, reloadKey]);
 
   useEffect(() => { setFlexibilityMinutes(rules.slotMinutes); }, [rules.slotMinutes]);
 

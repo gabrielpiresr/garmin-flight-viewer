@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
-import { getManeuverEditorExtensions } from "../../lib/maneuverContent";
+import { getManeuverEditorExtensions, MANEUVER_EDITOR_SURFACE_CLASS } from "../../lib/maneuverContent";
 import type { ManeuverMediaUpload, ManeuverRichContent } from "../../types/maneuver";
 
 type ManeuverRichTextEditorProps = {
@@ -25,17 +25,21 @@ export function ManeuverRichTextEditor({
 }: ManeuverRichTextEditorProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const skipNextContentSyncRef = useRef(false);
+  const [, setEditorRevision] = useState(0);
   const extensions = useMemo(() => getManeuverEditorExtensions(placeholder), [placeholder]);
   const editor = useEditor({
     extensions,
     content: value,
     editable: !disabled,
     immediatelyRender: false,
-    onUpdate: ({ editor: currentEditor }) => onChange(currentEditor.getJSON() as ManeuverRichContent),
+    onUpdate: ({ editor: currentEditor }) => {
+      skipNextContentSyncRef.current = true;
+      onChange(currentEditor.getJSON() as ManeuverRichContent);
+    },
     editorProps: {
       attributes: {
-        class:
-          "min-h-72 rounded-b-xl border-x border-b border-slate-700 bg-slate-950/40 px-4 py-3 text-sm leading-relaxed text-slate-100 outline-none",
+        class: MANEUVER_EDITOR_SURFACE_CLASS,
       },
       handlePaste: (_view, event) => {
         const files = Array.from(event.clipboardData?.files ?? []);
@@ -55,6 +59,21 @@ export function ManeuverRichTextEditor({
 
   useEffect(() => {
     if (!editor) return;
+    const refresh = () => setEditorRevision((current) => current + 1);
+    editor.on("selectionUpdate", refresh);
+    editor.on("transaction", refresh);
+    return () => {
+      editor.off("selectionUpdate", refresh);
+      editor.off("transaction", refresh);
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    if (skipNextContentSyncRef.current) {
+      skipNextContentSyncRef.current = false;
+      return;
+    }
     if (JSON.stringify(editor.getJSON()) === JSON.stringify(value)) return;
     editor.commands.setContent(value);
   }, [editor, value]);
@@ -101,6 +120,25 @@ export function ManeuverRichTextEditor({
       .run();
   }
 
+  function deleteTable() {
+    if (!editor) return;
+    editor.chain().focus().deleteTable().run();
+  }
+
+  function runTableCommand(run: () => boolean) {
+    if (!editor) return;
+    run();
+  }
+
+  const isInTable = editor?.isActive("table") ?? false;
+  const canDeleteTable = editor?.can().deleteTable() ?? false;
+  const canAddRowBefore = editor?.can().addRowBefore() ?? false;
+  const canAddRowAfter = editor?.can().addRowAfter() ?? false;
+  const canDeleteRow = editor?.can().deleteRow() ?? false;
+  const canAddColumnBefore = editor?.can().addColumnBefore() ?? false;
+  const canAddColumnAfter = editor?.can().addColumnAfter() ?? false;
+  const canDeleteColumn = editor?.can().deleteColumn() ?? false;
+
   const buttonClass = "rounded border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40";
   const activeClass = "border-sky-500/60 bg-sky-500/10 text-sky-200";
   const bubbleButtonClass = "rounded-md px-2 py-1 text-sm text-slate-200 hover:bg-slate-700 disabled:opacity-40";
@@ -123,8 +161,81 @@ export function ManeuverRichTextEditor({
         <button type="button" disabled={!editor || disabled} onClick={() => editor?.chain().focus().toggleOrderedList().run()} className={`${buttonClass} ${editor?.isActive("orderedList") ? activeClass : ""}`}>
           Numerada
         </button>
+        <button
+          type="button"
+          disabled={!editor || disabled}
+          onClick={() => editor?.chain().focus().toggleList("squareList", "squareListItem").run()}
+          className={`${buttonClass} ${editor?.isActive("squareList") ? activeClass : ""}`}
+        >
+          Checklist
+        </button>
         <button type="button" disabled={!editor || disabled} onClick={() => editor?.chain().focus().toggleBlockquote().run()} className={`${buttonClass} ${editor?.isActive("blockquote") ? activeClass : ""}`}>
           Destaque
+        </button>
+        <button type="button" disabled={!editor || disabled} onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} className={buttonClass}>
+          Tabela
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canDeleteTable}
+          onClick={deleteTable}
+          className={`${buttonClass} ${isInTable ? "border-red-700/50 text-red-300 hover:bg-red-500/10" : ""}`}
+        >
+          Excluir tabela
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canAddRowBefore}
+          onClick={() => runTableCommand(() => editor!.chain().focus().addRowBefore().run())}
+          className={buttonClass}
+          title="Adicionar linha acima"
+        >
+          Linha ↑
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canAddRowAfter}
+          onClick={() => runTableCommand(() => editor!.chain().focus().addRowAfter().run())}
+          className={buttonClass}
+          title="Adicionar linha abaixo"
+        >
+          Linha ↓
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canDeleteRow}
+          onClick={() => runTableCommand(() => editor!.chain().focus().deleteRow().run())}
+          className={buttonClass}
+          title="Remover linha"
+        >
+          − Linha
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canAddColumnBefore}
+          onClick={() => runTableCommand(() => editor!.chain().focus().addColumnBefore().run())}
+          className={buttonClass}
+          title="Adicionar coluna à esquerda"
+        >
+          Col ←
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canAddColumnAfter}
+          onClick={() => runTableCommand(() => editor!.chain().focus().addColumnAfter().run())}
+          className={buttonClass}
+          title="Adicionar coluna à direita"
+        >
+          Col →
+        </button>
+        <button
+          type="button"
+          disabled={!editor || disabled || !canDeleteColumn}
+          onClick={() => runTableCommand(() => editor!.chain().focus().deleteColumn().run())}
+          className={buttonClass}
+          title="Remover coluna"
+        >
+          − Coluna
         </button>
         <button type="button" disabled={!editor || disabled} onClick={setLink} className={`${buttonClass} ${editor?.isActive("link") ? activeClass : ""}`}>
           Link
@@ -172,6 +283,91 @@ export function ManeuverRichTextEditor({
           }}
         />
       </div>
+      {editor ? (
+        <BubbleMenu
+          editor={editor}
+          options={{ placement: "top" }}
+          shouldShow={({ editor: currentEditor, from, to }) => {
+            if (disabled || !currentEditor.isEditable || from !== to) return false;
+            return currentEditor.isActive("table");
+          }}
+        >
+          <div className="flex max-w-[min(100vw-2rem,40rem)] flex-wrap items-center gap-1 rounded-xl border border-slate-700 bg-slate-900/95 p-1 shadow-xl shadow-black/30">
+            <button
+              type="button"
+              title="Adicionar linha acima"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().addRowBefore().run())}
+              disabled={!canAddRowBefore}
+              className={bubbleButtonClass}
+            >
+              Linha ↑
+            </button>
+            <button
+              type="button"
+              title="Adicionar linha abaixo"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().addRowAfter().run())}
+              disabled={!canAddRowAfter}
+              className={bubbleButtonClass}
+            >
+              Linha ↓
+            </button>
+            <button
+              type="button"
+              title="Remover linha"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().deleteRow().run())}
+              disabled={!canDeleteRow}
+              className={bubbleButtonClass}
+            >
+              − Linha
+            </button>
+            <span className="mx-0.5 h-5 w-px bg-slate-700" />
+            <button
+              type="button"
+              title="Adicionar coluna à esquerda"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().addColumnBefore().run())}
+              disabled={!canAddColumnBefore}
+              className={bubbleButtonClass}
+            >
+              Col ←
+            </button>
+            <button
+              type="button"
+              title="Adicionar coluna à direita"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().addColumnAfter().run())}
+              disabled={!canAddColumnAfter}
+              className={bubbleButtonClass}
+            >
+              Col →
+            </button>
+            <button
+              type="button"
+              title="Remover coluna"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runTableCommand(() => editor.chain().focus().deleteColumn().run())}
+              disabled={!canDeleteColumn}
+              className={bubbleButtonClass}
+            >
+              − Coluna
+            </button>
+            <span className="mx-0.5 h-5 w-px bg-slate-700" />
+            <button
+              type="button"
+              title="Excluir tabela"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={deleteTable}
+              disabled={!canDeleteTable}
+              className="rounded-md px-2.5 py-1 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+            >
+              Excluir tabela
+            </button>
+          </div>
+        </BubbleMenu>
+      ) : null}
       {editor ? (
         <BubbleMenu
           editor={editor}

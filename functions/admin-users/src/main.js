@@ -109,6 +109,8 @@ const MANEUVERS_ARTICLES_COLLECTION_ID = process.env.APPWRITE_MANEUVERS_ARTICLES
 const HELP_SECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SECTIONS_COLLECTION_ID;
 const HELP_SUBSECTIONS_COLLECTION_ID = process.env.APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID;
 const HELP_ARTICLES_COLLECTION_ID = process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID;
+const INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID;
+const INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID;
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
 const ONBOARDING_STEPS_COLLECTION_ID = process.env.APPWRITE_ONBOARDING_STEPS_COLLECTION_ID;
 const PUSH_SUBSCRIPTIONS_COLLECTION_ID = process.env.APPWRITE_PUSH_SUBSCRIPTIONS_COLLECTION_ID;
@@ -11667,7 +11669,12 @@ function maneuverCollectionId(kind) {
   return "";
 }
 
-function helpCollectionId(kind) {
+function helpCollectionId(kind, audience = "student") {
+  if (audience === "instructor") {
+    if (kind === "section") return INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID;
+    if (kind === "article") return INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID;
+    return "";
+  }
   if (kind === "section") return HELP_SECTIONS_COLLECTION_ID;
   if (kind === "subsection") return HELP_SUBSECTIONS_COLLECTION_ID;
   if (kind === "article") return HELP_ARTICLES_COLLECTION_ID;
@@ -11708,21 +11715,21 @@ function sanitizeHelpData(data) {
   return data;
 }
 
-async function createHelpDocument(kind, data) {
-  const collectionId = helpCollectionId(kind);
+async function createHelpDocument(kind, data, audience = "student") {
+  const collectionId = helpCollectionId(kind, audience);
   if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
   return databases.createDocument(DATABASE_ID, collectionId, sdk.ID.unique(), sanitizeHelpData(data));
 }
 
-async function updateHelpDocument(kind, documentId, data) {
-  const collectionId = helpCollectionId(kind);
+async function updateHelpDocument(kind, documentId, data, audience = "student") {
+  const collectionId = helpCollectionId(kind, audience);
   if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
   if (!documentId) throw Object.assign(new Error("Documento da central de ajuda não informado."), { status: 400 });
   return databases.updateDocument(DATABASE_ID, collectionId, documentId, sanitizeHelpData(data));
 }
 
-async function deleteHelpDocument(kind, documentId) {
-  const collectionId = helpCollectionId(kind);
+async function deleteHelpDocument(kind, documentId, audience = "student") {
+  const collectionId = helpCollectionId(kind, audience);
   if (!collectionId) throw Object.assign(new Error("Coleção da central de ajuda não configurada."), { status: 500 });
   if (!documentId) throw Object.assign(new Error("Documento da central de ajuda não informado."), { status: 400 });
   await databases.deleteDocument(DATABASE_ID, collectionId, documentId);
@@ -18620,6 +18627,36 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "deleteHelpArticle") {
       await deleteHelpDocument("article", String(payload.documentId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createHelpSectionInstructor") {
+      const document = await createHelpDocument("section", payload.data, "instructor");
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "updateHelpSectionInstructor") {
+      const document = await updateHelpDocument("section", String(payload.documentId || ""), payload.data, "instructor");
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "deleteHelpSectionInstructor") {
+      await deleteHelpDocument("section", String(payload.documentId || ""), "instructor");
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "createHelpArticleInstructor") {
+      const document = await createHelpDocument("article", payload.data, "instructor");
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "updateHelpArticleInstructor") {
+      const document = await updateHelpDocument("article", String(payload.documentId || ""), payload.data, "instructor");
+      return jsonResponse(res, 200, { document });
+    }
+
+    if (action === "deleteHelpArticleInstructor") {
+      await deleteHelpDocument("article", String(payload.documentId || ""), "instructor");
       return jsonResponse(res, 200, { ok: true });
     }
 

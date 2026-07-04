@@ -47,6 +47,7 @@ type InstructorSection =
   | "students"
   | "profile"
   | "help"
+  | "manual-instrutor"
   | "dre"
   | "schedule"
   | "contratos"
@@ -262,6 +263,7 @@ const SECTION_ROUTES = [
   { id: "students", path: "/instrutor/alunos" },
   { id: "profile", path: "/instrutor/perfil" },
   { id: "help", path: "/instrutor/ajuda" },
+  { id: "manual-instrutor", path: "/instrutor/manual-instrutor" },
   { id: "dre", path: "/instrutor/edb" },
   { id: "schedule", path: "/instrutor/escala" },
   { id: "contratos", path: "/instrutor/contratos" },
@@ -290,7 +292,12 @@ export function InstructorLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [referProgramActive, setReferProgramActive] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
-  const activeNav = NAV_ITEMS.find((item) => item.id === section)!;
+  const activeNav = NAV_ITEMS.find((item) => item.id === section) ?? {
+    id: section,
+    label: section === "manual-instrutor" ? "Manual do instrutor" : section,
+    sublabel: "",
+    icon: null,
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -346,7 +353,8 @@ export function InstructorLayout() {
     [canTab, referProgramActive, visibleScheduleTabs],
   );
   const helpNavItem = visibleNavItems.find((item) => item.id === "help") ?? null;
-  const mainNavItems = visibleNavItems.filter((item) => item.id !== "help");
+  const manualInstrutorEnabled = canTab("manual-instrutor");
+  const mainNavItems = visibleNavItems.filter((item) => item.id !== "help" && item.id !== "manual-instrutor");
 
   return (
     <div className="flex min-h-screen bg-slate-950">
@@ -417,6 +425,28 @@ export function InstructorLayout() {
                 <p className="text-sm font-medium leading-none">Manual do Aluno</p>
               </div>
             </a>
+          ) : null}
+          {manualInstrutorEnabled ? (
+            <button
+              type="button"
+              onClick={() => setSection("manual-instrutor")}
+              title={sidebarCollapsed ? "Manual do instrutor" : undefined}
+              aria-label={sidebarCollapsed ? "Manual do instrutor" : undefined}
+              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                section === "manual-instrutor"
+                  ? "border-cyan-500/40 bg-cyan-950/30 text-cyan-300"
+                  : "border-transparent text-cyan-400 hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300"
+              }`}
+            >
+              <span className={section === "manual-instrutor" ? "" : "opacity-70 group-hover:opacity-100"}>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                  <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                </svg>
+              </span>
+              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <p className="text-sm font-medium leading-none">Manual do instrutor</p>
+              </div>
+            </button>
           ) : null}
         </nav>
 
@@ -560,6 +590,13 @@ export function InstructorLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("manual-instrutor") && (
+            <div hidden={section !== "manual-instrutor"}>
+              <LazyTab>
+                <HelpCenterTab audience="instructor" />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}>
               <LazyTab>
@@ -615,8 +652,24 @@ export function InstructorLayout() {
                     <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                   </svg>
                 </span>
-                <span className="max-w-full truncate">Manual</span>
+                <span className="max-w-full truncate">Manual Aluno</span>
               </a>
+            ) : null}
+            {manualInstrutorEnabled ? (
+              <button
+                type="button"
+                onClick={() => setSection("manual-instrutor")}
+                className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
+                  section === "manual-instrutor" ? "bg-cyan-500/10 text-cyan-300" : "text-cyan-400 hover:text-cyan-300"
+                }`}
+              >
+                <span className="h-4 w-4">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                    <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <span className="max-w-full truncate">Manual INVA</span>
+              </button>
             ) : null}
             {visibleNavItems.map((item) => {
               const isActive = section === item.id;

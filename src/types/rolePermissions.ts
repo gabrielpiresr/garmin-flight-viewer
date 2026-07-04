@@ -27,6 +27,7 @@ export type AdminTabKey =
   | "contents.manuais"
   | "contents.manuais-internos"
   | "contents.ajuda"
+  | "contents.ajuda-instrutor"
   | "contents.exercicios"
   | "users"
   | "import"
@@ -71,6 +72,7 @@ export type InstructorTabKey =
   | "fuelings"
   | "profile"
   | "help"
+  | "manual-instrutor"
   | "dre"       // Diário de bordo — opcional, desativado por padrão
   | "schedule"  // Escala — opcional, desativado por padrão
   | "schedule.voos"
@@ -199,6 +201,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contents.manuais": "Conteúdos › Manuais",
   "contents.manuais-internos": "Conteúdos › Manuais Internos",
   "contents.ajuda": "Conteúdos › Central de Ajuda",
+  "contents.ajuda-instrutor": "Conteúdos › Manual do Instrutor",
   "contents.exercicios": "Conteúdos › Critérios",
   "users": "Usuários",
   "import": "Import",
@@ -244,6 +247,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "fuelings": "Abastecimentos",
   "profile": "Perfil",
   "help": "Ajuda",
+  "manual-instrutor": "Manual do instrutor",
   "dre": "Diário de bordo",
   "schedule": "Escala",
   "schedule.voos": "Escala › Voos",

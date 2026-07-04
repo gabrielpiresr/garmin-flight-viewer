@@ -94,7 +94,7 @@ type AdminSection =
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "exercises" | "flight-review";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "exercises" | "flight-review";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -424,6 +424,15 @@ const CONTENTS_TABS = [
     ),
   },
   {
+    id: "instructor-help",
+    label: "Manual do Instrutor",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "exercises",
     label: "Critérios",
     icon: (
@@ -492,6 +501,7 @@ const CONTENTS_ROUTES = [
   { id: "manuals", path: "/admin/conteudos/manuais", aliases: ["/admin/manuais"] },
   { id: "manuais-internos", path: "/admin/conteudos/manuais-internos" },
   { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
+  { id: "instructor-help", path: "/admin/conteudos/manual-instrutor" },
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
   { id: "flight-review", path: "/admin/conteudos/flight-review", aliases: ["/admin/flight-review"] },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
@@ -580,6 +590,7 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   manuals: "contents.manuais",
   "manuais-internos": "contents.manuais-internos",
   help: "contents.ajuda",
+  "instructor-help": "contents.ajuda-instrutor",
   exercises: "contents.exercicios",
   "flight-review": "flight-review",
 };
@@ -948,6 +959,9 @@ export function AdminLayout() {
               ) : null}
               {openedContentsTabs.has("help") ? (
                 <div hidden={contentsTab !== "help"}><LazyTab><HelpCenterAdminTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("instructor-help") ? (
+                <div hidden={contentsTab !== "instructor-help"}><LazyTab><HelpCenterAdminTab audience="instructor" /></LazyTab></div>
               ) : null}
               {openedContentsTabs.has("exercises") ? (
                 <div hidden={contentsTab !== "exercises"}><LazyTab><TrainingExercisesTab /></LazyTab></div>

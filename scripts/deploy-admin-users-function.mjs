@@ -215,6 +215,14 @@ async function main() {
     process.env.APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID || env.VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID;
   const helpArticlesCollectionId =
     process.env.APPWRITE_HELP_ARTICLES_COLLECTION_ID || env.VITE_APPWRITE_HELP_ARTICLES_COL_ID;
+  const instructorHelpSectionsCollectionId =
+    process.env.APPWRITE_INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID ||
+    env.APPWRITE_INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID ||
+    env.VITE_APPWRITE_INSTRUCTOR_HELP_SECTIONS_COL_ID;
+  const instructorHelpArticlesCollectionId =
+    process.env.APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID ||
+    env.APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID ||
+    env.VITE_APPWRITE_INSTRUCTOR_HELP_ARTICLES_COL_ID;
   const platformSettingsCollectionId =
     process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
   const onboardingStepsCollectionId =
@@ -341,6 +349,12 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_HELP_SECTIONS_COLLECTION_ID", helpSectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_HELP_SUBSECTIONS_COLLECTION_ID", helpSubsectionsCollectionId);
   await upsertVariable(functions, "APPWRITE_HELP_ARTICLES_COLLECTION_ID", helpArticlesCollectionId);
+  if (instructorHelpSectionsCollectionId) {
+    await upsertVariable(functions, "APPWRITE_INSTRUCTOR_HELP_SECTIONS_COLLECTION_ID", instructorHelpSectionsCollectionId);
+  }
+  if (instructorHelpArticlesCollectionId) {
+    await upsertVariable(functions, "APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID", instructorHelpArticlesCollectionId);
+  }
   await upsertVariable(functions, "APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID", platformSettingsCollectionId);
   if (onboardingStepsCollectionId) {
     await upsertVariable(functions, "APPWRITE_ONBOARDING_STEPS_COLLECTION_ID", onboardingStepsCollectionId);

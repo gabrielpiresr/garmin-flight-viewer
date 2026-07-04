@@ -2082,6 +2082,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [clubMemberByStudentId, setClubMemberByStudentId] = useState<Record<string, boolean>>({});
+  const clubMembershipCacheRef = useRef<Map<string, boolean>>(new Map());
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
   const [formStudentCredits, setFormStudentCredits] = useState<StudentCreditModelSummary[] | null>(null);
@@ -2648,16 +2649,39 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       setClubMemberByStudentId({});
       return;
     }
-    void Promise.all(studentIds.map((studentId) => listStudentTrainingTracks(studentId))).then((results) => {
-      if (cancelled) return;
-      const map: Record<string, boolean> = {};
-      studentIds.forEach((studentId, index) => {
-        map[studentId] = hasActiveFlightReviewClubTrack(results[index]?.data);
-      });
-      setClubMemberByStudentId(map);
+    const cachedMap: Record<string, boolean> = {};
+    const missing = studentIds.filter((studentId) => {
+      const cached = clubMembershipCacheRef.current.get(studentId);
+      if (cached === undefined) return true;
+      cachedMap[studentId] = cached;
+      return false;
     });
+    setClubMemberByStudentId(cachedMap);
+    if (missing.length === 0) return;
+
+    const run = () => {
+      void Promise.all(missing.map((studentId) => listStudentTrainingTracks(studentId).catch(() => ({ data: [] })))).then((results) => {
+        if (cancelled) return;
+        const next: Record<string, boolean> = { ...cachedMap };
+        missing.forEach((studentId, index) => {
+          const isMember = hasActiveFlightReviewClubTrack(results[index]?.data);
+          clubMembershipCacheRef.current.set(studentId, isMember);
+          next[studentId] = isMember;
+        });
+        setClubMemberByStudentId(next);
+      });
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const idleId = idleWindow.requestIdleCallback
+      ? idleWindow.requestIdleCallback(run, { timeout: 2500 })
+      : window.setTimeout(run, 250);
     return () => {
       cancelled = true;
+      if (idleWindow.cancelIdleCallback) idleWindow.cancelIdleCallback(idleId);
+      else window.clearTimeout(idleId);
     };
   }, [weekData?.students]);
 
@@ -2917,65 +2941,88 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return weekData.supplies.find((supply) => supply.aircraftRegistration === reg) ?? null;
   }, [visibleAircraft, weekData]);
 
-  const aircraftSummary = useMemo(() => {
-    if (!weekData) return [];
-    return aircraftOptions.map((aircraft) => {
-      const rows = flights.filter((row) => row.aircraftRegistration === aircraft.registration);
-      const hours = rows.reduce((acc, row) => acc + netFlightHours(row), 0);
-      const students = new Set(rows.map((row) => row.studentId)).size;
-      return {
-        registration: aircraft.registration,
-        imageUrl: aircraft.imageUrl,
-        flights: rows.length,
-        hours: Number(hours.toFixed(1)),
-        students,
-      };
-    });
-  }, [aircraftOptions, flights, weekData, netFlightHours]);
-
-  const totalSummary = useMemo(() => {
-    const hours = flights.reduce((acc, row) => acc + netFlightHours(row), 0);
-    return {
-      flights: flights.length,
-      hours: Number(hours.toFixed(1)),
-      students: new Set(flights.map((row) => row.studentId)).size,
-    };
-  }, [flights, netFlightHours]);
-
-  const instructorSummary = useMemo(() => {
-    if (!weekData) return [];
-    return weekData.instructors.map((instructor) => {
-      const rows = flights.filter((row) => row.instructorId === instructor.userId);
-      const hours = rows.reduce((acc, row) => acc + netFlightHours(row), 0);
-      return { instructor, flights: rows.length, hours: Number(hours.toFixed(1)) };
-    });
-  }, [flights, weekData, netFlightHours]);
-
-  const unassignedInstructorCount = useMemo(() => flights.filter((row) => !row.instructorId).length, [flights]);
-
-  const servedStudents = useMemo(() => {
-    if (!weekData) return [];
-    const activeStudentIds = new Set(weekData.students.map((student) => student.userId));
-    const map = new Map<string, { id: string; label: string; flights: number; hours: number }>();
-    for (const student of weekData.students) {
-      map.set(student.userId, { id: student.userId, label: student.label, flights: 0, hours: 0 });
+  const scheduleSummary = useMemo(() => {
+    const totalStudentIds = new Set<string>();
+    let totalHours = 0;
+    let unassigned = 0;
+    const aircraftStats = new Map<string, { flights: number; hours: number; students: Set<string> }>();
+    const instructorStats = new Map<string, { flights: number; hours: number }>();
+    const studentStats = new Map<string, { id: string; label: string; flights: number; hours: number }>();
+    const activeStudentIds = new Set((weekData?.students ?? []).map((student) => student.userId));
+    for (const student of weekData?.students ?? []) {
+      studentStats.set(student.userId, { id: student.userId, label: student.label, flights: 0, hours: 0 });
     }
     for (const flight of flights) {
-      if (!activeStudentIds.has(flight.studentId)) continue;
-      const current = map.get(flight.studentId);
-      if (!current) continue;
-      current.flights += 1;
-      current.hours += flight.durationHours;
-      map.set(flight.studentId, current);
-    }
-    return [...map.values()].filter((row) => row.flights > 0).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
-  }, [flights, studentLabelMap, weekData]);
+      const hours = netFlightHours(flight);
+      totalHours += hours;
+      totalStudentIds.add(flight.studentId);
+      if (!flight.instructorId) unassigned += 1;
 
-  const notServedStudents = useMemo(() => {
-    if (!weekData) return [];
-    const served = new Set(servedStudents.map((row) => row.id));
-    return weekData.students.filter((row) => !served.has(row.userId)).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
-  }, [servedStudents, weekData]);
+      const registration = flight.aircraftRegistration ?? "";
+      if (registration) {
+        const current = aircraftStats.get(registration) ?? { flights: 0, hours: 0, students: new Set<string>() };
+        current.flights += 1;
+        current.hours += hours;
+        current.students.add(flight.studentId);
+        aircraftStats.set(registration, current);
+      }
+
+      if (flight.instructorId) {
+        const current = instructorStats.get(flight.instructorId) ?? { flights: 0, hours: 0 };
+        current.flights += 1;
+        current.hours += hours;
+        instructorStats.set(flight.instructorId, current);
+      }
+
+      if (activeStudentIds.has(flight.studentId)) {
+        const current = studentStats.get(flight.studentId);
+        if (current) {
+          current.flights += 1;
+          current.hours += flight.durationHours;
+          studentStats.set(flight.studentId, current);
+        }
+      }
+    }
+    const served = [...studentStats.values()].filter((row) => row.flights > 0).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+    const servedIds = new Set(served.map((row) => row.id));
+    return {
+      aircraftSummary: weekData
+        ? aircraftOptions.map((aircraft) => {
+            const stats = aircraftStats.get(aircraft.registration);
+            return {
+              registration: aircraft.registration,
+              imageUrl: aircraft.imageUrl,
+              flights: stats?.flights ?? 0,
+              hours: Number((stats?.hours ?? 0).toFixed(1)),
+              students: stats?.students.size ?? 0,
+            };
+          })
+        : [],
+      totalSummary: {
+        flights: flights.length,
+        hours: Number(totalHours.toFixed(1)),
+        students: totalStudentIds.size,
+      },
+      instructorSummary: weekData
+        ? weekData.instructors.map((instructor) => {
+            const stats = instructorStats.get(instructor.userId);
+            return { instructor, flights: stats?.flights ?? 0, hours: Number((stats?.hours ?? 0).toFixed(1)) };
+          })
+        : [],
+      unassignedInstructorCount: unassigned,
+      servedStudents: served,
+      notServedStudents: weekData
+        ? weekData.students.filter((row) => !servedIds.has(row.userId)).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"))
+        : [],
+    };
+  }, [aircraftOptions, flights, weekData, netFlightHours]);
+
+  const aircraftSummary = scheduleSummary.aircraftSummary;
+  const totalSummary = scheduleSummary.totalSummary;
+  const instructorSummary = scheduleSummary.instructorSummary;
+  const unassignedInstructorCount = scheduleSummary.unassignedInstructorCount;
+  const servedStudents = scheduleSummary.servedStudents;
+  const notServedStudents = scheduleSummary.notServedStudents;
 
   const selectedStudentSchedule = useMemo(() => {
     if (!selectedStudentId) return null;

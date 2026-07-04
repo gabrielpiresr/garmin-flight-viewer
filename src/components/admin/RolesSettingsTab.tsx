@@ -72,6 +72,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "contents.manuais", label: "Manuais" },
       { key: "contents.manuais-internos", label: "Manuais internos" },
       { key: "contents.ajuda", label: "Central de Ajuda" },
+      { key: "contents.ajuda-instrutor", label: "Manual do Instrutor" },
       { key: "contents.exercicios", label: "Critérios" },
     ],
   },

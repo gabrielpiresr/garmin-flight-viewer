@@ -55,6 +55,10 @@ export const MANEUVERS_MEDIA_BUCKET_ID =
 export const HELP_SECTIONS_COL_ID = import.meta.env.VITE_APPWRITE_HELP_SECTIONS_COL_ID as string | undefined;
 export const HELP_SUBSECTIONS_COL_ID = import.meta.env.VITE_APPWRITE_HELP_SUBSECTIONS_COL_ID as string | undefined;
 export const HELP_ARTICLES_COL_ID = import.meta.env.VITE_APPWRITE_HELP_ARTICLES_COL_ID as string | undefined;
+export const INSTRUCTOR_HELP_SECTIONS_COL_ID =
+  import.meta.env.VITE_APPWRITE_INSTRUCTOR_HELP_SECTIONS_COL_ID as string | undefined;
+export const INSTRUCTOR_HELP_ARTICLES_COL_ID =
+  import.meta.env.VITE_APPWRITE_INSTRUCTOR_HELP_ARTICLES_COL_ID as string | undefined;
 export const HELP_MEDIA_BUCKET_ID =
   (import.meta.env.VITE_APPWRITE_HELP_MEDIA_BUCKET_ID as string | undefined) ?? BUCKET_ID;
 export const INSTRUCTOR_PREFS_COL_ID = import.meta.env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID as string | undefined;

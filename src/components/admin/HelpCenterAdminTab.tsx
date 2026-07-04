@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { usePermissions } from "../../contexts/PermissionsContext";
 import {
@@ -23,6 +23,7 @@ import {
 import type {
   HelpArticle,
   HelpCatalog,
+  HelpCenterAudience,
   HelpMediaUpload,
   HelpRichContent,
   HelpSection,
@@ -85,7 +86,26 @@ function toNumber(value: string, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export function HelpCenterAdminTab() {
+const AUDIENCE_COPY: Record<HelpCenterAudience, { eyebrow: string; title: string; description: string }> = {
+  student: {
+    eyebrow: "Central de ajuda",
+    title: "Artigos de suporte da plataforma",
+    description: "Organize perguntas frequentes, guias e respostas por seção e subseção.",
+  },
+  instructor: {
+    eyebrow: "Manual do instrutor",
+    title: "Guia operacional para instrutores",
+    description: "Organize processos, rotinas e procedimentos por seção e artigo.",
+  },
+};
+
+type HelpCenterAdminTabProps = {
+  audience?: HelpCenterAudience;
+};
+
+export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabProps) {
+  const hideSubsections = true;
+  const copy = AUDIENCE_COPY[audience];
   const { user } = useAuth();
   const { showToast } = useToast();
   const { canAction } = usePermissions();
@@ -103,11 +123,20 @@ export function HelpCenterAdminTab() {
   const [articleEditorOpen, setArticleEditorOpen] = useState(false);
   const [sectionEditorOpen, setSectionEditorOpen] = useState(false);
   const [subsectionEditorOpen, setSubsectionEditorOpen] = useState(false);
+  const [dragSectionId, setDragSectionId] = useState<string | null>(null);
+  const [dragArticleId, setDragArticleId] = useState<string | null>(null);
+
+  const catalogRef = useRef(catalog);
+  useEffect(() => {
+    catalogRef.current = catalog;
+  }, [catalog]);
+
+  const canEdit = canAction("content.edit");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const { data, error: listError } = await listHelpCatalog(true);
+    const { data, error: listError } = await listHelpCatalog(true, audience);
     if (listError) {
       setError(listError.message);
       setCatalog({ sections: [], subsections: [], articles: [] });
@@ -116,7 +145,7 @@ export function HelpCenterAdminTab() {
       setSelectedSectionId((current) => current || data.sections[0]?.id || "");
     }
     setLoading(false);
-  }, []);
+  }, [audience]);
 
   useEffect(() => {
     void load();
@@ -198,7 +227,7 @@ export function HelpCenterAdminTab() {
       order: toNumber(sectionForm.order, catalog.sections.length + 1),
       isPublished: sectionForm.isPublished,
     };
-    const result = editingSectionId ? await updateHelpSection(editingSectionId, payload) : await createHelpSection(payload);
+    const result = editingSectionId ? await updateHelpSection(editingSectionId, payload, audience) : await createHelpSection(payload, audience);
     setSaving(false);
     if (result.error) {
       setError(result.error.message);
@@ -213,7 +242,7 @@ export function HelpCenterAdminTab() {
 
   async function handleDeleteSection(section: HelpSection) {
     if (!confirm(`Apagar seção "${section.title}"? Os artigos vinculados devem ser removidos separadamente.`)) return;
-    const result = await deleteHelpSection(section.id);
+    const result = await deleteHelpSection(section.id, audience);
     if (result.error) {
       setError(result.error.message);
       return;
@@ -221,6 +250,107 @@ export function HelpCenterAdminTab() {
     showToast({ variant: "success", message: "Seção apagada." });
     if (selectedSectionId === section.id) setSelectedSectionId("");
     await load();
+  }
+
+  function handleSectionDragEnter(targetId: string) {
+    if (!dragSectionId || dragSectionId === targetId) return;
+    setCatalog((prev) => {
+      const list = [...prev.sections];
+      const from = list.findIndex((section) => section.id === dragSectionId);
+      const to = list.findIndex((section) => section.id === targetId);
+      if (from < 0 || to < 0) return prev;
+      const [moved] = list.splice(from, 1);
+      list.splice(to, 0, moved!);
+      return { ...prev, sections: list };
+    });
+  }
+
+  async function persistSectionOrder() {
+    const list = catalogRef.current.sections;
+    const changed = list
+      .map((section, index) => ({ section, newOrder: index + 1 }))
+      .filter(({ section, newOrder }) => section.order !== newOrder);
+    if (changed.length === 0) return;
+    setCatalog((prev) => ({
+      ...prev,
+      sections: prev.sections.map((section) => {
+        const item = changed.find((entry) => entry.section.id === section.id);
+        return item ? { ...section, order: item.newOrder } : section;
+      }),
+    }));
+    const results = await Promise.all(
+      changed.map(({ section, newOrder }) =>
+        updateHelpSection(
+          section.id,
+          {
+            title: section.title,
+            description: section.description,
+            order: newOrder,
+            isPublished: section.isPublished,
+          },
+          audience,
+        ),
+      ),
+    );
+    const firstError = results.find((result) => result.error)?.error;
+    if (firstError) {
+      setError(firstError.message);
+      await load();
+    }
+  }
+
+  function handleArticleDragEnter(targetId: string) {
+    if (!dragArticleId || dragArticleId === targetId) return;
+    setCatalog((prev) => {
+      const list = [...prev.articles];
+      const from = list.findIndex((article) => article.id === dragArticleId);
+      const to = list.findIndex((article) => article.id === targetId);
+      if (from < 0 || to < 0) return prev;
+      const [moved] = list.splice(from, 1);
+      list.splice(to, 0, moved!);
+      return { ...prev, articles: list };
+    });
+  }
+
+  async function persistArticleOrder() {
+    const list = catalogRef.current.articles.filter((article) => article.sectionId === selectedSectionId);
+    const changed = list
+      .map((article, index) => ({ article, newOrder: index + 1 }))
+      .filter(({ article, newOrder }) => article.order !== newOrder);
+    if (changed.length === 0) return;
+    setCatalog((prev) => ({
+      ...prev,
+      articles: prev.articles.map((article) => {
+        const item = changed.find((entry) => entry.article.id === article.id);
+        return item ? { ...article, order: item.newOrder } : article;
+      }),
+    }));
+    const results = await Promise.all(
+      changed.map(({ article, newOrder }) =>
+        updateHelpArticle(
+          article.id,
+          {
+            sectionId: article.sectionId,
+            subsectionId: article.subsectionId,
+            title: article.title,
+            summary: article.summary,
+            contentJson: article.contentJson,
+            contentHtml: article.contentHtml,
+            plainText: article.plainText,
+            tags: article.tags,
+            order: newOrder,
+            isPublished: article.isPublished,
+            actorUserId: article.createdBy,
+          },
+          audience,
+        ),
+      ),
+    );
+    const firstError = results.find((result) => result.error)?.error;
+    if (firstError) {
+      setError(firstError.message);
+      await load();
+    }
   }
 
   async function handleSaveSubsection() {
@@ -236,7 +366,7 @@ export function HelpCenterAdminTab() {
       order: toNumber(subsectionForm.order, subsectionsForSelected.length + 1),
       isPublished: subsectionForm.isPublished,
     };
-    const result = editingSubsectionId ? await updateHelpSubsection(editingSubsectionId, payload) : await createHelpSubsection(payload);
+    const result = editingSubsectionId ? await updateHelpSubsection(editingSubsectionId, payload, audience) : await createHelpSubsection(payload, audience);
     setSaving(false);
     if (result.error) {
       setError(result.error.message);
@@ -250,7 +380,7 @@ export function HelpCenterAdminTab() {
 
   async function handleDeleteSubsection(subsection: HelpSubsection) {
     if (!confirm(`Apagar subseção "${subsection.title}"?`)) return;
-    const result = await deleteHelpSubsection(subsection.id);
+    const result = await deleteHelpSubsection(subsection.id, audience);
     if (result.error) {
       setError(result.error.message);
       return;
@@ -293,7 +423,7 @@ export function HelpCenterAdminTab() {
       isPublished: articleForm.isPublished,
       actorUserId: user?.id ?? null,
     };
-    const result = editingArticleId ? await updateHelpArticle(editingArticleId, payload) : await createHelpArticle(payload);
+    const result = editingArticleId ? await updateHelpArticle(editingArticleId, payload, audience) : await createHelpArticle(payload, audience);
     setSaving(false);
     if (result.error) {
       setError(result.error.message);
@@ -307,7 +437,7 @@ export function HelpCenterAdminTab() {
 
   async function handleDeleteArticle(article: HelpArticle) {
     if (!confirm(`Apagar artigo "${article.title}"?`)) return;
-    const result = await deleteHelpArticle(article.id);
+    const result = await deleteHelpArticle(article.id, audience);
     if (result.error) {
       setError(result.error.message);
       return;
@@ -321,9 +451,9 @@ export function HelpCenterAdminTab() {
       <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400/80">Central de ajuda</p>
-            <h2 className="text-xl font-semibold text-slate-100">Artigos de suporte da plataforma</h2>
-            <p className="mt-1 text-sm text-slate-500">Organize perguntas frequentes, guias e respostas por seção e subseção.</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400/80">{copy.eyebrow}</p>
+            <h2 className="text-xl font-semibold text-slate-100">{copy.title}</h2>
+            <p className="mt-1 text-sm text-slate-500">{copy.description}</p>
           </div>
           {canAction("content.edit") ? (
           <div className="flex flex-wrap gap-2">
@@ -346,20 +476,39 @@ export function HelpCenterAdminTab() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-[18rem_1fr] xl:grid-cols-[20rem_1fr]">
           <aside className="max-h-[calc(100vh-11rem)] overflow-y-auto rounded-2xl border border-slate-700/60 bg-slate-900/50 p-2">
-            {catalog.sections.length ? catalog.sections.map((section) => (
+            {catalog.sections.length ? catalog.sections.map((section, index) => (
               <button
                 key={section.id}
                 type="button"
+                draggable={canEdit}
+                onDragStart={() => setDragSectionId(section.id)}
+                onDragEnter={() => handleSectionDragEnter(section.id)}
+                onDragOver={(event) => event.preventDefault()}
+                onDragEnd={() => {
+                  void persistSectionOrder();
+                  setDragSectionId(null);
+                }}
                 onClick={() => handleSelectSection(section.id)}
                 className={`block w-full border-b border-slate-800/80 px-3 py-3 text-left text-sm transition last:border-b-0 ${
+                  dragSectionId === section.id ? "opacity-40" : ""
+                } ${
                   section.id === selectedSectionId
                     ? "rounded-xl border-b-transparent bg-cyan-500/10 text-cyan-300"
                     : "text-slate-300 hover:rounded-xl hover:bg-slate-800/70"
-                }`}
+                } ${canEdit ? "cursor-grab active:cursor-grabbing" : ""}`}
               >
-                <span className="block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Seção {section.order}</span>
+                <span className="flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+                  <span>Seção {index + 1}</span>
+                  <span className="flex items-center gap-1.5">
+                    {!section.isPublished ? (
+                      <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-amber-400/90">
+                        Rascunho
+                      </span>
+                    ) : null}
+                    {canEdit ? <span className="text-slate-600">⠿</span> : null}
+                  </span>
+                </span>
                 <span className="mt-0.5 block font-medium leading-snug">{section.title}</span>
-                <span className="mt-1 block text-[11px] text-slate-500">{section.isPublished ? "Publicado" : "Rascunho"}</span>
               </button>
             )) : <p className="p-4 text-sm text-slate-500">Crie a primeira seção para começar.</p>}
           </aside>
@@ -371,7 +520,7 @@ export function HelpCenterAdminTab() {
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400/80">Seção selecionada</p>
                     <h3 className="mt-1 break-words text-xl font-semibold text-slate-100">
-                      {selectedSection ? `${selectedSection.order}. ${selectedSection.title}` : "Selecione uma seção"}
+                      {selectedSection ? selectedSection.title : "Selecione uma seção"}
                     </h3>
                     {selectedSection?.description ? <p className="mt-1 text-sm text-slate-500">{selectedSection.description}</p> : null}
                   </div>
@@ -393,9 +542,11 @@ export function HelpCenterAdminTab() {
                       >
                         Editar seção
                       </button>
-                      <button type="button" onClick={() => resetSubsectionForm(selectedSection.id)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-                        Nova subseção
-                      </button>
+                      {!hideSubsections ? (
+                        <button type="button" onClick={() => resetSubsectionForm(selectedSection.id)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+                          Nova subseção
+                        </button>
+                      ) : null}
                       <button type="button" onClick={() => void handleDeleteSection(selectedSection)} className="rounded-lg border border-red-700/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10">
                         Apagar seção
                       </button>
@@ -426,7 +577,7 @@ export function HelpCenterAdminTab() {
               </section>
             ) : null}
 
-            {subsectionEditorOpen ? (
+            {subsectionEditorOpen && !hideSubsections ? (
               <section className="rounded-2xl border border-slate-700/60 bg-slate-900/60 p-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <h3 className="text-sm font-semibold text-slate-100">{editingSubsectionId ? "Editar subseção" : "Nova subseção"}</h3>
@@ -457,6 +608,7 @@ export function HelpCenterAdminTab() {
                     <span>Título do artigo</span>
                     <input value={articleForm.title} onChange={(event) => setArticleForm((prev) => ({ ...prev, title: event.target.value }))} placeholder="Ex.: Como redefinir minha senha" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-normal text-slate-100 outline-none focus:border-cyan-500" />
                   </label>
+                  {!hideSubsections ? (
                   <label className="space-y-1 text-xs font-medium text-slate-400">
                     <span>Subseção</span>
                     <select value={articleForm.subsectionId} onChange={(event) => setArticleForm((prev) => ({ ...prev, subsectionId: event.target.value }))} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-normal text-slate-100 outline-none focus:border-cyan-500">
@@ -464,6 +616,7 @@ export function HelpCenterAdminTab() {
                       {subsectionsForSelected.map((subsection) => <option key={subsection.id} value={subsection.id}>{subsection.title}</option>)}
                     </select>
                   </label>
+                  ) : null}
                   <label className="space-y-1 text-xs font-medium text-slate-400 md:col-span-2">
                     <span>Resumo</span>
                     <input value={articleForm.summary} onChange={(event) => setArticleForm((prev) => ({ ...prev, summary: event.target.value }))} placeholder="Resposta curta exibida na busca e na lista" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-normal text-slate-100 outline-none focus:border-cyan-500" />
@@ -499,7 +652,8 @@ export function HelpCenterAdminTab() {
             ) : null}
 
             {!articleEditorOpen ? (
-              <div className="grid gap-4 xl:grid-cols-[18rem_1fr]">
+              <div className={`grid gap-4 ${hideSubsections ? "" : "xl:grid-cols-[18rem_1fr]"}`}>
+                {!hideSubsections ? (
                 <section className="rounded-2xl border border-slate-700/60 bg-slate-900/50 p-4">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold text-slate-100">Subseções</h3>
@@ -534,6 +688,7 @@ export function HelpCenterAdminTab() {
                     )) : <p className="rounded-lg border border-slate-800 bg-slate-950/20 p-4 text-sm text-slate-500">Nenhuma subseção nesta seção.</p>}
                   </div>
                 </section>
+                ) : null}
 
                 <section className="rounded-2xl border border-slate-700/60 bg-slate-900/50 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
@@ -544,14 +699,32 @@ export function HelpCenterAdminTab() {
                     <button type="button" onClick={openArticleCreate} disabled={!selectedSectionId} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500 disabled:opacity-50">Novo artigo</button>
                   </div>
                   <div className="grid gap-3">
-                    {articlesForSelected.length ? articlesForSelected.map((article) => (
-                      <article key={article.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                    {articlesForSelected.length ? articlesForSelected.map((article, index) => (
+                      <article
+                        key={article.id}
+                        draggable={canEdit}
+                        onDragStart={() => setDragArticleId(article.id)}
+                        onDragEnter={() => handleArticleDragEnter(article.id)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDragEnd={() => {
+                          void persistArticleOrder();
+                          setDragArticleId(null);
+                        }}
+                        className={`rounded-xl border border-slate-700/60 bg-slate-950/30 p-4 ${
+                          dragArticleId === article.id ? "opacity-40" : ""
+                        } ${canEdit ? "cursor-grab active:cursor-grabbing" : ""}`}
+                      >
                         <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <h4 className="break-words text-base font-semibold text-slate-100">{article.order}. {article.title}</h4>
-                            <p className="text-xs text-slate-500">{article.isPublished ? "Publicado" : "Rascunho"}</p>
+                          <div className="flex min-w-0 items-start gap-2">
+                            {canEdit ? <span className="mt-1 shrink-0 text-slate-600">⠿</span> : null}
+                            <div className="min-w-0">
+                              <h4 className="break-words text-base font-semibold text-slate-100">
+                                {index + 1}. {article.title}
+                              </h4>
+                              <p className="text-xs text-slate-500">{article.isPublished ? "Publicado" : "Rascunho"}</p>
+                            </div>
                           </div>
-                          {canAction("content.edit") ? (
+                          {canEdit ? (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => openArticleEdit(article)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Editar</button>
                             <button type="button" onClick={() => void handleDeleteArticle(article)} className="rounded-lg border border-red-700/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10">Apagar</button>

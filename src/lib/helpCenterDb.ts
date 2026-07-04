@@ -8,6 +8,8 @@ import {
   HELP_MEDIA_BUCKET_ID,
   HELP_SECTIONS_COL_ID,
   HELP_SUBSECTIONS_COL_ID,
+  INSTRUCTOR_HELP_ARTICLES_COL_ID,
+  INSTRUCTOR_HELP_SECTIONS_COL_ID,
   ID,
   isAppwriteConfigured,
   storage,
@@ -16,6 +18,7 @@ import type {
   HelpArticle,
   HelpArticlePayload,
   HelpCatalog,
+  HelpCenterAudience,
   HelpMediaUpload,
   HelpRichContent,
   HelpSection,
@@ -26,20 +29,38 @@ import type {
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
+type HelpCollectionIds = {
+  sections: string | undefined;
+  subsections: string | undefined;
+  articles: string | undefined;
+};
+
 type PrivilegedHelpResponse = {
   document?: Record<string, unknown>;
   message?: string;
 };
 
-function isHelpCenterConfigured(): boolean {
-  return Boolean(
-    isAppwriteConfigured &&
-      databases &&
-      DB_ID &&
-      HELP_SECTIONS_COL_ID &&
-      HELP_SUBSECTIONS_COL_ID &&
-      HELP_ARTICLES_COL_ID,
-  );
+function getHelpCollectionIds(audience: HelpCenterAudience): HelpCollectionIds {
+  if (audience === "instructor") {
+    return {
+      sections: INSTRUCTOR_HELP_SECTIONS_COL_ID,
+      subsections: undefined,
+      articles: INSTRUCTOR_HELP_ARTICLES_COL_ID,
+    };
+  }
+  return {
+    sections: HELP_SECTIONS_COL_ID,
+    subsections: HELP_SUBSECTIONS_COL_ID,
+    articles: HELP_ARTICLES_COL_ID,
+  };
+}
+
+function isHelpCenterConfigured(audience: HelpCenterAudience): boolean {
+  const { sections, subsections, articles } = getHelpCollectionIds(audience);
+  if (audience === "instructor") {
+    return Boolean(isAppwriteConfigured && databases && DB_ID && sections && articles);
+  }
+  return Boolean(isAppwriteConfigured && databases && DB_ID && sections && subsections && articles);
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -141,24 +162,42 @@ function canUsePrivilegedHelpExecutor(): boolean {
   return Boolean(functions && ADMIN_USERS_FUNCTION_ID);
 }
 
-export async function listHelpCatalog(includeDrafts = false): Promise<{ data: HelpCatalog; error: Error | null }> {
+function privilegedAction(
+  audience: HelpCenterAudience,
+  base: "createHelpSection" | "updateHelpSection" | "deleteHelpSection" | "createHelpSubsection" | "updateHelpSubsection" | "deleteHelpSubsection" | "createHelpArticle" | "updateHelpArticle" | "deleteHelpArticle",
+): string {
+  if (audience === "instructor") {
+    return `${base}Instructor`;
+  }
+  return base;
+}
+
+export async function listHelpCatalog(
+  includeDrafts = false,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpCatalog; error: Error | null }> {
   const empty: HelpCatalog = { sections: [], subsections: [], articles: [] };
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SECTIONS_COL_ID || !HELP_SUBSECTIONS_COL_ID || !HELP_ARTICLES_COL_ID) {
+  const { sections: sectionsColId, subsections: subsectionsColId, articles: articlesColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId || !articlesColId) {
     return { data: empty, error: null };
   }
 
   try {
     const schoolFilter = Query.equal("school_id", [DEFAULT_SCHOOL_ID]);
     const publishedFilter = includeDrafts ? [] : [Query.equal("is_published", [true])];
-    const [sectionsRes, subsectionsRes, articlesRes] = await Promise.all([
-      databases.listDocuments(DB_ID, HELP_SECTIONS_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(100)]),
-      databases.listDocuments(DB_ID, HELP_SUBSECTIONS_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(300)]),
-      databases.listDocuments(DB_ID, HELP_ARTICLES_COL_ID, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(500)]),
+    const [sectionsRes, articlesRes] = await Promise.all([
+      databases.listDocuments(DB_ID, sectionsColId, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(100)]),
+      databases.listDocuments(DB_ID, articlesColId, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(500)]),
     ]);
+    let subsections: HelpSubsection[] = [];
+    if (audience === "student" && subsectionsColId) {
+      const subsectionsRes = await databases.listDocuments(DB_ID, subsectionsColId, [schoolFilter, ...publishedFilter, Query.orderAsc("order"), Query.limit(300)]);
+      subsections = subsectionsRes.documents.map((doc) => toSubsection(doc as Record<string, unknown>));
+    }
     return {
       data: {
         sections: sectionsRes.documents.map((doc) => toSection(doc as Record<string, unknown>)),
-        subsections: subsectionsRes.documents.map((doc) => toSubsection(doc as Record<string, unknown>)),
+        subsections,
         articles: articlesRes.documents.map((doc) => toArticle(doc as Record<string, unknown>)),
       },
       error: null,
@@ -168,14 +207,18 @@ export async function listHelpCatalog(includeDrafts = false): Promise<{ data: He
   }
 }
 
-export async function createHelpSection(payload: HelpSectionPayload): Promise<{ data: HelpSection | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SECTIONS_COL_ID) {
+export async function createHelpSection(
+  payload: HelpSectionPayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpSection | null; error: Error | null }> {
+  const { sections: sectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId) {
     return { data: null, error: new Error("Coleção de seções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
       const response = await executePrivilegedHelp({
-        action: "createHelpSection",
+        action: privilegedAction(audience, "createHelpSection"),
         data: {
           school_id: DEFAULT_SCHOOL_ID,
           title: payload.title,
@@ -186,7 +229,7 @@ export async function createHelpSection(payload: HelpSectionPayload): Promise<{ 
       });
       if (response.document) return { data: toSection(response.document), error: null };
     }
-    const doc = await databases.createDocument(DB_ID, HELP_SECTIONS_COL_ID, ID.unique(), {
+    const doc = await databases.createDocument(DB_ID, sectionsColId, ID.unique(), {
       school_id: DEFAULT_SCHOOL_ID,
       title: payload.title,
       description: payload.description ?? null,
@@ -199,14 +242,19 @@ export async function createHelpSection(payload: HelpSectionPayload): Promise<{ 
   }
 }
 
-export async function updateHelpSection(sectionId: string, payload: HelpSectionPayload): Promise<{ data: HelpSection | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SECTIONS_COL_ID) {
+export async function updateHelpSection(
+  sectionId: string,
+  payload: HelpSectionPayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpSection | null; error: Error | null }> {
+  const { sections: sectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId) {
     return { data: null, error: new Error("Coleção de seções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
       const response = await executePrivilegedHelp({
-        action: "updateHelpSection",
+        action: privilegedAction(audience, "updateHelpSection"),
         documentId: sectionId,
         data: {
           title: payload.title,
@@ -217,7 +265,7 @@ export async function updateHelpSection(sectionId: string, payload: HelpSectionP
       });
       if (response.document) return { data: toSection(response.document), error: null };
     }
-    const doc = await databases.updateDocument(DB_ID, HELP_SECTIONS_COL_ID, sectionId, {
+    const doc = await databases.updateDocument(DB_ID, sectionsColId, sectionId, {
       title: payload.title,
       description: payload.description ?? null,
       order: payload.order,
@@ -229,30 +277,41 @@ export async function updateHelpSection(sectionId: string, payload: HelpSectionP
   }
 }
 
-export async function deleteHelpSection(sectionId: string): Promise<{ error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SECTIONS_COL_ID) {
+export async function deleteHelpSection(
+  sectionId: string,
+  audience: HelpCenterAudience = "student",
+): Promise<{ error: Error | null }> {
+  const { sections: sectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId) {
     return { error: new Error("Coleção de seções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: "deleteHelpSection", documentId: sectionId });
+      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpSection"), documentId: sectionId });
       return { error: null };
     }
-    await databases.deleteDocument(DB_ID, HELP_SECTIONS_COL_ID, sectionId);
+    await databases.deleteDocument(DB_ID, sectionsColId, sectionId);
     return { error: null };
   } catch (error) {
     return { error: error as Error };
   }
 }
 
-export async function createHelpSubsection(payload: HelpSubsectionPayload): Promise<{ data: HelpSubsection | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SUBSECTIONS_COL_ID) {
+export async function createHelpSubsection(
+  payload: HelpSubsectionPayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpSubsection | null; error: Error | null }> {
+  if (audience === "instructor") {
+    return { data: null, error: new Error("Subseções não são usadas no manual do instrutor.") };
+  }
+  const { subsections: subsectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !subsectionsColId) {
     return { data: null, error: new Error("Coleção de subseções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
       const response = await executePrivilegedHelp({
-        action: "createHelpSubsection",
+        action: privilegedAction(audience, "createHelpSubsection"),
         data: {
           school_id: DEFAULT_SCHOOL_ID,
           section_id: payload.sectionId,
@@ -264,7 +323,7 @@ export async function createHelpSubsection(payload: HelpSubsectionPayload): Prom
       });
       if (response.document) return { data: toSubsection(response.document), error: null };
     }
-    const doc = await databases.createDocument(DB_ID, HELP_SUBSECTIONS_COL_ID, ID.unique(), {
+    const doc = await databases.createDocument(DB_ID, subsectionsColId, ID.unique(), {
       school_id: DEFAULT_SCHOOL_ID,
       section_id: payload.sectionId,
       title: payload.title,
@@ -278,14 +337,22 @@ export async function createHelpSubsection(payload: HelpSubsectionPayload): Prom
   }
 }
 
-export async function updateHelpSubsection(subsectionId: string, payload: HelpSubsectionPayload): Promise<{ data: HelpSubsection | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SUBSECTIONS_COL_ID) {
+export async function updateHelpSubsection(
+  subsectionId: string,
+  payload: HelpSubsectionPayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpSubsection | null; error: Error | null }> {
+  if (audience === "instructor") {
+    return { data: null, error: new Error("Subseções não são usadas no manual do instrutor.") };
+  }
+  const { subsections: subsectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !subsectionsColId) {
     return { data: null, error: new Error("Coleção de subseções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
       const response = await executePrivilegedHelp({
-        action: "updateHelpSubsection",
+        action: privilegedAction(audience, "updateHelpSubsection"),
         documentId: subsectionId,
         data: {
           section_id: payload.sectionId,
@@ -297,7 +364,7 @@ export async function updateHelpSubsection(subsectionId: string, payload: HelpSu
       });
       if (response.document) return { data: toSubsection(response.document), error: null };
     }
-    const doc = await databases.updateDocument(DB_ID, HELP_SUBSECTIONS_COL_ID, subsectionId, {
+    const doc = await databases.updateDocument(DB_ID, subsectionsColId, subsectionId, {
       section_id: payload.sectionId,
       title: payload.title,
       description: payload.description ?? null,
@@ -310,68 +377,90 @@ export async function updateHelpSubsection(subsectionId: string, payload: HelpSu
   }
 }
 
-export async function deleteHelpSubsection(subsectionId: string): Promise<{ error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_SUBSECTIONS_COL_ID) {
+export async function deleteHelpSubsection(
+  subsectionId: string,
+  audience: HelpCenterAudience = "student",
+): Promise<{ error: Error | null }> {
+  if (audience === "instructor") {
+    return { error: new Error("Subseções não são usadas no manual do instrutor.") };
+  }
+  const { subsections: subsectionsColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !subsectionsColId) {
     return { error: new Error("Coleção de subseções da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: "deleteHelpSubsection", documentId: subsectionId });
+      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpSubsection"), documentId: subsectionId });
       return { error: null };
     }
-    await databases.deleteDocument(DB_ID, HELP_SUBSECTIONS_COL_ID, subsectionId);
+    await databases.deleteDocument(DB_ID, subsectionsColId, subsectionId);
     return { error: null };
   } catch (error) {
     return { error: error as Error };
   }
 }
 
-export async function createHelpArticle(payload: HelpArticlePayload): Promise<{ data: HelpArticle | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_ARTICLES_COL_ID) {
+export async function createHelpArticle(
+  payload: HelpArticlePayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpArticle | null; error: Error | null }> {
+  const { articles: articlesColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !articlesColId) {
     return { data: null, error: new Error("Coleção de artigos da central de ajuda não configurada.") };
   }
   try {
+    const data = audience === "instructor" ? { ...articlePayload(payload), subsection_id: null } : articlePayload(payload);
     if (canUsePrivilegedHelpExecutor()) {
-      const response = await executePrivilegedHelp({ action: "createHelpArticle", data: articlePayload(payload) });
+      const response = await executePrivilegedHelp({ action: privilegedAction(audience, "createHelpArticle"), data });
       if (response.document) return { data: toArticle(response.document), error: null };
     }
-    const doc = await databases.createDocument(DB_ID, HELP_ARTICLES_COL_ID, ID.unique(), articlePayload(payload));
+    const doc = await databases.createDocument(DB_ID, articlesColId, ID.unique(), data);
     return { data: toArticle(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }
 }
 
-export async function updateHelpArticle(articleId: string, payload: HelpArticlePayload): Promise<{ data: HelpArticle | null; error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_ARTICLES_COL_ID) {
+export async function updateHelpArticle(
+  articleId: string,
+  payload: HelpArticlePayload,
+  audience: HelpCenterAudience = "student",
+): Promise<{ data: HelpArticle | null; error: Error | null }> {
+  const { articles: articlesColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !articlesColId) {
     return { data: null, error: new Error("Coleção de artigos da central de ajuda não configurada.") };
   }
   try {
+    const data = audience === "instructor" ? { ...articlePayload(payload), subsection_id: null } : articlePayload(payload);
     if (canUsePrivilegedHelpExecutor()) {
       const response = await executePrivilegedHelp({
-        action: "updateHelpArticle",
+        action: privilegedAction(audience, "updateHelpArticle"),
         documentId: articleId,
-        data: articlePayload(payload),
+        data,
       });
       if (response.document) return { data: toArticle(response.document), error: null };
     }
-    const doc = await databases.updateDocument(DB_ID, HELP_ARTICLES_COL_ID, articleId, articlePayload(payload));
+    const doc = await databases.updateDocument(DB_ID, articlesColId, articleId, data);
     return { data: toArticle(doc as unknown as Record<string, unknown>), error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }
 }
 
-export async function deleteHelpArticle(articleId: string): Promise<{ error: Error | null }> {
-  if (!isHelpCenterConfigured() || !databases || !DB_ID || !HELP_ARTICLES_COL_ID) {
+export async function deleteHelpArticle(
+  articleId: string,
+  audience: HelpCenterAudience = "student",
+): Promise<{ error: Error | null }> {
+  const { articles: articlesColId } = getHelpCollectionIds(audience);
+  if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !articlesColId) {
     return { error: new Error("Coleção de artigos da central de ajuda não configurada.") };
   }
   try {
     if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: "deleteHelpArticle", documentId: articleId });
+      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpArticle"), documentId: articleId });
       return { error: null };
     }
-    await databases.deleteDocument(DB_ID, HELP_ARTICLES_COL_ID, articleId);
+    await databases.deleteDocument(DB_ID, articlesColId, articleId);
     return { error: null };
   } catch (error) {
     return { error: error as Error };

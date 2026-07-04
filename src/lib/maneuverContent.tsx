@@ -3,6 +3,7 @@ import { mergeAttributes, Node } from "@tiptap/core";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
 import TextAlign from "@tiptap/extension-text-align";
 import Youtube from "@tiptap/extension-youtube";
 import StarterKit from "@tiptap/starter-kit";
@@ -188,6 +189,42 @@ export const VideoEmbed = Node.create({
   },
 });
 
+export const SquareListItem = Node.create({
+  name: "squareListItem",
+  content: "paragraph block*",
+  defining: true,
+  parseHTML() {
+    return [{ tag: "li[data-square-list-item]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["li", mergeAttributes(HTMLAttributes, { "data-square-list-item": "true" }), 0];
+  },
+});
+
+export const SquareList = Node.create({
+  name: "squareList",
+  group: "block list",
+  content: "squareListItem+",
+  parseHTML() {
+    return [{ tag: 'ul[data-square-list="true"]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["ul", mergeAttributes(HTMLAttributes, { "data-square-list": "true" }), 0];
+  },
+});
+
+export const MANEUVER_EDITOR_SURFACE_CLASS =
+  "min-h-72 rounded-b-xl border-x border-b border-slate-700 bg-slate-950/40 px-4 py-3 text-sm leading-relaxed text-slate-100 outline-none " +
+  "[&_.tableWrapper]:my-3 [&_.tableWrapper]:overflow-x-auto [&_table]:table-fixed " +
+  "[&_.column-resize-handle]:absolute [&_.column-resize-handle]:right-[-2px] [&_.column-resize-handle]:top-0 [&_.column-resize-handle]:bottom-[-2px] " +
+  "[&_.column-resize-handle]:z-20 [&_.column-resize-handle]:w-1.5 [&_.column-resize-handle]:cursor-col-resize [&_.column-resize-handle]:bg-cyan-500/80 " +
+  "[&.resize-cursor]:cursor-col-resize " +
+  "[&_ul[data-square-list]]:space-y-2 [&_ul[data-square-list]>li]:relative [&_ul[data-square-list]>li]:pl-6 " +
+  "[&_ul[data-square-list]>li]:before:absolute [&_ul[data-square-list]>li]:before:left-0 [&_ul[data-square-list]>li]:before:top-1 " +
+  "[&_ul[data-square-list]>li]:before:block [&_ul[data-square-list]>li]:before:h-3.5 [&_ul[data-square-list]>li]:before:w-3.5 " +
+  "[&_ul[data-square-list]>li]:before:rounded-sm [&_ul[data-square-list]>li]:before:border [&_ul[data-square-list]>li]:before:border-slate-500 " +
+  "[&_ul[data-square-list]>li]:before:bg-slate-900/60 [&_ul[data-square-list]>li]:before:content-['']";
+
 export function getManeuverEditorExtensions(placeholder = "Escreva o artigo..."): Extensions {
   return [
     StarterKit.configure({
@@ -223,6 +260,29 @@ export function getManeuverEditorExtensions(placeholder = "Escreva o artigo...")
       },
     }),
     VideoEmbed,
+    Table.configure({
+      resizable: true,
+      handleWidth: 8,
+      cellMinWidth: 40,
+      lastColumnResizable: true,
+      allowTableNodeSelection: true,
+      HTMLAttributes: {
+        class: "maneuver-table border-collapse text-sm",
+      },
+    }),
+    TableRow,
+    TableHeader.configure({
+      HTMLAttributes: {
+        class: "relative box-border min-w-[2.5rem] border border-slate-700 bg-slate-800/60 px-3 py-2 text-left align-top font-semibold text-slate-100",
+      },
+    }),
+    TableCell.configure({
+      HTMLAttributes: {
+        class: "relative box-border min-w-[2.5rem] border border-slate-700 px-3 py-2 align-top text-slate-100",
+      },
+    }),
+    SquareList,
+    SquareListItem,
     Placeholder.configure({ placeholder }),
   ];
 }
@@ -263,6 +323,32 @@ function renderNodes(nodes: RichNode[] | undefined, prefix: string): ReactNode[]
   return (nodes ?? []).map((node, index) => renderNode(node, `${prefix}-${index}`));
 }
 
+function tableColumnWidths(tableNode: RichNode): Array<number | null> {
+  const firstRow = tableNode.content?.[0];
+  if (!firstRow?.content) return [];
+  const widths: Array<number | null> = [];
+  for (const cell of firstRow.content) {
+    const colspan = typeof cell.attrs?.colspan === "number" ? cell.attrs.colspan : 1;
+    const colwidth = Array.isArray(cell.attrs?.colwidth) ? (cell.attrs.colwidth as number[]) : null;
+    for (let index = 0; index < colspan; index += 1) {
+      const width = colwidth?.[index];
+      widths.push(typeof width === "number" && Number.isFinite(width) ? width : null);
+    }
+  }
+  return widths;
+}
+
+function tableCellStyle(node: RichNode): CSSProperties | undefined {
+  const colwidth = Array.isArray(node.attrs?.colwidth) ? (node.attrs.colwidth as number[])[0] : undefined;
+  if (typeof colwidth !== "number" || !Number.isFinite(colwidth)) return undefined;
+  return { width: `${colwidth}px`, minWidth: `${colwidth}px` };
+}
+
+function tableCellSpan(node: RichNode): number | undefined {
+  const colspan = typeof node.attrs?.colspan === "number" ? node.attrs.colspan : 1;
+  return colspan > 1 ? colspan : undefined;
+}
+
 function renderNode(node: RichNode, key: string): ReactNode {
   switch (node.type) {
     case "text":
@@ -282,12 +368,80 @@ function renderNode(node: RichNode, key: string): ReactNode {
       return <ul key={key} className="list-disc space-y-1 break-words pl-5 text-slate-200 [overflow-wrap:anywhere]">{renderNodes(node.content, key)}</ul>;
     case "orderedList":
       return <ol key={key} className="list-decimal space-y-1 break-words pl-5 text-slate-200 [overflow-wrap:anywhere]">{renderNodes(node.content, key)}</ol>;
+    case "squareList":
+      return (
+        <ul key={key} className="space-y-2 break-words [overflow-wrap:anywhere]">
+          {renderNodes(node.content, key)}
+        </ul>
+      );
+    case "squareListItem":
+      return (
+        <li key={key} className="flex gap-2.5 text-slate-200">
+          <span className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-slate-500 bg-slate-900/60" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">{renderNodes(node.content, key)}</div>
+        </li>
+      );
+    case "taskList":
+      return (
+        <ul key={key} className="space-y-2 break-words [overflow-wrap:anywhere]">
+          {renderNodes(node.content, key)}
+        </ul>
+      );
+    case "taskItem":
+      return (
+        <li key={key} className="flex gap-2.5 text-slate-200">
+          <span className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-slate-500 bg-slate-900/60" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">{renderNodes(node.content, key)}</div>
+        </li>
+      );
     case "listItem":
       return <li key={key}>{renderNodes(node.content, key)}</li>;
     case "blockquote":
       return <blockquote key={key} className="border-l-2 border-sky-500/60 pl-4 text-slate-300">{renderNodes(node.content, key)}</blockquote>;
     case "horizontalRule":
       return <hr key={key} className="border-slate-700" />;
+    case "table": {
+      const columnWidths = tableColumnWidths(node);
+      const hasColumnWidths = columnWidths.some((width) => width != null);
+      return (
+        <div key={key} className="my-3 overflow-x-auto">
+          <table className="border-collapse text-sm" style={hasColumnWidths ? { tableLayout: "fixed" } : { width: "100%" }}>
+            {hasColumnWidths ? (
+              <colgroup>
+                {columnWidths.map((width, index) => (
+                  <col key={`${key}-col-${index}`} style={width ? { width: `${width}px` } : undefined} />
+                ))}
+              </colgroup>
+            ) : null}
+            <tbody>{renderNodes(node.content, key)}</tbody>
+          </table>
+        </div>
+      );
+    }
+    case "tableRow":
+      return <tr key={key}>{renderNodes(node.content, key)}</tr>;
+    case "tableHeader":
+      return (
+        <th
+          key={key}
+          colSpan={tableCellSpan(node)}
+          style={tableCellStyle(node)}
+          className="relative box-border min-w-[2.5rem] border border-slate-700 bg-slate-800/60 px-3 py-2 text-left align-top font-semibold text-slate-100"
+        >
+          {renderNodes(node.content, key)}
+        </th>
+      );
+    case "tableCell":
+      return (
+        <td
+          key={key}
+          colSpan={tableCellSpan(node)}
+          style={tableCellStyle(node)}
+          className="relative box-border min-w-[2.5rem] border border-slate-700 px-3 py-2 align-top text-slate-200"
+        >
+          {renderNodes(node.content, key)}
+        </td>
+      );
     case "image": {
       const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
       const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
@@ -331,7 +485,8 @@ export function richContentToPlainText(content: ManeuverRichContent): string {
   function walk(node: RichNode | undefined) {
     if (!node) return;
     if (node.text) chunks.push(node.text);
-    if (node.type === "paragraph" || node.type === "heading" || node.type === "listItem") chunks.push("\n");
+    if (node.type === "paragraph" || node.type === "heading" || node.type === "listItem" || node.type === "squareListItem" || node.type === "taskItem") chunks.push("\n");
+    if (node.type === "tableCell" || node.type === "tableHeader") chunks.push(" ");
     for (const child of node.content ?? []) walk(child);
   }
   walk(content as RichNode);
