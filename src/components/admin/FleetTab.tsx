@@ -282,6 +282,16 @@ function sagaEventIsCancelled(item: SagaDirectScheduleItem): boolean {
   return item.active === false || ["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(status);
 }
 
+/** Bloqueio de agenda (usuário de bloqueio ID 139): não é voo, nunca soma na projeção de horas. */
+function sagaEventIsBlock(item: SagaDirectScheduleItem): boolean {
+  const norm = (value: string | null | undefined) => String(value || "").replace(/^saga[:_-]?/i, "").trim();
+  if (norm(item.studentSagaId) === "139" || norm(item.instructorSagaId) === "139") return true;
+  if (norm(item.studentUserId) === "saga_139") return true;
+  return /bloqueio/i.test(String(item.notes || ""))
+    || /bloqueio/i.test(String(item.studentName || ""))
+    || /bloqueio/i.test(String(item.aircraft || ""));
+}
+
 function sagaScheduledAircraftFlights(
   schedules: SagaDirectScheduleItem[],
   rules: FlightScheduleRules,
@@ -290,6 +300,7 @@ function sagaScheduledAircraftFlights(
   const grouped: Record<string, ScheduledAircraftFlight[]> = {};
   for (const schedule of schedules) {
     if (sagaEventIsCancelled(schedule)) continue;
+    if (sagaEventIsBlock(schedule)) continue;
     const startMs = sagaDateMs(schedule.startAtRaw || schedule.startAt);
     const endMs = sagaDateMs(schedule.endAtRaw || schedule.endAt);
     if (startMs <= now || endMs <= startMs) continue;

@@ -1379,6 +1379,65 @@ export async function updateFlight(id: string, payload: {
   }
 }
 
+export async function clearSavedFlightTelemetry(id: string, payload: {
+  actorUserId: string;
+  actorRole: UserRole;
+}): Promise<{ error: Error | null; deletedCsvFile: boolean }> {
+  if (!isAppwriteConfigured || !databases) {
+    return { error: new Error("Appwrite nÃ£o configurado"), deletedCsvFile: false };
+  }
+  try {
+    if (payload.actorRole !== "instrutor" && payload.actorRole !== "admin") {
+      return { error: new Error("Apenas instrutor ou admin pode limpar telemetria."), deletedCsvFile: false };
+    }
+
+    const saved = await getSavedFlight(id);
+    if (saved.error || !saved.data) {
+      return { error: saved.error ?? new Error("Voo nÃ£o encontrado."), deletedCsvFile: false };
+    }
+    const decoded = decodeFlightRecord(saved.data.csv_text);
+    if (!decoded.meta) {
+      return { error: new Error("Ficha do voo sem metadados para limpar telemetria."), deletedCsvFile: false };
+    }
+
+    const current = await databases.getDocument(DB_ID, COL_ID, id, [Query.select(["csv_file_id"])]);
+    const previousCsvFileId = (current.csv_file_id as string | null | undefined) ?? null;
+    const csvText = encodeFlightRecord({ meta: decoded.meta, telemetryCsv: "", telemetryFiles: [] });
+
+    await updateFlightDocumentWithMaterializedFallback({
+      id,
+      basePayload: {
+        csv_text: csvText,
+        csv_file_id: null,
+        duration_sec: null,
+      },
+      csvText,
+      trainingMissionId: saved.data.training_mission_id,
+    });
+
+    const [metricsResult, alertsResult] = await Promise.all([
+      clearFlightTelemetryMetrics(id),
+      clearFlightTelemetryAlerts(id),
+    ]);
+    if (metricsResult.error) return { error: metricsResult.error, deletedCsvFile: false };
+    if (alertsResult.error) return { error: alertsResult.error, deletedCsvFile: false };
+
+    let deletedCsvFile = false;
+    if (previousCsvFileId && storage && BUCKET_ID) {
+      try {
+        await storage.deleteFile(BUCKET_ID, previousCsvFileId);
+        deletedCsvFile = true;
+      } catch {
+        deletedCsvFile = false;
+      }
+    }
+
+    return { error: null, deletedCsvFile };
+  } catch (e) {
+    return { error: e as Error, deletedCsvFile: false };
+  }
+}
+
 export async function updateFlightStatus(id: string, payload: {
   actorUserId: string;
   actorRole: UserRole;

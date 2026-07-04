@@ -179,7 +179,7 @@ export function detectTrafficPattern(
 
     switch (run.cls) {
       case 'final':
-        legType = 'final';
+        legType = ri === lastFinalRunIdx ? 'final' : null;
         break;
       case 'downwind':
         legType = 'downwind';

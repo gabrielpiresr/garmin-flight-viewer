@@ -1,10 +1,11 @@
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordTelemetryFile } from "./flightRecordCodec";
 import {
   autoBuildFlightReviewManeuvers,
+  clearAutoBuiltFlightReviewManeuvers,
   type AutoBuildFlightReviewResult,
 } from "./flightReviewAutoBuild";
 import { buildFlightTelemetryMetrics, deriveIdentity } from "./flightTelemetryMetrics";
-import { getSavedFlight, updateFlight } from "./flightsDb";
+import { clearSavedFlightTelemetry, getSavedFlight, updateFlight } from "./flightsDb";
 import { chartDurationSec, summarizeFlight } from "./flightStats";
 import { parseGarminCsv } from "./parseGarminCsv";
 import { mergeTelemetryCsvFiles } from "./telemetryCsvMerge";
@@ -25,6 +26,13 @@ export type AttachFlightTelemetryOutcome = {
    * observar a promise para exibir feedback, mas não precisa aguardá-la.
    */
   reviewAutoBuild?: Promise<AutoBuildFlightReviewResult>;
+};
+
+export type ClearFlightTelemetryOutcome = {
+  error: Error | null;
+  deletedCsvFile: boolean;
+  removedManeuvers: number;
+  removedReviews: number;
 };
 
 export async function attachFlightTelemetry(
@@ -94,7 +102,44 @@ export async function attachFlightTelemetry(
       instructor_user_id: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
       aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
     },
+    replaceExisting: true,
   });
 
   return { error: null, reviewAutoBuild };
+}
+
+export async function clearFlightTelemetry(input: {
+  flightId: string;
+  actorUserId: string;
+  actorRole: UserRole;
+}): Promise<ClearFlightTelemetryOutcome> {
+  const cleared = await clearSavedFlightTelemetry(input.flightId, {
+    actorUserId: input.actorUserId,
+    actorRole: input.actorRole,
+  });
+  if (cleared.error) {
+    return {
+      error: cleared.error,
+      deletedCsvFile: cleared.deletedCsvFile,
+      removedManeuvers: 0,
+      removedReviews: 0,
+    };
+  }
+
+  try {
+    const removed = await clearAutoBuiltFlightReviewManeuvers(input.flightId);
+    return {
+      error: null,
+      deletedCsvFile: cleared.deletedCsvFile,
+      removedManeuvers: removed.maneuvers,
+      removedReviews: removed.reviews,
+    };
+  } catch (err) {
+    return {
+      error: err as Error,
+      deletedCsvFile: cleared.deletedCsvFile,
+      removedManeuvers: 0,
+      removedReviews: 0,
+    };
+  }
 }

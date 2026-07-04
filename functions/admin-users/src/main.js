@@ -12529,6 +12529,7 @@ function defaultSchoolRules() {
       autoDebitCancellationPenalty: false,
       minBookingLeadDays: 0,
       maxBookingLeadDays: 365,
+      studentHiddenAircraftIdents: [],
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
@@ -12835,6 +12836,9 @@ function publicSchoolRules(settings, updatedAt) {
       autoDebitCancellationPenalty: Boolean(settings?.schedule?.autoDebitCancellationPenalty),
       minBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.minBookingLeadDays) || 0)),
       maxBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.maxBookingLeadDays ?? 365))),
+      studentHiddenAircraftIdents: Array.isArray(settings?.schedule?.studentHiddenAircraftIdents)
+        ? [...new Set(settings.schedule.studentHiddenAircraftIdents.map((value) => cleanString(value).toUpperCase()).filter(Boolean))]
+        : [],
     },
     scheduleStudentHelp: (() => sanitizeScheduleStudentHelp(settings?.scheduleStudentHelp))(),
     emailNotifications: Object.fromEntries(

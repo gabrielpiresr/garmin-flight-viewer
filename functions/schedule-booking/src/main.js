@@ -81,6 +81,7 @@ function defaultScheduleRules() {
     autoDebitCancellationPenalty: false,
     minBookingLeadDays: 0,
     maxBookingLeadDays: 365,
+    studentHiddenAircraftIdents: [],
   };
 }
 
@@ -113,6 +114,9 @@ function normalizeRules(raw) {
     weekendMaxFlightHours: number(raw?.weekendMaxFlightHours, 0) > 0 ? number(raw.weekendMaxFlightHours, 0) : null,
     weekendMaxFlights: number(raw?.weekendMaxFlights, 0) > 0 ? Math.round(number(raw.weekendMaxFlights, 0)) : null,
     allowZeroCreditOneHour: raw?.allowZeroCreditOneHour === true,
+    studentHiddenAircraftIdents: Array.isArray(raw?.studentHiddenAircraftIdents)
+      ? [...new Set(raw.studentHiddenAircraftIdents.map((value) => normalizeRegistration(value)).filter(Boolean))]
+      : [],
   };
 }
 
@@ -350,6 +354,17 @@ function sagaEventTimes(event, rules) {
 
 function normalizeRegistration(value) {
   return clean(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * Aeronaves ocultas para o aluno (studentHiddenAircraftIdents). Só se aplica ao aluno —
+ * admin/instrutor sempre veem tudo. Voos e a própria aeronave somem da escala do aluno.
+ */
+function aircraftHiddenForRole(rules, registration, actorRole) {
+  if (actorRole !== "aluno") return false;
+  const hidden = Array.isArray(rules.studentHiddenAircraftIdents) ? rules.studentHiddenAircraftIdents : [];
+  if (hidden.length === 0) return false;
+  return hidden.includes(normalizeRegistration(registration));
 }
 
 /** ID SAGA numérico de um usuário local: perfil.saga_user_id ("70" ou "saga_70") ou user_id no padrão "saga_70". */
@@ -1068,16 +1083,19 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     }
   }
 
-  const publicFlights = rules.sagaOnlySchedule
+  const publicFlights = (rules.sagaOnlySchedule
     ? flights
         .map((event) => publicSagaFlight(event, rules, actorId, actorRole, sagaUserIdOf(profile, actorId)))
         .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
-    : flights.map((doc) => publicFlight(doc, actorId, actorRole));
+    : flights.map((doc) => publicFlight(doc, actorId, actorRole))
+  ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, actorRole));
 
   return {
     mode: rules.mode,
     rules,
-    aircrafts: aircrafts.documents.map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null })),
+    aircrafts: aircrafts.documents
+      .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, actorRole))
+      .map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null })),
     flights: publicFlights,
     blockedSlots,
   };
@@ -1091,6 +1109,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
+  if (aircraftHiddenForRole(rules, registration, actorRole)) fail("Esta aeronave não está disponível para agendamento.", 403);
   const aircraft = await getAircraft(registration);
   const day = dayOfWeek(date);
   const weekend = day === 0 || day === 6;
@@ -1493,6 +1512,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
+  if (aircraftHiddenForRole(rules, registration, actorRole)) fail("Esta aeronave não está disponível para agendamento.", 403);
   const aircraft = await getAircraft(registration);
   const day = dayOfWeek(date);
   const weekend = day === 0 || day === 6;

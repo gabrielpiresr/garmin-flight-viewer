@@ -1,5 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
+import { listAircrafts } from "../../lib/aircraftDb";
+import { listSagaSchedulesDirect } from "../../lib/sagaImportDb";
+import { SCHOOL_ID } from "../../lib/appwrite";
 import { DEFAULT_SCHOOL_RULES, type FlightScheduleRules, type SchoolRules } from "../../types/schoolRules";
 import { ScheduleStudentHelpSection } from "./ScheduleStudentHelpSection";
 import { useToast } from "../ui/ToastProvider";
@@ -107,13 +110,55 @@ export function ScheduleSettingsPanel() {
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [aircraftRegistrations, setAircraftRegistrations] = useState<string[]>([]);
+  // Agendas que aparecem na escala do SAGA (ex.: BLOQUEIO ESCALA) e não estão nas aeronaves locais.
+  const [sagaAgendaIdents, setSagaAgendaIdents] = useState<string[]>([]);
 
   useEffect(() => {
+    let cancelled = false;
     void getSchoolRules()
-      .then(setRules)
+      .then((loaded) => {
+        if (cancelled) return;
+        setRules(loaded);
+        // No modo SAGA, busca as agendas reais para permitir esconder também as que não são aeronaves locais.
+        if (loaded.schedule.sagaOnlySchedule) {
+          void listSagaSchedulesDirect(3)
+            .then((events) => {
+              if (cancelled) return;
+              setSagaAgendaIdents([
+                ...new Set(events.map((event) => String(event.aircraft || "").trim().toUpperCase()).filter(Boolean)),
+              ]);
+            })
+            .catch(() => {});
+        }
+      })
       .catch((error) => showToast({ variant: "error", message: (error as Error).message }))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    void listAircrafts(SCHOOL_ID ?? "")
+      .then((rows) => {
+        if (cancelled) return;
+        setAircraftRegistrations(
+          rows.filter((row) => row.active).map((row) => String(row.registration || "").trim().toUpperCase()).filter(Boolean),
+        );
+      })
+      .catch(() => setAircraftRegistrations([]));
+    return () => {
+      cancelled = true;
+    };
   }, [showToast]);
+
+  // Lista exibida = aeronaves locais + agendas do SAGA + agendas já ocultas (para poder reexibir).
+  const scheduleAgendaOptions = useMemo(
+    () =>
+      [...new Set([
+        ...aircraftRegistrations,
+        ...sagaAgendaIdents,
+        ...rules.schedule.studentHiddenAircraftIdents,
+      ])].sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [aircraftRegistrations, sagaAgendaIdents, rules.schedule.studentHiddenAircraftIdents],
+  );
 
   function setSchedule(patch: Partial<FlightScheduleRules>) {
     setRules((current) => ({ ...current, schedule: { ...current.schedule, ...patch } }));
@@ -235,6 +280,40 @@ export function ScheduleSettingsPanel() {
             checked={schedule.sagaOnlySchedule}
             onChange={(next) => setSchedule({ sagaOnlySchedule: next })}
           />
+        </div>
+        <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
+          <p className="mb-1.5 inline-flex items-center gap-1 text-[11px] text-slate-500">
+            Agendas exibidas para os alunos
+            <InfoTip text="Desmarque uma agenda para escondê-la dos alunos na escala: eles não veem os voos dela nem conseguem agendar nessa aeronave. Admin e instrutores continuam vendo tudo." />
+          </p>
+          {scheduleAgendaOptions.length === 0 ? (
+            <p className="text-xs text-slate-500">Nenhuma aeronave ativa cadastrada.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {scheduleAgendaOptions.map((registration) => {
+                const hidden = schedule.studentHiddenAircraftIdents.includes(registration);
+                return (
+                  <label
+                    key={registration}
+                    className="flex cursor-pointer items-center gap-1.5 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!hidden}
+                      onChange={(event) =>
+                        setSchedule({
+                          studentHiddenAircraftIdents: event.target.checked
+                            ? schedule.studentHiddenAircraftIdents.filter((value) => value !== registration)
+                            : [...new Set([...schedule.studentHiddenAircraftIdents, registration])],
+                        })
+                      }
+                    />
+                    {registration}
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
       </Section>
 

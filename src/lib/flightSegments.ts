@@ -299,6 +299,28 @@ function hasTouchdownSpeedSignature(
   return recovered;
 }
 
+function hasAltitudeValleyTouchdownSignature(data: ChartRow[], idx: number): boolean {
+  const preGs = averageMetric(data, idx - 30, idx - 10, "gsKt");
+  const touchdownGs = averageMetric(data, idx - 3, idx + 3, "gsKt");
+  const preIas = averageMetric(data, idx - 30, idx - 10, "iasKt");
+  const touchdownIas = averageMetric(data, idx - 3, idx + 3, "iasKt");
+  const gs = get(data[idx]!, "gsKt");
+  const ias = get(data[idx]!, "iasKt");
+  const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
+
+  const touchdownSpeed =
+    (gs !== null && gs <= 75) ||
+    (ias !== null && ias <= 75) ||
+    (touchdownGs !== null && touchdownGs <= 70) ||
+    (touchdownIas !== null && touchdownIas <= 70);
+  const approachDecel =
+    (preGs !== null && touchdownGs !== null && preGs - touchdownGs >= 5) ||
+    (preIas !== null && touchdownIas !== null && preIas - touchdownIas >= 5);
+  const recentDescent = recentMinVs !== null && recentMinVs <= -250;
+
+  return touchdownSpeed && approachDecel && recentDescent;
+}
+
 function findAltitudeClimbAfterTouchdown(
   data: ChartRow[],
   touchdownIdx: number,
@@ -345,10 +367,11 @@ function isAltitudeValleyTouchdown(data: ChartRow[], idx: number): boolean {
   const climbFt = futureHigh.value !== null ? futureHigh.value - alt : 0;
   const rolloutStop = slowsBelowGroundSpeed(data, idx, 10, 180);
   const speedSignature = hasTouchdownSpeedSignature(data, idx, rolloutStop ? "landing" : "tgl");
+  const altitudeValleySignature = hasAltitudeValleyTouchdownSignature(data, idx);
 
   if (descentFt < 250) return false;
   if (!rolloutStop && climbFt < 100) return false;
-  if (!speedSignature) return false;
+  if (!speedSignature && !altitudeValleySignature) return false;
 
   const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
   const touchdownLikeSpeed =
@@ -460,11 +483,13 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
 
   const previousGs = get(data[previousAirborneIdx]!, "gsKt");
   const decelerating = previousGs !== null ? gs <= previousGs + 5 : true;
+  const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
+  const recentDescent = recentMinVs !== null && recentMinVs <= -150;
   const futureAirborne = hasFutureAirborne(data, idx);
   const rollout = gsNext <= gs || !futureAirborne;
   const missingAglRollout = aglDroppedOut && !futureAirborne && (gs <= 25 || slowsBelowGroundSpeed(data, idx, 10));
 
-  return decelerating && (aglIndicatesGround ? rollout : missingAglRollout);
+  return recentDescent && decelerating && (aglIndicatesGround ? rollout : missingAglRollout);
 }
 
 /**
@@ -848,6 +873,14 @@ function chooseTouchdownRepresentative(
   return a;
 }
 
+function segmentPrimaryX(segment: FlightSegment): number {
+  const primary =
+    segment.type === "takeoff"
+      ? segment.events.find((event) => event.type === "rotation") ?? segment.events.find((event) => event.type === "liftoff")
+      : segment.events.find((event) => event.type === "touchdown");
+  return primary?.xMs ?? segment.startX;
+}
+
 export function detectFlightSegments(
   data: ChartRow[],
   chartTimeBaseMs: number | null,
@@ -1071,7 +1104,7 @@ export function detectFlightSegments(
     }
   });
 
-  segments.sort((a, b) => a.startX - b.startX);
+  segments.sort((a, b) => segmentPrimaryX(a) - segmentPrimaryX(b) || a.startX - b.startX);
   return segments;
 }
 

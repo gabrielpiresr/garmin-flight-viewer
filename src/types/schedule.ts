@@ -98,6 +98,8 @@ export type ExistingScheduledFlight = {
   notes?: string | null;
   /** Voo agendado fora do gerador de escala (não usa prefixo auto/manual-scale). */
   isOutsideGenerator?: boolean;
+  /** Evento de bloqueio de agenda (usuário de bloqueio no SAGA) — exibido em cinza escuro. */
+  isBlocked?: boolean;
 };
 
 export type ScheduleWeekData = {

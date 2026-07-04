@@ -88,6 +88,8 @@ export type FlightScheduleRules = {
   autoDebitCancellationPenalty: boolean;
   minBookingLeadDays: number;
   maxBookingLeadDays: number;
+  /** Matrículas (agendas SAGA) OCULTAS para o aluno na escala — ele não vê nem agenda nelas. */
+  studentHiddenAircraftIdents: string[];
 };
 
 export type EmailNotificationRule = {
@@ -189,6 +191,7 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   autoDebitCancellationPenalty: false,
   minBookingLeadDays: 0,
   maxBookingLeadDays: 365,
+  studentHiddenAircraftIdents: [],
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
@@ -337,6 +340,9 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       autoDebitCancellationPenalty: Boolean(raw.schedule?.autoDebitCancellationPenalty),
       minBookingLeadDays: normalizeInteger(raw.schedule?.minBookingLeadDays, 0, 3650, 0),
       maxBookingLeadDays: normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
+      studentHiddenAircraftIdents: Array.isArray(raw.schedule?.studentHiddenAircraftIdents)
+        ? [...new Set(raw.schedule.studentHiddenAircraftIdents.map((value) => String(value).trim().toUpperCase()).filter(Boolean))]
+        : [],
     },
     scheduleStudentHelp: normalizeScheduleStudentHelp(
       raw.scheduleStudentHelp,

@@ -7,7 +7,7 @@ import { listFlightTelemetryAlerts, type FlightTelemetryAlertDoc } from "../lib/
 import { findRunwaysByAirport } from "../lib/runwaysDb";
 import { enrichTrafficPattern, selectBestRunwayHint } from "../lib/trafficPattern";
 import type { TrafficPatternAnalysis } from "../types/flight";
-import { attachFlightTelemetry } from "../lib/attachFlightTelemetry";
+import { attachFlightTelemetry, clearFlightTelemetry } from "../lib/attachFlightTelemetry";
 import { getSavedFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
@@ -235,6 +235,27 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     setWarnings(r.warnings);
   }, []);
 
+  const resetTelemetryView = useCallback(() => {
+    setFileName(null);
+    setTelemetryCharCount(0);
+    setTelemetrySources([]);
+    setTelemetrySegmentCandidates([]);
+    setSelectedTelemetrySegmentIds([]);
+    setTelemetryFileMetas([]);
+    setTelemetryGapSec(null);
+    setTelemetryGaps([]);
+    setTelemetryDirty(false);
+    setPoints([]);
+    setChartData([]);
+    setHasChartTime(false);
+    setChartTimeBaseMs(null);
+    setTelemetryColumns({});
+    setWarnings([]);
+    setSelectedSegmentId(null);
+    setChartDomain(null);
+    setEnrichedPattern(null);
+  }, []);
+
   useEffect(() => {
     if (!parsedResult) return;
     applyResult(parsedResult, "voo importado");
@@ -267,18 +288,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       const telemetryText = decoded.meta ? decoded.telemetryCsv : data.csv_text;
       if (!telemetryText.trim()) {
         setLoading(false);
-        setFileName(null);
-        setTelemetryCharCount(0);
-        setTelemetrySources([]);
-        setTelemetrySegmentCandidates([]);
-        setSelectedTelemetrySegmentIds([]);
-        setTelemetryFileMetas([]);
-        setTelemetryGapSec(null);
-        setTelemetryGaps([]);
-        setTelemetryDirty(false);
-        setPoints([]);
-        setChartData([]);
-        setWarnings([]);
+        resetTelemetryView();
         return;
       }
       const loadedSources =
@@ -327,7 +337,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       };
       worker.postMessage(telemetryText);
     });
-  }, [flightId, applyResult]);
+  }, [flightId, applyResult, resetTelemetryView]);
 
   const handleTelemetryFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -448,11 +458,18 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
 
       // Feedback do auto-build do Flight Review (roda em segundo plano)
       void result.reviewAutoBuild?.then((build) => {
-        if (build.added > 0) {
+        if (build.added > 0 || build.removed > 0) {
           window.dispatchEvent(new CustomEvent("flight-review-maneuvers-updated", { detail: { flightId } }));
+        }
+        if (build.added > 0) {
           showToast({
             variant: "success",
-            message: `${build.added} manobra${build.added > 1 ? "s" : ""} (decolagem/pouso/TGL) adicionada${build.added > 1 ? "s" : ""} ao Flight Review${build.analyzed > 0 ? " e analisada" + (build.analyzed > 1 ? "s" : "") : ""}.`,
+            message: `${build.added} manobra${build.added > 1 ? "s" : ""} (decolagem/pouso/TGL) ${build.removed > 0 ? "recriada" : "adicionada"}${build.added > 1 ? "s" : ""} no Flight Review${build.analyzed > 0 ? " e analisada" + (build.analyzed > 1 ? "s" : "") : ""}.`,
+          });
+        } else if (build.removed > 0) {
+          showToast({
+            variant: "info",
+            message: "Manobras antigas do Flight Review removidas; nenhum segmento novo foi criado.",
           });
         } else if (build.detected > 0 && build.skipped > 0) {
           showToast({
@@ -473,6 +490,39 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
       });
     } catch (err) {
       showToast({ variant: "error", message: (err as Error).message || "Falha ao processar telemetria." });
+    } finally {
+      setSavingTelemetry(false);
+    }
+  };
+
+  const handleClearTelemetry = async () => {
+    if (!flightId || !user || !canEditTelemetry) return;
+    const confirmed = window.confirm(
+      "Limpar a telemetria deste voo? Isso apaga os CSVs salvos, métricas, alertas e manobras automáticas de decolagem/pouso/TGL do Flight Review.",
+    );
+    if (!confirmed) return;
+
+    setSavingTelemetry(true);
+    setLoadError(null);
+    try {
+      const result = await clearFlightTelemetry({
+        flightId,
+        actorUserId: user.id,
+        actorRole: user.role,
+      });
+      if (result.error) throw result.error;
+
+      resetTelemetryView();
+      await loadFlightAlerts();
+      window.dispatchEvent(new CustomEvent("flight-review-maneuvers-updated", { detail: { flightId } }));
+      showToast({
+        variant: "success",
+        message: result.removedManeuvers > 0
+          ? `Telemetria limpa. ${result.removedManeuvers} manobra${result.removedManeuvers > 1 ? "s" : ""} automática${result.removedManeuvers > 1 ? "s" : ""} removida${result.removedManeuvers > 1 ? "s" : ""}.`
+          : "Telemetria limpa.",
+      });
+    } catch (err) {
+      showToast({ variant: "error", message: (err as Error).message || "Falha ao limpar telemetria." });
     } finally {
       setSavingTelemetry(false);
     }
@@ -710,6 +760,14 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
               className="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
             >
               {savingTelemetry ? "Processando..." : "Processar telemetria"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleClearTelemetry()}
+              disabled={savingTelemetry || (!fileName && telemetrySources.length === 0)}
+              className="inline-flex items-center justify-center rounded-lg border border-rose-500/40 px-4 py-2 text-sm font-medium text-rose-200 hover:bg-rose-500/10 disabled:opacity-50"
+            >
+              Limpar telemetria
             </button>
           </div>
         )}

@@ -30,6 +30,7 @@ import {
 import { navigateToTab } from "../lib/routedTabs";
 import { useToast } from "./ui/ToastProvider";
 import { ScheduleStudentChrome } from "./schedule/ScheduleStudentChrome";
+import { useDirectionalSlide } from "../hooks/useDirectionalSlide";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -287,6 +288,8 @@ function StudentAircraftBoard({
   onNextDay,
   showDayPicker,
   headerDays,
+  disablePrev,
+  minSelectableDate,
 }: {
   days: readonly number[];
   items: CalendarFlightItem[];
@@ -304,6 +307,10 @@ function StudentAircraftBoard({
   showDayPicker?: boolean;
   /** Dias exibidos no seletor do topo (no mobile: janela de 3 dias). */
   headerDays?: readonly number[];
+  /** Escala do aluno: desabilita a seta de voltar quando o período já contém hoje. */
+  disablePrev?: boolean;
+  /** Escala do aluno: dias anteriores a esta data (ISO) não podem ser selecionados. */
+  minSelectableDate?: string;
 }) {
   const isMobile = useIsMobile();
   // Colunas mais estreitas no mobile (160 → 120 → 96) + calha de horas reduzida.
@@ -391,19 +398,30 @@ function StudentAircraftBoard({
     <div className="space-y-4">
       {showDayPicker && onSelectDay && (
         <div className="flex items-center gap-1">
-          <button type="button" onClick={onPrevDay} className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700">‹</button>
+          <button
+            type="button"
+            onClick={onPrevDay}
+            disabled={disablePrev}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-slate-800"
+          >
+            ‹
+          </button>
           <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1">
             {(headerDays ?? DAY_ORDER).map((day) => {
               const date = dayOfWeekToDate(weekStart, day);
               const today = isDateToday(date);
               const selected = day === selectedDay;
+              // Escala do aluno: dias anteriores a hoje não podem ser selecionados.
+              const past = Boolean(minSelectableDate) && toLocalIso(date) < minSelectableDate!;
               return (
                 <button
                   key={day}
                   type="button"
-                  onClick={() => onSelectDay(day)}
+                  disabled={past}
+                  onClick={() => { if (!past) onSelectDay(day); }}
                   className={`flex min-w-0 flex-1 flex-col items-center rounded border px-0.5 py-1.5 text-[10px] transition-colors sm:px-1.5 sm:text-[11px] ${
-                    selected ? "border-sky-500 bg-sky-600/20 text-sky-300"
+                    past ? "cursor-not-allowed border-slate-800 bg-slate-900/40 text-slate-600 opacity-50"
+                      : selected ? "border-sky-500 bg-sky-600/20 text-sky-300"
                       : today ? "border-slate-500 bg-slate-700/50 text-slate-200 hover:bg-slate-700"
                       : "border-slate-700 bg-slate-800/30 text-slate-400 hover:bg-slate-800"
                   }`}
@@ -516,7 +534,9 @@ function StudentAircraftBoard({
                                   role={isInteractive ? "button" : undefined}
                                   tabIndex={isInteractive ? 0 : undefined}
                                   onPointerDown={(e) => {
-                                    if (!itemDraggable) return;
+                                    // Arrastar para alterar é exclusivo do desktop (mouse);
+                                    // no celular o toque apenas abre os detalhes via clique.
+                                    if (!itemDraggable || e.pointerType !== "mouse") return;
                                     e.preventDefault();
                                     e.stopPropagation();
                                     dragEndedRef.current = false;
@@ -532,7 +552,7 @@ function StudentAircraftBoard({
                                     onItemClick(item);
                                   }}
                                   className={`absolute overflow-hidden rounded border-2 px-1.5 py-1 text-left text-[10px] text-white ${isInteractive ? `hover:ring-1 hover:ring-white/60 z-10 ${itemDraggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}` : "pointer-events-none z-0"} ${colorCls}`}
-                                  style={{ top: `${topPx}px`, height: `${heightPx - 4}px`, left: "4px", right: "4px", touchAction: itemDraggable ? "none" : undefined }}
+                                  style={{ top: `${topPx}px`, height: `${heightPx - 4}px`, left: "4px", right: "4px" }}
                                 >
                                   <p className="truncate font-semibold">{item.studentLabel}</p>
                                   <p className="truncate opacity-90">{item.startTime}–{item.endTime}</p>
@@ -1461,6 +1481,10 @@ export function StudentScheduleTab() {
       ? [DAY_ORDER[selectedDayIndex]!]
       : DAY_ORDER; // list uses all
 
+  // Deslize horizontal disparado SÓ pelas setas de navegação (não ao selecionar
+  // um dia no cabeçalho).
+  const { ref: studentBoardSlideRef, slide: slideStudentBoard } = useDirectionalSlide();
+
   // Mobile: o seletor da visão diária mostra uma janela de 3 dias em torno do dia
   // selecionado; as setas avançam/recuam a janela (3 dias por clique).
   const headerDays: readonly number[] = isMobile
@@ -1469,6 +1493,13 @@ export function StudentScheduleTab() {
         Math.max(0, Math.min(selectedDayIndex - 1, DAY_ORDER.length - 3)) + 3,
       )
     : DAY_ORDER;
+
+  // Escala do aluno: dias anteriores a hoje ficam bloqueados (não seleciona, não agenda)
+  // e a seta de voltar não pode ir para períodos anteriores ao período que contém hoje.
+  const todayIso = toLocalIso(new Date());
+  const firstVisibleDayOfWeek = agendaView === "daily" ? (headerDays[0] ?? 1) : (visibleDays[0] ?? 1);
+  const firstVisibleDate = toLocalIso(dayOfWeekToDate(weekStart, firstVisibleDayOfWeek));
+  const canGoBack = firstVisibleDate > todayIso;
 
   // A visão semanal não existe no mobile.
   useEffect(() => {
@@ -1499,6 +1530,10 @@ export function StudentScheduleTab() {
   }
 
   function moveCalendar(direction: -1 | 1) {
+    // Aluno não volta para períodos anteriores ao que contém o dia de hoje.
+    if (direction === -1 && !canGoBack) return;
+    // Só as setas chamam moveCalendar → o deslize fica restrito à navegação.
+    slideStudentBoard(direction === 1 ? "forward" : "back");
     if (agendaView === "weekly" || agendaView === "list") {
       setWeekStart((current) => addDays(current, direction * 7));
       return;
@@ -1761,7 +1796,8 @@ export function StudentScheduleTab() {
       {weekLoading ? (
         <ScheduleSkeleton />
       ) : (
-        <>
+        <div className="overflow-hidden">
+        <div ref={studentBoardSlideRef}>
           {/* List view */}
           {agendaView === "list" && (
             <FlightListView flights={flights} onFlightClick={setDetailFlight} />
@@ -1780,12 +1816,13 @@ export function StudentScheduleTab() {
               privacyMode
               showTotals={false}
               showGeneratorLegend={false}
-              hasPrevWeek
+              hasPrevWeek={canGoBack}
               hasNextWeek
               onPrevWeek={() => moveCalendar(-1)}
               onNextWeek={() => moveCalendar(1)}
               getItemColor={studentItemColor}
               blockedSlots={calendarBlockedSlots}
+              pastBeforeDate={todayIso}
               onItemClick={handleItemClick}
               onItemDrop={mode === "booking" && rules.sagaOnlySchedule ? handleItemDrop : undefined}
               canDragItem={canDragItem}
@@ -1807,13 +1844,16 @@ export function StudentScheduleTab() {
                 onSelectDay={setSelectedDay}
                 onPrevDay={() => moveCalendar(-1)}
                 onNextDay={() => moveCalendar(1)}
+                disablePrev={!canGoBack}
+                minSelectableDate={todayIso}
                 headerDays={headerDays}
                 onItemClick={handleItemClick}
                 onEmptySlotClick={mode === "booking" ? openBookingAt : undefined}
               />
             </div>
           )}
-        </>
+        </div>
+        </div>
       )}
 
       {/* Flight detail modal */}
@@ -1962,7 +2002,7 @@ export function StudentScheduleTab() {
                   <>
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Livre</span>
+                        <span className="text-slate-400">Crédito Geral</span>
                         <strong
                           className={
                             (selectedModelBalance?.anyDayRemaining ?? 0) > 0.001
@@ -1974,7 +2014,7 @@ export function StudentScheduleTab() {
                         </strong>
                       </div>
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Dia de semana</span>
+                        <span className="text-slate-400">Crédito dia de semana</span>
                         <strong
                           className={
                             (selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001
@@ -2006,7 +2046,7 @@ export function StudentScheduleTab() {
                       ) : null}
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-slate-400">
-                          Saldo aplicável ao dia{isWeekendDate(flightDate) ? " (fds)" : ""}
+                          Saldo aplicável ao dia{isWeekendDate(flightDate) ? " (final de semana)" : ""}
                         </span>
                         <strong className={(selectedModelBalance?.freeHours ?? 0) > 0.001 ? "text-emerald-300" : "text-red-300"}>
                           {futureLoading ? "…" : formatDecimalHours(selectedModelBalance?.freeHours ?? 0)}

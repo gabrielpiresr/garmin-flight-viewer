@@ -79,6 +79,20 @@ function stripDataPoints(analysis: AnalysisResult): AnalysisResult {
   };
 }
 
+async function listAllDocuments(collectionId: string, queries: string[]): Promise<Array<Record<string, unknown>>> {
+  const documents: Array<Record<string, unknown>> = [];
+  const limit = 100;
+  for (let offset = 0;; offset += limit) {
+    const res = await databases!.listDocuments(DB_ID, collectionId, [
+      ...queries,
+      Query.limit(limit),
+      Query.offset(offset),
+    ]);
+    documents.push(...(res.documents as Array<Record<string, unknown>>));
+    if (documents.length >= res.total || res.documents.length === 0) break;
+  }
+  return documents;
+}
 
 export async function listFlightManeuvers(flightId: string): Promise<FlightManeuver[]> {
   if (!flightId || !isManeuversReady()) return [];
@@ -135,6 +149,40 @@ export async function updateFlightManeuver(
 export async function deleteFlightManeuver(id: string): Promise<void> {
   if (!isManeuversReady()) throw new Error("Appwrite not configured");
   await databases!.deleteDocument(DB_ID, FLIGHT_MANEUVERS_COL_ID!, id);
+}
+
+export async function clearFlightManeuversForFlight(
+  flightId: string,
+  options: { templateIds?: string[] } = {},
+): Promise<{ maneuvers: number; reviews: number }> {
+  if (!flightId || !isManeuversReady()) return { maneuvers: 0, reviews: 0 };
+
+  const [allReviewDocs, allManeuverDocs] = await Promise.all([
+    isReviewsReady()
+      ? listAllDocuments(FLIGHT_MANEUVER_REVIEWS_COL_ID!, [Query.equal("flight_id", flightId)])
+      : Promise.resolve([]),
+    listAllDocuments(FLIGHT_MANEUVERS_COL_ID!, [Query.equal("flight_id", flightId)]),
+  ]);
+  const filterByTemplate = options.templateIds !== undefined;
+  const templateIds = new Set((options.templateIds ?? []).filter(Boolean));
+  const maneuverDocs = filterByTemplate
+    ? allManeuverDocs.filter((doc) => templateIds.has(doc.template_id as string))
+    : allManeuverDocs;
+  const maneuverIds = new Set(maneuverDocs.map((doc) => doc.$id as string));
+  const reviewDocs = allReviewDocs.filter((doc) => maneuverIds.has(doc.flight_maneuver_id as string));
+
+  await Promise.all(
+    reviewDocs.map((doc) =>
+      databases!.deleteDocument(DB_ID, FLIGHT_MANEUVER_REVIEWS_COL_ID!, doc.$id as string),
+    ),
+  );
+  await Promise.all(
+    maneuverDocs.map((doc) =>
+      databases!.deleteDocument(DB_ID, FLIGHT_MANEUVERS_COL_ID!, doc.$id as string),
+    ),
+  );
+
+  return { maneuvers: maneuverDocs.length, reviews: reviewDocs.length };
 }
 
 // ---------- Reviews ----------

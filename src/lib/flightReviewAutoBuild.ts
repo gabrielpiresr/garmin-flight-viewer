@@ -6,6 +6,7 @@ import {
   deriveReviewStatus,
 } from "./flightManeuverAnalysis";
 import {
+  clearFlightManeuversForFlight,
   createFlightManeuver,
   listFlightManeuvers,
   updateFlightManeuver,
@@ -28,6 +29,17 @@ const SEG_CATEGORY_MAP: Partial<Record<SegmentType, ManeuverCategory>> = {
   tgl: "touch_and_go",
 };
 
+export async function clearAutoBuiltFlightReviewManeuvers(
+  flightId: string,
+): Promise<{ maneuvers: number; reviews: number }> {
+  const allTemplates = await listManeuverTemplates();
+  const autoCategories = new Set(Object.values(SEG_CATEGORY_MAP));
+  const templateIds = allTemplates
+    .filter((template) => autoCategories.has(template.category))
+    .map((template) => template.id);
+  return clearFlightManeuversForFlight(flightId, { templateIds });
+}
+
 /** Manobras com mesma categoria e início a menos de 2 min são consideradas a mesma. */
 const DEDUPE_START_TOLERANCE_MS = 120_000;
 
@@ -40,6 +52,7 @@ export type AutoBuildFlightReviewResult = {
   analyzed: number;
   /** Segmentos pulados por já existir manobra equivalente. */
   skipped: number;
+  removed: number;
   error: Error | null;
 };
 
@@ -53,6 +66,7 @@ export type AutoBuildFlightReviewInput = {
     instructor_user_id: string | null;
     aircraft_ident: string | null;
   };
+  replaceExisting?: boolean;
 };
 
 /**
@@ -68,6 +82,7 @@ export async function autoBuildFlightReviewManeuvers(
     added: 0,
     analyzed: 0,
     skipped: 0,
+    removed: 0,
     error: null,
   };
 
@@ -111,15 +126,19 @@ export async function autoBuildFlightReviewManeuvers(
         // aeronave não encontrada — usa todos os templates ativos
       }
     }
-    const [aircraftTemplates, activeTemplates, allTemplates, existing] = await Promise.all([
+    const [aircraftTemplates, activeTemplates, allTemplates] = await Promise.all([
       aircraftModelId
         ? listManeuverTemplates({ activeOnly: true, aircraftModelId })
         : listManeuverTemplates({ activeOnly: true }),
       listManeuverTemplates({ activeOnly: true }),
       listManeuverTemplates(),
-      listFlightManeuvers(input.flightId),
     ]);
     const categoryByTemplateId = new Map(allTemplates.map((t) => [t.id, t.category]));
+    if (input.replaceExisting) {
+      const removed = await clearAutoBuiltFlightReviewManeuvers(input.flightId);
+      result.removed = removed.maneuvers;
+    }
+    const existing = input.replaceExisting ? [] : await listFlightManeuvers(input.flightId);
 
     const stepsCache = new Map<string, ManeuverTemplateStep[]>();
     const analysisContext = { parsed, segments };

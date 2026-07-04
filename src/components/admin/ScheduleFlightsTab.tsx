@@ -61,9 +61,31 @@ import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
+import { useDirectionalSlide } from "../../hooks/useDirectionalSlide";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
+
+/** Viewport mobile (< 640px) — mesmo critério do useIsMobile da escala do aluno. */
+function isMobileViewport(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
+}
+
+function useIsMobileViewport(): boolean {
+  const [isMobile, setIsMobile] = useState(isMobileViewport);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return isMobile;
+}
+
+// Largura mínima por coluna de avião/dia no mobile — a grade passa a rolar na horizontal.
+const MOBILE_MIN_COLUMN_PX = 130;
+const MOBILE_HOURS_GUTTER_PX = 36;
 // Exportada: a visão do aluno usa a mesma paleta (mesma ordem = mesmas cores).
 export const AIRCRAFT_COLOR_CLASSES = [
   "bg-sky-600 border-sky-400/70",
@@ -191,6 +213,11 @@ const FLIGHT_CANCELLATION_REASONS = [
 const SAGA_EVENT_ID_PREFIX = "saga_evt_";
 const SAGA_STUDENT_ID_PREFIX = "saga:";
 
+// Usuário "bloqueio" no SAGA (piresr.gabriel+bloqueio@gmail.com, ID 139) — entra como
+// aluno E instrutor dos eventos de bloqueio de agenda criados pelo admin.
+const SAGA_BLOCK_USER_ID = "139";
+const SAGA_BLOCK_USER_NAME = "Bloqueio de agenda";
+
 function isSagaEventRowId(id: string): boolean {
   return id.startsWith(SAGA_EVENT_ID_PREFIX);
 }
@@ -220,6 +247,16 @@ function flightStatusToSagaStatus(status: FlightStatus | undefined): "PLANNED" |
   return "PLANNED";
 }
 
+/** Evento de bloqueio de agenda: usuário de bloqueio (ID 139) como aluno/instrutor, nota, nome ou agenda "bloqueio". */
+function sagaEventIsBlock(item: SagaDirectScheduleItem): boolean {
+  const norm = (value: string | null | undefined) => String(value || "").replace(/^saga[:_-]?/i, "").trim();
+  if (norm(item.studentSagaId) === SAGA_BLOCK_USER_ID || norm(item.instructorSagaId) === SAGA_BLOCK_USER_ID) return true;
+  if (norm(item.studentUserId) === `saga_${SAGA_BLOCK_USER_ID}`) return true;
+  return /bloqueio/i.test(String(item.notes || ""))
+    || /bloqueio/i.test(String(item.studentName || ""))
+    || /bloqueio/i.test(String(item.aircraft || ""));
+}
+
 function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingScheduledFlight | null {
   const start = sagaDirectDateTimeParts(item.startAtRaw || item.startAt);
   const end = sagaDirectDateTimeParts(item.endAtRaw || item.endAt);
@@ -244,6 +281,7 @@ function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingSched
     sagaScheduleId: item.id,
     notes: item.notes || null,
     isOutsideGenerator: false,
+    isBlocked: sagaEventIsBlock(item),
   };
 }
 
@@ -263,6 +301,8 @@ type FlightFormDraft = {
   instructorAnac: string | null;
   aircraftRegistration: string;
   dayOfWeek: number;
+  /** Data explícita do voo (YYYY-MM-DD) escolhida no calendário do modal. */
+  dateIso?: string;
   startTime: string;
   startHour: number;
   durationHours: number;
@@ -313,9 +353,9 @@ function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration"
   return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
 }
 
-/** Cancelados ficam sempre em vermelho sólido — sem o estilo "sem instrutor" (opacidade/risco). */
-function calendarItemUnassigned(item: Pick<CalendarFlightItem, "instructorId" | "flightStatus">): boolean {
-  return !item.instructorId && item.flightStatus !== "Cancelado";
+/** Cancelados e bloqueios ficam sólidos — sem o estilo "sem instrutor" (opacidade/risco). */
+function calendarItemUnassigned(item: Pick<CalendarFlightItem, "instructorId" | "flightStatus" | "isBlocked">): boolean {
+  return !item.instructorId && item.flightStatus !== "Cancelado" && !item.isBlocked;
 }
 
 function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undefined): string {
@@ -403,7 +443,7 @@ function nextSingleFocusSelection(prev: string[], value: string, allValues: stri
 }
 
 function buildAutoMeta(draft: FlightFormDraft, weekStart: string, instructor?: InstructorIdentity | null): FlightRecordMeta {
-  const weekDate = weekDateFromStart(weekStart, draft.dayOfWeek);
+  const weekDate = draft.dateIso || weekDateFromStart(weekStart, draft.dayOfWeek);
   const engineCut = minutesToScheduleHHMM(parseScheduleTimeToMinutes(draft.startTime) + Math.round(draft.durationHours * 60));
   return {
     schedule: {
@@ -629,6 +669,7 @@ function ScheduleLegend({
         <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-sky-600" /> Planejado</span>
         <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-orange-600" /> Pendente</span>
         <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-red-700" /> Cancelado</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-neutral-800" /> Bloqueio de agenda</span>
       </div>
     );
   }
@@ -647,6 +688,7 @@ function ScheduleLegend({
           {row.label}
         </span>
       ))}
+      <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-neutral-800" /> Bloqueio de agenda</span>
       {groupBy === "instructor" && instructorColumns.length > 0 ? (
         <span className="text-slate-600">| Bordas: instrutores</span>
       ) : null}
@@ -682,6 +724,7 @@ export function CalendarGrid({
   blockedSlots,
   projectionRows,
   projectionLoading = false,
+  pastBeforeDate,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -715,9 +758,14 @@ export function CalendarGrid({
   projectionRows?: AircraftProjectionRow[];
   /** Horas-base da Frota ainda carregando: mostra skeleton no lugar das linhas de projeção. */
   projectionLoading?: boolean;
+  /** Escala do aluno: dias anteriores a esta data (ISO) ficam escurecidos e sem agendamento. */
+  pastBeforeDate?: string;
 }) {
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
+  const isMobile = useIsMobileViewport();
+  // Escala do aluno: dias anteriores a `pastBeforeDate` ficam escurecidos e sem clique de agendamento.
+  const isDayPast = (day: number) => Boolean(pastBeforeDate) && weekDateFromStart(weekStart, day) < pastBeforeDate!;
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
   const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
   const boardHeight = calendarHours.length * rowHeight;
@@ -971,9 +1019,10 @@ export function CalendarGrid({
           Nenhum voo no período.
         </p>
       ) : (
-      <div className="w-full overflow-hidden">
+      <div className="w-full overflow-x-auto">
         <table
           className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
+          style={isMobile ? { minWidth: `${gridColumns.length * MOBILE_MIN_COLUMN_PX + MOBILE_HOURS_GUTTER_PX}px` } : undefined}
         >
           <thead>
             <tr>
@@ -983,8 +1032,9 @@ export function CalendarGrid({
                 if (dayColumns.length === 0) return null;
                 const date = dayOfWeekToDate(weekStart, day);
                 const today = isDateToday(date);
+                const past = isDayPast(day);
                 return (
-                  <th key={day} colSpan={dayColumns.length} className="rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs">
+                  <th key={day} colSpan={dayColumns.length} className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""}`}>
                     <span className="block uppercase">{DAY_LABEL[day]}</span>
                     <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
                       {date.getDate()}
@@ -1001,7 +1051,7 @@ export function CalendarGrid({
                 const projectionCell = groupBy === "aircraft" ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day] : undefined;
                 const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
                 return (
-                <th key={`${day}-${column.key}`} className={`bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""}`}>
+                <th key={`${day}-${column.key}`} className={`bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}>
                   <div className="flex items-center justify-center gap-1">
                     <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
                     <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
@@ -1034,6 +1084,7 @@ export function CalendarGrid({
               {gridColumns.map(({ day, column }) => {
                 const cellKey = `${day}|${column.key}`;
                 const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
+                const cellPast = isDayPast(day);
                 return (
                 <td key={cellKey} className={`align-top p-0 ${isFirstDayColumn ? "border-l-2 border-sky-500/30 pl-0.5" : ""}`}>
                   <div
@@ -1041,14 +1092,16 @@ export function CalendarGrid({
                       if (node) cellBoardRefs.current.set(cellKey, node);
                       else cellBoardRefs.current.delete(cellKey);
                     }}
-                    className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md"
+                    className={`relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md ${cellPast ? "cursor-default" : ""}`}
                     style={{ height: `${boardHeight}px` }}
                     onClick={(e) => {
-                      if (!onEmptySlotClick || dragState) return;
+                      // Dia passado (escala do aluno): não abre modal de agendamento.
+                      if (cellPast || !onEmptySlotClick || dragState) return;
                       const target = resolveDropTarget(e.clientX, e.clientY);
                       if (target) onEmptySlotClick(target);
                     }}
                   >
+                    {cellPast ? <div className="pointer-events-none absolute inset-0 z-20 bg-slate-950/55" /> : null}
                     {nightStartHour < calendarEndHour ? (
                       <div
                         className="pointer-events-none absolute inset-x-0 bg-indigo-950/25"
@@ -1105,7 +1158,9 @@ export function CalendarGrid({
                           tabIndex={0}
                           {...scheduleTooltipHandlers(item, setTooltip)}
                           onPointerDown={(e) => {
-                            if (!itemDraggable) return;
+                            // Arrastar para alterar é exclusivo do desktop (mouse);
+                            // no celular o toque apenas abre os detalhes via clique.
+                            if (!itemDraggable || e.pointerType !== "mouse") return;
                             e.preventDefault();
                             e.stopPropagation();
                             dragEndedRef.current = false;
@@ -1263,6 +1318,7 @@ function DailyCalendarGrid({
   projectionLoading?: boolean;
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
+  const isMobile = useIsMobileViewport();
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
   const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
   const boardHeight = calendarHours.length * rowHeight;
@@ -1481,9 +1537,10 @@ function DailyCalendarGrid({
           Nenhum voo neste dia.
         </p>
       ) : (
-        <div className="w-full overflow-hidden">
+        <div className="w-full overflow-x-auto">
           <table
             className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
+            style={isMobile ? { minWidth: `${columns.length * MOBILE_MIN_COLUMN_PX + MOBILE_HOURS_GUTTER_PX}px` } : undefined}
           >
             <thead>
               <tr>
@@ -1572,7 +1629,9 @@ function DailyCalendarGrid({
                               tabIndex={0}
                               {...scheduleTooltipHandlers(item, setTooltip)}
                               onPointerDown={(e) => {
-                                if (!draggable) return;
+                                // Arrastar para alterar é exclusivo do desktop (mouse);
+                                // no celular o toque apenas abre os detalhes via clique.
+                                if (!draggable || e.pointerType !== "mouse") return;
                                 e.preventDefault();
                                 e.stopPropagation();
                                 dragEndedRef.current = false;
@@ -1996,8 +2055,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [flights, setFlights] = useState<ExistingScheduledFlight[]>([]);
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
-  // Padrao da aba Escala: semanal, por aviao, cores por status e timeline normal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">("weekly");
+  // Padrao da aba Escala: semanal (diária no mobile), por aviao, cores por status e timeline normal.
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">(() => (isMobileViewport() ? "daily" : "weekly"));
   const [scheduleGroupBy, setScheduleGroupBy] = useState<ScheduleGroupBy>("aircraft");
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
@@ -2009,6 +2068,15 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [error, setError] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<FlightFormDraft | null>(null);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  // Bloqueio de agenda (modo SAGA): cria um evento comum no SAGA com o usuário de bloqueio.
+  const [blockDraft, setBlockDraft] = useState<{
+    aircraftRegistration: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    notes: string;
+  } | null>(null);
+  const [blockSaving, setBlockSaving] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
   const [formConflicts, setFormConflicts] = useState<DetectedFlightConflict[]>([]);
   const [forceSaveWithConflict, setForceSaveWithConflict] = useState(false);
@@ -2049,6 +2117,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const selectedWeekIndex = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
   const hasPreviousWeek = selectedWeekIndex > 0;
   const hasNextWeek = selectedWeekIndex >= 0 && selectedWeekIndex < weekOptions.length - 1;
+
+  // Deslize horizontal disparado SÓ pelas setas de navegação (não ao selecionar
+  // um dia no cabeçalho da visão diária).
+  const { ref: boardSlideRef, slide: slideBoard } = useDirectionalSlide();
 
   useEffect(() => {
     if (!error || error === lastErrorToastRef.current) return;
@@ -2535,6 +2607,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   // Cores dos cards: por avião (padrão) ou por status. Cancelado é sempre vermelho.
   const resolveItemColor = useCallback(
     (item: CalendarFlightItem): string => {
+      // Bloqueio de agenda: cinza escuro (fora do padrão de status/aeronave e do que vem do SAGA).
+      if (item.isBlocked) return "bg-neutral-800";
       const status = normalizeScheduleFlightStatus(item.flightStatus);
       if (status === "Cancelado") return "bg-red-700";
       if (colorScheme === "status") {
@@ -2695,6 +2769,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             endTime: hoursToHHMM(startHour + row.durationHours),
             isNight: row.isNight ?? false,
             isOutsideGenerator: row.isOutsideGenerator ?? false,
+            isBlocked: row.isBlocked ?? false,
             notes: row.notes ?? null,
           };
         }),
@@ -2727,6 +2802,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     if (sagaEvents) {
       for (const event of sagaEvents) {
         if (sagaEventIsCancelled(event)) continue;
+        // Bloqueios de agenda não são voos: nunca somam na projeção de horas.
+        if (sagaEventIsBlock(event)) continue;
         const start = sagaDirectDateTimeParts(event.startAtRaw || event.startAt);
         if (!start.date || !start.time) continue;
         const startMs = new Date(`${start.date}T${start.time}:00`).getTime();
@@ -2744,6 +2821,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     } else {
       for (const row of flights) {
         if (row.flightStatus === "Cancelado" || row.flightStatus === "Realizado") continue;
+        // Bloqueios de agenda não são voos: nunca somam na projeção de horas.
+        if (row.isBlocked) continue;
         const startMs = new Date(`${row.date}T${row.startTime}:00`).getTime();
         if (!Number.isFinite(startMs) || startMs <= now) continue;
         events.push({
@@ -2932,11 +3011,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       studentLabel: "",
       ...resolveInstructorDraft(weekData.instructors, null),
       aircraftRegistration: firstAircraft.registration,
-      dayOfWeek: 1,
+      dayOfWeek: selectedDay,
+      dateIso: weekDateFromStart(weekData.week.weekStart, selectedDay),
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
       durationHours: 1,
-      flightStatus: "Confirmado",
+      // No modo SAGA o voo novo entra como "Planejado" (Previsto) por padrão.
+      flightStatus: scheduleRules.sagaOnlySchedule ? "Previsto" : "Confirmado",
       isNight: false,
       notes: "",
     });
@@ -2959,6 +3040,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         instructorAnac: null,
         aircraftRegistration: row.aircraftRegistration ?? "",
         dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
+        dateIso: row.date,
         startTime: row.startTime,
         startHour: parseStartHour(row.startTime),
         durationHours: row.durationHours,
@@ -2993,6 +3075,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         (row.instructorId ? instructorById.get(row.instructorId)?.anacCode ?? null : null),
       aircraftRegistration: row.aircraftRegistration ?? "",
       dayOfWeek: new Date(`${row.date}T12:00:00`).getDay(),
+      dateIso: row.date,
       startTime: row.startTime,
       startHour:
         (decoded?.header.isNight ?? row.isNight)
@@ -3038,7 +3121,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       if (scheduleRules.sagaOnlySchedule) {
         // Modo saga-only: cria/edita/cancela o evento direto na agenda SAGA,
         // sem criar voo, notificação ou sincronização local.
-        const flightDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
+        const flightDate = formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
         const durationMinutes = Math.round(formDraft.durationHours * 60);
         const existingStatus = formDraft.id ? flights.find((row) => row.id === formDraft.id)?.flightStatus : undefined;
         if (formMode === "edit" && formDraft.flightStatus === "Cancelado" && existingStatus !== "Cancelado") {
@@ -3102,7 +3185,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       };
 
       if (formMode === "edit" && formDraft.id) {
-        const nextDate = weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
+        const nextDate = formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
         const nextStartTime = formDraft.startTime;
         const existingStatus = flights.find((row) => row.id === formDraft.id)?.flightStatus;
         if (formDraft.flightStatus === "Cancelado" && existingStatus !== "Cancelado") {
@@ -3150,7 +3233,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             actorUserId: user.id,
             data: {
               aircraft: formDraft.aircraftRegistration,
-              flightDate: weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
+              flightDate: formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
               startTime: formDraft.startTime,
               studentUserId: formDraft.studentId,
             },
@@ -3166,6 +3249,59 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       setError((e as Error).message);
     } finally {
       setFormSaving(false);
+    }
+  }
+
+  function openBlockModal() {
+    if (!weekData) return;
+    const firstAircraft = aircraftOptions[0];
+    if (!firstAircraft) {
+      setError("Cadastre uma aeronave ativa para bloquear a agenda.");
+      return;
+    }
+    setBlockDraft({
+      aircraftRegistration: firstAircraft.registration,
+      date: weekDateFromStart(weekData.week.weekStart, selectedDay),
+      startTime: "08:00",
+      endTime: "12:00",
+      notes: "",
+    });
+  }
+
+  async function handleSaveBlock() {
+    if (!blockDraft) return;
+    setError(null);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(blockDraft.date)) {
+      setError("Informe a data do bloqueio.");
+      return;
+    }
+    const startMin = parseScheduleTimeToMinutes(blockDraft.startTime);
+    const endMin = parseScheduleTimeToMinutes(blockDraft.endTime);
+    if (!blockDraft.startTime || !blockDraft.endTime || endMin <= startMin) {
+      setError("O fim do bloqueio deve ser depois do início.");
+      return;
+    }
+    setBlockSaving(true);
+    try {
+      const result = await upsertSagaScheduleDirect({
+        aircraftIdent: blockDraft.aircraftRegistration,
+        studentSagaId: SAGA_BLOCK_USER_ID,
+        studentName: SAGA_BLOCK_USER_NAME,
+        instructorSagaId: SAGA_BLOCK_USER_ID,
+        instructorName: SAGA_BLOCK_USER_NAME,
+        date: blockDraft.date,
+        startTime: blockDraft.startTime,
+        durationMinutes: endMin - startMin,
+        sagaStatus: "CONFIRMED",
+        rawNotes: ["Bloqueio de agenda via plataforma", blockDraft.notes.trim()].filter(Boolean).join(" | ").slice(0, 255),
+      });
+      showToast({ variant: "success", message: result.message });
+      setBlockDraft(null);
+      if (weekData) await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBlockSaving(false);
     }
   }
 
@@ -3275,7 +3411,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           </div>
         </div>
         {canCreateFlight ? (
-        <div className="flex items-end md:col-span-2">
+        <div className="flex items-end gap-2 md:col-span-2">
           <button
             type="button"
             onClick={() => openCreateModal()}
@@ -3284,6 +3420,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           >
             Novo voo
           </button>
+          {scheduleRules.sagaOnlySchedule ? (
+            <button
+              type="button"
+              onClick={() => openBlockModal()}
+              disabled={!weekData}
+              className="w-full rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-sm font-semibold text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+            >
+              Bloquear agenda
+            </button>
+          ) : null}
         </div>
         ) : null}
       </section>
@@ -3448,7 +3594,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           {/* Calendar grid */}
           <div className={`order-3 space-y-0 transition-opacity ${weekRefreshing ? "pointer-events-none opacity-60" : ""}`}>
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <div className="flex flex-1 overflow-hidden rounded-lg border border-slate-700 sm:flex-none">
+              {/* Ocupa a linha inteira no mobile para os botões não ficarem espremidos. */}
+              <div className="flex w-full overflow-hidden rounded-lg border border-slate-700 sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setAgendaView("weekly")}
@@ -3536,6 +3683,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               </label>
             </div>
 
+            {/* Deslize horizontal ao navegar entre datas/semanas. */}
+            <div className="overflow-hidden">
+            <div ref={boardSlideRef}>
             {invertedTimeline ? (
               <HorizontalTimelineBoard
                 rows={timelineRows}
@@ -3562,8 +3712,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 }
                 hasPrevWeek={agendaView === "three-day" ? threeDayStartIndex > 0 || hasPreviousWeek : hasPreviousWeek}
                 hasNextWeek={agendaView === "three-day" ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek : hasNextWeek}
-                onPrevWeek={agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1)}
-                onNextWeek={agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1)}
+                onPrevWeek={() => { slideBoard("back"); (agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1))(); }}
+                onNextWeek={() => { slideBoard("forward"); (agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1))(); }}
                 onItemClick={(item) => {
                   if (!canEditFlight) return;
                   const selected = flights.find((row) => row.id === item.id);
@@ -3577,6 +3727,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     const base = {
                       ...prev,
                       dayOfWeek: target.dayOfWeek,
+                      dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
                       startHour: target.startHour,
                       startTime: target.startTime,
                       isNight: target.isNight,
@@ -3616,6 +3767,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek
                   : hasNextWeek}
                 onPrevWeek={() => {
+                  slideBoard("back");
                   if (agendaView === "three-day") {
                     goToPreviousThreeDayPeriod();
                     return;
@@ -3623,6 +3775,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   goToWeekOffset(-1);
                 }}
                 onNextWeek={() => {
+                  slideBoard("forward");
                   if (agendaView === "three-day") {
                     goToNextThreeDayPeriod();
                     return;
@@ -3644,6 +3797,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       const base = {
                         ...prev,
                         dayOfWeek: target.dayOfWeek,
+                        dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
                         startHour: target.startHour,
                         startTime: target.startTime,
                         isNight: target.isNight,
@@ -3665,6 +3819,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     const base = {
                       ...prev,
                       dayOfWeek: target.dayOfWeek,
+                      dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
                       startHour: target.startHour,
                       startTime: target.startTime,
                       isNight: target.isNight,
@@ -3700,8 +3855,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   hasPrevWeek={hasPreviousWeek}
                   hasNextWeek={hasNextWeek}
                   onSelectDay={setSelectedDay}
-                  onPrevWeek={() => goToWeekOffset(-1)}
-                  onNextWeek={() => goToWeekOffset(1)}
+                  onPrevWeek={() => { slideBoard("back"); goToWeekOffset(-1); }}
+                  onNextWeek={() => { slideBoard("forward"); goToWeekOffset(1); }}
                   onItemClick={(item) => {
                     if (!canEditFlight) return;
                     const selected = flights.find((row) => row.id === item.id);
@@ -3714,7 +3869,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       await openEditModal(selected);
                       setFormDraft((prev) => {
                         if (!prev) return prev;
-                        const base = { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
+                        const base = { ...prev, dayOfWeek: target.dayOfWeek, dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek), startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
                         if (target.targetInstructorId !== undefined) {
                           const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
                           return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
@@ -3731,7 +3886,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     openCreateModal();
                     setFormDraft((prev) => {
                       if (!prev) return prev;
-                      const base = { ...prev, dayOfWeek: target.dayOfWeek, startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
+                      const base = { ...prev, dayOfWeek: target.dayOfWeek, dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek), startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
                       if (target.targetInstructorId !== undefined) {
                         const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
                         return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
@@ -3745,6 +3900,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 />
               </section>
             )}
+            </div>
+            </div>
           </div>
 
           {/* Resumo por instrutor — abaixo da agenda */}
@@ -3988,7 +4145,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               </button>
             </div>
             <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
-              {formMode === "edit" && (
+              {(
                 <div className="md:col-span-2">
                   <label className="block text-xs text-slate-400">
                     Status do voo
@@ -3997,8 +4154,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       onChange={(e) => setFormDraft((prev) => prev ? { ...prev, flightStatus: e.target.value as FlightStatus, cancellationReason: "", cancellationReasonText: "" } : prev)}
                       className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                     >
-                      {FLIGHT_STATUS_OPTIONS.map((s) => (
-                        <option key={s} value={s}>{s}</option>
+                      {(formMode === "create"
+                        ? (scheduleRules.sagaOnlySchedule
+                          ? (["Previsto", "Pendente", "Confirmado"] as FlightStatus[])
+                          : (["Pendente", "Confirmado"] as FlightStatus[]))
+                        : (scheduleRules.sagaOnlySchedule ? (["Previsto", ...FLIGHT_STATUS_OPTIONS] as FlightStatus[]) : FLIGHT_STATUS_OPTIONS)
+                      ).map((s) => (
+                        <option key={s} value={s}>{s === "Previsto" ? "Planejado (Previsto)" : s}</option>
                       ))}
                     </select>
                   </label>
@@ -4106,18 +4268,19 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 </select>
               </label>
               <label className="text-xs text-slate-400">
-                Dia
-                <select
-                  value={formDraft.dayOfWeek}
-                  onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, dayOfWeek: Number(e.target.value) } : prev))}
+                Data
+                <input
+                  type="date"
+                  value={formDraft.dateIso ?? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (!value) return;
+                    setFormDraft((prev) =>
+                      prev ? { ...prev, dateIso: value, dayOfWeek: new Date(`${value}T12:00:00`).getDay() } : prev,
+                    );
+                  }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                >
-                  {DAY_ORDER.map((day) => (
-                    <option key={day} value={day}>
-                      {DAY_LABEL[day]}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label className="text-xs text-slate-400">
                 {scheduleRules.sagaOnlySchedule ? "Início do bloco SAGA" : "Hora"}
@@ -4145,18 +4308,50 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   ))}
                 </select>
               </label>
-              <label className="text-xs text-slate-400">
-                {scheduleRules.sagaOnlySchedule ? "Duração do bloco SAGA (h)" : "Duração (h)"}
-                <input
-                  type="number"
-                  min={0.5}
-                  max={6}
-                  step={0.5}
-                  value={formDraft.durationHours}
-                  onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, durationHours: Number(e.target.value) } : prev))}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                />
-              </label>
+              {scheduleRules.sagaOnlySchedule ? (
+                <label className="text-xs text-slate-400">
+                  Final do bloco no SAGA
+                  <select
+                    value={String(parseScheduleTimeToMinutes(formDraft.startTime) + Math.round(formDraft.durationHours * 60))}
+                    onChange={(e) =>
+                      setFormDraft((prev) => {
+                        if (!prev) return prev;
+                        const startMin = parseScheduleTimeToMinutes(prev.startTime);
+                        const endMin = Number(e.target.value);
+                        return { ...prev, durationHours: Math.max(0.25, (endMin - startMin) / 60) };
+                      })
+                    }
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  >
+                    {(() => {
+                      const startMin = parseScheduleTimeToMinutes(formDraft.startTime);
+                      const currentEnd = startMin + Math.round(formDraft.durationHours * 60);
+                      const options: number[] = [];
+                      for (let minute = startMin + 15; minute < 24 * 60; minute += 15) options.push(minute);
+                      if (currentEnd > startMin && currentEnd < 24 * 60 && !options.includes(currentEnd)) {
+                        options.push(currentEnd);
+                        options.sort((a, b) => a - b);
+                      }
+                      return options.map((minute) => (
+                        <option key={minute} value={minute}>{minutesToScheduleHHMM(minute)}</option>
+                      ));
+                    })()}
+                  </select>
+                </label>
+              ) : (
+                <label className="text-xs text-slate-400">
+                  Duração (h)
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={6}
+                    step={0.5}
+                    value={formDraft.durationHours}
+                    onChange={(e) => setFormDraft((prev) => (prev ? { ...prev, durationHours: Number(e.target.value) } : prev))}
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+              )}
               <label className="text-xs text-slate-400 md:col-span-2">
                 Observações
                 <textarea
@@ -4229,7 +4424,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
                 if (!modelId) return null;
                 const modelSummary = formStudentCredits?.find((row) => row.aircraftModelId === modelId);
-                const flightDate = weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "";
+                const flightDate = formDraft.dateIso || (weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "");
                 const futureHours = Object.values(formStudentFutureMinutesByModel ?? {}).reduce(
                   (acc, minutes) => acc + minutes / 60,
                   0,
@@ -4337,6 +4532,100 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 {formSaving ? "Salvando..." : "Salvar voo"}
               </button>
             </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Modal de bloqueio de agenda (modo SAGA) */}
+      {blockDraft ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
+          <div className="flex max-h-[100dvh] w-full max-w-md flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-xl sm:border sm:border-slate-700">
+            <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
+              <p className="text-sm font-semibold text-slate-100">Bloquear agenda</p>
+              <button
+                type="button"
+                onClick={() => setBlockDraft(null)}
+                className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Fechar
+              </button>
+            </div>
+            <div className="space-y-3 overflow-y-auto p-4">
+              <p className="text-xs text-slate-500">
+                Cria um evento na agenda SAGA com o usuário de bloqueio, impedindo novos agendamentos no período.
+              </p>
+              <label className="block text-xs text-slate-400">
+                Aeronave
+                <select
+                  value={blockDraft.aircraftRegistration}
+                  onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, aircraftRegistration: e.target.value } : prev))}
+                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                >
+                  {aircraftOptions.map((aircraft) => (
+                    <option key={aircraft.registration} value={aircraft.registration}>
+                      {aircraft.registration}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs text-slate-400">
+                Data
+                <input
+                  type="date"
+                  value={blockDraft.date}
+                  onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))}
+                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-xs text-slate-400">
+                  Hora de início
+                  <input
+                    type="time"
+                    value={blockDraft.startTime}
+                    onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, startTime: e.target.value } : prev))}
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Hora de fim
+                  <input
+                    type="time"
+                    value={blockDraft.endTime}
+                    onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, endTime: e.target.value } : prev))}
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+              </div>
+              <label className="block text-xs text-slate-400">
+                Observação
+                <textarea
+                  value={blockDraft.notes}
+                  onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, notes: e.target.value.slice(0, 180) } : prev))}
+                  rows={3}
+                  maxLength={180}
+                  placeholder="Motivo do bloqueio (ex.: manutenção, evento...)"
+                  className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-violet-500"
+                />
+              </label>
+            </div>
+            <div className="flex flex-col justify-end gap-2 border-t border-slate-700 px-4 py-3 sm:flex-row sm:items-center">
+              <button
+                type="button"
+                onClick={() => setBlockDraft(null)}
+                className="w-full rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 sm:w-auto"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveBlock()}
+                disabled={blockSaving || !canCreateFlight}
+                className="w-full rounded bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50 sm:w-auto"
+              >
+                {blockSaving ? "Bloqueando..." : "Bloquear agenda"}
+              </button>
             </div>
           </div>
         </div>

@@ -244,6 +244,16 @@ function isCancelledScheduleFlight(flight: PublicScheduleFlight): boolean {
   return flight.status === "Cancelado";
 }
 
+/**
+ * Evento de bloqueio de agenda (usuário de bloqueio ID 139 no SAGA). Não é voo:
+ * nunca soma nas projeções de horas/horímetro nem na previsão de manutenção.
+ */
+function isBlockScheduleFlight(flight: PublicScheduleFlight): boolean {
+  const norm = (value?: string | null) => String(value || "").replace(/^saga[:_-]?/i, "").trim();
+  if (norm(flight.studentUserId) === "139") return true;
+  return /bloqueio/i.test(flight.studentName || "") || /bloqueio/i.test(flight.notes || "");
+}
+
 function scheduledAircraftFlights(params: {
   aircraft: Aircraft;
   scheduleFlights: PublicScheduleFlight[];
@@ -251,7 +261,7 @@ function scheduledAircraftFlights(params: {
 }): ScheduledAircraftFlight[] {
   const registration = normalizeRegistration(params.aircraft.registration);
   return params.scheduleFlights
-    .filter((flight) => !isCancelledScheduleFlight(flight))
+    .filter((flight) => !isCancelledScheduleFlight(flight) && !isBlockScheduleFlight(flight))
     .filter((flight) => normalizeRegistration(flight.aircraftIdent) === registration)
     .map((flight) => {
       const dateMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
@@ -293,6 +303,7 @@ function buildProjectionDays(params: {
   const dayHours = new Map<string, number>();
   for (const flight of params.scheduleFlights) {
     if (isCancelledScheduleFlight(flight)) continue;
+    if (isBlockScheduleFlight(flight)) continue;
     if (normalizeRegistration(flight.aircraftIdent) !== registration) continue;
     const startMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
     if (Number.isFinite(startMs) && startMs < params.nowMs) continue;
