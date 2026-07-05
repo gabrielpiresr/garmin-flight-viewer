@@ -56,11 +56,8 @@ function getHelpCollectionIds(audience: HelpCenterAudience): HelpCollectionIds {
 }
 
 function isHelpCenterConfigured(audience: HelpCenterAudience): boolean {
-  const { sections, subsections, articles } = getHelpCollectionIds(audience);
-  if (audience === "instructor") {
-    return Boolean(isAppwriteConfigured && databases && DB_ID && sections && articles);
-  }
-  return Boolean(isAppwriteConfigured && databases && DB_ID && sections && subsections && articles);
+  const { sections, articles } = getHelpCollectionIds(audience);
+  return Boolean(isAppwriteConfigured && databases && DB_ID && sections && articles);
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -179,7 +176,10 @@ export async function listHelpCatalog(
   const empty: HelpCatalog = { sections: [], subsections: [], articles: [] };
   const { sections: sectionsColId, subsections: subsectionsColId, articles: articlesColId } = getHelpCollectionIds(audience);
   if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId || !articlesColId) {
-    return { data: empty, error: null };
+    return {
+      data: empty,
+      error: new Error("Central de ajuda não configurada. Verifique as variáveis de ambiente no Appwrite."),
+    };
   }
 
   try {

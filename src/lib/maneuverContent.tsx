@@ -480,6 +480,18 @@ export function renderRichContent(content: ManeuverRichContent): ReactNode[] {
   return renderNodes(root.content, "rich");
 }
 
+export function safeRenderRichContent(content: ManeuverRichContent): ReactNode[] {
+  try {
+    return renderRichContent(content);
+  } catch {
+    return [
+      <p key="rich-content-error" className="text-sm text-amber-300">
+        Não foi possível exibir o conteúdo deste artigo.
+      </p>,
+    ];
+  }
+}
+
 export function richContentToPlainText(content: ManeuverRichContent): string {
   const chunks: string[] = [];
   function walk(node: RichNode | undefined) {

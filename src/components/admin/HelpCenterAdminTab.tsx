@@ -16,7 +16,7 @@ import {
 } from "../../lib/helpCenterDb";
 import {
   createEmptyRichContent,
-  renderRichContent,
+  safeRenderRichContent,
   richContentToHtml,
   richContentToPlainText,
 } from "../../lib/maneuverContent";
@@ -166,7 +166,10 @@ export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabP
   );
 
   const articlesForSelected = useMemo(
-    () => catalog.articles.filter((article) => article.sectionId === selectedSectionId),
+    () =>
+      catalog.articles
+        .filter((article) => article.sectionId === selectedSectionId)
+        .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title, "pt-BR")),
     [catalog.articles, selectedSectionId],
   );
 
@@ -302,13 +305,17 @@ export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabP
   function handleArticleDragEnter(targetId: string) {
     if (!dragArticleId || dragArticleId === targetId) return;
     setCatalog((prev) => {
-      const list = [...prev.articles];
-      const from = list.findIndex((article) => article.id === dragArticleId);
-      const to = list.findIndex((article) => article.id === targetId);
+      const sectionArticles = prev.articles
+        .filter((article) => article.sectionId === selectedSectionId)
+        .sort((left, right) => left.order - right.order);
+      const from = sectionArticles.findIndex((article) => article.id === dragArticleId);
+      const to = sectionArticles.findIndex((article) => article.id === targetId);
       if (from < 0 || to < 0) return prev;
-      const [moved] = list.splice(from, 1);
-      list.splice(to, 0, moved!);
-      return { ...prev, articles: list };
+      const reordered = [...sectionArticles];
+      const [moved] = reordered.splice(from, 1);
+      reordered.splice(to, 0, moved!);
+      const otherArticles = prev.articles.filter((article) => article.sectionId !== selectedSectionId);
+      return { ...prev, articles: [...otherArticles, ...reordered] };
     });
   }
 
@@ -732,7 +739,7 @@ export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabP
                           ) : null}
                         </div>
                         {article.summary ? <p className="mt-2 text-sm text-slate-400">{article.summary}</p> : null}
-                        <div className="mt-3 line-clamp-3 space-y-2 text-sm text-slate-300">{renderRichContent(article.contentJson)}</div>
+                        <div className="mt-3 line-clamp-3 space-y-2 text-sm text-slate-300">{safeRenderRichContent(article.contentJson)}</div>
                       </article>
                     )) : (
                       <div className="rounded-xl border border-slate-700/40 bg-slate-950/20 p-10 text-center text-sm text-slate-500">Nenhum artigo nesta seção.</div>

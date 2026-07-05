@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { findHighlightRange } from "../lib/adminSearchIndex";
 import { listHelpCatalog } from "../lib/helpCenterDb";
-import { renderRichContent } from "../lib/maneuverContent";
+import { safeRenderRichContent } from "../lib/maneuverContent";
 import type { HelpArticle, HelpCatalog, HelpCenterAudience, HelpSection } from "../types/helpCenter";
 import { Skeleton } from "./ui/Skeleton";
 
@@ -288,14 +288,20 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
       if (current && filteredIds.has(current.id)) return current;
       return searchHits.find((hit) => hit.article.id === selectedArticleId)?.article ?? searchHits[0]?.article ?? null;
     }
-    if (!selectedArticleId || !current) return null;
-    if (current.sectionId === selectedSection?.id) return current;
+    if (current && (!selectedSection || current.sectionId === selectedSection.id)) return current;
+    if (selectedSection) {
+      return catalog.articles.find((article) => article.sectionId === selectedSection.id) ?? null;
+    }
     return null;
-  }, [catalog.articles, filteredIds, isSearching, searchHits, selectedArticleId, selectedSection?.id]);
+  }, [catalog.articles, filteredIds, isSearching, searchHits, selectedArticleId, selectedSection]);
 
   const activeSectionGroup = useMemo(() => {
     return sectionGroups.find((group) => group.section.id === selectedSection?.id) ?? null;
   }, [sectionGroups, selectedSection?.id]);
+
+  function firstArticleInSection(sectionId: string): string {
+    return catalog.articles.find((article) => article.sectionId === sectionId)?.id ?? "";
+  }
 
   function enterSection(section: HelpSection, options?: { keepArticle?: boolean; articleId?: string }) {
     setSelectedSectionId(section.id);
@@ -307,14 +313,16 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
       const current = catalog.articles.find((article) => article.id === selectedArticleId);
       if (current?.sectionId === section.id) return;
     }
-    const firstArticle = filteredArticles.find((article) => article.sectionId === section.id);
+    const firstArticle =
+      filteredArticles.find((article) => article.sectionId === section.id) ??
+      catalog.articles.find((article) => article.sectionId === section.id);
     setSelectedArticleId(firstArticle?.id ?? "");
   }
 
   function goToSection(sectionId: string) {
     setQuery("");
     setSelectedSectionId(sectionId);
-    setSelectedArticleId("");
+    setSelectedArticleId(firstArticleInSection(sectionId));
   }
 
   function goHome() {
@@ -361,7 +369,7 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
         ) : null}
       </header>
       <div className="help-article-prose space-y-4 text-sm text-slate-300 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:text-sm [&_p]:text-sm [&_table]:text-sm">
-        {renderRichContent(selectedArticle.contentJson)}
+        {safeRenderRichContent(selectedArticle.contentJson)}
       </div>
     </div>
   ) : (
@@ -419,7 +427,7 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
     );
   } else if (error) {
     bodyContent = <div className="m-4 rounded-xl border border-amber-500/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">{error}</div>;
-  } else if (catalog.articles.length === 0) {
+  } else if (catalog.sections.length === 0 && catalog.articles.length === 0) {
     bodyContent = (
       <div className="p-10 text-center">
         <p className="text-base font-medium text-slate-300">Nenhum artigo publicado ainda.</p>
@@ -434,16 +442,27 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
             <h2 className="text-xl font-semibold text-slate-100">{copy.homeTitle}</h2>
             <p className="mt-1 text-sm text-slate-500">Escolha uma seção ou use a busca acima para encontrar um artigo.</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {homeSectionGroups.map(({ section, articleCount }) => (
-              <SectionCard
-                key={section.id}
-                section={section}
-                articleCount={articleCount}
-                onClick={() => selectSection(section)}
-              />
-            ))}
-          </div>
+          {homeSectionGroups.length ? (
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {homeSectionGroups.map(({ section, articleCount }) => (
+                <SectionCard
+                  key={section.id}
+                  section={section}
+                  articleCount={articleCount}
+                  onClick={() => selectSection(section)}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
+              Nenhuma seção publicada ainda.
+            </p>
+          )}
+          {catalog.articles.length > 0 && homeSectionGroups.every((group) => group.articleCount === 0) ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-900/20 p-4 text-sm text-amber-200">
+              Existem artigos publicados, mas nenhum está vinculado a uma seção visível. Peça ao administrador para revisar o cadastro.
+            </div>
+          ) : null}
         </div>
       </div>
     );
