@@ -149,15 +149,28 @@ export function ScheduleSettingsPanel() {
     };
   }, [showToast]);
 
-  // Lista exibida = aeronaves locais + agendas do SAGA + agendas já ocultas (para poder reexibir).
+  // Agendas adicionadas manualmente nesta sessão (ex.: agenda SAGA nova, ainda sem eventos).
+  const [manualAgendaIdents, setManualAgendaIdents] = useState<string[]>([]);
+  const [newAgendaIdent, setNewAgendaIdent] = useState("");
+
+  // Lista exibida = aeronaves locais + agendas do SAGA + agendas já ocultas ou marcadas
+  // como lista de espera (para poder reexibir/desmarcar) + adicionadas manualmente.
   const scheduleAgendaOptions = useMemo(
     () =>
       [...new Set([
         ...aircraftRegistrations,
         ...sagaAgendaIdents,
         ...rules.schedule.studentHiddenAircraftIdents,
+        ...rules.schedule.studentWaitlistAircraftIdents,
+        ...manualAgendaIdents,
       ])].sort((a, b) => a.localeCompare(b, "pt-BR")),
-    [aircraftRegistrations, sagaAgendaIdents, rules.schedule.studentHiddenAircraftIdents],
+    [
+      aircraftRegistrations,
+      sagaAgendaIdents,
+      rules.schedule.studentHiddenAircraftIdents,
+      rules.schedule.studentWaitlistAircraftIdents,
+      manualAgendaIdents,
+    ],
   );
 
   function setSchedule(patch: Partial<FlightScheduleRules>) {
@@ -292,28 +305,76 @@ export function ScheduleSettingsPanel() {
             <div className="flex flex-wrap gap-2">
               {scheduleAgendaOptions.map((registration) => {
                 const hidden = schedule.studentHiddenAircraftIdents.includes(registration);
+                const waitlist = schedule.studentWaitlistAircraftIdents.includes(registration);
                 return (
-                  <label
+                  <div
                     key={registration}
-                    className="flex cursor-pointer items-center gap-1.5 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                    className={`rounded border px-2 py-1.5 text-xs text-slate-300 ${waitlist ? "border-amber-600/60 bg-amber-900/10" : "border-slate-700"}`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={!hidden}
-                      onChange={(event) =>
-                        setSchedule({
-                          studentHiddenAircraftIdents: event.target.checked
-                            ? schedule.studentHiddenAircraftIdents.filter((value) => value !== registration)
-                            : [...new Set([...schedule.studentHiddenAircraftIdents, registration])],
-                        })
-                      }
-                    />
-                    {registration}
-                  </label>
+                    <p className="mb-1 font-semibold">
+                      {registration}
+                      {waitlist ? <span className="ml-1.5 rounded bg-amber-600/30 px-1 py-0.5 text-[10px] font-semibold text-amber-300">Lista de espera</span> : null}
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <label className="flex cursor-pointer items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={!hidden}
+                          onChange={(event) =>
+                            setSchedule({
+                              studentHiddenAircraftIdents: event.target.checked
+                                ? schedule.studentHiddenAircraftIdents.filter((value) => value !== registration)
+                                : [...new Set([...schedule.studentHiddenAircraftIdents, registration])],
+                            })
+                          }
+                        />
+                        Visível
+                      </label>
+                      <label className="flex cursor-pointer items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={waitlist}
+                          onChange={(event) =>
+                            setSchedule({
+                              studentWaitlistAircraftIdents: event.target.checked
+                                ? [...new Set([...schedule.studentWaitlistAircraftIdents, registration])]
+                                : schedule.studentWaitlistAircraftIdents.filter((value) => value !== registration),
+                            })
+                          }
+                        />
+                        <span className="inline-flex items-center gap-1">
+                          Lista de espera
+                          <InfoTip text="Agenda de LISTA DE ESPERA: o aluno só consegue marcar nela quando nenhum avião real está livre no horário. A solicitação fica aguardando ajustes/cancelamentos e a escola confirma ou cancela até 12h antes do voo. Vale apenas no modo SAGA." />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
                 );
               })}
             </div>
           )}
+          {/* Agenda do SAGA sem eventos recentes não aparece na lista automática — permite incluir pelo nome. */}
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="text"
+              value={newAgendaIdent}
+              onChange={(event) => setNewAgendaIdent(event.target.value)}
+              placeholder="Adicionar agenda do SAGA (ex.: LISTA DE ESPERA)"
+              className="w-64 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-600"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const ident = newAgendaIdent.trim().toUpperCase();
+                if (!ident) return;
+                setManualAgendaIdents((current) => [...new Set([...current, ident])]);
+                setNewAgendaIdent("");
+              }}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+            >
+              Adicionar
+            </button>
+          </div>
         </div>
       </Section>
 

@@ -36,7 +36,6 @@ import {
   FlightReviewClubPanel,
   ScheduleRulesPanel,
 } from "./PlatformSettingsExtraPanels";
-import { OnboardingSettingsPanel } from "./OnboardingSettingsPanel";
 import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
 import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
@@ -55,7 +54,6 @@ export type SettingsSubTab =
   | "badges"
   | "tracks"
   | "financeiro"
-  | "onboarding"
   | "indique-ganhe"
   | "roles"
   | "propostas"
@@ -119,15 +117,6 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
-    id: "onboarding",
-    label: "Onboarding",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-11.5a.75.75 0 00-1.5 0v2.25H7a.75.75 0 000 1.5h2.25V12a.75.75 0 001.5 0V9.75H13a.75.75 0 000-1.5h-2.25V6.5z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
     id: "indique-ganhe" as SettingsSubTab,
     label: "Indique e ganhe",
     icon: (
@@ -186,7 +175,6 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   badges:      "settings.badges",
   tracks:      "settings.trilhas",
   financeiro:  "settings.financeiro",
-  onboarding:  "settings.onboarding",
   "indique-ganhe": "settings.indique-ganhe",
   roles:       "settings.roles",
   propostas:   "settings.propostas",
@@ -869,11 +857,6 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
           <FlightCreditPackagesPanel />
           <SchoolProductsPanel />
           <CaktoSettingsPanel />
-        </div>
-      ) : null}
-      {openedSubTabs.has("onboarding") ? (
-        <div hidden={activeSubTab !== "onboarding"}>
-          <OnboardingSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("indique-ganhe") ? (

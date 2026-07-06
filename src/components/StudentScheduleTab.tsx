@@ -152,6 +152,11 @@ function toLocalIso(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+/** Mesma normalização de matrícula do servidor: maiúsculas, apenas A–Z e 0–9. */
+function normalizeIdent(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function resolveDefaultBookingDate(minBookingLeadDays: number): string {
   const minDate = new Date();
   minDate.setDate(minDate.getDate() + Math.max(0, Math.ceil(minBookingLeadDays)));
@@ -1103,6 +1108,9 @@ export function StudentScheduleTab() {
   const [proposedReason, setProposedReason] = useState("");
   // Aviso da exceção "1h com crédito zerado"
   const [zeroCreditConfirmOpen, setZeroCreditConfirmOpen] = useState(false);
+  // Modal de confirmação pós-solicitação (substitui o toast): informa o prazo de
+  // confirmação/cancelamento; para lista de espera, a janela é de 24h a 48h antes.
+  const [bookingSuccess, setBookingSuccess] = useState<{ waitlist: boolean } | null>(null);
 
   const fetchWeek = useCallback((ws: string): Promise<WeekBundle> => {
     const inFlight = weekFetchRef.current.get(ws);
@@ -1382,6 +1390,33 @@ export function StudentScheduleTab() {
     [getOccupiedIntervals, aircraftIdent, flightDate, rules],
   );
 
+  // ─── Lista de espera ─────────────────────────────────────────────────────────
+  const isWaitlistAircraft = useCallback(
+    (ident: string): boolean => {
+      const target = normalizeIdent(ident);
+      if (!target) return false;
+      if ((rules.studentWaitlistAircraftIdents ?? []).some((value) => normalizeIdent(value) === target)) return true;
+      return aircrafts.some((aircraft) => aircraft.isWaitlist && normalizeIdent(aircraft.registration) === target);
+    },
+    [rules.studentWaitlistAircraftIdents, aircrafts],
+  );
+  const waitlistSelected = isWaitlistAircraft(aircraftIdent);
+
+  // A lista de espera só pode ser usada quando NENHUM avião real comporta o voo no
+  // horário escolhido — se algum estiver livre, barramos a passagem para a etapa 2.
+  const waitlistFreeAircraft = useMemo(() => {
+    if (!waitlistSelected || !flightDate || !startTime) return null;
+    for (const aircraft of aircrafts) {
+      if (aircraft.isWaitlist || isWaitlistAircraft(aircraft.registration)) continue;
+      const intervals = getOccupiedIntervals(aircraft.registration, flightDate);
+      if (slotFitsIntervals(intervals, rules, flightDate, timeToMinutes(startTime), durationMinutes)) {
+        return aircraft.registration;
+      }
+    }
+    return null;
+  }, [waitlistSelected, aircrafts, isWaitlistAircraft, getOccupiedIntervals, rules, flightDate, startTime, durationMinutes]);
+  const waitlistBlocked = Boolean(waitlistFreeAircraft);
+
   // Disponibilidade dos slots é avaliada com a duração MÍNIMA do dia: assim um horário
   // que só comporta um voo mais curto continua aparecendo, e o tempo de voo se ajusta.
   const minDurationMinutes = useMemo(() => minDurationFor(rules, flightDate), [rules, flightDate]);
@@ -1586,10 +1621,11 @@ export function StudentScheduleTab() {
       flexibilityMinutes,
       notes: bookingNotes.trim() || undefined,
     });
-    showToast({ variant: "success", message: "Solicitação enviada como Pendente." });
     setBookingOpen(false);
     setZeroCreditConfirmOpen(false);
     setBookingNotes("");
+    // Modal (não toast): informa que é uma solicitação e o prazo da resposta da escola.
+    setBookingSuccess({ waitlist: waitlistSelected });
     invalidateAndReload();
   }
 
@@ -1780,7 +1816,7 @@ export function StudentScheduleTab() {
           )}
           {mode === "booking" && (
             <button type="button" onClick={() => openBookingAt()} className="inline-flex h-9 shrink-0 items-center rounded-lg bg-sky-600 px-3 text-xs font-semibold text-white hover:bg-sky-500 sm:h-[38px] sm:px-4 sm:text-sm">
-              + Marcar voo
+              + Solicitar voo
             </button>
           )}
         </>
@@ -1954,6 +1990,43 @@ export function StudentScheduleTab() {
         />
       )}
 
+      {/* Confirmação pós-solicitação (substitui o toast em todos os cenários) */}
+      {bookingSuccess && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4">
+          <div className="w-full max-w-md space-y-4 rounded-2xl border border-emerald-700/50 bg-slate-900 p-5 shadow-2xl">
+            <div>
+              <h3 className="font-semibold text-emerald-300">Solicitação de agendamento enviada</h3>
+              {bookingSuccess.waitlist ? (
+                <>
+                  <p className="mt-2 text-sm text-slate-300">
+                    Sua solicitação de agendamento foi registrada com sucesso na <strong>lista de espera</strong>.
+                  </p>
+                  <p className="mt-2 rounded-lg border border-amber-700/40 bg-amber-900/20 p-3 text-sm text-amber-200">
+                    O voo poderá ser confirmado a depender de ajustes ou cancelamentos de outros voos — até{" "}
+                    <strong>12h antes do voo</strong> você receberá a <strong>confirmação ou o cancelamento</strong> da
+                    solicitação.
+                  </p>
+                </>
+              ) : (
+                <p className="mt-2 text-sm text-slate-300">
+                  Sua solicitação de agendamento foi registrada com sucesso. Até <strong>12h antes do voo</strong> você
+                  receberá a <strong>confirmação ou o cancelamento</strong> da solicitação.
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setBookingSuccess(null)}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+              >
+                Entendi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Aviso da exceção "1h com crédito zerado" */}
       {zeroCreditConfirmOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4">
@@ -2104,6 +2177,23 @@ export function StudentScheduleTab() {
               </div>
             )}
 
+            {/* Lista de espera: contexto + barreira quando existe avião livre no horário */}
+            {waitlistSelected && !waitlistBlocked && (
+              <div className="rounded-lg border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-200">
+                Você está agendando na <strong>lista de espera</strong>: este horário não garante o voo — a
+                solicitação poderá ser confirmada conforme ajustes ou cancelamentos de outros voos.
+              </div>
+            )}
+            {waitlistSelected && waitlistBlocked && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
+                <span className="mt-0.5 shrink-0">⚠</span>
+                <span>
+                  O avião <strong>{waitlistFreeAircraft}</strong> está livre neste horário. A lista de espera só pode
+                  ser usada quando <strong>todos os aviões estiverem ocupados</strong> — agende diretamente no avião disponível.
+                </span>
+              </div>
+            )}
+
             {/* Blocked aircraft warning */}
             {blockedSlots.some((s) => s.aircraftRegistration === aircraftIdent) && (
               <div className="flex items-center gap-2 rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-300">
@@ -2201,6 +2291,18 @@ export function StudentScheduleTab() {
             </>)}
 
             {bookingStep === 2 && (<>
+            {/* Aviso da lista de espera — a confirmação depende de ajustes/cancelamentos */}
+            {waitlistSelected && (
+              <div className="rounded-xl border border-amber-700/40 bg-amber-900/20 p-3 text-xs text-amber-200">
+                <p className="font-semibold">Solicitação para a LISTA DE ESPERA</p>
+                <p className="mt-1 text-amber-100/90">
+                  Você está solicitando um voo para a <strong>lista de espera</strong>. Ele poderá ser confirmado a
+                  depender de ajustes ou cancelamentos de outros voos. Até <strong>12h antes do voo</strong> você
+                  receberá a confirmação ou o cancelamento da solicitação.
+                </p>
+              </div>
+            )}
+
             {/* Resumo do voo escolhido na etapa 1 */}
             <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-3 text-xs">
               <div className="flex items-center justify-between gap-2">
@@ -2281,6 +2383,7 @@ export function StudentScheduleTab() {
                         dateTooEarly ||
                         noSlotsForDay ||
                         startTimeInvalid ||
+                        waitlistBlocked ||
                         durationOptions.length === 0 ||
                         bookingCreditCheck.blocked
                       }
@@ -2301,6 +2404,7 @@ export function StudentScheduleTab() {
                         dateTooEarly ||
                         noSlotsForDay ||
                         startTimeInvalid ||
+                        waitlistBlocked ||
                         bookingCreditCheck.blocked
                       }
                       onClick={() => void submitBooking()}

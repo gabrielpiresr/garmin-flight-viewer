@@ -52,6 +52,9 @@ const NoticesTab = lazy(() => import("./NoticesTab").then((module) => ({ default
 const HelpCenterAdminTab = lazy(() =>
   import("./HelpCenterAdminTab").then((module) => ({ default: module.HelpCenterAdminTab })),
 );
+const OnboardingSettingsPanel = lazy(() =>
+  import("./OnboardingSettingsPanel").then((module) => ({ default: module.OnboardingSettingsPanel })),
+);
 const AdminSignaturesTab = lazy(() =>
   import("./AdminSignaturesTab").then((module) => ({ default: module.AdminSignaturesTab })),
 );
@@ -94,7 +97,7 @@ type AdminSection =
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "exercises" | "flight-review";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -433,6 +436,15 @@ const CONTENTS_TABS = [
     ),
   },
   {
+    id: "student-manual",
+    label: "Manual do Aluno",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
+      </svg>
+    ),
+  },
+  {
     id: "exercises",
     label: "Critérios",
     icon: (
@@ -502,6 +514,7 @@ const CONTENTS_ROUTES = [
   { id: "manuais-internos", path: "/admin/conteudos/manuais-internos" },
   { id: "help", path: "/admin/conteudos/central-ajuda", aliases: ["/admin/configuracoes/central-ajuda"] },
   { id: "instructor-help", path: "/admin/conteudos/manual-instrutor" },
+  { id: "student-manual", path: "/admin/conteudos/manual-aluno", aliases: ["/admin/configuracoes/onboarding"] },
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
   { id: "flight-review", path: "/admin/conteudos/flight-review", aliases: ["/admin/flight-review"] },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
@@ -522,7 +535,6 @@ const SETTINGS_ROUTES = [
   { id: "badges", path: "/admin/configuracoes/badges" },
   { id: "tracks", path: "/admin/configuracoes/trilhas" },
   { id: "financeiro", path: "/admin/configuracoes/financeiro" },
-  { id: "onboarding", path: "/admin/configuracoes/onboarding" },
   { id: "indique-ganhe", path: "/admin/configuracoes/indique-ganhe" },
   { id: "roles", path: "/admin/configuracoes/roles" },
   { id: "propostas", path: "/admin/configuracoes/propostas" },
@@ -563,7 +575,6 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   badges: "Badges",
   tracks: "Trilhas",
   financeiro: "Financeiro",
-  onboarding: "Onboarding",
   "indique-ganhe": "Indique e ganhe",
   roles: "Roles",
   propostas: "Propostas",
@@ -591,6 +602,7 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   "manuais-internos": "contents.manuais-internos",
   help: "contents.ajuda",
   "instructor-help": "contents.ajuda-instrutor",
+  "student-manual": "settings.onboarding",
   exercises: "contents.exercicios",
   "flight-review": "flight-review",
 };
@@ -962,6 +974,9 @@ export function AdminLayout() {
               ) : null}
               {openedContentsTabs.has("instructor-help") ? (
                 <div hidden={contentsTab !== "instructor-help"}><LazyTab><HelpCenterAdminTab audience="instructor" /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("student-manual") ? (
+                <div hidden={contentsTab !== "student-manual"}><LazyTab><OnboardingSettingsPanel /></LazyTab></div>
               ) : null}
               {openedContentsTabs.has("exercises") ? (
                 <div hidden={contentsTab !== "exercises"}><LazyTab><TrainingExercisesTab /></LazyTab></div>

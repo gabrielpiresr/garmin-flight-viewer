@@ -90,6 +90,11 @@ export type FlightScheduleRules = {
   maxBookingLeadDays: number;
   /** Matrículas (agendas SAGA) OCULTAS para o aluno na escala — ele não vê nem agenda nelas. */
   studentHiddenAircraftIdents: string[];
+  /**
+   * Agendas (SAGA) que funcionam como LISTA DE ESPERA: o aluno só consegue agendar nelas
+   * quando nenhum avião real está livre no horário; a confirmação depende de ajustes/cancelamentos.
+   */
+  studentWaitlistAircraftIdents: string[];
 };
 
 export type EmailNotificationRule = {
@@ -192,6 +197,7 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   minBookingLeadDays: 0,
   maxBookingLeadDays: 365,
   studentHiddenAircraftIdents: [],
+  studentWaitlistAircraftIdents: [],
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
@@ -342,6 +348,9 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       maxBookingLeadDays: normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
       studentHiddenAircraftIdents: Array.isArray(raw.schedule?.studentHiddenAircraftIdents)
         ? [...new Set(raw.schedule.studentHiddenAircraftIdents.map((value) => String(value).trim().toUpperCase()).filter(Boolean))]
+        : [],
+      studentWaitlistAircraftIdents: Array.isArray(raw.schedule?.studentWaitlistAircraftIdents)
+        ? [...new Set(raw.schedule.studentWaitlistAircraftIdents.map((value) => String(value).trim().toUpperCase()).filter(Boolean))]
         : [],
     },
     scheduleStudentHelp: normalizeScheduleStudentHelp(

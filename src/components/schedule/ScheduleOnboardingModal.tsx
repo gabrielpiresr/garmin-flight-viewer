@@ -47,19 +47,10 @@ export function ScheduleOnboardingModal({ steps, onComplete }: ScheduleOnboardin
     >
       <div className="relative flex max-h-[92dvh] w-full max-w-lg flex-col rounded-t-2xl border border-slate-700 bg-slate-900 shadow-xl sm:max-h-[88vh] sm:rounded-2xl">
         <div className="shrink-0 border-b border-slate-800 px-4 py-3 sm:px-5">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-medium uppercase tracking-widest text-sky-400/90">
-              Primeiro acesso · {index + 1} de {steps.length}
-            </p>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void finish()}
-              className="text-xs text-slate-500 transition hover:text-slate-300 disabled:opacity-50"
-            >
-              Pular
-            </button>
-          </div>
+          {/* Sem opção de pular: o aluno precisa passar por todos os passos no primeiro acesso. */}
+          <p className="text-xs font-medium uppercase tracking-widest text-sky-400/90">
+            Primeiro acesso · {index + 1} de {steps.length}
+          </p>
           <div className="mt-2 flex justify-center gap-1.5">
             {steps.map((_, i) => (
               <span

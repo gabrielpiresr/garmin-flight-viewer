@@ -3,6 +3,8 @@ import { DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { listManeuverCatalog } from "../lib/maneuversDb";
 import { listTrainingExercises } from "../lib/trainingExercisesDb";
 import { renderRichContent } from "../lib/maneuverContent";
+import { openManeuverCatalogPdf } from "../lib/maneuverPdf";
+import { getPdfBrand } from "../lib/pdfBrand";
 import type { ManeuverCatalog } from "../types/maneuver";
 import type { TrainingExercise } from "../types/trainingExercise";
 import type { TrainingMission, TrainingMissionType } from "../types/trainingTrack";
@@ -138,6 +140,23 @@ export function ManobrasTab({
     return catalog.articles.filter((a) => allowedArticleIds.has(a.id));
   }, [allowedArticleIds, catalog.articles]);
 
+  const exportCatalog = useMemo<ManeuverCatalog>(() => {
+    const articleIdsForExport = new Set(scopedArticles.map((article) => article.id));
+    const sectionIds = new Set(scopedArticles.map((article) => article.sectionId));
+    const subsectionIds = new Set(
+      scopedArticles
+        .map((article) => article.subsectionId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return {
+      sections: catalog.sections.filter((section) => sectionIds.has(section.id)),
+      subsections: catalog.subsections.filter(
+        (subsection) => sectionIds.has(subsection.sectionId) && subsectionIds.has(subsection.id),
+      ),
+      articles: catalog.articles.filter((article) => articleIdsForExport.has(article.id)),
+    };
+  }, [catalog.articles, catalog.sections, catalog.subsections, scopedArticles]);
+
   const filteredArticles = useMemo(() => {
     const term = normalize(query.trim());
     if (!term) return scopedArticles;
@@ -270,8 +289,23 @@ export function ManobrasTab({
       {/* Top bar: mission context or search */}
       {mission ? (
         <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-sky-400/80">Missão</p>
-          <h2 className="mt-1 text-lg font-semibold text-slate-100">{mission.name}</h2>
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-sky-400/80">Missão</p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-100">{mission.name}</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => openManeuverCatalogPdf(exportCatalog, { title: `Manobras - ${mission.name}`, brand: getPdfBrand() })}
+              disabled={loading || exportCatalog.articles.length === 0}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-sky-700/50 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16V8m0 8-3-3m3 3 3-3M5 20h14" />
+              </svg>
+              Baixar PDF
+            </button>
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <span className="rounded-full border border-slate-700 bg-slate-800/60 px-3 py-1 text-xs font-medium text-slate-300">
               {MISSION_TYPE_LABEL[mission.type]}
@@ -296,13 +330,26 @@ export function ManobrasTab({
               {introText ??
                 "Consulte procedimentos, sequências, erros comuns e referências publicadas pela escola."}
             </p>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800"
-            >
-              Atualizar
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => openManeuverCatalogPdf(exportCatalog, { title: "Manual de manobras", brand: getPdfBrand() })}
+                disabled={loading || exportCatalog.articles.length === 0}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-sky-700/50 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-300 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16V8m0 8-3-3m3 3 3-3M5 20h14" />
+                </svg>
+                Baixar PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800"
+              >
+                Atualizar
+              </button>
+            </div>
           </div>
           <input
             value={query}

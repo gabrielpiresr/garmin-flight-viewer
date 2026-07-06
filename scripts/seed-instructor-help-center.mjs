@@ -149,9 +149,50 @@ async function upsertArticle(sectionId, article) {
   console.log(`    ✓ article ${article.order}: created (${article.title})`);
 }
 
+async function listAllDocuments(collectionId) {
+  const documents = [];
+  let offset = 0;
+  while (true) {
+    const res = await db.listDocuments(DATABASE_ID, collectionId, [
+      Query.equal("school_id", [SCHOOL_ID]),
+      Query.limit(100),
+      Query.offset(offset),
+    ]);
+    documents.push(...res.documents);
+    if (documents.length >= res.total) break;
+    offset += res.documents.length;
+  }
+  return documents;
+}
+
+async function cleanupObsoleteContent() {
+  const validSectionTitles = new Set(INSTRUCTOR_HELP_SECTIONS.map((section) => section.title));
+  const validArticleTitles = new Set(
+    INSTRUCTOR_HELP_SECTIONS.flatMap((section) => section.articles.map((article) => article.title)),
+  );
+
+  const sections = await listAllDocuments(SECTIONS_COL_ID);
+  for (const section of sections) {
+    if (!validSectionTitles.has(section.title)) {
+      await db.deleteDocument(DATABASE_ID, SECTIONS_COL_ID, section.$id);
+      console.log(`  ✗ removed obsolete section: ${section.title}`);
+    }
+  }
+
+  const articles = await listAllDocuments(ARTICLES_COL_ID);
+  for (const article of articles) {
+    if (!validArticleTitles.has(article.title)) {
+      await db.deleteDocument(DATABASE_ID, ARTICLES_COL_ID, article.$id);
+      console.log(`  ✗ removed obsolete article: ${article.title}`);
+    }
+  }
+}
+
 async function main() {
   console.log("=== Seed Instructor Help Center ===");
-  console.log(`Importing ${INSTRUCTOR_HELP_SECTIONS.length} sections...\n`);
+  console.log("Cleaning obsolete sections and articles...\n");
+  await cleanupObsoleteContent();
+  console.log(`\nImporting ${INSTRUCTOR_HELP_SECTIONS.length} sections...\n`);
   for (const section of INSTRUCTOR_HELP_SECTIONS) {
     const sectionId = await upsertSection(section);
     for (const article of section.articles) {

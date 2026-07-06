@@ -3,6 +3,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { listOnboardingSteps } from "../lib/onboardingDb";
 import { openOnboardingPdf } from "../lib/onboardingPdf";
+import { getPdfBrand } from "../lib/pdfBrand";
 import { SlideRenderer } from "../components/onboarding/SlideLayouts";
 import type { MediaPosition, OnboardingStep, SlideLayout } from "../types/onboarding";
 import type { ManeuverRichContent } from "../types/maneuver";
@@ -196,7 +197,7 @@ export function OnboardingPresentationPage() {
           <BackButton />
           <div className="flex items-center gap-2">
             <button
-              onClick={() => openOnboardingPdf(steps)}
+              onClick={() => openOnboardingPdf(steps, { title: "Manual do aluno", brand: getPdfBrand() })}
               className="flex items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-300 backdrop-blur-sm transition hover:bg-slate-800"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

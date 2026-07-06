@@ -7,6 +7,8 @@ export type PublicScheduleAircraft = {
   registration: string;
   modelId: string;
   imageUrl: string | null;
+  /** Agenda de LISTA DE ESPERA (modo SAGA) — "avião virtual" para solicitações sem vaga. */
+  isWaitlist?: boolean;
 };
 
 export type PublicScheduleFlight = {

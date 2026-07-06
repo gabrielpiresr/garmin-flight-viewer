@@ -1,6 +1,8 @@
 import type { OnboardingStep } from "../types/onboarding";
 import { getOnboardingImageUrl } from "./onboardingDb";
 import { richContentToHtml } from "./maneuverContent";
+import type { PdfBrand } from "./pdfBrand";
+import { getPdfBrandLogoSrc } from "./pdfBrand";
 
 function esc(value: string | null | undefined): string {
   return String(value ?? "")
@@ -19,9 +21,18 @@ function sanitizeRichHtml(html: string | null | undefined): string {
     .replace(/javascript:/gi, "");
 }
 
-export function openOnboardingPdf(steps: OnboardingStep[]): void {
+export function openOnboardingPdf(
+  steps: OnboardingStep[],
+  options: { title?: string; brand?: PdfBrand } = {},
+): void {
   if (steps.length === 0) return;
 
+  const title = options.title ?? "Manual do aluno";
+  const logoSrc = getPdfBrandLogoSrc(options.brand);
+  const schoolName = options.brand?.schoolName || "Escola de Aviacao";
+  const primary = options.brand?.primaryColor || "#0369a1";
+  const accent = options.brand?.accentColor || "#0f766e";
+  const generatedAt = new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
   const pages = steps
     .map((step, idx) => {
       const imageUrl = step.imageFileId ? getOnboardingImageUrl(step.imageFileId) : "";
@@ -45,7 +56,7 @@ export function openOnboardingPdf(steps: OnboardingStep[]): void {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Onboarding</title>
+  <title>${esc(title)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -59,6 +70,43 @@ export function openOnboardingPdf(steps: OnboardingStep[]): void {
       max-width: 1120px;
       margin: 0 auto;
       padding: 20px;
+    }
+    .cover-page {
+      min-height: calc(100vh - 40px);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border: 1px solid #e2e8f0;
+      border-radius: 18px;
+      background: #fff;
+      padding: 42px;
+      margin-bottom: 14px;
+      page-break-after: always;
+    }
+    .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand-name { color: #475569; font-size: 13px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+    .logo { max-height: 78px; max-width: 220px; object-fit: contain; }
+    .cover-mark { width: 92px; height: 8px; border-radius: 999px; background: linear-gradient(90deg, ${esc(primary)}, ${esc(accent)}); }
+    .cover-title { max-width: 760px; }
+    .cover-eyebrow {
+      margin-bottom: 12px;
+      color: ${esc(primary)};
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .cover-title h1 { font-size: 52px; line-height: 1.08; letter-spacing: 0; }
+    .cover-subtitle { margin-top: 16px; max-width: 620px; color: #475569; font-size: 17px; }
+    .cover-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    .cover-meta span {
+      border: 1px solid #cbd5e1;
+      border-radius: 999px;
+      background: #fff;
+      padding: 6px 12px;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
     }
     .page {
       background: #fff;
@@ -142,6 +190,7 @@ export function openOnboardingPdf(steps: OnboardingStep[]): void {
     @media print {
       body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .container { max-width: none; padding: 0; }
+      .cover-page { min-height: calc(100vh - 1.8cm); border-radius: 0; margin: 0; border: none; padding: 0; }
       .page { border-radius: 0; margin: 0; border: none; }
       .image-wrap { max-height: 250px; }
       .image-wrap img { max-width: 90%; max-height: 250px; }
@@ -152,6 +201,25 @@ export function openOnboardingPdf(steps: OnboardingStep[]): void {
 </head>
 <body>
   <main class="container">
+    <section class="cover-page">
+      <div class="brand-row">
+        <div>
+          <div class="cover-mark"></div>
+          <p class="brand-name">${esc(schoolName)}</p>
+        </div>
+        ${logoSrc ? `<img src="${esc(logoSrc)}" class="logo" alt="" />` : ""}
+      </div>
+      <div class="cover-title">
+        <p class="cover-eyebrow">Manual de boas-vindas</p>
+        <h1>${esc(title)}</h1>
+        <p class="cover-subtitle">Apresentacao organizada em etapas para orientar o aluno no primeiro acesso e na rotina da escola.</p>
+        <div class="cover-meta">
+          <span>${steps.length} etapas</span>
+          <span>Gerado em ${esc(generatedAt)}</span>
+        </div>
+      </div>
+      <p class="brand-name">${esc(schoolName)}</p>
+    </section>
     ${pages}
   </main>
   <script>

@@ -47,7 +47,7 @@ export function defaultOnboardingStepsForMode(mode: ScheduleMode): ScheduleOnboa
     step(
       "how-book",
       "Como marcar um voo",
-      "1. Toque em + Marcar voo ou em um horário livre na agenda.\n2. Escolha a aeronave, a data e o horário de acionamento.\n3. Defina a duração do voo e confirme.\n4. Seu pedido fica pendente até a escola confirmar.",
+      "1. Toque em + Solicitar voo ou em um horário livre na agenda.\n2. Escolha a aeronave, a data e o horário de acionamento.\n3. Defina a duração do voo e confirme.\n4. Seu pedido fica pendente até a escola confirmar.",
       1,
     ),
     step(

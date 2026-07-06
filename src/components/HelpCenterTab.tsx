@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { findHighlightRange } from "../lib/adminSearchIndex";
 import { listHelpCatalog } from "../lib/helpCenterDb";
+import { openHelpCatalogPdf } from "../lib/helpCenterPdf";
 import { safeRenderRichContent } from "../lib/maneuverContent";
+import { getPdfBrand } from "../lib/pdfBrand";
 import type { HelpArticle, HelpCatalog, HelpCenterAudience, HelpSection } from "../types/helpCenter";
 import { Skeleton } from "./ui/Skeleton";
 
@@ -535,8 +537,23 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
   return (
     <section className={`${className} mx-auto min-w-0 space-y-5`}>
       <div className="overflow-hidden rounded-2xl border border-slate-700/60 bg-slate-900/50">
-        <div className="border-b border-slate-800 px-4 py-3 md:px-5">
-          <SearchField id="help-search" value={query} placeholder={copy.searchPlaceholder} onChange={setQuery} />
+        <div className="flex flex-col gap-3 border-b border-slate-800 px-4 py-3 md:px-5 lg:flex-row lg:items-center">
+          <div className="min-w-0 flex-1">
+            <SearchField id="help-search" value={query} placeholder={copy.searchPlaceholder} onChange={setQuery} />
+          </div>
+          {audience === "instructor" ? (
+            <button
+              type="button"
+              onClick={() => openHelpCatalogPdf(catalog, { audience: "instructor", title: "Manual do instrutor", brand: getPdfBrand() })}
+              disabled={loading || catalog.sections.length === 0}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-700/50 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16V8m0 8-3-3m3 3 3-3M5 20h14" />
+              </svg>
+              Baixar PDF
+            </button>
+          ) : null}
         </div>
         {bodyContent}
       </div>

@@ -453,7 +453,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
   {
     order: 8,
     title: "Onboarding e ground do aluno",
-    description: "Orientação inicial do aluno antes de avançar nos voos.",
+    description: "Orientação inicial do aluno, ground e primeira hora de voo.",
     articles: [
       {
         order: 1,
@@ -489,22 +489,15 @@ export const INSTRUCTOR_HELP_SECTIONS = [
           ["bullet", ["Quem faz", "Quando acontece", "Conteúdo mínimo", "Onde registrar"]],
         ],
       },
-    ],
-  },
-  {
-    order: 9,
-    title: "Primeira hora de voo do aluno",
-    description: "Procedimentos para a primeira hora de voo.",
-    articles: [
       {
-        order: 1,
+        order: 4,
         title: "Objetivo da primeira hora",
         summary: "Apresentar a rotina de voo e dar segurança ao aluno.",
         tags: ["primeira hora", "inicio"],
         blocks: [["paragraph", "Apresentar a rotina de voo, entender o perfil do aluno e dar segurança para o início da formação."]],
       },
       {
-        order: 2,
+        order: 5,
         title: "Antes do voo",
         summary: "O que explicar ao aluno antes da primeira hora.",
         tags: ["primeira hora", "briefing"],
@@ -520,7 +513,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
         ],
       },
       {
-        order: 3,
+        order: 6,
         title: "Durante o voo",
         summary: "O que observar na primeira hora de voo.",
         tags: ["primeira hora", "observacao"],
@@ -536,7 +529,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
         ],
       },
       {
-        order: 4,
+        order: 7,
         title: "Depois do voo",
         summary: "Ações do instrutor após a primeira hora.",
         tags: ["primeira hora", "debriefing"],
@@ -552,9 +545,9 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 10,
+    order: 9,
     title: "Voo solo",
-    description: "Critérios, processo e restrições para voo solo.",
+    description: "Critérios, processo e restrições para voo solo e navegação solo.",
     articles: [
       {
         order: 1,
@@ -608,15 +601,8 @@ export const INSTRUCTOR_HELP_SECTIONS = [
           ]],
         ],
       },
-    ],
-  },
-  {
-    order: 11,
-    title: "Navegação solo",
-    description: "Critérios e processo para navegação solo.",
-    articles: [
       {
-        order: 1,
+        order: 4,
         title: "Quando considerar navegação solo",
         summary: "Critérios mínimos para navegação solo.",
         tags: ["navegacao", "solo"],
@@ -631,7 +617,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
         ],
       },
       {
-        order: 2,
+        order: 5,
         title: "Planejamento obrigatório",
         summary: "Itens mínimos do planejamento de navegação.",
         tags: ["navegacao", "planejamento"],
@@ -650,7 +636,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
         ],
       },
       {
-        order: 3,
+        order: 6,
         title: "Processo de navegação solo",
         summary: "Fluxo de aprovação e execução da navegação solo.",
         tags: ["navegacao", "processo"],
@@ -670,7 +656,98 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 12,
+    order: 10,
+    title: "Abastecimento",
+    description: "Lançamento e controle de abastecimentos no sistema.",
+    articles: [
+      {
+        order: 1,
+        title: "Objetivo do abastecimento",
+        summary: "Por que registrar abastecimentos na escola.",
+        tags: ["abastecimento", "combustivel"],
+        blocks: [
+          ["paragraph", "Registrar cada abastecimento garante rastreabilidade de custos, controle por aeronave e conferência financeira da operação."],
+          ["bullet", [
+            "Histórico por aeronave",
+            "Conferência de gastos com combustível",
+            "Vínculo com voos e alunos, quando aplicável",
+            "Base para relatórios administrativos",
+          ]],
+        ],
+      },
+      {
+        order: 2,
+        title: "Como lançar abastecimento no sistema",
+        summary: "Passo a passo no menu Abastecimentos.",
+        tags: ["abastecimento", "sistema"],
+        blocks: [
+          ["ordered", [
+            "Acessar o menu Abastecimentos",
+            "Clicar em Novo abastecimento",
+            "Preencher data, hora e aeródromo",
+            "Selecionar responsável e aeronave",
+            "Informar litros, valor por litro e forma de pagamento",
+            "Escolher o tipo de combustível",
+            "Vincular aluno, se a escola usar esse campo",
+            "Salvar o lançamento",
+          ]],
+        ],
+      },
+      {
+        order: 3,
+        title: "Campos obrigatórios do lançamento",
+        summary: "Dados mínimos que não podem faltar.",
+        tags: ["abastecimento", "campos"],
+        blocks: [
+          ["bullet", [
+            "Data e hora do abastecimento",
+            "Aeródromo",
+            "Responsável pelo lançamento",
+            "Aeronave abastecida",
+            "Quantidade em litros",
+            "Valor por litro e valor total",
+            "Forma de pagamento",
+            "Tipo de combustível (AVGAS, Jet A ou Jet A1)",
+          ]],
+        ],
+      },
+      {
+        order: 4,
+        title: "Regras e responsabilidades",
+        summary: "Boas práticas no registro de combustível.",
+        tags: ["abastecimento", "regras"],
+        blocks: [
+          ["bullet", [
+            "Lançar o abastecimento no mesmo dia, sempre que possível",
+            "Conferir prefixo da aeronave antes de salvar",
+            "Não lançar valores estimados sem avisar a coordenação",
+            "Corrigir lançamentos errados em vez de criar duplicados",
+            "Em dúvida sobre pagamento ou nota fiscal, chamar a coordenação",
+            "Alunos só devem aparecer no lançamento quando a escola definir essa regra",
+          ]],
+        ],
+      },
+      {
+        order: 5,
+        title: "Erros comuns no abastecimento",
+        summary: "Falhas frequentes e como evitar.",
+        tags: ["abastecimento", "erros"],
+        blocks: [
+          ["bullet", [
+            "Aeronave errada selecionada",
+            "Litros ou valor por litro invertidos",
+            "Data diferente do abastecimento real",
+            "Forma de pagamento incorreta",
+            "Tipo de combustível incompatível com a aeronave",
+            "Lançamento duplicado do mesmo cupom",
+            "Esquecer de salvar após editar um registro",
+          ]],
+        ],
+      },
+    ],
+  },
+  {
+    order: 11,
     title: "Endosso pré-check",
     description: "Processo de endosso antes do check.",
     articles: [
@@ -709,7 +786,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 13,
+    order: 12,
     title: "Situações especiais",
     description: "Procedimentos para casos que exigem atenção extra.",
     articles: [
@@ -780,7 +857,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 14,
+    order: 13,
     title: "Ocorrências",
     description: "O que é ocorrência e como proceder.",
     articles: [
@@ -837,7 +914,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 15,
+    order: 14,
     title: "Comunicação com alunos",
     description: "Canais permitidos e regras de comunicação.",
     articles: [
@@ -870,7 +947,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 16,
+    order: 15,
     title: "Repasse de comissão aos instrutores",
     description: "Como funciona o cálculo e pagamento de repasses.",
     articles: [
@@ -965,7 +1042,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
     ],
   },
   {
-    order: 17,
+    order: 16,
     title: "Pendências para preencher com a coordenação",
     description: "Itens a validar e tabela de acompanhamento.",
     articles: [
@@ -984,9 +1061,9 @@ export const INSTRUCTOR_HELP_SECTIONS = [
             "Processo de briefing",
             "Processo de debriefing",
             "Padrão de preenchimento da ficha do aluno",
-            "Critérios para voo solo",
-            "Critérios para navegação solo",
+            "Critérios para voo solo e navegação solo",
             "Critérios para endosso pré-check",
+            "Processo de abastecimento",
             "Limites meteorológicos",
             "Limites de aluno",
             "Limites por aeronave",
@@ -1014,7 +1091,7 @@ export const INSTRUCTOR_HELP_SECTIONS = [
             "Lançamento de voo — Pendente",
             "Limites operacionais — Pendente",
             "Voo solo — Pendente",
-            "Navegação solo — Pendente",
+            "Abastecimento — Pendente",
             "Pré-check — Pendente",
             "Situações especiais — Pendente",
             "Comunicação — Pendente",

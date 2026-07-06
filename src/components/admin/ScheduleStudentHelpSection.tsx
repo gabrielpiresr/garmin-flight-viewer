@@ -15,7 +15,11 @@ type ScheduleStudentHelpSectionProps = {
 };
 
 function newId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+  // randomUUID não existe em contexto não-seguro (http) — fallback evita o clique "morto".
+  const random = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+  return `${prefix}-${random}`;
 }
 
 export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: ScheduleStudentHelpSectionProps) {
@@ -88,6 +92,83 @@ export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: S
     });
   }
 
+  // Rascunho de item NOVO (ainda fora da lista salva): o editor precisa ser
+  // renderizado à parte — dentro do map ele nunca aparece e o clique parecia "morto".
+  const newStepDraftOpen = Boolean(draftStep && !helpConfig.onboardingSteps.some((s) => s.id === draftStep.id));
+  const newFaqDraftOpen = Boolean(draftFaq && !helpConfig.customFaqs.some((f) => f.id === draftFaq.id));
+
+  const stepEditorForm = draftStep ? (
+    <div className="space-y-3">
+      <input
+        value={draftStep.title}
+        onChange={(e) => setDraftStep({ ...draftStep, title: e.target.value })}
+        placeholder="Título do passo"
+        className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+      />
+      <ManeuverRichTextEditor
+        value={draftStep.descriptionJson}
+        placeholder="Descreva este passo..."
+        onChange={(descriptionJson) => setDraftStep({ ...draftStep, descriptionJson })}
+        onUploadMedia={async (file) => {
+          const { data } = await uploadManeuverMedia(file);
+          return data;
+        }}
+      />
+      <div className="flex gap-2">
+        <button type="button" onClick={saveStepDraft} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white">
+          Salvar passo
+        </button>
+        <button
+          type="button"
+          onClick={() => { setEditingStepId(null); setDraftStep(null); }}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400"
+        >
+          Cancelar
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  const faqEditorForm = draftFaq ? (
+    <div className="space-y-3">
+      <input
+        value={draftFaq.title}
+        onChange={(e) => setDraftFaq({ ...draftFaq, title: e.target.value })}
+        placeholder="Pergunta"
+        className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+      />
+      <ManeuverRichTextEditor
+        value={draftFaq.answerJson}
+        placeholder="Escreva a resposta..."
+        onChange={(answerJson) => setDraftFaq({ ...draftFaq, answerJson })}
+        onUploadMedia={async (file) => {
+          const { data } = await uploadManeuverMedia(file);
+          return data;
+        }}
+      />
+      <label className="flex items-center gap-2 text-xs text-slate-400">
+        <input
+          type="checkbox"
+          checked={draftFaq.enabled}
+          onChange={(e) => setDraftFaq({ ...draftFaq, enabled: e.target.checked })}
+        />
+        Ativa para alunos
+      </label>
+      <div className="flex gap-2">
+        <button type="button" onClick={saveFaqDraft} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white">
+          Salvar pergunta
+        </button>
+        <button
+          type="button"
+          onClick={() => { setEditingFaqId(null); setDraftFaq(null); }}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400"
+        >
+          Cancelar
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 space-y-6">
       <div>
@@ -124,35 +205,7 @@ export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: S
             .map((step, index, arr) => (
               <div key={step.id} className="rounded-lg border border-slate-700/60 bg-slate-900/50 p-3">
                 {editingStepId === step.id && draftStep ? (
-                  <div className="space-y-3">
-                    <input
-                      value={draftStep.title}
-                      onChange={(e) => setDraftStep({ ...draftStep, title: e.target.value })}
-                      placeholder="Título do passo"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
-                    />
-                    <ManeuverRichTextEditor
-                      value={draftStep.descriptionJson}
-                      placeholder="Descreva este passo..."
-                      onChange={(descriptionJson) => setDraftStep({ ...draftStep, descriptionJson })}
-                      onUploadMedia={async (file) => {
-                        const { data } = await uploadManeuverMedia(file);
-                        return data;
-                      }}
-                    />
-                    <div className="flex gap-2">
-                      <button type="button" onClick={saveStepDraft} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white">
-                        Salvar passo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setEditingStepId(null); setDraftStep(null); }}
-                        className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
+                  stepEditorForm
                 ) : (
                   <div className="flex flex-wrap items-start gap-2">
                     <div className="min-w-0 flex-1">
@@ -179,7 +232,12 @@ export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: S
             ))}
         </div>
 
-        {helpConfig.onboardingSteps.length < 5 ? (
+        {/* Editor do passo NOVO — rascunho ainda fora da lista salva */}
+        {newStepDraftOpen ? (
+          <div className="rounded-lg border border-sky-700/50 bg-slate-900/50 p-3">{stepEditorForm}</div>
+        ) : null}
+
+        {helpConfig.onboardingSteps.length < 5 && !newStepDraftOpen ? (
           <button
             type="button"
             onClick={() => {
@@ -281,43 +339,7 @@ export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: S
             .map((faq, index, arr) => (
               <div key={faq.id} className="rounded-lg border border-slate-700/60 bg-slate-900/50 p-3">
                 {editingFaqId === faq.id && draftFaq ? (
-                  <div className="space-y-3">
-                    <input
-                      value={draftFaq.title}
-                      onChange={(e) => setDraftFaq({ ...draftFaq, title: e.target.value })}
-                      placeholder="Pergunta"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
-                    />
-                    <ManeuverRichTextEditor
-                      value={draftFaq.answerJson}
-                      placeholder="Escreva a resposta..."
-                      onChange={(answerJson) => setDraftFaq({ ...draftFaq, answerJson })}
-                      onUploadMedia={async (file) => {
-                        const { data } = await uploadManeuverMedia(file);
-                        return data;
-                      }}
-                    />
-                    <label className="flex items-center gap-2 text-xs text-slate-400">
-                      <input
-                        type="checkbox"
-                        checked={draftFaq.enabled}
-                        onChange={(e) => setDraftFaq({ ...draftFaq, enabled: e.target.checked })}
-                      />
-                      Ativa para alunos
-                    </label>
-                    <div className="flex gap-2">
-                      <button type="button" onClick={saveFaqDraft} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white">
-                        Salvar pergunta
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setEditingFaqId(null); setDraftFaq(null); }}
-                        className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
+                  faqEditorForm
                 ) : (
                   <div className="flex flex-wrap items-start gap-2">
                     <div className="min-w-0 flex-1">
@@ -345,7 +367,12 @@ export function ScheduleStudentHelpSection({ schedule, helpConfig, onChange }: S
             ))}
         </div>
 
-        {helpConfig.customFaqs.length < 10 ? (
+        {/* Editor da pergunta NOVA — rascunho ainda fora da lista salva */}
+        {newFaqDraftOpen ? (
+          <div className="rounded-lg border border-sky-700/50 bg-slate-900/50 p-3">{faqEditorForm}</div>
+        ) : null}
+
+        {helpConfig.customFaqs.length < 10 && !newFaqDraftOpen ? (
           <button
             type="button"
             onClick={() => {

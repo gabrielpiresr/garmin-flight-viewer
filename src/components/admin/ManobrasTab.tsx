@@ -14,12 +14,14 @@ import {
   updateManeuverSection,
   uploadManeuverMedia,
 } from "../../lib/maneuversDb";
+import { openManeuverCatalogPdf } from "../../lib/maneuverPdf";
 import {
   createEmptyRichContent,
   renderRichContent,
   richContentToHtml,
   richContentToPlainText,
 } from "../../lib/maneuverContent";
+import { getPdfBrand } from "../../lib/pdfBrand";
 import type {
   ManeuverArticle,
   ManeuverCatalog,
@@ -467,8 +469,17 @@ export function ManobrasTab() {
               Arraste seções e artigos para reordenar. As alterações da seção salvam automaticamente.
             </p>
           </div>
-          {canEdit ? (
-            <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => openManeuverCatalogPdf(catalog, { title: "Manual de manobras", includeDrafts: true, brand: getPdfBrand() })}
+              disabled={loading || catalog.sections.length === 0}
+              className="rounded-lg border border-sky-700/50 px-4 py-2 text-sm font-medium text-sky-300 transition hover:bg-sky-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Baixar PDF
+            </button>
+            {canEdit ? (
+              <>
               <button
                 type="button"
                 disabled={saving}
@@ -485,8 +496,9 @@ export function ManobrasTab() {
               >
                 Novo artigo
               </button>
-            </div>
-          ) : null}
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
 

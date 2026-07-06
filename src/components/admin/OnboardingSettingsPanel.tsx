@@ -11,6 +11,8 @@ import {
 } from "../../lib/onboardingDb";
 import { uploadManeuverMedia } from "../../lib/maneuversDb";
 import { createEmptyRichContent, richContentToHtml, richContentToPlainText } from "../../lib/maneuverContent";
+import { openOnboardingPdf } from "../../lib/onboardingPdf";
+import { getPdfBrand } from "../../lib/pdfBrand";
 import { hasRichTextContent } from "../../lib/richContentFields";
 import type { OnboardingStep, OnboardingStepInput } from "../../types/onboarding";
 import { ManeuverRichTextEditor } from "./ManeuverRichTextEditor";
@@ -177,14 +179,32 @@ export function OnboardingSettingsPanel() {
     <section className="space-y-6 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">Onboarding</h2>
+          <h2 className="text-lg font-semibold text-slate-100">Manual do aluno</h2>
           <p className="mt-1 text-sm text-slate-400">
             Exibido no primeiro acesso de alunos aprovados. Cada etapa é uma tela com título, descrição e imagem opcional.
           </p>
         </div>
         <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
+            <a
+              href="/apresentacao"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2.5 text-sm text-slate-300 transition hover:bg-slate-800"
+            >
+              Abrir manual
+            </a>
+            <button
+              type="button"
+              onClick={() => openOnboardingPdf(steps, { title: "Manual do aluno", brand: getPdfBrand() })}
+              disabled={steps.length === 0}
+              className="inline-flex items-center justify-center rounded-xl border border-cyan-700/50 bg-cyan-500/10 px-4 py-2.5 text-sm text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Baixar PDF
+            </button>
+          </div>
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2.5">
-            <span className="text-sm text-slate-300">Ativar onboarding</span>
+            <span className="text-sm text-slate-300">Ativar no primeiro acesso</span>
             <input
               type="checkbox"
               checked={enabled}

@@ -14,12 +14,14 @@ import {
   updateHelpSubsection,
   uploadHelpMedia,
 } from "../../lib/helpCenterDb";
+import { openHelpCatalogPdf } from "../../lib/helpCenterPdf";
 import {
   createEmptyRichContent,
   safeRenderRichContent,
   richContentToHtml,
   richContentToPlainText,
 } from "../../lib/maneuverContent";
+import { getPdfBrand } from "../../lib/pdfBrand";
 import type {
   HelpArticle,
   HelpCatalog,
@@ -462,16 +464,28 @@ export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabP
             <h2 className="text-xl font-semibold text-slate-100">{copy.title}</h2>
             <p className="mt-1 text-sm text-slate-500">{copy.description}</p>
           </div>
-          {canAction("content.edit") ? (
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={resetSectionForm} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
-              Nova seção
-            </button>
-            <button type="button" onClick={openArticleCreate} disabled={!selectedSectionId} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-cyan-500 disabled:opacity-50">
-              Novo artigo
-            </button>
+            {audience === "instructor" ? (
+              <button
+                type="button"
+                onClick={() => openHelpCatalogPdf(catalog, { audience: "instructor", title: "Manual do instrutor", includeDrafts: true, brand: getPdfBrand() })}
+                disabled={loading || catalog.sections.length === 0}
+                className="rounded-lg border border-cyan-700/50 px-4 py-2 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Baixar PDF
+              </button>
+            ) : null}
+            {canAction("content.edit") ? (
+              <>
+                <button type="button" onClick={resetSectionForm} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+                  Nova seção
+                </button>
+                <button type="button" onClick={openArticleCreate} disabled={!selectedSectionId} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-cyan-500 disabled:opacity-50">
+                  Novo artigo
+                </button>
+              </>
+            ) : null}
           </div>
-          ) : null}
         </div>
       </div>
 

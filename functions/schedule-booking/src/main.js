@@ -82,6 +82,7 @@ function defaultScheduleRules() {
     minBookingLeadDays: 0,
     maxBookingLeadDays: 365,
     studentHiddenAircraftIdents: [],
+    studentWaitlistAircraftIdents: [],
   };
 }
 
@@ -116,6 +117,10 @@ function normalizeRules(raw) {
     allowZeroCreditOneHour: raw?.allowZeroCreditOneHour === true,
     studentHiddenAircraftIdents: Array.isArray(raw?.studentHiddenAircraftIdents)
       ? [...new Set(raw.studentHiddenAircraftIdents.map((value) => normalizeRegistration(value)).filter(Boolean))]
+      : [],
+    // Preserva o texto original (é o rótulo exibido); comparações usam normalizeRegistration.
+    studentWaitlistAircraftIdents: Array.isArray(raw?.studentWaitlistAircraftIdents)
+      ? [...new Set(raw.studentWaitlistAircraftIdents.map((value) => clean(value).toUpperCase()).filter(Boolean))]
       : [],
   };
 }
@@ -367,6 +372,82 @@ function aircraftHiddenForRole(rules, registration, actorRole) {
   return hidden.includes(normalizeRegistration(registration));
 }
 
+// ─── Lista de espera ──────────────────────────────────────────────────────────
+// Agendas SAGA marcadas como lista de espera funcionam como um "avião virtual":
+// conflitos de horário valem nela (1 evento por intervalo), mas o aluno só pode
+// usá-la quando NENHUM avião real disponível consegue atender o bloco do voo.
+
+function waitlistIdents(rules) {
+  return Array.isArray(rules.studentWaitlistAircraftIdents) ? rules.studentWaitlistAircraftIdents : [];
+}
+
+function isWaitlistIdent(rules, registration) {
+  const target = normalizeRegistration(registration);
+  if (!target) return false;
+  return waitlistIdents(rules).some((ident) => normalizeRegistration(ident) === target);
+}
+
+async function listActiveAircrafts() {
+  const result = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.limit(500),
+  ]);
+  return result.documents;
+}
+
+/** Modelo usado para validar créditos na lista de espera (ela não é uma aeronave local). */
+async function waitlistFallbackModelId(rules) {
+  const aircrafts = await listActiveAircrafts().catch(() => []);
+  const candidate = aircrafts.find((doc) => doc.model_id && !isWaitlistIdent(rules, doc.registration));
+  return candidate?.model_id || null;
+}
+
+/** true quando a aeronave tem algum evento SAGA ativo sobrepondo o intervalo. */
+function sagaAircraftHasConflict(events, rules, registration, occupiedStartAt, occupiedEndAt, ignoreEventId = "") {
+  const requestedStart = Date.parse(occupiedStartAt);
+  const requestedEnd = Date.parse(occupiedEndAt);
+  const reg = normalizeRegistration(registration);
+  return events.some((event) => {
+    if (clean(event.id) === clean(ignoreEventId)) return false;
+    if (sagaEventIsCancelled(event)) return false;
+    if (normalizeRegistration(event.aircraft) !== reg) return false;
+    const times = sagaEventTimes(event, rules);
+    if (!times) return false;
+    return times.occupiedStartMs < requestedEnd && times.occupiedEndMs > requestedStart;
+  });
+}
+
+async function slotBlockedForAircraft(aircraftId, date, startMinute, endMinute) {
+  try {
+    await validateBlockedSlot(aircraftId, date, startMinute, endMinute);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Barreira da lista de espera (somente aluno): se QUALQUER avião real que o aluno pode
+ * agendar estiver livre (sem conflito e sem bloqueio) no bloco completo do voo, a
+ * solicitação na lista de espera é recusada — ele deve agendar no avião livre.
+ */
+async function validateWaitlistNoAircraftFree(events, rules, actorRole, date, blockStartMinute, blockEndMinute, occupiedStartAt, occupiedEndAt, ignoreEventId = "") {
+  if (actorRole !== "aluno") return;
+  const aircrafts = await listActiveAircrafts().catch(() => []);
+  for (const doc of aircrafts) {
+    const registration = clean(doc.registration).toUpperCase();
+    if (!registration || isWaitlistIdent(rules, registration)) continue;
+    if (aircraftHiddenForRole(rules, registration, actorRole)) continue;
+    if (sagaAircraftHasConflict(events, rules, registration, occupiedStartAt, occupiedEndAt, ignoreEventId)) continue;
+    if (await slotBlockedForAircraft(doc.$id, date, blockStartMinute, blockEndMinute)) continue;
+    fail(
+      `O avião ${registration} está livre neste horário. A lista de espera só pode ser usada quando todos os aviões estiverem ocupados — agende diretamente no avião disponível.`,
+      409,
+    );
+  }
+}
+
 /** ID SAGA numérico de um usuário local: perfil.saga_user_id ("70" ou "saga_70") ou user_id no padrão "saga_70". */
 function sagaUserIdOf(profile, userId) {
   const fromProfile = normalizeSagaUserId(profile?.saga_user_id);
@@ -440,18 +521,9 @@ function requireStudentSagaId(profile) {
 
 /** Conflito de aeronave contra os eventos ativos da agenda SAGA. */
 function validateSagaConflict(events, rules, registration, occupiedStartAt, occupiedEndAt, ignoreEventId = "") {
-  const requestedStart = Date.parse(occupiedStartAt);
-  const requestedEnd = Date.parse(occupiedEndAt);
-  const reg = normalizeRegistration(registration);
-  const conflict = events.some((event) => {
-    if (clean(event.id) === clean(ignoreEventId)) return false;
-    if (sagaEventIsCancelled(event)) return false;
-    if (normalizeRegistration(event.aircraft) !== reg) return false;
-    const times = sagaEventTimes(event, rules);
-    if (!times) return false;
-    return times.occupiedStartMs < requestedEnd && times.occupiedEndMs > requestedStart;
-  });
-  if (conflict) fail("A aeronave já possui um voo neste intervalo na agenda SAGA.", 409);
+  if (sagaAircraftHasConflict(events, rules, registration, occupiedStartAt, occupiedEndAt, ignoreEventId)) {
+    fail("A aeronave já possui um voo neste intervalo na agenda SAGA.", 409);
+  }
 }
 
 /** O aluno não pode ter outro voo ativo (em qualquer aeronave) no mesmo intervalo. */
@@ -1090,12 +1162,32 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     : flights.map((doc) => publicFlight(doc, actorId, actorRole))
   ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, actorRole));
 
+  const publicAircrafts = aircrafts.documents
+    .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, actorRole))
+    .map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null }));
+
+  // Lista de espera (modo SAGA): entra como coluna/"avião virtual" para agendamento.
+  // Créditos usam o modelo da frota — a agenda não é uma aeronave local.
+  if (rules.sagaOnlySchedule) {
+    const fallbackModelId =
+      aircrafts.documents.find((doc) => doc.model_id && !isWaitlistIdent(rules, doc.registration))?.model_id || null;
+    for (const ident of waitlistIdents(rules)) {
+      if (aircraftHiddenForRole(rules, ident, actorRole)) continue;
+      if (publicAircrafts.some((row) => normalizeRegistration(row.registration) === normalizeRegistration(ident))) continue;
+      publicAircrafts.push({
+        id: `waitlist-${normalizeRegistration(ident)}`,
+        registration: ident,
+        modelId: fallbackModelId,
+        imageUrl: null,
+        isWaitlist: true,
+      });
+    }
+  }
+
   return {
     mode: rules.mode,
     rules,
-    aircrafts: aircrafts.documents
-      .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, actorRole))
-      .map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null })),
+    aircrafts: publicAircrafts,
     flights: publicFlights,
     blockedSlots,
   };
@@ -1110,7 +1202,11 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
   if (aircraftHiddenForRole(rules, registration, actorRole)) fail("Esta aeronave não está disponível para agendamento.", 403);
-  const aircraft = await getAircraft(registration);
+  // Lista de espera: não é uma aeronave local — só existe no modo SAGA.
+  const waitlistBooking = isWaitlistIdent(rules, registration);
+  if (waitlistBooking && !rules.sagaOnlySchedule) fail("A lista de espera está disponível apenas no modo SAGA.");
+  const aircraft = waitlistBooking ? null : await getAircraft(registration);
+  const aircraftModelId = waitlistBooking ? await waitlistFallbackModelId(rules) : aircraft.model_id;
   const day = dayOfWeek(date);
   const weekend = day === 0 || day === 6;
   const minHours = weekend ? rules.weekendMinHours : rules.weekdayMinHours;
@@ -1128,14 +1224,29 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   validateBookingLeadDates(date, presentationMs, rules);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
-  await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  if (!waitlistBooking) {
+    await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  }
 
   if (rules.sagaOnlySchedule) {
     // Mesmas regras, mas o evento vive apenas na agenda SAGA — nada é salvo no sistema.
     const studentSagaId = requireStudentSagaId(student);
     const events = await listSagaEvents();
+    // A lista de espera se comporta como um avião: só um voo por intervalo nela.
     validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
     validateSagaStudentOverlap(events, rules, studentSagaId, times.occupiedStartAt, times.occupiedEndAt);
+    if (waitlistBooking) {
+      await validateWaitlistNoAircraftFree(
+        events,
+        rules,
+        actorRole,
+        date,
+        startMinute - rules.bufferBeforeMinutes,
+        startMinute + durationMinutes + rules.bufferAfterMinutes,
+        times.occupiedStartAt,
+        times.occupiedEndAt,
+      );
+    }
     // Travas de quantidade/horas valem apenas para o aluno — admin e instrutor marcam livremente.
     if (actorRole === "aluno") {
       const dailyLimitSaga = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
@@ -1151,8 +1262,8 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       validateWeeklyLimits(rules, sagaStudentWeekUsage(events, rules, studentSagaId, date), durationMinutes, weekend);
     }
     if (rules.requireCreditsForBooking) {
-      const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules);
-      const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, reserved);
+      const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules);
+      const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reserved);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -1164,6 +1275,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     const flexibilityMinutes = integer(payload.flexibilityMinutes, 0, 0, 8 * 60);
     const observation = clean(payload.notes).slice(0, 180);
     const bookingNotes = [
+      waitlistBooking ? "LISTA DE ESPERA" : "",
       "Agendado via plataforma",
       flexibilityMinutes > 0 ? `Flexibilidade: ±${clock(flexibilityMinutes)}` : "",
       observation ? `Obs: ${observation}` : "",
@@ -1205,7 +1317,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       flight: {
         id: clean(result.scheduleId),
         aircraftIdent: registration,
-        aircraftModelId: aircraft.model_id || null,
+        aircraftModelId: aircraftModelId || null,
         flightDate: date,
         presentationTime: times.presentationTime,
         startTime: times.startTime,
@@ -1328,21 +1440,38 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
-  const aircraft = await getAircraft(registration);
+  const waitlistBooking = isWaitlistIdent(rules, registration);
+  if (waitlistBooking && !rules.sagaOnlySchedule) fail("A lista de espera está disponível apenas no modo SAGA.");
+  const aircraft = waitlistBooking ? null : await getAircraft(registration);
+  const aircraftModelId = waitlistBooking ? await waitlistFallbackModelId(rules) : aircraft.model_id;
   const startMinute = parseClock(payload.startTime);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
-  await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  if (!waitlistBooking) {
+    await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  }
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   let reservedSaga = { weekdayHours: 0, weekendHours: 0 };
   if (rules.sagaOnlySchedule) {
     const events = await listSagaEvents();
     validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
+    if (waitlistBooking) {
+      await validateWaitlistNoAircraftFree(
+        events,
+        rules,
+        actorRole,
+        date,
+        startMinute - rules.bufferBeforeMinutes,
+        startMinute + durationMinutes + rules.bufferAfterMinutes,
+        times.occupiedStartAt,
+        times.occupiedEndAt,
+      );
+    }
     const profile = await getProfile(studentId);
-    reservedSaga = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraft.model_id, rules);
+    reservedSaga = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraftModelId, rules);
   } else {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
-  const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, reservedSaga);
+  const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reservedSaga);
   const freeBalanceHours = credit.rawAvailableHours;
   const zeroCreditExceptionAvailable =
     rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit);
@@ -1513,7 +1642,10 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
   if (aircraftHiddenForRole(rules, registration, actorRole)) fail("Esta aeronave não está disponível para agendamento.", 403);
-  const aircraft = await getAircraft(registration);
+  // Alteração PARA a lista de espera segue as mesmas regras da solicitação nela.
+  const waitlistBooking = isWaitlistIdent(rules, registration);
+  const aircraft = waitlistBooking ? null : await getAircraft(registration);
+  const aircraftModelId = waitlistBooking ? await waitlistFallbackModelId(rules) : aircraft.model_id;
   const day = dayOfWeek(date);
   const weekend = day === 0 || day === 6;
   const minHours = weekend ? rules.weekendMinHours : rules.weekdayMinHours;
@@ -1530,7 +1662,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   validateBookingLeadDates(date, presentationMs, rules);
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
-  await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  if (!waitlistBooking) {
+    await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
+  }
   validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt, id);
   validateSagaStudentOverlap(
     events,
@@ -1540,6 +1674,19 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     times.occupiedEndAt,
     id,
   );
+  if (waitlistBooking) {
+    await validateWaitlistNoAircraftFree(
+      events,
+      rules,
+      actorRole,
+      date,
+      startMinute - rules.bufferBeforeMinutes,
+      startMinute + durationMinutes + rules.bufferAfterMinutes,
+      times.occupiedStartAt,
+      times.occupiedEndAt,
+      id,
+    );
+  }
   if (actorRole === "aluno") {
     const studentSagaIdForLimits = clean(event.studentSagaId) || actorSagaId;
     const dailyLimit = weekend ? rules.weekendMaxFlightsPerDay : rules.weekdayMaxFlightsPerDay;
@@ -1562,9 +1709,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   if (rules.requireCreditsForBooking) {
     const studentSagaId = clean(event.studentSagaId) || actorSagaId;
     const studentUserId = clean(event.studentUserId) || (own ? actorId : null);
-    const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraft.model_id, rules, id);
+    const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules, id);
     if (studentUserId) {
-      const credit = await creditAvailable(studentUserId, aircraft.model_id, isNight, durationMinutes / 60, date, reserved);
+      const credit = await creditAvailable(studentUserId, aircraftModelId, isNight, durationMinutes / 60, date, reserved);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -1618,7 +1765,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     flight: {
       id,
       aircraftIdent: registration,
-      aircraftModelId: aircraft.model_id || null,
+      aircraftModelId: aircraftModelId || null,
       flightDate: date,
       presentationTime: times.presentationTime,
       startTime: times.startTime,

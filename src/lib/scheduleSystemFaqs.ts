@@ -145,7 +145,7 @@ export function buildSystemFaqAnswer(id: ScheduleSystemFaqId, rules: FlightSched
     }
     case "how-to-book":
       return richFromLines([
-        "1. Toque em + Marcar voo ou clique em um horário livre na agenda.",
+        "1. Toque em + Solicitar voo ou clique em um horário livre na agenda.",
         `2. Escolha a aeronave, a data e o horário. Os horários disponíveis seguem intervalos de ${rules.slotMinutes} minutos, a partir das ${rules.scheduleStartTime}.`,
         `3. Escolha a duração do voo (entre ${formatHours(rules.weekdayMinHours)} e ${formatHours(rules.weekdayMaxHours)} em dia de semana; fim de semana: ${formatHours(rules.weekendMinHours)} a ${formatHours(rules.weekendMaxHours)}).`,
         "4. Confirme o pedido. A escola analisa e confirma depois.",

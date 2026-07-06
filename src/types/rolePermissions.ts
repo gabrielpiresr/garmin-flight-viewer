@@ -221,7 +221,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.trilhas": "Configurações › Trilhas",
   "settings.exercicios": "Configurações › Critérios",
   "settings.financeiro": "Configurações › Financeiro",
-  "settings.onboarding": "Configurações › Onboarding",
+  "settings.onboarding": "Conteúdos › Manual do Aluno",
   "settings.indique-ganhe": "Configurações › Indique e ganhe",
   "settings.roles": "Configurações › Roles",
   "settings.propostas": "Configurações › Propostas",
