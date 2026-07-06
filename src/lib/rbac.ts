@@ -692,6 +692,33 @@ export async function listProfileSummariesByUserIds(
   return out;
 }
 
+// Leitura leve do apelido (nickname) por userId — usado em listas onde só o apelido importa.
+export async function listProfileNicknamesByUserIds(
+  userIds: string[],
+): Promise<Record<string, string>> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !PROFILES_COL_ID) return {};
+
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return {};
+
+  const out: Record<string, string> = {};
+  const chunkSize = 25;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const res = await databases.listDocuments(DB_ID, PROFILES_COL_ID, [
+      Query.equal("user_id", chunk),
+      Query.limit(chunk.length),
+    ]);
+    for (const doc of res.documents) {
+      const userId = (doc.user_id as string | undefined) ?? "";
+      if (!userId) continue;
+      out[userId] = (doc.nickname as string | undefined) ?? "";
+    }
+  }
+
+  return out;
+}
+
 function profileDocumentPermissions(userId: string): string[] {
   return [
     Permission.read(Role.user(userId)),

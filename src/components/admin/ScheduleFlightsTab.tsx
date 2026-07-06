@@ -29,6 +29,7 @@ import {
   MANUAL_SOURCE_PREFIX,
 } from "../../lib/scheduleGenerationDb";
 import { shortName } from "../../lib/flightDisplay";
+import { ScheduleStudentSummaryPanel } from "./ScheduleStudentSummaryPanel";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { freeBalanceForDateFromPools, isWeekendDate } from "../../lib/creditWeekday";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
@@ -2073,6 +2074,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const [error, setError] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<FlightFormDraft | null>(null);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const isMobile = useIsMobileViewport();
+  // Mobile: subaba do modal de detalhes ("Voo" = formulário, "Aluno" = resumo).
+  const [modalMobileTab, setModalMobileTab] = useState<"voo" | "aluno">("voo");
   // Bloqueio de agenda (modo SAGA): cria um evento comum no SAGA com o usuário de bloqueio.
   const [blockDraft, setBlockDraft] = useState<{
     aircraftRegistration: string;
@@ -2676,6 +2680,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       else window.clearTimeout(idleId);
     };
   }, [weekData?.students]);
+
+  // Cada abertura do modal gera um demandId novo — volta para a subaba "Voo" no mobile.
+  useEffect(() => {
+    if (formDraft) setModalMobileTab("voo");
+  }, [formDraft?.demandId]);
 
   useEffect(() => {
     const studentId = formDraft?.studentId;
@@ -3375,6 +3384,86 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  // Bloco de créditos do aluno (já exibido no modal hoje) — agora renderizado dentro
+  // da coluna/subaba de resumo do aluno. Depende de estados carregados em background.
+  function renderStudentCreditsBlock() {
+    if (!formDraft) return null;
+    return (
+      <div className="rounded-xl border border-slate-700/60 bg-slate-800/40 p-3">
+        <p className="mb-2 text-xs font-semibold text-slate-300">Créditos disponíveis do aluno</p>
+        {formStudentCreditsLoading ? (
+          <p className="text-xs text-slate-500">Carregando créditos...</p>
+        ) : formStudentCredits && formStudentCredits.length > 0 ? (
+          <div className="space-y-1">
+            {formStudentCredits.map((row) => (
+              <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
+                <span className="text-slate-300">
+                  {row.aircraftModelName}
+                  {(row.weekdayOnlyAvailableHours ?? 0) > 0.001 ? (
+                    <span className="ml-1 text-sky-400">· dos quais só seg–sex: {(row.weekdayOnlyAvailableHours ?? 0).toFixed(1)}h</span>
+                  ) : null}
+                </span>
+                <span className="text-slate-400">
+                  {/* Saldo cru (pode ser negativo) — mesma conta da aba Créditos. */}
+                  Disponível: <strong className={row.balanceHours > 0 ? "text-emerald-300" : "text-red-300"}>
+                    {row.balanceHours < 0 ? "-" : ""}{Math.floor(Math.abs(row.balanceHours))}h{String(Math.round((Math.abs(row.balanceHours) % 1) * 60)).padStart(2, "0")}
+                  </strong>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">Nenhum crédito encontrado para este aluno.</p>
+        )}
+        {(() => {
+          if (!formDraft || formStudentFutureMinutesByModel === null) return null;
+          const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
+          if (!modelId) return null;
+          const modelSummary = formStudentCredits?.find((row) => row.aircraftModelId === modelId);
+          const flightDate = formDraft.dateIso || (weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "");
+          const futureHours = Object.values(formStudentFutureMinutesByModel ?? {}).reduce(
+            (acc, minutes) => acc + minutes / 60,
+            0,
+          );
+          const globalBalanceHours = formStudentCreditTotals?.balanceHours
+            ?? (formStudentCreditTotals
+              ? Number(
+                  (
+                    formStudentCreditTotals.purchasedHours
+                    - formStudentCreditTotals.consumedHours
+                    - (formStudentCreditTotals.penaltyHours ?? 0)
+                  ).toFixed(2),
+                )
+              : modelSummary?.balanceHours ?? 0);
+          const applicableHours = formStudentCreditTotals && flightDate
+            ? freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours
+            : globalBalanceHours;
+          const freeHours = applicableHours - futureHours;
+          const fmt = (hours: number) => `${hours < 0 ? "-" : ""}${Math.floor(Math.abs(hours))}h${String(Math.round((Math.abs(hours) % 1) * 60)).padStart(2, "0")}`;
+          return (
+            <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">Horas futuras agendadas</span>
+                <strong className="text-sky-300">{fmt(futureHours)}</strong>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">
+                  Saldo aplicável ao dia{flightDate && isWeekendDate(flightDate) ? " (fds)" : ""}
+                </span>
+                <strong className={freeHours > 0 ? "text-emerald-300" : "text-red-300"}>{fmt(freeHours)}</strong>
+              </div>
+              {formStudentCreditTotals && flightDate ? (
+                <p className="text-[11px] text-slate-500">
+                  Antes de reservas futuras: {fmt(freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours)}
+                </p>
+              ) : null}
+            </div>
+          );
+        })()}
+      </div>
+    );
   }
 
   return (
@@ -4166,9 +4255,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
       {formDraft && weekData ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
-          <div className="flex max-h-[100dvh] w-full max-w-2xl flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-xl sm:border sm:border-slate-700">
-            <div className="overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
+          <div className="flex max-h-[100dvh] w-full max-w-2xl flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:max-w-3xl sm:rounded-xl sm:border sm:border-slate-700 lg:max-w-6xl">
+            {/* Cabeçalho fixo */}
+            <div className="flex flex-shrink-0 items-center justify-between border-b border-slate-700 px-4 py-3">
               <p className="text-sm font-semibold text-slate-100">{formMode === "create" ? "Novo voo" : "Editar voo"}</p>
               <button
                 type="button"
@@ -4178,6 +4267,29 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 Fechar
               </button>
             </div>
+            {/* Mobile: subabas Voo / Aluno */}
+            {isMobile ? (
+              <div className="flex flex-shrink-0 border-b border-slate-700">
+                {(["voo", "aluno"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setModalMobileTab(tab)}
+                    className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                      modalMobileTab === tab
+                        ? "border-b-2 border-violet-500 text-violet-200"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {tab === "voo" ? "Voo" : "Aluno"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {/* Corpo: formulário (esq.) + resumo do aluno (dir. no desktop / subaba no mobile) */}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {/* Coluna esquerda: formulário do voo — rola independente (55% no desktop) */}
+              <div className={`min-h-0 w-full overflow-y-auto sm:w-[55%] ${isMobile && modalMobileTab !== "voo" ? "hidden" : ""}`}>
             <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
               {(
                 <div className="md:col-span-2">
@@ -4426,80 +4538,6 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               );
             })()}
 
-            {/* Student credits — always shown when modal is open */}
-            <div className="mx-4 mb-3 rounded-xl border border-slate-700 bg-slate-800/60 p-3">
-              <p className="mb-2 text-xs font-semibold text-slate-300">Créditos disponíveis do aluno</p>
-              {formStudentCreditsLoading ? (
-                <p className="text-xs text-slate-500">Carregando créditos...</p>
-              ) : formStudentCredits && formStudentCredits.length > 0 ? (
-                <div className="space-y-1">
-                  {formStudentCredits.map((row) => (
-                    <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300">
-                        {row.aircraftModelName}
-                        {(row.weekdayOnlyAvailableHours ?? 0) > 0.001 ? (
-                          <span className="ml-1 text-sky-400">· dos quais só seg–sex: {(row.weekdayOnlyAvailableHours ?? 0).toFixed(1)}h</span>
-                        ) : null}
-                      </span>
-                      <span className="text-slate-400">
-                        {/* Saldo cru (pode ser negativo) — mesma conta da aba Créditos. */}
-                        Disponível: <strong className={row.balanceHours > 0 ? "text-emerald-300" : "text-red-300"}>
-                          {row.balanceHours < 0 ? "-" : ""}{Math.floor(Math.abs(row.balanceHours))}h{String(Math.round((Math.abs(row.balanceHours) % 1) * 60)).padStart(2, "0")}
-                        </strong>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">Nenhum crédito encontrado para este aluno.</p>
-              )}
-              {(() => {
-                if (!formDraft || formStudentFutureMinutesByModel === null) return null;
-                const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
-                if (!modelId) return null;
-                const modelSummary = formStudentCredits?.find((row) => row.aircraftModelId === modelId);
-                const flightDate = formDraft.dateIso || (weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "");
-                const futureHours = Object.values(formStudentFutureMinutesByModel ?? {}).reduce(
-                  (acc, minutes) => acc + minutes / 60,
-                  0,
-                );
-                const globalBalanceHours = formStudentCreditTotals?.balanceHours
-                  ?? (formStudentCreditTotals
-                    ? Number(
-                        (
-                          formStudentCreditTotals.purchasedHours
-                          - formStudentCreditTotals.consumedHours
-                          - (formStudentCreditTotals.penaltyHours ?? 0)
-                        ).toFixed(2),
-                      )
-                    : modelSummary?.balanceHours ?? 0);
-                const applicableHours = formStudentCreditTotals && flightDate
-                  ? freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours
-                  : globalBalanceHours;
-                const freeHours = applicableHours - futureHours;
-                const fmt = (hours: number) => `${hours < 0 ? "-" : ""}${Math.floor(Math.abs(hours))}h${String(Math.round((Math.abs(hours) % 1) * 60)).padStart(2, "0")}`;
-                return (
-                  <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Horas futuras agendadas</span>
-                      <strong className="text-sky-300">{fmt(futureHours)}</strong>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">
-                        Saldo aplicável ao dia{flightDate && isWeekendDate(flightDate) ? " (fds)" : ""}
-                      </span>
-                      <strong className={freeHours > 0 ? "text-emerald-300" : "text-red-300"}>{fmt(freeHours)}</strong>
-                    </div>
-                    {formStudentCreditTotals && flightDate ? (
-                      <p className="text-[11px] text-slate-500">
-                        Antes de reservas futuras: {fmt(freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours)}
-                      </p>
-                    ) : null}
-                  </div>
-                );
-              })()}
-            </div>
-
             {/* No modo SAGA a disponibilidade operacional local não se aplica. */}
             {!selectedAircraftHasSupply && !scheduleRules.sagaOnlySchedule ? (
               <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
@@ -4530,8 +4568,27 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 )}
               </div>
             ) : null}
+              </div>
+              {/* Coluna direita (desktop) / subaba "Aluno" (mobile): resumo do aluno */}
+              <div
+                className={`min-h-0 w-full overflow-y-auto border-slate-700 bg-slate-950/30 p-4 sm:w-[45%] sm:flex-shrink-0 sm:border-l ${
+                  isMobile ? (modalMobileTab === "aluno" ? "" : "hidden") : ""
+                }`}
+              >
+                <ScheduleStudentSummaryPanel
+                  studentUserId={
+                    formDraft.studentId && !formDraft.studentId.startsWith(SAGA_STUDENT_ID_PREFIX)
+                      ? formDraft.studentId
+                      : null
+                  }
+                  studentLabel={formDraft.studentLabel}
+                  viewer={user ? { userId: user.id, role: user.role } : { userId: "", role: "admin" }}
+                  creditsSlot={renderStudentCreditsBlock()}
+                />
+              </div>
+            </div>
 
-            <div className="flex flex-col justify-end gap-2 border-t border-slate-700 px-4 py-3 sm:flex-row sm:items-center">
+            <div className="flex flex-shrink-0 flex-col justify-end gap-2 border-t border-slate-700 px-4 py-3 sm:flex-row sm:items-center">
               <button
                 type="button"
                 onClick={() => setFormDraft(null)}
@@ -4565,7 +4622,6 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               >
                 {formSaving ? "Salvando..." : "Salvar voo"}
               </button>
-            </div>
             </div>
           </div>
         </div>
