@@ -835,6 +835,8 @@ const COLORS: Record<string, string> = {
 
 const TOUCHDOWN_DEDUPE_MS = 75_000;
 const TGL_TAKEOFF_WINDOW_MS = 90_000;
+const TGL_TOUCHDOWN_OVERLAP_PRE_MS = 45_000;
+const TGL_TOUCHDOWN_OVERLAP_LIFT_TOLERANCE_MS = 5_000;
 
 interface TakeoffGroup { rotIdx: number; liftIdx: number; ftIdx: number | null; }
 interface TouchdownGroup { tdIdx: number; }
@@ -879,6 +881,20 @@ function segmentPrimaryX(segment: FlightSegment): number {
       ? segment.events.find((event) => event.type === "rotation") ?? segment.events.find((event) => event.type === "liftoff")
       : segment.events.find((event) => event.type === "touchdown");
   return primary?.xMs ?? segment.startX;
+}
+
+function isTakeoffPartOfTglTouchdown(data: ChartRow[], tdIdx: number, takeoff: TakeoffGroup): boolean {
+  const tdX = data[tdIdx]!.x;
+  const rotDelta = data[takeoff.rotIdx]!.x - tdX;
+  const liftDelta = data[takeoff.liftIdx]!.x - tdX;
+
+  if (rotDelta > 0 && rotDelta <= TGL_TAKEOFF_WINDOW_MS) return true;
+
+  return (
+    rotDelta >= -TGL_TOUCHDOWN_OVERLAP_PRE_MS &&
+    liftDelta >= -TGL_TOUCHDOWN_OVERLAP_LIFT_TOLERANCE_MS &&
+    liftDelta <= TGL_TAKEOFF_WINDOW_MS
+  );
 }
 
 export function detectFlightSegments(
@@ -1085,10 +1101,7 @@ export function detectFlightSegments(
 
     if (isTgl) {
       takeoffs.forEach((takeoff, takeoffIdx) => {
-        if (
-          takeoff.rotIdx > td.tdIdx &&
-          data[takeoff.rotIdx]!.x - data[td.tdIdx]!.x <= TGL_TAKEOFF_WINDOW_MS
-        ) {
+        if (isTakeoffPartOfTglTouchdown(data, td.tdIdx, takeoff)) {
           tglTakeoffs.add(takeoffIdx);
         }
       });

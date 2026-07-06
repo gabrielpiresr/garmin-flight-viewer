@@ -24,6 +24,18 @@ export type AircraftBaseHours = {
   maintenanceDue: AircraftMaintenanceDue[];
 };
 
+/**
+ * Dados de frota + manutenção carregados de uma só vez. A Home e a Escala precisam
+ * exatamente do mesmo conjunto (aeronaves, OS, itens de programa por modelo, horas-base),
+ * então centralizar aqui evita as consultas duplicadas que rodavam nos dois lugares.
+ */
+export type FleetMaintenanceContext = {
+  baseHours: AircraftBaseHours[];
+  aircrafts: Aircraft[];
+  workOrders: MaintenanceWorkOrder[];
+  programItemsByModel: Map<string, MaintenanceProgramItem[]>;
+};
+
 function flightDateMs(flight: SavedFlightListItem): number {
   const date = flight.flight_date ?? flight.created_at;
   const time = flight.start_time ? `T${flight.start_time}` : "";
@@ -85,7 +97,7 @@ function maintenanceDueList(modelItems: MaintenanceProgramItem[]): AircraftMaint
   return due.sort((a, b) => b.intervalHours - a.intervalHours);
 }
 
-export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftBaseHours[]> {
+export async function loadFleetMaintenanceContext(schoolId: string): Promise<FleetMaintenanceContext> {
   const [aircrafts, orders, flightsResult, corrections] = await Promise.all([
     listAircrafts(schoolId),
     listWorkOrders().catch(() => [] as MaintenanceWorkOrder[]),
@@ -126,7 +138,7 @@ export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftB
   }
 
   const now = Date.now();
-  return aircrafts.map((aircraft) => {
+  const baseHours = aircrafts.map((aircraft) => {
     const aircraftOrders = ordersByAircraftId.get(aircraft.id) ?? [];
     const aircraftCorrections = correctionsByAircraftId.get(aircraft.id) ?? [];
     const opening = resolveOpening(aircraft, aircraftOrders, aircraftCorrections);
@@ -145,4 +157,11 @@ export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftB
       maintenanceDue: maintenanceDueList(programItemsByModel.get(aircraft.model_id) ?? []),
     };
   });
+
+  return { baseHours, aircrafts, workOrders: orders, programItemsByModel };
+}
+
+/** Wrapper fino para quem só precisa das horas-base (mantém a API existente). */
+export async function loadAircraftBaseHours(schoolId: string): Promise<AircraftBaseHours[]> {
+  return (await loadFleetMaintenanceContext(schoolId)).baseHours;
 }

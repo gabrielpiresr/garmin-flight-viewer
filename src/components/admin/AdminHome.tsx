@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
-import { listAircrafts } from "../../lib/aircraftDb";
+import { getPublicScheduleCached, loadFleetMaintenanceContextCached } from "../../lib/scheduleCache";
 import { getAdminDashboardSummary, listAdminFlightReports } from "../../lib/adminUsersDb";
-import { loadAircraftBaseHours, type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
-import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
-import { getPublicSchedule, type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
+import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
 import { useAuth } from "../../contexts/AuthContext";
 import type { AdminDashboardAircraftUtilization, AdminDashboardData } from "../../types/adminDashboard";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
@@ -435,20 +434,17 @@ export function AdminHome(_props: Props) {
     setInstructorSummary([]);
     setError(null);
     try {
-      const [dashboard, aircrafts, baseHoursRows, workOrders, schedule] = await Promise.all([
+      // Uma única carga de frota+manutenção (aeronaves, OS, itens de programa por modelo,
+      // horas-base) compartilhada com a Escala — antes a Home refazia listAircrafts,
+      // listWorkOrders e listProgramItemsByModel que o loadAircraftBaseHours já buscava.
+      const [dashboard, fleet, schedule] = await Promise.all([
         getAdminDashboardSummary({ ...monthPeriod, upcomingLimit: 1, alertLimit: EMPTY_ALERT_LIMIT }),
-        listAircrafts(schoolId),
-        loadAircraftBaseHours(schoolId),
-        listWorkOrders().catch(() => [] as MaintenanceWorkOrder[]),
-        getPublicSchedule(monthPeriod.toDate, scheduleEnd).catch(() => ({ flights: [] as PublicScheduleFlight[] })),
+        loadFleetMaintenanceContextCached(schoolId),
+        getPublicScheduleCached(monthPeriod.toDate, scheduleEnd).catch(() => ({ flights: [] as PublicScheduleFlight[] })),
       ]);
 
+      const { baseHours: baseHoursRows, aircrafts, workOrders, programItemsByModel } = fleet;
       const airplaneRows = aircrafts.filter((aircraft) => aircraft.type === "aviao");
-      const uniqueModelIds = [...new Set(airplaneRows.map((aircraft) => aircraft.model_id).filter(Boolean))];
-      const programEntries = await Promise.all(
-        uniqueModelIds.map(async (modelId) => [modelId, await listProgramItemsByModel(modelId).catch(() => [])] as const),
-      );
-      const programItemsByModel = new Map(programEntries);
       const baseByRegistration = new Map(baseHoursRows.map((row) => [normalizeRegistration(row.registration), row]));
       const utilizationByRegistration = new Map(dashboard.aircraftUtilization.map((row) => [normalizeRegistration(row.aircraftIdent), row]));
       const workOrdersByAircraftId = new Map<string, MaintenanceWorkOrder[]>();

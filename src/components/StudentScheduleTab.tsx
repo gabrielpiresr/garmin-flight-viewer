@@ -10,6 +10,7 @@ import {
   type PublicScheduleAircraft,
   type PublicScheduleFlight,
 } from "../lib/scheduleBookingDb";
+import { getPublicScheduleCached, invalidatePublicSchedule } from "../lib/scheduleCache";
 import { getStudentCreditStatement } from "../lib/creditsDb";
 import { freeBalanceForDateFromPools, isWeekendDate } from "../lib/creditWeekday";
 import { getAvailableFlightCreditPackages } from "../lib/flightCreditSalesDb";
@@ -1082,6 +1083,7 @@ export function StudentScheduleTab() {
   // Credits from creditsDb
   const [creditSummaries, setCreditSummaries] = useState<StudentCreditModelSummary[]>([]);
   const [creditTotals, setCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
+  const [weekdayOnlyPurchasedHours, setWeekdayOnlyPurchasedHours] = useState(0);
   const [creditsLoading, setCreditsLoading] = useState(false);
   const creditsLoadedRef = useRef(false);
   const creditsFetchingRef = useRef(false);
@@ -1115,7 +1117,7 @@ export function StudentScheduleTab() {
   const fetchWeek = useCallback((ws: string): Promise<WeekBundle> => {
     const inFlight = weekFetchRef.current.get(ws);
     if (inFlight) return inFlight;
-    const promise = getPublicSchedule(ws, addDays(ws, 6))
+    const promise = getPublicScheduleCached(ws, addDays(ws, 6))
       .then((data) => {
         weekCacheRef.current.set(ws, data);
         return data;
@@ -1172,6 +1174,7 @@ export function StudentScheduleTab() {
   // Após qualquer mutação (solicitar/alterar/cancelar) o cache é descartado e tudo recarrega.
   const invalidateAndReload = useCallback(() => {
     weekCacheRef.current.clear();
+    invalidatePublicSchedule(); // limpa também o cache de módulo (senão o refetch volta dados velhos)
     creditsLoadedRef.current = false;
     futureLoadedRef.current = false;
     setReloadKey((value) => value + 1);
@@ -1193,10 +1196,16 @@ export function StudentScheduleTab() {
         });
         setCreditSummaries(stmt.summaries);
         setCreditTotals(stmt.totals);
+        setWeekdayOnlyPurchasedHours(
+          stmt.purchases
+            .filter((purchase) => purchase.weekdayOnly)
+            .reduce((acc, purchase) => acc + purchase.hours, 0),
+        );
         creditsLoadedRef.current = true;
       } catch {
         setCreditSummaries([]);
         setCreditTotals(null);
+        setWeekdayOnlyPurchasedHours(0);
         creditsLoadedRef.current = false;
       } finally {
         creditsFetchingRef.current = false;
@@ -1273,8 +1282,12 @@ export function StudentScheduleTab() {
       freeHours: pools.freeHours,
       weekdayOnlyRemaining: pools.weekdayOnlyRemaining,
       anyDayRemaining: pools.anyDayRemaining,
+      anyDayAvailableHours: creditTotals?.anyDayAvailableHours ?? 0,
+      weekdayOnlyAvailableHours: creditTotals?.weekdayOnlyAvailableHours ?? 0,
     };
   }, [aircrafts, aircraftIdent, flightDate, futureOwnFlights, creditSummaries, creditTotals]);
+
+  const showWeekdayCredits = weekdayOnlyPurchasedHours > 0.001;
 
   // Créditos: bloqueia envio no modal quando saldo livre não cobre o voo (inclui exceção "1h zerado").
   const bookingCreditCheck = useMemo(() => {
@@ -2088,26 +2101,28 @@ export function StudentScheduleTab() {
                         <span className="text-slate-400">Crédito Geral</span>
                         <strong
                           className={
-                            (selectedModelBalance?.anyDayRemaining ?? 0) > 0.001
+                            (selectedModelBalance?.anyDayAvailableHours ?? 0) > 0.001
                               ? "text-emerald-300"
                               : "text-slate-300"
                           }
                         >
-                          {formatDecimalHours(selectedModelBalance?.anyDayRemaining ?? 0)}
+                          {formatDecimalHours(selectedModelBalance?.anyDayAvailableHours ?? 0)}
                         </strong>
                       </div>
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Crédito dia de semana</span>
-                        <strong
-                          className={
-                            (selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001
-                              ? "text-sky-300"
-                              : "text-slate-300"
-                          }
-                        >
-                          {formatDecimalHours(selectedModelBalance?.weekdayOnlyRemaining ?? 0)}
-                        </strong>
-                      </div>
+                      {showWeekdayCredits ? (
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-400">Crédito dia de semana</span>
+                          <strong
+                            className={
+                              (selectedModelBalance?.weekdayOnlyAvailableHours ?? 0) > 0.001
+                                ? "text-sky-300"
+                                : "text-slate-300"
+                            }
+                          >
+                            {formatDecimalHours(selectedModelBalance?.weekdayOnlyAvailableHours ?? 0)}
+                          </strong>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
                       <div className="flex items-center justify-between text-xs">
@@ -2135,7 +2150,9 @@ export function StudentScheduleTab() {
                           {futureLoading ? "…" : formatDecimalHours(selectedModelBalance?.freeHours ?? 0)}
                         </strong>
                       </div>
-                      {(selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001 && isWeekendDate(flightDate) ? (
+                      {showWeekdayCredits &&
+                      (selectedModelBalance?.weekdayOnlyRemaining ?? 0) > 0.001 &&
+                      isWeekendDate(flightDate) ? (
                         <p className="text-[11px] text-amber-300">
                           Você tem {formatDecimalHours(selectedModelBalance?.weekdayOnlyRemaining ?? 0)} válidas só em dia de semana; não valem neste dia.
                         </p>

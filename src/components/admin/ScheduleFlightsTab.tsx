@@ -9,7 +9,6 @@ import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/no
 import { cancelScheduleFlight, confirmScheduleFlight } from "../../lib/scheduleBookingDb";
 import {
   cancelSagaScheduleDirect,
-  listSagaSchedulesDirect,
   syncSagaScheduleEvent,
   upsertSagaScheduleDirect,
   type SagaDirectScheduleItem,
@@ -23,7 +22,6 @@ import {
 } from "../../lib/scheduleConflicts";
 import {
   AUTO_SOURCE_PREFIX,
-  getScheduleWeekData,
   generateScheduleWeekPickerOptions,
   getCurrentWeekStart,
   getScheduleWeekPickerOptions,
@@ -34,7 +32,14 @@ import { shortName } from "../../lib/flightDisplay";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { freeBalanceForDateFromPools, isWeekendDate } from "../../lib/creditWeekday";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
-import { loadAircraftBaseHours, type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import {
+  getSagaScheduleEventsCached,
+  getScheduleWeekDataCached,
+  invalidateSagaScheduleEvents,
+  loadFleetMaintenanceContextCached,
+  peekSagaScheduleEvents,
+} from "../../lib/scheduleCache";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
 import type { StudentCreditModelSummary, StudentCreditStatement } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
@@ -2197,29 +2202,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   };
   const weekBundleCacheRef = useRef(new Map<string, WeekBundle>());
   const weekFetchInFlightRef = useRef(new Map<string, Promise<WeekBundle>>());
-  const sagaEventsCacheRef = useRef<{ at: number; events: SagaDirectScheduleItem[] } | null>(null);
-  const sagaEventsInFlightRef = useRef<Promise<SagaDirectScheduleItem[]> | null>(null);
   // Opções de filtro já apresentadas — preserva a seleção do usuário entre semanas.
   const seenFilterAircraftRef = useRef<Set<string>>(new Set());
   const seenFilterInstructorsRef = useRef<Set<string>>(new Set());
 
-  // Busca de eventos SAGA com dedupe: uma chamada cobre 3 meses e é compartilhada
-  // entre navegação e prefetch (evita duas buscas lentas em paralelo).
-  const getSagaEvents = useCallback(async (force = false): Promise<SagaDirectScheduleItem[]> => {
-    const cache = sagaEventsCacheRef.current;
-    if (!force && cache && Date.now() - cache.at < WEEK_BUNDLE_TTL_MS) return cache.events;
-    if (!force && sagaEventsInFlightRef.current) return sagaEventsInFlightRef.current;
-    const promise = listSagaSchedulesDirect(3)
-      .then((events) => {
-        sagaEventsCacheRef.current = { at: Date.now(), events };
-        return events;
-      })
-      .finally(() => {
-        sagaEventsInFlightRef.current = null;
-      });
-    sagaEventsInFlightRef.current = promise;
-    return promise;
-  }, []);
+  // Busca de eventos SAGA (3 meses numa chamada) via cache compartilhado em módulo:
+  // sobrevive à troca de aba e pode ser aquecido pelo prefetch pós-login.
+  const getSagaEvents = useCallback(
+    (force = false): Promise<SagaDirectScheduleItem[]> => getSagaScheduleEventsCached(3, { force }),
+    [],
+  );
 
   const fetchWeekBundle = useCallback(
     async (weekStart: string, weekOption?: ScheduleWeekOption, force = false): Promise<WeekBundle> => {
@@ -2233,13 +2225,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
       const promise = (async (): Promise<WeekBundle> => {
         const [data, rules, aircraftRows] = await Promise.all([
-          getScheduleWeekData({
+          getScheduleWeekDataCached({
             weekStart,
             actorUserId,
             actorRole,
             scope: "flights-only",
             week: weekOption,
-          }),
+          }, { force }),
           getSchoolRules().catch(() => ({ schedule: DEFAULT_FLIGHT_SCHEDULE_RULES })),
           listAircrafts(schoolId).catch(() => []),
         ]);
@@ -2428,7 +2420,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     setLoadingWeekData(false);
     lastErrorToastRef.current = null;
     weekBundleCacheRef.current.clear();
-    sagaEventsCacheRef.current = null;
+    invalidateSagaScheduleEvents();
     seenFilterAircraftRef.current.clear();
     seenFilterInstructorsRef.current.clear();
   }, [actorUserId]);
@@ -2726,17 +2718,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       // Horas de voo futuras já agendadas (modo SAGA): bloco − buffers, por modelo.
       if (!scheduleRules.sagaOnlySchedule) return;
       try {
-        let sagaCache = sagaEventsCacheRef.current;
-        if (!sagaCache || Date.now() - sagaCache.at > WEEK_BUNDLE_TTL_MS) {
-          const events = await listSagaSchedulesDirect(3);
-          sagaCache = { at: Date.now(), events };
-          sagaEventsCacheRef.current = sagaCache;
-        }
+        const events = await getSagaScheduleEventsCached(3);
         if (cancelled) return;
         const modelByReg = new Map(activeAircrafts.map((aircraft) => [aircraft.registration.toUpperCase(), aircraft.model_id]));
         const now = Date.now();
         const minutesByModel: Record<string, number> = {};
-        for (const event of sagaCache.events) {
+        for (const event of events) {
           if (sagaEventIsCancelled(event)) continue;
           if ((event.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${event.studentSagaId}`) !== studentId) continue;
           if (formDraft.sagaScheduleId && event.id === formDraft.sagaScheduleId) continue; // não conta o próprio voo em edição
@@ -2809,8 +2796,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   useEffect(() => {
     if (!actorUserId || aircraftBaseHoursRequestedRef.current) return;
     aircraftBaseHoursRequestedRef.current = true;
-    void loadAircraftBaseHours(schoolId)
-      .then((rows) => setAircraftBaseHours(new Map(rows.map((row) => [row.registration.trim().toUpperCase(), row]))))
+    void loadFleetMaintenanceContextCached(schoolId)
+      .then(({ baseHours }) => setAircraftBaseHours(new Map(baseHours.map((row) => [row.registration.trim().toUpperCase(), row]))))
       .catch(() => setAircraftBaseHours(new Map())); // falha: projeção mostra "—" em vez de skeleton eterno
   }, [actorUserId]);
 
@@ -2822,7 +2809,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     const now = Date.now();
     type ProjEvent = { reg: string; date: string; hours: number };
     const events: ProjEvent[] = [];
-    const sagaEvents = scheduleRules.sagaOnlySchedule ? sagaEventsCacheRef.current?.events : null;
+    const sagaEvents = scheduleRules.sagaOnlySchedule ? peekSagaScheduleEvents(3) : null;
     if (sagaEvents) {
       for (const event of sagaEvents) {
         if (sagaEventIsCancelled(event)) continue;

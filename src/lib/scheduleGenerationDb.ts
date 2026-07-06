@@ -8,7 +8,7 @@ import {
 } from "./appwrite";
 import { listAircrafts } from "./aircraftDb";
 import { listAssignableInstructors, listStudentIdentitiesForSchedule } from "./rbac";
-import { listAllSavedFlights, listScheduledFlightsForWeek, normalizeScheduleFlightStatus, type SavedFlightListItem } from "./flightsDb";
+import { listSavedFlights, listScheduledFlightsForWeek, normalizeScheduleFlightStatus, type SavedFlightListItem } from "./flightsDb";
 import { getSchoolRules } from "./schoolRulesDb";
 import type {
   AircraftWeekSupply,
@@ -315,12 +315,28 @@ async function listExistingGeneratedFlights(
   rows = listed.data;
 
   if (rows.length === 0) {
-    const { data } = await listAllSavedFlights(viewer);
-    rows = (data ?? []).filter(
-      (row) =>
-        row.source_filename.startsWith(`${AUTO_SOURCE_PREFIX}${weekStart}`) ||
-        row.source_filename.startsWith(`${MANUAL_SOURCE_PREFIX}${weekStart}`),
-    );
+    // Fallback para dados legados sem índice de semana. listSavedFlights vem ordenado
+    // por flight_date desc; os voos gerados desta semana têm flight_date dentro dela,
+    // então paramos assim que a página mais antiga já é anterior a weekStart (não há
+    // mais match adiante) — antes isto baixava todo o histórico e filtrava no cliente.
+    const autoPrefix = `${AUTO_SOURCE_PREFIX}${weekStart}`;
+    const manualPrefix = `${MANUAL_SOURCE_PREFIX}${weekStart}`;
+    const collected: SavedFlightListItem[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page += 1) {
+      const res = await listSavedFlights(viewer, { limit: 100, cursor });
+      if (res.error) throw res.error;
+      const pageRows = res.data ?? [];
+      for (const row of pageRows) {
+        if (row.source_filename.startsWith(autoPrefix) || row.source_filename.startsWith(manualPrefix)) {
+          collected.push(row);
+        }
+      }
+      const oldest = pageRows[pageRows.length - 1];
+      if (!res.nextCursor || pageRows.length === 0 || (oldest?.flight_date ?? "") < weekStart) break;
+      cursor = res.nextCursor;
+    }
+    rows = collected;
   }
 
   const out: ExistingScheduledFlight[] = [];

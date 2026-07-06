@@ -6,6 +6,7 @@ import { PendingApprovalScreen } from "./components/PendingApprovalScreen";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 import { useOnboardingGate } from "./hooks/useOnboardingGate";
 import { refreshBrandCache } from "./lib/schoolRulesDb";
+import { warmScheduleForUser } from "./lib/scheduleCache";
 
 const MainLayout = lazy(() => import("./components/MainLayout").then((module) => ({ default: module.MainLayout })));
 const AdminLayout = lazy(() => import("./components/admin/AdminLayout").then((module) => ({ default: module.AdminLayout })));
@@ -58,8 +59,22 @@ export default function App() {
   const isApresentacaoRoute = window.location.pathname === "/apresentacao";
 
   // After login, refresh brand cache and reapply theme with latest settings.
+  // Também pré-carrega a aba Escala em segundo plano (ocioso), para que ao abri-la
+  // ela já esteja pronta — best-effort, sem competir com o primeiro paint da Home.
   useEffect(() => {
-    if (user) void refreshBrandCache();
+    if (!user) return;
+    void refreshBrandCache();
+    const warm = () => void warmScheduleForUser(user);
+    const w = window as typeof window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const usedIdle = typeof w.requestIdleCallback === "function";
+    const handle = usedIdle ? w.requestIdleCallback!(warm, { timeout: 3000 }) : window.setTimeout(warm, 1200);
+    return () => {
+      if (usedIdle) w.cancelIdleCallback?.(handle);
+      else window.clearTimeout(handle);
+    };
   }, [user?.id]);
 
   if (isOfflineLogbookRoute) {
