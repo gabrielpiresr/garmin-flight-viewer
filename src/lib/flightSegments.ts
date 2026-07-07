@@ -854,6 +854,10 @@ function isKnownReliableAglAircraft(aircraftIdent: string | null | undefined): b
   return Boolean(normalized && normalized !== "PSDZA");
 }
 
+function isKnownUnreliableAglAircraft(aircraftIdent: string | null | undefined): boolean {
+  return normalizeAircraftIdent(aircraftIdent) === "PSDZA";
+}
+
 function chooseTouchdownRepresentative(
   data: ChartRow[],
   takeoffs: TakeoffGroup[],
@@ -909,9 +913,10 @@ export function detectFlightSegments(
   const SAMPLE_MS = estimateSampleIntervalMs(data);
   const aircraftIdent = options.aircraftIdent ?? null;
   const reliableAglAircraft = isKnownReliableAglAircraft(aircraftIdent);
+  const knownUnreliableAglAircraft = isKnownUnreliableAglAircraft(aircraftIdent);
   const aglAvailable = hasAglSamples(data);
-  const aglIsUnreliable = reliableAglAircraft ? false : hasUnreliableAgl(data);
-  const allowAltitudeFallback = !reliableAglAircraft && (aglIsUnreliable || !aglAvailable);
+  const aglIsUnreliable = knownUnreliableAglAircraft || (reliableAglAircraft ? false : hasUnreliableAgl(data));
+  const allowAltitudeFallback = knownUnreliableAglAircraft || (!reliableAglAircraft && (aglIsUnreliable || !aglAvailable));
   const requireAglForTgl = reliableAglAircraft && aglAvailable;
 
   const takeoffs: TakeoffGroup[] = [];
