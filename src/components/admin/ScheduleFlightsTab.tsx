@@ -370,6 +370,61 @@ function calendarStudentTitle(label: string, isOutsideGenerator: boolean | undef
   return isOutsideGenerator ? `*${short}` : short;
 }
 
+/**
+ * Linha secundária do card. Oculta o dado que já está no cabeçalho da coluna para
+ * não duplicar: agrupado por avião → mostra só o instrutor; por instrutor → só o avião.
+ */
+function calendarItemSubtitle(
+  item: Pick<CalendarFlightItem, "aircraftRegistration" | "instructorLabel">,
+  groupBy: ScheduleGroupBy,
+): string {
+  const instructor = shortName(item.instructorLabel) || "Sem instrutor";
+  if (groupBy === "aircraft") return instructor;
+  if (groupBy === "instructor") return item.aircraftRegistration;
+  return `${item.aircraftRegistration} · ${instructor}`;
+}
+
+/** Minuto do dia atual (0–1439), atualizado a cada minuto — para a linha de "agora". */
+function useNowMinutes(): number {
+  const [now, setNow] = useState(() => {
+    const d = new Date();
+    return d.getHours() * 60 + d.getMinutes();
+  });
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const d = new Date();
+      setNow(d.getHours() * 60 + d.getMinutes());
+    }, 60000);
+    return () => window.clearInterval(id);
+  }, []);
+  return now;
+}
+
+/** Linha vermelha translúcida marcando o horário atual (estilo Google Agenda). */
+function CalendarNowLine({
+  nowMinutes,
+  startHour,
+  endHour,
+  rowHeight,
+  withDot = false,
+}: {
+  nowMinutes: number;
+  startHour: number;
+  endHour: number;
+  rowHeight: number;
+  withDot?: boolean;
+}) {
+  if (nowMinutes < startHour * 60 || nowMinutes > endHour * 60) return null;
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-0 z-10 h-px bg-red-500/50"
+      style={{ top: `${calendarTopPx(nowMinutes, rowHeight)}px` }}
+    >
+      {withDot ? <span className="absolute -left-0.5 -top-[3px] h-1.5 w-1.5 rounded-full bg-red-500/70" /> : null}
+    </div>
+  );
+}
+
 function dayOfWeekToDate(weekStart: string, dayOfWeek: number): Date {
   const date = new Date(`${weekStart}T12:00:00`);
   if (Number.isNaN(date.getTime())) return new Date();
@@ -639,8 +694,6 @@ function ScheduleItemTooltipCard({ state }: { state: ScheduleTooltipState }) {
         <span className="truncate text-right font-medium text-slate-200">{shortName(item.instructorLabel) || "Sem instrutor"}</span>
         <span className="text-slate-500">Horas</span>
         <span className="text-right font-medium text-slate-200">{(item.flightHours ?? item.durationHours).toFixed(1)}h</span>
-        <span className="text-slate-500">Peso</span>
-        <span className="text-right font-medium text-slate-200">{item.totalWeightLabel}</span>
       </div>
       {notes ? (
         <div className="mt-2 border-t border-slate-800 pt-2">
@@ -738,6 +791,7 @@ export function CalendarGrid({
   projectionRows,
   projectionLoading = false,
   pastBeforeDate,
+  onDayHeaderClick,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -773,10 +827,13 @@ export function CalendarGrid({
   projectionLoading?: boolean;
   /** Escala do aluno: dias anteriores a esta data (ISO) ficam escurecidos e sem agendamento. */
   pastBeforeDate?: string;
+  /** Semanal/3 dias: clicar no cabeçalho do dia abre a visão diária naquele dia. */
+  onDayHeaderClick?: (day: number) => void;
 }) {
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
   const isMobile = useIsMobileViewport();
+  const nowMinutes = useNowMinutes();
   // Escala do aluno: dias anteriores a `pastBeforeDate` ficam escurecidos e sem clique de agendamento.
   const isDayPast = (day: number) => Boolean(pastBeforeDate) && weekDateFromStart(weekStart, day) < pastBeforeDate!;
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
@@ -1046,8 +1103,15 @@ export function CalendarGrid({
                 const date = dayOfWeekToDate(weekStart, day);
                 const today = isDateToday(date);
                 const past = isDayPast(day);
+                const clickable = Boolean(onDayHeaderClick);
                 return (
-                  <th key={day} colSpan={dayColumns.length} className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""}`}>
+                  <th
+                    key={day}
+                    colSpan={dayColumns.length}
+                    onClick={clickable ? () => onDayHeaderClick!(day) : undefined}
+                    title={clickable ? "Ver este dia na visão diária" : undefined}
+                    className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""} ${clickable ? "cursor-pointer transition-colors hover:bg-sky-500/15 hover:text-sky-200" : ""}`}
+                  >
                     <span className="block uppercase">{DAY_LABEL[day]}</span>
                     <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
                       {date.getDate()}
@@ -1140,6 +1204,15 @@ export function CalendarGrid({
                     {calendarHours.map((hour, idx) => (
                       <div key={`${day}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                     ))}
+                    {isDateToday(dayOfWeekToDate(weekStart, day)) ? (
+                      <CalendarNowLine
+                        nowMinutes={nowMinutes}
+                        startHour={CALENDAR_START_HOUR}
+                        endHour={calendarEndHour}
+                        rowHeight={rowHeight}
+                        withDot={isFirstDayColumn}
+                      />
+                    ) : null}
                     {blockedSlots?.filter((s) => s.dayOfWeek === day).map((s, i) => {
                       const startIdx = calendarHours.findIndex((h) => h >= Math.floor(s.startHour));
                       if (startIdx < 0) return null;
@@ -1218,9 +1291,8 @@ export function CalendarGrid({
                           </p>
                           <p className="truncate opacity-90">{item.startTime}-{item.endTime}</p>
                           <p className="truncate opacity-80">
-                            {privacyMode ? (item.isBlocked ? "" : item.aircraftRegistration) : `${item.aircraftRegistration} · ${shortName(item.instructorLabel) || "Sem instrutor"}`}
+                            {privacyMode ? (item.isBlocked ? "" : item.aircraftRegistration) : calendarItemSubtitle(item, groupBy)}
                           </p>
-                          {!privacyMode ? <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p> : null}
                         </div>
                       );
                     })}
@@ -1332,10 +1404,12 @@ function DailyCalendarGrid({
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
   const isMobile = useIsMobileViewport();
+  const nowMinutes = useNowMinutes();
   const calendarHours = useMemo(() => buildCalendarHours(items), [items]);
   const calendarEndHour = (calendarHours[calendarHours.length - 1] ?? CALENDAR_START_HOUR) + 1;
   const boardHeight = calendarHours.length * rowHeight;
   const draggable = Boolean(onItemDrop);
+  const showNowLine = isDateToday(dayOfWeekToDate(weekStart, selectedDay));
 
   const dayItems = useMemo(
     () => items.filter((i) => i.dayOfWeek === selectedDay),
@@ -1627,6 +1701,15 @@ function DailyCalendarGrid({
                         {calendarHours.map((hour, idx) => (
                           <div key={`${col.key}-${hour}`} className="absolute left-0 right-0 border-b border-slate-700/40" style={{ top: `${idx * rowHeight}px` }} />
                         ))}
+                        {showNowLine ? (
+                          <CalendarNowLine
+                            nowMinutes={nowMinutes}
+                            startHour={CALENDAR_START_HOUR}
+                            endHour={calendarEndHour}
+                            rowHeight={rowHeight}
+                            withDot={columns[0]?.key === col.key}
+                          />
+                        ) : null}
                         {entries.map((entry) => {
                           if (dragState?.hasMoved && dragState.item.id === entry.item.id) return null;
                           const item = entry.item;
@@ -1676,8 +1759,7 @@ function DailyCalendarGrid({
                                 {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                               </p>
                               <p className="truncate opacity-90">{item.startTime}–{item.endTime}</p>
-                              <p className="truncate opacity-80">{groupBy === "instructor" ? item.aircraftRegistration : shortName(item.instructorLabel) || "Sem instrutor"}</p>
-                              <p className="truncate opacity-80">Peso: {item.totalWeightLabel}</p>
+                              <p className="truncate opacity-80">{calendarItemSubtitle(item, groupBy)}</p>
                             </div>
                           );
                         })}
@@ -2027,7 +2109,7 @@ function HorizontalTimelineBoard({
                           {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                         </p>
                         <p className="truncate opacity-90">
-                          {showDayInItems ? `${DAY_LABEL[item.dayOfWeek]} ` : ""}{item.startTime}–{item.endTime} · {shortName(item.instructorLabel) || "Sem instrutor"}
+                          {showDayInItems ? `${DAY_LABEL[item.dayOfWeek]} ` : ""}{item.startTime}–{item.endTime} · {groupBy === "instructor" ? item.aircraftRegistration : shortName(item.instructorLabel) || "Sem instrutor"}
                         </p>
                       </div>
                     );
@@ -2538,6 +2620,31 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [weekData]);
 
+  // Instrutores do cadastro da semana UNIÃO os que aparecem nos voos (ex.: eventos
+  // SAGA fora do roster) — mesma ideia do aircraftOptions. É a fonte única de opções
+  // do filtro e das colunas ao agrupar por instrutor, para nenhum voo ficar sem coluna.
+  const instructorOptions = useMemo<Array<{ userId: string; label: string }>>(() => {
+    const labelById = new Map<string, string>();
+    for (const instructor of weekData?.instructors ?? []) labelById.set(instructor.userId, instructor.label);
+    for (const row of flights) {
+      if (row.instructorId && !labelById.has(row.instructorId)) {
+        labelById.set(row.instructorId, row.instructorLabel ?? row.instructorId);
+      }
+    }
+    const orderedIds = [
+      ...(weekData?.instructors ?? []).map((instructor) => instructor.userId),
+      ...flights.map((row) => row.instructorId ?? "").filter(Boolean),
+    ];
+    const seen = new Set<string>();
+    const out: Array<{ userId: string; label: string }> = [];
+    for (const id of orderedIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ userId: id, label: labelById.get(id) ?? id });
+    }
+    return out;
+  }, [weekData, flights]);
+
   const aircraftOptions = useMemo(() => {
     const byRegistration = new Map<string, { registration: string; imageUrl: string | null; hasSupply: boolean }>();
     for (const supply of weekData?.supplies ?? []) {
@@ -2597,14 +2704,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const borderByInstructor = useMemo(() => {
     const map = new Map<string, string>();
-    (weekData?.instructors ?? []).forEach((instructor, index) =>
+    instructorOptions.forEach((instructor, index) =>
       map.set(instructor.userId, INSTRUCTOR_BORDER_CLASSES[index % INSTRUCTOR_BORDER_CLASSES.length]!),
     );
     return map;
-  }, [weekData]);
+  }, [instructorOptions]);
 
   const calendarInstructorColumns = useMemo<ScheduleColumn[]>(() => {
-    const rows: ScheduleColumn[] = (weekData?.instructors ?? [])
+    const rows: ScheduleColumn[] = instructorOptions
       .filter((instructor) => visibleInstructors.includes(instructor.userId))
       .map((instructor) => ({
         key: instructor.userId,
@@ -2623,7 +2730,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       });
     }
     return rows;
-  }, [borderByInstructor, visibleInstructors, weekData]);
+  }, [borderByInstructor, visibleInstructors, instructorOptions]);
 
   const scheduleColumns = useMemo<ScheduleColumn[]>(
     () => {
@@ -3717,7 +3824,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Instrutores</p>
                   <div className="flex gap-1">
-                    <button type="button" onClick={() => setVisibleInstructors(["__none__", ...weekData.instructors.map((i) => i.userId)])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
+                    <button type="button" onClick={() => setVisibleInstructors(["__none__", ...instructorOptions.map((i) => i.userId)])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Todos</button>
                     <button type="button" onClick={() => setVisibleInstructors([])} className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800">Nenhum</button>
                   </div>
                 </div>
@@ -3728,14 +3835,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       checked={visibleInstructors.includes("__none__")}
                       onChange={() =>
                         setVisibleInstructors((prev) =>
-                          nextSingleFocusSelection(prev, "__none__", ["__none__", ...weekData.instructors.map((option) => option.userId)]),
+                          nextSingleFocusSelection(prev, "__none__", ["__none__", ...instructorOptions.map((option) => option.userId)]),
                         )
                       }
                     />
                     <span className="h-3 w-3 rounded border-2 border-red-300 bg-slate-800" />
                     Sem instrutor
                   </label>
-                  {weekData.instructors.map((instructor) => {
+                  {instructorOptions.map((instructor) => {
                     const checked = visibleInstructors.includes(instructor.userId);
                     const border = borderByInstructor.get(instructor.userId) ?? "border-white/80";
                     return (
@@ -3745,7 +3852,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           checked={checked}
                           onChange={() =>
                             setVisibleInstructors((prev) =>
-                              nextSingleFocusSelection(prev, instructor.userId, ["__none__", ...weekData.instructors.map((option) => option.userId)]),
+                              nextSingleFocusSelection(prev, instructor.userId, ["__none__", ...instructorOptions.map((option) => option.userId)]),
                             )
                           }
                         />
@@ -3942,6 +4049,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 items={calendarItems}
                 days={agendaView === "three-day" ? threeDayWindow : DAY_ORDER}
                 title={agendaView === "three-day" ? "Agenda de 3 dias" : "Agenda semanal"}
+                onDayHeaderClick={(day) => { setSelectedDay(day); setAgendaView("daily"); }}
                 groupBy={scheduleGroupBy}
                 columns={scheduleColumns}
                 colorScheme={colorScheme}

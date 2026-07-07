@@ -1,7 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { UserRole } from "../../lib/rbac";
 import {
-  loadScheduleStudentSummary,
+  loadNextMissions,
+  loadStudentFlightSummary,
+  loadStudentProfileCard,
+  type ScheduleStudentFlightSummary,
+  type ScheduleStudentNextMission,
   type ScheduleStudentSummary,
 } from "../../lib/scheduleStudentSummary";
 
@@ -82,28 +86,72 @@ export function ScheduleStudentSummaryPanel({
   viewer: { userId: string; role: UserRole };
   creditsSlot?: ReactNode;
 }) {
-  const [summary, setSummary] = useState<ScheduleStudentSummary | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Três blocos independentes: cada um carrega e é exibido assim que fica pronto
+  // (o perfil é uma leitura só e aparece quase instantâneo; voos e próxima missão
+  // não bloqueiam mais um ao outro nem à identificação).
+  const [profile, setProfile] = useState<ScheduleStudentSummary["profile"]>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [flightSummary, setFlightSummary] = useState<ScheduleStudentFlightSummary | null>(null);
+  const [flightsLoading, setFlightsLoading] = useState(false);
+  const [missions, setMissions] = useState<ScheduleStudentNextMission[] | null>(null);
+  const [trackName, setTrackName] = useState<string | null>(null);
+  const [missionsLoading, setMissionsLoading] = useState(false);
 
   useEffect(() => {
     if (!studentUserId) {
-      setSummary(null);
-      setLoading(false);
+      setProfile(null);
+      setFlightSummary(null);
+      setMissions(null);
+      setTrackName(null);
+      setProfileLoading(false);
+      setFlightsLoading(false);
+      setMissionsLoading(false);
       return;
     }
     let cancelled = false;
-    setSummary(null);
-    setLoading(true);
-    void loadScheduleStudentSummary({ studentUserId, viewer })
+    setProfile(null);
+    setFlightSummary(null);
+    setMissions(null);
+    setTrackName(null);
+    setProfileLoading(true);
+    setFlightsLoading(true);
+    setMissionsLoading(true);
+
+    void loadStudentProfileCard(studentUserId)
       .then((data) => {
-        if (!cancelled) setSummary(data);
+        if (!cancelled) setProfile(data);
       })
       .catch(() => {
-        if (!cancelled) setSummary(null);
+        if (!cancelled) setProfile(null);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setProfileLoading(false);
       });
+
+    void loadStudentFlightSummary({ studentUserId, viewer })
+      .then((data) => {
+        if (!cancelled) setFlightSummary(data);
+      })
+      .catch(() => {
+        if (!cancelled) setFlightSummary(null);
+      })
+      .finally(() => {
+        if (!cancelled) setFlightsLoading(false);
+      });
+
+    void loadNextMissions(studentUserId)
+      .then((data) => {
+        if (cancelled) return;
+        setMissions(data.nextMissions);
+        setTrackName(data.primaryTrackName);
+      })
+      .catch(() => {
+        if (!cancelled) setMissions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setMissionsLoading(false);
+      });
+
     return () => {
       cancelled = true;
     };
@@ -127,15 +175,14 @@ export function ScheduleStudentSummaryPanel({
     );
   }
 
-  const profile = summary?.profile ?? null;
-  const metrics = summary?.metrics ?? null;
+  const metrics = flightSummary?.metrics ?? null;
 
   return (
     <div className="space-y-3">
       {/* 1. Identificação + certificado médico */}
       <Card>
         <SectionTitle>Aluno</SectionTitle>
-        {loading && !summary ? (
+        {profileLoading && !profile ? (
           <div className="space-y-2">
             <div className="h-4 w-1/2 animate-pulse rounded bg-slate-700/60" />
             <div className="h-3 w-2/3 animate-pulse rounded bg-slate-700/40" />
@@ -150,7 +197,8 @@ export function ScheduleStudentSummaryPanel({
                 <span className="text-slate-500">Telefone:</span> {profile?.phone || "—"}
               </p>
               <p>
-                <span className="text-slate-500">Trilha:</span> {summary?.trackName || "—"}
+                <span className="text-slate-500">Trilha:</span>{" "}
+                {missionsLoading && !missions ? "…" : trackName || "—"}
               </p>
             </div>
             <div className="mt-3 border-t border-slate-700/60 pt-2">
@@ -185,7 +233,7 @@ export function ScheduleStudentSummaryPanel({
       {/* 3. Créditos — logo abaixo dos dados do aluno (carrega independente do resumo). */}
       {creditsSlot}
 
-      {loading && !summary ? (
+      {flightsLoading && !flightSummary ? (
         <SummarySkeleton />
       ) : (
         <>
@@ -200,7 +248,7 @@ export function ScheduleStudentSummaryPanel({
           {/* 4. Últimos 5 voos executados (data DESC) */}
           <Card>
             <SectionTitle>Últimos voos executados</SectionTitle>
-            {summary && summary.lastFlights.length > 0 ? (
+            {flightSummary && flightSummary.lastFlights.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[380px] border-collapse text-xs">
                   <thead>
@@ -214,7 +262,7 @@ export function ScheduleStudentSummaryPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.lastFlights.map((flight) => (
+                    {flightSummary.lastFlights.map((flight) => (
                       <tr key={flight.id} className="border-b border-slate-800/60">
                         <td className="whitespace-nowrap px-1.5 py-1 align-top">
                           <span className="block text-slate-200">{flight.dateLabel}</span>
@@ -234,13 +282,23 @@ export function ScheduleStudentSummaryPanel({
               <p className="text-xs text-slate-500">Nenhum voo executado encontrado.</p>
             )}
           </Card>
+        </>
+      )}
 
-          {/* 5. Próxima missão (mesma lógica da jornada do aluno) */}
-          <Card>
-            <SectionTitle>Próxima missão</SectionTitle>
-            {summary && summary.nextMissions.length > 0 ? (
-              <div className="space-y-2">
-                {summary.nextMissions.map((mission, index) => (
+      {/* 5. Próxima missão (mesma lógica da jornada do aluno) — carrega independente. */}
+      {missionsLoading && !missions ? (
+        <Card>
+          <SectionTitle>Próxima missão</SectionTitle>
+          <div className="space-y-2">
+            <div className="h-16 animate-pulse rounded-lg bg-slate-700/30" />
+          </div>
+        </Card>
+      ) : (
+        <Card>
+          <SectionTitle>Próxima missão</SectionTitle>
+          {missions && missions.length > 0 ? (
+            <div className="space-y-2">
+              {missions.map((mission, index) => (
                   <div
                     key={`${mission.trackName}-${index}`}
                     className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2"
@@ -264,13 +322,12 @@ export function ScheduleStudentSummaryPanel({
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className="text-xs text-slate-500">
-                {summary ? "Sem próxima missão (trilha completa ou sem trilha ativa)." : "—"}
-              </p>
-            )}
-          </Card>
-        </>
+          ) : (
+            <p className="text-xs text-slate-500">
+              Sem próxima missão (trilha completa ou sem trilha ativa).
+            </p>
+          )}
+        </Card>
       )}
     </div>
   );

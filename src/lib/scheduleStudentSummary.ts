@@ -66,15 +66,6 @@ export type ScheduleStudentSummary = {
   ok: boolean;
 };
 
-const EMPTY_SUMMARY: ScheduleStudentSummary = {
-  profile: null,
-  trackName: null,
-  metrics: { executedCount: 0, totalHours: 0, totalLandings: 0, soloCount: 0, lastFlightIso: null },
-  lastFlights: [],
-  nextMissions: [],
-  ok: false,
-};
-
 function flightMissionIds(flight: SavedFlightListItem): string[] {
   const fromMaterialized = (() => {
     if (!flight.training_mission_ids_json) return [];
@@ -123,7 +114,7 @@ function resolveOutcome(risk: {
 }
 
 // Próxima missão por trilha ativa — mesma lógica de timeline da jornada do aluno.
-async function loadNextMissions(
+export async function loadNextMissions(
   studentUserId: string,
 ): Promise<{ nextMissions: ScheduleStudentNextMission[]; primaryTrackName: string | null }> {
   const tracksRes = await listStudentTrainingTracks(studentUserId);
@@ -185,46 +176,43 @@ async function loadNextMissions(
   return { nextMissions: result, primaryTrackName };
 }
 
-export async function loadScheduleStudentSummary(params: {
+/** Cartão de identificação + certificado médico. Uma única leitura (getProfile) — rápido. */
+export async function loadStudentProfileCard(
+  studentUserId: string,
+): Promise<ScheduleStudentSummary["profile"]> {
+  const res = await getProfile(studentUserId);
+  const profile = res.data;
+  if (!profile) return null;
+  return {
+    fullName: profile.fullName || "",
+    email: profile.email || "",
+    anacCode: profile.anacCode || "",
+    phone: profile.phone || "",
+    medical: profile.anacMedical,
+  };
+}
+
+export type ScheduleStudentFlightSummary = {
+  metrics: ScheduleStudentSummary["metrics"];
+  lastFlights: ScheduleStudentSummaryFlight[];
+};
+
+/**
+ * Métricas de voos executados + últimos 5 voos (com ficha completa desses 5).
+ * Independente do perfil e da próxima missão — carrega e exibe em paralelo.
+ */
+export async function loadStudentFlightSummary(params: {
   studentUserId: string;
   viewer: { userId: string; role: UserRole };
-}): Promise<ScheduleStudentSummary> {
+}): Promise<ScheduleStudentFlightSummary> {
   const { studentUserId, viewer } = params;
 
-  const [profileRes, historyRes, nextMissionsRes] = await Promise.allSettled([
-    getProfile(studentUserId),
-    listStudentFlightHistory({
-      actorUserId: viewer.userId,
-      actorRole: viewer.role,
-      studentUserId,
-    }),
-    loadNextMissions(studentUserId),
-  ]);
-
-  const summary: ScheduleStudentSummary = {
-    ...EMPTY_SUMMARY,
-    metrics: { ...EMPTY_SUMMARY.metrics },
-    ok: true,
-  };
-
-  if (profileRes.status === "fulfilled" && profileRes.value.data) {
-    const profile = profileRes.value.data;
-    summary.profile = {
-      fullName: profile.fullName || "",
-      email: profile.email || "",
-      anacCode: profile.anacCode || "",
-      phone: profile.phone || "",
-      medical: profile.anacMedical,
-    };
-  }
-
-  if (nextMissionsRes.status === "fulfilled") {
-    summary.nextMissions = nextMissionsRes.value.nextMissions;
-    summary.trackName = nextMissionsRes.value.primaryTrackName;
-  }
-
-  const history: SavedFlightListItem[] =
-    historyRes.status === "fulfilled" ? historyRes.value.data ?? [] : [];
+  const historyRes = await listStudentFlightHistory({
+    actorUserId: viewer.userId,
+    actorRole: viewer.role,
+    studentUserId,
+  });
+  const history: SavedFlightListItem[] = historyRes.data ?? [];
 
   // Métricas a partir dos campos materializados (block_time_minutes, landings, snapshot).
   const executed = history.filter((item) => isCompletedFlight(item, buildFlightDisplayInfo(item, null)));
@@ -244,7 +232,7 @@ export async function loadScheduleStudentSummary(params: {
       lastFlightIso = info.flightDateIso ?? item.flight_date ?? null;
     }
   }
-  summary.metrics = {
+  const metrics = {
     executedCount: executed.length,
     totalHours: totalMinutes / 60,
     totalLandings,
@@ -272,7 +260,7 @@ export async function loadScheduleStudentSummary(params: {
   } catch {
     recentInfoById = {};
   }
-  summary.lastFlights = recent.map((item) => {
+  const lastFlights = recent.map((item) => {
     const info = recentInfoById[item.id] ?? buildFlightDisplayInfo(item, null);
     const date = getDateBase(item, info);
     const nickname = item.instructor_user_id ? nicknameByInstructorId[item.instructor_user_id] : "";
@@ -292,5 +280,5 @@ export async function loadScheduleStudentSummary(params: {
     };
   });
 
-  return summary;
+  return { metrics, lastFlights };
 }
