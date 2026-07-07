@@ -6,6 +6,7 @@ import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flights
 import { flightAircraftHours } from "../../lib/flightHours";
 import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
+import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import {
   listAircraftHorimeterCorrections,
   createAircraftHorimeterCorrection,
@@ -32,6 +33,7 @@ const emptyForm = {
   owner_name: "",
   operator_name: "",
   logbook_sequence_number: "",
+  plane_it_id: "",
   image_url: "",
   active: true,
   wb_empty_weight_kg: "",
@@ -89,6 +91,11 @@ type UpcomingMaintenance = {
   remainingDays: number | null;
   forecast: string;
 };
+type PlaneItTotalsState = {
+  loading: boolean;
+  error: string | null;
+  totals: Record<string, PlaneItAircraftTotal>;
+};
 
 function numberToFormValue(value: number | null | undefined, fallback = ""): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : fallback;
@@ -102,6 +109,11 @@ function nullableNumber(value: string): number | null {
 function nullablePositiveNumber(value: string): number | null {
   const parsed = Number(value.replace(",", "."));
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function formatPlaneItHours(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "sem dado";
+  return `${formatHours(value)} totais`;
 }
 
 function parseRecurrenceRules(value: string): RecurrenceRules {
@@ -510,6 +522,7 @@ export function FleetTab() {
   const [editingCorrectionId, setEditingCorrectionId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ date: "", time: "", ttaf: "", notes: "" });
   const [savingEditCorrection, setSavingEditCorrection] = useState(false);
+  const [planeIt, setPlaneIt] = useState<PlaneItTotalsState>({ loading: false, error: null, totals: {} });
 
   useEffect(() => {
     if (error) showToast({ variant: "error", message: error });
@@ -557,6 +570,32 @@ export function FleetTab() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const planeItIds = useMemo(
+    () => Array.from(new Set(aircrafts.map((aircraft) => aircraft.plane_it_id?.trim()).filter((id): id is string => Boolean(id)))),
+    [aircrafts],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!planeItIds.length) {
+      setPlaneIt({ loading: false, error: null, totals: {} });
+      return;
+    }
+    setPlaneIt((current) => ({ ...current, loading: true, error: null }));
+    fetchPlaneItAircraftTotals(planeItIds)
+      .then((result) => {
+        if (!cancelled) setPlaneIt({ loading: false, error: null, totals: result.totals });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPlaneIt({ loading: false, error: err instanceof Error ? err.message : "Falha ao carregar Plane It.", totals: {} });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planeItIds.join("|")]);
 
   const correctionsByAircraftId = useMemo(() => {
     const grouped: Record<string, AircraftHorimeterCorrection[]> = {};
@@ -664,6 +703,7 @@ export function FleetTab() {
       owner_name: ac.owner_name ?? "",
       operator_name: ac.operator_name ?? "",
       logbook_sequence_number: ac.logbook_sequence_number ?? "",
+      plane_it_id: ac.plane_it_id ?? "",
       image_url: ac.image_url ?? "",
       active: ac.active,
       wb_empty_weight_kg: numberToFormValue(ac.wb_empty_weight_kg),
@@ -713,6 +753,7 @@ export function FleetTab() {
           owner_name: form.owner_name.trim() || null,
           operator_name: form.operator_name.trim() || null,
           logbook_sequence_number: form.logbook_sequence_number.trim() || null,
+          plane_it_id: form.plane_it_id.trim() || null,
           image_url: imageUrl,
           active: form.active,
           ...weightBalancePayload(form),
@@ -729,6 +770,7 @@ export function FleetTab() {
           owner_name: form.owner_name.trim() || null,
           operator_name: form.operator_name.trim() || null,
           logbook_sequence_number: form.logbook_sequence_number.trim() || null,
+          plane_it_id: form.plane_it_id.trim() || null,
           image_url: imageUrl ?? undefined,
           active: form.active,
           ...weightBalancePayload(form),
@@ -938,6 +980,17 @@ export function FleetTab() {
                     className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
                   />
                 </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-400">ID no Plane It</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={form.plane_it_id}
+                    onChange={(e) => setForm((f) => ({ ...f, plane_it_id: e.target.value }))}
+                    placeholder="ex: 1474"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                </div>
               </>
             )}
             <div className="sm:col-span-2">
@@ -1134,6 +1187,8 @@ export function FleetTab() {
               corrections: aircraftCorrections,
             });
             const currentHours = totals.hours;
+            const planeItId = ac.plane_it_id?.trim() || "";
+            const planeItTotal = planeItId ? planeIt.totals[planeItId] : undefined;
             const upcoming = buildUpcomingMaintenance({
               aircraft: ac,
               modelItems: programItemsByModel[ac.model_id] ?? [],
@@ -1195,6 +1250,16 @@ export function FleetTab() {
                       <p className="mt-1 text-sm font-semibold text-slate-200">
                         {currentHours == null ? "Sem abertura" : `${formatHours(currentHours)} totais`}
                       </p>
+                      <div className="mt-2 border-t border-slate-800 pt-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-cyan-400">No Plane It</p>
+                        {planeIt.loading && planeItId ? (
+                          <Skeleton className="mt-1 h-4 w-24 rounded bg-cyan-400/15" />
+                        ) : (
+                          <p className="mt-1 text-xs font-semibold text-cyan-100">
+                            {!planeItId ? "sem ID" : planeIt.error ? "indisp." : formatPlaneItHours(planeItTotal?.horasVooEtapaDecimalTotal)}
+                          </p>
+                        )}
+                      </div>
                       <p className="mt-1 text-xs text-slate-500">
                         Ciclos {totals.cycles ?? "-"} · Pousos {totals.landings ?? "-"}
                       </p>

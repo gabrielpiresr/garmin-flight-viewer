@@ -34,6 +34,7 @@ import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { freeBalanceForDateFromPools, isWeekendDate } from "../../lib/creditWeekday";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import {
   getSagaScheduleEventsCached,
   getScheduleWeekDataCached,
@@ -530,6 +531,12 @@ type ProjectionCell = {
 type AircraftProjectionRow = {
   registration: string;
   hoursByDay: Partial<Record<number, ProjectionCell>>;
+};
+type ProjectionHoursSource = "system" | "planeIt";
+type PlaneItTotalsState = {
+  loading: boolean;
+  error: string | null;
+  totals: Record<string, PlaneItAircraftTotal>;
 };
 
 type AircraftColumn = {
@@ -2101,6 +2108,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean } | null>(null);
   // Horas totais atuais por aeronave (mesmo cálculo da Frota) — base da projeção na agenda
   const [aircraftBaseHours, setAircraftBaseHours] = useState<Map<string, AircraftBaseHours> | null>(null);
+  const [projectionHoursSource, setProjectionHoursSource] = useState<ProjectionHoursSource>("system");
+  const [planeIt, setPlaneIt] = useState<PlaneItTotalsState>({ loading: false, error: null, totals: {} });
   const aircraftBaseHoursRequestedRef = useRef(false);
   const weekOptionsRef = useRef<ScheduleWeekOption[]>([]);
   weekOptionsRef.current = weekOptions;
@@ -2428,6 +2437,44 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     seenFilterAircraftRef.current.clear();
     seenFilterInstructorsRef.current.clear();
   }, [actorUserId]);
+
+  const planeItIds = useMemo(
+    () => Array.from(new Set(activeAircrafts.map((aircraft) => aircraft.plane_it_id?.trim()).filter((id): id is string => Boolean(id)))),
+    [activeAircrafts],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!planeItIds.length) {
+      setPlaneIt({ loading: false, error: null, totals: {} });
+      return;
+    }
+    setPlaneIt((current) => ({ ...current, loading: true, error: null }));
+    fetchPlaneItAircraftTotals(planeItIds)
+      .then((result) => {
+        if (!cancelled) setPlaneIt({ loading: false, error: null, totals: result.totals });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPlaneIt({ loading: false, error: err instanceof Error ? err.message : "Falha ao carregar Plane It.", totals: {} });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planeItIds.join("|")]);
+
+  const planeItHoursByRegistration = useMemo(() => {
+    const rows = new Map<string, number>();
+    for (const aircraft of activeAircrafts) {
+      const planeItId = aircraft.plane_it_id?.trim();
+      if (!planeItId) continue;
+      const hours = planeIt.totals[planeItId]?.horasVooEtapaDecimalTotal;
+      if (hours == null || !Number.isFinite(hours)) continue;
+      rows.set(aircraft.registration.trim().toUpperCase(), hours);
+    }
+    return rows;
+  }, [activeAircrafts, planeIt.totals]);
 
   useEffect(() => {
     if (!actorUserId) return;
@@ -2858,7 +2905,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       .map((aircraft) => {
         const reg = aircraft.registration.trim().toUpperCase();
         const info = aircraftBaseHours.get(reg);
-        const base = info?.hours ?? null;
+        const base = projectionHoursSource === "planeIt"
+          ? planeItHoursByRegistration.get(reg) ?? null
+          : info?.hours ?? null;
         const dueList = info?.maintenanceDue ?? [];
         const hoursByDay: Partial<Record<number, ProjectionCell>> = {};
         if (base == null) {
@@ -2889,7 +2938,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         }
         return { registration: aircraft.registration, hoursByDay };
       });
-  }, [weekData, aircraftBaseHours, scheduleRules, flights, activeAircrafts, netFlightHours]);
+  }, [weekData, aircraftBaseHours, scheduleRules, flights, activeAircrafts, netFlightHours, projectionHoursSource, planeItHoursByRegistration]);
+
+  const projectionLoading = aircraftBaseHours === null || (projectionHoursSource === "planeIt" && planeIt.loading);
 
   // Linhas da agenda invertida (linha do tempo horizontal)
   const timelineRows = useMemo<TimelineRow[]>(() => {
@@ -3795,6 +3846,28 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   </button>
                 </div>
               </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Horas</span>
+                <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setProjectionHoursSource("system")}
+                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${projectionHoursSource === "system" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Sistema
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProjectionHoursSource("planeIt")}
+                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${projectionHoursSource === "planeIt" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                  >
+                    Plane It
+                  </button>
+                </div>
+                {projectionHoursSource === "planeIt" && planeIt.error ? (
+                  <span className="text-[10px] font-medium text-amber-300">indisp.</span>
+                ) : null}
+              </div>
               <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
                 <input
                   type="checkbox"
@@ -3876,7 +3949,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 instructorColumns={calendarInstructorColumns}
                 getItemColor={resolveItemColor}
                 projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
-                projectionLoading={aircraftBaseHours === null}
+                projectionLoading={projectionLoading}
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
                 backgroundSupply={selectedSupplyForBackground}
@@ -3974,7 +4047,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   backgroundSupply={selectedSupplyForBackground}
                   clubMemberByStudentId={clubMemberByStudentId}
                   projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
-                  projectionLoading={aircraftBaseHours === null}
+                  projectionLoading={projectionLoading}
                   hasPrevWeek={hasPreviousWeek}
                   hasNextWeek={hasNextWeek}
                   onSelectDay={setSelectedDay}

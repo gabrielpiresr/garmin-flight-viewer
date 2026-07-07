@@ -53,6 +53,7 @@ function toAircraft(doc: Record<string, unknown>): Aircraft {
     owner_name: (doc.owner_name as string | null | undefined) ?? null,
     operator_name: (doc.operator_name as string | null | undefined) ?? null,
     logbook_sequence_number: (doc.logbook_sequence_number as string | null | undefined) ?? null,
+    plane_it_id: (doc.plane_it_id as string | null | undefined) ?? null,
     logbook_opening_date: (doc.logbook_opening_date as string | null | undefined) ?? null,
     logbook_ttaf: (doc.logbook_ttaf as number | null | undefined) ?? null,
     logbook_landings: (doc.logbook_landings as number | null | undefined) ?? null,
@@ -170,6 +171,7 @@ export async function createAircraft(data: {
   owner_name?: string | null;
   operator_name?: string | null;
   logbook_sequence_number?: string | null;
+  plane_it_id?: string | null;
   image_url?: string;
   active?: boolean;
 } & AircraftWeightBalanceData): Promise<Aircraft> {
@@ -188,6 +190,7 @@ export async function createAircraft(data: {
       owner_name: data.owner_name ?? null,
       operator_name: data.operator_name ?? null,
       logbook_sequence_number: data.logbook_sequence_number ?? null,
+      plane_it_id: data.plane_it_id ?? null,
       image_url: data.image_url ?? null,
       active: data.active ?? true,
       wb_empty_weight_kg: data.wb_empty_weight_kg ?? null,
@@ -233,6 +236,7 @@ export async function updateAircraft(
     owner_name: string | null;
     operator_name: string | null;
     logbook_sequence_number: string | null;
+    plane_it_id: string | null;
     image_url: string | null;
     active: boolean;
   }> & AircraftWeightBalanceData,

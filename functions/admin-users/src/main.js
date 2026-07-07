@@ -435,6 +435,9 @@ function parseFunctionPayload(req) {
 }
 
 const SAGA_BASE_URL = "https://epeac.saga.aero";
+const PLANE_IT_BASE_URL = "https://app.planeit.com.br";
+const PLANE_IT_SESSION_TTL_MS = 20 * 60 * 1000;
+let planeItSessionCache = null;
 const SAGA_AUTH_SESSION_KEY = "sagaAuthSession";
 
 function sagaHtmlSnippet(html, maxLength = 3000) {
@@ -1767,6 +1770,7 @@ const SAGA_IMPORT_PROGRESS_KEY = "sagaImportProgress";
 const SAGA_IMPORT_PAUSED_STATE_KEY = "sagaImportPausedState";
 const SAGA_IMPORT_ALL_USERS_LAST_RUN_KEY = "sagaImportAllUsersLastRun";
 const SAGA_IMPORT_SYNC_HISTORY_KEY = "sagaImportSyncHistory";
+const PLANE_IT_CREDENTIALS_KEY = "planeItCredentials";
 
 function defaultSagaImportMapping() {
   return {
@@ -2214,6 +2218,178 @@ async function loadSagaImportSettings() {
     loadSagaImportCredentials(),
   ]);
   return { mapping, catalogs, credentials };
+}
+
+function sanitizePlaneItCredentials(input = {}) {
+  return {
+    email: cleanString(input.email).toLowerCase(),
+    password: String(input.password || ""),
+    updatedAt: input.updatedAt || null,
+  };
+}
+
+async function loadPlaneItCredentials() {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return sanitizePlaneItCredentials();
+  const doc = await getSettingDoc(PLANE_IT_CREDENTIALS_KEY);
+  if (!doc) return sanitizePlaneItCredentials();
+  return sanitizePlaneItCredentials(parseJsonObject(doc.settings_json, {}));
+}
+
+async function savePlaneItCredentials(input = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const settings = sanitizePlaneItCredentials({ ...input, updatedAt: nowIso() });
+  if (!settings.email || !settings.password) {
+    throw Object.assign(new Error("Informe login e senha do Plane It."), { status: 400 });
+  }
+  const data = { key: PLANE_IT_CREDENTIALS_KEY, settings_json: JSON.stringify(settings) };
+  const current = await getSettingDoc(PLANE_IT_CREDENTIALS_KEY);
+  const doc = current
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.$id, data)
+    : await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  planeItSessionCache = null;
+  return { ...settings, updatedAt: doc.$updatedAt || settings.updatedAt };
+}
+
+function planeItSessionCacheMatches(credentials) {
+  return (
+    planeItSessionCache &&
+    planeItSessionCache.email === cleanString(credentials.email).toLowerCase() &&
+    cleanString(planeItSessionCache.accessToken) &&
+    planeItSessionCache.cookieJar instanceof Map &&
+    Date.now() - Number(planeItSessionCache.createdAt || 0) < PLANE_IT_SESSION_TTL_MS
+  );
+}
+
+async function planeItFetch(path, options = {}, cookieJar = new Map()) {
+  const headers = {
+    accept: "application/json, text/plain, */*",
+    "user-agent": "Mozilla/5.0",
+    ...(options.headers || {}),
+  };
+  const cookie = sagaCookieHeader(cookieJar);
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(`${PLANE_IT_BASE_URL}${path}`, {
+    ...options,
+    headers,
+    redirect: "manual",
+  });
+  sagaMergeCookies(cookieJar, response.headers);
+  const text = await response.text();
+  return { response, text };
+}
+
+function parsePlaneItJson(text) {
+  try {
+    return JSON.parse(text || "{}");
+  } catch {
+    return {};
+  }
+}
+
+async function planeItLoginSession(credentials) {
+  if (planeItSessionCacheMatches(credentials)) {
+    return {
+      accessToken: planeItSessionCache.accessToken,
+      cookieJar: new Map(planeItSessionCache.cookieJar),
+    };
+  }
+
+  const email = cleanString(credentials.email).toLowerCase();
+  const password = String(credentials.password || "");
+  if (!email || !password) {
+    throw Object.assign(new Error("Credenciais Plane It nao configuradas pelo administrador."), { status: 400 });
+  }
+
+  const cookieJar = new Map();
+  await planeItFetch("/login", {
+    method: "GET",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  }, cookieJar);
+
+  const basicAuth = Buffer.from(`${email}:${password}`, "utf8").toString("base64");
+  const login = await planeItFetch("/api/v1/login", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      origin: PLANE_IT_BASE_URL,
+      referer: `${PLANE_IT_BASE_URL}/login`,
+      "content-type": "application/json",
+    },
+  }, cookieJar);
+  const status = Number(login.response.status || 0);
+  const body = parsePlaneItJson(login.text);
+  const accessToken = cleanString(body?.data?.access_token || body?.access_token);
+  if (status >= 400 || Number(body?.codigo) !== 200 || !accessToken) {
+    throw Object.assign(new Error(cleanString(body?.mensagem) || "Falha ao autenticar no Plane It."), { status: status || 502 });
+  }
+
+  await planeItFetch(`/auth/redirect?token=${encodeURIComponent(accessToken)}`, {
+    method: "GET",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      referer: `${PLANE_IT_BASE_URL}/login`,
+    },
+  }, cookieJar);
+
+  planeItSessionCache = {
+    email,
+    accessToken,
+    cookieJar: new Map(cookieJar),
+    createdAt: Date.now(),
+  };
+  return { accessToken, cookieJar };
+}
+
+async function fetchPlaneItAircraftTotals(input = {}) {
+  const rawIds = Array.isArray(input.planeItIds) ? input.planeItIds : [];
+  const planeItIds = Array.from(new Set(rawIds.map(cleanString).filter(Boolean))).slice(0, 100);
+  if (!planeItIds.length) return { totals: {}, updatedAt: nowIso() };
+  const credentials = await loadPlaneItCredentials();
+  const session = await planeItLoginSession(credentials);
+  const params = new URLSearchParams();
+  for (const id of planeItIds) params.append("idAeronave[]", id);
+
+  let result = await planeItFetch(`/api/spa/v1/aeronaves/totais?${params.toString()}`, {
+    method: "GET",
+    headers: {
+      referer: `${PLANE_IT_BASE_URL}/`,
+      "x-requested-with": "XMLHttpRequest",
+    },
+  }, session.cookieJar);
+
+  if (Number(result.response.status) === 401 || Number(result.response.status) === 419 || Number(result.response.status) === 403) {
+    planeItSessionCache = null;
+    const fresh = await planeItLoginSession(credentials);
+    result = await planeItFetch(`/api/spa/v1/aeronaves/totais?${params.toString()}`, {
+      method: "GET",
+      headers: {
+        referer: `${PLANE_IT_BASE_URL}/`,
+        "x-requested-with": "XMLHttpRequest",
+      },
+    }, fresh.cookieJar);
+  }
+
+  const status = Number(result.response.status || 0);
+  const body = parsePlaneItJson(result.text);
+  if (status >= 400 || Number(body?.codigo) >= 400) {
+    throw Object.assign(new Error(cleanString(body?.mensagem) || "Falha ao consultar aeronaves no Plane It."), { status: status || 502 });
+  }
+
+  const data = body?.data && typeof body.data === "object" ? body.data : {};
+  const totals = {};
+  for (const id of planeItIds) {
+    const row = data[id] && typeof data[id] === "object" ? data[id] : null;
+    const hours = Number(row?.horasVooEtapaDecimalTotal);
+    totals[id] = {
+      planeItId: id,
+      horasVooEtapaDecimalTotal: Number.isFinite(hours) ? hours : null,
+    };
+  }
+  return { totals, updatedAt: nowIso() };
 }
 
 async function requireSagaMappingActor(actorUserId) {
@@ -18411,6 +18587,24 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       const { publicSettings } = await loadCaktoSettings();
       return jsonResponse(res, 200, { settings: publicSettings });
+    }
+
+    if (action === "planeItGetSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await loadPlaneItCredentials();
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "planeItSaveSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await savePlaneItCredentials(payload.settings || payload);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "planeItAircraftTotals") {
+      await requireAdmin(actorUserId);
+      const result = await fetchPlaneItAircraftTotals(payload);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "getFlightCreditSalesConfig") {

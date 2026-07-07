@@ -56,6 +56,7 @@ export type Aircraft = {
   owner_name: string | null;
   operator_name: string | null;
   logbook_sequence_number: string | null;
+  plane_it_id: string | null;
   logbook_opening_date: string | null;
   logbook_ttaf: number | null;
   logbook_landings: number | null;

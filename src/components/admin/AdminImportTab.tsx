@@ -31,6 +31,7 @@ import {
   collectMissionLookupKeysFromFlights,
   isScopedSagaMissionKey,
 } from "../../lib/sagaMissionMappingUi";
+import { getPlaneItSettings, savePlaneItSettings } from "../../lib/planeItDb";
 
 type TableColumn<T> = { key: keyof T; label: string; className?: string };
 
@@ -851,6 +852,12 @@ function CreditMappingTable({
 export function AdminImportTab() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [planeItEmail, setPlaneItEmail] = useState("");
+  const [planeItPassword, setPlaneItPassword] = useState("");
+  const [planeItUpdatedAt, setPlaneItUpdatedAt] = useState<string | null>(null);
+  const [planeItLoading, setPlaneItLoading] = useState(true);
+  const [planeItSaving, setPlaneItSaving] = useState(false);
+  const [planeItMessage, setPlaneItMessage] = useState<string | null>(null);
   const [result, setResult] = useState<SagaImportResult | null>(null);
   const [mappingDraft, setMappingDraft] = useState<SagaImportMapping>(EMPTY_MAPPING);
   const [importSummary, setImportSummary] = useState<SagaImportSummary | null>(null);
@@ -942,6 +949,27 @@ export function AdminImportTab() {
       })
       .finally(() => {
         if (!cancelled) setSettingsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlaneItLoading(true);
+    getPlaneItSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setPlaneItEmail(settings.email ?? "");
+        setPlaneItPassword(settings.password ?? "");
+        setPlaneItUpdatedAt(settings.updatedAt ?? null);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Falha ao carregar configuracoes do Plane It.");
+      })
+      .finally(() => {
+        if (!cancelled) setPlaneItLoading(false);
       });
     return () => {
       cancelled = true;
@@ -1166,6 +1194,29 @@ export function AdminImportTab() {
     }
   }
 
+  async function handleSavePlaneItSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const cleanEmail = planeItEmail.trim();
+    if (!cleanEmail || !planeItPassword) {
+      setError("Informe login e senha do Plane It.");
+      return;
+    }
+    setPlaneItSaving(true);
+    setError(null);
+    setPlaneItMessage(null);
+    try {
+      const saved = await savePlaneItSettings({ email: cleanEmail, password: planeItPassword });
+      setPlaneItEmail(saved.email);
+      setPlaneItPassword(saved.password);
+      setPlaneItUpdatedAt(saved.updatedAt);
+      setPlaneItMessage("Credenciais do Plane It salvas.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao salvar credenciais do Plane It.");
+    } finally {
+      setPlaneItSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <SagaImportProgressOverlay
@@ -1225,6 +1276,54 @@ export function AdminImportTab() {
           </p>
         )}
       </section>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400">Plane It</p>
+            <h2 className="mt-1 text-xl font-semibold text-slate-100">Credenciais e consulta de totais</h2>
+            <p className="mt-1 max-w-3xl text-sm text-slate-400">
+              Login usado pelo backend para consultar os totais das aeronaves e exibir horas do Plane It no dashboard.
+            </p>
+            {planeItUpdatedAt ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Ultima atualizacao: {new Date(planeItUpdatedAt).toLocaleString("pt-BR")}
+              </p>
+            ) : null}
+            {planeItMessage ? <p className="mt-2 text-xs font-medium text-emerald-300">{planeItMessage}</p> : null}
+          </div>
+          <form onSubmit={handleSavePlaneItSettings} className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_minmax(12rem,1fr)_auto]">
+            <label className="sr-only" htmlFor="planeit-email">Login Plane It</label>
+            <input
+              id="planeit-email"
+              type="email"
+              autoComplete="username"
+              value={planeItEmail}
+              onChange={(event) => setPlaneItEmail(event.target.value)}
+              placeholder="Login Plane It"
+              className="min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-500"
+            />
+            <label className="sr-only" htmlFor="planeit-password">Senha Plane It</label>
+            <input
+              id="planeit-password"
+              type="password"
+              autoComplete="current-password"
+              value={planeItPassword}
+              onChange={(event) => setPlaneItPassword(event.target.value)}
+              placeholder="Senha"
+              className="min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-500"
+            />
+            <button
+              type="submit"
+              disabled={planeItLoading || planeItSaving}
+              className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {planeItLoading ? "Carregando..." : planeItSaving ? "Salvando..." : "Salvar Plane It"}
+            </button>
+          </form>
+        </div>
+      </section>
+
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-xl shadow-slate-950/20">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>

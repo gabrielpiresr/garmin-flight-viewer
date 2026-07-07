@@ -4,6 +4,7 @@ import { getPublicScheduleCached, loadFleetMaintenanceContextCached } from "../.
 import { getAdminDashboardSummary, listAdminFlightReports } from "../../lib/adminUsersDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
+import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import { useAuth } from "../../contexts/AuthContext";
 import type { AdminDashboardAircraftUtilization, AdminDashboardData } from "../../types/adminDashboard";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
@@ -64,6 +65,12 @@ type AdminHomeCacheEntry = {
   instructorSummary: InstructorMonthSummary[] | null;
 };
 
+type PlaneItTotalsState = {
+  loading: boolean;
+  error: string | null;
+  totals: Record<string, PlaneItAircraftTotal>;
+};
+
 type RecurrenceRules = {
   hours: number | null;
   days: number | null;
@@ -102,6 +109,11 @@ function fmtInt(value: number | null | undefined): string {
 
 function fmtHours(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "sem horímetro";
+  return `${fmtNumber(value, 1)} h`;
+}
+
+function fmtPlaneItHours(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "sem dado";
   return `${fmtNumber(value, 1)} h`;
 }
 
@@ -558,16 +570,62 @@ function AdminHomeSkeleton() {
 }
 
 function AircraftCards({ cards }: { cards: AircraftHomeCard[] }) {
+  const [planeIt, setPlaneIt] = useState<PlaneItTotalsState>({ loading: false, error: null, totals: {} });
+  const planeItIds = useMemo(
+    () => Array.from(new Set(cards.map((card) => card.aircraft.plane_it_id?.trim()).filter((id): id is string => Boolean(id)))),
+    [cards],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!planeItIds.length) {
+      setPlaneIt({ loading: false, error: null, totals: {} });
+      return;
+    }
+    setPlaneIt((current) => ({ ...current, loading: true, error: null }));
+    fetchPlaneItAircraftTotals(planeItIds)
+      .then((result) => {
+        if (!cancelled) setPlaneIt({ loading: false, error: null, totals: result.totals });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPlaneIt({ loading: false, error: err instanceof Error ? err.message : "Falha ao carregar Plane It.", totals: {} });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planeItIds.join("|")]);
+
   return (
     <section className="grid gap-4 xl:grid-cols-2">
-      {cards.length ? cards.map((card) => <AircraftCard key={card.aircraft.id} card={card} />) : (
+      {cards.length ? cards.map((card) => (
+        <AircraftCard
+          key={card.aircraft.id}
+          card={card}
+          planeItTotal={card.aircraft.plane_it_id ? planeIt.totals[card.aircraft.plane_it_id] : undefined}
+          planeItLoading={Boolean(card.aircraft.plane_it_id) && planeIt.loading}
+          planeItError={planeIt.error}
+        />
+      )) : (
         <EmptyState text="Nenhum avião cadastrado na frota." />
       )}
     </section>
   );
 }
 
-function AircraftCard({ card }: { card: AircraftHomeCard }) {
+function AircraftCard({
+  card,
+  planeItTotal,
+  planeItLoading,
+  planeItError,
+}: {
+  card: AircraftHomeCard;
+  planeItTotal?: PlaneItAircraftTotal;
+  planeItLoading: boolean;
+  planeItError: string | null;
+}) {
+  const hasPlaneItId = Boolean(card.aircraft.plane_it_id?.trim());
   return (
     <article className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -575,9 +633,21 @@ function AircraftCard({ card }: { card: AircraftHomeCard }) {
           <p className="truncate text-lg font-semibold text-slate-100">{aircraftName(card.aircraft, card.modelName)}</p>
           <p className="mt-0.5 text-xs text-slate-500">{card.aircraft.active ? "Ativo" : "Inativo"}</p>
         </div>
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-right">
+        <div className="grid min-w-60 grid-cols-2 overflow-hidden rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-right">
+          <div className="px-3 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-emerald-300">Horímetro</p>
-          <p className="mt-1 text-2xl font-semibold text-emerald-100">{fmtHours(card.baseHours?.hours)}</p>
+          <p className="mt-1 text-xl font-semibold text-emerald-100">{fmtHours(card.baseHours?.hours)}</p>
+          </div>
+          <div className="border-l border-emerald-500/20 px-3 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-cyan-300">No Plane It:</p>
+            {planeItLoading ? (
+              <Skeleton className="ml-auto mt-2 h-6 w-20 rounded-md bg-cyan-400/15" />
+            ) : (
+              <p className="mt-1 text-xl font-semibold text-cyan-100">
+                {!hasPlaneItId ? "sem ID" : planeItError ? "indisp." : fmtPlaneItHours(planeItTotal?.horasVooEtapaDecimalTotal)}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
