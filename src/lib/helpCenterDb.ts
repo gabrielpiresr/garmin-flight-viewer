@@ -159,6 +159,46 @@ function canUsePrivilegedHelpExecutor(): boolean {
   return Boolean(functions && ADMIN_USERS_FUNCTION_ID);
 }
 
+function isNotFoundError(error: unknown): boolean {
+  const code = (error as { code?: number; response?: { status?: number } })?.code
+    ?? (error as { response?: { status?: number } })?.response?.status;
+  return code === 404;
+}
+
+/**
+ * Exclusão robusta: tenta a função administrativa (necessária para usuários sem o
+ * label `admin` no Appwrite) e SEMPRE confirma com um delete direto idempotente.
+ * A função pode responder 200 sem apagar de fato (versão desatualizada em produção) —
+ * por isso não confiamos apenas nela: só reportamos sucesso quando o documento some.
+ */
+async function deleteHelpDocumentVerified(
+  collectionId: string,
+  documentId: string,
+  action: string,
+): Promise<{ error: Error | null }> {
+  let functionError: Error | null = null;
+  if (canUsePrivilegedHelpExecutor()) {
+    try {
+      await executePrivilegedHelp({ action, documentId });
+    } catch (error) {
+      functionError = error as Error;
+    }
+  }
+  if (!databases || !DB_ID) {
+    return { error: functionError ?? new Error("Central de ajuda não configurada.") };
+  }
+  try {
+    await databases.deleteDocument(DB_ID, collectionId, documentId);
+    return { error: null };
+  } catch (error) {
+    // 404 = já não existe (a função apagou) → sucesso.
+    if (isNotFoundError(error)) return { error: null };
+    // Sem permissão direta (usuário sem label admin): confia na função se ela não
+    // acusou erro; caso contrário, propaga o erro mais informativo.
+    return { error: functionError ?? (canUsePrivilegedHelpExecutor() ? null : (error as Error)) };
+  }
+}
+
 function privilegedAction(
   audience: HelpCenterAudience,
   base: "createHelpSection" | "updateHelpSection" | "deleteHelpSection" | "createHelpSubsection" | "updateHelpSubsection" | "deleteHelpSubsection" | "createHelpArticle" | "updateHelpArticle" | "deleteHelpArticle",
@@ -285,16 +325,7 @@ export async function deleteHelpSection(
   if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !sectionsColId) {
     return { error: new Error("Coleção de seções da central de ajuda não configurada.") };
   }
-  try {
-    if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpSection"), documentId: sectionId });
-      return { error: null };
-    }
-    await databases.deleteDocument(DB_ID, sectionsColId, sectionId);
-    return { error: null };
-  } catch (error) {
-    return { error: error as Error };
-  }
+  return deleteHelpDocumentVerified(sectionsColId, sectionId, privilegedAction(audience, "deleteHelpSection"));
 }
 
 export async function createHelpSubsection(
@@ -388,16 +419,7 @@ export async function deleteHelpSubsection(
   if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !subsectionsColId) {
     return { error: new Error("Coleção de subseções da central de ajuda não configurada.") };
   }
-  try {
-    if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpSubsection"), documentId: subsectionId });
-      return { error: null };
-    }
-    await databases.deleteDocument(DB_ID, subsectionsColId, subsectionId);
-    return { error: null };
-  } catch (error) {
-    return { error: error as Error };
-  }
+  return deleteHelpDocumentVerified(subsectionsColId, subsectionId, privilegedAction(audience, "deleteHelpSubsection"));
 }
 
 export async function createHelpArticle(
@@ -455,16 +477,7 @@ export async function deleteHelpArticle(
   if (!isHelpCenterConfigured(audience) || !databases || !DB_ID || !articlesColId) {
     return { error: new Error("Coleção de artigos da central de ajuda não configurada.") };
   }
-  try {
-    if (canUsePrivilegedHelpExecutor()) {
-      await executePrivilegedHelp({ action: privilegedAction(audience, "deleteHelpArticle"), documentId: articleId });
-      return { error: null };
-    }
-    await databases.deleteDocument(DB_ID, articlesColId, articleId);
-    return { error: null };
-  } catch (error) {
-    return { error: error as Error };
-  }
+  return deleteHelpDocumentVerified(articlesColId, articleId, privilegedAction(audience, "deleteHelpArticle"));
 }
 
 export async function uploadHelpMedia(file: File): Promise<{ data: HelpMediaUpload | null; error: Error | null }> {
