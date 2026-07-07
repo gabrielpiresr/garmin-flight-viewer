@@ -134,6 +134,27 @@ async function getRules() {
   return normalizeRules(body.schedule || {});
 }
 
+/**
+ * Modo simplificado de créditos: quando a escola configura
+ * flightCreditSales.nightHoursDifferentFromDay = false, dia e noite compartilham o
+ * mesmo saldo. O extrato do aluno (buildStudentCreditStatement em src/lib/creditsDb.ts)
+ * respeita isso; a verificação do servidor precisa fazer o mesmo, senão o front mostra
+ * saldo (ex.: 5h) e a API rejeita o agendamento por filtrar créditos por is_night/expiração.
+ * Default false (dia ≠ noite) quando o config não existe — igual ao padrão do front.
+ */
+async function getCreditSalesSimplified() {
+  try {
+    const result = await databases.listDocuments(DATABASE_ID, SETTINGS_ID, [
+      sdk.Query.equal("key", ["flightCreditSales"]),
+      sdk.Query.limit(1),
+    ]);
+    const body = parseJson(result.documents[0]?.settings_json, {});
+    return body.nightHoursDifferentFromDay === false;
+  } catch {
+    return false;
+  }
+}
+
 async function getProfile(userId) {
   const result = await databases.listDocuments(DATABASE_ID, PROFILES_ID, [
     sdk.Query.equal("user_id", [userId]),
@@ -251,6 +272,26 @@ function notifyAdminsStudentAction(kind, data) {
     JSON.stringify({ action: "notifyStudentScheduleEvent", kind, data }),
     true, // async — a notificação nunca bloqueia nem derruba a ação do aluno
   ).catch(() => {});
+}
+
+/**
+ * Lança no SAGA a multa de cancelamento como remoção de crédito (fire-and-forget).
+ * A admin-users tem a sessão/CSRF do SAGA e faz o POST /credits?action=remove.
+ * Best-effort: nunca bloqueia nem derruba o cancelamento (aluno ou admin).
+ */
+function registerSagaCancellationPenalty(data) {
+  if (!ADMIN_USERS_FUNCTION_ID) return;
+  functions.createExecution(
+    ADMIN_USERS_FUNCTION_ID,
+    JSON.stringify({ action: "registerSagaCancellationPenalty", ...data }),
+    true, // async
+  ).catch(() => {});
+}
+
+/** Componentes BR (data DD/MM/AAAA e hora HH:MM em UTC-3) do instante do cancelamento. */
+function brCancelStamp() {
+  const iso = new Date(Date.now() - 3 * 3600000).toISOString();
+  return { isoDate: iso.slice(0, 10), br: `${brDate(iso.slice(0, 10))}, ${iso.slice(11, 16)}` };
 }
 
 /**
@@ -686,8 +727,10 @@ function creditLifoSort(a, b) {
   return b.purchaseDate.localeCompare(a.purchaseDate) || a.expiresAt.localeCompare(b.expiresAt);
 }
 
-function creditEligibleForFlight(credit, flight, isNight) {
+function creditEligibleForFlight(credit, flight, isNight, simplified = false) {
   if (credit.remainingHours <= 0.0001) return false;
+  // No modo simplificado dia/noite e validade não segregam créditos (espelha o front).
+  if (simplified) return true;
   if (credit.isNight !== isNight) return false;
   if (credit.expiresAt < flight.flightDate) return false;
   return true;
@@ -728,7 +771,7 @@ function applyPenaltyToPools(pools, penaltyHours, flightDate) {
 }
 
 /** Replay cronológico + LIFO — espelha replayCreditLedger em src/lib/creditsDb.ts */
-function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight) {
+function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight, simplified = false) {
   const mutable = creditDocs.map((doc) => ({
     id: clean(doc.$id),
     purchaseDate: creditPurchaseDate(doc),
@@ -776,9 +819,10 @@ function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight) {
       continue;
     }
     const flight = event.flight;
-    if (flight.isNight !== isNight) continue;
+    // Simplificado: todos os voos consomem o pool único; segregado: só os do mesmo turno.
+    if (!simplified && flight.isNight !== isNight) continue;
     const eligible = mutable
-      .filter((credit) => creditEligibleForFlight(credit, flight, isNight))
+      .filter((credit) => creditEligibleForFlight(credit, flight, isNight, simplified))
       .sort(creditLifoSort);
     let remainingDebit = flight.hours;
     for (const credit of eligible) {
@@ -804,7 +848,7 @@ function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight) {
   };
 
   for (const doc of adjustmentDocs) {
-    if (Boolean(doc.is_night) !== isNight) continue;
+    if (!simplified && Boolean(doc.is_night) !== isNight) continue;
     const penalty = adjustmentPenaltyHours(doc);
     if (penalty <= 0.0001) continue;
     pools = applyPenaltyToPools(pools, penalty, clean(doc.flight_date) || null);
@@ -844,7 +888,7 @@ function creditInsufficientMessage(freeBalance, flightHours, flightDate, availWk
   return `Crédito insuficiente. Disponível: ${Math.max(0, freeBalance).toFixed(2)}h.`;
 }
 
-async function creditAvailable(studentId, modelId, isNight, flightHours, flightDate, sagaReserved = { weekdayHours: 0, weekendHours: 0 }) {
+async function creditAvailable(studentId, modelId, isNight, flightHours, flightDate, sagaReserved = { weekdayHours: 0, weekendHours: 0 }, simplified = false) {
   // Bug 5 guard: if aircraft has no model configured, credits can't be verified
   if (!modelId) {
     return {
@@ -859,12 +903,12 @@ async function creditAvailable(studentId, modelId, isNight, flightHours, flightD
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  // No modo simplificado o extrato do aluno inclui créditos vencidos; a query só filtra
+  // por validade quando dia/noite são segregados (senão o servidor divergiria do front).
+  const creditQueries = [sdk.Query.equal("user_id", [studentId]), sdk.Query.limit(500)];
+  if (!simplified) creditQueries.push(sdk.Query.greaterThanEqual("expires_at", today));
   const [credits, adjustments, flights] = await Promise.all([
-    databases.listDocuments(DATABASE_ID, CREDITS_ID, [
-      sdk.Query.equal("user_id", [studentId]),
-      sdk.Query.greaterThanEqual("expires_at", today),
-      sdk.Query.limit(500),
-    ]),
+    databases.listDocuments(DATABASE_ID, CREDITS_ID, creditQueries),
     databases.listDocuments(DATABASE_ID, ADJUSTMENTS_ID, [
       sdk.Query.equal("student_user_id", [studentId]),
       sdk.Query.limit(500),
@@ -876,8 +920,11 @@ async function creditAvailable(studentId, modelId, isNight, flightHours, flightD
     ]),
   ]);
 
-  const nightCredits = credits.documents.filter((doc) => Boolean(doc.is_night) === isNight);
-  const pools = computeCreditPools(nightCredits, flights.documents, adjustments.documents, isNight);
+  // Simplificado: pool único (todos os créditos); segregado: só os do mesmo turno.
+  const scopedCredits = simplified
+    ? credits.documents
+    : credits.documents.filter((doc) => Boolean(doc.is_night) === isNight);
+  const pools = computeCreditPools(scopedCredits, flights.documents, adjustments.documents, isNight, simplified);
   const { availWk, rawAny } = pools;
   const freeBalance = freeBalanceForDate(pools, sagaReserved, flightDate);
   const weekdayReserve = number(sagaReserved.weekdayHours, 0);
@@ -1263,7 +1310,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
     if (rules.requireCreditsForBooking) {
       const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules);
-      const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reserved);
+      const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -1371,7 +1418,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
   }
   if (rules.requireCreditsForBooking) {
-    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date);
+    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, undefined, rules.creditSimplified);
     const freeBalanceHours = credit.rawAvailableHours;
     if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
       fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -1471,7 +1518,7 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   } else {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
-  const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reservedSaga);
+  const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reservedSaga, rules.creditSimplified);
   const freeBalanceHours = credit.rawAvailableHours;
   const zeroCreditExceptionAvailable =
     rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit);
@@ -1550,6 +1597,20 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
       sdk.Permission.read(sdk.Role.label("instrutor")),
     ]).catch((error) => {
       if (error?.code !== 409) throw error;
+    });
+    // Espelha a multa como remoção de crédito no SAGA (best-effort, não bloqueia).
+    const stamp = brCancelStamp();
+    registerSagaCancellationPenalty({
+      studentUserId,
+      aircraftModelId: aircraft?.model_id || "",
+      aircraftIdent: clean(event.aircraft).toUpperCase(),
+      penaltyHours,
+      penaltyPct,
+      isNight: times.startMinute >= rules.nightFlightStartHour * 60,
+      createdAt: stamp.isoDate,
+      flightWhen: `${brDate(times.flightDate)} às ${times.startTime}`,
+      cancelledWhen: stamp.br,
+      penaltyRef: `saga-${id}`,
     });
   }
   if (studentUserId) {
@@ -1711,7 +1772,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     const studentUserId = clean(event.studentUserId) || (own ? actorId : null);
     const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules, id);
     if (studentUserId) {
-      const credit = await creditAvailable(studentUserId, aircraftModelId, isNight, durationMinutes / 60, date, reserved);
+      const credit = await creditAvailable(studentUserId, aircraftModelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -1820,6 +1881,20 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
     ]).catch((error) => {
       if (error?.code !== 409) throw error;
     });
+    // Espelha a multa como remoção de crédito no SAGA (best-effort, não bloqueia).
+    const stamp = brCancelStamp();
+    registerSagaCancellationPenalty({
+      studentUserId: doc.student_user_id,
+      aircraftModelId: doc.aircraft_model_id || "",
+      aircraftIdent: clean(doc.aircraft_ident).toUpperCase(),
+      penaltyHours,
+      penaltyPct,
+      isNight: Boolean(doc.is_night),
+      createdAt: stamp.isoDate,
+      flightWhen: `${brDate(doc.flight_date)} às ${clean(doc.start_time)}`,
+      cancelledWhen: stamp.br,
+      penaltyRef: `local-${id}`,
+    });
   }
   await databases.createDocument(DATABASE_ID, AUDIT_ID, `cancel-${id}`, {
     school_id: SCHOOL_ID,
@@ -1874,6 +1949,9 @@ module.exports = async ({ req, res, error }) => {
     const profile = await getProfile(actorId);
     const actorRole = getEffectiveRole(profile);
     const rules = await getRules();
+    // Flag do modo simplificado de créditos (dia = noite) — threaded via rules p/ as
+    // verificações de crédito espelharem o extrato do aluno.
+    rules.creditSimplified = await getCreditSalesSimplified();
     let data;
     if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
     else if (payload.action === "checkAvailability") data = await handleAvailability(payload, actorId, actorRole, rules);

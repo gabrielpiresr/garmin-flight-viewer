@@ -149,6 +149,9 @@ const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"]);
 const SCHEDULED_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto"]);
 const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
+// Banco usado no lançamento de MULTA (remoção de crédito). No exemplo real do SAGA a
+// multa de cancelamento usa bank_id=2 (diferente do banco de compra). Configurável.
+const SAGA_CREDIT_PENALTY_BANK_ID = process.env.SAGA_CREDIT_PENALTY_BANK_ID || "2";
 const SAGA_CREDIT_TYPE = process.env.SAGA_CREDIT_TYPE || "GENERIC";
 const SAGA_CREDIT_AIRCRAFT_ICAO = process.env.SAGA_CREDIT_AIRCRAFT_ICAO || "MC01";
 
@@ -3584,6 +3587,101 @@ async function createManualSagaCredit(localCreditDoc, logs = []) {
   }
   await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
   return { ok: true, status: "completed", marker, sagaStudentId };
+}
+
+/**
+ * Lança no SAGA a MULTA de um cancelamento como remoção de crédito
+ * (POST /credits?action=remove). Espelha createManualSagaCredit para sessão/CSRF/
+ * idempotência (marca `GFV-PENALTY:<ref>` nas notas e verifica antes de postar). O
+ * valor monetário sai do mesmo cálculo de tarifa/hora do aluno usado no custo do voo.
+ * Best-effort: chamada de forma assíncrona pela schedule-booking; nunca deve derrubar
+ * o cancelamento.
+ */
+async function registerSagaCancellationPenalty(params, logs = []) {
+  const studentUserId = cleanString(params?.studentUserId);
+  const penaltyHours = positiveNumber(params?.penaltyHours);
+  if (!studentUserId) return { ok: false, status: "skipped", message: "Aluno nao informado." };
+  if (penaltyHours <= 0) return { ok: false, status: "skipped", message: "Sem multa a lancar." };
+
+  const profile = await getProfileByUserId(studentUserId).catch(() => null);
+  const sagaStudentId =
+    cleanString(profile?.saga_user_id) || cleanString(studentUserId).match(/^saga_(\d+)$/)?.[1] || "";
+  if (!sagaStudentId) return { ok: false, status: "skipped", message: "Aluno sem saga_user_id vinculado." };
+
+  const modelId = cleanString(params?.aircraftModelId);
+  const penaltyRef = cleanString(params?.penaltyRef) || `${sagaStudentId}-${cleanString(params?.createdAt)}`;
+  const marker = `GFV-PENALTY:${penaltyRef}`;
+
+  const { cookieJar, loginEmail } = await loadSagaCreditCookieJar(logs);
+  let page = await sagaCreditPage(cookieJar, sagaStudentId);
+  if (String(page.html || "").includes(marker)) {
+    await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+    return { ok: true, status: "already_exists", marker, sagaStudentId };
+  }
+
+  const csrfToken = resolveSagaCsrfToken(page.html, cookieJar);
+  if (!csrfToken) {
+    throw Object.assign(new Error("Token CSRF do formulario de creditos do SAGA nao encontrado."), { status: 502 });
+  }
+
+  const mapping = await loadSagaImportMapping().catch(() => defaultSagaImportMapping());
+  const aircraftIcao = resolveSagaCreditAircraftIcaoForLocalModel(mapping, modelId);
+  const rate = await resolveStudentHourlyRateServer(studentUserId, modelId, Boolean(params?.isNight)).catch(() => ({
+    hourlyRate: 0,
+  }));
+  const value = Math.round(Number(rate?.hourlyRate || 0) * penaltyHours * 100) / 100;
+  const createdAt = asIsoDate(params?.createdAt) || nowIso().slice(0, 10);
+  const pct = Math.round(Number(params?.penaltyPct || 0));
+  const notes = [
+    `MULTA ${pct}% - Voo cancelado: ${cleanString(params?.flightWhen)} - Cancelamento em: ${cleanString(params?.cancelledWhen)}`.trim(),
+    marker,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  // hours em formato BR (vírgula) como no lançamento manual do SAGA; value em ponto.
+  const form = new URLSearchParams({
+    _token: csrfToken,
+    student_id: sagaStudentId,
+    created_at: createdAt,
+    aircraft_icao: aircraftIcao,
+    type: SAGA_CREDIT_TYPE,
+    hours: String(penaltyHours).replace(".", ","),
+    value: String(value),
+    bank_id: SAGA_CREDIT_PENALTY_BANK_ID,
+    expiration_at: createdAt,
+    notes,
+  });
+
+  const post = await sagaFetch(
+    "/credits?action=remove",
+    {
+      method: "POST",
+      body: form.toString(),
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: SAGA_BASE_URL,
+        referer: `${SAGA_BASE_URL}/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`,
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(post)) {
+    throw Object.assign(new Error("Sessao SAGA expirou ao lancar a multa."), { status: 401 });
+  }
+
+  page = await sagaCreditPage(cookieJar, sagaStudentId);
+  const confirmed = String(page.html || "").includes(marker);
+  await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+  if (!confirmed) {
+    const location = cleanString(post.response.headers.get("location"));
+    throw Object.assign(
+      new Error(`SAGA nao confirmou a multa (HTTP ${post.response.status}, redirect ${location || "ausente"}).`),
+      { status: 502 },
+    );
+  }
+  return { ok: true, status: "completed", marker, sagaStudentId, value, hours: penaltyHours };
 }
 
 async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode = false, createOnly = false } = {}) {
@@ -17885,6 +17983,22 @@ module.exports = async ({ req, res, log, error }) => {
       if (!validKinds.has(kind)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
       await notifyStudentScheduleEventToAdmins(kind, payload.data);
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "registerSagaCancellationPenalty") {
+      // Chamada interna da schedule-booking (via API key, sem actorUserId) quando um
+      // cancelamento debita multa — lança a remoção de crédito no SAGA. Best-effort:
+      // qualquer falha é logada, não derruba o cancelamento (execução assíncrona).
+      if (actorUserId) await requireAdmin(actorUserId);
+      const result = await registerSagaCancellationPenalty(payload).catch((err) => ({
+        ok: false,
+        status: "error",
+        message: err?.message || String(err),
+      }));
+      log(
+        `[registerSagaCancellationPenalty] student=${cleanString(payload.studentUserId)} ref=${cleanString(payload.penaltyRef)} result=${JSON.stringify(result)}`,
+      );
+      return jsonResponse(res, 200, { ok: true, result });
     }
 
     if (action === "notifyCaktoSaleEvent") {
