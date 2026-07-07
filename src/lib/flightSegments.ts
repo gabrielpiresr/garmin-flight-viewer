@@ -149,7 +149,12 @@ function hasUnreliableAgl(data: ChartRow[]): boolean {
 // ─── event detection ─────────────────────────────────────────────────────────
 
 /** Index of ROTATION or null. */
-function findRotation(data: ChartRow[], after: number): number | null {
+function findRotation(
+  data: ChartRow[],
+  after: number,
+  options: { ignoreAgl?: boolean } = {},
+): number | null {
+  const { ignoreAgl = false } = options;
   for (let i = Math.max(after + 3, 3); i < data.length; i++) {
     const gs = get(data[i]!, "gsKt");
     const pitch = get(data[i]!, "pitchDeg");
@@ -159,7 +164,7 @@ function findRotation(data: ChartRow[], after: number): number | null {
       gs !== null && gs > 45 &&
       pitch !== null && pitch > 3 &&
       pitchPrev !== null && (pitch - pitchPrev) > 2 &&
-      (agl === null || agl === 0)
+      (ignoreAgl || agl === null || agl === 0)
     ) return i;
   }
   return null;
@@ -232,6 +237,146 @@ function slowsBelowGroundSpeed(data: ChartRow[], idx: number, thresholdKt: numbe
   return false;
 }
 
+function hasSustainedLowGroundSpeed(
+  data: ChartRow[],
+  idx: number,
+  thresholdKt: number,
+  within = 60,
+  minRows = 10,
+): boolean {
+  let run = 0;
+  for (let i = idx; i <= Math.min(data.length - 1, idx + within); i++) {
+    const gs = get(data[i]!, "gsKt");
+    run = gs !== null && gs < thresholdKt ? run + 1 : 0;
+    if (run >= minRows) return true;
+  }
+  return false;
+}
+
+function hasGroundRollBeforeTakeoff(data: ChartRow[], rotIdx: number): boolean {
+  for (let i = rotIdx; i >= Math.max(0, rotIdx - 180); i--) {
+    const gs = get(data[i]!, "gsKt");
+    if (gs !== null && gs < 25) return true;
+  }
+  return false;
+}
+
+function refineTouchdownCandidate(data: ChartRow[], idx: number): number {
+  const fullStopRollout = hasSustainedLowGroundSpeed(data, idx, 25, 60);
+  const touchAndGoRollout = hasFutureAirborne(data, idx, 90);
+  const lateRollout = isLateRolloutSpeed(data, idx);
+  if (!fullStopRollout && !touchAndGoRollout && !lateRollout) return idx;
+
+  const referenceAlt =
+    smoothedAltExtreme(data, idx - 10, idx + 10, "min").value ??
+    smoothedGpsAltFt(data, idx);
+  const speedValleyIdx = touchAndGoRollout ? localSpeedValleyIdx(data, idx) : null;
+  const searchEnd =
+    speedValleyIdx !== null && speedValleyIdx < idx
+      ? Math.max(Math.max(0, idx - 45), speedValleyIdx - 1)
+      : idx;
+  let impactIdx: number | null = null;
+  let impactG: number | null = null;
+
+  for (let i = Math.max(0, idx - 45); i <= searchEnd; i++) {
+    const candidateAlt = smoothedGpsAltFt(data, i);
+    if (referenceAlt !== null && candidateAlt !== null && candidateAlt > referenceAlt + 150) continue;
+
+    const gs = get(data[i]!, "gsKt");
+    const ias = get(data[i]!, "iasKt");
+    if (gs === null || gs < 35 || gs > 75) continue;
+    if (ias !== null && (ias < 30 || ias > 85)) continue;
+
+    const recentMinVs = minVerticalSpeed(data, i - 45, i);
+    if (recentMinVs === null || recentMinVs > -250) continue;
+
+    const normG = get(data[i]!, "normG");
+    if (normG !== null && normG >= 1.1 && (impactG === null || normG >= impactG)) {
+      impactG = normG;
+      impactIdx = i;
+    }
+  }
+
+  if (impactIdx !== null) return impactIdx;
+  if (touchAndGoRollout && !fullStopRollout && !lateRollout) return idx;
+
+  for (let i = Math.max(0, idx - 45); i <= searchEnd; i++) {
+    const candidateAlt = smoothedGpsAltFt(data, i);
+    if (referenceAlt !== null && candidateAlt !== null && candidateAlt > referenceAlt + 150) continue;
+
+    const gs = get(data[i]!, "gsKt");
+    const ias = get(data[i]!, "iasKt");
+    const vs = get(data[i]!, "vertSpeedFpm");
+    if (
+      gs !== null &&
+      gs >= 35 &&
+      gs <= 60 &&
+      (ias === null || (ias >= 30 && ias <= 70)) &&
+      vs !== null &&
+      Math.abs(vs) <= 150
+    ) {
+      return i;
+    }
+  }
+
+  return idx;
+}
+
+function isPlausibleTouchdownSpeed(data: ChartRow[], idx: number): boolean {
+  const gs = get(data[idx]!, "gsKt");
+  const ias = get(data[idx]!, "iasKt");
+  return (gs !== null && gs >= 35) || (ias !== null && ias >= 35);
+}
+
+function isLateRolloutSpeed(data: ChartRow[], idx: number): boolean {
+  const gs = get(data[idx]!, "gsKt");
+  const ias = get(data[idx]!, "iasKt");
+  return (gs !== null && gs <= 25) || (ias !== null && ias <= 25);
+}
+
+function localSpeedValleyIdx(data: ChartRow[], idx: number, lookBehind = 30, lookAhead = 20): number | null {
+  const gsMinIdx = minMetricIdx(data, idx - lookBehind, idx + lookAhead, "gsKt");
+  const iasMinIdx = minMetricIdx(data, idx - lookBehind, idx + lookAhead, "iasKt");
+  if (gsMinIdx === null) return iasMinIdx;
+  if (iasMinIdx === null) return gsMinIdx;
+
+  const gs = get(data[gsMinIdx]!, "gsKt") ?? Number.POSITIVE_INFINITY;
+  const ias = get(data[iasMinIdx]!, "iasKt") ?? Number.POSITIVE_INFINITY;
+  return gs <= ias ? gsMinIdx : iasMinIdx;
+}
+
+function findTglRotationAfterTouchdown(data: ChartRow[], tdIdx: number, fallbackRotIdx?: number): number | null {
+  const speedValleyIdx = localSpeedValleyIdx(data, tdIdx, 0, 45);
+  const startIdx = Math.max(tdIdx + 1, (speedValleyIdx ?? tdIdx) + 1);
+  const endIdx = Math.min(data.length - 1, tdIdx + 90);
+
+  for (let i = startIdx; i <= endIdx; i++) {
+    const gs = get(data[i]!, "gsKt");
+    const previousGs = averageMetric(data, i - 5, i - 1, "gsKt");
+    const velU = get(data[i]!, "velUMps");
+    const vs = get(data[i]!, "vertSpeedFpm");
+    const pitch = get(data[i]!, "pitchDeg");
+    const alt = smoothedGpsAltFt(data, i);
+    const previousAlt = smoothedGpsAltFt(data, i - 3);
+
+    if (
+      gs !== null &&
+      gs > 45 &&
+      previousGs !== null &&
+      gs >= previousGs + 1.5 &&
+      pitch !== null &&
+      pitch > 3 &&
+      ((velU !== null && velU > 0.5) || (vs !== null && vs > 100)) &&
+      (alt === null || previousAlt === null || alt >= previousAlt)
+    ) {
+      return i;
+    }
+  }
+
+  if (fallbackRotIdx !== undefined && fallbackRotIdx >= startIdx) return fallbackRotIdx;
+  return null;
+}
+
 function minVerticalSpeed(data: ChartRow[], startIdx: number, endIdx: number): number | null {
   let min: number | null = null;
   for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
@@ -261,6 +406,19 @@ function minMetric(data: ChartRow[], startIdx: number, endIdx: number, key: stri
     if (value !== null) min = min === null ? value : Math.min(min, value);
   }
   return min;
+}
+
+function minMetricIdx(data: ChartRow[], startIdx: number, endIdx: number, key: string): number | null {
+  let bestIdx: number | null = null;
+  let min: number | null = null;
+  for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
+    const value = get(data[i]!, key);
+    if (value !== null && (min === null || value < min)) {
+      min = value;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }
 
 function hasTouchdownSpeedSignature(
@@ -307,6 +465,8 @@ function hasAltitudeValleyTouchdownSignature(data: ChartRow[], idx: number): boo
   const gs = get(data[idx]!, "gsKt");
   const ias = get(data[idx]!, "iasKt");
   const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
+  const localMinGs = minMetric(data, idx - 20, idx + 20, "gsKt");
+  const localMinIas = minMetric(data, idx - 20, idx + 20, "iasKt");
 
   const touchdownSpeed =
     (gs !== null && gs <= 75) ||
@@ -316,9 +476,12 @@ function hasAltitudeValleyTouchdownSignature(data: ChartRow[], idx: number): boo
   const approachDecel =
     (preGs !== null && touchdownGs !== null && preGs - touchdownGs >= 5) ||
     (preIas !== null && touchdownIas !== null && preIas - touchdownIas >= 5);
+  const localSpeedDip =
+    (localMinGs !== null && localMinGs <= 62) ||
+    (localMinIas !== null && localMinIas <= 62);
   const recentDescent = recentMinVs !== null && recentMinVs <= -250;
 
-  return touchdownSpeed && approachDecel && recentDescent;
+  return touchdownSpeed && (approachDecel || localSpeedDip) && recentDescent;
 }
 
 function findAltitudeClimbAfterTouchdown(
@@ -469,7 +632,8 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
   const gsNext = get(data[idx + 1]!, "gsKt");
   const aglIndicatesGround = agl === 0;
   const aglDroppedOut = agl === null;
-  if ((!aglIndicatesGround && !aglDroppedOut) || gs === null || gs < 20 || gsNext === null) return false;
+  if ((!aglIndicatesGround && !aglDroppedOut) || gs === null || gsNext === null) return false;
+  if (gs < 20 && !aglDroppedOut) return false;
 
   let previousAirborneIdx: number | null = null;
   for (let i = idx - 1; i >= Math.max(0, idx - 45); i--) {
@@ -488,8 +652,12 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
   const futureAirborne = hasFutureAirborne(data, idx);
   const rollout = gsNext <= gs || !futureAirborne;
   const missingAglRollout = aglDroppedOut && !futureAirborne && (gs <= 25 || slowsBelowGroundSpeed(data, idx, 10));
+  const missingAglFullStop =
+    aglDroppedOut &&
+    (gs <= 35 || slowsBelowGroundSpeed(data, idx, 25, 30)) &&
+    hasSustainedLowGroundSpeed(data, idx, 25, 60);
 
-  return recentDescent && decelerating && (aglIndicatesGround ? rollout : missingAglRollout);
+  return recentDescent && decelerating && (aglIndicatesGround ? rollout : missingAglRollout || missingAglFullStop);
 }
 
 /**
@@ -514,18 +682,30 @@ function findTouchdownWithOptions(
   const { end, allowAltitudeTouchdown = true } = options;
   const limit = end !== undefined ? Math.min(end, data.length - 4) : data.length - 4;
   for (let i = after + 1; i <= limit; i++) {
-    if (isStableRolloutTouchdown(data, i)) return i;
+    if (isStableRolloutTouchdown(data, i)) {
+      const refinedIdx = refineTouchdownCandidate(data, i);
+      return refinedIdx > after ? refinedIdx : i;
+    }
 
     if (isTouchAndGoRecoveryTouchdown(data, i)) {
       for (let j = i + 1; j <= Math.min(i + 10, limit); j++) {
-        if (isStableRolloutTouchdown(data, j)) return j;
+        if (isStableRolloutTouchdown(data, j)) {
+          const refinedIdx = refineTouchdownCandidate(data, j);
+          return refinedIdx > after ? refinedIdx : j;
+        }
       }
       return i;
     }
 
-    if (isAglTransitionTouchdown(data, i)) return i;
+    if (isAglTransitionTouchdown(data, i)) {
+      const refinedIdx = refineTouchdownCandidate(data, i);
+      return refinedIdx > after ? refinedIdx : i;
+    }
 
-    if (allowAltitudeTouchdown && isAltitudeValleyTouchdown(data, i)) return i;
+    if (allowAltitudeTouchdown && isAltitudeValleyTouchdown(data, i)) {
+      const refinedIdx = refineTouchdownCandidate(data, i);
+      return refinedIdx > after ? refinedIdx : i;
+    }
   }
   return null;
 }
@@ -872,6 +1052,8 @@ function chooseTouchdownRepresentative(
   );
   if (takeoffBetweenCandidates) return a;
 
+  if (isPlausibleTouchdownSpeed(data, a.tdIdx) && isLateRolloutSpeed(data, b.tdIdx)) return a;
+
   const aGs = get(data[a.tdIdx]!, "gsKt");
   const bGs = get(data[b.tdIdx]!, "gsKt");
   if (aGs !== null && bGs !== null && bGs <= aGs - 5) return b;
@@ -924,7 +1106,7 @@ export function detectFlightSegments(
 
   let searchFrom = 0;
   while (searchFrom < data.length) {
-    const rotIdx = findRotation(data, searchFrom);
+    const rotIdx = findRotation(data, searchFrom, { ignoreAgl: aglIsUnreliable });
     if (rotIdx === null) break;
 
     const liftIdx = findLiftoff(data, rotIdx);
@@ -959,8 +1141,9 @@ export function detectFlightSegments(
   }
   if (allowAltitudeFallback) {
     for (const tdIdx of collectAltitudeTouchdowns(data)) {
-      if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
-        touchdowns.push({ tdIdx });
+      const refinedTdIdx = refineTouchdownCandidate(data, tdIdx);
+      if (!touchdowns.some((td) => td.tdIdx === refinedTdIdx)) {
+        touchdowns.push({ tdIdx: refinedTdIdx });
       }
     }
   }
@@ -1035,7 +1218,15 @@ export function detectFlightSegments(
     nextTglTakeoff: TakeoffGroup | undefined,
     climbAfterTouchdownIdx: number | null,
   ) {
-    const nextLiftIdx = nextTglTakeoff?.liftIdx ?? findLiftoff(data, tdIdx, 120);
+    const tglRotationIdx = findTglRotationAfterTouchdown(data, tdIdx, nextTglTakeoff?.rotIdx);
+    const detectedLiftIdx =
+      tglRotationIdx !== null
+        ? findLiftoff(data, tglRotationIdx, 120)
+        : nextTglTakeoff?.liftIdx ?? findLiftoff(data, tdIdx, 120);
+    const nextLiftIdx =
+      detectedLiftIdx !== null && tglRotationIdx !== null && detectedLiftIdx < tglRotationIdx
+        ? tglRotationIdx
+        : detectedLiftIdx;
     const nextAlt =
       nextLiftIdx !== null
         ? get(data[nextLiftIdx]!, "gpsAltFt") ?? get(data[tdIdx]!, "gpsAltFt") ?? 0
@@ -1053,8 +1244,8 @@ export function detectFlightSegments(
 
     const events: FlightEvent[] = [
       { type: "touchdown", xMs: data[tdIdx]!.x, label: "Touchdown", color: COLORS.touchdown, rowIdx: tdIdx },
-      ...(nextTglTakeoff !== undefined
-        ? [{ type: "rotation" as const, xMs: data[nextTglTakeoff.rotIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: nextTglTakeoff.rotIdx }]
+      ...(tglRotationIdx !== null
+        ? [{ type: "rotation" as const, xMs: data[tglRotationIdx]!.x, label: "Rotation", color: COLORS.rotation, rowIdx: tglRotationIdx }]
         : []),
       ...(nextLiftIdx !== null
         ? [{ type: "liftoff" as const, xMs: data[nextLiftIdx]!.x, label: "Liftoff", color: COLORS.liftoff, rowIdx: nextLiftIdx }]
@@ -1117,7 +1308,7 @@ export function detectFlightSegments(
   });
 
   takeoffs.forEach((takeoff, idx) => {
-    if (!tglTakeoffs.has(idx)) {
+    if (!tglTakeoffs.has(idx) && (!aglIsUnreliable || hasGroundRollBeforeTakeoff(data, takeoff.rotIdx))) {
       pushTakeoffSegment(`takeoff-${idx}`, takeoff);
     }
   });
