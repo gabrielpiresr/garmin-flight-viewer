@@ -146,6 +146,43 @@ function hasUnreliableAgl(data: ChartRow[]): boolean {
   return impossibleGroundRows >= 5 || airborneRowsWithMissingAgl >= 30;
 }
 
+const MAX_TOUCHDOWN_AGL_FT = 600;
+const MAX_TOUCHDOWN_RELATIVE_ALT_FT = 600;
+const MAX_TOUCHDOWN_AGL_WITHOUT_ALT_FT = 1200;
+
+interface TouchdownDetectionContext {
+  fieldElevationFt: number | null;
+}
+
+function estimateFieldElevationFt(data: ChartRow[]): number | null {
+  const altitudes = data
+    .map((row) => get(row, "gpsAltFt"))
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b);
+  if (altitudes.length === 0) return null;
+
+  return altitudes[Math.floor(altitudes.length * 0.05)] ?? altitudes[0] ?? null;
+}
+
+function createTouchdownDetectionContext(data: ChartRow[]): TouchdownDetectionContext {
+  return { fieldElevationFt: estimateFieldElevationFt(data) };
+}
+
+function isImplausiblyHighTouchdownCandidate(
+  data: ChartRow[],
+  idx: number,
+  context: TouchdownDetectionContext | undefined,
+): boolean {
+  const agl = get(data[idx]!, "heightAglFt");
+  if (agl === null || agl <= MAX_TOUCHDOWN_AGL_FT) return false;
+
+  const alt = smoothedGpsAltFt(data, idx);
+  const fieldElevationFt = context?.fieldElevationFt ?? null;
+  if (alt === null || fieldElevationFt === null) return agl > MAX_TOUCHDOWN_AGL_WITHOUT_ALT_FT;
+
+  return alt > fieldElevationFt + MAX_TOUCHDOWN_RELATIVE_ALT_FT;
+}
+
 // ─── event detection ─────────────────────────────────────────────────────────
 
 /** Index of ROTATION or null. */
@@ -512,8 +549,13 @@ function findAltitudeClimbAfterTouchdown(
   return null;
 }
 
-function isAltitudeValleyTouchdown(data: ChartRow[], idx: number): boolean {
+function isAltitudeValleyTouchdown(
+  data: ChartRow[],
+  idx: number,
+  context?: TouchdownDetectionContext,
+): boolean {
   if (idx < 30 || idx + 5 >= data.length) return false;
+  if (isImplausiblyHighTouchdownCandidate(data, idx, context)) return false;
 
   const alt = smoothedGpsAltFt(data, idx);
   const gs = get(data[idx]!, "gsKt");
@@ -545,11 +587,14 @@ function isAltitudeValleyTouchdown(data: ChartRow[], idx: number): boolean {
   return touchdownLikeSpeed;
 }
 
-function collectAltitudeTouchdowns(data: ChartRow[]): number[] {
+function collectAltitudeTouchdowns(
+  data: ChartRow[],
+  context?: TouchdownDetectionContext,
+): number[] {
   const candidates: number[] = [];
 
   for (let i = 30; i < data.length - 5; i++) {
-    if (isAltitudeValleyTouchdown(data, i)) candidates.push(i);
+    if (isAltitudeValleyTouchdown(data, i, context)) candidates.push(i);
   }
 
   candidates.sort((a, b) => a - b);
@@ -671,27 +716,44 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
  * @param end  Optional upper bound (inclusive). Defaults to `data.length - 4`.
  */
 export function findTouchdown(data: ChartRow[], after: number, end?: number): number | null {
-  return findTouchdownWithOptions(data, after, { end });
+  return findTouchdownWithOptions(data, after, {
+    end,
+    touchdownContext: createTouchdownDetectionContext(data),
+  });
 }
 
 function findTouchdownWithOptions(
   data: ChartRow[],
   after: number,
-  options: { end?: number; allowAltitudeTouchdown?: boolean } = {},
+  options: {
+    end?: number;
+    allowAltitudeTouchdown?: boolean;
+    touchdownContext?: TouchdownDetectionContext;
+  } = {},
 ): number | null {
-  const { end, allowAltitudeTouchdown = true } = options;
+  const { end, allowAltitudeTouchdown = true, touchdownContext } = options;
   const limit = end !== undefined ? Math.min(end, data.length - 4) : data.length - 4;
+  const acceptableTouchdownIdx = (idx: number) =>
+    !isImplausiblyHighTouchdownCandidate(data, idx, touchdownContext);
+
   for (let i = after + 1; i <= limit; i++) {
+    if (!acceptableTouchdownIdx(i)) continue;
+
     if (isStableRolloutTouchdown(data, i)) {
       const refinedIdx = refineTouchdownCandidate(data, i);
-      return refinedIdx > after ? refinedIdx : i;
+      const candidateIdx = refinedIdx > after ? refinedIdx : i;
+      if (acceptableTouchdownIdx(candidateIdx)) return candidateIdx;
+      continue;
     }
 
     if (isTouchAndGoRecoveryTouchdown(data, i)) {
       for (let j = i + 1; j <= Math.min(i + 10, limit); j++) {
+        if (!acceptableTouchdownIdx(j)) continue;
         if (isStableRolloutTouchdown(data, j)) {
           const refinedIdx = refineTouchdownCandidate(data, j);
-          return refinedIdx > after ? refinedIdx : j;
+          const candidateIdx = refinedIdx > after ? refinedIdx : j;
+          if (acceptableTouchdownIdx(candidateIdx)) return candidateIdx;
+          continue;
         }
       }
       return i;
@@ -699,12 +761,15 @@ function findTouchdownWithOptions(
 
     if (isAglTransitionTouchdown(data, i)) {
       const refinedIdx = refineTouchdownCandidate(data, i);
-      return refinedIdx > after ? refinedIdx : i;
+      const candidateIdx = refinedIdx > after ? refinedIdx : i;
+      if (acceptableTouchdownIdx(candidateIdx)) return candidateIdx;
+      continue;
     }
 
-    if (allowAltitudeTouchdown && isAltitudeValleyTouchdown(data, i)) {
+    if (allowAltitudeTouchdown && isAltitudeValleyTouchdown(data, i, touchdownContext)) {
       const refinedIdx = refineTouchdownCandidate(data, i);
-      return refinedIdx > after ? refinedIdx : i;
+      const candidateIdx = refinedIdx > after ? refinedIdx : i;
+      if (acceptableTouchdownIdx(candidateIdx)) return candidateIdx;
     }
   }
   return null;
@@ -1100,6 +1165,7 @@ export function detectFlightSegments(
   const aglIsUnreliable = knownUnreliableAglAircraft || (reliableAglAircraft ? false : hasUnreliableAgl(data));
   const allowAltitudeFallback = knownUnreliableAglAircraft || (!reliableAglAircraft && (aglIsUnreliable || !aglAvailable));
   const requireAglForTgl = reliableAglAircraft && aglAvailable;
+  const touchdownContext = createTouchdownDetectionContext(data);
 
   const takeoffs: TakeoffGroup[] = [];
   const touchdowns: TouchdownGroup[] = [];
@@ -1119,6 +1185,7 @@ export function detectFlightSegments(
 
     const tdIdx = findTouchdownWithOptions(data, liftIdx + 1, {
       allowAltitudeTouchdown: allowAltitudeFallback,
+      touchdownContext,
     });
     if (tdIdx !== null) {
       touchdowns.push({ tdIdx });
@@ -1132,6 +1199,7 @@ export function detectFlightSegments(
   while (touchdownSearchFrom < data.length) {
     const tdIdx = findTouchdownWithOptions(data, touchdownSearchFrom, {
       allowAltitudeTouchdown: allowAltitudeFallback,
+      touchdownContext,
     });
     if (tdIdx === null) break;
     if (!touchdowns.some((td) => td.tdIdx === tdIdx)) {
@@ -1140,9 +1208,12 @@ export function detectFlightSegments(
     touchdownSearchFrom = tdIdx + 5;
   }
   if (allowAltitudeFallback) {
-    for (const tdIdx of collectAltitudeTouchdowns(data)) {
+    for (const tdIdx of collectAltitudeTouchdowns(data, touchdownContext)) {
       const refinedTdIdx = refineTouchdownCandidate(data, tdIdx);
-      if (!touchdowns.some((td) => td.tdIdx === refinedTdIdx)) {
+      if (
+        !isImplausiblyHighTouchdownCandidate(data, refinedTdIdx, touchdownContext) &&
+        !touchdowns.some((td) => td.tdIdx === refinedTdIdx)
+      ) {
         touchdowns.push({ tdIdx: refinedTdIdx });
       }
     }
