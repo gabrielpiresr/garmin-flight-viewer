@@ -151,7 +151,7 @@ export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, o
         >
           &larr; Jornada
         </button>
-        {isClubMember && (
+        {(isClubMember || isTrial) && (
           <div className="flex flex-wrap items-center gap-2">
             {shareStatus ? <span className="text-xs text-slate-400">{shareStatus}</span> : null}
             <button

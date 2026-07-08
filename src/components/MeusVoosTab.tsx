@@ -158,15 +158,64 @@ function sagaFlightStartMs(flight: PublicScheduleFlight): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function SagaUpcomingSkeleton({ variant }: { variant: "cards" | "list" }) {
+  if (variant === "list") {
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
+        <ul className="divide-y divide-slate-800/80">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li key={i} className="flex items-center gap-3 px-3 py-3">
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-5 w-16 rounded" />
+              <Skeleton className="h-4 w-12" />
+              <Skeleton className="ml-auto h-4 w-20" />
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  return (
+    <ul className="space-y-2">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <li key={i} className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <div className="flex w-8 shrink-0 flex-col items-center gap-1">
+              <Skeleton className="h-5 w-6" />
+              <Skeleton className="h-2.5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex gap-1.5">
+                <Skeleton className="h-5 w-16 rounded" />
+                <Skeleton className="h-4 w-24" />
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, j) => (
+                  <Skeleton key={j} className="h-3 w-full" />
+                ))}
+              </div>
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function SagaUpcomingList({
   flights,
   onOpen,
   variant = "cards",
+  loading = false,
 }: {
   flights: PublicScheduleFlight[];
   onOpen?: (flight: PublicScheduleFlight) => void;
   variant?: "cards" | "list";
+  loading?: boolean;
 }) {
+  if (loading && flights.length === 0) {
+    return <SagaUpcomingSkeleton variant={variant} />;
+  }
   if (flights.length === 0) {
     return <p className="rounded-xl border border-slate-700/60 bg-slate-900/30 px-4 py-6 text-center text-sm text-slate-500">Nenhum voo futuro.</p>;
   }
@@ -424,6 +473,7 @@ export function MeusVoosTab() {
   const showSagaSync = !!ADMIN_USERS_FUNCTION_ID && !!user;
   const [sagaOnlySchedule, setSagaOnlySchedule] = useState(false);
   const [sagaUpcoming, setSagaUpcoming] = useState<PublicScheduleFlight[]>([]);
+  const [sagaUpcomingLoading, setSagaUpcomingLoading] = useState(true);
   const [sagaAircrafts, setSagaAircrafts] = useState<PublicScheduleAircraft[]>([]);
   const [scheduleTabEnabled, setScheduleTabEnabled] = useState(false);
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules | null>(null);
@@ -433,8 +483,12 @@ export function MeusVoosTab() {
   // Modo "escala somente no SAGA": busca on-demand a escala do mês atual + 2 meses
   // e exibe os voos futuros do aluno na seção "Voos futuros". Nada é salvo no sistema.
   useEffect(() => {
-    if (!user || !isStudentView) return;
+    if (!user || !isStudentView) {
+      setSagaUpcomingLoading(false);
+      return;
+    }
     let cancelled = false;
+    setSagaUpcomingLoading(true);
     void getSchoolRules()
       .then(async (rules) => {
         if (cancelled) return;
@@ -457,6 +511,9 @@ export function MeusVoosTab() {
       })
       .catch(() => {
         if (!cancelled) setSagaUpcoming([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSagaUpcomingLoading(false);
       });
     return () => {
       cancelled = true;
@@ -823,6 +880,21 @@ export function MeusVoosTab() {
     const past = filteredItems.filter((item) => !isScheduledFlightStatus(item, infoById[item.id]));
     return groupFlights(past, infoById, "desc");
   }, [filteredItems, infoById]);
+  // "Voos de trial": ranking cronológico (0-based) dos voos reais do aluno.
+  // Os primeiros N voos ficam liberados sem membership do Club (mesma semântica
+  // da Jornada, mas contando voos em ordem de data em vez de missões).
+  const trialFlightIndexById = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (!isStudentView) return map;
+    const realFlights = items.filter((item) => !isScheduledFlightStatus(item, infoById[item.id]));
+    realFlights
+      .slice()
+      .sort((a, b) => getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]))
+      .forEach((item, index) => {
+        map[item.id] = index;
+      });
+    return map;
+  }, [isStudentView, items, infoById]);
   const consolidatedSummary = useMemo(() => {
     return filteredItems.reduce(
       (acc, item) => {
@@ -981,6 +1053,7 @@ export function MeusVoosTab() {
         onBack={backToList}
         fichaInitialStepId={detailOpenOptions.initialStepId}
         hideFichaStepMenu={detailOpenOptions.hideStepMenu}
+        trialFlightIndex={selectedFlightId ? trialFlightIndexById[selectedFlightId] : undefined}
       />
     );
   }
@@ -1179,7 +1252,7 @@ export function MeusVoosTab() {
           {sagaOnlySchedule && isStudentView ? (
             <div className="space-y-2">
               <SectionTitle title="Voos futuros" tone="future" />
-              <SagaUpcomingList flights={sagaUpcoming} />
+              <SagaUpcomingList flights={sagaUpcoming} loading={sagaUpcomingLoading} />
             </div>
           ) : null}
           <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-10 text-center">
@@ -1214,6 +1287,7 @@ export function MeusVoosTab() {
               <SagaUpcomingList
                 flights={sagaUpcoming}
                 variant="list"
+                loading={sagaUpcomingLoading}
                 onOpen={scheduleTabEnabled ? setSagaDetailFlight : undefined}
               />
             </div>
@@ -1263,6 +1337,7 @@ export function MeusVoosTab() {
           {sagaOnlySchedule && isStudentView ? (
             <SagaUpcomingList
               flights={sagaUpcoming}
+              loading={sagaUpcomingLoading}
               onOpen={scheduleTabEnabled ? setSagaDetailFlight : undefined}
             />
           ) : null}

@@ -84,6 +84,11 @@ type Props = {
   hideFichaStepMenu?: boolean;
   initialSubTab?: SubTab;
   allowedSubTabs?: SubTab[];
+  /**
+   * Posição cronológica (0-based) deste voo entre os voos do aluno. Usada para o
+   * "Voos de trial": os primeiros N voos ficam liberados sem membership do Club.
+   */
+  trialFlightIndex?: number;
 };
 
 export function FlightDetailView({
@@ -96,10 +101,12 @@ export function FlightDetailView({
   hideFichaStepMenu = false,
   initialSubTab,
   allowedSubTabs,
+  trialFlightIndex,
 }: Props) {
   const { user } = useAuth();
-  const { enabled: clubEnabled, isClubMember } = useFlightReviewClub();
-  const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember;
+  const { enabled: clubEnabled, isClubMember, trialFlightCount } = useFlightReviewClub();
+  const isTrial = trialFlightIndex !== undefined && trialFlightCount > 0 && trialFlightIndex < trialFlightCount;
+  const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember && !isTrial;
   const defaultSubTab = initialSubTab ?? "ficha";
   const [activeSubTab, setActiveSubTab] = useState<SubTab>(defaultSubTab);
   const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set([defaultSubTab]));
@@ -228,7 +235,7 @@ export function FlightDetailView({
         <p className="text-sm text-slate-400">
           {flightId ? "Detalhes do voo" : "Novo voo"}
         </p>
-        {flightId && isClubMember && (
+        {flightId && (isClubMember || isTrial) && (
           <>
             <button
               type="button"

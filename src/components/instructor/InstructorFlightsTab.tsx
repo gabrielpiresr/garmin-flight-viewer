@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
+  formatMinutes,
   getDateBase,
   getFlightDateTimeMs,
   isFutureFlight,
+  shortName,
   type FlightDisplayInfo,
 } from "../../lib/flightDisplay";
+import { getPublicSchedule, type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
+import { getSchoolRules } from "../../lib/schoolRulesDb";
 import {
   deleteSavedFlight,
   getSavedFlight,
@@ -136,6 +140,166 @@ function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" 
     <p className={`text-xs font-semibold uppercase tracking-widest ${tone === "future" ? "text-sky-300" : "text-violet-300"}`}>
       {title}
     </p>
+  );
+}
+
+// ─── Voos futuros vindos da escala do SAGA (modo "escala somente no SAGA") ────
+// No modo saga-only os voos agendados não ficam salvos no sistema, então a seção
+// "Voos futuros" do instrutor lê a agenda do SAGA sob demanda (nada é persistido).
+
+const SAGA_AIRCRAFT_COLORS = [
+  "bg-sky-900/60 text-sky-300 border-sky-600/50",
+  "bg-violet-900/60 text-violet-300 border-violet-600/50",
+  "bg-emerald-900/60 text-emerald-400 border-emerald-600/50",
+  "bg-amber-900/60 text-amber-400 border-amber-600/50",
+  "bg-fuchsia-900/60 text-fuchsia-300 border-fuchsia-600/50",
+];
+
+function sagaAircraftColor(registration: string): string {
+  const key = registration || "unknown";
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash + key.charCodeAt(i) * (i + 1)) % 997;
+  return SAGA_AIRCRAFT_COLORS[hash % SAGA_AIRCRAFT_COLORS.length] ?? SAGA_AIRCRAFT_COLORS[0]!;
+}
+
+function sagaFlightStartMs(flight: PublicScheduleFlight): number {
+  const ms = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function InstructorSagaUpcoming({
+  flights,
+  loading,
+  variant,
+}: {
+  flights: PublicScheduleFlight[];
+  loading: boolean;
+  variant: "list" | "cards";
+}) {
+  if (loading && flights.length === 0) {
+    if (variant === "list") {
+      return (
+        <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
+          <ul className="divide-y divide-slate-800/80">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="flex items-center gap-3 px-3 py-3">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-5 w-16 rounded" />
+                <Skeleton className="h-4 w-12" />
+                <Skeleton className="ml-auto h-4 w-20" />
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    }
+    return (
+      <ul className="space-y-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <li key={i} className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+            <div className="flex items-start gap-3">
+              <div className="flex w-8 shrink-0 flex-col items-center gap-1">
+                <Skeleton className="h-5 w-6" />
+                <Skeleton className="h-2.5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex gap-1.5">
+                  <Skeleton className="h-5 w-16 rounded" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, j) => (
+                    <Skeleton key={j} className="h-3 w-full" />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (flights.length === 0) {
+    return <p className="rounded-xl border border-slate-700/60 bg-slate-900/30 px-4 py-6 text-center text-sm text-slate-500">Nenhum voo futuro.</p>;
+  }
+
+  if (variant === "list") {
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/30">
+        <div className="overflow-x-auto">
+          <table className="min-w-[760px] w-full text-left text-xs">
+            <thead className="bg-slate-950/40 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                {["Data", "Aeronave", "Apresentação", "Acionamento", "Corte", "Encerramento", "Duração", "Aluno", "Status"].map((label) => (
+                  <th key={label} className="px-3 py-2 font-semibold whitespace-nowrap">{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {flights.map((flight) => (
+                <tr key={flight.id} className="text-slate-300">
+                  <td className="px-3 py-2 text-slate-200 whitespace-nowrap">
+                    {new Date(`${flight.flightDate}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className={`rounded border px-1.5 py-0.5 ${sagaAircraftColor(flight.aircraftIdent)}`}>{flight.aircraftIdent || "—"}</span>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">{flight.presentationTime || "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{flight.startTime || "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{flight.cutoffTime ?? "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{flight.endTime ?? "—"}</td>
+                  <td className="px-3 py-2 font-semibold text-emerald-400 whitespace-nowrap">{formatMinutes(flight.durationMinutes)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{shortName(flight.studentName ?? "") || "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap"><FlightStatusBadge status={flight.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ul className="space-y-2">
+      {flights.map((flight) => {
+        const d = new Date(`${flight.flightDate}T12:00:00`);
+        const day = d.getDate();
+        const mon = d.toLocaleString("pt-BR", { month: "short" }).replace(".", "");
+        return (
+          <li key={flight.id} className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
+            <div className="flex items-start gap-3">
+              <div className="flex w-8 shrink-0 flex-col items-center text-center">
+                <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${sagaAircraftColor(flight.aircraftIdent)}`}>
+                    {flight.aircraftIdent || "—"}
+                  </span>
+                  <span className="text-xs text-slate-400">
+                    {flight.startTime || "—"}{flight.cutoffTime ? ` – ${flight.cutoffTime}` : ""}
+                  </span>
+                  <span className="text-xs font-semibold text-emerald-400">· {formatMinutes(flight.durationMinutes)} de voo</span>
+                  {flight.studentName ? (
+                    <span className="text-xs text-slate-500">· {shortName(flight.studentName)}</span>
+                  ) : null}
+                  <FlightStatusBadge status={flight.status} />
+                </div>
+                <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-slate-500 sm:grid-cols-4">
+                  <span>Apresentação: <strong className="text-slate-300">{flight.presentationTime || "—"}</strong></span>
+                  <span>Acionamento: <strong className="text-slate-300">{flight.startTime || "—"}</strong></span>
+                  <span>Corte: <strong className="text-slate-300">{flight.cutoffTime ?? "—"}</strong></span>
+                  <span>Encerramento: <strong className="text-slate-300">{flight.endTime ?? "—"}</strong></span>
+                </div>
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -445,6 +609,10 @@ export function InstructorFlightsTab() {
   const [signingInProgress, setSigningInProgress] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
   const [signingValidationErrors, setSigningValidationErrors] = useState<string[]>([]);
+  // Voos futuros da escala do SAGA (modo "escala somente no SAGA") — não persistem.
+  const [sagaOnlySchedule, setSagaOnlySchedule] = useState(false);
+  const [sagaFuture, setSagaFuture] = useState<PublicScheduleFlight[]>([]);
+  const [sagaFutureLoading, setSagaFutureLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!user || !configured) {
@@ -494,6 +662,43 @@ export function InstructorFlightsTab() {
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
+
+  // Modo "escala somente no SAGA": busca on-demand a agenda do mês atual + 2 meses
+  // e mostra os voos futuros em que o instrutor logado é o instrutor. Nada persiste.
+  useEffect(() => {
+    if (!user || user.role !== "instrutor") {
+      setSagaFutureLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSagaFutureLoading(true);
+    void getSchoolRules()
+      .then(async (rules) => {
+        if (cancelled) return;
+        if (!rules.schedule.sagaOnlySchedule) return;
+        setSagaOnlySchedule(true);
+        const now = new Date();
+        const from = now.toISOString().slice(0, 10);
+        const to = new Date(now.getFullYear(), now.getMonth() + 3, 0, 12).toISOString().slice(0, 10);
+        const data = await getPublicSchedule(from, to);
+        if (cancelled) return;
+        const minStartMs = Date.now() + 60 * 60 * 1000;
+        setSagaFuture(
+          data.flights
+            .filter((flight) => flight.isOwn && flight.status !== "Cancelado" && sagaFlightStartMs(flight) >= minStartMs)
+            .sort((a, b) => sagaFlightStartMs(b) - sagaFlightStartMs(a)),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSagaFuture([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSagaFutureLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, refreshKey]);
 
   useEffect(() => {
     setDisplayMode(readStoredDisplayMode(user?.id));
@@ -1110,12 +1315,26 @@ export function InstructorFlightsTab() {
             </div>
           ))}
         </div>
-      ) : filteredItems.length === 0 ? (
-        <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-10 text-center">
-          <p className="text-sm font-medium text-slate-400">Nenhum voo encontrado.</p>
+      ) : filteredItems.length === 0 && !(sagaOnlySchedule && (sagaFutureLoading || sagaFuture.length > 0)) ? (
+        <div className="space-y-6">
+          {sagaOnlySchedule ? (
+            <div className="space-y-2">
+              <SectionTitle title="Voos futuros" tone="future" />
+              <InstructorSagaUpcoming flights={sagaFuture} loading={sagaFutureLoading} variant={displayMode === "cards" ? "cards" : "list"} />
+            </div>
+          ) : null}
+          <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-10 text-center">
+            <p className="text-sm font-medium text-slate-400">Nenhum voo encontrado.</p>
+          </div>
         </div>
       ) : displayMode === "calendar" ? (
         <div className="space-y-4">
+          {sagaOnlySchedule ? (
+            <div className="space-y-2">
+              <SectionTitle title="Voos futuros" tone="future" />
+              <InstructorSagaUpcoming flights={sagaFuture} loading={sagaFutureLoading} variant="list" />
+            </div>
+          ) : null}
           <FlightsAgendaBoard
             items={filteredItems}
             infoById={infoById}
@@ -1133,24 +1352,31 @@ export function InstructorFlightsTab() {
         </div>
       ) : displayMode === "table" ? (
         <div className="space-y-6">
-          <FlightTableSection
-            title="Voos futuros"
-            groups={futureGroups}
-            infoById={infoById}
-            videoFlagsById={videoFlagsById}
-            variant="future"
-            emptyLabel="Nenhum voo futuro."
-            onOpen={openFlight}
-            onDelete={(id) => void handleDelete(id)}
-            onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
-            reloadingSagaFlightId={reloadingSagaFlightId}
-            onEditSuggestion={openSuggestion}
-            onPreencherFicha={(id) => {
-              setSelectedFlightId(id);
-              setView("preencher-ficha");
-            }}
-            clubMemberByStudentId={clubMemberByStudentId}
-          />
+          {sagaOnlySchedule ? (
+            <div className="space-y-2">
+              <SectionTitle title="Voos futuros" tone="future" />
+              <InstructorSagaUpcoming flights={sagaFuture} loading={sagaFutureLoading} variant="list" />
+            </div>
+          ) : (
+            <FlightTableSection
+              title="Voos futuros"
+              groups={futureGroups}
+              infoById={infoById}
+              videoFlagsById={videoFlagsById}
+              variant="future"
+              emptyLabel="Nenhum voo futuro."
+              onOpen={openFlight}
+              onDelete={(id) => void handleDelete(id)}
+              onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
+              reloadingSagaFlightId={reloadingSagaFlightId}
+              onEditSuggestion={openSuggestion}
+              onPreencherFicha={(id) => {
+                setSelectedFlightId(id);
+                setView("preencher-ficha");
+              }}
+              clubMemberByStudentId={clubMemberByStudentId}
+            />
+          )}
           <FlightTableSection
             title="Voos antigos"
             groups={pastGroups}
@@ -1191,7 +1417,9 @@ export function InstructorFlightsTab() {
         <div className="space-y-6">
           <section className="space-y-4">
             <SectionTitle title="Voos futuros" tone="future" />
-            {futureGroups.length === 0 ? (
+            {sagaOnlySchedule ? (
+              <InstructorSagaUpcoming flights={sagaFuture} loading={sagaFutureLoading} variant="cards" />
+            ) : futureGroups.length === 0 ? (
               <p className="text-sm text-slate-500">Nenhum voo futuro.</p>
             ) : (
               futureGroups.map((group) => (
