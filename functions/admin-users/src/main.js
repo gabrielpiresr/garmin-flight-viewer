@@ -148,6 +148,7 @@ const TENANT_ROLES_COLLECTION_ID =
 const VALID_ROLES = new Set(["admin", "instrutor", "aluno"]);
 const VALID_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto", "Cancelado", "Realizado"]);
 const SCHEDULED_FLIGHT_STATUSES = new Set(["Pendente", "Confirmado", "Previsto"]);
+const GHOST_FLIGHT_SOURCE_PREFIX = "ghost-flight-";
 const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
 // Banco usado no lançamento de MULTA (remoção de crédito). No exemplo real do SAGA a
 // multa de cancelamento usa bank_id=2 (diferente do banco de compra). Configurável.
@@ -185,6 +186,7 @@ const FLIGHT_SELECT = [
   "training_mission_id",
   "training_snapshot_json",
   "flight_status",
+  "saga_flight_id",
   "saga_schedule_id",
   "saga_schedule_synced_at",
   "saga_schedule_sync_status",
@@ -205,9 +207,12 @@ const FLIGHT_DETAIL_SELECT = [
   "training_mission_ids_json",
   "schedule_week_start",
   "schedule_demand_id",
+  "flight_seq_number",
 ];
+const FLIGHT_REPORT_SELECT = FLIGHT_DETAIL_SELECT.filter((field) => field !== "csv_text");
 const PROFILE_SELECT = [
   "$id",
+  "school_id",
   "user_id",
   "is_active",
   "role",
@@ -2949,7 +2954,7 @@ async function updateSagaProfileFields(userId, sagaUser, role, { enableAccess = 
   const sexo = genderRaw === "M" ? "Masculino" : genderRaw === "F" ? "Feminino" : null;
   const sagaNickname = cleanString(detail.nickname || sagaUser.nickname).slice(0, 128) || null;
   const fields = {
-    ...(enableAccess ? { is_active: true } : {}),
+    ...(enableAccess ? { is_active: true, approval_status: "approved" } : {}),
     full_name: cleanString(sagaUser.nome).slice(0, 255) || null,
     nickname: sagaNickname,
     cpf: cleanString(sagaUser.cpf).slice(0, 14) || null,
@@ -4768,6 +4773,54 @@ function sagaFlightPermissions(studentUserId, instructorUserId) {
     perms.push(sdk.Permission.update(sdk.Role.user(instructorUserId)));
   }
   return Array.from(new Set(perms));
+}
+
+function ghostFlightPermissions(instructorUserId) {
+  const perms = [
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+    sdk.Permission.update(sdk.Role.label("instrutor")),
+  ];
+  if (instructorUserId) {
+    perms.push(sdk.Permission.read(sdk.Role.user(instructorUserId)));
+    perms.push(sdk.Permission.update(sdk.Role.user(instructorUserId)));
+  }
+  return Array.from(new Set(perms));
+}
+
+function flightVideoPermissions(videoDoc, flightDoc) {
+  const uploadedBy = cleanString(videoDoc?.uploaded_by);
+  const isGhost = isGhostFlightDoc(flightDoc);
+  const perms = isGhost
+    ? [
+        sdk.Permission.read(sdk.Role.label("admin")),
+        sdk.Permission.update(sdk.Role.label("admin")),
+        sdk.Permission.delete(sdk.Role.label("admin")),
+        sdk.Permission.read(sdk.Role.label("instrutor")),
+      ]
+    : [
+        sdk.Permission.read(sdk.Role.users()),
+        sdk.Permission.read(sdk.Role.label("admin")),
+        sdk.Permission.update(sdk.Role.label("admin")),
+        sdk.Permission.delete(sdk.Role.label("admin")),
+        sdk.Permission.read(sdk.Role.label("instrutor")),
+      ];
+  if (uploadedBy) {
+    perms.push(sdk.Permission.read(sdk.Role.user(uploadedBy)));
+    perms.push(sdk.Permission.update(sdk.Role.user(uploadedBy)));
+    perms.push(sdk.Permission.delete(sdk.Role.user(uploadedBy)));
+  }
+  return Array.from(new Set(perms));
+}
+
+function isGhostFlightSource(sourceFilename) {
+  return cleanString(sourceFilename).startsWith(GHOST_FLIGHT_SOURCE_PREFIX);
+}
+
+function isGhostFlightDoc(doc) {
+  return isGhostFlightSource(doc?.source_filename) || cleanString(doc?.name).toLowerCase().startsWith("voo temporario");
 }
 
 function sagaImportZuluToLocalClock(raw) {
@@ -6886,6 +6939,470 @@ function encodeFlightRecordCsv({ meta, telemetryCsv, telemetryFiles }) {
   return `${META_PREFIX}${metaEncoded}\n${csv}`;
 }
 
+function hasDecodedTelemetry(decoded) {
+  return Boolean(cleanString(decoded?.telemetryCsv)) || (Array.isArray(decoded?.telemetryFiles) && decoded.telemetryFiles.length > 0);
+}
+
+function ghostObservationFromMeta(meta) {
+  return cleanString(meta?.preFlight?.objectiveMd || meta?.risk?.commentsMd);
+}
+
+function buildGhostSourceFilename(input) {
+  const date = cleanString(input.flightDate || input.date).replace(/[^\d-]/g, "") || todayIso();
+  const aircraft = cleanString(input.aircraftIdent || input.aircraft).replace(/[^a-z0-9-]/gi, "").toUpperCase() || "AIRCRAFT";
+  return `${GHOST_FLIGHT_SOURCE_PREFIX}${date}-${aircraft}-${Date.now()}`;
+}
+
+async function userFlightIdentity(userId) {
+  const safeUserId = cleanString(userId);
+  if (!safeUserId) return { name: "", anac: "" };
+  const [profile, user] = await Promise.all([
+    getProfileByUserId(safeUserId).catch(() => null),
+    users.get({ userId: safeUserId }).catch(() => null),
+  ]);
+  return {
+    name: cleanString(profile?.full_name || profile?.nickname || user?.name || user?.email || safeUserId),
+    anac: cleanString(profile?.anac_code),
+  };
+}
+
+function buildGhostFlightMeta(input, identities) {
+  const flightDate = asIsoDate(input.flightDate || input.date);
+  const startTime = cleanString(input.startTime || input.time).slice(0, 5);
+  const aircraft = cleanString(input.aircraftIdent || input.aircraft).toUpperCase();
+  const observation = cleanString(input.observation).slice(0, 4096);
+  return {
+    header: {
+      studentUserId: cleanString(input.studentUserId),
+      studentLabel: identities.student.name || cleanString(input.studentUserId),
+      studentName: identities.student.name || undefined,
+      studentAnac: identities.student.anac || undefined,
+      instructorUserId: cleanString(input.instructorUserId),
+      instructorName: identities.instructor.name || undefined,
+      instructorAnac: identities.instructor.anac || undefined,
+      date: flightDate,
+      startTime: startTime || undefined,
+      departureTimeUtc: startTime || undefined,
+      aircraft,
+    },
+    preFlight: {
+      objectiveMd: observation,
+      briefingMd: "",
+      instructorSuggestionMd: "",
+      studentSuggestionMd: "",
+    },
+    legs: [
+      {
+        id: "ghost-leg-1",
+        date: flightDate,
+        role: "",
+        studentRole: "",
+        instructorRole: "",
+        dep: "",
+        arr: "",
+        landings: 0,
+        flightTime: "",
+        navTime: "",
+        ifrTime: "",
+        nightTime: "",
+        serviceTime: "",
+        engineStart: startTime || "",
+        takeoff: "",
+        landing: "",
+        engineCut: "",
+        distance: "",
+      },
+    ],
+    risk: {
+      commentsMd: observation,
+      dangerMd: "",
+      riskMd: "",
+      managementMd: "",
+      instructorOutcome: "",
+      instructorOpinionMd: "",
+    },
+  };
+}
+
+async function createFlightDocumentCompat(docId, payload, permissions) {
+  try {
+    return await databases.createDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, payload, permissions);
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+    const {
+      from_to,
+      landings,
+      block_time_minutes,
+      total_flight_minutes,
+      total_miles,
+      telemetry_present,
+      instructor_suggestion_md,
+      student_suggestion_md,
+      instructor_suggestion_present,
+      student_suggestion_present,
+      weight_balance_complete,
+      is_night,
+      training_mission_ids_json,
+      flight_seq_number,
+      ...compatPayload
+    } = payload;
+    return databases.createDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId, compatPayload, permissions);
+  }
+}
+
+async function updateDocumentCompat(collectionId, docId, patch, permissions) {
+  try {
+    if (permissions) return await databases.updateDocument(DATABASE_ID, collectionId, docId, patch, permissions);
+    return await databases.updateDocument(DATABASE_ID, collectionId, docId, patch);
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (!/attribute|unknown|invalid document structure/i.test(message)) throw err;
+    if (!Object.prototype.hasOwnProperty.call(patch, "flight_id")) throw err;
+    const fallback = { flight_id: patch.flight_id };
+    if (permissions) return databases.updateDocument(DATABASE_ID, collectionId, docId, fallback, permissions);
+    return databases.updateDocument(DATABASE_ID, collectionId, docId, fallback);
+  }
+}
+
+async function createGhostFlight(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const studentUserId = cleanString(input.studentUserId);
+  const instructorUserId = cleanString(input.instructorUserId);
+  const aircraftIdent = cleanString(input.aircraftIdent || input.aircraft).toUpperCase();
+  const flightDate = asIsoDate(input.flightDate || input.date);
+  const startTime = cleanString(input.startTime || input.time).slice(0, 5);
+  if (!studentUserId || !instructorUserId || !aircraftIdent || !flightDate) {
+    throw Object.assign(new Error("Informe data, aeronave, instrutor e aluno para criar o voo temporario."), { status: 400 });
+  }
+
+  const identities = {
+    student: await userFlightIdentity(studentUserId),
+    instructor: await userFlightIdentity(instructorUserId),
+  };
+  const meta = buildGhostFlightMeta({ ...input, studentUserId, instructorUserId, aircraftIdent, flightDate, startTime }, identities);
+  const csvText = encodeFlightRecordCsv({ meta, telemetryCsv: "" });
+  const sourceFilename = buildGhostSourceFilename({ flightDate, aircraftIdent });
+  const docId = sdk.ID.unique();
+  const doc = await createFlightDocumentCompat(
+    docId,
+    {
+      school_id: SCHOOL_ID,
+      user_id: studentUserId,
+      student_user_id: studentUserId,
+      instructor_user_id: instructorUserId,
+      created_by_role: "admin",
+      name: `Voo temporario ${aircraftIdent} ${flightDate}${startTime ? ` ${startTime}` : ""}`,
+      source_filename: sourceFilename,
+      csv_text: csvText,
+      csv_file_id: null,
+      aircraft_ident: aircraftIdent,
+      duration_sec: null,
+      flight_date: flightDate,
+      start_time: startTime || null,
+      training_track_id: null,
+      training_stage_id: null,
+      training_mission_id: null,
+      training_snapshot_json: null,
+      flight_status: "Realizado",
+      from_to: "Voo temporario sem ficha SAGA",
+      landings: null,
+      block_time_minutes: null,
+      total_flight_minutes: null,
+      total_miles: null,
+      telemetry_present: false,
+      instructor_suggestion_md: null,
+      student_suggestion_md: null,
+      instructor_suggestion_present: false,
+      student_suggestion_present: false,
+      weight_balance_complete: false,
+      is_night: false,
+      training_mission_ids_json: null,
+      flight_seq_number: null,
+    },
+    ghostFlightPermissions(instructorUserId),
+  );
+  await createAuditEvent(actorUserId, {
+    eventType: "ghost_flight_created",
+    entityType: "flight",
+    entityId: doc.$id,
+    reason: cleanString(input.observation) || "Voo temporario criado para upload antecipado.",
+    afterSnapshot: { flightId: doc.$id, studentUserId, instructorUserId, aircraftIdent, flightDate, startTime },
+  });
+  return { flight: toFlight({ ...doc, csv_text: csvText }) };
+}
+
+async function updateGhostFlight(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const flightId = cleanString(input.flightId || input.id);
+  if (!flightId) throw Object.assign(new Error("Voo temporario nao informado."), { status: 400 });
+  const current = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, selectQuery(FLIGHT_DETAIL_SELECT));
+  if (!isGhostFlightDoc(current)) throw Object.assign(new Error("O voo informado nao e um voo temporario."), { status: 400 });
+
+  const studentUserId = cleanString(input.studentUserId || current.student_user_id || current.user_id);
+  const instructorUserId = cleanString(input.instructorUserId || current.instructor_user_id);
+  const aircraftIdent = cleanString(input.aircraftIdent || input.aircraft || current.aircraft_ident).toUpperCase();
+  const flightDate = asIsoDate(input.flightDate || input.date || current.flight_date);
+  const startTime = cleanString(input.startTime ?? input.time ?? current.start_time).slice(0, 5);
+  if (!studentUserId || !instructorUserId || !aircraftIdent || !flightDate) {
+    throw Object.assign(new Error("Informe data, aeronave, instrutor e aluno para atualizar o voo temporario."), { status: 400 });
+  }
+
+  const [currentCsvText, identities] = await Promise.all([
+    loadFlightCsvText(current),
+    Promise.all([userFlightIdentity(studentUserId), userFlightIdentity(instructorUserId)]),
+  ]);
+  const decoded = decodeFlightRecordCsv(currentCsvText);
+  const meta = buildGhostFlightMeta({ ...input, studentUserId, instructorUserId, aircraftIdent, flightDate, startTime }, {
+    student: identities[0],
+    instructor: identities[1],
+  });
+  const csvText = encodeFlightRecordCsv({
+    meta,
+    telemetryCsv: decoded.telemetryCsv,
+    telemetryFiles: decoded.telemetryFiles,
+  });
+  const patch = {
+    user_id: studentUserId,
+    student_user_id: studentUserId,
+    instructor_user_id: instructorUserId,
+    name: `Voo temporario ${aircraftIdent} ${flightDate}${startTime ? ` ${startTime}` : ""}`,
+    csv_text: csvText,
+    aircraft_ident: aircraftIdent,
+    flight_date: flightDate,
+    start_time: startTime || null,
+  };
+  if (!isGhostFlightSource(current.source_filename)) {
+    patch.source_filename = buildGhostSourceFilename({ flightDate, aircraftIdent });
+  }
+  const updated = await databases.updateDocument(
+    DATABASE_ID,
+    FLIGHTS_COLLECTION_ID,
+    flightId,
+    patch,
+    ghostFlightPermissions(instructorUserId),
+  );
+  await createAuditEvent(actorUserId, {
+    eventType: "ghost_flight_updated",
+    entityType: "flight",
+    entityId: flightId,
+    reason: cleanString(input.observation) || "Voo temporario atualizado.",
+    beforeSnapshot: {
+      studentUserId: current.student_user_id || current.user_id || null,
+      instructorUserId: current.instructor_user_id || null,
+      aircraftIdent: current.aircraft_ident || null,
+      flightDate: current.flight_date || null,
+      startTime: current.start_time || null,
+    },
+    afterSnapshot: { flightId, studentUserId, instructorUserId, aircraftIdent, flightDate, startTime },
+  });
+  return { flight: toFlight({ ...updated, csv_text: csvText }) };
+}
+
+async function deleteGhostFlight(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const flightId = cleanString(input.flightId || input.id);
+  if (!flightId) throw Object.assign(new Error("Voo temporario nao informado."), { status: 400 });
+  const ghost = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, selectQuery(FLIGHT_DETAIL_SELECT));
+  if (!isGhostFlightDoc(ghost)) throw Object.assign(new Error("O voo informado nao e um voo temporario."), { status: 400 });
+
+  const summary = { deletedDocuments: 0, deletedByCollection: {}, deletedFiles: 0, fileErrors: [], errors: [] };
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVERS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_VIDEOS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_TAKEOFFS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, "flight_id", [flightId]);
+  if (ghost.csv_file_id && FLIGHTS_CSV_BUCKET_ID) {
+    await deleteStorageFileQuietly(summary, FLIGHTS_CSV_BUCKET_ID, ghost.csv_file_id);
+  }
+  await databases.deleteDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  summary.deletedDocuments += 1;
+  summary.deletedByCollection[FLIGHTS_COLLECTION_ID] = (summary.deletedByCollection[FLIGHTS_COLLECTION_ID] || 0) + 1;
+  await createAuditEvent(actorUserId, {
+    eventType: "ghost_flight_deleted",
+    entityType: "flight",
+    entityId: flightId,
+    reason: cleanString(input.reason) || "Voo temporario excluido.",
+    beforeSnapshot: {
+      flightId,
+      studentUserId: ghost.student_user_id || ghost.user_id || null,
+      instructorUserId: ghost.instructor_user_id || null,
+      aircraftIdent: ghost.aircraft_ident || null,
+      flightDate: ghost.flight_date || null,
+      startTime: ghost.start_time || null,
+    },
+    afterSnapshot: summary,
+  });
+  return { ok: true, flightId, deleted: summary };
+}
+
+async function listFlightVideosForFlight(flightId) {
+  if (!FLIGHT_VIDEOS_COLLECTION_ID || !flightId) return [];
+  return listAllDocuments(FLIGHT_VIDEOS_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    ...selectQuery(["$id", "$permissions", "flight_id", "uploaded_by", "processing_status"]),
+  ]);
+}
+
+async function hasMaterializedTelemetry(flightId) {
+  const docs = await listDocumentsByFieldIn(
+    FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID,
+    "flight_id",
+    [flightId],
+    selectQuery(["$id", "telemetry_present"]),
+    1,
+  );
+  return docs.some((doc) => doc.telemetry_present !== false);
+}
+
+function isSagaRealFlight(doc) {
+  return !isGhostFlightDoc(doc) && (cleanString(doc?.saga_flight_id) || cleanString(doc?.source_filename).toLowerCase().includes("saga"));
+}
+
+async function listGhostMergeCandidates(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const ghostFlightId = cleanString(input.ghostFlightId || input.flightId);
+  if (!ghostFlightId) throw Object.assign(new Error("Voo temporario nao informado."), { status: 400 });
+  const ghost = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, ghostFlightId, selectQuery(FLIGHT_DETAIL_SELECT));
+  if (!isGhostFlightDoc(ghost)) throw Object.assign(new Error("O voo informado nao e um voo temporario."), { status: 400 });
+
+  const queries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("flight_status", ["Realizado"]),
+    sdk.Query.limit(100),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.orderDesc("start_time"),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ];
+  if (ghost.flight_date) queries.splice(2, 0, sdk.Query.equal("flight_date", [ghost.flight_date]));
+  if (ghost.aircraft_ident) queries.splice(2, 0, sdk.Query.equal("aircraft_ident", [ghost.aircraft_ident]));
+  const page = await listDocumentsPage(FLIGHTS_COLLECTION_ID, queries);
+  const ghostMeta = decodeFlightMeta(await loadFlightCsvText(ghost));
+  const candidates = [];
+  for (const doc of page.documents) {
+    if (doc.$id === ghostFlightId || !isSagaRealFlight(doc)) continue;
+    const docStudentUserId = cleanString(doc.student_user_id || doc.user_id);
+    const ghostStudentUserId = cleanString(ghost.student_user_id || ghost.user_id);
+    if (ghostStudentUserId && docStudentUserId && ghostStudentUserId !== docStudentUserId) continue;
+    const decoded = decodeFlightRecordCsv(await loadFlightCsvText(doc));
+    const videos = await listFlightVideosForFlight(doc.$id);
+    const telemetryBlocked = Boolean(doc.telemetry_present) || hasDecodedTelemetry(decoded) || (await hasMaterializedTelemetry(doc.$id));
+    candidates.push({
+      ...toFlight({ ...doc, csv_text: encodeFlightRecordCsv({ meta: decoded.meta || decodeFlightMeta(doc.csv_text), telemetryCsv: decoded.telemetryCsv, telemetryFiles: decoded.telemetryFiles }) }),
+      mergeBlockedReason: telemetryBlocked
+        ? "Voo real ja possui telemetria."
+        : videos.length > 0
+          ? "Voo real ja possui video."
+          : "",
+      matchScore:
+        (doc.aircraft_ident && doc.aircraft_ident === ghost.aircraft_ident ? 40 : 0) +
+        (doc.flight_date && doc.flight_date === ghost.flight_date ? 30 : 0) +
+        (docStudentUserId && docStudentUserId === ghostStudentUserId ? 20 : 0) +
+        (doc.instructor_user_id && doc.instructor_user_id === ghost.instructor_user_id ? 10 : 0) +
+        (ghostMeta?.header?.startTime && doc.start_time === ghostMeta.header.startTime ? 5 : 0),
+    });
+  }
+  candidates.sort((a, b) => b.matchScore - a.matchScore || flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
+  return { candidates: candidates.slice(0, 25) };
+}
+
+async function reassignFlightChildren(collectionId, fromFlightId, toFlightId, patchExtras = {}, permissionsForDoc = null) {
+  if (!collectionId) return 0;
+  const docs = await listAllDocuments(collectionId, [sdk.Query.equal("flight_id", [fromFlightId])]);
+  for (const doc of docs) {
+    const permissions = typeof permissionsForDoc === "function" ? permissionsForDoc(doc) : undefined;
+    await updateDocumentCompat(collectionId, doc.$id, { flight_id: toFlightId, ...patchExtras }, permissions);
+  }
+  return docs.length;
+}
+
+async function finalizeGhostFlightMerge(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const ghostFlightId = cleanString(input.ghostFlightId);
+  const realFlightId = cleanString(input.realFlightId);
+  if (!ghostFlightId || !realFlightId || ghostFlightId === realFlightId) {
+    throw Object.assign(new Error("Informe o voo temporario e o voo real."), { status: 400 });
+  }
+  const [ghost, real] = await Promise.all([
+    databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, ghostFlightId, selectQuery(FLIGHT_DETAIL_SELECT)),
+    databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, realFlightId, selectQuery(FLIGHT_DETAIL_SELECT)),
+  ]);
+  if (!isGhostFlightDoc(ghost)) throw Object.assign(new Error("O voo de origem nao e temporario."), { status: 400 });
+  if (isGhostFlightDoc(real) || !isSagaRealFlight(real)) throw Object.assign(new Error("Selecione um voo real importado do SAGA."), { status: 400 });
+
+  const [ghostCsvText, realCsvText, ghostVideos, realVideos] = await Promise.all([
+    loadFlightCsvText(ghost),
+    loadFlightCsvText(real),
+    listFlightVideosForFlight(ghostFlightId),
+    listFlightVideosForFlight(realFlightId),
+  ]);
+  const pendingGhostVideo = ghostVideos.find((video) => ["processing", "uploading"].includes(cleanString(video.processing_status)));
+  if (pendingGhostVideo) throw Object.assign(new Error("Aguarde o processamento do video temporario terminar antes de apontar para o voo real."), { status: 409 });
+  if (realVideos.length > 0) throw Object.assign(new Error("O voo real ja possui video vinculado."), { status: 409 });
+
+  const ghostDecoded = decodeFlightRecordCsv(ghostCsvText);
+  const realDecoded = decodeFlightRecordCsv(realCsvText);
+  const realHasTelemetry = Boolean(real.telemetry_present) || hasDecodedTelemetry(realDecoded) || (await hasMaterializedTelemetry(realFlightId));
+  if (realHasTelemetry) throw Object.assign(new Error("O voo real ja possui telemetria."), { status: 409 });
+  if (!realDecoded.meta) throw Object.assign(new Error("A ficha do voo real nao possui metadados validos."), { status: 409 });
+
+  const mergedCsvText = encodeFlightRecordCsv({
+    meta: realDecoded.meta,
+    telemetryCsv: ghostDecoded.telemetryCsv,
+    telemetryFiles: ghostDecoded.telemetryFiles,
+  });
+  const ghostHasTelemetry = hasDecodedTelemetry(ghostDecoded);
+  await updateDocumentCompat(FLIGHTS_COLLECTION_ID, realFlightId, {
+    csv_text: mergedCsvText,
+    csv_file_id: null,
+    duration_sec: ghost.duration_sec || real.duration_sec || null,
+    telemetry_present: ghostHasTelemetry,
+  });
+
+  const identityPatch = {
+    student_user_id: real.student_user_id || real.user_id || null,
+    instructor_user_id: real.instructor_user_id || null,
+    aircraft_ident: real.aircraft_ident || null,
+    flight_date: real.flight_date || null,
+    start_time: real.start_time || null,
+  };
+  const transferred = {
+    videos: await reassignFlightChildren(
+      FLIGHT_VIDEOS_COLLECTION_ID,
+      ghostFlightId,
+      realFlightId,
+      {},
+      (video) => flightVideoPermissions(video, real),
+    ),
+    telemetrySummaries: await reassignFlightChildren(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, ghostFlightId, realFlightId, identityPatch),
+    landings: await reassignFlightChildren(FLIGHT_LANDINGS_COLLECTION_ID, ghostFlightId, realFlightId, identityPatch),
+    takeoffs: await reassignFlightChildren(FLIGHT_TAKEOFFS_COLLECTION_ID, ghostFlightId, realFlightId, identityPatch),
+    alerts: await reassignFlightChildren(FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, ghostFlightId, realFlightId, identityPatch),
+    maneuvers: await reassignFlightChildren(FLIGHT_MANEUVERS_COLLECTION_ID, ghostFlightId, realFlightId, {
+      student_id: real.student_user_id || real.user_id || null,
+      instructor_id: real.instructor_user_id || null,
+      aircraft_ident: real.aircraft_ident || null,
+    }),
+    reviews: await reassignFlightChildren(FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, ghostFlightId, realFlightId),
+  };
+
+  if (ghost.csv_file_id && FLIGHTS_CSV_BUCKET_ID) {
+    await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, ghost.csv_file_id).catch(() => undefined);
+  }
+  await databases.deleteDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, ghostFlightId);
+  await createAuditEvent(actorUserId, {
+    eventType: "ghost_flight_merged",
+    entityType: "flight",
+    entityId: realFlightId,
+    reason: "Voo temporario apontado para voo real SAGA.",
+    beforeSnapshot: { ghostFlightId, realFlightId },
+    afterSnapshot: { transferred },
+  });
+  return { ok: true, realFlightId, ghostFlightId, transferred };
+}
+
 function mergeSagaFlightMetaWithExisting(sagaMeta, existingMeta, { preserveTraining = true } = {}) {
   if (!sagaMeta) return existingMeta;
   if (!existingMeta) return sagaMeta;
@@ -8552,6 +9069,8 @@ function toFlight(doc) {
     createdAt: doc.$createdAt || "",
     updatedAt: doc.$updatedAt || "",
     sourceFilename: doc.source_filename || "",
+    isGhostFlight: isGhostFlightDoc(doc),
+    ghostObservation: isGhostFlightDoc(doc) ? ghostObservationFromMeta(meta) : "",
     flightStatus: normalizeFlightStatus(doc.flight_status, {
       flightDate: doc.flight_date || meta?.header?.date || (doc.$createdAt || "").slice(0, 10) || null,
       startTime: doc.start_time || meta?.header?.startTime || null,
@@ -9687,6 +10206,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     instructors: stringList(params.instructors || params.instructorUserIds),
     students: stringList(params.students || params.studentUserIds),
     status: VALID_FLIGHT_STATUSES.has(params.status) ? params.status : "all",
+    ghostMode: ["include", "only"].includes(cleanString(params.ghostMode)) ? cleanString(params.ghostMode) : "exclude",
   };
   if (safeActorRole === "instrutor" && actorUserId) {
     filters.instructors = [actorUserId];
@@ -9701,11 +10221,28 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     sdk.Query.orderDesc("flight_date"),
     sdk.Query.orderDesc("start_time"),
     sdk.Query.limit(limit),
-    ...selectQuery(FLIGHT_DETAIL_SELECT),
+    ...selectQuery(FLIGHT_REPORT_SELECT),
   ];
   if (cursor) flightQueries.push(sdk.Query.cursorAfter(cursor));
 
-  const flightsPage = await listDocumentsPage(FLIGHTS_COLLECTION_ID, flightQueries);
+  let flightsPage;
+  if (filters.ghostMode === "only") {
+    const [sourcePage, legacyNamePage] = await Promise.all([
+      listDocumentsPage(FLIGHTS_COLLECTION_ID, [
+        ...flightQueries,
+        sdk.Query.startsWith("source_filename", GHOST_FLIGHT_SOURCE_PREFIX),
+      ]).catch(() => ({ documents: [], total: 0 })),
+      listDocumentsPage(FLIGHTS_COLLECTION_ID, [
+        ...flightQueries,
+        sdk.Query.startsWith("name", "Voo temporario"),
+      ]).catch(() => ({ documents: [], total: 0 })),
+    ]);
+    const byId = new Map();
+    for (const doc of [...(sourcePage.documents || []), ...(legacyNamePage.documents || [])]) byId.set(doc.$id, doc);
+    flightsPage = { documents: Array.from(byId.values()), total: byId.size };
+  } else {
+    flightsPage = await listDocumentsPage(FLIGHTS_COLLECTION_ID, flightQueries);
+  }
   const flights = flightsPage.documents;
   const flightIds = flights.map((flight) => flight.$id);
   const userIds = Array.from(new Set(flights.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]).filter(Boolean)));
@@ -9734,17 +10271,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     );
   }
 
-  const hydratedFlights = await Promise.all(
-    flights.map(async (doc) => {
-      const shouldHydrateCsv =
-        !cleanString(doc.csv_text) &&
-        cleanString(doc.csv_file_id) &&
-        !cleanString(doc.instructor_user_id);
-      if (!shouldHydrateCsv) return toFlight(doc);
-      const csvText = await loadFlightCsvText(doc);
-      return toFlight({ ...doc, csv_text: csvText });
-    }),
-  );
+  const hydratedFlights = flights.map((doc) => toFlight(doc));
 
   const rows = hydratedFlights.map((flight) => {
     const aircraftIdent = normalizeAircraftIdent(flight.aircraftIdent);
@@ -9778,7 +10305,11 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
   });
 
   const filteredRows = rows
-    .filter((row) => rowMatchesReportFilters(row, filters))
+    .filter((row) => {
+      if (filters.ghostMode === "exclude" && row.isGhostFlight) return false;
+      if (filters.ghostMode === "only" && !row.isGhostFlight) return false;
+      return rowMatchesReportFilters(row, filters);
+    })
     .sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
 
   return {
@@ -9871,18 +10402,24 @@ async function buildRecords({ search = "", onlyUserId = null } = {}) {
 async function findProfileSearchUserIds(search) {
   const needle = normalizeSearch(search);
   if (!needle) return [];
-  const profiles = await listAllDocuments(PROFILES_COLLECTION_ID, [
-    sdk.Query.equal("school_id", [SCHOOL_ID]),
-    ...selectQuery(["$id", "user_id", "full_name", "cpf", "phone", "anac_code", "email", "role"]),
-  ]);
-  return profiles
-    .filter((profile) =>
-      normalizeSearch([profile.full_name, profile.nickname, profile.cpf, profile.phone, profile.anac_code, profile.email, profile.user_id].join(" ")).includes(
-        needle,
-      ),
-    )
-    .map((profile) => profile.user_id)
-    .filter(Boolean);
+  const raw = cleanString(search);
+  const searchableFields = ["full_name", "nickname", "email", "anac_code", "cpf", "phone"];
+  const pages = await Promise.all(
+    searchableFields.map((field) =>
+      databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+        sdk.Query.equal("school_id", [SCHOOL_ID]),
+        sdk.Query.search(field, raw),
+        sdk.Query.limit(20),
+        ...selectQuery(["user_id"]),
+      ]).catch(() => ({ documents: [] })),
+    ),
+  );
+  return Array.from(new Set(
+    pages
+      .flatMap((page) => page.documents || [])
+      .map((profile) => cleanString(profile.user_id))
+      .filter(Boolean),
+  ));
 }
 
 function toTrainingTrack(doc) {
@@ -10268,6 +10805,106 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
     limit: safeLimit,
     offset: safeOffset,
   };
+}
+
+async function searchFlightPickerUsers(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const role = cleanString(payload.role);
+  if (!VALID_ROLES.has(role)) {
+    throw Object.assign(new Error("Perfil invalido para busca."), { status: 400 });
+  }
+  const search = cleanString(payload.search);
+  const limit = Math.min(20, Math.max(1, Number(payload.limit) || 10));
+  let userIds = [];
+
+  if (search) {
+    const [authRes, profileSearchUserIds] = await Promise.all([
+      users.list({
+        search,
+        queries: [sdk.Query.limit(25), sdk.Query.offset(0)],
+        total: true,
+      }).catch(() => ({ users: [] })),
+      findProfileSearchUserIds(search).catch(() => []),
+    ]);
+    userIds = Array.from(new Set([
+      ...(authRes.users || []).map((user) => user.$id),
+      ...profileSearchUserIds,
+    ].filter(Boolean)));
+  } else {
+    const [primaryPage, assignedPage] = await Promise.all([
+      databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+        sdk.Query.equal("school_id", [SCHOOL_ID]),
+        sdk.Query.equal("role", [role]),
+        sdk.Query.limit(limit * 3),
+        ...selectQuery(["user_id"]),
+      ]),
+      databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+        sdk.Query.equal("school_id", [SCHOOL_ID]),
+        sdk.Query.equal("assigned_role_slugs", [role]),
+        sdk.Query.limit(limit * 3),
+        ...selectQuery(["user_id"]),
+      ]).catch(() => ({ documents: [] })),
+    ]);
+    userIds = Array.from(new Set([
+      ...(primaryPage.documents || []).map((profile) => cleanString(profile.user_id)),
+      ...(assignedPage.documents || []).map((profile) => cleanString(profile.user_id)),
+    ].filter(Boolean)));
+  }
+
+  if (!userIds.length) return { users: [] };
+  const profilesByUserId = await getProfilesByUserIds(userIds);
+  const roleMatches = await Promise.all(
+    userIds.map(async (userId) => [userId, await profileHasPortalRole(profilesByUserId.get(userId), role)]),
+  );
+  const filteredIds = roleMatches
+    .filter(([userId, matches]) => {
+      const profile = profilesByUserId.get(userId);
+      return matches && cleanString(profile?.school_id) === SCHOOL_ID;
+    })
+    .map(([userId]) => userId)
+    .slice(0, limit);
+  const authUsers = await getUsersByIds(filteredIds);
+  const authById = new Map(authUsers.map((user) => [user.$id, user]));
+  const rows = filteredIds
+    .map((userId) => {
+      const profile = profilesByUserId.get(userId);
+      const auth = authById.get(userId);
+      const fullName = cleanString(profile?.full_name || profile?.nickname || auth?.name || auth?.email || userId);
+      return {
+        userId,
+        email: cleanString(auth?.email || profile?.email),
+        name: cleanString(auth?.name || fullName),
+        role,
+        roles: parseAssignedRoleSlugs(profile),
+        activeRole: cleanString(profile?.active_role || profile?.role) || role,
+        assignedRoleSlugs: parseAssignedRoleSlugs(profile),
+        activeRoleSlug: cleanString(profile?.active_role_slug),
+        labels: auth?.labels || [],
+        emailVerification: Boolean(auth?.emailVerification),
+        createdAt: auth?.$createdAt || "",
+        profile: {
+          fullName,
+          nickname: cleanString(profile?.nickname),
+          anacCode: cleanString(profile?.anac_code),
+        },
+      };
+    })
+    .sort((a, b) => adminPickerUserLabel(a).localeCompare(adminPickerUserLabel(b), "pt-BR"));
+  return { users: rows };
+}
+
+async function profileHasPortalRole(profile, role) {
+  const safeRole = cleanString(role);
+  if (!profile || !VALID_ROLES.has(safeRole)) return false;
+  if (cleanString(profile.role) === safeRole || cleanString(profile.active_role) === safeRole) return true;
+  const assignedSlugs = parseAssignedRoleSlugs(profile);
+  if (assignedSlugs.includes(safeRole)) return true;
+  const assignedPortals = await Promise.all(assignedSlugs.map((slug) => resolvePortalTypeForSlug(slug).catch(() => "")));
+  return assignedPortals.includes(safeRole);
+}
+
+function adminPickerUserLabel(user) {
+  return cleanString(user?.profile?.fullName || user?.name || user?.email || user?.userId);
 }
 
 async function backfillEnrollmentFormProfileDocument(userId, documents = {}) {
@@ -18462,6 +19099,31 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, report);
     }
 
+    if (action === "createGhostFlight") {
+      const result = await createGhostFlight(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "updateGhostFlight") {
+      const result = await updateGhostFlight(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "deleteGhostFlight") {
+      const result = await deleteGhostFlight(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "listGhostMergeCandidates") {
+      const result = await listGhostMergeCandidates(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "finalizeGhostFlightMerge") {
+      const result = await finalizeGhostFlightMerge(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
     if (action === "sagaGetImportSettings") {
       const settings = await loadSagaImportSettingsForActor(actorUserId);
       return jsonResponse(res, 200, { ok: true, ...settings });
@@ -19020,6 +19682,11 @@ module.exports = async ({ req, res, log, error }) => {
         `[listSummaries] search="${String(payload.search || "")}" total=${page.total} pageUsers=${(page.users || []).length}`,
       );
       return jsonResponse(res, 200, page);
+    }
+
+    if (action === "searchFlightPickerUsers") {
+      const result = await searchFlightPickerUsers(actorUserId, payload);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "getResendAccountInfo") {

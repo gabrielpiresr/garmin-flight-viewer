@@ -11,6 +11,8 @@ import { parseGarminCsv } from "./parseGarminCsv";
 import { mergeTelemetryCsvFiles } from "./telemetryCsvMerge";
 import type { UserRole } from "./rbac";
 
+const GHOST_FLIGHT_SOURCE_PREFIX = "ghost-flight-";
+
 export type AttachFlightTelemetryInput = {
   flightId: string;
   actorUserId: string;
@@ -79,7 +81,9 @@ export async function attachFlightTelemetry(
     actorRole,
     studentUserId: saved.data.student_user_id ?? decoded.meta.header.studentUserId,
     instructorUserId: saved.data.instructor_user_id ?? decoded.meta.header.instructorUserId ?? null,
-    source_filename: merged.sourceFileName,
+    source_filename: saved.data.source_filename?.startsWith(GHOST_FLIGHT_SOURCE_PREFIX)
+      ? saved.data.source_filename
+      : merged.sourceFileName,
     csv_text: csvText,
     aircraft_ident: saved.data.aircraft_ident ?? decoded.meta.header.aircraft ?? null,
     duration_sec: durationSec,

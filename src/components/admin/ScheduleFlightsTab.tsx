@@ -2620,6 +2620,33 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     return map;
   }, [weekData]);
 
+  // Apelido (nickname) do aluno por userId — vazio quando não há. Os perfis já vêm
+  // carregados em weekData, então este mapa não adiciona nenhuma leitura extra.
+  const studentNicknameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const student of weekData?.students ?? []) {
+      const nick = (student.nickname ?? "").trim();
+      if (nick) map.set(student.userId, nick);
+    }
+    return map;
+  }, [weekData]);
+
+  // Nome de exibição da escala: prefere o apelido; cai no nome completo quando não há.
+  // O `label` (nome completo) segue intacto no formulário/persistência — só o display
+  // da agenda usa o apelido.
+  const studentDisplayName = useCallback(
+    (studentId: string, fallback: string | null | undefined): string =>
+      studentNicknameById.get(studentId) || studentLabelMap.get(studentId) || fallback || studentId,
+    [studentNicknameById, studentLabelMap],
+  );
+  const instructorDisplayName = useCallback(
+    (instructorId: string | null | undefined, fallback: string | null | undefined): string | null => {
+      const identity = instructorId ? instructorById.get(instructorId) : null;
+      return (identity?.nickname ?? "").trim() || fallback || identity?.label || instructorId || null;
+    },
+    [instructorById],
+  );
+
   // Instrutores do cadastro da semana UNIÃO os que aparecem nos voos (ex.: eventos
   // SAGA fora do roster) — mesma ideia do aircraftOptions. É a fonte única de opções
   // do filtro e das colunas ao agrupar por instrutor, para nenhum voo ficar sem coluna.
@@ -2715,7 +2742,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       .filter((instructor) => visibleInstructors.includes(instructor.userId))
       .map((instructor) => ({
         key: instructor.userId,
-        label: shortName(instructor.label, instructor.label),
+        label: shortName(instructorDisplayName(instructor.userId, instructor.label) ?? instructor.label, instructor.label),
         colorClass: borderByInstructor.get(instructor.userId) ?? "border-white/80",
         groupBy: "instructor",
         instructorId: instructor.userId,
@@ -2730,7 +2757,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       });
     }
     return rows;
-  }, [borderByInstructor, visibleInstructors, instructorOptions]);
+  }, [borderByInstructor, visibleInstructors, instructorOptions, instructorDisplayName]);
 
   const scheduleColumns = useMemo<ScheduleColumn[]>(
     () => {
@@ -2929,10 +2956,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             id: row.id,
             studentId: row.studentId,
             flightHours: netFlightHours(row),
-            studentLabel: studentLabelMap.get(row.studentId) ?? row.studentLabel ?? row.studentId,
+            studentLabel: studentDisplayName(row.studentId, row.studentLabel),
             instructorId: row.instructorId,
-            instructorLabel:
-              row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null),
+            instructorLabel: instructorDisplayName(row.instructorId, row.instructorLabel),
             totalWeightLabel: totalWeightByFlightId.get(row.id) ?? "—",
             aircraftRegistration: row.aircraftRegistration ?? "Aeronave",
             dayOfWeek,
@@ -2947,7 +2973,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             notes: row.notes ?? null,
           };
         }),
-    [flights, hideCancelledFlights, instructorById, studentLabelMap, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
+    [flights, hideCancelledFlights, studentDisplayName, instructorDisplayName, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
   );
 
   const cancelledFlightCount = useMemo(
@@ -3857,7 +3883,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           }
                         />
                         <span className={`h-3 w-3 rounded border-2 ${border} bg-slate-800`} />
-                        {shortName(instructor.label, instructor.label)}
+                        {shortName(instructorDisplayName(instructor.userId, instructor.label) ?? instructor.label, instructor.label)}
                       </label>
                     );
                   })}
@@ -4222,7 +4248,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             <div className={`${mobileInstructorSummaryOpen ? "mt-3 grid" : "hidden"} grid-cols-1 gap-3 md:mt-0 md:grid md:grid-cols-4`}>
               {instructorSummary.map((row) => (
                 <article key={row.instructor.userId} className={`rounded-xl border bg-slate-800/30 p-3 ${borderByInstructor.get(row.instructor.userId) ?? "border-slate-700"}`}>
-                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(row.instructor.label, row.instructor.label)}</p>
+                  <p className="truncate text-sm font-semibold text-slate-100">{shortName(instructorDisplayName(row.instructor.userId, row.instructor.label) ?? row.instructor.label, row.instructor.label)}</p>
                   <p className="mt-1 text-xs text-slate-400">{row.hours.toFixed(1)}h previstas</p>
                   <p className="text-xs text-slate-500">{row.flights} voos</p>
                 </article>
@@ -4266,9 +4292,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     const conflicts = conflictsByFlightId.get(row.id) ?? [];
                     return (
                       <tr key={row.id} className="border-b border-slate-800/60">
-                        <td className="px-2 py-2 text-slate-200">{shortName(studentLabelMap.get(row.studentId) ?? row.studentId, studentLabelMap.get(row.studentId) ?? row.studentId)}</td>
+                        <td className="px-2 py-2 text-slate-200">{shortName(studentDisplayName(row.studentId, row.studentId))}</td>
                         <td className="px-2 py-2 text-slate-300">
-                          {shortName(row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null)) || "—"}
+                          {shortName(instructorDisplayName(row.instructorId, row.instructorLabel)) || "—"}
                         </td>
                         <td className="px-2 py-2 text-slate-300">{totalWeightByFlightId.get(row.id) ?? "—"}</td>
                         <td className="px-2 py-2 text-slate-300">{row.aircraftRegistration ?? "—"}</td>
@@ -4323,7 +4349,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                     onClick={() => setSelectedStudentId(row.id)}
                     className="w-full rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-left text-sm hover:bg-slate-800/60"
                   >
-                    <p className="font-medium text-slate-200">{shortName(row.label, row.label)}</p>
+                    <p className="font-medium text-slate-200">{shortName(studentDisplayName(row.id, row.label))}</p>
                     <p className="text-xs text-slate-500">{row.flights} voos · {row.hours.toFixed(1)}h</p>
                     <p className="text-xs text-emerald-300">Atendido</p>
                   </button>
@@ -4344,7 +4370,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       onClick={() => setSelectedStudentId(row.userId)}
                       className="w-full rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-left text-sm hover:bg-red-500/10"
                     >
-                      <p className="font-medium text-slate-200">{shortName(row.label, row.label)}</p>
+                      <p className="font-medium text-slate-200">{shortName(studentDisplayName(row.userId, row.label))}</p>
                       <p className="text-xs text-red-300">Sem voo marcado nesta semana</p>
                     </button>
                   ))}
@@ -4420,7 +4446,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                           <td className="px-2 py-1.5 text-slate-300">{row.durationHours.toFixed(1)}h</td>
                           <td className="px-2 py-1.5 text-slate-300">{row.aircraftRegistration ?? "—"}</td>
                           <td className="px-2 py-1.5 text-slate-300">
-                            {shortName(row.instructorLabel ?? (row.instructorId ? instructorById.get(row.instructorId)?.label ?? row.instructorId : null)) || "—"}
+                            {shortName(instructorDisplayName(row.instructorId, row.instructorLabel)) || "—"}
                           </td>
                           <td className="px-2 py-1.5 text-slate-300">{totalWeightByFlightId.get(row.id) ?? "—"}</td>
                         </tr>

@@ -114,6 +114,7 @@ export type StudentOption = {
 export type ScheduleStudentIdentity = {
   userId: string;
   label: string;
+  nickname: string | null;
   email: string | null;
   anacCode: string | null;
   weightKg: number | null;
@@ -132,6 +133,7 @@ type ProfileDoc = {
   custom_role_slug?: string;
   email?: string;
   full_name?: string;
+  nickname?: string;
   cpf?: string;
   rg?: string;
   rg_orgao_expedidor?: string;
@@ -362,6 +364,7 @@ function toInstructorIdentity(doc: ProfileDoc): InstructorIdentity | null {
   return {
     userId,
     label,
+    nickname: doc.nickname?.trim() || null,
     anacCode: doc.anac_code || null,
     weightKg: typeof doc.weight_kg === "number" ? doc.weight_kg : null,
     heightCm: typeof doc.height_cm === "number" ? doc.height_cm : null,
@@ -992,6 +995,7 @@ export async function listStudentIdentitiesForSchedule(_actorUserId: string): Pr
       return {
         userId,
         label: fullName || email || userId,
+        nickname: ((doc.nickname as string | undefined) ?? "").trim() || null,
         email: email || null,
         anacCode: (doc.anac_code as string | undefined) || null,
         weightKg: typeof doc.weight_kg === "number" ? doc.weight_kg : null,
@@ -1068,12 +1072,17 @@ export async function listAssignableInstructors(actorRole: UserRole): Promise<In
     (preferencesRes.documents as unknown as InstructorPreferenceDoc[]).map((doc) => [doc.user_id ?? "", doc]),
   );
   return profilesRes.documents
-    .filter((doc) => doc.is_active !== false && normalizeUserRole((doc.role as string | undefined) ?? null) === "instrutor")
+    // Inclui multi-role: quem tem "instrutor" entre os papéis (mesmo com role/portal
+    // ativo = admin, ex.: led@epeac.com.br roles=[instrutor,admin]) é atribuível como
+    // instrutor. Antes o filtro olhava só o `role` primário e deixava esses de fora,
+    // o que fazia o nickname deles não resolver na escala.
+    .filter((doc) => doc.is_active !== false && resolveProfileRoles(doc as unknown as ProfileDoc).roles.includes("instrutor"))
     .map((doc) =>
       toInstructorIdentity({
         user_id: (doc.user_id as string | undefined) ?? "",
         email: (doc.email as string | undefined) ?? "",
         full_name: (doc.full_name as string | undefined) ?? "",
+        nickname: (doc.nickname as string | undefined) ?? "",
         weight_kg: doc.weight_kg as number | undefined,
         height_cm: doc.height_cm as number | undefined,
         anac_code: (doc.anac_code as string | undefined) ?? "",

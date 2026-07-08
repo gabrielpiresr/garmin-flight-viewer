@@ -538,6 +538,7 @@ export async function getScheduleWeekData(params: {
   const students: StudentIdentity[] = [...identityByUserId.values()].map((identity) => ({
     userId: identity.userId,
     label: identity.label,
+    nickname: identity.nickname,
     email: identity.email,
     anacCode: identity.anacCode,
     weightKg: identity.weightKg,

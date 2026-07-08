@@ -13,6 +13,8 @@ export type ScheduleWeekOption = {
 export type StudentIdentity = {
   userId: string;
   label: string;
+  /** Apelido do perfil (nickname). Usado no display da escala; vazio quando não há. */
+  nickname?: string | null;
   email: string | null;
   anacCode: string | null;
   weightKg: number | null;
@@ -22,6 +24,8 @@ export type StudentIdentity = {
 export type InstructorIdentity = {
   userId: string;
   label: string;
+  /** Apelido do perfil (nickname). Usado no display da escala; vazio quando não há. */
+  nickname?: string | null;
   anacCode: string | null;
   weightKg: number | null;
   heightCm: number | null;

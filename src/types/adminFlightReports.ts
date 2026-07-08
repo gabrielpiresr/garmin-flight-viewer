@@ -102,6 +102,10 @@ export type AdminFlightTelemetrySummary = {
 export type AdminFlightReportRow = {
   id: string;
   status: AdminFlightReportStatus;
+  isGhostFlight?: boolean;
+  ghostObservation?: string;
+  mergeBlockedReason?: string;
+  matchScore?: number;
   createdAt: string;
   updatedAt: string;
   sourceFilename: string;
@@ -163,6 +167,7 @@ export type AdminFlightReportParams = {
   instructors?: string[];
   students?: string[];
   status?: AdminFlightReportStatus | "all";
+  ghostMode?: "exclude" | "include" | "only";
   limit?: number;
   cursor?: string | null;
 };

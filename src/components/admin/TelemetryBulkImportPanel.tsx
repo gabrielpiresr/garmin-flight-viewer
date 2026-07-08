@@ -45,6 +45,7 @@ function createFileId(): string {
 export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported }: Props) {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const [expanded, setExpanded] = useState(false);
   const [bulkAircraft, setBulkAircraft] = useState("");
   const [files, setFiles] = useState<BulkLogFile[]>([]);
   const [assignments, setAssignments] = useState<LogFileAssignment[]>([]);
@@ -203,16 +204,26 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
   }
 
   return (
-    <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+    <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/35">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-slate-800/40"
+        aria-expanded={expanded}
+      >
         <div>
           <h2 className="text-sm font-semibold text-slate-100">Importação em massa</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Vários CSVs podem ir para o mesmo voo (ex.: reinício do Garmin). Padrão: log_AAAAMMDD_HHMMSS_ICAO — segmentos
-            extras devem bater com uma perna da rota e cair na duração do voo.
-          </p>
+          <p className="mt-0.5 text-xs text-slate-500">Associe vários CSVs ao mesmo voo quando precisar.</p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <span className="rounded-md border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300">
+          {expanded ? "Recolher" : "Expandir"}
+        </span>
+      </button>
+
+      {expanded ? (
+        <div className="space-y-4 border-t border-slate-800 px-4 py-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <label className="text-xs text-slate-400">
             Avião obrigatório
             <select
@@ -380,6 +391,8 @@ export function TelemetryBulkImportPanel({ flights, aircraftOptions, onImported 
             </button>
           </div>
         </>
+      ) : null}
+        </div>
       ) : null}
     </section>
   );

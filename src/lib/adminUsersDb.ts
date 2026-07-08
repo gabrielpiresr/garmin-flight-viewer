@@ -4,7 +4,7 @@ import type { UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 import type { AdminDashboardData, AdminDashboardParams } from "../types/adminDashboard";
-import type { AdminFlightReportPage, AdminFlightReportParams } from "../types/adminFlightReports";
+import type { AdminFlightReportPage, AdminFlightReportParams, AdminFlightReportRow } from "../types/adminFlightReports";
 import type { AdminStudentsProgressData, AdminStudentsProgressParams } from "../types/adminStudents";
 import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types/adminUsers";
 import type { StudentCreditInput } from "../types/credits";
@@ -32,6 +32,9 @@ type AdminUsersResponse = {
   users?: AdminUserSummary[];
   user?: AdminUserDetail;
   flights?: AdminFlightReportPage["flights"];
+  flight?: AdminFlightReportRow;
+  candidates?: AdminFlightReportRow[];
+  transferred?: Record<string, number>;
   scheduleWeekFlights?: ScheduleWeekFlightRow[];
   nextCursor?: string | null;
   dashboard?: AdminDashboardData;
@@ -162,6 +165,15 @@ export async function listAdminUserSummaries(params: {
   };
 }
 
+export async function searchFlightPickerUsers(params: {
+  role: UserRole;
+  search?: string;
+  limit?: number;
+}): Promise<AdminUserSummary[]> {
+  const response = await executeAdminUsers({ action: "searchFlightPickerUsers", ...params });
+  return response.users ?? [];
+}
+
 export async function runEnrollmentAutomation(input: {
   leadId: string;
   trainingTrackId: string;
@@ -256,6 +268,52 @@ export async function listAdminFlightReports(params: AdminFlightReportParams = {
     limit: response.limit ?? params.limit ?? 100,
     nextCursor: response.nextCursor ?? null,
   };
+}
+
+export async function createGhostFlight(input: {
+  flightDate: string;
+  aircraftIdent: string;
+  instructorUserId: string;
+  studentUserId: string;
+  startTime?: string;
+  observation?: string;
+}): Promise<AdminFlightReportRow> {
+  const response = await executeAdminUsers({ action: "createGhostFlight", ...input });
+  if (!response.flight) throw new Error(response.message || "Voo temporario nao retornado pela funcao.");
+  return response.flight;
+}
+
+export async function updateGhostFlight(input: {
+  flightId: string;
+  flightDate: string;
+  aircraftIdent: string;
+  instructorUserId: string;
+  studentUserId: string;
+  startTime?: string;
+  observation?: string;
+}): Promise<AdminFlightReportRow> {
+  const response = await executeAdminUsers({ action: "updateGhostFlight", ...input });
+  if (!response.flight) throw new Error(response.message || "Voo temporario nao retornado pela funcao.");
+  return response.flight;
+}
+
+export async function deleteGhostFlight(flightId: string): Promise<void> {
+  const response = await executeAdminUsers({ action: "deleteGhostFlight", flightId });
+  if (response.ok !== true) throw new Error(response.message || "Falha ao excluir voo temporario.");
+}
+
+export async function listGhostMergeCandidates(ghostFlightId: string): Promise<AdminFlightReportRow[]> {
+  const response = await executeAdminUsers({ action: "listGhostMergeCandidates", ghostFlightId });
+  return response.candidates ?? [];
+}
+
+export async function finalizeGhostFlightMerge(input: {
+  ghostFlightId: string;
+  realFlightId: string;
+}): Promise<Record<string, number>> {
+  const response = await executeAdminUsers({ action: "finalizeGhostFlightMerge", ...input });
+  if (response.ok !== true) throw new Error(response.message || "Falha ao apontar voo temporario.");
+  return response.transferred ?? {};
 }
 
 export async function getAdminDashboardSummary(params: AdminDashboardParams): Promise<AdminDashboardData> {

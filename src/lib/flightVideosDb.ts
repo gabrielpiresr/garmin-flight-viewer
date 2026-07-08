@@ -5,6 +5,8 @@ import type { UserRole } from "./rbac";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 const VIDEOS_COL_ID = import.meta.env.VITE_APPWRITE_VIDEOS_COLLECTION_ID as string;
+const FLIGHTS_COL_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string;
+const GHOST_FLIGHT_SOURCE_PREFIX = "ghost-flight-";
 
 export type ProcessingStatus = "processing" | "uploading" | "ready" | "failed";
 
@@ -34,14 +36,22 @@ function buildFlightVideoDocumentPermissions(
   uploadedBy: string,
   actorUserId: string,
   actorRole: UserRole,
+  isGhostFlight = false,
 ): string[] {
-  const permissions = [
-    Permission.read(Role.users()),
-    Permission.read(Role.user(uploadedBy)),
-    Permission.read(Role.label("instrutor")),
-    Permission.update(Role.user(uploadedBy)),
-    Permission.delete(Role.user(uploadedBy)),
-  ];
+  const permissions = isGhostFlight
+    ? [
+        Permission.read(Role.user(uploadedBy)),
+        Permission.read(Role.label("instrutor")),
+        Permission.update(Role.user(uploadedBy)),
+        Permission.delete(Role.user(uploadedBy)),
+      ]
+    : [
+        Permission.read(Role.users()),
+        Permission.read(Role.user(uploadedBy)),
+        Permission.read(Role.label("instrutor")),
+        Permission.update(Role.user(uploadedBy)),
+        Permission.delete(Role.user(uploadedBy)),
+      ];
 
   if (actorRole === "admin") {
     permissions.push(
@@ -52,6 +62,18 @@ function buildFlightVideoDocumentPermissions(
   }
 
   return filterClientSidePermissions(permissions, actorUserId, actorRole);
+}
+
+async function isGhostFlight(flightId: string): Promise<boolean> {
+  if (!isAppwriteConfigured || !databases || !DB_ID || !FLIGHTS_COL_ID || !flightId) return false;
+  try {
+    const doc = await databases.getDocument(DB_ID, FLIGHTS_COL_ID, flightId, [
+      Query.select(["source_filename"]),
+    ]);
+    return String(doc.source_filename || "").startsWith(GHOST_FLIGHT_SOURCE_PREFIX);
+  } catch {
+    return false;
+  }
 }
 
 export async function createFlightVideoDoc(payload: {
@@ -74,6 +96,7 @@ export async function createFlightVideoDoc(payload: {
       payload.uploadedBy,
       payload.actorUserId,
       payload.actorRole,
+      await isGhostFlight(payload.flightId),
     );
 
     const d = await databases.createDocument(DB_ID, VIDEOS_COL_ID, ID.unique(), {
@@ -204,13 +227,19 @@ export async function listFlightVideoFlags(flightIds: string[]): Promise<Record<
   if (!isAppwriteConfigured || !databases || !VIDEOS_COL_ID || uniqueIds.length === 0) return flags;
 
   try {
+    const db = databases;
     const chunkSize = 25;
+    const chunks: string[][] = [];
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-      const chunk = uniqueIds.slice(i, i + chunkSize);
-      const res = await databases.listDocuments(DB_ID, VIDEOS_COL_ID, [
+      chunks.push(uniqueIds.slice(i, i + chunkSize));
+    }
+    const pages = await Promise.all(chunks.map((chunk) =>
+      db.listDocuments(DB_ID, VIDEOS_COL_ID, [
         Query.equal("flight_id", chunk),
         Query.limit(100),
-      ]);
+      ]),
+    ));
+    for (const res of pages) {
       for (const doc of res.documents) {
         const flightId = (doc.flight_id as string | undefined) ?? "";
         if (flightId) flags[flightId] = true;
