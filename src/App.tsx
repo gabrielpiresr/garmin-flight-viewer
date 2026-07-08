@@ -1,10 +1,12 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useAuth } from "./contexts/AuthContext";
 import { PermissionsProvider } from "./contexts/PermissionsContext";
 import { LoginPage } from "./pages/LoginPage";
 import { PendingApprovalScreen } from "./components/PendingApprovalScreen";
 import { OnboardingFlow } from "./components/OnboardingFlow";
+import { RoleMigrationOverlay } from "./components/RoleMigrationOverlay";
 import { useOnboardingGate } from "./hooks/useOnboardingGate";
+import { endRoleMigration, readRoleMigration } from "./lib/roleMigration";
 import { refreshBrandCache } from "./lib/schoolRulesDb";
 import { warmScheduleForUser } from "./lib/scheduleCache";
 
@@ -46,9 +48,27 @@ function AppLoading() {
   );
 }
 
+// Limpa o overlay de migração assim que o layout de destino monta (dentro do
+// mesmo Suspense, só monta quando o chunk resolve — evita flash de spinner).
+function MigrationBeacon({ onReady }: { onReady: () => void }) {
+  useEffect(() => {
+    onReady();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
 export default function App() {
   const { user, loading } = useAuth();
   const onboardingGate = useOnboardingGate();
+  // Overlay "Migrando para X" que sobrevive ao reload do RoleSwitcher.
+  const [migrationLabel, setMigrationLabel] = useState<string | null>(() => {
+    const label = readRoleMigration();
+    if (label) endRoleMigration();
+    return label;
+  });
+  const bootFallback = migrationLabel ? <RoleMigrationOverlay label={migrationLabel} /> : <AppLoading />;
+  const clearMigration = () => setMigrationLabel(null);
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
   const isVideoHelperRoute = window.location.pathname === "/video-helper";
   const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
@@ -134,7 +154,7 @@ export default function App() {
   }
 
   if (loading) {
-    return <AppLoading />;
+    return bootFallback;
   }
 
   if (!user) {
@@ -154,7 +174,8 @@ export default function App() {
   if (user.role === "admin") {
     return (
       <PermissionsProvider>
-        <Suspense fallback={<AppLoading />}>
+        <Suspense fallback={bootFallback}>
+          {migrationLabel ? <MigrationBeacon onReady={clearMigration} /> : null}
           <AdminLayout />
         </Suspense>
       </PermissionsProvider>
@@ -164,7 +185,8 @@ export default function App() {
   if (user.role === "instrutor") {
     return (
       <PermissionsProvider>
-        <Suspense fallback={<AppLoading />}>
+        <Suspense fallback={bootFallback}>
+          {migrationLabel ? <MigrationBeacon onReady={clearMigration} /> : null}
           <InstructorLayout />
         </Suspense>
       </PermissionsProvider>
@@ -176,7 +198,7 @@ export default function App() {
   }
 
   if (user.role === "aluno" && onboardingGate.loading) {
-    return <AppLoading />;
+    return bootFallback;
   }
 
   if (user.role === "aluno" && onboardingGate.shouldShow) {
@@ -190,7 +212,8 @@ export default function App() {
 
   return (
     <PermissionsProvider>
-      <Suspense fallback={<AppLoading />}>
+      <Suspense fallback={bootFallback}>
+        {migrationLabel ? <MigrationBeacon onReady={clearMigration} /> : null}
         <MainLayout />
       </Suspense>
     </PermissionsProvider>

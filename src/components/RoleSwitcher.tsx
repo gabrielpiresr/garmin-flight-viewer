@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { ROLE_DISPLAY_LABELS } from "../lib/rbac";
+import { beginRoleMigration } from "../lib/roleMigration";
 import { listTenantRoles } from "../lib/tenantRolesDb";
 import type { TenantRole } from "../types/rolePermissions";
+import { RoleMigrationOverlay } from "./RoleMigrationOverlay";
 
 type RoleSwitcherProps = {
   compact?: boolean;
@@ -20,6 +22,7 @@ function slugLabel(slug: string, tenantRoles: TenantRole[]): string {
 export function RoleSwitcher({ compact = false, className = "" }: RoleSwitcherProps) {
   const { user, switchRole } = useAuth();
   const [switching, setSwitching] = useState(false);
+  const [migratingLabel, setMigratingLabel] = useState<string | null>(null);
   const [tenantRoles, setTenantRoles] = useState<TenantRole[]>([]);
 
   useEffect(() => {
@@ -31,21 +34,24 @@ export function RoleSwitcher({ compact = false, className = "" }: RoleSwitcherPr
 
   async function handleChange(nextSlug: string) {
     if (nextSlug === user?.activeRoleSlug || switching) return;
+    const label = slugLabel(nextSlug, tenantRoles);
     setSwitching(true);
-    try {
-      const { error } = await switchRole(nextSlug);
-      if (error) {
-        window.alert(error.message || "Não foi possível trocar o role.");
-      } else {
-        window.location.reload();
-      }
-    } finally {
+    setMigratingLabel(label);
+    const { error } = await switchRole(nextSlug);
+    if (error) {
       setSwitching(false);
+      setMigratingLabel(null);
+      window.alert(error.message || "Não foi possível trocar o role.");
+      return;
     }
+    // Mantém o overlay visível através do reload (relido no boot do App).
+    beginRoleMigration(label);
+    window.location.reload();
   }
 
   return (
     <div className={`inline-flex flex-wrap gap-1 ${className}`}>
+      {migratingLabel ? <RoleMigrationOverlay label={migratingLabel} /> : null}
       {user.assignedRoleSlugs.map((slug) => {
         const active = user.activeRoleSlug === slug;
         return (
