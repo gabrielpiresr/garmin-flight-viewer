@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { findHighlightRange } from "../lib/adminSearchIndex";
+import { parseHelpArticleHref } from "../lib/helpArticleLink";
 import { listHelpCatalog } from "../lib/helpCenterDb";
 import { openHelpCatalogPdf } from "../lib/helpCenterPdf";
 import { safeRenderRichContent } from "../lib/maneuverContent";
@@ -191,6 +192,7 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const articleTopRef = useRef<HTMLDivElement | null>(null);
 
   const trimmedQuery = query.trim();
   const isSearching = trimmedQuery.length > 0;
@@ -342,8 +344,24 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
     setSelectedArticleId(article.id);
   }
 
+  // Navegação por referência cruzada entre artigos (link "/artigo-ajuda/<id>"),
+  // interceptada no corpo do artigo para trocar de artigo sem reload.
+  function handleArticleBodyClick(event: MouseEvent<HTMLDivElement>) {
+    const anchor = (event.target as HTMLElement).closest("a");
+    if (!anchor) return;
+    const targetId = parseHelpArticleHref(anchor.getAttribute("href"));
+    if (!targetId) return;
+    event.preventDefault();
+    const target = catalog.articles.find((article) => article.id === targetId);
+    if (!target) return;
+    setQuery("");
+    setSelectedSectionId(target.sectionId);
+    setSelectedArticleId(target.id);
+    requestAnimationFrame(() => articleTopRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
+
   const articleBody = selectedArticle ? (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div ref={articleTopRef} className="mx-auto max-w-3xl space-y-5">
       <header className="space-y-3 border-b border-slate-800 pb-5">
         <nav aria-label="Navegação do artigo" className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium text-slate-500">
           <button type="button" onClick={goHome} className="hover:text-cyan-400 hover:underline">
@@ -370,7 +388,10 @@ export function HelpCenterTab({ className = "w-full max-w-[96rem]", audience = "
           </div>
         ) : null}
       </header>
-      <div className="help-article-prose space-y-4 text-sm text-slate-300 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:text-sm [&_p]:text-sm [&_table]:text-sm">
+      <div
+        onClick={handleArticleBodyClick}
+        className="help-article-prose space-y-4 text-sm text-slate-300 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:text-sm [&_p]:text-sm [&_table]:text-sm"
+      >
         {safeRenderRichContent(selectedArticle.contentJson)}
       </div>
     </div>

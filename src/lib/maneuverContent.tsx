@@ -307,8 +307,19 @@ function renderMarkedText(node: RichNode, key: string): ReactNode {
     if (mark.type === "code") value = <code key={`${key}-c`} className="rounded bg-slate-800 px-1 py-0.5 text-sky-100">{value}</code>;
     if (mark.type === "link") {
       const href = typeof mark.attrs?.href === "string" ? mark.attrs.href : "";
+      const isArticleRef = href.startsWith("/artigo-ajuda/");
       value = isSafeUrl(href) ? (
-        <a key={`${key}-l`} href={href} target={/^https?:\/\//i.test(href) ? "_blank" : undefined} rel="noreferrer" className="break-words text-sky-300 underline underline-offset-2 hover:text-sky-200">
+        <a
+          key={`${key}-l`}
+          href={href}
+          target={/^https?:\/\//i.test(href) ? "_blank" : undefined}
+          rel="noreferrer"
+          className={
+            isArticleRef
+              ? "break-words font-medium text-cyan-300 underline decoration-dotted underline-offset-2 hover:text-cyan-200"
+              : "break-words text-sky-300 underline underline-offset-2 hover:text-sky-200"
+          }
+        >
           {value}
         </a>
       ) : (

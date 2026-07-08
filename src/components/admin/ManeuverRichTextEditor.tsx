@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { getManeuverEditorExtensions, MANEUVER_EDITOR_SURFACE_CLASS } from "../../lib/maneuverContent";
 import type { ManeuverMediaUpload, ManeuverRichContent } from "../../types/maneuver";
@@ -10,6 +10,8 @@ type ManeuverRichTextEditorProps = {
   onUploadMedia: (file: File) => Promise<ManeuverMediaUpload | null>;
   disabled?: boolean;
   placeholder?: string;
+  /** Botões extras na barra de ferramentas com acesso ao editor (ex.: citar artigo). */
+  renderExtraTools?: (editor: Editor | null) => ReactNode;
 };
 
 function isYoutubeUrl(url: string): boolean {
@@ -22,6 +24,7 @@ export function ManeuverRichTextEditor({
   onUploadMedia,
   disabled = false,
   placeholder = "Escreva o artigo da manobra...",
+  renderExtraTools,
 }: ManeuverRichTextEditorProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
@@ -240,6 +243,7 @@ export function ManeuverRichTextEditor({
         <button type="button" disabled={!editor || disabled} onClick={setLink} className={`${buttonClass} ${editor?.isActive("link") ? activeClass : ""}`}>
           Link
         </button>
+        {renderExtraTools ? renderExtraTools(disabled ? null : editor) : null}
         <button type="button" disabled={!editor || disabled} onClick={() => imageInputRef.current?.click()} className={buttonClass}>
           Imagem
         </button>

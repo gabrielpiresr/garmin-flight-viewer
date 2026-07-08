@@ -34,6 +34,7 @@ import type {
 import type { ManeuverMediaUpload, ManeuverRichContent } from "../../types/maneuver";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
+import { HelpArticleLinkTool } from "./HelpArticleLinkTool";
 import { ManeuverRichTextEditor } from "./ManeuverRichTextEditor";
 
 type SectionForm = {
@@ -661,6 +662,14 @@ export function HelpCenterAdminTab({ audience = "student" }: HelpCenterAdminTabP
                     onChange={(contentJson) => setArticleForm((prev) => ({ ...prev, contentJson }))}
                     onUploadMedia={handleUploadMedia}
                     disabled={saving}
+                    renderExtraTools={(editor) => (
+                      <HelpArticleLinkTool
+                        editor={editor}
+                        articles={catalog.articles}
+                        sections={catalog.sections}
+                        currentArticleId={editingArticleId}
+                      />
+                    )}
                   />
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
