@@ -298,6 +298,34 @@ function hasGroundRollBeforeTakeoff(data: ChartRow[], rotIdx: number): boolean {
   return false;
 }
 
+const TOUCHDOWN_MIN_PLAUSIBLE_IAS_KT = 40;
+
+function findIasBelowTouchdownFloor(data: ChartRow[], startIdx: number, endIdx: number): number | null {
+  const start = Math.max(0, startIdx);
+  const end = Math.min(data.length - 1, endIdx);
+  let firstBelow: number | null = null;
+
+  for (let i = start; i <= end; i++) {
+    const ias = get(data[i]!, "iasKt");
+    if (ias === null) continue;
+
+    if (ias < TOUCHDOWN_MIN_PLAUSIBLE_IAS_KT && firstBelow === null) {
+      firstBelow = i;
+    }
+
+    const prevIas = i > start ? get(data[i - 1]!, "iasKt") : null;
+    if (
+      ias < TOUCHDOWN_MIN_PLAUSIBLE_IAS_KT &&
+      prevIas !== null &&
+      prevIas >= TOUCHDOWN_MIN_PLAUSIBLE_IAS_KT
+    ) {
+      return i;
+    }
+  }
+
+  return firstBelow;
+}
+
 function refineTouchdownCandidate(data: ChartRow[], idx: number): number {
   const fullStopRollout = hasSustainedLowGroundSpeed(data, idx, 25, 60);
   const touchAndGoRollout = hasFutureAirborne(data, idx, 90);
@@ -354,6 +382,12 @@ function refineTouchdownCandidate(data: ChartRow[], idx: number): number {
     ) {
       return i;
     }
+  }
+
+  const currentIas = get(data[idx]!, "iasKt");
+  if (currentIas !== null && currentIas < TOUCHDOWN_MIN_PLAUSIBLE_IAS_KT) {
+    const floorIdx = findIasBelowTouchdownFloor(data, Math.max(0, idx - 60), searchEnd);
+    if (floorIdx !== null) return floorIdx;
   }
 
   return idx;
