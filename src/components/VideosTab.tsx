@@ -5,6 +5,7 @@
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent,
   type RefObject,
 } from "react";
 import { ExportModal, type ExportProgress } from "./ExportModal";
@@ -140,18 +141,63 @@ function formatTimecode(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5] as const;
+const PLAYBACK_REACT_SYNC_MS = 250;
+const DOUBLE_TAP_MS = 280;
+const SKIP_FORWARD_SEC = 10;
+
+function formatPlaybackRate(rate: number): string {
+  return rate === 1 ? "1×" : `${rate}×`;
+}
+
+function VideoSkipFlash({ flashKey }: { flashKey: number }) {
+  if (!flashKey) return null;
+  return (
+    <div key={flashKey} className="pointer-events-none absolute inset-0 z-[25] overflow-hidden">
+      <div className="video-skip-shimmer absolute inset-0 bg-gradient-to-r from-transparent via-sky-300/25 to-transparent" />
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="video-skip-flash-badge flex items-center gap-1.5 rounded-full bg-black/75 px-4 py-2 text-lg font-semibold text-white shadow-lg ring-1 ring-sky-400/45 backdrop-blur-sm">
+          <span className="text-sky-300">+10s</span>
+          <span aria-hidden="true" className="text-sm tracking-tighter text-white/85">
+            ▶▶
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoLoadingOverlay({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/90"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="Carregando vídeo"
+    >
+      <div className="h-9 w-9 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+      <span className="mt-3 text-xs font-medium text-slate-300">Carregando vídeo…</span>
+    </div>
+  );
+}
+
 /** Barra de reprodução fora do vídeo — não gira com a rotação do frame. */
 function VideoPlaybackControls({
   videoRef,
   durationSec,
   currentTimeSec,
   playbackBindKey,
+  playbackRate,
+  onPlaybackRateChange,
   onSeek,
 }: {
   videoRef: RefObject<HTMLVideoElement | null>;
   durationSec: number;
   currentTimeSec: number;
   playbackBindKey: string;
+  playbackRate: number;
+  onPlaybackRateChange: (rate: number) => void;
   onSeek: (t: number) => void;
 }) {
   const [playing, setPlaying] = useState(false);
@@ -184,6 +230,12 @@ function VideoPlaybackControls({
     else el.pause();
   };
 
+  const setSpeed = (next: number) => {
+    onPlaybackRateChange(next);
+    const el = videoRef.current;
+    if (el) el.playbackRate = next;
+  };
+
   return (
     <div className="flex shrink-0 items-center gap-2 border-t border-slate-800 bg-slate-950/95 px-2 py-1.5">
       <button
@@ -194,6 +246,19 @@ function VideoPlaybackControls({
       >
         {playing ? "⏸" : "▶"}
       </button>
+      <select
+        value={playbackRate}
+        onChange={(e) => setSpeed(Number(e.target.value))}
+        title="Velocidade de reprodução"
+        aria-label="Velocidade de reprodução"
+        className="h-7 shrink-0 cursor-pointer rounded-md border border-slate-700 bg-slate-800 px-1.5 text-[10px] font-medium tabular-nums text-slate-300 hover:bg-slate-700 focus:border-sky-500 focus:outline-none"
+      >
+        {PLAYBACK_RATES.map((rate) => (
+          <option key={rate} value={rate}>
+            {formatPlaybackRate(rate)}
+          </option>
+        ))}
+      </select>
       <input
         type="range"
         min={0}
@@ -1526,6 +1591,9 @@ function TelemetryVideoPlayer({
   const [overlayStyle, setOverlayStyle] = useState<TelemetryOverlayStyle>("hud");
   const [currentPoint, setCurrentPoint] = useState<VideoTelemetryPoint | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [skipFlashKey, setSkipFlashKey] = useState(0);
+  const [videoLoading, setVideoLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -1559,6 +1627,10 @@ function TelemetryVideoPlayer({
   const [brand, setBrand] = useState(() => getCachedVideoBrand());
   const verticalDragRef = useRef<{ startX: number; startCrop: number; moved: boolean } | null>(null);
   const currentTimeRef = useRef(0);
+  const currentPointRef = useRef<VideoTelemetryPoint | null>(null);
+  const stageClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const verticalTapRef = useRef(0);
+  const stageClickAtRef = useRef(0);
   const onEndedRef = useRef(onEnded);
   onEndedRef.current = onEnded;
 
@@ -1632,12 +1704,64 @@ function TelemetryVideoPlayer({
     };
   }, [points, orientation]);
 
-  const syncPlaybackState = useCallback((el: HTMLVideoElement) => {
-    const time = el.currentTime;
-    currentTimeRef.current = time;
-    setCurrentTimeSec(time);
-    setCurrentPoint(points.length > 0 ? pointAtVideoTime(points, time) : null);
-  }, [points]);
+  const syncPlaybackState = useCallback(
+    (el: HTMLVideoElement, opts?: { syncReact?: boolean; drawOverlays?: boolean }) => {
+      const syncReact = opts?.syncReact !== false;
+      const drawOverlays = opts?.drawOverlays !== false;
+      const time = el.currentTime;
+      currentTimeRef.current = time;
+      const point = points.length > 0 ? pointAtVideoTime(points, time) : null;
+      currentPointRef.current = point;
+      if (drawOverlays) drawFrameOverlaysRef.current(point);
+      if (syncReact) {
+        setCurrentTimeSec(time);
+        setCurrentPoint(point);
+      }
+    },
+    [points],
+  );
+
+  const drawFrameOverlaysRef = useRef<(point: VideoTelemetryPoint | null) => void>(() => {});
+
+  useEffect(() => {
+    setVideoLoading(true);
+  }, [video.id, video.file_url, orientation]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    const markReady = () => {
+      if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        setVideoLoading(false);
+      }
+    };
+
+    const markLoading = () => {
+      if (el.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        setVideoLoading(true);
+      }
+    };
+
+    const onError = () => setVideoLoading(false);
+
+    markReady();
+
+    el.addEventListener("loadstart", markLoading);
+    el.addEventListener("loadeddata", markReady);
+    el.addEventListener("canplay", markReady);
+    el.addEventListener("playing", markReady);
+    el.addEventListener("waiting", markLoading);
+    el.addEventListener("error", onError);
+    return () => {
+      el.removeEventListener("loadstart", markLoading);
+      el.removeEventListener("loadeddata", markReady);
+      el.removeEventListener("canplay", markReady);
+      el.removeEventListener("playing", markReady);
+      el.removeEventListener("waiting", markLoading);
+      el.removeEventListener("error", onError);
+    };
+  }, [video.id, video.file_url, orientation]);
 
   // The 16:9 and 9:16 previews mount different <video> elements. Rebind listeners
   // when orientation changes so widgets and the trim playhead keep following playback.
@@ -1645,7 +1769,12 @@ function TelemetryVideoPlayer({
     const el = videoRef.current;
     if (!el) return;
 
+    el.playbackRate = playbackRate;
+
+    let rafId = 0;
+    let lastReactAt = 0;
     let restoredTime = false;
+
     const restoreAndSync = () => {
       if (!restoredTime) {
         const targetTime = currentTimeRef.current;
@@ -1664,29 +1793,62 @@ function TelemetryVideoPlayer({
       }
       syncPlaybackState(el);
     };
-    const update = () => syncPlaybackState(el);
-    const handleEnded = () => onEndedRef.current?.();
+
+    const tick = (now: number) => {
+      if (el.paused || el.ended) return;
+      const time = el.currentTime;
+      currentTimeRef.current = time;
+      const point = points.length > 0 ? pointAtVideoTime(points, time) : null;
+      currentPointRef.current = point;
+      drawFrameOverlaysRef.current(point);
+      if (now - lastReactAt >= PLAYBACK_REACT_SYNC_MS) {
+        lastReactAt = now;
+        setCurrentTimeSec(time);
+        setCurrentPoint(point);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const startLoop = () => {
+      cancelAnimationFrame(rafId);
+      lastReactAt = 0;
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const stopLoop = () => {
+      cancelAnimationFrame(rafId);
+      syncPlaybackState(el);
+    };
+
+    const handleEnded = () => {
+      stopLoop();
+      onEndedRef.current?.();
+    };
+    const onSeeked = () => syncPlaybackState(el);
 
     if (el.readyState >= 1) restoreAndSync();
-    else update();
+    else syncPlaybackState(el, { drawOverlays: false });
+
+    if (!el.paused && !el.ended) startLoop();
 
     el.addEventListener("loadedmetadata", restoreAndSync);
     el.addEventListener("loadeddata", restoreAndSync);
     el.addEventListener("durationchange", restoreAndSync);
-    el.addEventListener("timeupdate", update);
-    el.addEventListener("seeked", update);
-    el.addEventListener("play", update);
+    el.addEventListener("seeked", onSeeked);
+    el.addEventListener("play", startLoop);
+    el.addEventListener("pause", stopLoop);
     el.addEventListener("ended", handleEnded);
     return () => {
+      cancelAnimationFrame(rafId);
       el.removeEventListener("loadedmetadata", restoreAndSync);
       el.removeEventListener("loadeddata", restoreAndSync);
       el.removeEventListener("durationchange", restoreAndSync);
-      el.removeEventListener("timeupdate", update);
-      el.removeEventListener("seeked", update);
-      el.removeEventListener("play", update);
+      el.removeEventListener("seeked", onSeeked);
+      el.removeEventListener("play", startLoop);
+      el.removeEventListener("pause", stopLoop);
       el.removeEventListener("ended", handleEnded);
     };
-  }, [orientation, syncPlaybackState, video.id]);
+  }, [orientation, syncPlaybackState, video.id, points, playbackRate]);
 
   useEffect(() => {
     // Double-rAF: first frame commits the DOM (new canvas mounts), second frame draws after layout
@@ -1705,15 +1867,6 @@ function TelemetryVideoPlayer({
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [points, routeMap, overlayStyle, orientation]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const mapFit = "cover";
-    const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
-    const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
-    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, mapStyle, mapFit, mapPanelOpacity);
-  }, [points, currentPoint, routeMap, overlayStyle, orientation]);
-
   const chartPoints = useMemo(
     () => telemetryChartPoints(points, trimStartSec, trimEndSec, chartsFollowTrim),
     [points, trimStartSec, trimEndSec, chartsFollowTrim],
@@ -1721,14 +1874,29 @@ function TelemetryVideoPlayer({
 
   const chartDrawStyle = "hud" as const;
 
-  const redrawCharts = useCallback(() => {
-    if (altitudeChartRef.current) {
-      drawTelemetryChart(altitudeChartRef.current, chartPoints, currentPoint, "altitude", chartDrawStyle);
-    }
-    if (speedChartRef.current) {
-      drawTelemetryChart(speedChartRef.current, chartPoints, currentPoint, "speed", chartDrawStyle);
-    }
-  }, [chartPoints, currentPoint, chartDrawStyle]);
+  const drawCharts = useCallback(
+    (point: VideoTelemetryPoint | null) => {
+      if (altitudeChartRef.current) {
+        drawTelemetryChart(altitudeChartRef.current, chartPoints, point, "altitude", chartDrawStyle);
+      }
+      if (speedChartRef.current) {
+        drawTelemetryChart(speedChartRef.current, chartPoints, point, "speed", chartDrawStyle);
+      }
+    },
+    [chartPoints, chartDrawStyle],
+  );
+
+  const drawRouteMarker = useCallback(
+    (point: VideoTelemetryPoint | null) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const mapFit = "cover";
+      const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
+      const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
+      drawVideoRouteMapMarker(canvas, routeMap, points, point, mapStyle, mapFit, mapPanelOpacity);
+    },
+    [points, routeMap, overlayStyle, orientation],
+  );
 
   const redrawRouteMap = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1737,29 +1905,39 @@ function TelemetryVideoPlayer({
     const mapStyle = overlayStyle === "hud" ? "hud" : "compact";
     const mapPanelOpacity = orientation === "vertical" ? 0.9 : 1;
     drawVideoRouteMapBase(canvas, routeMap, points, mapStyle, mapFit, mapPanelOpacity);
-    drawVideoRouteMapMarker(canvas, routeMap, points, currentPoint, mapStyle, mapFit, mapPanelOpacity);
-  }, [points, currentPoint, routeMap, overlayStyle, orientation]);
+    drawVideoRouteMapMarker(canvas, routeMap, points, currentPointRef.current, mapStyle, mapFit, mapPanelOpacity);
+  }, [points, routeMap, overlayStyle, orientation]);
+
+  const drawFrameOverlays = useCallback(
+    (point: VideoTelemetryPoint | null) => {
+      drawCharts(point);
+      drawRouteMarker(point);
+    },
+    [drawCharts, drawRouteMarker],
+  );
+
+  drawFrameOverlaysRef.current = drawFrameOverlays;
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      redrawCharts();
+      drawCharts(currentPointRef.current);
       redrawRouteMap();
     });
     return () => cancelAnimationFrame(raf);
-  }, [redrawCharts, redrawRouteMap, enabledWidgets, overlayStyle, orientation]);
+  }, [drawCharts, redrawRouteMap, enabledWidgets, overlayStyle, orientation]);
 
   useEffect(() => {
     const overlay = overlayRef.current;
     const container = containerRef.current;
     if (!overlay && !container) return;
     const observer = new ResizeObserver(() => {
-      redrawCharts();
+      drawCharts(currentPointRef.current);
       redrawRouteMap();
     });
     if (overlay) observer.observe(overlay);
     if (container) observer.observe(container);
     return () => observer.disconnect();
-  }, [redrawCharts, redrawRouteMap]);
+  }, [drawCharts, redrawRouteMap]);
 
   const hasTelemetry = video.telemetry_present && points.length > 1 && available.length > 0;
   const isStudent = user?.role !== "instrutor" && user?.role !== "admin";
@@ -1772,12 +1950,33 @@ function TelemetryVideoPlayer({
 
   const seekVideo = useCallback(
     (t: number) => {
+      const el = videoRef.current;
+      const shouldResume = el ? !el.paused && !el.ended : false;
       currentTimeRef.current = t;
+      const point = points.length > 0 ? pointAtVideoTime(points, t) : null;
+      currentPointRef.current = point;
       setCurrentTimeSec(t);
-      setCurrentPoint(points.length > 0 ? pointAtVideoTime(points, t) : null);
-      if (videoRef.current) videoRef.current.currentTime = t;
+      setCurrentPoint(point);
+      drawFrameOverlays(point);
+      if (el) {
+        el.currentTime = t;
+        if (shouldResume && el.paused) void el.play();
+      }
     },
-    [points],
+    [points, drawFrameOverlays],
+  );
+
+  const skipForward = useCallback(
+    (sec: number) => {
+      const el = videoRef.current;
+      if (!el) return;
+      const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : (video.duration_sec ?? Infinity);
+      const nextTime = Math.min(dur, el.currentTime + sec);
+      if (nextTime <= el.currentTime) return;
+      seekVideo(nextTime);
+      setSkipFlashKey((key) => key + 1);
+    },
+    [seekVideo, video.duration_sec],
   );
 
   const togglePlayPause = useCallback(() => {
@@ -1786,6 +1985,58 @@ function TelemetryVideoPlayer({
     if (el.paused) void el.play();
     else el.pause();
   }, []);
+
+  const handleStageClick = useCallback(() => {
+    const now = Date.now();
+    const isSecondClick = now - stageClickAtRef.current < DOUBLE_TAP_MS;
+    stageClickAtRef.current = now;
+
+    if (stageClickTimerRef.current) {
+      clearTimeout(stageClickTimerRef.current);
+      stageClickTimerRef.current = null;
+    }
+    if (isSecondClick) return;
+
+    stageClickTimerRef.current = setTimeout(() => {
+      stageClickTimerRef.current = null;
+      togglePlayPause();
+    }, DOUBLE_TAP_MS);
+  }, [togglePlayPause]);
+
+  const handleStageDoubleClick = useCallback(
+    (e: MouseEvent) => {
+      e.preventDefault();
+      stageClickAtRef.current = 0;
+      if (stageClickTimerRef.current) {
+        clearTimeout(stageClickTimerRef.current);
+        stageClickTimerRef.current = null;
+      }
+      skipForward(SKIP_FORWARD_SEC);
+    },
+    [skipForward],
+  );
+
+  const handleVerticalStagePointerUp = useCallback(() => {
+    if (!verticalDragRef.current) return;
+    if (verticalDragRef.current.moved) {
+      verticalDragRef.current = null;
+      return;
+    }
+    verticalDragRef.current = null;
+    const now = Date.now();
+    if (now - verticalTapRef.current < DOUBLE_TAP_MS) {
+      verticalTapRef.current = 0;
+      skipForward(SKIP_FORWARD_SEC);
+      return;
+    }
+    verticalTapRef.current = now;
+    setTimeout(() => {
+      if (verticalTapRef.current === now) {
+        verticalTapRef.current = 0;
+        togglePlayPause();
+      }
+    }, DOUBLE_TAP_MS);
+  }, [skipForward, togglePlayPause]);
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current;
@@ -1956,10 +2207,10 @@ function TelemetryVideoPlayer({
                 <video
                   ref={videoRef}
                   src={video.file_url}
-                  preload="metadata"
+                  preload="auto"
                   playsInline
                   autoPlay={autoPlay}
-                  className="absolute inset-0 h-full w-full bg-black object-cover"
+                  className={`absolute inset-0 h-full w-full bg-black object-cover transition-opacity duration-300 ${videoLoading ? "opacity-0" : "opacity-100"}`}
                   style={{
                     objectPosition: `${verticalCropPct}% center`,
                     ...videoRotationStyle(videoRotationDeg),
@@ -1993,21 +2244,24 @@ function TelemetryVideoPlayer({
                   setVerticalCropPct(Math.max(0, Math.min(100, verticalDragRef.current.startCrop - deltaPct)));
                 }}
                 onPointerUp={() => {
-                  if (verticalDragRef.current && !verticalDragRef.current.moved) togglePlayPause();
-                  verticalDragRef.current = null;
+                  handleVerticalStagePointerUp();
                 }}
                 onPointerCancel={() => { verticalDragRef.current = null; }}
               />
+                <VideoSkipFlash flashKey={skipFlashKey} />
                 <div className="pointer-events-none absolute bottom-2 left-1/2 z-20 -translate-x-1/2 rounded bg-black/40 px-2 py-0.5 text-[9px] text-white/60">
                   ← arraste para enquadrar →
                 </div>
               </div>
+              <VideoLoadingOverlay show={videoLoading} />
             </div>
             <VideoPlaybackControls
               videoRef={videoRef}
               durationSec={video.duration_sec ?? 0}
               currentTimeSec={currentTimeSec}
               playbackBindKey={`${orientation}-${video.id}`}
+              playbackRate={playbackRate}
+              onPlaybackRateChange={setPlaybackRate}
               onSeek={seekVideo}
             />
           </div>
@@ -2025,18 +2279,20 @@ function TelemetryVideoPlayer({
                 <video
                   ref={videoRef}
                   src={video.file_url}
-                  preload="metadata"
+                  preload="auto"
                   playsInline
                   autoPlay={autoPlay}
-                  className="absolute inset-0 h-full w-full bg-black object-cover"
+                  className={`absolute inset-0 h-full w-full bg-black object-cover transition-opacity duration-300 ${videoLoading ? "opacity-0" : "opacity-100"}`}
                   style={videoRotationStyle(videoRotationDeg)}
                 />
                 <button
                   type="button"
                   className="video-stage-interactive absolute inset-0 z-[4] cursor-pointer border-0 bg-transparent p-0"
-                  aria-label="Reproduzir ou pausar"
-                  onClick={togglePlayPause}
+                  aria-label="Reproduzir, pausar ou avançar 10 segundos com duplo clique"
+                  onClick={handleStageClick}
+                  onDoubleClick={handleStageDoubleClick}
                 />
+                <VideoSkipFlash flashKey={skipFlashKey} />
                 {hasTelemetry && (
                   <div className="absolute inset-0">
                     <TelemetryBrandMark brand={brand} compact={overlayStyle === "compact"} />
@@ -2064,12 +2320,15 @@ function TelemetryVideoPlayer({
                   </div>
                 )}
               </div>
+              <VideoLoadingOverlay show={videoLoading} />
             </div>
             <VideoPlaybackControls
               videoRef={videoRef}
               durationSec={video.duration_sec ?? 0}
               currentTimeSec={currentTimeSec}
               playbackBindKey={`${orientation}-${video.id}`}
+              playbackRate={playbackRate}
+              onPlaybackRateChange={setPlaybackRate}
               onSeek={seekVideo}
             />
           </div>

@@ -349,3 +349,44 @@ body {
 .step-animate {
   animation: step-fade-in 0.22s ease-out both;
 }
+
+@keyframes video-skip-flash {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.94);
+  }
+  22% {
+    opacity: 1;
+    transform: translateX(0) scale(1.02);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(6px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(16px) scale(0.97);
+  }
+}
+
+@keyframes video-skip-shimmer {
+  0% {
+    opacity: 0;
+    transform: translateX(-80%);
+  }
+  30% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(80%);
+  }
+}
+
+.video-skip-flash-badge {
+  animation: video-skip-flash 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.video-skip-shimmer {
+  animation: video-skip-shimmer 320ms ease-out forwards;
+}
