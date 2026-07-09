@@ -141,7 +141,7 @@ function formatTimecode(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5] as const;
+const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 7.5, 10] as const;
 const PLAYBACK_REACT_SYNC_MS = 250;
 const DOUBLE_TAP_MS = 280;
 const SKIP_FORWARD_SEC = 10;
@@ -1594,6 +1594,7 @@ function TelemetryVideoPlayer({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [skipFlashKey, setSkipFlashKey] = useState(0);
   const [videoLoading, setVideoLoading] = useState(true);
+  const [videoLoadedOnce, setVideoLoadedOnce] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -1725,6 +1726,7 @@ function TelemetryVideoPlayer({
 
   useEffect(() => {
     setVideoLoading(true);
+    setVideoLoadedOnce(false);
   }, [video.id, video.file_url, orientation]);
 
   useEffect(() => {
@@ -1734,11 +1736,12 @@ function TelemetryVideoPlayer({
     const markReady = () => {
       if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
         setVideoLoading(false);
+        setVideoLoadedOnce(true);
       }
     };
 
     const markLoading = () => {
-      if (el.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (!videoLoadedOnce && el.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         setVideoLoading(true);
       }
     };
@@ -1751,17 +1754,15 @@ function TelemetryVideoPlayer({
     el.addEventListener("loadeddata", markReady);
     el.addEventListener("canplay", markReady);
     el.addEventListener("playing", markReady);
-    el.addEventListener("waiting", markLoading);
     el.addEventListener("error", onError);
     return () => {
       el.removeEventListener("loadstart", markLoading);
       el.removeEventListener("loadeddata", markReady);
       el.removeEventListener("canplay", markReady);
       el.removeEventListener("playing", markReady);
-      el.removeEventListener("waiting", markLoading);
       el.removeEventListener("error", onError);
     };
-  }, [video.id, video.file_url, orientation]);
+  }, [video.id, video.file_url, orientation, videoLoadedOnce]);
 
   // The 16:9 and 9:16 previews mount different <video> elements. Rebind listeners
   // when orientation changes so widgets and the trim playhead keep following playback.
