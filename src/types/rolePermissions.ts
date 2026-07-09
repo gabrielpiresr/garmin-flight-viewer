@@ -69,6 +69,7 @@ export type InstructorTabKey =
   | "manuais-internos"
   | "maneuvers"
   | "students"
+  | "users"
   | "fuelings"
   | "profile"
   | "help"
@@ -244,6 +245,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "manuais-internos": "Manuais Internos",
   "maneuvers": "Manobras",
   "students": "Alunos",
+  "users": "Usuários",
   "fuelings": "Abastecimentos",
   "profile": "Perfil",
   "help": "Ajuda",

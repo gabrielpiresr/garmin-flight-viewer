@@ -21,6 +21,7 @@ const InstructorProfileTab = lazy(() =>
 const FlightReportsTab = lazy(() =>
   import("../admin/FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })),
 );
+const AdminUsersTab = lazy(() => import("../admin/AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
 const InstructorStudentsTab = lazy(() =>
   import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
 );
@@ -45,6 +46,7 @@ type InstructorSection =
   | "manuais-internos"
   | "maneuvers"
   | "students"
+  | "users"
   | "profile"
   | "help"
   | "manual-instrutor"
@@ -147,6 +149,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "users",
+    label: "Usuários",
+    sublabel: "Perfis e permissões",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-1.083 1.881 10.088 10.088 0 004.884-1.233.75.75 0 00.367-.614 5.625 5.625 0 00-6.39-5.57 8.956 8.956 0 012.223 5.392z" />
+      </svg>
+    ),
+  },
+  {
     id: "profile",
     label: "Perfil",
     sublabel: "Dados e disponibilidade",
@@ -238,6 +250,7 @@ const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "flights",
   "schedule",
   "students",
+  "users",
   "maneuvers",
   "manuals",
   "manuais-internos",
@@ -261,6 +274,7 @@ const SECTION_ROUTES = [
   { id: "manuais-internos", path: "/instrutor/manuais-internos" },
   { id: "maneuvers", path: "/instrutor/manobras" },
   { id: "students", path: "/instrutor/alunos" },
+  { id: "users", path: "/instrutor/usuarios" },
   { id: "profile", path: "/instrutor/perfil" },
   { id: "help", path: "/instrutor/ajuda" },
   { id: "manual-instrutor", path: "/instrutor/manual-instrutor" },
@@ -573,6 +587,13 @@ export function InstructorLayout() {
             <div hidden={section !== "students"} className="flex min-h-[calc(100vh-12rem)] flex-col">
               <LazyTab>
                 <InstructorStudentsTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("users") && (
+            <div hidden={section !== "users"}>
+              <LazyTab>
+                <AdminUsersTab />
               </LazyTab>
             </div>
           )}
