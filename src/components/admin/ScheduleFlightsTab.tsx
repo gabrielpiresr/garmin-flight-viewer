@@ -117,6 +117,10 @@ const CALENDAR_MIN_END_HOUR = (SLOT_HOURS[SLOT_HOURS.length - 1] ?? 17) + 1;
 const CALENDAR_MAX_END_HOUR = 24;
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
+function normalizeAircraftIdent(value: string | null | undefined): string {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
   id: string;
   createdAt: string;
@@ -2386,11 +2390,18 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     const actives = bundle.aircraftRows.filter((aircraft) => aircraft.active !== false);
     setActiveAircrafts(actives);
 
-    const aircraftOptionsAll = Array.from(new Set([
-      ...bundle.data.supplies.map((s) => s.aircraftRegistration),
-      ...actives.map((aircraft) => aircraft.registration),
-      ...bundle.rows.map((row) => row.aircraftRegistration ?? "").filter(Boolean),
-    ]));
+    const activeRegistrationByIdent = new Map(actives.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft.registration]));
+    const aircraftOptionsAll: string[] = [];
+    const seenAircraftIdents = new Set<string>();
+    const addAircraftOption = (registration: string | null | undefined) => {
+      const ident = normalizeAircraftIdent(registration);
+      if (!ident || seenAircraftIdents.has(ident)) return;
+      seenAircraftIdents.add(ident);
+      aircraftOptionsAll.push(activeRegistrationByIdent.get(ident) ?? String(registration || "").trim().toUpperCase());
+    };
+    for (const aircraft of actives) addAircraftOption(aircraft.registration);
+    for (const supply of bundle.data.supplies) addAircraftOption(supply.aircraftRegistration);
+    for (const row of bundle.rows) addAircraftOption(row.aircraftRegistration);
     if (seenFilterAircraftRef.current.size === 0) {
       setVisibleAircraft(aircraftOptionsAll);
     } else {
@@ -2674,16 +2685,22 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const aircraftOptions = useMemo(() => {
     const byRegistration = new Map<string, { registration: string; imageUrl: string | null; hasSupply: boolean }>();
+    const activeRegistrationByIdent = new Map(activeAircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft.registration]));
     for (const supply of weekData?.supplies ?? []) {
-      byRegistration.set(supply.aircraftRegistration, {
-        registration: supply.aircraftRegistration,
+      const ident = normalizeAircraftIdent(supply.aircraftRegistration);
+      const registration = activeRegistrationByIdent.get(ident) ?? supply.aircraftRegistration;
+      if (!ident) continue;
+      byRegistration.set(ident, {
+        registration,
         imageUrl: supply.aircraftImageUrl ?? null,
         hasSupply: true,
       });
     }
     for (const aircraft of activeAircrafts) {
-      const current = byRegistration.get(aircraft.registration);
-      byRegistration.set(aircraft.registration, {
+      const ident = normalizeAircraftIdent(aircraft.registration);
+      if (!ident) continue;
+      const current = byRegistration.get(ident);
+      byRegistration.set(ident, {
         registration: aircraft.registration,
         imageUrl: current?.imageUrl ?? aircraft.image_url ?? null,
         hasSupply: Boolean(current?.hasSupply),
@@ -2691,8 +2708,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     }
     for (const row of flights) {
       const registration = row.aircraftRegistration ?? "";
-      if (registration && !byRegistration.has(registration)) {
-        byRegistration.set(registration, { registration, imageUrl: null, hasSupply: false });
+      const ident = normalizeAircraftIdent(registration);
+      if (ident && !byRegistration.has(ident)) {
+        byRegistration.set(ident, { registration: activeRegistrationByIdent.get(ident) ?? registration, imageUrl: null, hasSupply: false });
       }
     }
     return Array.from(byRegistration.values()).sort((a, b) => a.registration.localeCompare(b.registration, "pt-BR"));

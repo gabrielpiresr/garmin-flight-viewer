@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as sdk from "node-appwrite";
+import { InputFile } from "node-appwrite/file";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -400,7 +401,7 @@ async function main() {
   await upsertVariable(functions, "SCHOOL_TIMEZONE", schoolTimezone);
 
   const buffer = fs.readFileSync(archivePath);
-  const code = new File([buffer], "admin-users-function.tar.gz", { type: "application/gzip" });
+  const code = InputFile.fromBuffer(buffer, "admin-users-function.tar.gz");
   const deployment = await functions.createDeployment({
     functionId,
     code,

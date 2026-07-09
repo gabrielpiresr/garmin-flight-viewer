@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { account, ID } from "../lib/appwrite";
 import { ensureProfile, getProfile, uploadProfileDocumentAttachment } from "../lib/rbac";
 import { executeAnacSync } from "../lib/anacSync";
-import { getLeadByToken, updateLead } from "../lib/crmDb";
+import { getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
 import { getCachedBrandSettings } from "../lib/notificationsDb";
 import type { CrmLead } from "../types/crm";
 import type { ProfileDocumentType } from "../lib/rbac";
@@ -469,14 +469,16 @@ export function CadastroPage() {
       void executeAnacSync({ cpf: cpfDigits, anacCode: anacDigits, birthDate: s1.birthDate });
 
       // 7. Vincular userId ao lead e mover para Registro Preenchido
-      await updateLead(lead.id, {
-        userId,
-        name: s1.fullName.trim(),
-        phone: phoneDigits,
-        weightKg: weight,
-        heightCm: height,
-        qualFilledAt: new Date().toISOString(),
-        crmStatus: "registro_preenchido",
+      await moveLeadToCrmStatus(lead.id, "registro_preenchido", {
+        currentLead: lead,
+        extraUpdates: {
+          userId,
+          name: s1.fullName.trim(),
+          phone: phoneDigits,
+          weightKg: weight,
+          heightCm: height,
+          qualFilledAt: new Date().toISOString(),
+        },
       });
 
       // 8. Encerrar sessão

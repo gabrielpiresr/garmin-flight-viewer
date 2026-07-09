@@ -83,6 +83,14 @@ export type SavedFlightListItem = {
   saga_schedule_sync_status?: string | null;
 };
 
+const GHOST_FLIGHT_SOURCE_PREFIX = "ghost-flight-";
+
+/** Placeholder de telemetria sem ficha SAGA — nao deve aparecer em listagens operacionais. */
+export function isGhostFlightListItem(item: Pick<SavedFlightListItem, "source_filename" | "from_to">): boolean {
+  if (String(item.source_filename || "").trim().startsWith(GHOST_FLIGHT_SOURCE_PREFIX)) return true;
+  return String(item.from_to || "").trim().toLowerCase().startsWith("voo temporario");
+}
+
 export type SavedFlightFull = SavedFlightListItem & { csv_text: string };
 export type SavedFlightsPage = {
   data: SavedFlightListItem[] | null;

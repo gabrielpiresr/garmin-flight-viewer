@@ -1,5 +1,5 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, Permission, Role, ADMIN_USER_ID, AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID } from "./appwrite";
+import { databases, ID, isAppwriteConfigured, Permission, Role, AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID } from "./appwrite";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
@@ -9,19 +9,11 @@ function isReady(): boolean {
 
 // Appwrite document permissions: read, update, delete, write (no "create")
 function adminScopedPermissions(): string[] {
-  const permissions = [
+  return [
     Permission.read(Role.label("admin")),
     Permission.update(Role.label("admin")),
     Permission.delete(Role.label("admin")),
   ];
-  if (ADMIN_USER_ID) {
-    permissions.push(
-      Permission.read(Role.user(ADMIN_USER_ID)),
-      Permission.update(Role.user(ADMIN_USER_ID)),
-      Permission.delete(Role.user(ADMIN_USER_ID)),
-    );
-  }
-  return Array.from(new Set(permissions));
 }
 
 export type AircraftHorimeterCorrection = {

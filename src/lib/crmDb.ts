@@ -1,5 +1,6 @@
 import { Query } from "appwrite";
 import { CRM_LEADS_COL_ID, CRM_STATUS_SETTINGS_COL_ID, databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+import { buildFollowupsForStatus, buildLeadStatusMove, getStatusSetting } from "./crmStatusMove";
 import type {
   CrmLead,
   CrmLeadFollowup,
@@ -123,8 +124,9 @@ function parseLeadFollowups(value: string | null | undefined): CrmLeadFollowup[]
         const title = String(item?.title || "").trim();
         const triggeredAt = String(item?.triggeredAt || "").trim();
         const completedAt = item?.completedAt ? String(item.completedAt) : null;
+        const manual = Boolean(item?.manual);
         if (!id || !title || !triggeredAt) return null;
-        return { id, status, title, triggeredAt, completedAt };
+        return { id, status, title, triggeredAt, completedAt, manual: manual || undefined };
       })
       .filter((item): item is CrmLeadFollowup => Boolean(item));
   } catch {
@@ -156,7 +158,10 @@ function toStatusSettingFromDoc(doc: CrmStatusSettingDoc): CrmStatusSetting {
     id: doc.$id,
     status: normalizeCrmStatus(doc.status),
     followups: parseStatusFollowups(doc.followups_json),
-    expirationDays: typeof doc.expiration_days === "number" && doc.expiration_days > 0 ? Math.round(doc.expiration_days) : null,
+    expirationDays:
+      typeof doc.expiration_days === "number" && doc.expiration_days >= 0
+        ? Math.round(doc.expiration_days)
+        : null,
   };
 }
 
@@ -255,11 +260,24 @@ export async function getLeadByToken(token: string): Promise<{ data: CrmLead | n
   }
 }
 
+async function resolveFollowupsForNewLead(
+  status: CrmStatus,
+  enteredAt: string,
+  provided?: CrmLeadFollowup[],
+): Promise<CrmLeadFollowup[]> {
+  if (provided && provided.length > 0) return provided;
+  const { data: settings } = await listCrmStatusSettings();
+  const setting = getStatusSetting(settings, status);
+  return buildFollowupsForStatus(status, enteredAt, setting.followups);
+}
+
 export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead | null; error: Error | null }> {
   if (!configured()) return { data: null, error: new Error("CRM não configurado.") };
   try {
     const now = new Date().toISOString();
+    const crmStatus = normalizeCrmStatus(input.crmStatus ?? "novo_lead");
     const statusEnteredAt = input.statusEnteredAt ?? now;
+    const followups = await resolveFollowupsForNewLead(crmStatus, statusEnteredAt, input.followups);
     const doc = await databases!.createDocument(
       DB_ID!,
       CRM_LEADS_COL_ID!,
@@ -269,15 +287,100 @@ export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead |
         name: input.name,
         email: input.email,
         phone: input.phone,
-        crm_status: input.crmStatus ?? "qualificacao",
+        crm_status: crmStatus,
         status_entered_at: statusEnteredAt,
         funnel_entered_at: input.funnelEnteredAt ?? statusEnteredAt,
-        followups_json: JSON.stringify(input.followups ?? []),
+        followups_json: JSON.stringify(followups),
         pay_in_person: input.payInPerson ?? false,
       },
       publicLeadDocumentPermissions(),
     );
     return { data: toLeadFromDoc(doc as unknown as CrmLeadDoc), error: null };
+  } catch (e) {
+    return { data: null, error: e as Error };
+  }
+}
+
+type CrmLeadStatusExtraUpdates = Partial<{
+  name: string;
+  email: string;
+  phone: string;
+  userId: string | null;
+  qualToken: string | null;
+  qualFilledAt: string | null;
+  referrerUserId: string | null;
+  referralSource: string | null;
+  acceptedProposalId: string | null;
+  payInPerson: boolean;
+  notes: string | null;
+  weightKg: number | null;
+  heightCm: number | null;
+}> & CrmLeadQualInput;
+
+export async function moveLeadToCrmStatus(
+  id: string,
+  targetStatus: CrmStatus,
+  options?: {
+    currentLead?: CrmLead;
+    settings?: CrmStatusSetting[];
+    enteredAt?: string;
+    extraUpdates?: CrmLeadStatusExtraUpdates;
+  },
+): Promise<{ data: CrmLead | null; error: Error | null }> {
+  if (!configured()) return { data: null, error: new Error("CRM não configurado.") };
+
+  try {
+    let currentLead = options?.currentLead ?? null;
+    if (!currentLead) {
+      const { data, error } = await getLead(id);
+      if (error || !data) return { data: null, error: error ?? new Error("Lead não encontrado.") };
+      currentLead = data;
+    }
+
+    const normalizedTarget = normalizeCrmStatus(targetStatus);
+    const settings = options?.settings ?? (await listCrmStatusSettings()).data;
+    const extraUpdates = options?.extraUpdates ?? {};
+
+    const payload: Record<string, unknown> = {};
+    if (extraUpdates.name !== undefined) payload.name = extraUpdates.name;
+    if (extraUpdates.email !== undefined) payload.email = extraUpdates.email;
+    if (extraUpdates.phone !== undefined) payload.phone = extraUpdates.phone;
+    if (extraUpdates.notes !== undefined) payload.notes = extraUpdates.notes;
+    if (extraUpdates.userId !== undefined) payload.user_id = extraUpdates.userId;
+    if (extraUpdates.qualToken !== undefined) payload.qual_token = extraUpdates.qualToken;
+    if (extraUpdates.qualFilledAt !== undefined) payload.qual_filled_at = extraUpdates.qualFilledAt;
+    if (extraUpdates.referrerUserId !== undefined) payload.referrer_user_id = extraUpdates.referrerUserId;
+    if (extraUpdates.referralSource !== undefined) payload.referral_source = extraUpdates.referralSource;
+    if (extraUpdates.acceptedProposalId !== undefined) payload.accepted_proposal_id = extraUpdates.acceptedProposalId;
+    if (extraUpdates.payInPerson !== undefined) payload.pay_in_person = extraUpdates.payInPerson;
+    if (extraUpdates.desiredCourse !== undefined) payload.desired_course = extraUpdates.desiredCourse;
+    if (extraUpdates.desiredHours !== undefined) payload.desired_hours = extraUpdates.desiredHours;
+    if (extraUpdates.weightKg !== undefined) payload.weight_kg = extraUpdates.weightKg;
+    if (extraUpdates.heightCm !== undefined) payload.height_cm = extraUpdates.heightCm;
+    if (extraUpdates.availableDays !== undefined) payload.available_days_json = JSON.stringify(extraUpdates.availableDays);
+    if (extraUpdates.availablePeriod !== undefined) payload.available_period = extraUpdates.availablePeriod;
+    if (extraUpdates.startDate !== undefined) payload.start_date = extraUpdates.startDate;
+    if (extraUpdates.weeklyHours !== undefined) payload.weekly_hours = extraUpdates.weeklyHours;
+    if (extraUpdates.anacCode !== undefined) payload.anac_code = extraUpdates.anacCode;
+    if (extraUpdates.birthDate !== undefined) payload.birth_date = extraUpdates.birthDate;
+    if (extraUpdates.cpf !== undefined) payload.cpf = extraUpdates.cpf;
+    if (extraUpdates.theoreticalExamDone !== undefined) payload.theoretical_exam_done = extraUpdates.theoreticalExamDone;
+    if (extraUpdates.theoreticalStudyStatus !== undefined) payload.theoretical_study_status = extraUpdates.theoreticalStudyStatus;
+    if (extraUpdates.transferSchool !== undefined) payload.transfer_school = extraUpdates.transferSchool;
+
+    if (currentLead.crmStatus !== normalizedTarget) {
+      const move = buildLeadStatusMove(currentLead, normalizedTarget, settings, { enteredAt: options?.enteredAt });
+      payload.crm_status = move.crmStatus;
+      payload.status_entered_at = move.statusEnteredAt;
+      payload.funnel_entered_at = move.funnelEnteredAt;
+      payload.followups_json = JSON.stringify(move.followups);
+    } else if (normalizedTarget !== targetStatus) {
+      payload.crm_status = normalizedTarget;
+    }
+
+    await databases!.updateDocument(DB_ID!, CRM_LEADS_COL_ID!, id, payload);
+    const { data, error } = await getLead(id);
+    return { data, error };
   } catch (e) {
     return { data: null, error: e as Error };
   }
@@ -378,12 +481,28 @@ export async function upsertLeadByEmail(
     if (safeReferrer) qualPayload.referrer_user_id = safeReferrer;
     if (safeReferralSource) qualPayload.referral_source = safeReferralSource;
 
+    const { data: statusSettings } = await listCrmStatusSettings();
+    const enteredAt = new Date().toISOString();
+
     let doc;
     if (res.total > 0 && res.documents[0]) {
       const existingDoc = res.documents[0] as unknown as CrmLeadDoc;
       const currentStatus = normalizeCrmStatus(existingDoc.crm_status);
       if (currentStatus === "novo_lead" || currentStatus === "aguardando_qualificacao") {
-        qualPayload.crm_status = "aguardando_proposta";
+        const targetStatus: CrmStatus = "aguardando_proposta";
+        const move = buildLeadStatusMove(
+          {
+            crmStatus: currentStatus,
+            funnelEnteredAt: existingDoc.funnel_entered_at ?? null,
+          },
+          targetStatus,
+          statusSettings,
+          { enteredAt },
+        );
+        qualPayload.crm_status = move.crmStatus;
+        qualPayload.status_entered_at = move.statusEnteredAt;
+        qualPayload.funnel_entered_at = existingDoc.funnel_entered_at || move.funnelEnteredAt;
+        qualPayload.followups_json = JSON.stringify(move.followups);
       }
       if (!existingDoc.referrer_user_id && safeReferrer) {
         qualPayload.referrer_user_id = safeReferrer;
@@ -393,6 +512,8 @@ export async function upsertLeadByEmail(
       }
       doc = await databases!.updateDocument(DB_ID!, CRM_LEADS_COL_ID!, res.documents[0].$id, qualPayload);
     } else {
+      const targetStatus: CrmStatus = "aguardando_proposta";
+      const move = buildLeadStatusMove({ crmStatus: targetStatus, funnelEnteredAt: null }, targetStatus, statusSettings, { enteredAt });
       doc = await databases!.createDocument(
         DB_ID!,
         CRM_LEADS_COL_ID!,
@@ -401,7 +522,10 @@ export async function upsertLeadByEmail(
           name: input.name,
           email: input.email,
           phone: input.phone ?? "",
-          crm_status: "aguardando_proposta",
+          crm_status: move.crmStatus,
+          status_entered_at: move.statusEnteredAt,
+          funnel_entered_at: move.funnelEnteredAt,
+          followups_json: JSON.stringify(move.followups),
           referrer_user_id: safeReferrer,
           referral_source: safeReferralSource,
           ...qualPayload,

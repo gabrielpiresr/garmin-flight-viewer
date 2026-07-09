@@ -7,7 +7,19 @@ import { buildSagaAnacPostFields, hasSagaAnacPerson, parseSagaAnacPerson, sagaAn
 import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
-import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
+import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, moveLeadToCrmStatus, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
+import {
+  applyLeadStatusMove,
+  buildFollowupsForStatus,
+  buildManualFollowup,
+  countOverdueFollowups,
+  countPendingFollowups,
+  daysUntil,
+  getExpirationAt,
+  getStatusSetting,
+  hasExpirationConfigured,
+  isLeadStatusExpired,
+} from "../../lib/crmStatusMove";
 import { notifyCrmLeadEvent } from "../../lib/notificationsDb";
 import { hasStudentScheduledFlights, hasStudentRealizedFlights } from "../../lib/flightsDb";
 import { getProposalsByLead } from "../../lib/crmProposalsDb";
@@ -33,7 +45,7 @@ import {
   CRM_STATUS_PILL,
   AVAILABLE_DAY_LABELS,
 } from "../../types/crm";
-import type { CrmLead, CrmLeadFollowup, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
+import type { CrmLead, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
 import type { AvailableDay, AvailablePeriod } from "../../types/crm";
 
 // ─── Card field settings ──────────────────────────────────────────────────────
@@ -159,41 +171,6 @@ function formatDateShort(value: string | null | undefined): string {
   return date.toLocaleDateString("pt-BR");
 }
 
-function addDaysIso(value: string, days: number): string {
-  const date = new Date(value);
-  date.setDate(date.getDate() + Math.max(0, Math.round(days)));
-  return date.toISOString();
-}
-
-function daysUntil(value: string): number {
-  const target = new Date(value);
-  if (Number.isNaN(target.getTime())) return 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  target.setHours(0, 0, 0, 0);
-  return Math.ceil((target.getTime() - today.getTime()) / 86400000);
-}
-
-function getStatusSetting(settings: CrmStatusSetting[], status: CrmStatus): CrmStatusSetting {
-  return settings.find((item) => item.status === status) ?? { id: "", status, followups: [], expirationDays: null };
-}
-
-function getExpirationAt(lead: CrmLead, settings: CrmStatusSetting[]): string | null {
-  const setting = getStatusSetting(settings, lead.crmStatus);
-  if (!lead.statusEnteredAt || !setting.expirationDays) return null;
-  return addDaysIso(lead.statusEnteredAt, setting.expirationDays);
-}
-
-function buildFollowupsForStatus(status: CrmStatus, enteredAt: string, templates: CrmStatusFollowupTemplate[]): CrmLeadFollowup[] {
-  return templates.map((template) => ({
-    id: crypto.randomUUID(),
-    status,
-    title: template.title,
-    triggeredAt: addDaysIso(enteredAt, template.days),
-    completedAt: null,
-  }));
-}
-
 // ─── Lead Card (Notion-style) ─────────────────────────────────────────────────
 
 function LeadCard({
@@ -230,16 +207,23 @@ function LeadCard({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
 
-  const openFollowups = lead.followups.filter((item) => !item.completedAt && new Date(item.triggeredAt).getTime() <= Date.now()).length;
+  const overdueFollowups = countOverdueFollowups(lead.followups);
+  const pendingFollowups = countPendingFollowups(lead.followups);
   const expirationAt = getExpirationAt(lead, statusSettings);
   const expirationDaysLeft = expirationAt ? daysUntil(expirationAt) : null;
-  const expired = expirationDaysLeft != null && expirationDaysLeft < 0;
+  const expired = isLeadStatusExpired(lead, statusSettings);
 
   return (
     <div
       draggable
       onDragStart={() => onDragStart(lead)}
-      className="group relative rounded-lg bg-[var(--panel)] px-3 py-2.5 cursor-grab active:cursor-grabbing hover:bg-slate-800/50 transition-colors"
+      className={`group relative rounded-lg px-3 py-2.5 cursor-grab active:cursor-grabbing transition-colors ${
+        expired
+          ? "bg-red-950/20 ring-1 ring-red-500/60 hover:bg-red-950/30"
+          : overdueFollowups > 0
+            ? "bg-amber-950/10 ring-1 ring-amber-600/40 hover:bg-amber-950/20"
+            : "bg-[var(--panel)] hover:bg-slate-800/50"
+      }`}
     >
       <div className="flex items-start gap-1.5">
         {/* Ícone documento */}
@@ -288,19 +272,24 @@ function LeadCard({
                 ✓ Proposta aceita
               </span>
             )}
-            {visibleFields.has("openFollowups") && openFollowups > 0 && (
-              <span className="rounded px-1.5 py-0.5 text-[10px] bg-amber-900/60 text-amber-300">
-                {openFollowups} FUP aberto{openFollowups > 1 ? "s" : ""}
+            {expired && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-red-900/80 text-red-200">
+                Expirado
+              </span>
+            )}
+            {overdueFollowups > 0 && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-900/70 text-amber-200">
+                {overdueFollowups} FUP vencido{overdueFollowups > 1 ? "s" : ""}
+              </span>
+            )}
+            {pendingFollowups > 0 && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-900/60 text-sky-200">
+                {pendingFollowups} FUP pendente{pendingFollowups > 1 ? "s" : ""}
               </span>
             )}
             {lead.payInPerson && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-cyan-900/60 text-cyan-300">
                 Pagara presencialmente
-              </span>
-            )}
-            {visibleFields.has("expired") && expired && (
-              <span className="rounded px-1.5 py-0.5 text-[10px] bg-red-900/70 text-red-300">
-                Expirado
               </span>
             )}
             {visibleFields.has("expirationDays") && expirationDaysLeft != null && !expired && (
@@ -461,7 +450,9 @@ function StatusSettingsModal({
   onClose: () => void;
   onSave: (setting: Pick<CrmStatusSetting, "status" | "followups" | "expirationDays">) => void;
 }) {
-  const [expirationDays, setExpirationDays] = useState(setting.expirationDays?.toString() ?? "");
+  const [expirationDays, setExpirationDays] = useState(
+    setting.expirationDays != null ? String(setting.expirationDays) : "",
+  );
   const [followups, setFollowups] = useState<CrmStatusFollowupTemplate[]>(setting.followups);
   const inputCls = "w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
@@ -477,8 +468,9 @@ function StatusSettingsModal({
     const cleaned = followups
       .map((item) => ({ ...item, title: item.title.trim(), days: Math.max(0, Math.round(Number(item.days) || 0)) }))
       .filter((item) => item.title);
-    const exp = expirationDays.trim() ? Math.max(0, Math.round(Number(expirationDays) || 0)) : null;
-    onSave({ status, followups: cleaned, expirationDays: exp && exp > 0 ? exp : null });
+    const trimmedExp = expirationDays.trim();
+    const exp = trimmedExp === "" ? null : Math.max(0, Math.round(Number(trimmedExp) || 0));
+    onSave({ status, followups: cleaned, expirationDays: exp });
   }
 
   return (
@@ -497,7 +489,7 @@ function StatusSettingsModal({
         </div>
         <div className="space-y-5 p-5">
           <label className="block text-xs text-slate-500">
-            Expiracao em dias
+            Expiracao em dias (0 = expira no mesmo dia)
             <input inputMode="numeric" value={expirationDays} onChange={(e) => setExpirationDays(e.target.value)} placeholder="Sem expiracao" className={`${inputCls} mt-1`} />
           </label>
           <div className="space-y-2">
@@ -552,9 +544,19 @@ function LeadModal({
     setSaving(true);
     setError(null);
     if (lead) {
-      const { error: err } = await updateLead(lead.id, { name, email, phone, crmStatus: status });
-      if (err) { setError(err.message); setSaving(false); return; }
-      onSaved({ ...lead, name, email, phone, crmStatus: status });
+      if (status !== lead.crmStatus) {
+        const { data, error: err } = await moveLeadToCrmStatus(lead.id, status, {
+          currentLead: lead,
+          settings: statusSettings,
+          extraUpdates: { name, email, phone },
+        });
+        if (err || !data) { setError(err?.message ?? "Erro ao atualizar."); setSaving(false); return; }
+        onSaved(data);
+      } else {
+        const { error: err } = await updateLead(lead.id, { name, email, phone });
+        if (err) { setError(err.message); setSaving(false); return; }
+        onSaved({ ...lead, name, email, phone });
+      }
     } else {
       const enteredAt = new Date().toISOString();
       const setting = getStatusSetting(statusSettings, status);
@@ -1047,6 +1049,7 @@ function DrawerField({ label, children }: { label: string; children: ReactNode }
 function LeadDetailDrawer({
   lead,
   currentUserName,
+  statusSettings,
   onClose,
   onLeadPatched,
   onSendCadastro,
@@ -1057,6 +1060,7 @@ function LeadDetailDrawer({
 }: {
   lead: CrmLead;
   currentUserName: string;
+  statusSettings: CrmStatusSetting[];
   onClose: () => void;
   onLeadPatched: (lead: CrmLead) => void;
   onSendCadastro: (lead: CrmLead) => void;
@@ -1112,6 +1116,9 @@ function LeadDetailDrawer({
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentText, setCommentText] = useState("");
   const [commentSaving, setCommentSaving] = useState(false);
+  const [newFollowupTitle, setNewFollowupTitle] = useState("");
+  const [newFollowupDueDate, setNewFollowupDueDate] = useState("");
+  const [followupSaving, setFollowupSaving] = useState(false);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => setOpen(true));
@@ -1230,6 +1237,12 @@ function LeadDetailDrawer({
   }
 
   const sagaAnac = parseSagaAnacPerson(sagaAnacJson);
+  const currentStatusSetting = getStatusSetting(statusSettings, lead.crmStatus);
+  const expirationAt = getExpirationAt(lead, statusSettings);
+  const expirationDaysLeft = expirationAt ? daysUntil(expirationAt) : null;
+  const statusExpired = isLeadStatusExpired(lead, statusSettings);
+  const openFollowupCount = countOverdueFollowups(lead.followups);
+  const pendingFollowupCount = countPendingFollowups(lead.followups);
 
   useEffect(() => {
     if (!leadReady.current) return;
@@ -1361,6 +1374,38 @@ function LeadDetailDrawer({
     onLeadPatched(nextLead);
     const { error } = await updateLead(lead.id, { followups: nextFollowups });
     if (error) showToast("Erro ao atualizar follow-up.", "error");
+  }
+
+  async function handleAddManualFollowup() {
+    const title = newFollowupTitle.trim();
+    if (!title || !newFollowupDueDate) {
+      showToast("Informe o nome e o vencimento do FUP.", "error");
+      return;
+    }
+    setFollowupSaving(true);
+    const item = buildManualFollowup(lead.crmStatus, title, newFollowupDueDate);
+    const nextFollowups = [...lead.followups, item];
+    const nextLead = { ...lead, followups: nextFollowups };
+    onLeadPatched(nextLead);
+    const { error } = await updateLead(lead.id, { followups: nextFollowups });
+    setFollowupSaving(false);
+    if (error) {
+      showToast("Erro ao criar follow-up.", "error");
+      return;
+    }
+    setNewFollowupTitle("");
+    setNewFollowupDueDate("");
+    showToast("FUP adicionado.", "success");
+  }
+
+  async function handleRemoveFollowup(followupId: string) {
+    const target = lead.followups.find((item) => item.id === followupId);
+    if (!target?.manual) return;
+    const nextFollowups = lead.followups.filter((item) => item.id !== followupId);
+    const nextLead = { ...lead, followups: nextFollowups };
+    onLeadPatched(nextLead);
+    const { error } = await updateLead(lead.id, { followups: nextFollowups });
+    if (error) showToast("Erro ao remover follow-up.", "error");
   }
 
   async function handleTogglePayInPerson(checked: boolean) {
@@ -1665,7 +1710,7 @@ function LeadDetailDrawer({
 
           <section className="mt-6 space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups e expiração</p>
               <label className="flex items-center gap-2 text-xs text-cyan-300">
                 <input
                   type="checkbox"
@@ -1676,25 +1721,111 @@ function LeadDetailDrawer({
                 Aluno pagara presencialmente
               </label>
             </div>
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-400">
+                Entrada no status: {lead.statusEnteredAt ? formatDateShort(lead.statusEnteredAt) : "Nao registrada"}
+              </div>
+              {hasExpirationConfigured(currentStatusSetting) ? (
+                <div className={`rounded-lg border px-3 py-2 text-xs ${statusExpired ? "border-red-900/60 bg-red-950/20 text-red-300" : "border-slate-800 bg-[var(--bg)] text-slate-400"}`}>
+                  {statusExpired
+                    ? `Expirado ha ${Math.abs(expirationDaysLeft!)} dia(s)`
+                    : expirationDaysLeft === 0
+                      ? `Expira hoje (${formatDateShort(expirationAt)})`
+                      : `Expira em ${expirationDaysLeft} dia(s) (${formatDateShort(expirationAt)})`}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">
+                  Sem expiracao configurada para este status
+                </div>
+              )}
+            </div>
+            {(openFollowupCount > 0 || pendingFollowupCount > 0) && (
+              <div className="flex flex-wrap gap-2 text-xs">
+                {openFollowupCount > 0 && (
+                  <span className="rounded-md bg-amber-900/50 px-2 py-1 text-amber-200">{openFollowupCount} FUP(s) vencido(s)</span>
+                )}
+                {pendingFollowupCount > 0 && (
+                  <span className="rounded-md bg-sky-900/50 px-2 py-1 text-sky-200">{pendingFollowupCount} FUP(s) pendente(s)</span>
+                )}
+              </div>
+            )}
+            <div className="rounded-lg border border-slate-800 bg-[var(--bg)] p-3">
+              <p className="text-xs font-medium text-slate-300">Adicionar FUP manual</p>
+              <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_160px_auto]">
+                <input
+                  type="text"
+                  value={newFollowupTitle}
+                  onChange={(e) => setNewFollowupTitle(e.target.value)}
+                  placeholder="Nome do FUP"
+                  className={drawerFieldCls}
+                />
+                <input
+                  type="date"
+                  value={newFollowupDueDate}
+                  onChange={(e) => setNewFollowupDueDate(e.target.value)}
+                  className={drawerFieldCls}
+                />
+                <button
+                  type="button"
+                  disabled={followupSaving}
+                  onClick={() => void handleAddManualFollowup()}
+                  className="rounded-lg border border-sky-700/60 bg-sky-600/10 px-3 py-2 text-xs font-medium text-sky-300 hover:bg-sky-600/20 disabled:opacity-50"
+                >
+                  {followupSaving ? "Salvando..." : "Adicionar"}
+                </button>
+              </div>
+            </div>
             {lead.followups.length === 0 ? (
               <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Nenhum follow-up engatilhado para este status.</p>
             ) : (
               <div className="space-y-2">
-                {lead.followups.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                {lead.followups.map((item) => {
+                  const isOverdue = !item.completedAt && new Date(item.triggeredAt).getTime() <= Date.now();
+                  const isPending = !item.completedAt && !isOverdue;
+                  return (
+                  <div key={item.id} className={`flex items-center justify-between gap-3 rounded-lg border bg-[var(--bg)] px-3 py-2 ${item.completedAt ? "border-slate-800" : isOverdue ? "border-amber-800/60" : "border-sky-800/40"}`}>
                     <div className="min-w-0">
-                      <p className="text-xs font-medium text-slate-200">{item.title}</p>
-                      <p className="text-[11px] text-slate-500">Engatilhado em {formatDateShort(item.triggeredAt)}</p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-xs font-medium text-slate-200">{item.title}</p>
+                        {item.manual && (
+                          <span className="rounded px-1 py-0.5 text-[10px] bg-violet-900/50 text-violet-300">Manual</span>
+                        )}
+                        {isPending && (
+                          <span className="rounded px-1 py-0.5 text-[10px] bg-sky-900/50 text-sky-300">Pendente</span>
+                        )}
+                        {isOverdue && (
+                          <span className="rounded px-1 py-0.5 text-[10px] bg-amber-900/60 text-amber-300">Vencido</span>
+                        )}
+                      </div>
+                      <p className={`text-[11px] ${isOverdue ? "text-amber-400" : isPending ? "text-sky-400/90" : "text-slate-500"}`}>
+                        {item.completedAt
+                          ? `Realizado em ${formatDateShort(item.completedAt)}`
+                          : isOverdue
+                            ? `Venceu em ${formatDateShort(item.triggeredAt)}`
+                            : `Vence em ${formatDateShort(item.triggeredAt)}`}
+                      </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleToggleFollowup(item.id)}
-                      className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs ${item.completedAt ? "border-emerald-800 bg-emerald-950/30 text-emerald-300" : "border-slate-700 text-slate-300 hover:bg-slate-800"}`}
-                    >
-                      {item.completedAt ? "Realizado" : "Marcar realizado"}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {item.manual && !item.completedAt && (
+                        <button
+                          type="button"
+                          onClick={() => void handleRemoveFollowup(item.id)}
+                          className="rounded-lg border border-red-900/50 px-2 py-1 text-xs text-red-300 hover:bg-red-950/30"
+                        >
+                          Remover
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleFollowup(item.id)}
+                        className={`rounded-lg border px-2.5 py-1 text-xs ${item.completedAt ? "border-emerald-800 bg-emerald-950/30 text-emerald-300" : "border-slate-700 text-slate-300 hover:bg-slate-800"}`}
+                      >
+                        {item.completedAt ? "Realizado" : "Marcar realizado"}
+                      </button>
+                    </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -2255,7 +2386,7 @@ export function CrmTab() {
     );
     const toPromote = results.filter((r) => r.realized).map((r) => r.lead);
     if (toPromote.length === 0) return currentLeads;
-    const moved = toPromote.map((lead) => buildStatusMove(lead, "cadastro_anac", settingsForMove));
+    const moved = toPromote.map((lead) => applyLeadStatusMove(lead, "cadastro_anac", settingsForMove));
     await Promise.all(moved.map((lead) => updateLead(lead.id, {
       crmStatus: "cadastro_anac",
       statusEnteredAt: lead.statusEnteredAt,
@@ -2302,20 +2433,8 @@ export function CrmTab() {
     });
   }
 
-  function buildStatusMove(lead: CrmLead, targetStatus: CrmStatus, settingsForMove = statusSettings): CrmLead {
-    const enteredAt = new Date().toISOString();
-    const setting = getStatusSetting(settingsForMove, targetStatus);
-    return {
-      ...lead,
-      crmStatus: targetStatus,
-      statusEnteredAt: enteredAt,
-      funnelEnteredAt: lead.funnelEnteredAt || enteredAt,
-      followups: buildFollowupsForStatus(targetStatus, enteredAt, setting.followups),
-    };
-  }
-
   async function persistStatusMove(lead: CrmLead, targetStatus: CrmStatus): Promise<boolean> {
-    const nextLead = buildStatusMove(lead, targetStatus);
+    const nextLead = applyLeadStatusMove(lead, targetStatus, statusSettings);
     setLeads((ls) => ls.map((item) => item.id === lead.id ? nextLead : item));
     if (detailModal?.id === lead.id) setDetailModal(nextLead);
     const { error } = await updateLead(lead.id, {
@@ -2364,7 +2483,7 @@ export function CrmTab() {
         return null;
       }
     }
-    const nextLead = buildStatusMove(lead, targetStatus);
+    const nextLead = applyLeadStatusMove(lead, targetStatus, statusSettings);
     const ok = await persistStatusMove(lead, targetStatus);
     return ok ? nextLead : null;
   }
@@ -2426,7 +2545,7 @@ export function CrmTab() {
       const ok = await persistStatusMove(lead, targetStatus);
       if (!ok) return;
       // Buscar propostas para perguntar qual foi aceita
-      const leadWithStatus = buildStatusMove(lead, targetStatus);
+      const leadWithStatus = applyLeadStatusMove(lead, targetStatus, statusSettings);
       const props = await getProposalsByLead(lead.id).catch(() => [] as CrmProposal[]);
       setProposalAcceptModal({ lead: leadWithStatus, proposals: props });
       return;
@@ -2461,7 +2580,7 @@ export function CrmTab() {
     setLostReasonModal(null);
     const existingNotes = lead.notes ? lead.notes.trim() : "";
     const notes = `Motivo de perda: ${reason}${existingNotes ? `\n\n---\n${existingNotes}` : ""}`;
-    const nextLead = { ...buildStatusMove(lead, "lead_perdido"), notes };
+    const nextLead = { ...applyLeadStatusMove(lead, "lead_perdido", statusSettings), notes };
     setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
     const { error } = await updateLead(lead.id, {
       crmStatus: "lead_perdido",
@@ -2538,7 +2657,9 @@ export function CrmTab() {
         useStudentEmail: input.useStudentEmail,
       });
       const nextStatus = result.nextStatus as CrmStatus;
-      setLeads((ls) => ls.map((l) => l.id === lead.id ? { ...l, crmStatus: nextStatus } : l));
+      const nextLead = applyLeadStatusMove(lead, nextStatus, statusSettings);
+      setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
+      if (detailModal?.id === lead.id) setDetailModal(nextLead);
       let message = `Matrícula automatizada. ${result.createdContracts} contrato(s) gerado(s).`;
       if (result.saga?.ok && !result.saga.skipped) message += " Aluno criado no SAGA.";
       else if (result.saga?.ok && result.saga.skipped) message += " Aluno já vinculado no SAGA.";
@@ -2715,6 +2836,7 @@ export function CrmTab() {
         <LeadDetailDrawer
           lead={detailModal}
           currentUserName={user?.name ?? user?.email ?? "Admin"}
+          statusSettings={statusSettings}
           onClose={() => setDetailModal(null)}
           onLeadPatched={(lead) => {
             setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));

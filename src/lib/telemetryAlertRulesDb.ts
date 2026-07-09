@@ -1,6 +1,5 @@
 import { Query } from "appwrite";
 import {
-  ADMIN_USER_ID,
   databases,
   ID,
   isAppwriteConfigured,
@@ -80,21 +79,12 @@ function rulePayload(input: TelemetryAlertRuleInput, actorUserId?: string) {
 }
 
 function rulePermissions() {
-  return Array.from(
-    new Set([
-      Permission.read(Role.users()),
-      Permission.read(Role.label("admin")),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-      ...(ADMIN_USER_ID
-        ? [
-            Permission.read(Role.user(ADMIN_USER_ID)),
-            Permission.update(Role.user(ADMIN_USER_ID)),
-            Permission.delete(Role.user(ADMIN_USER_ID)),
-          ]
-        : []),
-    ]),
-  );
+  return [
+    Permission.read(Role.users()),
+    Permission.read(Role.label("admin")),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
 }
 
 export async function listTelemetryAlertRulesByModel(modelId: string): Promise<TelemetryAlertRule[]> {

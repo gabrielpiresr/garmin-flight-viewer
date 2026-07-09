@@ -1,5 +1,5 @@
 import { Query } from "appwrite";
-import { databases, ID, isAppwriteConfigured, Permission, Role, MAINTENANCE_RULES_COL_ID, ADMIN_USER_ID } from "./appwrite";
+import { databases, ID, isAppwriteConfigured, Permission, Role, MAINTENANCE_RULES_COL_ID } from "./appwrite";
 import type { MaintenanceRule } from "../types/admin";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -9,20 +9,11 @@ function isReady(): boolean {
 }
 
 function adminScopedPermissions(): string[] {
-  return Array.from(
-    new Set([
-      Permission.read(Role.label("admin")),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-      ...(ADMIN_USER_ID
-        ? [
-            Permission.read(Role.user(ADMIN_USER_ID)),
-            Permission.update(Role.user(ADMIN_USER_ID)),
-            Permission.delete(Role.user(ADMIN_USER_ID)),
-          ]
-        : []),
-    ]),
-  );
+  return [
+    Permission.read(Role.label("admin")),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
 }
 
 function toRule(doc: Record<string, unknown>): MaintenanceRule {

@@ -13,6 +13,10 @@ const PORT = Number(process.env.PORT || 7842);
 const CHUNK_SIZE = 16 * 1024 * 1024;
 const MEMORY_LIMIT_BYTES = Math.floor(os.totalmem() * 0.5);
 const MAX_UPLOAD_RETRIES = 8;
+// Watchdog de estol: se o ffmpeg ficar este tempo sem avançar o out_time (típico de
+// encoder de hardware — QSV/NVENC/AMF — que estola no meio do arquivo), matamos o
+// processo. Em etapas de recodificação isso dispara uma nova tentativa via CPU (libx264).
+const FFMPEG_STALL_TIMEOUT_MS = Number(process.env.FFMPEG_STALL_TIMEOUT_MS || 90000);
 const HELPER_DIR = process.env.HELPER_RESOURCES
   || path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
 
@@ -137,7 +141,7 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.3.4",
+      version: "1.4.0",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,
@@ -1257,10 +1261,16 @@ async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDurati
   fs.writeFileSync(tmpList, lines);
 
   // Tenta concat sem reencode primeiro
-  const ok = await runFfmpeg(ffmpeg, [
-    "-f", "concat", "-safe", "0", "-i", tmpList,
-    "-c", "copy", "-y", "-progress", "pipe:2", "-nostats", output,
-  ], totalDuration, onProgress, { job });
+  let ok = false;
+  try {
+    ok = await runFfmpeg(ffmpeg, [
+      "-f", "concat", "-safe", "0", "-i", tmpList,
+      "-c", "copy", "-y", "-progress", "pipe:2", "-nostats", output,
+    ], totalDuration, onProgress, { job });
+  } catch (err) {
+    if (job?.cancelled) throw err;
+    ok = false; // copy travou/falhou → cai no reencode
+  }
 
   if (!ok) {
     // Fallback: reencode normalizando resolução
@@ -1274,16 +1284,17 @@ async function concatVideos(ffmpeg, ffprobe, encoder, files, output, totalDurati
     filter += `;${files.map((_, i) => `[v${i}]`).join("")}concat=n=${n}:v=1:a=0[outv]`;
     filter += `;${files.map((_, i) => `[${i}:a]`).join("")}concat=n=${n}:v=0:a=1[outa]`;
 
-    await runFfmpeg(ffmpeg, [
+    const buildArgs = (enc) => [
       ...inputs, "-filter_complex", filter,
       "-map", "[outv]", "-map", "[outa]",
-      ...encoderArgs(encoder),
+      ...encoderArgs(enc),
       "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
       "-movflags", "+faststart",
       "-threads", String(ffmpegThreadLimit()),
       "-y", "-progress", "pipe:2", "-nostats", output,
-    ], totalDuration, onProgress, { mustSucceed: true, job });
+    ];
+    await runEncodeWithFallback(ffmpeg, encoder, buildArgs, totalDuration, onProgress, { job, output });
     return { transcoded: true };
   }
   return { transcoded: false };
@@ -1294,7 +1305,8 @@ async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, outp
   const filterArgs = hasWatermark
     ? [
         "-i", input, "-i", watermark,
-        "-filter_complex", "[0:v][1:v]overlay=W-w-20:H-h-20,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[outv]",
+        // Logo reduzida à metade (iw/2 x ih/2) antes do overlay no canto inferior direito.
+        "-filter_complex", "[1:v]scale=iw/2:ih/2[wm];[0:v][wm]overlay=W-w-20:H-h-20,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[outv]",
         "-map", "[outv]", "-map", "0:a",
       ]
     : [
@@ -1302,15 +1314,16 @@ async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, outp
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
       ];
 
-  await runFfmpeg(ffmpeg, [
+  const buildArgs = (enc) => [
     ...filterArgs,
-    ...encoderArgs(encoder),
+    ...encoderArgs(enc),
     "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
     "-threads", String(ffmpegThreadLimit()),
     "-y", "-progress", "pipe:2", "-nostats", output,
-  ], duration, onProgress, { mustSucceed: true, job });
+  ];
+  await runEncodeWithFallback(ffmpeg, encoder, buildArgs, duration, onProgress, { job, output });
 }
 
 function ffmpegThreadLimit() {
@@ -1337,7 +1350,7 @@ function queryWindowsProcessRss(pid) {
   });
 }
 
-function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false, cwd, job = null } = {}) {
+function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = false, cwd, job = null, stallTimeoutMs = FFMPEG_STALL_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) });
     if (job) {
@@ -1346,7 +1359,17 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
     }
     let stderr = "";
     let memoryExceeded = false;
-    const memoryTimer = setInterval(async () => {
+    let stalled = false;
+    let lastOutTimeUs = -1;
+    let lastAdvanceAt = Date.now();
+    const watchTimer = setInterval(async () => {
+      // Watchdog de estol: out_time parado tempo demais → encoder travou (comum no QSV/NVENC).
+      if (stallTimeoutMs > 0 && Date.now() - lastAdvanceAt > stallTimeoutMs) {
+        stalled = true;
+        p.kill("SIGTERM");
+        return;
+      }
+      // Watchdog de memória.
       const ffmpegRss = await queryWindowsProcessRss(p.pid);
       const used = process.memoryUsage().rss + ffmpegRss;
       if (used > MEMORY_LIMIT_BYTES) {
@@ -1361,14 +1384,19 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
       for (const line of text.split("\n")) {
         const m = line.match(/out_time_us=(\d+)/);
         if (m && totalDuration > 0) {
-          const pct = Math.min(99, Math.floor((parseInt(m[1]) / 1e6 / totalDuration) * 100));
+          const us = parseInt(m[1]);
+          if (us > lastOutTimeUs) {
+            lastOutTimeUs = us;
+            lastAdvanceAt = Date.now();
+          }
+          const pct = Math.min(99, Math.floor((us / 1e6 / totalDuration) * 100));
           onProgress(pct);
         }
       }
     });
 
     p.on("close", (code) => {
-      clearInterval(memoryTimer);
+      clearInterval(watchTimer);
       if (job) {
         job.ffmpegPid = null;
         job.ffmpegProcess = null;
@@ -1377,17 +1405,63 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
         reject(new Error("Cancelado"));
         return;
       }
+      if (stalled) {
+        const err = new Error(`ffmpeg travou: sem progresso por ${Math.round(stallTimeoutMs / 1000)}s (encoder pode ter estolado).`);
+        err.stalled = true;
+        reject(err);
+        return;
+      }
       if (memoryExceeded) {
         reject(new Error("Processamento interrompido antes de ultrapassar 50% da memoria do computador."));
         return;
       }
       if (mustSucceed && code !== 0) {
-        reject(new Error(`ffmpeg saiu com código ${code}:\n${stderr.slice(-500)}`));
+        const err = new Error(`ffmpeg saiu com código ${code}:\n${stderr.slice(-500)}`);
+        err.ffmpegExitCode = code;
+        reject(err);
       } else {
         resolve(code === 0);
       }
     });
   });
+}
+
+// errno (negativos) em que refazer no libx264 NÃO ajuda — o problema é disco/IO/memória,
+// não o encoder. Refazer por CPU só desperdiça tempo e bate no mesmo erro.
+const FFMPEG_NON_RETRYABLE_ERRNO = new Set([-28 /*ENOSPC: disco cheio*/, -12 /*ENOMEM*/, -5 /*EIO*/]);
+
+function ffmpegSignedExit(code) {
+  if (typeof code !== "number") return null;
+  // No Windows o código vem como uint32 (ex.: -28 chega como 4294967268).
+  return code > 0x7fffffff ? code - 0x100000000 : code;
+}
+
+// Recodifica tentando o encoder de hardware; se ele ESTOLAR (watchdog) ou falhar por
+// motivo que a CPU resolveria, repete UMA vez via libx264. Erros de disco/IO/memória
+// NÃO são refeitos (viram mensagem clara). buildArgs(enc) monta os args para o encoder.
+async function runEncodeWithFallback(ffmpeg, encoder, buildArgs, totalDuration, onProgress, { job = null, output = null } = {}) {
+  try {
+    return await runFfmpeg(ffmpeg, buildArgs(encoder), totalDuration, onProgress, { mustSucceed: true, job });
+  } catch (err) {
+    if (job?.cancelled) throw err;
+    const signed = ffmpegSignedExit(err?.ffmpegExitCode);
+    // Disco cheio: não adianta refazer em lugar nenhum — devolve mensagem amigável.
+    if (signed === -28 || /No space left on device/i.test(err?.message || "")) {
+      const e = new Error("Sem espaço em disco para finalizar o vídeo (ffmpeg ENOSPC). Libere espaço no drive temporário e tente de novo.");
+      e.diskFull = true;
+      throw e;
+    }
+    const isHardware = encoder && encoder !== "libx264";
+    const nonRetryable = signed != null && FFMPEG_NON_RETRYABLE_ERRNO.has(signed);
+    // Só refaz via CPU quando faz sentido: estol do encoder de HW, ou falha de HW que
+    // não seja disco/IO/memória.
+    if (!isHardware || (nonRetryable && !err?.stalled)) throw err;
+    const motivo = err?.stalled ? "estolou" : `falhou (código ${signed ?? err?.ffmpegExitCode ?? "?"})`;
+    console.warn(`[${job?.id ?? "job"}] Encoder ${encoder} ${motivo} — repetindo via CPU (libx264).`);
+    if (output) { try { if (fs.existsSync(output)) fs.unlinkSync(output); } catch {} }
+    onProgress(0); // reinicia a barra para a passada por CPU
+    return await runFfmpeg(ffmpeg, buildArgs("libx264"), totalDuration, onProgress, { mustSucceed: true, job });
+  }
 }
 
 async function detectResolution(ffprobe, files) {
@@ -1969,6 +2043,43 @@ async function cliDetectTelemetry(videoPath) {
   }
 }
 
+// ─── Limpeza de temp órfão ──────────────────────────────────────────────────────
+
+function dirSizeBytes(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const ent of entries) {
+    const p = path.join(dir, ent.name);
+    try {
+      if (ent.isDirectory()) total += dirSizeBytes(p);
+      else total += fs.statSync(p).size;
+    } catch {}
+  }
+  return total;
+}
+
+// Na inicialização não há job ativo, então qualquer pasta flight-* no %TEMP% é lixo de
+// jobs anteriores que morreram sem limpar (ex.: um estol deixou ~26 GB presos). Remove as
+// pastas com mais de 5 min (evita mexer em algo recém-criado por segurança).
+function sweepOrphanTempDirs(base = os.tmpdir()) {
+  let removed = 0, freed = 0;
+  try {
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    for (const ent of fs.readdirSync(base, { withFileTypes: true })) {
+      if (!ent.isDirectory() || !ent.name.startsWith("flight-")) continue;
+      const dir = path.join(base, ent.name);
+      try {
+        if (fs.statSync(dir).mtimeMs > cutoff) continue;
+        const size = dirSizeBytes(dir);
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed++; freed += size;
+      } catch {}
+    }
+  } catch {}
+  return { removed, freed };
+}
+
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
 const cliTelemetryArg = process.argv.indexOf("--detect-telemetry");
@@ -1982,14 +2093,23 @@ if (cliTelemetryArg >= 0) {
     console.error(e);
     process.exit(1);
   });
-} else server.listen(PORT, "127.0.0.1", () => {
-  console.log("╔══════════════════════════════════════════════════╗");
-  console.log("║     Flight Video Helper — rodando                ║");
-  console.log(`║     http://127.0.0.1:${PORT}                       ║`);
-  console.log("║     Deixe esta janela aberta.                    ║");
-  console.log("╚══════════════════════════════════════════════════╝");
-  registerAutoStart();
-});
+} else if (require.main === module) {
+  server.listen(PORT, "127.0.0.1", () => {
+    console.log("╔══════════════════════════════════════════════════╗");
+    console.log("║     Flight Video Helper — rodando                ║");
+    console.log(`║     http://127.0.0.1:${PORT}                       ║`);
+    console.log("║     Deixe esta janela aberta.                    ║");
+    console.log("╚══════════════════════════════════════════════════╝");
+    const swept = sweepOrphanTempDirs();
+    if (swept.removed > 0) {
+      console.log(`[startup] Limpeza de temp: ${swept.removed} pasta(s) orfa(s), ${(swept.freed / 1e9).toFixed(2)} GB liberados.`);
+    }
+    registerAutoStart();
+  });
+}
+
+// Exporta funções internas para testes (require sem subir o servidor).
+module.exports = { runFfmpeg, runEncodeWithFallback, ffmpegSignedExit, sweepOrphanTempDirs };
 
 if (cliTelemetryArg < 0) server.on("error", (e) => {
   if (e.code === "EADDRINUSE") {

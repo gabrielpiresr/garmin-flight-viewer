@@ -122,6 +122,8 @@ export type CrmLeadFollowup = {
   title: string;
   triggeredAt: string;
   completedAt: string | null;
+  /** FUP criado manualmente no lead (preservado ao mudar de status). */
+  manual?: boolean;
 };
 
 export type CrmLead = {

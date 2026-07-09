@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
 import { listAircrafts } from "../../lib/aircraftDb";
-import { listSagaSchedulesDirect } from "../../lib/sagaImportDb";
+import { getSagaImportSettings, listSagaSchedulesDirect, type SagaImportMapping } from "../../lib/sagaImportDb";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { DEFAULT_SCHOOL_RULES, type FlightScheduleRules, type SchoolRules } from "../../types/schoolRules";
 import { ScheduleStudentHelpSection } from "./ScheduleStudentHelpSection";
@@ -24,6 +24,37 @@ function hhmmToHours(value: string): number {
 }
 
 const inputCls = "mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-sm text-white";
+
+function normalizeAircraftIdent(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function canonicalAircraftIdent(value: string, mapping: SagaImportMapping | null): string {
+  const raw = value.trim().toUpperCase();
+  if (!raw) return "";
+  const direct = mapping?.aircraftBySaga?.[raw]?.trim().toUpperCase();
+  if (direct) return direct;
+  const normalized = normalizeAircraftIdent(raw);
+  for (const [sagaIdent, localIdent] of Object.entries(mapping?.aircraftBySaga ?? {})) {
+    if (normalizeAircraftIdent(sagaIdent) === normalized) {
+      const mapped = localIdent.trim().toUpperCase();
+      if (mapped) return mapped;
+    }
+  }
+  return raw;
+}
+
+function canonicalAircraftList(values: string[], mapping: SagaImportMapping | null): string[] {
+  return [...new Set(values.map((value) => canonicalAircraftIdent(value, mapping)).filter(Boolean))];
+}
+
+function canonicalizeSchedule(schedule: FlightScheduleRules, mapping: SagaImportMapping | null): FlightScheduleRules {
+  return {
+    ...schedule,
+    studentHiddenAircraftIdents: canonicalAircraftList(schedule.studentHiddenAircraftIdents, mapping),
+    studentWaitlistAircraftIdents: canonicalAircraftList(schedule.studentWaitlistAircraftIdents, mapping),
+  };
+}
 
 /** Ícone de informação com tooltip própria (hover no desktop, toque no mobile). */
 function InfoTip({ text }: { text: string }) {
@@ -113,20 +144,27 @@ export function ScheduleSettingsPanel() {
   const [aircraftRegistrations, setAircraftRegistrations] = useState<string[]>([]);
   // Agendas que aparecem na escala do SAGA (ex.: BLOQUEIO ESCALA) e não estão nas aeronaves locais.
   const [sagaAgendaIdents, setSagaAgendaIdents] = useState<string[]>([]);
+  const [sagaImportMapping, setSagaImportMapping] = useState<SagaImportMapping | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void getSchoolRules()
-      .then((loaded) => {
+    void Promise.all([
+      getSchoolRules(),
+      getSagaImportSettings().catch(() => null),
+    ])
+      .then(([loaded, importSettings]) => {
         if (cancelled) return;
-        setRules(loaded);
+        const mapping = importSettings?.mapping ?? null;
+        setSagaImportMapping(mapping);
+        const canonicalSchedule = canonicalizeSchedule(loaded.schedule, mapping);
+        setRules({ ...loaded, schedule: canonicalSchedule });
         // No modo SAGA, busca as agendas reais para permitir esconder também as que não são aeronaves locais.
-        if (loaded.schedule.sagaOnlySchedule) {
+        if (canonicalSchedule.sagaOnlySchedule) {
           void listSagaSchedulesDirect(3)
             .then((events) => {
               if (cancelled) return;
               setSagaAgendaIdents([
-                ...new Set(events.map((event) => String(event.aircraft || "").trim().toUpperCase()).filter(Boolean)),
+                ...new Set(events.map((event) => canonicalAircraftIdent(String(event.aircraft || ""), mapping)).filter(Boolean)),
               ]);
             })
             .catch(() => {});
@@ -174,7 +212,7 @@ export function ScheduleSettingsPanel() {
   );
 
   function setSchedule(patch: Partial<FlightScheduleRules>) {
-    setRules((current) => ({ ...current, schedule: { ...current.schedule, ...patch } }));
+    setRules((current) => ({ ...current, schedule: canonicalizeSchedule({ ...current.schedule, ...patch }, sagaImportMapping) }));
   }
 
   function setHelpConfig(next: typeof rules.scheduleStudentHelp) {
@@ -241,7 +279,7 @@ export function ScheduleSettingsPanel() {
         studentTabs: rules.studentTabs,
         theme: rules.theme,
         schedule: {
-          ...schedule,
+          ...canonicalizeSchedule(schedule, sagaImportMapping),
           minRequestHours: schedule.weekdayMinHours,
           maxRequestHours: schedule.weekdayMaxHours,
         },
@@ -365,7 +403,7 @@ export function ScheduleSettingsPanel() {
             <button
               type="button"
               onClick={() => {
-                const ident = newAgendaIdent.trim().toUpperCase();
+                const ident = canonicalAircraftIdent(newAgendaIdent, sagaImportMapping);
                 if (!ident) return;
                 setManualAgendaIdents((current) => [...new Set([...current, ident])]);
                 setNewAgendaIdent("");

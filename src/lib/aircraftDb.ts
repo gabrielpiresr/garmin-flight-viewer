@@ -1,5 +1,5 @@
 import { Query } from "appwrite";
-import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, AIRCRAFTS_COL_ID, ADMIN_USER_ID, storage } from "./appwrite";
+import { BUCKET_ID, databases, ID, isAppwriteConfigured, Permission, Role, AIRCRAFTS_COL_ID, storage } from "./appwrite";
 import type { Aircraft, AircraftType } from "../types/admin";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -9,34 +9,19 @@ function isReady(): boolean {
 }
 
 function adminScopedPermissions(): string[] {
-  const permissions = [
+  return [
     Permission.read(Role.users()),
     Permission.update(Role.label("admin")),
     Permission.delete(Role.label("admin")),
   ];
-
-  if (ADMIN_USER_ID) {
-    permissions.push(
-      Permission.read(Role.user(ADMIN_USER_ID)),
-      Permission.update(Role.user(ADMIN_USER_ID)),
-      Permission.delete(Role.user(ADMIN_USER_ID)),
-    );
-  }
-
-  return Array.from(new Set(permissions));
 }
 
 function aircraftPhotoPermissions(): string[] {
-  return Array.from(
-    new Set([
-      Permission.read(Role.any()),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-      ...(ADMIN_USER_ID
-        ? [Permission.update(Role.user(ADMIN_USER_ID)), Permission.delete(Role.user(ADMIN_USER_ID))]
-        : []),
-    ]),
-  );
+  return [
+    Permission.read(Role.any()),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
 }
 
 function toAircraft(doc: Record<string, unknown>): Aircraft {

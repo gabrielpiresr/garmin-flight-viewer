@@ -21,6 +21,7 @@ const OP_WEEKS_ID = process.env.APPWRITE_OPERATIONAL_WEEKS_COLLECTION_ID || "air
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "";
 const ACTIVE_STATUSES = ["Pendente", "Confirmado"];
+const SAGA_IMPORT_MAPPING_KEY = "sagaImportMapping";
 
 function response(res, status, body) {
   return res.json(body, status);
@@ -125,13 +126,46 @@ function normalizeRules(raw) {
   };
 }
 
+function canonicalAircraftIdentFromMapping(value, mapping) {
+  const raw = clean(value).toUpperCase();
+  if (!raw) return "";
+  const direct = clean(mapping?.aircraftBySaga?.[raw]).toUpperCase();
+  if (direct) return direct;
+  const normalized = normalizeRegistration(raw);
+  for (const [sagaIdent, localIdent] of Object.entries(mapping?.aircraftBySaga || {})) {
+    if (normalizeRegistration(sagaIdent) === normalized) {
+      const mapped = clean(localIdent).toUpperCase();
+      if (mapped) return mapped;
+    }
+  }
+  return raw;
+}
+
+function canonicalizeRulesWithSagaMapping(rules, mapping) {
+  if (!mapping?.aircraftBySaga || typeof mapping.aircraftBySaga !== "object") return rules;
+  return {
+    ...rules,
+    studentHiddenAircraftIdents: [
+      ...new Set(rules.studentHiddenAircraftIdents.map((value) => normalizeRegistration(canonicalAircraftIdentFromMapping(value, mapping))).filter(Boolean)),
+    ],
+    studentWaitlistAircraftIdents: [
+      ...new Set(rules.studentWaitlistAircraftIdents.map((value) => canonicalAircraftIdentFromMapping(value, mapping)).filter(Boolean)),
+    ],
+  };
+}
+
 async function getRules() {
   const result = await databases.listDocuments(DATABASE_ID, SETTINGS_ID, [
     sdk.Query.equal("key", ["schoolRules"]),
     sdk.Query.limit(1),
   ]);
   const body = parseJson(result.documents[0]?.settings_json, {});
-  return normalizeRules(body.schedule || {});
+  const mappingResult = await databases.listDocuments(DATABASE_ID, SETTINGS_ID, [
+    sdk.Query.equal("key", [SAGA_IMPORT_MAPPING_KEY]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  const mapping = parseJson(mappingResult.documents[0]?.settings_json, {});
+  return canonicalizeRulesWithSagaMapping(normalizeRules(body.schedule || {}), mapping);
 }
 
 /**

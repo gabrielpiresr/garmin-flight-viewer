@@ -7,6 +7,7 @@ import {
   type FlightDisplayInfo,
 } from "../../lib/flightDisplay";
 import {
+  isGhostFlightListItem,
   listSavedFlights,
   type FlightStatus,
   type SavedFlightListItem,
@@ -98,7 +99,6 @@ export function AdminAllFlightsTab() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [totalFlights, setTotalFlights] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("table");
@@ -116,7 +116,6 @@ export function AdminAllFlightsTab() {
     if (!user || !configured) {
       setItems([]);
       setNextCursor(null);
-      setTotalFlights(0);
       return;
     }
     setLoading(true);
@@ -129,7 +128,6 @@ export function AdminAllFlightsTab() {
     }
     setItems(page.data ?? []);
     setNextCursor(page.nextCursor);
-    setTotalFlights(page.total);
   }, [configured, user]);
 
   const loadMore = useCallback(async () => {
@@ -147,7 +145,6 @@ export function AdminAllFlightsTab() {
       return [...byId.values()];
     });
     setNextCursor(page.nextCursor);
-    setTotalFlights(page.total);
   }, [configured, loadingMore, nextCursor, user]);
 
   useEffect(() => {
@@ -190,9 +187,14 @@ export function AdminAllFlightsTab() {
     };
   }, [items]);
 
+  const visibleItems = useMemo(
+    () => items.filter((item) => !isGhostFlightListItem(item)),
+    [items],
+  );
+
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return items.filter((item) => {
+    return visibleItems.filter((item) => {
       const info = infoById[item.id];
       const sigs = signaturesByFlightId[item.id];
       const iso = info?.flightDateIso ?? item.flight_date ?? "";
@@ -216,9 +218,9 @@ export function AdminAllFlightsTab() {
       if (signatureFilter === "pending" && count === 3) return false;
       return true;
     }).sort((a, b) => getFlightDateTimeMs(b, infoById[b.id]) - getFlightDateTimeMs(a, infoById[a.id]));
-  }, [dateFrom, dateTo, infoById, items, search, signatureFilter, signaturesByFlightId, statusFilter]);
+  }, [dateFrom, dateTo, infoById, visibleItems, search, signatureFilter, signaturesByFlightId, statusFilter]);
 
-  const reopenFlight = items.find((item) => item.id === reopenFlightId) ?? null;
+  const reopenFlight = visibleItems.find((item) => item.id === reopenFlightId) ?? null;
   const reopenInfo = reopenFlight ? infoById[reopenFlight.id] : undefined;
   const reopenSignatures = reopenFlight ? signaturesByFlightId[reopenFlight.id] : undefined;
 
@@ -405,7 +407,7 @@ export function AdminAllFlightsTab() {
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-xs text-slate-500">{Math.min(items.length, totalFlights)} de {totalFlights} voos carregados</span>
+        <span className="text-xs text-slate-500">{visibleItems.length} voos exibidos{nextCursor ? " (carregando mais...)" : ""}</span>
         {nextCursor ? (
           <button type="button" onClick={loadMore} disabled={loadingMore} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-60">
             {loadingMore ? "Carregando..." : "Carregar mais"}

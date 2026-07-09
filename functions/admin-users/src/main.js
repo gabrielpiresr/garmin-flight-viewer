@@ -7,6 +7,7 @@ const { Resend } = require("resend");
 const webpush = require("web-push");
 const pdfParse = require("pdf-parse");
 const { createStudentAutomationService } = require("./studentAutomations");
+const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -97,6 +98,10 @@ const CONTRACT_SIGNATURES_COLLECTION_ID =
   process.env.APPWRITE_CONTRACT_SIGNATURES_COL_ID ||
   "contract_signatures";
 const CRM_LEADS_COLLECTION_ID = process.env.APPWRITE_CRM_LEADS_COLLECTION_ID || process.env.APPWRITE_CRM_LEADS_COL_ID || "crm_leads";
+const CRM_STATUS_SETTINGS_COLLECTION_ID =
+  process.env.APPWRITE_CRM_STATUS_SETTINGS_COLLECTION_ID ||
+  process.env.APPWRITE_CRM_STATUS_SETTINGS_COL_ID ||
+  "crm_status_settings";
 const CRM_PROPOSALS_COLLECTION_ID =
   process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || process.env.APPWRITE_CRM_PROPOSALS_COL_ID || "crm_proposals";
 const CAKTO_RECEIPTS_COLLECTION_ID =
@@ -3406,6 +3411,68 @@ function sagaCreditFingerprint(userId, credit) {
   ].join("|");
 }
 
+function extractGfvCaktoCreditId(...values) {
+  for (const value of values) {
+    const match = cleanString(value).match(/GFV-CAKTO:([A-Za-z0-9_-]+)/);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function sagaCreditImportFingerprint(userId, credit, modelId) {
+  return [
+    cleanString(userId),
+    sagaCreditPurchaseDateIso(credit.purchaseDate) || dateBrToIso(credit.purchaseDate) || cleanString(credit.purchaseDate),
+    sagaMoneyValue(credit._originalTotalValue ?? credit.totalValue).toFixed(2),
+    cleanString(modelId),
+    sagaHoursValue(credit.hours || credit.hoursHhmm).toFixed(2),
+  ].join("|");
+}
+
+function localCreditImportFingerprint(doc) {
+  return [
+    cleanString(doc.user_id),
+    sagaCreditPurchaseDateIso(doc.purchase_date) || cleanString(doc.purchase_date),
+    Number(doc.amount_paid || 0).toFixed(2),
+    cleanString(doc.aircraft_model_id),
+    Number(doc.hours || 0).toFixed(2),
+  ].join("|");
+}
+
+async function findExistingCreditForSagaImport(userId, credit, modelId, { testMode = false } = {}) {
+  if (!STUDENT_CREDITS_COLLECTION_ID) return null;
+  const safeUserId = cleanString(userId);
+  if (!safeUserId) return null;
+
+  const markerCreditId = extractGfvCaktoCreditId(credit.notes, credit.segmentNote);
+  if (markerCreditId) {
+    const byMarker = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, markerCreditId).catch(() => null);
+    if (byMarker && cleanString(byMarker.user_id) === safeUserId) {
+      return { docId: markerCreditId, reason: "already_exists_via_cakto" };
+    }
+  }
+
+  const targetFingerprint = sagaCreditImportFingerprint(safeUserId, credit, modelId);
+  const docs = await databases.listDocuments(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("user_id", [safeUserId]),
+    ...selectQuery(["$id", "user_id", "purchase_date", "amount_paid", "aircraft_model_id", "hours", "notes"]),
+    sdk.Query.limit(200),
+  ]).catch(() => ({ documents: [] }));
+
+  for (const doc of docs.documents || []) {
+    const docId = cleanString(doc.$id);
+    if (isSagaManagedCreditDocId(docId, testMode)) continue;
+    if (localCreditImportFingerprint(doc) === targetFingerprint) {
+      return { docId, reason: "already_exists_local_match" };
+    }
+    if (markerCreditId && extractGfvCaktoCreditId(doc.notes) === markerCreditId) {
+      return { docId, reason: "already_exists_via_cakto" };
+    }
+  }
+  return null;
+}
+
 function sagaFinancialEntryMatchesStudent(entry, sagaUser) {
   const client = normalizeSearch(entry?.cliente);
   const rawClient = cleanString(entry?.cliente).replace(/\D/g, "");
@@ -3918,7 +3985,7 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
   };
   const existing = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId).catch(() => null);
   if (existing) {
-    if (createOnly) return { skipped: true, reason: "already_exists", hours, aircraft: sagaModel, docId };
+    if (createOnly) return { skipped: true, reason: "already_exists", hours, aircraft: sagaModel, docId, covered: true };
     try {
       await databases.updateDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
         ...data,
@@ -3930,6 +3997,19 @@ async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, 
     }
     return { updated: true, hours, aircraft: sagaModel, docId };
   }
+
+  const duplicate = await findExistingCreditForSagaImport(userId, credit, modelId, { testMode });
+  if (duplicate) {
+    return {
+      skipped: true,
+      reason: duplicate.reason,
+      hours,
+      aircraft: sagaModel,
+      docId: duplicate.docId,
+      covered: true,
+    };
+  }
+
   try {
     await databases.createDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, payload, creditPermissions(userId));
   } catch (err) {
@@ -3974,7 +4054,7 @@ async function upsertSagaFinancialCredit(actorUserId, entry, userId, mapping, ca
   const docId = sagaFinancialCreditDocId(testMode, userId, entry);
   const existing = await databases.getDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId).catch(() => null);
   if (existing) {
-    if (createOnly) return { skipped: true, reason: "already_exists", hours, aircraft: sagaModel, docId };
+    if (createOnly) return { skipped: true, reason: "already_exists", hours, aircraft: sagaModel, docId, covered: true };
     try {
       await databases.updateDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, docId, {
         ...data,
@@ -3986,6 +4066,26 @@ async function upsertSagaFinancialCredit(actorUserId, entry, userId, mapping, ca
     }
     return { updated: true, hours, aircraft: sagaModel, docId };
   }
+
+  const duplicateCredit = matchedCredit || {
+    purchaseDate: entry.data,
+    totalValue: entry.valorTotal,
+    hours,
+    model: sagaModel,
+    notes: entry.natureza,
+  };
+  const duplicate = await findExistingCreditForSagaImport(userId, duplicateCredit, modelId, { testMode });
+  if (duplicate) {
+    return {
+      skipped: true,
+      reason: duplicate.reason,
+      hours,
+      aircraft: sagaModel,
+      docId: duplicate.docId,
+      covered: true,
+    };
+  }
+
   const payload = {
     ...data,
     school_id: SCHOOL_ID,
@@ -6435,6 +6535,9 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
             }
           } else {
             summary.creditsSkipped += 1;
+            if (result.covered) {
+              coveredCreditFingerprints.add(sagaCreditFingerprint(userId, credit._sourceCredit || credit));
+            }
             if (result.reason === "missing_credit_aircraft_mapping") summary.missing.creditAircrafts.push(cleanString(result.aircraft));
             summary.skippedCredits.push({
               student: cleanString(credit.studentName),
@@ -6492,6 +6595,9 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
           }
         } else {
           summary.financialCreditsSkipped += 1;
+          if (result.covered && matchedCredit) {
+            coveredCreditFingerprints.add(sagaCreditFingerprint(student.userId, matchedCredit));
+          }
           if (result.reason === "missing_credit_aircraft_mapping") summary.missing.creditAircrafts.push(cleanString(result.aircraft));
           summary.skippedCredits.push({
             student: cleanString(entry.cliente),
@@ -6627,6 +6733,9 @@ function sagaImportCreditSkipReasonLabel(reason) {
   if (reason === "zero_credit_balance") return "Saldo de credito zerado no SAGA.";
   if (reason === "missing_financial_credit_hours") return "Lancamento financeiro sem horas identificaveis.";
   if (reason === "credits_collection_missing") return "Colecao de creditos nao configurada.";
+  if (reason === "already_exists") return "Credito ja importado anteriormente.";
+  if (reason === "already_exists_via_cakto") return "Credito ja lancado via Cakto; ignorado para evitar duplicacao.";
+  if (reason === "already_exists_local_match") return "Credito ja existe no sistema com os mesmos dados.";
   return "Motivo nao identificado.";
 }
 
@@ -6733,6 +6842,42 @@ function pickDefaultActiveSlug(slugs) {
     if (match) return match;
   }
   return slugs[0] || "aluno";
+}
+
+async function getTenantRoleDocBySlug(slug) {
+  const safeSlug = cleanString(slug);
+  if (!safeSlug || !TENANT_ROLES_COLLECTION_ID || !DATABASE_ID) return null;
+  try {
+    const res = await databases.listDocuments(DATABASE_ID, TENANT_ROLES_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.equal("slug", [safeSlug]),
+      sdk.Query.limit(1),
+    ]);
+    return res.documents[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseRolePermissionsJson(value) {
+  if (!value || typeof value !== "string") return { tabs: {}, actions: {} };
+  try {
+    const parsed = JSON.parse(value);
+    return {
+      tabs: parsed && typeof parsed.tabs === "object" && parsed.tabs ? parsed.tabs : {},
+      actions: parsed && typeof parsed.actions === "object" && parsed.actions ? parsed.actions : {},
+    };
+  } catch {
+    return { tabs: {}, actions: {} };
+  }
+}
+
+async function tenantRoleAllowsTab(slug, tabKey) {
+  if (cleanString(slug) === "admin") return true;
+  const role = await getTenantRoleDocBySlug(slug);
+  if (!role) return false;
+  const permissions = parseRolePermissionsJson(role.permissions_json);
+  return permissions.tabs?.[tabKey] === true;
 }
 
 async function resolvePortalTypeForSlug(slug) {
@@ -7844,6 +7989,21 @@ async function requireInstructorOrAdmin(actorUserId) {
   return actor;
 }
 
+async function requireUsersListAccess(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const [profile, actor] = await Promise.all([getProfileByUserId(actorUserId), users.get({ userId: actorUserId })]);
+  const profilePortal = await resolveProfilePortal(profile);
+  const labelRole = deriveRoleFromLabels(actor?.labels || []);
+  if (profilePortal === "admin" || labelRole === "admin") return actor;
+  if (profilePortal !== "instrutor" && labelRole !== "instrutor") {
+    throw Object.assign(new Error("Apenas administradores ou instrutores podem acessar usuarios."), { status: 403 });
+  }
+  const assigned = parseAssignedRoleSlugs(profile);
+  const activeSlug = parseActiveRoleSlug(profile, assigned);
+  if (await tenantRoleAllowsTab(activeSlug, "users")) return actor;
+  throw Object.assign(new Error("Role sem permissao para acessar usuarios."), { status: 403 });
+}
+
 function contractPermissions(recipientUserId) {
   return [
     sdk.Permission.read(sdk.Role.users()),
@@ -8516,6 +8676,21 @@ async function getLeadById(leadId) {
   return databases.getDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, leadId);
 }
 
+async function loadCrmStatusSettings() {
+  if (!CRM_STATUS_SETTINGS_COLLECTION_ID) return [];
+  try {
+    const docs = await listAllDocuments(CRM_STATUS_SETTINGS_COLLECTION_ID, [sdk.Query.limit(100)]);
+    return docs.map(toStatusSettingFromDoc);
+  } catch {
+    return [];
+  }
+}
+
+async function buildCrmLeadStatusChangePayload(lead, targetStatus) {
+  const settings = await loadCrmStatusSettings();
+  return buildLeadStatusMove(lead, targetStatus, settings);
+}
+
 async function listProfileDocumentsByUserId(userId) {
   if (!PROFILE_DOCUMENTS_COLLECTION_ID) return [];
   const res = await databases.listDocuments(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, [
@@ -8769,9 +8944,8 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
   await ensureEnrollmentFormPreview(enrollmentForm);
   created.push(enrollmentForm);
 
-  await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, lead.$id, {
-    crm_status: "aguardando_assinatura_pagamento",
-  });
+  const statusPayload = await buildCrmLeadStatusChangePayload(lead, "aguardando_assinatura_pagamento");
+  await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, lead.$id, statusPayload);
 
   for (const contract of created) {
     await sendContractNotificationEmail(contract, {
@@ -9984,7 +10158,11 @@ async function getDashboardSummary(payload = {}) {
   const profiles = await listProfilesForDashboard(userIds);
   const profilesByUserId = new Map(profiles.map((profile) => [profile.user_id, profile]));
 
+  // Voos temporarios (ghost) sao placeholders de telemetria sem voo real casado — nao contam
+  // como executados no dashboard (por aviao, horas e KPIs), igual ao padrao dos relatorios
+  // (listFlightReports usa ghostMode "exclude"). Filtrar aqui cobre tudo que deriva de periodRows.
   const periodRows = periodFlightDocs
+    .filter((doc) => !isGhostFlightDoc(doc))
     .map((doc) => dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId))
     .filter((row) => rowMatchesDashboardFilters(row, filters));
   const futureRowsForOperationalCounts = upcomingPage.documents
@@ -16920,12 +17098,6 @@ async function attachLocalUsersToSagaSchedules(schedules) {
  * 2) segmento da chave do de-para; 3) catálogo local por matrícula normalizada.
  */
 function resolveScheduleAircraftIdent(row, mapping, catalogs) {
-  const sagaId = cleanString(row.aircraftSagaId);
-  if (sagaId) {
-    for (const [registration, mappedId] of Object.entries(mapping.aircraftIdByRegistration || {})) {
-      if (cleanString(mappedId) === sagaId) return cleanString(registration);
-    }
-  }
   const sagaName = cleanString(row.aircraft);
   if (sagaName) {
     const direct = cleanString(mapping.aircraftBySaga?.[sagaName]);
@@ -16936,6 +17108,15 @@ function resolveScheduleAircraftIdent(row, mapping, catalogs) {
         const segments = String(key).split("/").map((part) => normalizeAircraftIdent(part));
         if (segments.includes(normalized)) return cleanString(ident);
       }
+    }
+  }
+  const sagaId = cleanString(row.aircraftSagaId);
+  if (sagaId) {
+    for (const [registration, mappedId] of Object.entries(mapping.aircraftIdByRegistration || {})) {
+      if (cleanString(mappedId) !== sagaId) continue;
+      const normalized = normalizeAircraftIdent(registration);
+      const catalogMatch = (catalogs?.aircrafts || []).find((aircraft) => normalizeAircraftIdent(aircraft.registration) === normalized);
+      return cleanString(catalogMatch?.registration) || cleanString(registration);
     }
   }
   return resolveSagaScheduleAircraft(row, mapping, catalogs);
@@ -19168,6 +19349,21 @@ module.exports = async ({ req, res, log, error }) => {
       }
     }
 
+    if (action === "listSummaries" || action === "list") {
+      await requireUsersListAccess(actorUserId);
+      const page = await listSummaries({
+        search: String(payload.search || ""),
+        role: String(payload.role || ""),
+        customRoleSlug: String(payload.customRoleSlug || ""),
+        limit: payload.limit,
+        offset: payload.offset,
+      });
+      log(
+        `[listSummaries] search="${String(payload.search || "")}" total=${page.total} pageUsers=${(page.users || []).length}`,
+      );
+      return jsonResponse(res, 200, page);
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "createUser") {
@@ -19668,20 +19864,6 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getDashboardSummary") {
       const dashboard = await getDashboardSummary(payload);
       return jsonResponse(res, 200, { dashboard });
-    }
-
-    if (action === "listSummaries" || action === "list") {
-      const page = await listSummaries({
-        search: String(payload.search || ""),
-        role: String(payload.role || ""),
-        customRoleSlug: String(payload.customRoleSlug || ""),
-        limit: payload.limit,
-        offset: payload.offset,
-      });
-      log(
-        `[listSummaries] search="${String(payload.search || "")}" total=${page.total} pageUsers=${(page.users || []).length}`,
-      );
-      return jsonResponse(res, 200, page);
     }
 
     if (action === "searchFlightPickerUsers") {

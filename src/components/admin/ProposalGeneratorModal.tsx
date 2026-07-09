@@ -3,7 +3,7 @@ import { getProposalsByLead } from "../../lib/crmProposalsDb";
 import { createProposalWithPayment, retryProposalPayment } from "../../lib/caktoDb";
 import { getProposalConfig } from "../../lib/proposalSettingsDb";
 import { openProposalPdf } from "../../lib/proposalPdf";
-import { updateLead } from "../../lib/crmDb";
+import { moveLeadToCrmStatus } from "../../lib/crmDb";
 import { listSchoolProducts } from "../../lib/schoolProductsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import type { CrmLead } from "../../types/crm";
@@ -152,7 +152,7 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
         notes: notes.trim(),
       });
 
-      await updateLead(lead.id, { crmStatus: "proposta_enviada" });
+      await moveLeadToCrmStatus(lead.id, "proposta_enviada", { currentLead: lead });
 
       setCreatedProposal(data);
       setExistingProposals((prev) => [data, ...prev]);

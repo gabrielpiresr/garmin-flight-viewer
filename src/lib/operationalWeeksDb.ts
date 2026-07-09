@@ -6,7 +6,6 @@ import {
   Permission,
   Role,
   OP_WEEKS_COL_ID,
-  ADMIN_USER_ID,
 } from "./appwrite";
 import type {
   OperationalWeek,
@@ -21,21 +20,12 @@ import type {
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
 
 function weekDocPerms() {
-  return Array.from(
-    new Set([
-      Permission.read(Role.users()),
-      Permission.read(Role.label("admin")),
-      Permission.update(Role.label("admin")),
-      Permission.delete(Role.label("admin")),
-      ...(ADMIN_USER_ID
-        ? [
-            Permission.read(Role.user(ADMIN_USER_ID)),
-            Permission.update(Role.user(ADMIN_USER_ID)),
-            Permission.delete(Role.user(ADMIN_USER_ID)),
-          ]
-        : []),
-    ]),
-  );
+  return [
+    Permission.read(Role.users()),
+    Permission.read(Role.label("admin")),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
 }
 
 function isReady(): boolean {
