@@ -348,6 +348,27 @@ async function getHelperStatus(): Promise<HelperStatus> {
   return health.online ? "online" : "offline";
 }
 
+const WORKDIR_STORAGE_KEY = "gfv:video-helper-workdir";
+
+type DiskInfo = { deviceId: string; label: string; freeBytes: number; totalBytes: number };
+type DisksResponse = { tempDrive: string; disks: DiskInfo[]; lastWorkDir: string };
+
+// Caminho de trabalho para um disco: "" = disco do sistema (%TEMP%); outro disco →
+// subpasta dedicada. Espelha resolveWorkDir/listDisks do helper.
+function workDirForDisk(deviceId: string, tempDrive: string): string {
+  return deviceId.toUpperCase() === tempDrive.toUpperCase() ? "" : `${deviceId}\\FlightVideoHelperTemp`;
+}
+
+async function fetchHelperDisks(): Promise<DisksResponse | null> {
+  try {
+    const res = await fetch(`${HELPER_URL}/disks`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    return await res.json() as DisksResponse;
+  } catch {
+    return null;
+  }
+}
+
 function getCachedVideoBrand(): { schoolName: string; logoUrl: string } {
   const settings = getCachedBrandSettings();
   return {
@@ -394,6 +415,11 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const [concatenationMode, setConcatenationMode] = useState<ConcatenationMode>("local");
   const [processingStrategy, setProcessingStrategy] = useState<ProcessingStrategy | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [disks, setDisks] = useState<DiskInfo[]>([]);
+  const [tempDrive, setTempDrive] = useState<string>("");
+  const [workDir, setWorkDir] = useState<string>(() => {
+    try { return localStorage.getItem(WORKDIR_STORAGE_KEY) || ""; } catch { return ""; }
+  });
   const dragIndexRef = useRef<number | null>(null);
   const evtSourceRef = useRef<EventSource | null>(null);
 
@@ -401,6 +427,30 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     setHelperStatus("checking");
     setHelperStatus(await getHelperStatus());
   }, []);
+
+  const handleWorkDirChange = useCallback((value: string) => {
+    setWorkDir(value);
+    try { localStorage.setItem(WORKDIR_STORAGE_KEY, value); } catch {}
+  }, []);
+
+  // Carrega os discos disponíveis quando o helper está online (para o seletor).
+  useEffect(() => {
+    if (publicMode || helperStatus !== "online") return;
+    let cancelled = false;
+    void (async () => {
+      const info = await fetchHelperDisks();
+      if (cancelled || !info) return;
+      setDisks(info.disks);
+      setTempDrive(info.tempDrive);
+      // Se o disco salvo não existe mais (ex.: SSD removido), volta para o padrão.
+      setWorkDir((cur) => {
+        if (!cur) return cur;
+        const stillThere = info.disks.some((d) => workDirForDisk(d.deviceId, info.tempDrive) === cur);
+        return stillThere ? cur : "";
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [helperStatus, publicMode]);
 
   const loadVideos = useCallback(async () => {
     if (publicMode) {
@@ -860,6 +910,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
           logoUrl: applyLogo ? getCachedVideoBrand().logoUrl : "",
           processingMode,
           confirmTranscode: analysis.requiresTranscode,
+          workDir,
         }),
       });
       const body = await res.json().catch(() => ({})) as { error?: string };
@@ -998,6 +1049,10 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
               onProcessingModeChange={setProcessingMode}
               concatenationMode={concatenationMode}
               onConcatenationModeChange={setConcatenationMode}
+              disks={disks}
+              tempDrive={tempDrive}
+              workDir={workDir}
+              onWorkDirChange={handleWorkDirChange}
               isAnalyzing={isAnalyzing}
             />
           )}
@@ -1213,6 +1268,10 @@ function FileSelectionList({
   onProcessingModeChange,
   concatenationMode,
   onConcatenationModeChange,
+  disks,
+  tempDrive,
+  workDir,
+  onWorkDirChange,
   isAnalyzing,
 }: {
   files: SelectedFile[];
@@ -1228,6 +1287,10 @@ function FileSelectionList({
   onProcessingModeChange: (value: ProcessingMode) => void;
   concatenationMode: ConcatenationMode;
   onConcatenationModeChange: (value: ConcatenationMode) => void;
+  disks: DiskInfo[];
+  tempDrive: string;
+  workDir: string;
+  onWorkDirChange: (value: string) => void;
   isAnalyzing: boolean;
 }) {
   return (
@@ -1374,6 +1437,31 @@ function FileSelectionList({
         <p className="text-[10px] text-amber-300">
           No modo "concatenar só no player", o upload envia os vídeos sem recodificação e sem logo.
         </p>
+      )}
+
+      {disks.length > 1 && (
+        <label className="block rounded-lg border border-slate-700/60 bg-slate-900/50 px-3 py-2.5 text-xs text-slate-300">
+          <span className="font-medium">💾 Disco de trabalho</span>
+          <select
+            value={workDir}
+            onChange={(event) => onWorkDirChange(event.target.value)}
+            className="mt-1.5 w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 accent-sky-500"
+          >
+            {disks.map((disk) => {
+              const value = workDirForDisk(disk.deviceId, tempDrive);
+              const isSystem = value === "";
+              const freeGb = (disk.freeBytes / 1e9).toFixed(0);
+              return (
+                <option key={disk.deviceId} value={value}>
+                  {disk.deviceId}{disk.label ? ` ${disk.label}` : ""}{isSystem ? " (Sistema)" : ""} — {freeGb} GB livres
+                </option>
+              );
+            })}
+          </select>
+          <span className="mt-1 block text-[10px] leading-4 text-slate-400">
+            Onde os arquivos temporários são gravados durante o processamento. Para voos longos, escolha um disco com bastante espaço livre.
+          </span>
+        </label>
       )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

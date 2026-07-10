@@ -17,8 +17,50 @@ const MAX_UPLOAD_RETRIES = 8;
 // encoder de hardware — QSV/NVENC/AMF — que estola no meio do arquivo), matamos o
 // processo. Em etapas de recodificação isso dispara uma nova tentativa via CPU (libx264).
 const FFMPEG_STALL_TIMEOUT_MS = Number(process.env.FFMPEG_STALL_TIMEOUT_MS || 90000);
+// Folga de disco exigida ANTES de iniciar (múltiplo da soma dos arquivos de entrada).
+// Transcode escreve joined + final + reescrita do faststart (pico ~2,5×); copy/remux
+// reescrevem o final via faststart (~2,2×). Evita rodar 40 min para morrer em ENOSPC.
+const DISK_HEADROOM_TRANSCODE = Number(process.env.DISK_HEADROOM_TRANSCODE || 2.5);
+const DISK_HEADROOM_COPY = Number(process.env.DISK_HEADROOM_COPY || 2.2);
 const HELPER_DIR = process.env.HELPER_RESOURCES
   || path.dirname(process.execPath.endsWith("node.exe") ? process.argv[1] : process.execPath);
+
+// ─── Log persistente em arquivo ─────────────────────────────────────────────
+// O app Electron descarta o stdout/stderr do helper (main.js), então espelhamos
+// os logs num arquivo para permitir diagnosticar falhas (estol, disco cheio, etc.)
+// depois que acontecem. Local: %LOCALAPPDATA%\Flight Video Helper\logs\helper.log.
+const LOG_DIR = process.env.HELPER_LOG_DIR
+  || (process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "Flight Video Helper", "logs")
+    : os.tmpdir());
+const LOG_FILE = path.join(LOG_DIR, "helper.log");
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+function appendLog(level, args) {
+  try {
+    const parts = args.map((a) => {
+      if (typeof a === "string") return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    });
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} [${level}] ${parts.join(" ")}\n`);
+  } catch {}
+}
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > LOG_MAX_BYTES) {
+    fs.renameSync(LOG_FILE, path.join(LOG_DIR, "helper.log.old"));
+  }
+} catch {}
+for (const level of ["log", "warn", "error"]) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => { appendLog(level, args); orig(...args); };
+}
+process.on("uncaughtException", (err) => {
+  appendLog("fatal", ["uncaughtException", err?.stack || err?.message || String(err)]);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  appendLog("error", ["unhandledRejection", reason?.stack || reason?.message || String(reason)]);
+});
 
 // #region agent log
 const AGENT_DEBUG_ENDPOINT = "http://127.0.0.1:7507/ingest/74fbafb9-127e-4adf-aee6-0b36f081c2f1";
@@ -141,11 +183,16 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     return json(res, {
       ok: true,
-      version: "1.4.0",
+      version: "1.6.0",
       activeJobId,
       memoryLimitBytes: MEMORY_LIMIT_BYTES,
       memoryUsedBytes: process.memoryUsage().rss,
     });
+  }
+
+  // GET /disks — volumes disponíveis + espaço livre, para o seletor de disco no app
+  if (url === "/disks" && req.method === "GET") {
+    return json(res, { ...listDisks(), lastWorkDir: readConfig().lastWorkDir || "" });
   }
 
   if (url === "/pick-files" && req.method === "POST") {
@@ -427,7 +474,12 @@ async function runPipeline(req, job) {
   const encoder = analysis.encoder;
   console.log(`[${jobId}] Encoder selecionado: ${encoder}`);
 
-  const tmpDir = path.join(os.tmpdir(), `flight-${jobId}`);
+  const workBase = resolveWorkDir(req.workDir);
+  if (path.resolve(workBase) !== path.resolve(os.tmpdir())) {
+    writeConfig({ lastWorkDir: workBase });
+    console.log(`[${jobId}] Disco de trabalho: ${workBase}`);
+  }
+  const tmpDir = path.join(workBase, `flight-${jobId}`);
   fs.mkdirSync(tmpDir, { recursive: true });
   const selectedFiles = Array.isArray(videoPaths) ? videoPaths.map((item) => path.resolve(String(item))) : [];
   const videoFiles = selectedFiles.filter((file) => isVideoFile(file));
@@ -445,6 +497,26 @@ async function runPipeline(req, job) {
 
   // Duração total para calcular progresso
   const totalDuration = ffprobe ? await getTotalDuration(ffprobe, videoFiles) : 0;
+
+  // ── Checagem de espaço em disco (antes de gastar 40 min para morrer em ENOSPC) ──
+  // Estratégia "direct" envia o original sem escrever no temp → não precisa de folga.
+  if (analysis.strategy !== "direct") {
+    const inputBytes = videoFiles.reduce((sum, f) => {
+      try { return sum + fs.statSync(f).size; } catch { return sum; }
+    }, 0);
+    const factor = analysis.strategy === "transcode" ? DISK_HEADROOM_TRANSCODE : DISK_HEADROOM_COPY;
+    const requiredBytes = Math.round(inputBytes * factor);
+    const freeBytes = await getFreeDiskBytes(workBase);
+    const gb = (b) => (b / 1e9).toFixed(1);
+    console.log(`[${jobId}] Disco ${workBase} (${analysis.strategy}): precisa ~${gb(requiredBytes)} GB, livre ${freeBytes == null ? "?" : gb(freeBytes)} GB (fator ${factor}).`);
+    if (freeBytes != null && freeBytes < requiredBytes) {
+      return fail(
+        `Espaco em disco insuficiente para processar este voo. ` +
+        `Necessario ~${gb(requiredBytes)} GB livres no disco de trabalho (${workBase}), disponivel ${gb(freeBytes)} GB. ` +
+        `Escolha outro disco no seletor ou libere espaco e tente novamente.`
+      );
+    }
+  }
 
   try {
     // ── Stage 1: Concat ──────────────────────────────────────────────────────
@@ -1327,9 +1399,14 @@ async function applyWatermarkAndCompress(ffmpeg, encoder, input, watermark, outp
 }
 
 function ffmpegThreadLimit() {
-  const cpuLimit = Math.max(1, Math.floor(os.cpus().length / 2));
+  // Usa quase todos os núcleos (reserva alguns p/ o sistema) — antes era metade, o que
+  // estrangulava principalmente o fallback por CPU (libx264). Continua limitado pela
+  // memória disponível. Ajustável por FFMPEG_RESERVE_CORES / FFMPEG_MAX_THREADS.
+  const reserve = Number(process.env.FFMPEG_RESERVE_CORES || 1);
+  const cpuLimit = Math.max(1, os.cpus().length - reserve);
   const memoryLimit = Math.max(1, Math.floor(MEMORY_LIMIT_BYTES / (768 * 1024 * 1024)));
-  return Math.min(cpuLimit, memoryLimit, 8);
+  const cap = Number(process.env.FFMPEG_MAX_THREADS || 16);
+  return Math.min(cpuLimit, memoryLimit, cap);
 }
 
 function queryWindowsProcessRss(pid) {
@@ -1360,11 +1437,15 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
     let stderr = "";
     let memoryExceeded = false;
     let stalled = false;
+    let reachedEnd = false;
     let lastOutTimeUs = -1;
     let lastAdvanceAt = Date.now();
     const watchTimer = setInterval(async () => {
       // Watchdog de estol: out_time parado tempo demais → encoder travou (comum no QSV/NVENC).
-      if (stallTimeoutMs > 0 && Date.now() - lastAdvanceAt > stallTimeoutMs) {
+      // Depois de "progress=end" o encode terminou e o ffmpeg está reescrevendo o arquivo
+      // para o -movflags +faststart (out_time fica parado por minutos em arquivos grandes):
+      // NÃO é estol, então não matamos — só o watchdog de memória segue ativo.
+      if (!reachedEnd && stallTimeoutMs > 0 && Date.now() - lastAdvanceAt > stallTimeoutMs) {
         stalled = true;
         p.kill("SIGTERM");
         return;
@@ -1382,6 +1463,7 @@ function runFfmpeg(ffmpeg, args, totalDuration, onProgress, { mustSucceed = fals
       const text = chunk.toString();
       stderr += text;
       for (const line of text.split("\n")) {
+        if (line.includes("progress=end")) reachedEnd = true;
         const m = line.match(/out_time_us=(\d+)/);
         if (m && totalDuration > 0) {
           const us = parseInt(m[1]);
@@ -2043,6 +2125,108 @@ async function cliDetectTelemetry(videoPath) {
   }
 }
 
+// ─── Espaço em disco ─────────────────────────────────────────────────────────
+
+// Bytes livres no volume que contém `dir`. Usa fs.statfs (Node 18.15+/Electron 25+);
+// se indisponível, tenta o Windows (PowerShell/wmic). Retorna null se não conseguir
+// medir — nesse caso o chamador NÃO bloqueia (nunca falha por não saber o espaço).
+async function getFreeDiskBytes(dir) {
+  try {
+    if (typeof fs.statfs === "function") {
+      const st = await new Promise((resolve, reject) =>
+        fs.statfs(dir, (err, stats) => (err ? reject(err) : resolve(stats))));
+      const free = Number(st.bavail) * Number(st.bsize);
+      if (Number.isFinite(free) && free > 0) return free;
+    }
+  } catch {}
+  if (process.platform === "win32") {
+    const drive = path.parse(path.resolve(dir)).root.replace(/[\\/]+$/, "");
+    try {
+      const out = execSync(
+        `powershell -NoProfile -Command "(Get-PSDrive ${drive.replace(/:$/, "")}).Free"`,
+        { windowsHide: true, timeout: 8000 },
+      ).toString().trim();
+      const free = Number(out);
+      if (Number.isFinite(free) && free > 0) return free;
+    } catch {}
+    try {
+      const out = execSync(
+        `wmic logicaldisk where "DeviceID='${drive}'" get FreeSpace /value`,
+        { windowsHide: true, timeout: 8000 },
+      ).toString();
+      const m = out.match(/FreeSpace=(\d+)/);
+      if (m) return Number(m[1]);
+    } catch {}
+  }
+  return null;
+}
+
+// ─── Config persistente + disco de trabalho ─────────────────────────────────
+
+const CONFIG_DIR = process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, "Flight Video Helper")
+  : os.tmpdir();
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+function readConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); } catch { return {}; }
+}
+function writeConfig(patch) {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ ...readConfig(), ...patch }));
+  } catch {}
+}
+
+// Lista os volumes fixos/removíveis do Windows (para o seletor de disco no app).
+// tempDrive = a letra onde fica o %TEMP% (o padrão do sistema).
+function listDisks() {
+  const tempDrive = path.parse(os.tmpdir()).root.replace(/[\\/]+$/, "");
+  let disks = [];
+  if (process.platform === "win32") {
+    try {
+      const out = execSync(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2 OR DriveType=3' | Select-Object DeviceID,VolumeName,FreeSpace,Size | ConvertTo-Json -Compress"`,
+        { windowsHide: true, timeout: 8000 },
+      ).toString().trim();
+      if (out) {
+        let data = JSON.parse(out);
+        if (!Array.isArray(data)) data = [data];
+        disks = data
+          .map((d) => ({
+            deviceId: String(d.DeviceID || "").replace(/[\\/]+$/, ""),
+            label: String(d.VolumeName || ""),
+            freeBytes: Number(d.FreeSpace) || 0,
+            totalBytes: Number(d.Size) || 0,
+          }))
+          .filter((d) => /^[A-Za-z]:$/.test(d.deviceId));
+      }
+    } catch (e) {
+      console.warn(`[disks] falha ao listar volumes: ${e.message}`);
+    }
+  }
+  return { tempDrive, disks };
+}
+
+// Resolve o diretório de trabalho pedido pelo app. String vazia → padrão do sistema
+// (%TEMP%). Se o caminho não existir/não for gravável, cai no padrão com aviso (nunca
+// deixa um voo travar por causa de um disco mal configurado).
+function resolveWorkDir(requested) {
+  const wanted = typeof requested === "string" ? requested.trim() : "";
+  if (!wanted) return os.tmpdir();
+  try {
+    const dir = path.resolve(wanted);
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, `.write-test-${Date.now()}`);
+    fs.writeFileSync(probe, "ok");
+    fs.unlinkSync(probe);
+    return dir;
+  } catch (e) {
+    console.warn(`[workdir] nao foi possivel usar "${wanted}" (${e.message}) — usando o disco padrao.`);
+    return os.tmpdir();
+  }
+}
+
 // ─── Limpeza de temp órfão ──────────────────────────────────────────────────────
 
 function dirSizeBytes(dir) {
@@ -2101,6 +2285,13 @@ if (cliTelemetryArg >= 0) {
     console.log("║     Deixe esta janela aberta.                    ║");
     console.log("╚══════════════════════════════════════════════════╝");
     const swept = sweepOrphanTempDirs();
+    // Também varre o disco de trabalho escolhido pelo usuário (jobs que morreram lá).
+    const lastWorkDir = readConfig().lastWorkDir;
+    if (lastWorkDir && path.resolve(lastWorkDir) !== path.resolve(os.tmpdir())) {
+      const extra = sweepOrphanTempDirs(lastWorkDir);
+      swept.removed += extra.removed;
+      swept.freed += extra.freed;
+    }
     if (swept.removed > 0) {
       console.log(`[startup] Limpeza de temp: ${swept.removed} pasta(s) orfa(s), ${(swept.freed / 1e9).toFixed(2)} GB liberados.`);
     }
@@ -2109,7 +2300,7 @@ if (cliTelemetryArg >= 0) {
 }
 
 // Exporta funções internas para testes (require sem subir o servidor).
-module.exports = { runFfmpeg, runEncodeWithFallback, ffmpegSignedExit, sweepOrphanTempDirs };
+module.exports = { runFfmpeg, runEncodeWithFallback, ffmpegSignedExit, sweepOrphanTempDirs, getFreeDiskBytes };
 
 if (cliTelemetryArg < 0) server.on("error", (e) => {
   if (e.code === "EADDRINUSE") {
