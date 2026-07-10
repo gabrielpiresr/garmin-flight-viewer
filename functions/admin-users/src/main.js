@@ -16366,14 +16366,71 @@ async function createCaktoProposal(input) {
   }
 }
 
-async function createFlightCreditCheckout(actorUserId, packageId, customHoursInput = null, weekdayOnlyInput = false) {
-  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
-  const role = await getActorRole(actorUserId);
-  if (role !== "aluno") {
-    throw Object.assign(new Error("A compra de pacotes esta disponivel apenas para alunos."), { status: 403 });
+function filterFlightCreditPackagesForUser(packages, profile, authUser) {
+  const sagaIdNum = Number(cleanString(profile?.saga_user_id));
+  const hasSagaId = Number.isFinite(sagaIdNum) && sagaIdNum > 0;
+  const userCreatedAt = authUser?.$createdAt || null;
+  return packages.filter((pkg) => {
+    const el = pkg.eligibility || { type: "all" };
+    if (!el.type || el.type === "all") return true;
+    if (el.type === "saga_id_range") {
+      if (!hasSagaId) return false;
+      if (el.min != null && sagaIdNum < el.min) return false;
+      if (el.max != null && sagaIdNum > el.max) return false;
+      return true;
+    }
+    if (el.type === "created_date_range") {
+      if (!userCreatedAt) return false;
+      const createdMs = new Date(userCreatedAt).getTime();
+      if (el.from && createdMs < new Date(el.from).getTime()) return false;
+      if (el.to && createdMs > new Date(el.to + "T23:59:59.999Z").getTime()) return false;
+      return true;
+    }
+    return true;
+  });
+}
+
+async function getFlightCreditPackagesForStudentUserId(studentUserId) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
+  const [profile, authUser, { settings, doc }] = await Promise.all([
+    getProfileByUserId(safeUserId).catch(() => null),
+    users.get({ userId: safeUserId }).catch(() => null),
+    loadFlightCreditSalesConfig(),
+  ]);
+  const config = publicFlightCreditSalesConfig(settings, doc?.$updatedAt || null, true);
+  if (!config.studentPurchasesEnabled) {
+    config.packages = [];
+  } else {
+    config.packages = filterFlightCreditPackagesForUser(config.packages, profile, authUser);
   }
+  return config;
+}
+
+async function listStaffCreditPurchaseStudents(search = "") {
+  const needle = normalizeSearch(String(search || ""));
+  if (needle.length < 3) return [];
+  const page = await listSummaries({ search: String(search || "").trim(), role: "aluno", limit: 25, offset: 0 });
+  return (page.users || [])
+    .map((user) => ({
+      userId: cleanString(user.userId),
+      name: cleanString(user.name),
+      email: cleanString(user.email),
+    }))
+    .filter((user) => user.userId);
+}
+
+async function createFlightCreditCheckoutForUser(
+  targetUserId,
+  packageId,
+  customHoursInput = null,
+  weekdayOnlyInput = false,
+  { requireStudentPurchasesEnabled = true } = {},
+) {
+  const safeUserId = cleanString(targetUserId);
+  if (!safeUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
   const { settings } = await loadFlightCreditSalesConfig();
-  if (!settings?.studentPurchasesEnabled) {
+  if (requireStudentPurchasesEnabled && !settings?.studentPurchasesEnabled) {
     throw Object.assign(new Error("A compra de horas pelo aluno esta desabilitada."), { status: 403 });
   }
   const weekdayOnly = weekdayOnlyInput === true;
@@ -16403,8 +16460,8 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
     throw Object.assign(new Error("Quantidade de horas invalida."), { status: 400 });
   }
 
-  const actor = await users.get({ userId: actorUserId });
-  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const actor = await users.get({ userId: safeUserId });
+  const profile = await getProfileByUserId(safeUserId).catch(() => null);
   const baseHourPrice = referencePackage.hourPrice;
   const effectiveHourPrice = weekdayOnly
     ? Math.round(baseHourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
@@ -16432,7 +16489,7 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
     proposalId,
     {
       school_id: SCHOOL_ID,
-      lead_id: actorUserId,
+      lead_id: safeUserId,
       lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
       lead_email: cleanString(actor.email),
       hours: finalHours,
@@ -16440,7 +16497,7 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
       total_value: totalValue,
       products_json: JSON.stringify({
         kind: "student_credit_package",
-        studentUserId: actorUserId,
+        studentUserId: safeUserId,
         packageId: normalized.id,
         creditId,
         snapshot,
@@ -16452,7 +16509,7 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
     },
     [
       sdk.Permission.read(sdk.Role.any()),
-      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.read(sdk.Role.user(safeUserId)),
       sdk.Permission.update(sdk.Role.label("admin")),
       sdk.Permission.delete(sdk.Role.label("admin")),
     ],
@@ -16473,6 +16530,15 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
     });
     throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
   }
+}
+
+async function createFlightCreditCheckout(actorUserId, packageId, customHoursInput = null, weekdayOnlyInput = false) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role !== "aluno") {
+    throw Object.assign(new Error("A compra de pacotes esta disponivel apenas para alunos."), { status: 403 });
+  }
+  return createFlightCreditCheckoutForUser(actorUserId, packageId, customHoursInput, weekdayOnlyInput);
 }
 
 async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null, weekdayOnlyInput = false) {
@@ -19175,6 +19241,32 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, result);
     }
 
+    if (action === "listStaffCreditPurchaseStudents") {
+      if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+      await requireInstructorOrAdmin(actorUserId);
+      const students = await listStaffCreditPurchaseStudents(payload.search);
+      return jsonResponse(res, 200, { students });
+    }
+
+    if (action === "getStaffFlightCreditPackagesForStudent") {
+      if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+      await requireInstructorOrAdmin(actorUserId);
+      const config = await getFlightCreditPackagesForStudentUserId(payload.targetUserId);
+      return jsonResponse(res, 200, { config });
+    }
+
+    if (action === "staffCreateFlightCreditCheckout") {
+      if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+      await requireInstructorOrAdmin(actorUserId);
+      const checkout = await createFlightCreditCheckoutForUser(
+        payload.targetUserId,
+        payload.packageId,
+        payload.customHours,
+        payload.weekdayOnly === true,
+      );
+      return jsonResponse(res, 200, { checkout });
+    }
+
     if (action === "getAvailableFlightCreditPackages") {
       if (!actorUserId) return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
       const [profile, authUser, { settings, doc }] = await Promise.all([
@@ -19190,27 +19282,7 @@ module.exports = async ({ req, res, log, error }) => {
       if (!config.studentPurchasesEnabled) {
         config.packages = [];
       } else {
-        const sagaIdNum = Number(cleanString(profile?.saga_user_id));
-        const hasSagaId = Number.isFinite(sagaIdNum) && sagaIdNum > 0;
-        const userCreatedAt = authUser?.$createdAt || null;
-        config.packages = config.packages.filter((pkg) => {
-          const el = pkg.eligibility || { type: "all" };
-          if (!el.type || el.type === "all") return true;
-          if (el.type === "saga_id_range") {
-            if (!hasSagaId) return false;
-            if (el.min != null && sagaIdNum < el.min) return false;
-            if (el.max != null && sagaIdNum > el.max) return false;
-            return true;
-          }
-          if (el.type === "created_date_range") {
-            if (!userCreatedAt) return false;
-            const createdMs = new Date(userCreatedAt).getTime();
-            if (el.from && createdMs < new Date(el.from).getTime()) return false;
-            if (el.to && createdMs > new Date(el.to + "T23:59:59.999Z").getTime()) return false;
-            return true;
-          }
-          return true;
-        });
+        config.packages = filterFlightCreditPackagesForUser(config.packages, profile, authUser);
       }
       return jsonResponse(res, 200, { config });
     }

@@ -39,6 +39,20 @@ const PublicProposalPage = lazy(() =>
 const OnboardingPresentationPage = lazy(() =>
   import("./pages/OnboardingPresentationPage").then((module) => ({ default: module.OnboardingPresentationPage })),
 );
+const StaffCreditPurchasePage = lazy(() =>
+  import("./pages/StaffCreditPurchasePage").then((module) => ({ default: module.StaffCreditPurchasePage })),
+);
+
+function normalizeAppPath(path: string): string {
+  const pathname = path.split(/[?#]/, 1)[0] ?? "/";
+  const withoutTrailingSlash = pathname.replace(/\/+$/, "");
+  return withoutTrailingSlash || "/";
+}
+
+function isStaffCreditPurchaseRoute(path = window.location.pathname): boolean {
+  const normalized = normalizeAppPath(path);
+  return normalized === "/admin/comprar-creditos" || normalized === "/instrutor/comprar-creditos";
+}
 
 function AppLoading() {
   return (
@@ -166,6 +180,16 @@ export default function App() {
       <PermissionsProvider>
         <Suspense fallback={<AppLoading />}>
           <OnboardingPresentationPage />
+        </Suspense>
+      </PermissionsProvider>
+    );
+  }
+
+  if (isStaffCreditPurchaseRoute() && (user.role === "admin" || user.role === "instrutor")) {
+    return (
+      <PermissionsProvider>
+        <Suspense fallback={bootFallback}>
+          <StaffCreditPurchasePage />
         </Suspense>
       </PermissionsProvider>
     );

@@ -555,7 +555,7 @@ const ADMIN_ROUTES = [
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
   { id: "dre", path: "/admin/dre" },
-  { id: "receipts", path: "/admin/recebimentos" },
+  { id: "receipts", path: "/admin/recebimentos", aliases: ["/admin/comprar-creditos"] },
   { id: "contracts", path: "/admin/contratos" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },

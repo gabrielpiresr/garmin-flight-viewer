@@ -314,7 +314,14 @@ export function CaktoReceiptsTab() {
             </div>
           ))}
         </div>
-        <div className="ml-4 shrink-0">
+        <div className="ml-4 flex shrink-0 gap-2">
+          <button
+            type="button"
+            onClick={() => window.open("/admin/comprar-creditos", "_blank", "noopener,noreferrer")}
+            className="rounded-lg border border-emerald-700/50 bg-emerald-600/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-600/20 transition"
+          >
+            Compra sem login
+          </button>
           <button
             type="button"
             onClick={() => setShowPaymentModal(true)}
