@@ -320,7 +320,7 @@ export function CaktoReceiptsTab() {
             onClick={() => window.open("/admin/comprar-creditos", "_blank", "noopener,noreferrer")}
             className="rounded-lg border border-emerald-700/50 bg-emerald-600/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-600/20 transition"
           >
-            Compra sem login
+            Tablet da escola
           </button>
           <button
             type="button"

@@ -442,6 +442,9 @@ function normalizeRegistration(value) {
  */
 function aircraftHiddenForRole(rules, registration, actorRole) {
   if (actorRole !== "aluno") return false;
+  // A lista de espera é sempre visível ao aluno (coluna virtual), mesmo que a agenda
+  // SAGA correspondente esteja marcada como oculta nas configurações.
+  if (isWaitlistIdent(rules, registration)) return false;
   const hidden = Array.isArray(rules.studentHiddenAircraftIdents) ? rules.studentHiddenAircraftIdents : [];
   if (hidden.length === 0) return false;
   return hidden.includes(normalizeRegistration(registration));
@@ -1183,7 +1186,20 @@ function penaltyFor(hoursBefore, rules) {
 }
 
 async function handleCalendar(payload, actorId, actorRole, rules, profile) {
-  if (rules.mode === "closed" && actorRole === "aluno") return { mode: rules.mode, rules, aircrafts: [], flights: [] };
+  const privileged = actorRole === "admin" || actorRole === "instrutor";
+  const forStudentUserId = privileged ? clean(payload.forStudentUserId) : "";
+  let viewActorId = actorId;
+  let viewActorRole = actorRole;
+  let viewProfile = profile;
+  if (forStudentUserId) {
+    viewProfile = await getProfile(forStudentUserId);
+    if (!viewProfile || getEffectiveRole(viewProfile) !== "aluno") fail("Aluno inválido.", 400);
+    viewActorId = forStudentUserId;
+    viewActorRole = "aluno";
+  }
+  const viewActorSagaId = sagaUserIdOf(viewProfile, viewActorId);
+
+  if (rules.mode === "closed" && viewActorRole === "aluno") return { mode: rules.mode, rules, aircrafts: [], flights: [] };
   const from = clean(payload.dateFrom);
   const to = clean(payload.dateTo);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) fail("Período inválido.");
@@ -1238,13 +1254,13 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
 
   const publicFlights = (rules.sagaOnlySchedule
     ? flights
-        .map((event) => publicSagaFlight(event, rules, actorId, actorRole, sagaUserIdOf(profile, actorId)))
+        .map((event) => publicSagaFlight(event, rules, viewActorId, viewActorRole, viewActorSagaId))
         .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
-    : flights.map((doc) => publicFlight(doc, actorId, actorRole))
-  ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, actorRole));
+    : flights.map((doc) => publicFlight(doc, viewActorId, viewActorRole))
+  ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, viewActorRole));
 
   const publicAircrafts = aircrafts.documents
-    .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, actorRole))
+    .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, viewActorRole))
     .map((doc) => ({ id: doc.$id, registration: doc.registration, modelId: doc.model_id, imageUrl: doc.image_url || null }));
 
   // Lista de espera (modo SAGA): entra como coluna/"avião virtual" para agendamento.
@@ -1253,7 +1269,6 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     const fallbackModelId =
       aircrafts.documents.find((doc) => doc.model_id && !isWaitlistIdent(rules, doc.registration))?.model_id || null;
     for (const ident of waitlistIdents(rules)) {
-      if (aircraftHiddenForRole(rules, ident, actorRole)) continue;
       if (publicAircrafts.some((row) => normalizeRegistration(row.registration) === normalizeRegistration(ident))) continue;
       publicAircrafts.push({
         id: `waitlist-${normalizeRegistration(ident)}`,

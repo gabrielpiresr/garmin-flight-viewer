@@ -89,8 +89,13 @@ async function execute(payload: Record<string, unknown>): Promise<FunctionRespon
   return response;
 }
 
-export async function getPublicSchedule(dateFrom: string, dateTo: string) {
-  const response = await execute({ action: "getCalendar", dateFrom, dateTo });
+export async function getPublicSchedule(dateFrom: string, dateTo: string, opts?: { forStudentUserId?: string }) {
+  const response = await execute({
+    action: "getCalendar",
+    dateFrom,
+    dateTo,
+    ...(opts?.forStudentUserId ? { forStudentUserId: opts.forStudentUserId } : {}),
+  });
   if (!response.rules || !response.mode) throw new Error("Configuração da escala não retornada.");
   return {
     mode: response.mode,

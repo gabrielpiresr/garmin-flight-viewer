@@ -68,13 +68,14 @@ const publicScheduleInflight = new Map<string, Promise<PublicScheduleResult>>();
 export function getPublicScheduleCached(
   dateFrom: string,
   dateTo: string,
-  opts?: CacheOptions,
+  opts?: CacheOptions & { forStudentUserId?: string },
 ): Promise<PublicScheduleResult> {
+  const studentKey = opts?.forStudentUserId ? `|student:${opts.forStudentUserId}` : "";
   return cachedCall(
     publicScheduleStore,
     publicScheduleInflight,
-    `${dateFrom}|${dateTo}`,
-    () => getPublicSchedule(dateFrom, dateTo),
+    `${dateFrom}|${dateTo}${studentKey}`,
+    () => getPublicSchedule(dateFrom, dateTo, { forStudentUserId: opts?.forStudentUserId }),
     opts,
   );
 }

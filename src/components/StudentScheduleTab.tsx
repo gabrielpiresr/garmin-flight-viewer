@@ -242,6 +242,11 @@ function useIsMobile(): boolean {
   return isMobile;
 }
 
+function defaultAgendaView(): "weekly" | "daily" | "list" {
+  if (typeof window === "undefined") return "weekly";
+  return window.matchMedia("(max-width: 639px)").matches ? "daily" : "weekly";
+}
+
 // ─── Skeleton da agenda (carregamento inicial e troca de semana) ──────────────
 
 function ScheduleSkeleton() {
@@ -606,19 +611,28 @@ const STATUS_LEGEND: Array<{ status: FlightStatus; label: string }> = [
 
 // ─── Flight List View ─────────────────────────────────────────────────────────
 
+function resolveFlightOwn(flight: PublicScheduleFlight, actingForStudentId?: string): boolean {
+  if (actingForStudentId) {
+    return Boolean(flight.studentUserId && flight.studentUserId === actingForStudentId);
+  }
+  return flight.isOwn;
+}
+
 function FlightListView({
   flights,
   onFlightClick,
+  actingForStudentId,
 }: {
   flights: PublicScheduleFlight[];
   onFlightClick: (flight: PublicScheduleFlight) => void;
+  actingForStudentId?: string;
 }) {
   const ownFlights = useMemo(
-    () => [...flights.filter((f) => f.isOwn)].sort((a, b) => {
+    () => [...flights.filter((f) => resolveFlightOwn(f, actingForStudentId))].sort((a, b) => {
       if (a.flightDate !== b.flightDate) return a.flightDate.localeCompare(b.flightDate);
       return a.startTime.localeCompare(b.startTime);
     }),
-    [flights],
+    [flights, actingForStudentId],
   );
 
   if (ownFlights.length === 0) {
@@ -1044,8 +1058,21 @@ export function CancellationModal({
 
 type WeekBundle = Awaited<ReturnType<typeof getPublicSchedule>>;
 
-export function StudentScheduleTab() {
+export type StudentScheduleTabProps = {
+  /** Agenda em nome de um aluno (modo tablet da escola). */
+  actingForStudent?: {
+    userId: string;
+    name?: string;
+    email?: string;
+  };
+  /** No modo tablet, direciona para a aba de créditos da mesma página. */
+  onStaffCreditsCta?: () => void;
+};
+
+export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: StudentScheduleTabProps = {}) {
   const { user } = useAuth();
+  const actingForStudentId = actingForStudent?.userId;
+  const scheduleStudentUserId = actingForStudentId ?? user?.id ?? "";
   const { showToast } = useToast();
   const isMobile = useIsMobile();
   const [weekStart, setWeekStart] = useState(mondayIso);
@@ -1071,7 +1098,7 @@ export function StudentScheduleTab() {
   // Checkbox obrigatório de ciência (a escola confirma entre 48h e 12h antes)
   const [bookingAck, setBookingAck] = useState(false);
   // Mobile abre direto na visão diária; desktop na semanal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">("daily");
+  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">(() => defaultAgendaView());
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
   const [onlyMyFlights, setOnlyMyFlights] = useState(false);
   const [blockedSlots, setBlockedSlots] = useState<PublicBlockedSlot[]>([]);
@@ -1117,7 +1144,8 @@ export function StudentScheduleTab() {
   const fetchWeek = useCallback((ws: string): Promise<WeekBundle> => {
     const inFlight = weekFetchRef.current.get(ws);
     if (inFlight) return inFlight;
-    const promise = getPublicScheduleCached(ws, addDays(ws, 6))
+    const scheduleOpts = actingForStudentId ? { forStudentUserId: actingForStudentId } : undefined;
+    const promise = getPublicScheduleCached(ws, addDays(ws, 6), scheduleOpts)
       .then((data) => {
         weekCacheRef.current.set(ws, data);
         return data;
@@ -1125,7 +1153,7 @@ export function StudentScheduleTab() {
       .finally(() => { weekFetchRef.current.delete(ws); });
     weekFetchRef.current.set(ws, promise);
     return promise;
-  }, []);
+  }, [actingForStudentId]);
 
   useEffect(() => {
     void getSchoolRules()
@@ -1183,7 +1211,7 @@ export function StudentScheduleTab() {
   // Load credits from creditsDb — mesmo cálculo da aba Créditos (inclusive o
   // modo simplificado via nightHoursDifferentFromDay da config de pacotes).
   useEffect(() => {
-    if (!bookingOpen || !user?.id || !user.role || creditsLoadedRef.current || creditsFetchingRef.current) return;
+    if (!bookingOpen || !user?.id || !user.role || !scheduleStudentUserId || creditsLoadedRef.current || creditsFetchingRef.current) return;
     creditsFetchingRef.current = true;
     setCreditsLoading(true);
     void (async () => {
@@ -1191,7 +1219,7 @@ export function StudentScheduleTab() {
         const config = await getAvailableFlightCreditPackages().catch(() => null);
         const stmt = await getStudentCreditStatement({
           viewer: { userId: user.id, role: user.role },
-          studentUserId: user.id,
+          studentUserId: scheduleStudentUserId,
           nightHoursDifferentFromDay: config?.nightHoursDifferentFromDay !== false,
         });
         setCreditSummaries(stmt.summaries);
@@ -1212,7 +1240,7 @@ export function StudentScheduleTab() {
         setCreditsLoading(false);
       }
     })();
-  }, [bookingOpen, user?.id, user?.role, reloadKey]);
+  }, [bookingOpen, user?.id, user?.role, scheduleStudentUserId, reloadKey]);
 
   useEffect(() => { setFlexibilityMinutes(rules.slotMinutes); }, [rules.slotMinutes]);
 
@@ -1227,7 +1255,7 @@ export function StudentScheduleTab() {
     const now = new Date();
     const from = toLocalIso(now);
     const to = toLocalIso(new Date(now.getFullYear(), now.getMonth() + 3, 0, 12));
-    void getPublicSchedule(from, to)
+    void getPublicSchedule(from, to, actingForStudentId ? { forStudentUserId: actingForStudentId } : undefined)
       .then((data) => {
         futureLoadedRef.current = true;
         setFutureFlights(data.flights);
@@ -1240,17 +1268,17 @@ export function StudentScheduleTab() {
         futureFetchingRef.current = false;
         setFutureLoading(false);
       });
-  }, [bookingOpen, reloadKey]);
+  }, [bookingOpen, reloadKey, actingForStudentId]);
 
   // Voos futuros do próprio aluno — usados para "Horas futuras agendadas".
   const futureOwnFlights = useMemo(() => {
     const nowMs = Date.now();
     return futureFlights.filter((flight) => {
-      if (!flight.isOwn || flight.status === "Cancelado") return false;
+      if (!resolveFlightOwn(flight, actingForStudentId) || flight.status === "Cancelado") return false;
       const startMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
       return Number.isFinite(startMs) && startMs > nowMs;
     });
-  }, [futureFlights]);
+  }, [futureFlights, actingForStudentId]);
 
   // Saldo global (LIFO entre modelos): pools − horas futuras de todos os modelos.
   const selectedModelBalance = useMemo(() => {
@@ -1354,6 +1382,7 @@ export function StudentScheduleTab() {
     creditTotals,
     durationMinutes,
   ]);
+  const bookingCreditPending = rules.requireCreditsForBooking && (creditsLoading || futureLoading);
 
   // Tempo de voo: além dos limites min/max do dia, um acionamento diurno não pode
   // invadir o período noturno — ex.: noturno às 17:30 e acionamento 16:30 → máx. 1h (item 8).
@@ -1478,11 +1507,13 @@ export function StudentScheduleTab() {
   const calendarItems = useMemo<CalendarFlightItem[]>(() => {
     const flightItems = flights
       .filter((flight) => {
-        if (flight.status === "Cancelado" && !flight.isOwn) return false;
-        if (onlyMyFlights && !flight.isOwn) return false;
+        const own = resolveFlightOwn(flight, actingForStudentId);
+        if (flight.status === "Cancelado" && !own) return false;
+        if (onlyMyFlights && !own) return false;
         return true;
       })
       .map((flight) => {
+        const own = resolveFlightOwn(flight, actingForStudentId);
         const occupiedStart = flight.presentationTime || flight.startTime;
         const occupiedEnd = flight.endTime || flight.cutoffTime || flight.startTime;
         const occupiedMinutes = Math.max(rules.slotMinutes, timeToMinutes(occupiedEnd) - timeToMinutes(occupiedStart));
@@ -1490,7 +1521,7 @@ export function StudentScheduleTab() {
         return {
           id: flight.id,
           studentId: flight.studentUserId || flight.id,
-          studentLabel: flight.isOwn ? (flight.status === "Pendente" ? "Solicitado" : flight.status) : "Ocupado",
+          studentLabel: own ? (flight.status === "Pendente" ? "Solicitado" : flight.status) : "Ocupado",
           instructorId: null,
           instructorLabel: null,
           totalWeightLabel: "",
@@ -1501,7 +1532,7 @@ export function StudentScheduleTab() {
           flightStatus: normalizeScheduleFlightStatus(flight.status),
           startTime: occupiedStart,
           endTime: occupiedEnd,
-          isOwn: flight.isOwn,
+          isOwn: own,
         } satisfies CalendarFlightItem;
       });
 
@@ -1530,7 +1561,7 @@ export function StudentScheduleTab() {
     });
 
     return [...flightItems, ...blockedItems];
-  }, [flights, rules.slotMinutes, onlyMyFlights, blockedSlots]);
+  }, [flights, rules.slotMinutes, onlyMyFlights, blockedSlots, actingForStudentId]);
 
   const selectedDayIndex = Math.max(0, DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]));
   const visibleDays = agendaView === "weekly"
@@ -1633,6 +1664,7 @@ export function StudentScheduleTab() {
       durationMinutes,
       flexibilityMinutes,
       notes: bookingNotes.trim() || undefined,
+      ...(actingForStudentId ? { studentUserId: actingForStudentId } : {}),
     });
     setBookingOpen(false);
     setZeroCreditConfirmOpen(false);
@@ -1716,7 +1748,13 @@ export function StudentScheduleTab() {
     }
     setSaving(true);
     try {
-      const availability = await checkScheduleAvailability({ aircraftIdent, flightDate, startTime, durationMinutes });
+      const availability = await checkScheduleAvailability({
+        aircraftIdent,
+        flightDate,
+        startTime,
+        durationMinutes,
+        ...(actingForStudentId ? { studentUserId: actingForStudentId } : {}),
+      });
       if (rules.requireCreditsForBooking && !availability.creditSufficient) {
         const freeHours =
           availability.creditFreeHours ??
@@ -1762,6 +1800,16 @@ export function StudentScheduleTab() {
     );
   }
   if (mode === "intentions") {
+    if (actingForStudent) {
+      const studentLabel = actingForStudent.name || actingForStudent.email || "o aluno";
+      return (
+        <ScheduleStudentChrome rules={rules} helpConfig={helpConfig} mode={mode}>
+          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-8 text-center text-sm text-slate-400">
+            A escola está no modo de intenções semanais. Peça que {studentLabel} acesse a conta dele para preencher as intenções, ou aguarde a abertura da escala para agendamento.
+          </div>
+        </ScheduleStudentChrome>
+      );
+    }
     return (
       <ScheduleStudentChrome rules={rules} helpConfig={helpConfig} mode={mode}>
         <AgendamentoTab />
@@ -1852,14 +1900,22 @@ export function StudentScheduleTab() {
         </div>
       )}
 
-      {weekLoading ? (
-        <ScheduleSkeleton />
-      ) : (
-        <div className="overflow-hidden">
-        <div ref={studentBoardSlideRef}>
+      <div className="relative overflow-hidden">
+        {weekLoading ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-3">
+            <span className="rounded-full border border-sky-500/30 bg-slate-950/90 px-3 py-1 text-xs font-semibold text-sky-300 shadow-lg shadow-slate-950/40">
+              Atualizando escala...
+            </span>
+          </div>
+        ) : null}
+        <div ref={studentBoardSlideRef} className={weekLoading ? "opacity-60 transition-opacity" : "transition-opacity"}>
           {/* List view */}
           {agendaView === "list" && (
-            <FlightListView flights={flights} onFlightClick={setDetailFlight} />
+            <FlightListView
+              flights={flights}
+              onFlightClick={setDetailFlight}
+              actingForStudentId={actingForStudentId}
+            />
           )}
 
           {/* Weekly view */}
@@ -1912,8 +1968,7 @@ export function StudentScheduleTab() {
             </div>
           )}
         </div>
-        </div>
-      )}
+      </div>
 
       {/* Flight detail modal */}
       {detailFlight && !cancelFlight && (
@@ -2080,49 +2135,90 @@ export function StudentScheduleTab() {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
           <div className="flex max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-2xl sm:border sm:border-slate-700">
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
-            <div>
-              <h3 className="font-semibold text-slate-100">Solicitar voo</h3>
-              <p className="text-xs text-slate-500">
-                Etapa {bookingStep} de 2 · {bookingStep === 1 ? "Escolha aeronave, dia e horário." : "Revise e confirme a solicitação."}
-              </p>
+            <div className="space-y-3">
+              <div>
+                <h3 className="font-semibold text-slate-100">Solicitar voo</h3>
+                <p className="text-xs text-slate-500">
+                  {bookingStep === 1 ? "Escolha aeronave, dia e horário." : "Revise os detalhes e confirme a solicitação."}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { step: 1, label: "Voo" },
+                  { step: 2, label: "Confirmação" },
+                ] as const).map(({ step, label }) => {
+                  const active = bookingStep === step;
+                  const done = bookingStep > step;
+                  return (
+                    <div
+                      key={step}
+                      className={`rounded-lg border px-3 py-2 text-xs ${
+                        active
+                          ? "border-sky-500/50 bg-sky-500/10 text-sky-200"
+                          : done
+                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                            : "border-slate-700 bg-slate-800/50 text-slate-500"
+                      }`}
+                    >
+                      <span className="font-semibold">Etapa {step}</span>
+                      <span className="ml-1">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {bookingStep === 1 && (<>
             {/* Credits by model (real data from creditsDb) */}
             {bookingStep === 1 && rules.requireCreditsForBooking ? (
               <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-3">
-                <p className="mb-2 text-xs font-semibold text-slate-300">Seus créditos disponíveis</p>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold text-slate-300">Créditos para este voo</p>
+                  {bookingCreditPending ? (
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-300">
+                      verificando
+                    </span>
+                  ) : null}
+                </div>
                 {creditsLoading ? (
-                  <p className="text-xs text-slate-500 animate-pulse">Carregando créditos…</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="h-14 animate-pulse rounded-lg bg-slate-700/60" />
+                    <div className="h-14 animate-pulse rounded-lg bg-slate-700/60" />
+                  </div>
                 ) : (
                   <>
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Crédito Geral</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Crédito geral</p>
                         <strong
                           className={
                             (selectedModelBalance?.anyDayAvailableHours ?? 0) > 0.001
-                              ? "text-emerald-300"
-                              : "text-slate-300"
+                              ? "text-base text-emerald-300"
+                              : "text-base text-slate-300"
                           }
                         >
                           {formatDecimalHours(selectedModelBalance?.anyDayAvailableHours ?? 0)}
                         </strong>
                       </div>
                       {showWeekdayCredits ? (
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-400">Crédito dia de semana</span>
+                        <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-2">
+                          <p className="text-[10px] uppercase tracking-wider text-slate-500">Seg-sex</p>
                           <strong
                             className={
                               (selectedModelBalance?.weekdayOnlyAvailableHours ?? 0) > 0.001
-                                ? "text-sky-300"
-                                : "text-slate-300"
+                                ? "text-base text-sky-300"
+                                : "text-base text-slate-300"
                             }
                           >
                             {formatDecimalHours(selectedModelBalance?.weekdayOnlyAvailableHours ?? 0)}
                           </strong>
                         </div>
-                      ) : null}
+                      ) : (
+                        <div className="rounded-lg border border-slate-700/70 bg-slate-950/30 p-2">
+                          <p className="text-[10px] uppercase tracking-wider text-slate-500">Este voo</p>
+                          <strong className="text-base text-slate-200">{formatDecimalHours(durationMinutes / 60)}</strong>
+                        </div>
+                      )}
                     </div>
                     <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
                       <div className="flex items-center justify-between text-xs">
@@ -2171,11 +2267,19 @@ export function StudentScheduleTab() {
                 </div>
                 {bookingCreditCheck.showCreditsCta && (
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-red-800/40 pt-2">
-                    <span className="text-red-200/90">Para adicionar mais créditos acesse a aba Créditos.</span>
+                    <span className="text-red-200/90">
+                      {actingForStudent
+                        ? "Para adicionar mais créditos, use a aba Créditos nesta página."
+                        : "Para adicionar mais créditos acesse a aba Créditos."}
+                    </span>
                     <button
                       type="button"
                       onClick={() => {
                         setBookingOpen(false);
+                        if (actingForStudent && onStaffCreditsCta) {
+                          onStaffCreditsCta();
+                          return;
+                        }
                         navigateToTab("/aluno/creditos");
                       }}
                       className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
@@ -2402,7 +2506,7 @@ export function StudentScheduleTab() {
                         startTimeInvalid ||
                         waitlistBlocked ||
                         durationOptions.length === 0 ||
-                        bookingCreditCheck.blocked
+                        (bookingCreditCheck.blocked && !bookingCreditPending)
                       }
                       onClick={() => setBookingStep(2)}
                       className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
