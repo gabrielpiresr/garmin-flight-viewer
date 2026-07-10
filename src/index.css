@@ -390,3 +390,21 @@ body {
 .video-skip-shimmer {
   animation: video-skip-shimmer 320ms ease-out forwards;
 }
+
+/* Tablet da escola: só os textos auxiliares menores ficam um pouco maiores. */
+@layer components {
+  .staff-tablet-page .text-xs {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+
+  .staff-tablet-page .text-\[10px\] {
+    font-size: 0.75rem;
+    line-height: 1rem;
+  }
+
+  .staff-tablet-page .text-\[11px\] {
+    font-size: 0.8125rem;
+    line-height: 1.125rem;
+  }
+}

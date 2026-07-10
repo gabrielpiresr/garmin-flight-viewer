@@ -18,6 +18,7 @@ import type { StudentCreditModelSummary, StudentCreditStatement } from "../types
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, DEFAULT_SCHOOL_RULES, type FlightScheduleRules } from "../types/schoolRules";
 import type { ScheduleStudentHelpConfig } from "../types/scheduleStudentHelp";
 import { getSchoolRules } from "../lib/schoolRulesDb";
+import { filterScheduleBundleForStudentView } from "../lib/scheduleStudentVisibility";
 import { normalizeScheduleFlightStatus, type FlightStatus } from "../lib/flightsDb";
 import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
@@ -1098,7 +1099,9 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   // Checkbox obrigatório de ciência (a escola confirma entre 48h e 12h antes)
   const [bookingAck, setBookingAck] = useState(false);
   // Mobile abre direto na visão diária; desktop na semanal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">(() => defaultAgendaView());
+  const [agendaView, setAgendaView] = useState<"weekly" | "daily" | "list">(() =>
+    actingForStudent ? "daily" : defaultAgendaView(),
+  );
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
   const [onlyMyFlights, setOnlyMyFlights] = useState(false);
   const [blockedSlots, setBlockedSlots] = useState<PublicBlockedSlot[]>([]);
@@ -1141,19 +1144,31 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   // confirmação/cancelamento; para lista de espera, a janela é de 24h a 48h antes.
   const [bookingSuccess, setBookingSuccess] = useState<{ waitlist: boolean } | null>(null);
 
+  const weekCacheKey = useCallback(
+    (weekStartIso: string) => (actingForStudentId ? `${weekStartIso}|student:${actingForStudentId}` : weekStartIso),
+    [actingForStudentId],
+  );
+
+  const normalizeWeekBundle = useCallback(
+    (data: WeekBundle): WeekBundle => (actingForStudentId ? filterScheduleBundleForStudentView(data) : data),
+    [actingForStudentId],
+  );
+
   const fetchWeek = useCallback((ws: string): Promise<WeekBundle> => {
-    const inFlight = weekFetchRef.current.get(ws);
+    const cacheKey = weekCacheKey(ws);
+    const inFlight = weekFetchRef.current.get(cacheKey);
     if (inFlight) return inFlight;
     const scheduleOpts = actingForStudentId ? { forStudentUserId: actingForStudentId } : undefined;
     const promise = getPublicScheduleCached(ws, addDays(ws, 6), scheduleOpts)
       .then((data) => {
-        weekCacheRef.current.set(ws, data);
-        return data;
+        const view = normalizeWeekBundle(data);
+        weekCacheRef.current.set(cacheKey, view);
+        return view;
       })
-      .finally(() => { weekFetchRef.current.delete(ws); });
-    weekFetchRef.current.set(ws, promise);
+      .finally(() => { weekFetchRef.current.delete(cacheKey); });
+    weekFetchRef.current.set(cacheKey, promise);
     return promise;
-  }, [actingForStudentId]);
+  }, [actingForStudentId, normalizeWeekBundle, weekCacheKey]);
 
   useEffect(() => {
     void getSchoolRules()
@@ -1170,18 +1185,21 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       setAircrafts(data.aircrafts);
       setFlights(data.flights);
       setBlockedSlots(data.blockedSlots);
-      setAircraftIdent((current) => current || data.aircrafts[0]?.registration || "");
+      setAircraftIdent((current) => {
+        if (current && data.aircrafts.some((aircraft) => aircraft.registration === current)) return current;
+        return data.aircrafts[0]?.registration || "";
+      });
       setFlightDate((current) => current || weekStart);
       setInitialLoaded(true);
       setWeekLoading(false);
       const nextWeekStart = addDays(weekStart, 7);
-      if (!weekCacheRef.current.has(nextWeekStart)) {
+      if (!weekCacheRef.current.has(weekCacheKey(nextWeekStart))) {
         window.setTimeout(() => {
           if (!cancelled) void fetchWeek(nextWeekStart).catch(() => {});
         }, 0);
       }
     };
-    const cached = weekCacheRef.current.get(weekStart);
+    const cached = weekCacheRef.current.get(weekCacheKey(weekStart));
     if (cached) {
       apply(cached);
     } else {
@@ -1197,7 +1215,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     }
     // Prefetch da próxima semana em segundo plano (não recarrega o que já está no cache).
     return () => { cancelled = true; };
-  }, [weekStart, reloadKey, fetchWeek, showToast]);
+  }, [weekStart, reloadKey, fetchWeek, showToast, weekCacheKey]);
 
   // Após qualquer mutação (solicitar/alterar/cancelar) o cache é descartado e tudo recarrega.
   const invalidateAndReload = useCallback(() => {
@@ -1258,7 +1276,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     void getPublicSchedule(from, to, actingForStudentId ? { forStudentUserId: actingForStudentId } : undefined)
       .then((data) => {
         futureLoadedRef.current = true;
-        setFutureFlights(data.flights);
+        const view = actingForStudentId ? filterScheduleBundleForStudentView(data) : data;
+        setFutureFlights(view.flights);
       })
       .catch(() => {
         // Falhou: mantém o que tiver e deixa tentar de novo na próxima abertura.

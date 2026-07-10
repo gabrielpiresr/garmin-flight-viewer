@@ -67,13 +67,13 @@ export function StaffStudentSelector({ selectedStudent, onSelectStudent, onClear
                 {selectedStudent.name || selectedStudent.email}
               </p>
               {selectedStudent.name && selectedStudent.email ? (
-                <p className="text-xs text-slate-500">{selectedStudent.email}</p>
+                <p className="text-sm text-slate-500">{selectedStudent.email}</p>
               ) : null}
             </div>
             <button
               type="button"
               onClick={handleClear}
-              className="text-xs text-slate-500 transition hover:text-slate-300"
+              className="text-sm text-slate-500 transition hover:text-slate-300"
             >
               Trocar
             </button>
@@ -87,12 +87,12 @@ export function StaffStudentSelector({ selectedStudent, onSelectStudent, onClear
               className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
             />
             {search.trim().length > 0 && search.trim().length < MIN_SEARCH_LENGTH ? (
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-sm text-slate-500">
                 Digite pelo menos {MIN_SEARCH_LENGTH} caracteres para buscar.
               </p>
             ) : null}
             {searchError ? <p className="mt-2 text-sm text-red-300">{searchError}</p> : null}
-            {searchLoading ? <p className="mt-2 text-xs text-slate-500">Buscando…</p> : null}
+            {searchLoading ? <p className="mt-2 text-sm text-slate-500">Buscando…</p> : null}
             {!searchLoading && search.trim().length >= MIN_SEARCH_LENGTH && searchResults.length > 0 ? (
               <ul className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900">
                 {searchResults.map((student) => (
@@ -115,7 +115,7 @@ export function StaffStudentSelector({ selectedStudent, onSelectStudent, onClear
             search.trim().length >= MIN_SEARCH_LENGTH &&
             searchResults.length === 0 &&
             !searchError ? (
-              <p className="mt-2 text-xs text-slate-500">Nenhum aluno encontrado.</p>
+              <p className="mt-2 text-sm text-slate-500">Nenhum aluno encontrado.</p>
             ) : null}
           </>
         )}
