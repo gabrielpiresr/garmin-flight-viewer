@@ -31,7 +31,6 @@ import {
 import { shortName } from "../../lib/flightDisplay";
 import { ScheduleStudentSummaryPanel } from "./ScheduleStudentSummaryPanel";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
-import { freeBalanceForDateFromPools, isWeekendDate } from "../../lib/creditWeekday";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
@@ -43,7 +42,7 @@ import {
   peekSagaScheduleEvents,
 } from "../../lib/scheduleCache";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
-import type { StudentCreditModelSummary, StudentCreditStatement } from "../../types/credits";
+import type { StudentCreditStatement } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
   buildScheduleHourOptions,
@@ -458,6 +457,24 @@ function hoursToHHMM(hours: number): string {
   const mm = Math.round((hours - hh) * 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
+
+function formatCreditHours(hours: number): string {
+  const sign = hours < 0 ? "-" : "";
+  const abs = Math.abs(hours);
+  const hh = Math.floor(abs);
+  const mm = Math.round((abs - hh) * 60);
+  return `${sign}${hh}h${String(mm).padStart(2, "0")}`;
+}
+
+function scheduledFlightMs(flightDate: string, startTime: string): number {
+  return new Date(`${flightDate}T${startTime}:00`).getTime();
+}
+
+type FormStudentScheduledFlight = {
+  flightDate: string;
+  startTime: string;
+  hours: number;
+};
 
 function parseStartHour(startTime: string): number {
   const [hh, mm] = startTime.split(":").map(Number);
@@ -2187,10 +2204,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   const clubMembershipCacheRef = useRef<Map<string, boolean>>(new Map());
   const [scheduleRules, setScheduleRules] = useState<FlightScheduleRules>(DEFAULT_FLIGHT_SCHEDULE_RULES);
   const [sagaSyncLogs, setSagaSyncLogs] = useState<SagaScheduleSyncLogItem[]>([]);
-  const [formStudentCredits, setFormStudentCredits] = useState<StudentCreditModelSummary[] | null>(null);
   const [formStudentCreditTotals, setFormStudentCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [formStudentCreditsLoading, setFormStudentCreditsLoading] = useState(false);
-  const [formStudentFutureMinutesByModel, setFormStudentFutureMinutesByModel] = useState<Record<string, number> | null>(null);
+  const [formStudentSagaScheduledFlights, setFormStudentSagaScheduledFlights] = useState<FormStudentScheduledFlight[] | null>(null);
   const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean } | null>(null);
   // Horas totais atuais por aeronave (mesmo cálculo da Frota) — base da projeção na agenda
   const [aircraftBaseHours, setAircraftBaseHours] = useState<Map<string, AircraftBaseHours> | null>(null);
@@ -2888,16 +2904,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   useEffect(() => {
     const studentId = formDraft?.studentId;
     if (!formDraft || !studentId || !user?.id || !user?.role) {
-      setFormStudentCredits(null);
       setFormStudentCreditTotals(null);
       setFormStudentCreditsLoading(false);
-      setFormStudentFutureMinutesByModel(null);
+      setFormStudentSagaScheduledFlights(null);
       return;
     }
     let cancelled = false;
-    setFormStudentCredits(null);
     setFormStudentCreditTotals(null);
-    setFormStudentFutureMinutesByModel(null);
+    setFormStudentSagaScheduledFlights(scheduleRules.sagaOnlySchedule ? null : []);
     setFormStudentCreditsLoading(true);
     void (async () => {
       try {
@@ -2912,51 +2926,125 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
           nightHoursDifferentFromDay: salesConfigFlagRef.current.nightDifferent,
         });
         if (cancelled) return;
-        setFormStudentCredits(stmt.summaries);
         setFormStudentCreditTotals(stmt.totals);
       } catch {
-        if (!cancelled) {
-          setFormStudentCredits([]);
-          setFormStudentCreditTotals(null);
-        }
+        if (!cancelled) setFormStudentCreditTotals(null);
       } finally {
         if (!cancelled) setFormStudentCreditsLoading(false);
       }
 
-      // Horas de voo futuras já agendadas (modo SAGA): bloco − buffers, por modelo.
+      // Voos futuros já agendados (modo SAGA): bloco − buffers, para projeção de saldo.
       if (!scheduleRules.sagaOnlySchedule) return;
       try {
         const events = await getSagaScheduleEventsCached(3);
         if (cancelled) return;
-        const modelByReg = new Map(activeAircrafts.map((aircraft) => [aircraft.registration.toUpperCase(), aircraft.model_id]));
         const now = Date.now();
-        const minutesByModel: Record<string, number> = {};
+        const scheduled: FormStudentScheduledFlight[] = [];
         for (const event of events) {
           if (sagaEventIsCancelled(event)) continue;
           if ((event.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${event.studentSagaId}`) !== studentId) continue;
-          if (formDraft.sagaScheduleId && event.id === formDraft.sagaScheduleId) continue; // não conta o próprio voo em edição
+          if (formDraft.sagaScheduleId && event.id === formDraft.sagaScheduleId) continue;
           const start = sagaDirectDateTimeParts(event.startAtRaw || event.startAt);
           const end = sagaDirectDateTimeParts(event.endAtRaw || event.endAt);
           if (!start.date || !start.time) continue;
-          const startMs = new Date(`${start.date}T${start.time}:00`).getTime();
+          const startMs = scheduledFlightMs(start.date, start.time);
           if (!Number.isFinite(startMs) || startMs <= now) continue;
           const startMin = parseScheduleTimeToMinutes(start.time);
           let endMin = end.time ? parseScheduleTimeToMinutes(end.time) : startMin + 60;
           if (end.date && end.date > start.date) endMin += 1440;
           const netMinutes = sagaEffectiveFlightMinutes(endMin - startMin, scheduleRules);
-          const modelId = modelByReg.get((event.aircraft || "").toUpperCase());
-          if (!modelId) continue;
-          minutesByModel[modelId] = (minutesByModel[modelId] ?? 0) + netMinutes;
+          scheduled.push({
+            flightDate: start.date,
+            startTime: start.time,
+            hours: netMinutes / 60,
+          });
         }
-        setFormStudentFutureMinutesByModel(minutesByModel);
+        scheduled.sort((a, b) => scheduledFlightMs(a.flightDate, a.startTime) - scheduledFlightMs(b.flightDate, b.startTime));
+        setFormStudentSagaScheduledFlights(scheduled);
       } catch {
-        if (!cancelled) setFormStudentFutureMinutesByModel(null);
+        if (!cancelled) setFormStudentSagaScheduledFlights(null);
       }
     })();
     return () => { cancelled = true; };
   // formDraft?.demandId changes each time the modal opens (new demandId per session)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formDraft?.demandId, formDraft?.studentId, user?.id, user?.role]);
+  }, [formDraft?.demandId, formDraft?.studentId, user?.id, user?.role, scheduleRules.sagaOnlySchedule]);
+
+  const formStudentScheduledFlights = useMemo((): FormStudentScheduledFlight[] | null => {
+    const studentId = formDraft?.studentId;
+    if (!studentId) return null;
+    if (scheduleRules.sagaOnlySchedule) return formStudentSagaScheduledFlights;
+
+    const now = Date.now();
+    const excludeLocalId = formDraft?.id;
+    const scheduled: FormStudentScheduledFlight[] = [];
+    for (const row of flights) {
+      if (row.studentId !== studentId) continue;
+      if (row.flightStatus === "Cancelado") continue;
+      if (excludeLocalId && row.id === excludeLocalId) continue;
+      const startMs = scheduledFlightMs(row.date, row.startTime);
+      if (!Number.isFinite(startMs) || startMs <= now) continue;
+      scheduled.push({
+        flightDate: row.date,
+        startTime: row.startTime,
+        hours: netFlightHours(row),
+      });
+    }
+    scheduled.sort((a, b) => scheduledFlightMs(a.flightDate, a.startTime) - scheduledFlightMs(b.flightDate, b.startTime));
+    return scheduled;
+  }, [
+    formDraft?.studentId,
+    formDraft?.id,
+    flights,
+    scheduleRules.sagaOnlySchedule,
+    formStudentSagaScheduledFlights,
+    netFlightHours,
+  ]);
+
+  const formStudentCreditDisplay = useMemo(() => {
+    if (!formDraft || !formStudentCreditTotals) return null;
+
+    const totals = formStudentCreditTotals;
+    const studentBalance = totals.balanceHours ?? Number(
+      (totals.purchasedHours - totals.consumedHours - (totals.penaltyHours ?? 0)).toFixed(2),
+    );
+    const purchasedHours = totals.purchasedHours;
+    const usedHours = totals.consumedHours + (totals.penaltyHours ?? 0);
+
+    const flightDate = formDraft.dateIso || (weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "");
+    const durationMinutes = Math.round(formDraft.durationHours * 60);
+    const thisFlightHours = scheduleRules.sagaOnlySchedule
+      ? sagaEffectiveFlightMinutes(durationMinutes, scheduleRules) / 60
+      : formDraft.durationHours;
+    const currentFlightActive = formDraft.flightStatus !== "Cancelado";
+    const currentFlightMs = flightDate && formDraft.startTime
+      ? scheduledFlightMs(flightDate, formDraft.startTime)
+      : NaN;
+
+    const scheduled = formStudentScheduledFlights ?? [];
+    const scheduledBeforeHours = Number(
+      scheduled
+        .filter((flight) => Number.isFinite(currentFlightMs) && scheduledFlightMs(flight.flightDate, flight.startTime) < currentFlightMs)
+        .reduce((sum, flight) => sum + flight.hours, 0)
+        .toFixed(2),
+    );
+    const otherScheduledHours = Number(scheduled.reduce((sum, flight) => sum + flight.hours, 0).toFixed(2));
+    const activeThisFlightHours = currentFlightActive ? thisFlightHours : 0;
+    const allScheduledHours = Number((otherScheduledHours + activeThisFlightHours).toFixed(2));
+    const balanceAfterThisFlight = Number((studentBalance - activeThisFlightHours - scheduledBeforeHours).toFixed(2));
+    const balanceAfterAllScheduled = Number((studentBalance - allScheduledHours).toFixed(2));
+
+    return {
+      studentBalance,
+      balanceAfterThisFlight,
+      purchasedHours,
+      usedHours,
+      thisFlightHours: activeThisFlightHours,
+      scheduledBeforeHours,
+      allScheduledHours,
+      balanceAfterAllScheduled,
+    };
+  }, [formDraft, formStudentCreditTotals, formStudentScheduledFlights, weekData, scheduleRules]);
 
   const calendarItems = useMemo<CalendarFlightItem[]>(
     () =>
@@ -3588,82 +3676,74 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     }
   }
 
-  // Bloco de créditos do aluno (já exibido no modal hoje) — agora renderizado dentro
-  // da coluna/subaba de resumo do aluno. Depende de estados carregados em background.
+  // Bloco de créditos do aluno — destaque no saldo atual e projeção após este voo.
   function renderStudentCreditsBlock() {
     if (!formDraft) return null;
+
+    const scheduledLoading = scheduleRules.sagaOnlySchedule && formStudentScheduledFlights === null;
+    const creditColor = (hours: number) => (
+      hours > 0.001 ? "text-emerald-300" : hours < -0.001 ? "text-red-300" : "text-slate-300"
+    );
+    const display = formStudentCreditDisplay;
+
     return (
       <div className="rounded-xl border border-slate-700/60 bg-slate-800/40 p-3">
-        <p className="mb-2 text-xs font-semibold text-slate-300">Créditos disponíveis do aluno</p>
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Créditos do aluno</p>
         {formStudentCreditsLoading ? (
-          <p className="text-xs text-slate-500">Carregando créditos...</p>
-        ) : formStudentCredits && formStudentCredits.length > 0 ? (
-          <div className="space-y-1">
-            {formStudentCredits.map((row) => (
-              <div key={row.aircraftModelId} className="flex items-center justify-between text-xs">
-                <span className="text-slate-300">
-                  {row.aircraftModelName}
-                  {(row.weekdayOnlyAvailableHours ?? 0) > 0.001 ? (
-                    <span className="ml-1 text-sky-400">· dos quais só seg–sex: {(row.weekdayOnlyAvailableHours ?? 0).toFixed(1)}h</span>
-                  ) : null}
-                </span>
-                <span className="text-slate-400">
-                  {/* Saldo cru (pode ser negativo) — mesma conta da aba Créditos. */}
-                  Disponível: <strong className={row.balanceHours > 0 ? "text-emerald-300" : "text-red-300"}>
-                    {row.balanceHours < 0 ? "-" : ""}{Math.floor(Math.abs(row.balanceHours))}h{String(Math.round((Math.abs(row.balanceHours) % 1) * 60)).padStart(2, "0")}
-                  </strong>
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
+          <p className="animate-pulse text-xs text-slate-500">Carregando créditos…</p>
+        ) : !display ? (
           <p className="text-xs text-slate-500">Nenhum crédito encontrado para este aluno.</p>
-        )}
-        {(() => {
-          if (!formDraft || formStudentFutureMinutesByModel === null) return null;
-          const modelId = activeAircrafts.find((aircraft) => aircraft.registration === formDraft.aircraftRegistration)?.model_id ?? null;
-          if (!modelId) return null;
-          const modelSummary = formStudentCredits?.find((row) => row.aircraftModelId === modelId);
-          const flightDate = formDraft.dateIso || (weekData ? weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek) : "");
-          const futureHours = Object.values(formStudentFutureMinutesByModel ?? {}).reduce(
-            (acc, minutes) => acc + minutes / 60,
-            0,
-          );
-          const globalBalanceHours = formStudentCreditTotals?.balanceHours
-            ?? (formStudentCreditTotals
-              ? Number(
-                  (
-                    formStudentCreditTotals.purchasedHours
-                    - formStudentCreditTotals.consumedHours
-                    - (formStudentCreditTotals.penaltyHours ?? 0)
-                  ).toFixed(2),
-                )
-              : modelSummary?.balanceHours ?? 0);
-          const applicableHours = formStudentCreditTotals && flightDate
-            ? freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours
-            : globalBalanceHours;
-          const freeHours = applicableHours - futureHours;
-          const fmt = (hours: number) => `${hours < 0 ? "-" : ""}${Math.floor(Math.abs(hours))}h${String(Math.round((Math.abs(hours) % 1) * 60)).padStart(2, "0")}`;
-          return (
-            <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Horas futuras agendadas</span>
-                <strong className="text-sky-300">{fmt(futureHours)}</strong>
+        ) : (
+          <>
+            <div className="space-y-2.5 rounded-lg border border-slate-600/50 bg-slate-900/50 p-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-sm font-medium text-slate-100">Saldo atual</span>
+                <strong className={`text-base font-semibold tabular-nums ${creditColor(display.studentBalance)}`}>
+                  {formatCreditHours(display.studentBalance)}
+                </strong>
               </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">
-                  Saldo aplicável ao dia{flightDate && isWeekendDate(flightDate) ? " (fds)" : ""}
-                </span>
-                <strong className={freeHours > 0 ? "text-emerald-300" : "text-red-300"}>{fmt(freeHours)}</strong>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-sm font-medium text-slate-100">Saldo após este voo</span>
+                <strong className={`text-base font-semibold tabular-nums ${scheduledLoading ? "text-slate-400" : creditColor(display.balanceAfterThisFlight)}`}>
+                  {scheduledLoading ? "…" : formatCreditHours(display.balanceAfterThisFlight)}
+                </strong>
               </div>
-              {formStudentCreditTotals && flightDate ? (
-                <p className="text-[11px] text-slate-500">
-                  Antes de reservas futuras: {fmt(freeBalanceForDateFromPools(formStudentCreditTotals, flightDate, []).freeHours)}
+              {!scheduledLoading ? (
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  {formatCreditHours(display.studentBalance)}
+                  {" − "}
+                  {formatCreditHours(display.thisFlightHours)} (este voo)
+                  {display.scheduledBeforeHours > 0.001 ? (
+                    <> − {formatCreditHours(display.scheduledBeforeHours)} (agendados antes)</>
+                  ) : null}
                 </p>
               ) : null}
             </div>
-          );
-        })()}
+
+            <div className="mt-3 space-y-1.5 border-t border-slate-700/60 pt-3">
+              <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span>Horas compradas</span>
+                <span className="tabular-nums text-slate-400">{formatCreditHours(display.purchasedHours)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span>Horas utilizadas (voos + multas)</span>
+                <span className="tabular-nums text-slate-400">{formatCreditHours(display.usedHours)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span>Horas em voos agendados</span>
+                <span className="tabular-nums text-slate-400">
+                  {scheduledLoading ? "…" : formatCreditHours(display.allScheduledHours)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span>Saldo após todos os agendamentos</span>
+                <span className={`tabular-nums ${scheduledLoading ? "text-slate-400" : creditColor(display.balanceAfterAllScheduled)}`}>
+                  {scheduledLoading ? "…" : formatCreditHours(display.balanceAfterAllScheduled)}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     );
   }

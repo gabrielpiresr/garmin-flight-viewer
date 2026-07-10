@@ -16825,6 +16825,12 @@ function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
     if (normalizeAircraftIdent(localAircraftIdent) !== normalizedIdent) continue;
     const cleanSagaKey = cleanString(sagaAircraftKey);
     if (/^\d+$/.test(cleanSagaKey)) return cleanSagaKey;
+    const sagaKeyId =
+      cleanString(mapping.aircraftIdByRegistration?.[normalizeAircraftIdent(cleanSagaKey)]) ||
+      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey]) ||
+      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey.toLowerCase()]) ||
+      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey.toUpperCase()]);
+    if (sagaKeyId) return sagaKeyId;
   }
   return "";
 }
