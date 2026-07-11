@@ -43,17 +43,17 @@ export const AIRCRAFT_BADGE_COLOR_CLASSES = [
 ] as const;
 
 const AIRCRAFT_REGISTRATION_SCHEDULE_COLORS: Record<string, string> = {
-  PSDZA: "bg-[#8E0807] border-[#8E0807]/70",
+  PSDZA: "bg-violet-600 border-violet-400/70",
   PSDZB: "bg-[#7C8800] border-[#7C8800]/70",
 };
 
 const AIRCRAFT_REGISTRATION_GENERATION_COLORS: Record<string, string> = {
-  PSDZA: "bg-[#8E0807]/90 border-[#8E0807]/70",
+  PSDZA: "bg-violet-600/90 border-violet-400/70",
   PSDZB: "bg-[#7C8800]/90 border-[#7C8800]/70",
 };
 
 const AIRCRAFT_REGISTRATION_BADGE_COLORS: Record<string, string> = {
-  PSDZA: "bg-[#8E0807]/20 text-[#8E0807] border-[#8E0807]/50",
+  PSDZA: "bg-violet-900/60 text-violet-300 border-violet-600/50",
   PSDZB: "bg-[#7C8800]/20 text-[#7C8800] border-[#7C8800]/50",
 };
 
