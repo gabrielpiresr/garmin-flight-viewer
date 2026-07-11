@@ -17,8 +17,11 @@ import { useToast } from "../components/ui/ToastProvider";
 const StudentScheduleTab = lazy(() =>
   import("../components/StudentScheduleTab").then((module) => ({ default: module.StudentScheduleTab })),
 );
+const ManobrasTab = lazy(() =>
+  import("../components/ManobrasTab").then((module) => ({ default: module.ManobrasTab })),
+);
 
-type TabletTab = "creditos" | "escala";
+type TabletTab = "creditos" | "escala" | "manobras";
 
 export function StaffCreditPurchasePage() {
   const { user } = useAuth();
@@ -127,7 +130,7 @@ export function StaffCreditPurchasePage() {
         <div className="space-y-1">
           <h1 className="text-xl font-semibold text-slate-100 sm:text-2xl">Tablet da escola</h1>
           <p className="text-sm text-slate-500">
-            Auxilie alunos com pagamentos e agendamento de voos.
+            Auxilie alunos com pagamentos, agendamento de voos e consulta de manobras.
           </p>
         </div>
 
@@ -135,6 +138,7 @@ export function StaffCreditPurchasePage() {
           {([
             ["creditos", "Créditos"],
             ["escala", "Escala"],
+            ["manobras", "Manobras"],
           ] as const).map(([tabId, label]) => (
             <button
               key={tabId}
@@ -193,10 +197,31 @@ export function StaffCreditPurchasePage() {
               </>
             )}
           </div>
-        ) : !selectedStudent ? (
-          <div className="rounded-xl border border-slate-800/80 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
-            Selecione um aluno para visualizar e agendar voos na escala.
-          </div>
+        ) : activeTab === "escala" ? (
+          !selectedStudent ? (
+            <div className="rounded-xl border border-slate-800/80 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
+              Selecione um aluno para visualizar e agendar voos na escala.
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div className="space-y-4">
+                  <Skeleton className="h-10 w-full rounded-xl" />
+                  <Skeleton className="h-96 w-full rounded-xl" />
+                </div>
+              }
+            >
+              <StudentScheduleTab
+                key={selectedStudent.userId}
+                actingForStudent={{
+                  userId: selectedStudent.userId,
+                  name: selectedStudent.name,
+                  email: selectedStudent.email,
+                }}
+                onStaffCreditsCta={() => setActiveTab("creditos")}
+              />
+            </Suspense>
+          )
         ) : (
           <Suspense
             fallback={
@@ -206,15 +231,7 @@ export function StaffCreditPurchasePage() {
               </div>
             }
           >
-            <StudentScheduleTab
-              key={selectedStudent.userId}
-              actingForStudent={{
-                userId: selectedStudent.userId,
-                name: selectedStudent.name,
-                email: selectedStudent.email,
-              }}
-              onStaffCreditsCta={() => setActiveTab("creditos")}
-            />
+            <ManobrasTab className="w-full" />
           </Suspense>
         )}
       </div>

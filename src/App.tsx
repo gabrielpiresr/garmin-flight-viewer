@@ -42,6 +42,9 @@ const OnboardingPresentationPage = lazy(() =>
 const StaffCreditPurchasePage = lazy(() =>
   import("./pages/StaffCreditPurchasePage").then((module) => ({ default: module.StaffCreditPurchasePage })),
 );
+const PublicSchedulePage = lazy(() =>
+  import("./pages/PublicSchedulePage").then((module) => ({ default: module.PublicSchedulePage })),
+);
 
 function normalizeAppPath(path: string): string {
   const pathname = path.split(/[?#]/, 1)[0] ?? "/";
@@ -52,6 +55,10 @@ function normalizeAppPath(path: string): string {
 function isStaffCreditPurchaseRoute(path = window.location.pathname): boolean {
   const normalized = normalizeAppPath(path);
   return normalized === "/admin/comprar-creditos" || normalized === "/instrutor/comprar-creditos";
+}
+
+function isPublicScheduleRoute(path = window.location.pathname): boolean {
+  return normalizeAppPath(path) === "/escala-publica";
 }
 
 function AppLoading() {
@@ -190,6 +197,16 @@ export default function App() {
       <PermissionsProvider>
         <Suspense fallback={bootFallback}>
           <StaffCreditPurchasePage />
+        </Suspense>
+      </PermissionsProvider>
+    );
+  }
+
+  if (isPublicScheduleRoute()) {
+    return (
+      <PermissionsProvider>
+        <Suspense fallback={bootFallback}>
+          <PublicSchedulePage />
         </Suspense>
       </PermissionsProvider>
     );

@@ -809,6 +809,7 @@ export function CalendarGrid({
   onItemDrop,
   canDragItem,
   onEmptySlotClick,
+  tooltipOnlyClick = false,
   onPrevWeek,
   onNextWeek,
   hasPrevWeek,
@@ -841,6 +842,8 @@ export function CalendarGrid({
   /** Quando definido, restringe quais cards podem ser arrastados (ex.: aluno só os próprios). */
   canDragItem?: (item: CalendarFlightItem) => boolean;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
+  /** Clique abre tooltip (popup) em vez de acionar onItemClick — escala pública. */
+  tooltipOnlyClick?: boolean;
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
@@ -1300,6 +1303,10 @@ export function CalendarGrid({
                               e.preventDefault();
                               return;
                             }
+                            if (tooltipOnlyClick) {
+                              setTooltip({ item, x: e.clientX, y: e.clientY });
+                              return;
+                            }
                             onItemClick(item);
                           }}
                           className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable)}`}
@@ -1395,6 +1402,7 @@ function DailyCalendarGrid({
   onItemClick,
   onItemDrop,
   onEmptySlotClick,
+  tooltipOnlyClick = false,
   onSelectDay,
   onPrevWeek,
   onNextWeek,
@@ -1421,6 +1429,7 @@ function DailyCalendarGrid({
   onItemClick: (item: CalendarFlightItem) => void;
   onItemDrop?: (item: CalendarFlightItem, target: CalendarDropTarget) => void;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
+  tooltipOnlyClick?: boolean;
   onSelectDay: (day: number) => void;
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
@@ -1773,6 +1782,10 @@ function DailyCalendarGrid({
                                 e.stopPropagation();
                                 if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
                                 if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
+                                if (tooltipOnlyClick) {
+                                  setTooltip({ item, x: e.clientX, y: e.clientY });
+                                  return;
+                                }
                                 onItemClick(item);
                               }}
                               className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable)}`}
@@ -1869,6 +1882,7 @@ function HorizontalTimelineBoard({
   clubMemberByStudentId,
   onItemClick,
   onEmptySlotClick,
+  tooltipOnlyClick = false,
   daySelector,
   onPrevWeek,
   onNextWeek,
@@ -1888,6 +1902,7 @@ function HorizontalTimelineBoard({
   clubMemberByStudentId?: Record<string, boolean>;
   onItemClick: (item: CalendarFlightItem) => void;
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
+  tooltipOnlyClick?: boolean;
   daySelector?: { weekStart: string; selectedDay: number; onSelectDay: (day: number) => void };
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
@@ -2123,6 +2138,10 @@ function HorizontalTimelineBoard({
                         {...scheduleTooltipHandlers(item, setTooltip)}
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (tooltipOnlyClick) {
+                            setTooltip({ item, x: e.clientX, y: e.clientY });
+                            return;
+                          }
                           onItemClick(item);
                         }}
                         className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), false)}`}
@@ -2159,9 +2178,12 @@ type ScheduleFlightsTabProps = {
   /** Semana a exibir após publicar escala no gerador. */
   focusWeekStart?: string | null;
   onFocusWeekConsumed?: () => void;
+  /** Vitrine somente leitura: agenda + filtros, sem edição. */
+  publicDisplayMode?: boolean;
 };
 
-export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed }: ScheduleFlightsTabProps = {}) {
+export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed, publicDisplayMode = false }: ScheduleFlightsTabProps = {}) {
+  const readOnlyDisplay = publicDisplayMode;
   const { user } = useAuth();
   const { showToast } = useToast();
   const { canAction } = usePermissions();
@@ -3650,6 +3672,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
     }
   }
 
+  function handleCalendarItemClick(item: CalendarFlightItem) {
+    if (readOnlyDisplay || !canEditFlight) return;
+    const selected = flights.find((row) => row.id === item.id);
+    if (selected) void openEditModal(selected);
+  }
+
   async function handleDeleteFlight(row: ExistingScheduledFlight) {
     if (isSagaEventRowId(row.id)) {
       if (!window.confirm("Remover este evento da agenda SAGA?")) return;
@@ -3762,12 +3790,33 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   return (
     <div className="flex w-full flex-col gap-5">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Escala</h2>
-        <p className="text-xs text-slate-500">Mesma dinâmica da Escala Automática, focada apenas em voos já marcados.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+            {readOnlyDisplay ? "Escala pública" : "Escala"}
+          </h2>
+          <p className="text-xs text-slate-500">
+            {readOnlyDisplay
+              ? "Visualização somente leitura da agenda — ideal para exibir no computador da escola."
+              : "Mesma dinâmica da Escala Automática, focada apenas em voos já marcados."}
+          </p>
+        </div>
+        {!readOnlyDisplay ? (
+          <button
+            type="button"
+            onClick={() => window.open("/escala-publica", "_blank", "noopener,noreferrer")}
+            className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
+            title="Abrir escala em nova aba para exibição no computador da escola"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M4.75 3A1.75 1.75 0 003 4.75v10.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0017 15.25V4.75A1.75 1.75 0 0015.25 3H4.75zM5 5h10v10H5V5zm7.75 8.25a.75.75 0 00-1.5 0v1.69l-2.22-2.22a.75.75 0 00-1.06 1.06l2.22 2.22H8.5a.75.75 0 000 1.5h3.25a.75.75 0 00.75-.75V13.25z" />
+            </svg>
+            Escala pública
+          </button>
+        ) : null}
       </div>
 
-      <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} />
+      {!readOnlyDisplay ? <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} /> : null}
 
       <section className="grid min-w-0 grid-cols-1 gap-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4 md:grid-cols-4">
         <div className="md:col-span-2">
@@ -3827,7 +3876,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             </button>
           </div>
         </div>
-        {canCreateFlight ? (
+        {canCreateFlight && !readOnlyDisplay ? (
         <div className="flex items-end gap-2 md:col-span-2">
           <button
             type="button"
@@ -3883,7 +3932,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         </section>
       ) : null}
 
-      {weekData ? (
+      {weekData && !readOnlyDisplay ? (
         <section className="order-5">
           {/* Mobile: resumo recolhido por padrão */}
           <button
@@ -4153,12 +4202,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                 hasNextWeek={agendaView === "three-day" ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek : hasNextWeek}
                 onPrevWeek={() => { slideBoard("back"); (agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1))(); }}
                 onNextWeek={() => { slideBoard("forward"); (agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1))(); }}
-                onItemClick={(item) => {
-                  if (!canEditFlight) return;
-                  const selected = flights.find((row) => row.id === item.id);
-                  if (selected) void openEditModal(selected);
-                }}
-                onEmptySlotClick={(target) => {
+                onItemClick={handleCalendarItemClick}
+                tooltipOnlyClick={readOnlyDisplay}
+                onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
                   if (!canCreateFlight) return;
                   openCreateModal();
                   setFormDraft((prev) => {
@@ -4222,12 +4268,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   }
                   goToWeekOffset(1);
                 }}
-                onItemClick={(item) => {
-                  if (!canEditFlight) return;
-                  const selected = flights.find((row) => row.id === item.id);
-                  if (selected) void openEditModal(selected);
-                }}
-                onItemDrop={canEditFlight ? (item, target) => {
+                onItemClick={handleCalendarItemClick}
+                tooltipOnlyClick={readOnlyDisplay}
+                onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {
                   const selected = flights.find((row) => row.id === item.id);
                   if (!selected) return;
                   void (async () => {
@@ -4250,8 +4293,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                       return base;
                     });
                   })();
-                } : undefined}
-                onEmptySlotClick={(target) => {
+                }}
+                onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
                   if (!canCreateFlight) return;
                   openCreateModal();
                   setFormDraft((prev) => {
@@ -4297,12 +4340,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                   onSelectDay={setSelectedDay}
                   onPrevWeek={() => { slideBoard("back"); goToWeekOffset(-1); }}
                   onNextWeek={() => { slideBoard("forward"); goToWeekOffset(1); }}
-                  onItemClick={(item) => {
-                    if (!canEditFlight) return;
-                    const selected = flights.find((row) => row.id === item.id);
-                    if (selected) void openEditModal(selected);
-                  }}
-                  onItemDrop={canEditFlight ? (item, target) => {
+                  onItemClick={handleCalendarItemClick}
+                  tooltipOnlyClick={readOnlyDisplay}
+                  onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {
                     const selected = flights.find((row) => row.id === item.id);
                     if (!selected) return;
                     void (async () => {
@@ -4320,8 +4360,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
                         return base;
                       });
                     })();
-                  } : undefined}
-                  onEmptySlotClick={(target) => {
+                  }}
+                  onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
                     if (!canCreateFlight) return;
                     openCreateModal();
                     setFormDraft((prev) => {
@@ -4344,6 +4384,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
             </div>
           </div>
 
+          {!readOnlyDisplay ? (
+          <>
           {/* Resumo por instrutor — abaixo da agenda */}
           <section className="order-7 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
             <button
@@ -4488,10 +4530,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               )}
             </div>
           </section>
+          </>
+          ) : null}
         </>
       ) : null}
 
-      {selectedStudentSchedule ? (
+      {!readOnlyDisplay && selectedStudentSchedule ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
           <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
@@ -4570,7 +4614,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
         </div>
       ) : null}
 
-      {formDraft && weekData ? (
+      {!readOnlyDisplay && formDraft && weekData ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
           <div className="flex max-h-[100dvh] w-full max-w-2xl flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:max-w-3xl sm:rounded-xl sm:border sm:border-slate-700 lg:max-w-6xl">
             {/* Cabeçalho fixo */}
@@ -4932,7 +4976,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
       ) : null}
 
       {/* Modal de bloqueio de agenda (modo SAGA) */}
-      {blockDraft ? (
+      {!readOnlyDisplay && blockDraft ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
           <div className="flex max-h-[100dvh] w-full max-w-md flex-col overflow-hidden rounded-none border-0 bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-xl sm:border sm:border-slate-700">
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
