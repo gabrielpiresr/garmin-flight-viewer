@@ -29,17 +29,24 @@ export function CreditosTab() {
     setLoading(true);
     setError(null);
     try {
-      const config = await getAvailableFlightCreditPackages().catch(() => null);
-      setPackageConfig(config);
-      const next = await getStudentCreditStatement({
+      const configPromise = getAvailableFlightCreditPackages().catch(() => null);
+      const statementPromise = getStudentCreditStatement({
         viewer: { userId: user.id, role: user.role },
         studentUserId: user.id,
-        nightHoursDifferentFromDay: config?.nightHoursDifferentFromDay !== false,
       });
+      const [config, next] = await Promise.all([configPromise, statementPromise]);
+      setPackageConfig(config);
       setStatement(next);
+      if (config?.nightHoursDifferentFromDay === false) {
+        const corrected = await getStudentCreditStatement({
+          viewer: { userId: user.id, role: user.role },
+          studentUserId: user.id,
+          nightHoursDifferentFromDay: false,
+        });
+        setStatement(corrected);
+      }
     } catch (e) {
       setError((e as Error).message);
-      setStatement(null);
     } finally {
       setLoading(false);
     }
@@ -72,7 +79,7 @@ export function CreditosTab() {
 
   const showSagaButton = !!ADMIN_USERS_FUNCTION_ID && !!user;
 
-  if (loading) {
+  if (loading && !statement) {
     return (
       <section className="space-y-4 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-5">
         <Skeleton className="h-20 rounded-xl" />
@@ -86,7 +93,7 @@ export function CreditosTab() {
     );
   }
 
-  if (error) {
+  if (error && !statement) {
     return (
       <section className="rounded-2xl border border-red-500/30 bg-red-950/20 p-5">
         <p className="text-sm text-red-400">{error}</p>
@@ -104,6 +111,16 @@ export function CreditosTab() {
 
   return (
     <div className="space-y-4">
+      {loading ? (
+        <p className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300">
+          Atualizando créditos sem apagar o extrato atual...
+        </p>
+      ) : null}
+      {error ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+          Não foi possível atualizar agora. Mantivemos o último extrato carregado.
+        </p>
+      ) : null}
       <div className="flex flex-wrap justify-end gap-2">
         {packageConfig?.studentPurchasesEnabled && packageConfig.packages.length > 0 ? (
           <button

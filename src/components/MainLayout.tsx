@@ -10,6 +10,7 @@ import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
+import { StudentTabSkeleton } from "./student/StudentExperience";
 import type { StudentTabKey } from "../types/rolePermissions";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
@@ -221,17 +222,25 @@ const SECTION_ROUTES = [
   { id: "indique-ganhe", path: "/aluno/indique-ganhe" },
 ] satisfies readonly TabRoute<Section>[];
 
-function TabLoading() {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6">
-      <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
-      <div className="mt-4 h-24 animate-pulse rounded bg-slate-800/70" />
-    </div>
-  );
+const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
+  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento"] },
+  { label: "Evoluir", ids: ["jornada", "manobras", "manuais", "avisos"] },
+  { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "indique-ganhe"] },
+  { label: "Suporte", ids: ["ajuda"] },
+];
+
+const MOBILE_PRIMARY_NAV: Section[] = ["home", "schedule", "meus-voos", "jornada"];
+
+function skeletonKind(section: Section): "default" | "home" | "schedule" | "credits" | "journey" {
+  if (section === "home") return "home";
+  if (section === "schedule" || section === "agendamento") return "schedule";
+  if (section === "creditos" || section === "dre") return "credits";
+  if (section === "jornada") return "journey";
+  return "default";
 }
 
-function LazyTab({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<TabLoading />}>{children}</Suspense>;
+function LazyTab({ section, children }: { section: Section; children: ReactNode }) {
+  return <Suspense fallback={<StudentTabSkeleton kind={skeletonKind(section)} />}>{children}</Suspense>;
 }
 
 export function MainLayout() {
@@ -245,6 +254,7 @@ export function MainLayout() {
   const [referProgramActive, setReferProgramActive] = useState(false);
   const [referProgramLoaded, setReferProgramLoaded] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
 
   const visibleNavItems = useMemo(
     () =>
@@ -257,11 +267,29 @@ export function MainLayout() {
   );
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
-  const ajudaNavItem = availableNavItems.find((item) => item.id === "ajuda") ?? null;
-  const mainNavItems = availableNavItems.filter((item) => item.id !== "ajuda");
+  const navById = useMemo(() => new Map(availableNavItems.map((item) => [item.id, item])), [availableNavItems]);
+  const desktopNavGroups = useMemo(
+    () =>
+      DESKTOP_NAV_GROUPS.map((group) => ({
+        ...group,
+        items: group.ids.map((id) => navById.get(id)).filter((item): item is NavItem => Boolean(item)),
+      })).filter((group) => group.items.length > 0),
+    [navById],
+  );
+  const mobilePrimaryItems = useMemo(
+    () => MOBILE_PRIMARY_NAV.map((id) => navById.get(id)).filter((item): item is NavItem => Boolean(item)),
+    [navById],
+  );
+  const mobilePrimaryIds = useMemo(() => new Set(mobilePrimaryItems.map((item) => item.id)), [mobilePrimaryItems]);
+  const mobileMoreItems = useMemo(
+    () => availableNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
+    [availableNavItems, mobilePrimaryIds],
+  );
+  const isMobileMoreActive = !mobilePrimaryIds.has(section);
 
   function openSection(target: Section) {
     const targetIsAvailable = availableNavItems.some((item) => item.id === target);
+    setMobileMoreOpen(false);
     setSection(targetIsAvailable ? target : activeNav.id);
   }
 
@@ -382,29 +410,36 @@ export function MainLayout() {
           <p className={`${sidebarCollapsed ? "hidden" : ""} text-sm font-semibold text-slate-200`}>Operação de voo</p>
         </div>
 
-        <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
-          {mainNavItems.map((item) => {
-            const isActive = section === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => openSection(item.id)}
-                title={sidebarCollapsed ? item.label : undefined}
-                aria-label={sidebarCollapsed ? item.label : undefined}
-                className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
-                  isActive
-                    ? SELECTED_NAV_CLASS
-                    : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
-                }`}
-              >
-                <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
-                <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
-                  <p className="text-sm font-medium leading-none">{item.label}</p>
-                </div>
-              </button>
-            );
-          })}
+        <nav className={`flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
+          {desktopNavGroups.map((group) => (
+            <div key={group.label} className="space-y-1">
+              <p className={`${sidebarCollapsed ? "sr-only" : "px-3 text-[10px] font-semibold uppercase tracking-widest text-slate-600"}`}>
+                {group.label}
+              </p>
+              {group.items.map((item) => {
+                const isActive = section === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => openSection(item.id)}
+                    title={sidebarCollapsed ? item.label : undefined}
+                    aria-label={sidebarCollapsed ? item.label : undefined}
+                    className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                      isActive
+                        ? SELECTED_NAV_CLASS
+                        : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
+                    <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                      <p className="text-sm font-medium leading-none">{item.label}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
           {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
             <a
               href={clubLpUrl}
@@ -444,27 +479,6 @@ export function MainLayout() {
             </a>
           ) : null}
         </nav>
-
-        {ajudaNavItem ? (
-          <div className={`${sidebarCollapsed ? "px-2 pb-1" : "px-3 pb-1"}`}>
-            <button
-              type="button"
-              onClick={() => openSection(ajudaNavItem.id)}
-              title={sidebarCollapsed ? ajudaNavItem.label : undefined}
-              aria-label={sidebarCollapsed ? ajudaNavItem.label : undefined}
-              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
-                section === ajudaNavItem.id
-                  ? SELECTED_NAV_CLASS
-                  : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
-              }`}
-            >
-              <span className={section === ajudaNavItem.id ? "" : "opacity-60 group-hover:opacity-100"}>{ajudaNavItem.icon}</span>
-              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
-                <p className="text-sm font-medium leading-none">{ajudaNavItem.label}</p>
-              </div>
-            </button>
-          </div>
-        ) : null}
         <div className={`border-t border-slate-800 py-4 ${sidebarCollapsed ? "px-2" : "px-4"}`}>
           <UserEmailWithRoleSwitcher email={user?.email} sidebarCollapsed={sidebarCollapsed} />
           <button
@@ -510,101 +524,104 @@ export function MainLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
-              <LazyTab>
+              <LazyTab section="home">
                 <StudentHome
                   onOpenFlights={() => openSection("meus-voos")}
                   onOpenNotices={() => openSection("avisos")}
+                  onOpenSchedule={() => openSection("schedule")}
+                  onOpenCredits={() => openSection("creditos")}
+                  onOpenJourney={() => openSection("jornada")}
                 />
               </LazyTab>
             </div>
           )}
           {openedSections.has("jornada") && (
             <div hidden={section !== "jornada"}>
-              <LazyTab>
+              <LazyTab section="jornada">
                 <JornadaTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("meus-voos") && (
             <div hidden={section !== "meus-voos"}>
-              <LazyTab>
+              <LazyTab section="meus-voos">
                 <MeusVoosTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("agendamento") && (
             <div hidden={section !== "agendamento"}>
-              <LazyTab>
+              <LazyTab section="agendamento">
                 <AgendamentoTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("schedule") && (
             <div hidden={section !== "schedule"}>
-              <LazyTab>
+              <LazyTab section="schedule">
                 <StudentScheduleTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("creditos") && (
             <div hidden={section !== "creditos"}>
-              <LazyTab>
+              <LazyTab section="creditos">
                 <CreditosSectionRouter />
               </LazyTab>
             </div>
           )}
           {openedSections.has("avisos") && (
             <div hidden={section !== "avisos"}>
-              <LazyTab>
+              <LazyTab section="avisos">
                 <NoticeFeed className="w-full max-w-4xl" showHeader={false} />
               </LazyTab>
             </div>
           )}
           {openedSections.has("manuais") && (
             <div hidden={section !== "manuais"}>
-              <LazyTab>
+              <LazyTab section="manuais">
                 <ManuaisTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("manobras") && (
             <div hidden={section !== "manobras"}>
-              <LazyTab>
+              <LazyTab section="manobras">
                 <ManobrasTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("perfil") && (
             <div hidden={section !== "perfil"}>
-              <LazyTab>
+              <LazyTab section="perfil">
                 <AlunoProfileDashboard />
               </LazyTab>
             </div>
           )}
           {openedSections.has("ajuda") && (
             <div hidden={section !== "ajuda"}>
-              <LazyTab>
+              <LazyTab section="ajuda">
                 <HelpCenterTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}>
-              <LazyTab>
+              <LazyTab section="dre">
                 <StudentDreTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("fuelings") && (
             <div hidden={section !== "fuelings"}>
-              <LazyTab>
+              <LazyTab section="fuelings">
                 <FuelingsTab />
               </LazyTab>
             </div>
           )}
           {openedSections.has("contratos") && (
             <div hidden={section !== "contratos"}>
-              <LazyTab>
+              <LazyTab section="contratos">
                 <ContractsUserTab
                   userId={user?.id ?? ""}
                   schoolId={user?.schoolId ?? ""}
@@ -615,7 +632,7 @@ export function MainLayout() {
           )}
           {openedSections.has("indique-ganhe") && (
             <div hidden={section !== "indique-ganhe"}>
-              <LazyTab>
+              <LazyTab section="indique-ganhe">
                 <ReferAndEarnTab portalRole="aluno" />
               </LazyTab>
             </div>
@@ -627,39 +644,121 @@ export function MainLayout() {
           aviação.
         </footer>
 
-        <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
-          <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
-            {onboardingInMenu && (
-              <a
-                href="/apresentacao"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium text-cyan-400 transition hover:text-cyan-300"
-              >
-                <span className="h-4 w-4">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                    <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
-                  </svg>
-                </span>
-                <span className="max-w-full truncate">Manual</span>
-              </a>
-            )}
-            {availableNavItems.map((item) => {
+        {mobileMoreOpen ? (
+          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden" onClick={() => setMobileMoreOpen(false)}>
+            <div
+              className="absolute inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] max-h-[65vh] overflow-y-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-slate-950"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Mais</p>
+                  <p className="text-sm font-semibold text-slate-100">Outras áreas do aluno</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileMoreOpen(false)}
+                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+                >
+                  Fechar
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {mobileMoreItems.map((item) => {
+                  const isActive = section === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => openSection(item.id)}
+                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
+                        isActive
+                          ? SELECTED_NAV_CLASS
+                          : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                      }`}
+                    >
+                      <span className="shrink-0">{item.icon}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{item.label}</span>
+                        <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+                {onboardingInMenu ? (
+                  <a
+                    href="/apresentacao"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex min-w-0 items-center gap-2 rounded-xl border border-cyan-700/40 bg-cyan-950/20 p-3 text-left text-cyan-300"
+                  >
+                    <span className="shrink-0">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                        <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                      </svg>
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold">Manual</span>
+                      <span className="block truncate text-[11px] text-cyan-300/70">Manual do aluno</span>
+                    </span>
+                  </a>
+                ) : null}
+                {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
+                  <a
+                    href={clubLpUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-700/40 bg-amber-950/20 p-3 text-left text-amber-300"
+                  >
+                    <span className="shrink-0">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                        <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                      </svg>
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold">Flight Club</span>
+                      <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
+                    </span>
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <nav className="fixed inset-x-3 bottom-3 z-50 pb-[env(safe-area-inset-bottom)] lg:hidden">
+          <div className="grid grid-cols-5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
+            {mobilePrimaryItems.map((item) => {
               const isActive = section === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => openSection(item.id)}
-                  className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
+                  className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition ${
                     isActive ? "school-nav-active" : "text-slate-500 hover:text-slate-300"
                   }`}
                 >
                   <span className="h-4 w-4">{item.icon}</span>
-                  <span className="max-w-full truncate">{item.label}</span>
+                  <span className="max-w-full truncate">{item.label === "Meus voos" ? "Voos" : item.label}</span>
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => setMobileMoreOpen((open) => !open)}
+              aria-expanded={mobileMoreOpen}
+              className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition ${
+                isMobileMoreActive || mobileMoreOpen ? "school-nav-active" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <span className="h-4 w-4">
+                <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                  <path d="M3.5 8.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6.5 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6.5 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3z" />
+                </svg>
+              </span>
+              <span>Mais</span>
+            </button>
           </div>
         </nav>
       </div>

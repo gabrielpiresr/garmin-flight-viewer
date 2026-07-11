@@ -17,7 +17,8 @@ import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
 import { Tabs } from "./ui/Tabs";
 
-type SubTab = "telemetria" | "videos" | "ficha" | "aluno" | "auditoria" | "flight-review";
+export type FlightDetailSubTab = "telemetria" | "videos" | "ficha" | "aluno" | "auditoria" | "flight-review";
+type SubTab = FlightDetailSubTab;
 
 type SubTabConfig = { id: SubTab; label: string; icon: ReactNode };
 
@@ -266,7 +267,41 @@ export function FlightDetailView({
         )}
       </div>
 
-      <Tabs items={subTabs} value={activeSubTab} onChange={setActiveSubTab} ariaLabel="Detalhes do voo" />
+      <div className="grid grid-cols-2 gap-2 md:hidden" role="tablist" aria-label="Detalhes do voo">
+        {subTabs.map((tab) => {
+          const isActive = tab.id === activeSubTab;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setActiveSubTab(tab.id)}
+              className={`flex min-h-[54px] min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
+                isActive
+                  ? "border-sky-400/70 bg-sky-500/15 text-sky-100 shadow-sm shadow-sky-950/30"
+                  : "border-slate-700/70 bg-slate-900/50 text-slate-400 hover:border-slate-600 hover:bg-slate-800/70 hover:text-slate-200"
+              }`}
+            >
+              <span
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${
+                  isActive ? "border-sky-400/40 bg-sky-400/10 text-sky-200" : "border-slate-700 bg-slate-950/40 text-slate-500"
+                }`}
+              >
+                {tab.icon}
+              </span>
+              <span className="min-w-0 truncate">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <Tabs
+        items={subTabs}
+        value={activeSubTab}
+        onChange={setActiveSubTab}
+        ariaLabel="Detalhes do voo"
+        className="hidden md:block"
+      />
 
       <div className="min-h-0 min-w-0 flex-1">
         {visitedSubTabs.has("ficha") ? (

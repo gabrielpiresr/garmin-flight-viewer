@@ -291,7 +291,7 @@ function hasSustainedLowGroundSpeed(
 }
 
 function hasGroundRollBeforeTakeoff(data: ChartRow[], rotIdx: number): boolean {
-  for (let i = rotIdx; i >= Math.max(0, rotIdx - 180); i--) {
+  for (let i = rotIdx; i >= Math.max(0, rotIdx - 90); i--) {
     const gs = get(data[i]!, "gsKt");
     if (gs !== null && gs < 25) return true;
   }
@@ -477,6 +477,15 @@ function minMetric(data: ChartRow[], startIdx: number, endIdx: number, key: stri
     if (value !== null) min = min === null ? value : Math.min(min, value);
   }
   return min;
+}
+
+function maxMetric(data: ChartRow[], startIdx: number, endIdx: number, key: string): number | null {
+  let max: number | null = null;
+  for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i++) {
+    const value = get(data[i]!, key);
+    if (value !== null) max = max === null ? value : Math.max(max, value);
+  }
+  return max;
 }
 
 function minMetricIdx(data: ChartRow[], startIdx: number, endIdx: number, key: string): number | null {
@@ -737,6 +746,79 @@ function isAglTransitionTouchdown(data: ChartRow[], idx: number): boolean {
     hasSustainedLowGroundSpeed(data, idx, 25, 60);
 
   return recentDescent && decelerating && (aglIndicatesGround ? rollout : missingAglRollout || missingAglFullStop);
+}
+
+function isGpsFieldRolloutTouchdown(
+  data: ChartRow[],
+  idx: number,
+  context: TouchdownDetectionContext | undefined,
+): boolean {
+  if (idx < 60 || idx + 30 >= data.length) return false;
+  if (isImplausiblyHighTouchdownCandidate(data, idx, context)) return false;
+
+  const fieldElevationFt = context?.fieldElevationFt ?? null;
+  const alt = smoothedGpsAltFt(data, idx);
+  const gs = get(data[idx]!, "gsKt");
+  const ias = get(data[idx]!, "iasKt");
+  if (fieldElevationFt === null || alt === null || gs === null) return false;
+  if (alt > fieldElevationFt + 350) return false;
+  if (gs < 25 || gs > 58) return false;
+  if (ias !== null && ias > 65) return false;
+
+  const previousHighFt = maxMetric(data, idx - 240, idx - 30, "gpsAltFt");
+  const recentMinVs = minVerticalSpeed(data, idx - 180, idx);
+  const lowSpeedRollout = hasSustainedLowGroundSpeed(data, idx, 25, 180, 8);
+  if (previousHighFt === null || previousHighFt - alt < 300) return false;
+  if (recentMinVs === null || recentMinVs > -250) return false;
+  if (!lowSpeedRollout) return false;
+
+  return true;
+}
+
+function refineGpsFieldRolloutTouchdown(
+  data: ChartRow[],
+  idx: number,
+  context: TouchdownDetectionContext | undefined,
+): number {
+  const fieldElevationFt = context?.fieldElevationFt ?? null;
+  if (fieldElevationFt === null) return idx;
+
+  for (let i = Math.max(60, idx - 90); i <= idx; i++) {
+    if (isImplausiblyHighTouchdownCandidate(data, i, context)) continue;
+
+    const alt = smoothedGpsAltFt(data, i);
+    const gs = get(data[i]!, "gsKt");
+    const ias = get(data[i]!, "iasKt");
+    if (alt === null || gs === null) continue;
+    if (alt > fieldElevationFt + 350) continue;
+    if (gs < 25 || gs > 58) continue;
+    if (ias !== null && ias > 65) continue;
+
+    const previousHighFt = maxMetric(data, i - 240, i - 30, "gpsAltFt");
+    const recentMinVs = minVerticalSpeed(data, i - 180, i);
+    if (previousHighFt === null || previousHighFt - alt < 300) continue;
+    if (recentMinVs === null || recentMinVs > -250) continue;
+    if (!hasSustainedLowGroundSpeed(data, i, 25, 180, 8)) continue;
+
+    return i;
+  }
+
+  return idx;
+}
+
+function findGpsFieldRolloutTouchdownAfter(
+  data: ChartRow[],
+  idx: number,
+  context: TouchdownDetectionContext | undefined,
+  withinRows = 180,
+): number | null {
+  for (let i = idx; i <= Math.min(data.length - 1, idx + withinRows); i++) {
+    if (isGpsFieldRolloutTouchdown(data, i, context)) {
+      return refineGpsFieldRolloutTouchdown(data, i, context);
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -1252,6 +1334,29 @@ export function detectFlightSegments(
       }
     }
   }
+
+  const lastTakeoffLiftIdx = takeoffs.reduce<number | null>(
+    (latest, takeoff) => latest === null || takeoff.liftIdx > latest ? takeoff.liftIdx : latest,
+    null,
+  );
+  if (
+    lastTakeoffLiftIdx !== null &&
+    !touchdowns.some((td) => td.tdIdx > lastTakeoffLiftIdx)
+  ) {
+    const finalLandingIdx = findGpsFieldRolloutTouchdownAfter(
+      data,
+      lastTakeoffLiftIdx,
+      touchdownContext,
+      data.length - lastTakeoffLiftIdx - 1,
+    );
+    if (
+      finalLandingIdx !== null &&
+      !touchdowns.some((td) => Math.abs(data[td.tdIdx]!.x - data[finalLandingIdx]!.x) < TOUCHDOWN_DEDUPE_MS)
+    ) {
+      touchdowns.push({ tdIdx: finalLandingIdx });
+    }
+  }
+
   touchdowns.sort((a, b) => a.tdIdx - b.tdIdx);
   const uniqueTouchdowns: TouchdownGroup[] = [];
   touchdowns.forEach((td) => {

@@ -144,7 +144,43 @@ export function CreditStatementView({
       ) : null}
 
       {statement.summaries.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
+        <>
+        <div className="grid gap-2 md:hidden">
+          {statement.summaries.map((summary) => (
+            <article key={summary.aircraftModelId} className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="break-words text-sm font-semibold text-slate-100">{summary.aircraftModelName}</h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Compradas {formatHours(summary.purchasedHours)} · usadas {formatHours(summary.consumedHours)}
+                  </p>
+                </div>
+                <span className={`shrink-0 rounded-lg border px-2 py-1 text-sm font-semibold ${
+                  summary.availableHours < 0 ? "border-red-500/30 text-red-300" : "border-emerald-500/30 text-emerald-300"
+                }`}>
+                  {formatHours(summary.availableHours)}
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                {showWeekdayPools ? (
+                  <div>
+                    <p className="text-slate-500">seg-sex</p>
+                    <p className="font-semibold text-sky-300">{formatHours(summary.weekdayOnlyAvailableHours)}</p>
+                  </div>
+                ) : null}
+                <div>
+                  <p className="text-slate-500">vencidas</p>
+                  <p className="font-semibold text-slate-300">{formatHours(summary.expiredHours)}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">pendentes</p>
+                  <p className="font-semibold text-amber-300">{formatHours(summary.unallocatedFlightHours)}</p>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+        <div className="hidden overflow-x-auto rounded-lg border border-slate-800 md:block">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
               <tr>
@@ -174,6 +210,7 @@ export function CreditStatementView({
             </tbody>
           </table>
         </div>
+        </>
       ) : null}
 
       {!hasCredits ? (
@@ -184,11 +221,37 @@ export function CreditStatementView({
         <div className="space-y-5">
           <div>
             <h4 className="text-sm font-semibold text-slate-200">Extrato de compras</h4>
-            <div className="mt-2 overflow-x-auto rounded-lg border border-slate-800">
+            <div className="mt-2 rounded-lg border border-slate-800 md:overflow-x-auto">
               {statement.purchases.length === 0 ? (
                 <p className="px-3 py-4 text-sm text-slate-500">Nenhuma compra registrada.</p>
               ) : (
-                <table className="w-full min-w-[900px] text-left text-sm">
+                <>
+                <div className="divide-y divide-slate-800 md:hidden">
+                  {statement.purchases.map((purchase) => {
+                    const payment = purchase.paymentInstallments
+                      ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
+                      : purchase.paymentMethod || "Forma não informada";
+                    return (
+                      <article key={purchase.id} className="p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-100">{purchase.aircraftModelName}</p>
+                            <p className="mt-0.5 text-xs text-slate-500">{formatDate(purchase.purchaseDate)} · {payment}</p>
+                          </div>
+                          <span className="shrink-0 text-sm font-semibold text-emerald-300">{formatHours(purchase.hours)}</span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                          <span>{formatCurrency(purchase.amountPaid)}</span>
+                          <span>Validade {formatDate(purchase.expiresAt)}</span>
+                          {purchase.isNight ? <span className="rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] text-indigo-300">Noturno</span> : null}
+                          {purchase.weekdayOnly ? <span className="rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] text-sky-300">seg-sex</span> : null}
+                        </div>
+                        {renderPurchaseActions ? <div className="mt-2 flex flex-wrap gap-2">{renderPurchaseActions(purchase)}</div> : null}
+                      </article>
+                    );
+                  })}
+                </div>
+                <table className="hidden w-full min-w-[900px] text-left text-sm md:table">
                   <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 font-medium">Data</th>
@@ -231,17 +294,37 @@ export function CreditStatementView({
                     })}
                   </tbody>
                 </table>
+                </>
               )}
             </div>
           </div>
 
           <div>
             <h4 className="text-sm font-semibold text-slate-200">Extrato de saídas (voos)</h4>
-            <div className="mt-2 overflow-x-auto rounded-lg border border-slate-800">
+            <div className="mt-2 rounded-lg border border-slate-800 md:overflow-x-auto">
               {statement.flightDebits.length === 0 ? (
                 <p className="px-3 py-4 text-sm text-slate-500">Nenhuma saída por voo encontrada.</p>
               ) : (
-                <table className="w-full min-w-[640px] text-left text-sm">
+                <>
+                <div className="divide-y divide-slate-800 md:hidden">
+                  {statement.flightDebits.map((debit) => (
+                    <article key={debit.id} className="p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-100">{debit.aircraftIdent || "Aeronave não informada"}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">{formatDate(debit.flightDate)}</p>
+                        </div>
+                        <span className="shrink-0 rounded-lg border border-red-500/30 px-2 py-1 text-sm font-semibold text-red-300">
+                          -{formatHours(debit.hours)}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-400">
+                        {debit.aircraftModelName} · {debit.isNight ? "Noturno" : "Diurno"}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+                <table className="hidden w-full min-w-[640px] text-left text-sm md:table">
                   <thead className="bg-slate-950/40 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 font-medium">Data</th>
@@ -263,6 +346,7 @@ export function CreditStatementView({
                     ))}
                   </tbody>
                 </table>
+                </>
               )}
             </div>
           </div>

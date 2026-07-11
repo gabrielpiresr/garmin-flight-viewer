@@ -11,11 +11,6 @@ import { closeScheduleWeek } from "../../lib/operationalWeeksDb";
 import { shortName } from "../../lib/flightDisplay";
 import { getSchoolRules } from "../../lib/schoolRulesDb";
 import {
-  buildScheduleHourOptions,
-  hourSelectValue,
-  parseHourSelectValue,
-} from "../../lib/scheduleTimeOptions";
-import {
   calendarTopPx,
   hoursOverlappingInterval,
   minutesToScheduleHHMM,
@@ -190,6 +185,23 @@ function hoursToHHMM(hours: number): string {
 
 function composeEndTime(startTime: string, durationHours: number): string {
   return minutesToScheduleHHMM(suggestionStartMinute({ startTime, startHour: 0 }) + Math.round(durationHours * 60));
+}
+
+function normalizeTimeInput(value: string): string | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh > 23 || mm > 59) return null;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function startHourFromTime(startTime: string): number {
+  return parseScheduleTimeToMinutes(startTime) / 60;
+}
+
+function isNightStartTime(startTime: string, rules: FlightScheduleRules): boolean {
+  return rules.allowNightFlights && parseScheduleTimeToMinutes(startTime) >= rules.nightFlightStartHour * 60;
 }
 
 function wait(ms: number): Promise<void> {
@@ -698,8 +710,8 @@ function buildSuggestionFromDraft(
   studentLabel: string,
   rules: FlightScheduleRules = DEFAULT_FLIGHT_SCHEDULE_RULES,
 ): ScheduledFlightSuggestion {
-  const isNight = draft.isNight ?? false;
-  const startMinute = isNight ? rules.nightFlightStartHour * 60 : parseScheduleTimeToMinutes(draft.startTime);
+  const startMinute = parseScheduleTimeToMinutes(draft.startTime);
+  const isNight = draft.isNight ?? isNightStartTime(draft.startTime, rules);
   const startHour = startMinute / 60;
   return {
     demandId: draft.demandId,
@@ -1824,6 +1836,10 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
 
   function handleSaveFlightModal() {
     if (!weekData || !flightModalDraft) return;
+    if (!normalizeTimeInput(flightModalDraft.startTime)) {
+      setError("Informe um horario valido para o voo.");
+      return;
+    }
     const studentLabel =
       weekData.students.find((row) => row.userId === flightModalDraft.studentId)?.label ?? flightModalDraft.studentId;
     const next = buildSuggestionFromDraft(flightModalDraft, weekData.week.weekStart, studentLabel, scheduleRules);
@@ -1840,8 +1856,6 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
     () => [...editableSuggestions].sort(compareByDayAndHour),
     [editableSuggestions],
   );
-
-  const hourOptions = useMemo(() => buildScheduleHourOptions(scheduleRules), [scheduleRules]);
 
   const colorByAircraft = useMemo(() => {
     const regs = [...new Set((weekData?.supplies ?? []).map((s) => s.aircraftRegistration))];
@@ -2410,26 +2424,23 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                           </select>
                         </td>
                         <td className="px-2 py-2">
-                          <select
-                            value={hourSelectValue(row.isNight, row.startTime, row.startHour)}
+                          <input
+                            type="time"
+                            step={60}
+                            value={row.startTime}
                             onChange={(e) => {
-                              const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                              const nextTime = normalizeTimeInput(e.target.value);
+                              if (!nextTime) return;
                               updateSuggestion(row.demandId, (current) => ({
                                 ...current,
-                                startHour: parsed.startHour,
-                                isNight: parsed.isNight,
-                                startTime: parsed.startTime,
-                                endTime: composeEndTime(parsed.startTime, current.durationHours),
+                                startHour: startHourFromTime(nextTime),
+                                isNight: isNightStartTime(nextTime, scheduleRules),
+                                startTime: nextTime,
+                                endTime: composeEndTime(nextTime, current.durationHours),
                               }));
                             }}
                             className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"
-                          >
-                            {hourOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </td>
                         <td className="px-2 py-2">
                           <input
@@ -3016,29 +3027,26 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
               </label>
               <label className="text-xs text-slate-400">
                 Hora
-                <select
-                  value={hourSelectValue(flightModalDraft.isNight, flightModalDraft.startTime, flightModalDraft.startHour)}
+                <input
+                  type="time"
+                  step={60}
+                  value={flightModalDraft.startTime}
                   onChange={(e) => {
-                    const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                    const nextTime = normalizeTimeInput(e.target.value);
+                    if (!nextTime) return;
                     setFlightModalDraft((prev) =>
                       prev
                         ? {
                             ...prev,
-                            startHour: parsed.startHour,
-                            startTime: parsed.startTime,
-                            isNight: parsed.isNight,
+                            startHour: startHourFromTime(nextTime),
+                            startTime: nextTime,
+                            isNight: isNightStartTime(nextTime, scheduleRules),
                           }
                         : prev,
                     );
                   }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                >
-                  {hourOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label className="text-xs text-slate-400">
                 Duração (h)

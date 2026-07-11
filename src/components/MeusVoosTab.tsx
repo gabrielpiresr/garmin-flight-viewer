@@ -33,6 +33,7 @@ import {
 } from "../lib/flightSignaturesDb";
 import { exportFlightFichaPdf } from "../lib/flightFichaPdf";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
+import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
 import {
   buildBasicFlightListDisplayInfo,
   invalidateFlightListDisplayCache,
@@ -53,7 +54,7 @@ import { navigateToTab } from "../lib/routedTabs";
 import type { FlightScheduleRules } from "../types/schoolRules";
 import { CancellationModal, FlightDetailModal } from "./StudentScheduleTab";
 import { FlightsAgendaBoard } from "./FlightsAgendaBoard";
-import { FlightDetailView } from "./FlightDetailView";
+import { FlightDetailView, type FlightDetailSubTab } from "./FlightDetailView";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
 import { NovoVooFlow } from "./NovoVooFlow";
 import type { NovoVooStepId } from "./NovoVooFlow";
@@ -62,7 +63,7 @@ import { Skeleton } from "./ui/Skeleton";
 type View = "list" | "detail" | "create";
 
 type FlightCardInfo = FlightListDisplayInfo;
-type DetailOpenOptions = { initialStepId?: NovoVooStepId; hideStepMenu?: boolean };
+type DetailOpenOptions = { initialStepId?: NovoVooStepId; hideStepMenu?: boolean; initialSubTab?: FlightDetailSubTab };
 
 function groupFlights(
   items: SavedFlightListItem[],
@@ -275,7 +276,7 @@ function SagaUpcomingList({
             >
               <div className="flex items-start gap-3">
                 <div className="flex w-8 shrink-0 flex-col items-center text-center">
-                  <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                  <span className="text-lg font-bold leading-none text-slate-100">{day}</span>
                   <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                 </div>
                 <div className="min-w-0 flex-1">
@@ -359,6 +360,8 @@ function displayModeStorageKey(userId?: string): string {
 function readStoredDisplayMode(userId?: string): DisplayMode {
   if (typeof window === "undefined") return defaultDisplayMode();
   const stored = window.localStorage.getItem(displayModeStorageKey(userId));
+  const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+  if (!isDesktop && stored === "table") return "cards";
   return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
 }
 
@@ -429,6 +432,91 @@ function ShareFlightButton({
   );
 }
 
+type FlightActionItem = {
+  label: string;
+  tone?: "default" | "sky" | "amber" | "emerald" | "red";
+  disabled?: boolean;
+  onSelect: () => void;
+};
+
+function OpenFlightChevron() {
+  return (
+    <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-700/60 bg-slate-950/30 text-slate-400 transition group-hover:border-sky-500/50 group-hover:text-sky-300" aria-hidden="true">
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M7.22 4.47a.75.75 0 011.06 0l5 5a.75.75 0 010 1.06l-5 5a.75.75 0 11-1.06-1.06L11.69 10 7.22 5.53a.75.75 0 010-1.06z" clipRule="evenodd" />
+      </svg>
+    </span>
+  );
+}
+
+function MoreActionsButton({
+  open,
+  onClick,
+}: {
+  open: boolean;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="Mais opcoes"
+      aria-expanded={open}
+      onClick={onClick}
+      className={`rounded-lg border p-1.5 transition ${open ? "border-sky-500/50 bg-sky-500/10 text-sky-300" : "border-slate-700/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200"}`}
+    >
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 5.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 5.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
+      </svg>
+    </button>
+  );
+}
+
+function FlightActionsPopover({
+  actions,
+  onClose,
+}: {
+  actions: FlightActionItem[];
+  onClose: () => void;
+}) {
+  if (actions.length === 0) return null;
+  const toneClass: Record<NonNullable<FlightActionItem["tone"]>, string> = {
+    default: "text-slate-200 hover:bg-slate-800",
+    sky: "text-sky-300 hover:bg-sky-500/10",
+    amber: "text-amber-300 hover:bg-amber-500/10",
+    emerald: "text-emerald-300 hover:bg-emerald-500/10",
+    red: "text-red-300 hover:bg-red-500/10",
+  };
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-30"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+      />
+      <div className="absolute right-0 top-full z-40 mt-1 w-52 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-xl shadow-slate-950/40">
+        {actions.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            disabled={action.disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (action.disabled) return;
+              onClose();
+              action.onSelect();
+            }}
+            className={`block w-full px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${toneClass[action.tone ?? "default"]}`}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 export function MeusVoosTab() {
   const { user, configured } = useAuth();
   const { canTab } = usePermissions();
@@ -453,6 +541,7 @@ export function MeusVoosTab() {
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readStoredDisplayMode(user?.id));
   const [studentSuggestionFlightId, setStudentSuggestionFlightId] = useState<string | null>(null);
   const [shareFlightId, setShareFlightId] = useState<string | null>(null);
+  const [publicLinkFlightId, setPublicLinkFlightId] = useState<string | null>(null);
   const [cardMenuFlightId, setCardMenuFlightId] = useState<string | null>(null);
   const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
   const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
@@ -920,6 +1009,27 @@ export function MeusVoosTab() {
     openFlight(id, { initialStepId: "peso-balanceamento", hideStepMenu: true });
   };
 
+  const openFlightVideo = (id: string) => {
+    openFlight(id, { initialSubTab: "videos" });
+  };
+
+  const openFlightTelemetry = (id: string) => {
+    openFlight(id, { initialSubTab: "telemetria" });
+  };
+
+  const generatePublicLink = async (id: string) => {
+    setPublicLinkFlightId(id);
+    try {
+      const url = await createFlightPublicShare(id);
+      await navigator.clipboard?.writeText(url);
+      showToast({ variant: "success", message: "Link publico gerado e copiado." });
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Nao foi possivel gerar o link publico." });
+    } finally {
+      setPublicLinkFlightId(null);
+    }
+  };
+
   const exportFicha = async (id: string) => {
     setErr(null);
     const printWindow = window.open("", "_blank");
@@ -1051,6 +1161,7 @@ export function MeusVoosTab() {
       <FlightDetailView
         flightId={selectedFlightId}
         onBack={backToList}
+        initialSubTab={detailOpenOptions.initialSubTab}
         fichaInitialStepId={detailOpenOptions.initialStepId}
         hideFichaStepMenu={detailOpenOptions.hideStepMenu}
         trialFlightIndex={selectedFlightId ? trialFlightIndexById[selectedFlightId] : undefined}
@@ -1098,7 +1209,7 @@ export function MeusVoosTab() {
                 key={mode}
                 type="button"
                 onClick={() => setDisplayMode(mode)}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                className={`items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${mode === "table" ? "hidden md:inline-flex" : "inline-flex"} ${
                   displayMode === mode
                     ? "bg-sky-600 text-white"
                     : "text-slate-400 hover:text-slate-200"
@@ -1131,7 +1242,7 @@ export function MeusVoosTab() {
                     <path d="M20 12v2a8 8 0 01-8 8 8 8 0 01-7.32-4.74" strokeLinecap="round" strokeLinejoin="round" />
                     <path d="M20 4v4h-4M4 20v-4h4" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  Sincronizar do SAGA
+                  Sincronizar
                 </>
               )}
             </button>
@@ -1300,10 +1411,15 @@ export function MeusVoosTab() {
               onOpen={(id) => {
                 openFlight(id);
               }}
+              onPublicLink={(id) => void generatePublicLink(id)}
+              publicLinkFlightId={publicLinkFlightId}
+              onOpenVideo={openFlightVideo}
+              onOpenTelemetry={openFlightTelemetry}
               onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
               onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
               reloadingSagaFlightId={reloadingSagaFlightId}
               showStudentPending={isStudentView}
+              hideStudentColumn={isStudentView}
               onStudentSuggestion={isStudentView ? openStudentSuggestionModal : undefined}
               onStudentWeightBalance={isStudentView ? openFutureWeightBalance : undefined}
             />
@@ -1316,8 +1432,12 @@ export function MeusVoosTab() {
             emptyLabel="Nenhum voo antigo."
             onOpen={openFlight}
             onShare={(id) => setShareFlightId(id)}
+            onPublicLink={(id) => void generatePublicLink(id)}
+            publicLinkFlightId={publicLinkFlightId}
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
+            onOpenVideo={openFlightVideo}
+            onOpenTelemetry={openFlightTelemetry}
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
             onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
             reloadingSagaFlightId={reloadingSagaFlightId}
@@ -1354,18 +1474,57 @@ export function MeusVoosTab() {
                   const mon = d.toLocaleString("pt-BR", { month: "short" }).replace(".", "");
                   const isPastFlight = !isScheduledFlightStatus(f, info);
                   if (isStudentView) {
+                    const futureActions: FlightActionItem[] = [
+                      {
+                        label: info?.weightBalanceFilled ? "Ver peso e balanceamento" : "Preencher peso e balanceamento",
+                        tone: "sky",
+                        onSelect: () => openFutureWeightBalance(f.id),
+                      },
+                      ...(!info?.studentSuggestionMd
+                        ? [{ label: "Enviar sugestao do aluno", tone: "sky" as const, onSelect: () => openStudentSuggestionModal(f.id) }]
+                        : []),
+                      {
+                        label: publicLinkFlightId === f.id ? "Gerando link..." : "Gerar link publico",
+                        tone: "sky",
+                        disabled: publicLinkFlightId === f.id,
+                        onSelect: () => void generatePublicLink(f.id),
+                      },
+                    ];
                     return (
                       <li
                         key={f.id}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => openFlight(f.id)}
-                        className="cursor-pointer rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-slate-600"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openFlight(f.id);
+                          }
+                        }}
+                        className="group relative cursor-pointer rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-sky-500/50 hover:bg-slate-900/70 focus:outline-none focus-visible:border-sky-500/70"
                       >
+                        <div className="absolute right-3 top-3 flex items-center gap-1">
+                          <div className="relative">
+                            <MoreActionsButton
+                              open={cardMenuFlightId === f.id}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setCardMenuFlightId((current) => (current === f.id ? null : f.id));
+                              }}
+                            />
+                            {cardMenuFlightId === f.id ? (
+                              <FlightActionsPopover actions={futureActions} onClose={() => setCardMenuFlightId(null)} />
+                            ) : null}
+                          </div>
+                          <OpenFlightChevron />
+                        </div>
                         <div className="flex items-start gap-3">
                           <div className="flex w-8 shrink-0 flex-col items-center text-center">
-                            <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                            <span className="text-lg font-bold leading-none text-slate-100">{day}</span>
                             <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                           </div>
-                          <div className="min-w-0 flex-1">
+                          <div className="min-w-0 flex-1 pr-20 sm:pr-24">
                             {!info ? (
                               <div className="grid grid-cols-2 gap-1.5">
                                 {Array.from({ length: 4 }).map((_, j) => (
@@ -1421,12 +1580,11 @@ export function MeusVoosTab() {
                   return (
                     <li
                       key={f.id}
-                      onClick={() => openFlight(f.id)}
-                      className="cursor-pointer rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-slate-600"
+                      className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-slate-600"
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex w-8 shrink-0 flex-col items-center text-center">
-                          <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                          <span className="text-lg font-bold leading-none text-slate-100">{day}</span>
                           <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                         </div>
                         <div className="min-w-0 flex-1">
@@ -1541,6 +1699,15 @@ export function MeusVoosTab() {
                                 </button>
                               </>
                             ) : null}
+                            {!isPastFlight ? (
+                              <button
+                                type="button"
+                                onClick={() => openFlight(f.id)}
+                                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                              >
+                                Detalhes
+                              </button>
+                            ) : null}
                             {canManageFlights ? (
                               <button
                                 type="button"
@@ -1586,12 +1753,20 @@ export function MeusVoosTab() {
                         return (
                           <li
                             key={f.id}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => openFlight(f.id)}
-                            className="cursor-pointer rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-slate-600"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                openFlight(f.id);
+                              }
+                            }}
+                            className="group cursor-pointer rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 transition hover:border-sky-500/50 hover:bg-slate-900/70 focus:outline-none focus-visible:border-sky-500/70"
                           >
                             <div className="flex items-start gap-3">
                               <div className="flex w-8 shrink-0 flex-col items-center text-center">
-                                <span className="text-lg font-bold leading-none text-sky-400">{day}</span>
+                                <span className="text-lg font-bold leading-none text-slate-100">{day}</span>
                                 <span className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-500">{mon}</span>
                               </div>
                               <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
@@ -1601,7 +1776,8 @@ export function MeusVoosTab() {
                                   </span>
                                   {pastStartTime ? <span className="text-xs text-slate-500">{pastStartTime}</span> : null}
                                 </div>
-                                <div className="relative shrink-0">
+                                <div className="flex shrink-0 items-center gap-1">
+                                <div className="relative">
                                   <button
                                     type="button"
                                     aria-label="Mais ações"
@@ -1646,6 +1822,29 @@ export function MeusVoosTab() {
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             setCardMenuFlightId(null);
+                                            setShareFlightId(f.id);
+                                          }}
+                                          className="block w-full px-3 py-2 text-left text-xs font-semibold text-sky-400 hover:bg-slate-800"
+                                        >
+                                          Compartilhar
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setCardMenuFlightId(null);
+                                            void generatePublicLink(f.id);
+                                          }}
+                                          disabled={publicLinkFlightId === f.id}
+                                          className="block w-full px-3 py-2 text-left text-xs font-semibold text-sky-400 hover:bg-slate-800 disabled:opacity-60"
+                                        >
+                                          {publicLinkFlightId === f.id ? "Gerando link..." : "Gerar link publico"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setCardMenuFlightId(null);
                                             void exportFicha(f.id);
                                           }}
                                           disabled={exportingFichaId === f.id}
@@ -1671,6 +1870,8 @@ export function MeusVoosTab() {
                                     </>
                                   ) : null}
                                 </div>
+                                <OpenFlightChevron />
+                                </div>
                               </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-slate-500">
@@ -1680,27 +1881,35 @@ export function MeusVoosTab() {
                               {pastTotal ? <p>Duração: <span className="text-slate-300">{pastTotal}</span></p> : null}
                               {info?.instructorName ? <p className="col-span-2 truncate">Instrutor: <span className="text-slate-300">{shortName(info.instructorName, info.instructorName)}</span></p> : null}
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800/50 pt-2.5">
-                              <FlightSignatureBadges sigs={signaturesByFlightId[f.id]} compact />
-                              <div className="ml-auto flex flex-wrap items-center gap-2">
-                                <ShareFlightButton
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setShareFlightId(f.id);
-                                  }}
-                                  iconOnly
-                                />
+                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800/50 pt-2.5 text-xs">
+                              {info?.videoOk ? (
                                 <button
                                   type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openFlight(f.id);
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openFlightVideo(f.id);
                                   }}
-                                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                                  className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-semibold text-sky-300 hover:bg-sky-500/20"
                                 >
-                                  Detalhes
+                                  Ver video
                                 </button>
-                              </div>
+                              ) : (
+                                <span className="rounded-full border border-slate-700/60 px-2 py-1 text-slate-500">Video -</span>
+                              )}
+                              {info?.telemetryOk ? (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openFlightTelemetry(f.id);
+                                  }}
+                                  className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 font-semibold text-emerald-300 hover:bg-emerald-500/20"
+                                >
+                                  Ver telemetria
+                                </button>
+                              ) : (
+                                <span className="rounded-full border border-slate-700/60 px-2 py-1 text-slate-500">Telemetria -</span>
+                              )}
                             </div>
                           </li>
                         );
@@ -2035,8 +2244,12 @@ function FlightTableSection({
   emptyLabel,
   onOpen,
   onShare,
+  onPublicLink,
+  publicLinkFlightId,
   onExportFicha,
   exportingFichaId,
+  onOpenVideo,
+  onOpenTelemetry,
   onDelete,
   onReloadSaga,
   reloadingSagaFlightId,
@@ -2051,8 +2264,12 @@ function FlightTableSection({
   emptyLabel: string;
   onOpen: (id: string) => void;
   onShare?: (id: string) => void;
+  onPublicLink?: (id: string) => void;
+  publicLinkFlightId?: string | null;
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
+  onOpenVideo?: (id: string) => void;
+  onOpenTelemetry?: (id: string) => void;
   onDelete?: (id: string) => void;
   onReloadSaga?: (flight: SavedFlightListItem) => void;
   reloadingSagaFlightId?: string | null;
@@ -2062,6 +2279,25 @@ function FlightTableSection({
   /** Visão do aluno: a coluna "Aluno" é redundante. */
   hideStudentColumn?: boolean;
 }) {
+  const [openActionFlightId, setOpenActionFlightId] = useState<string | null>(null);
+  const tableMinWidth = showStudentPending ? "min-w-[1060px]" : "min-w-[1120px]";
+  const hasReloadableFlights = groups.some((group) => group.flights.some((flight) => Boolean(flight.saga_flight_id)));
+  const showActionColumn = Boolean(onShare || onPublicLink || onExportFicha || onDelete || (onReloadSaga && hasReloadableFlights));
+  const renderMediaLink = (available: boolean | undefined, label: string, onClick?: () => void) => {
+    if (!available || !onClick) return <span className="text-slate-600">-</span>;
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        className="text-xs font-semibold text-sky-300 underline-offset-4 hover:underline"
+      >
+        {label}
+      </button>
+    );
+  };
   return (
     <section className="space-y-3">
       <SectionTitle title={title} tone={title.toLowerCase().includes("futuro") ? "future" : title.toLowerCase().includes("antigo") ? "past" : "default"} />
@@ -2074,7 +2310,7 @@ function FlightTableSection({
               {group.label}
             </div> : null}
             <div className="overflow-x-auto">
-              <table className="min-w-[980px] w-full text-left text-xs">
+              <table className={`${tableMinWidth} w-full text-left text-xs`}>
                 <thead className="bg-slate-950/40 text-[10px] uppercase tracking-wider text-slate-500">
                   <tr>
                     <th className="px-3 py-2 font-semibold">Data</th>
@@ -2090,25 +2326,46 @@ function FlightTableSection({
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Sugestão INVA</th> : null}
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Peso e Balanceamento</th> : null}
                     {showStudentPending ? <th className="px-3 py-2 font-semibold">Sugestão aluno</th> : null}
+                    <th className="px-3 py-2 font-semibold">Video</th>
+                    <th className="px-3 py-2 font-semibold">Telemetria</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
-                    {onDelete || onShare || onExportFicha ? <th className="px-3 py-2 font-semibold">Ações</th> : null}
+                    {showActionColumn ? <th className="px-3 py-2 font-semibold">Acoes</th> : null}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/80">
                   {group.flights.map((item) => {
                     const info = infoById[item.id];
                     const d = getDateBase(item, info);
-                    const isFuture = isScheduledFlightStatus(item, info);
                     const dateLabel = info?.flightDateIso
                       ? new Date(`${info.flightDateIso}T12:00:00`).toLocaleDateString("pt-BR")
                       : d.toLocaleDateString("pt-BR");
+                    const rowHasActions = Boolean(onShare || onPublicLink || onExportFicha || onDelete || (item.saga_flight_id && onReloadSaga));
+                    const rowActions: FlightActionItem[] = [
+                      ...(onShare ? [{ label: "Compartilhar", tone: "sky" as const, onSelect: () => onShare(item.id) }] : []),
+                      ...(onPublicLink ? [{ label: publicLinkFlightId === item.id ? "Gerando link..." : "Gerar link publico", tone: "sky" as const, disabled: publicLinkFlightId === item.id, onSelect: () => onPublicLink(item.id) }] : []),
+                      ...(onExportFicha ? [{ label: exportingFichaId === item.id ? "Gerando ficha..." : "Baixar ficha", tone: "sky" as const, disabled: exportingFichaId === item.id, onSelect: () => onExportFicha(item.id) }] : []),
+                      ...(item.saga_flight_id && onReloadSaga ? [{ label: reloadingSagaFlightId === item.id ? "Recarregando SAGA..." : "Recarregar SAGA", tone: "amber" as const, disabled: reloadingSagaFlightId === item.id, onSelect: () => onReloadSaga(item) }] : []),
+                      ...(onDelete ? [{ label: "Apagar voo", tone: "red" as const, onSelect: () => onDelete(item.id) }] : []),
+                    ];
                     return (
                       <tr
                         key={item.id}
-                        className="text-slate-300 transition hover:bg-slate-800/30"
+                        tabIndex={0}
+                        onClick={() => onOpen(item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onOpen(item.id);
+                          }
+                        }}
+                        className="group cursor-pointer text-slate-300 transition odd:bg-slate-950/10 hover:bg-slate-800/30 focus:outline-none focus-visible:bg-slate-800/40"
                       >
-                        <td className="px-3 py-2 text-slate-200">{dateLabel}</td>
-                        <td className="px-3 py-2">{info?.startTime || "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-200">
+                          <span className="inline-flex items-center gap-2 text-slate-100">
+                            {dateLabel}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2">{info?.startTime || "—"}</td>
                         {!hideStudentColumn ? <td className="px-3 py-2">{shortName(info?.studentName)}</td> : null}
                         <td className="px-3 py-2">{shortName(info?.instructorName) || "—"}</td>
                         <td className="px-3 py-2">
@@ -2156,79 +2413,36 @@ function FlightTableSection({
                             )}
                           </td>
                         ) : null}
-                        <td className="px-3 py-2">
-                          <div className="flex flex-col gap-1">
-                            <FlightStatusBadge status={item.flight_status} />
-                          {!isFuture && info?.telemetryOk ? (
-                            <span className="text-emerald-300">Telemetria ok</span>
-                          ) : null}
-                          </div>
+                        <td className="whitespace-nowrap px-3 py-2">
+                          {renderMediaLink(info?.videoOk, "Ver video", onOpenVideo ? () => onOpenVideo(item.id) : undefined)}
                         </td>
-                        {onDelete || onShare || onExportFicha ? (
+                        <td className="whitespace-nowrap px-3 py-2">
+                          {renderMediaLink(info?.telemetryOk, "Ver telemetria", onOpenTelemetry ? () => onOpenTelemetry(item.id) : undefined)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <FlightStatusBadge status={item.flight_status} />
+                        </td>
+                        {showActionColumn ? (
                           <td className="px-3 py-2">
-                            <div className="flex items-center gap-2">
-                              {onShare ? (
-                                <>
-                                  <ShareFlightButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onShare(item.id);
+                            {rowHasActions ? (
+                              <div className="flex items-center gap-1">
+                                <div className="relative inline-flex">
+                                  <MoreActionsButton
+                                    open={openActionFlightId === item.id}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setOpenActionFlightId((current) => (current === item.id ? null : item.id));
                                     }}
-                                    iconOnly
                                   />
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onOpen(item.id);
-                                    }}
-                                    className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                                  >
-                                    Detalhes
-                                  </button>
-                                  {item.saga_flight_id && onReloadSaga ? (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onReloadSaga(item);
-                                      }}
-                                      disabled={reloadingSagaFlightId === item.id}
-                                      className="rounded border border-amber-600/40 bg-amber-900/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-900/20 disabled:opacity-60"
-                                    >
-                                      {reloadingSagaFlightId === item.id ? "Recarregando..." : "Recarregar SAGA"}
-                                    </button>
+                                  {openActionFlightId === item.id ? (
+                                    <FlightActionsPopover actions={rowActions} onClose={() => setOpenActionFlightId(null)} />
                                   ) : null}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onExportFicha?.(item.id);
-                                    }}
-                                    disabled={exportingFichaId === item.id}
-                                    className="inline-flex items-center gap-1.5 rounded border border-sky-600/40 bg-sky-600/10 px-2 py-1 text-xs text-sky-400 hover:bg-sky-600/20"
-                                  >
-                                    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v7.19L6.53 7.22a.75.75 0 00-1.06 1.06l4 4a.75.75 0 001.06 0l4-4a.75.75 0 10-1.06-1.06l-2.72 2.72V2.75z" />
-                                      <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
-                                    </svg>
-                                    {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
-                                  </button>
-                                </>
-                              ) : null}
-                              {onDelete ? (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDelete(item.id);
-                                  }}
-                                  className="text-red-400/80 underline-offset-4 hover:underline"
-                                >
-                                  Apagar
-                                </button>
-                              ) : null}
-                            </div>
+                                </div>
+                                <OpenFlightChevron />
+                              </div>
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
                           </td>
                         ) : null}
                       </tr>

@@ -1954,6 +1954,10 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
               hasNextWeek
               onPrevWeek={() => moveCalendar(-1)}
               onNextWeek={() => moveCalendar(1)}
+              onDayHeaderClick={(day) => {
+                setSelectedDay(day);
+                setAgendaView("daily");
+              }}
               getItemColor={studentItemColor}
               blockedSlots={calendarBlockedSlots}
               pastBeforeDate={todayIso}

@@ -1252,6 +1252,10 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     }
   }
 
+  const visibleBlockedSlots = blockedSlots.filter(
+    (slot) => !aircraftHiddenForRole(rules, slot.aircraftRegistration, viewActorRole),
+  );
+
   const publicFlights = (rules.sagaOnlySchedule
     ? flights
         .map((event) => publicSagaFlight(event, rules, viewActorId, viewActorRole, viewActorSagaId))
@@ -1285,7 +1289,7 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     rules,
     aircrafts: publicAircrafts,
     flights: publicFlights,
-    blockedSlots,
+    blockedSlots: visibleBlockedSlots,
   };
 }
 

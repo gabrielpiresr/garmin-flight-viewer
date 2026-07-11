@@ -45,11 +45,6 @@ import { getSchoolRules } from "../../lib/schoolRulesDb";
 import type { StudentCreditStatement } from "../../types/credits";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
-  buildScheduleHourOptions,
-  hourSelectValue,
-  parseHourSelectValue,
-} from "../../lib/scheduleTimeOptions";
-import {
   calendarTopPx,
   minutesToScheduleHHMM,
   parseScheduleTimeToMinutes,
@@ -479,6 +474,19 @@ type FormStudentScheduledFlight = {
 function parseStartHour(startTime: string): number {
   const [hh, mm] = startTime.split(":").map(Number);
   return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
+}
+
+function normalizeTimeInput(value: string): string | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh > 23 || mm > 59) return null;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function isNightStartTime(startTime: string, rules: FlightScheduleRules): boolean {
+  return rules.allowNightFlights && parseScheduleTimeToMinutes(startTime) >= rules.nightFlightStartHour * 60;
 }
 
 function buildCalendarHours(items: CalendarFlightItem[]): number[] {
@@ -2226,10 +2234,6 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
 
   const minGapMinutes = 30;
   // Admin/instrutor escolhem o início em meio-slot (slot 30min → opções de 15 em 15).
-  const hourOptions = useMemo(
-    () => buildScheduleHourOptions(scheduleRules, Math.max(5, (scheduleRules.slotMinutes || 30) / 2)),
-    [scheduleRules],
-  );
   const threeDayStartIndex = Math.min(
     Math.max(DAY_ORDER.indexOf(selectedDay as (typeof DAY_ORDER)[number]), 0),
     DAY_ORDER.length - 1,
@@ -3434,6 +3438,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
   async function handleSaveForm() {
     if (!user || !weekData || !formDraft) return;
     setError(null);
+    if (!normalizeTimeInput(formDraft.startTime)) {
+      setError("Informe um horario de inicio valido.");
+      return;
+    }
+    if (scheduleRules.sagaOnlySchedule && Math.round(formDraft.durationHours * 60) <= 0) {
+      setError("O fim do bloco SAGA deve ser depois do inicio.");
+      return;
+    }
     const conflicts = detectFlightConflicts({
       draft: {
         ...formDraft,
@@ -4735,59 +4747,46 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed 
               </label>
               <label className="text-xs text-slate-400">
                 {scheduleRules.sagaOnlySchedule ? "Início do bloco SAGA" : "Hora"}
-                <select
-                  value={hourSelectValue(formDraft.isNight, formDraft.startTime, formDraft.startHour)}
+                <input
+                  type="time"
+                  step={60}
+                  value={formDraft.startTime}
                   onChange={(e) => {
-                    const parsed = parseHourSelectValue(e.target.value, scheduleRules);
+                    const nextTime = normalizeTimeInput(e.target.value);
+                    if (!nextTime) return;
                     setFormDraft((prev) =>
                       prev
                         ? {
                             ...prev,
-                            startHour: parsed.startHour,
-                            startTime: parsed.startTime,
-                            isNight: parsed.isNight,
+                            startHour: parseStartHour(nextTime),
+                            startTime: nextTime,
+                            isNight: isNightStartTime(nextTime, scheduleRules),
                           }
                         : prev,
                     );
                   }}
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                >
-                  {hourOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               {scheduleRules.sagaOnlySchedule ? (
                 <label className="text-xs text-slate-400">
                   Final do bloco no SAGA
-                  <select
-                    value={String(parseScheduleTimeToMinutes(formDraft.startTime) + Math.round(formDraft.durationHours * 60))}
-                    onChange={(e) =>
+                  <input
+                    type="time"
+                    step={60}
+                    value={minutesToScheduleHHMM(parseScheduleTimeToMinutes(formDraft.startTime) + Math.round(formDraft.durationHours * 60))}
+                    onChange={(e) => {
+                      const nextEndTime = normalizeTimeInput(e.target.value);
+                      if (!nextEndTime) return;
                       setFormDraft((prev) => {
                         if (!prev) return prev;
                         const startMin = parseScheduleTimeToMinutes(prev.startTime);
-                        const endMin = Number(e.target.value);
-                        return { ...prev, durationHours: Math.max(0.25, (endMin - startMin) / 60) };
-                      })
-                    }
+                        const endMin = parseScheduleTimeToMinutes(nextEndTime);
+                        return { ...prev, durationHours: (endMin - startMin) / 60 };
+                      });
+                    }}
                     className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                  >
-                    {(() => {
-                      const startMin = parseScheduleTimeToMinutes(formDraft.startTime);
-                      const currentEnd = startMin + Math.round(formDraft.durationHours * 60);
-                      const options: number[] = [];
-                      for (let minute = startMin + 15; minute < 24 * 60; minute += 15) options.push(minute);
-                      if (currentEnd > startMin && currentEnd < 24 * 60 && !options.includes(currentEnd)) {
-                        options.push(currentEnd);
-                        options.sort((a, b) => a - b);
-                      }
-                      return options.map((minute) => (
-                        <option key={minute} value={minute}>{minutesToScheduleHHMM(minute)}</option>
-                      ));
-                    })()}
-                  </select>
+                  />
                 </label>
               ) : (
                 <label className="text-xs text-slate-400">

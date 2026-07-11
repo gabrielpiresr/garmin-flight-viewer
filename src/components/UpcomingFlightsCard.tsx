@@ -6,46 +6,105 @@ import {
   buildBasicFlightListDisplayInfo,
   loadFullFlightListDisplayInfos,
 } from "../lib/flightListDisplayCache";
+import { getPublicSchedule, type PublicScheduleFlight } from "../lib/scheduleBookingDb";
 
-type UpcomingFlight = {
+type SavedUpcomingFlight = {
+  kind: "saved";
+  id: string;
+  at: number;
   item: SavedFlightListItem;
   info: FlightDisplayInfo;
 };
 
+type ScheduleUpcomingFlight = {
+  kind: "schedule";
+  id: string;
+  at: number;
+  flight: PublicScheduleFlight;
+};
+
+type UpcomingFlight = SavedUpcomingFlight | ScheduleUpcomingFlight;
+
 type UpcomingFlightsCardProps = {
   className?: string;
   limit?: number;
+  onLoadingChange?: (loading: boolean) => void;
   onOpenFlights: () => void;
   title?: string;
   subtitle?: string;
 };
 
+function upcomingRange(): { from: string; to: string } {
+  const now = new Date();
+  const from = now.toISOString().slice(0, 10);
+  const end = new Date(now.getFullYear(), now.getMonth() + 3, 0, 12);
+  return { from, to: end.toISOString().slice(0, 10) };
+}
+
+function scheduleDateTimeMs(flight: PublicScheduleFlight): number {
+  const time = flight.startTime || flight.presentationTime || "00:00";
+  const date = new Date(`${flight.flightDate}T${time}`);
+  const value = date.getTime();
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function isFutureScheduleFlight(flight: PublicScheduleFlight): boolean {
+  const startsAt = scheduleDateTimeMs(flight);
+  const endsAt = startsAt + Math.max(flight.durationMinutes || 0, 30) * 60_000;
+  return endsAt >= Date.now();
+}
+
 function formatFlightDate(info: FlightDisplayInfo, item: SavedFlightListItem): string {
   const iso = info.flightDateIso ?? item.created_at.slice(0, 10);
   const date = new Date(`${iso}T12:00:00`);
   return Number.isNaN(date.getTime())
-    ? "—"
+    ? "-"
+    : date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+}
+
+function formatScheduleFlightDate(flight: PublicScheduleFlight): string {
+  const date = new Date(`${flight.flightDate}T12:00:00`);
+  return Number.isNaN(date.getTime())
+    ? "-"
     : date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
 }
 
 function futureStudentPendingItems(info: FlightDisplayInfo): string[] {
   const pending: string[] = [];
-  if (!info.studentSuggestionMd.trim()) pending.push("sugestão do aluno");
+  if (!info.studentSuggestionMd.trim()) pending.push("sugestao do aluno");
   if (!info.weightBalanceFilled) pending.push("peso e balanceamento");
   return pending;
+}
+
+function scheduleStatusLabel(status: PublicScheduleFlight["status"]): string {
+  return status;
+}
+
+function savedRow(item: SavedFlightListItem): SavedUpcomingFlight {
+  const info = buildBasicFlightListDisplayInfo(item);
+  return { kind: "saved", id: item.id, at: getFlightDateTimeMs(item, info), item, info };
+}
+
+function scheduleRow(flight: PublicScheduleFlight): ScheduleUpcomingFlight {
+  return { kind: "schedule", id: `schedule:${flight.id}`, at: scheduleDateTimeMs(flight), flight };
 }
 
 export function UpcomingFlightsCard({
   className = "w-full",
   limit = 3,
+  onLoadingChange,
   onOpenFlights,
-  title = "Próximos voos",
-  subtitle = "Somente os próximos voos futuros atribuídos a você.",
+  title = "Proximos voos",
+  subtitle = "Somente os proximos voos futuros atribuidos a voce.",
 }: UpcomingFlightsCardProps) {
   const { user, configured } = useAuth();
   const [flights, setFlights] = useState<UpcomingFlight[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
 
   const load = useCallback(async () => {
     if (!user || !configured) {
@@ -55,45 +114,80 @@ export function UpcomingFlightsCard({
     }
     setLoading(true);
     setError(null);
-    const { data, error: listError } = await listSavedFlights(
-      { userId: user.id, role: user.role },
-      { limit: Math.max(50, limit * 4) },
-    );
-    if (listError) {
-      setError(listError.message);
-      setFlights([]);
-      setLoading(false);
+
+    const range = upcomingRange();
+    const [savedResult, scheduleResult] = await Promise.allSettled([
+      listSavedFlights({ userId: user.id, role: user.role }, { limit: Math.max(50, limit * 4) }),
+      getPublicSchedule(range.from, range.to),
+    ]);
+
+    const errors: string[] = [];
+    let savedRows: SavedUpcomingFlight[] = [];
+    let scheduleRows: ScheduleUpcomingFlight[] = [];
+
+    if (savedResult.status === "fulfilled") {
+      if (savedResult.value.error) {
+        errors.push(savedResult.value.error.message);
+      } else {
+        savedRows = (savedResult.value.data ?? [])
+          .map(savedRow)
+          .filter(({ item, info }) => isFutureFlight(item, info))
+          .sort((a, b) => a.at - b.at);
+      }
+    } else {
+      errors.push(savedResult.reason instanceof Error ? savedResult.reason.message : "Falha ao carregar voos salvos.");
+    }
+
+    if (scheduleResult.status === "fulfilled") {
+      scheduleRows = scheduleResult.value.flights
+        .filter((flight) => flight.isOwn || flight.studentUserId === user.id)
+        .filter(isFutureScheduleFlight)
+        .map(scheduleRow)
+        .sort((a, b) => a.at - b.at);
+    } else {
+      errors.push(scheduleResult.reason instanceof Error ? scheduleResult.reason.message : "Falha ao carregar a escala.");
+    }
+
+    const savedSagaIds = new Set(savedRows.map((row) => row.item.saga_flight_id).filter(Boolean));
+    const mergedRows = [
+      ...savedRows,
+      ...scheduleRows.filter((row) => !savedSagaIds.has(row.flight.id)),
+    ]
+      .sort((a, b) => a.at - b.at)
+      .slice(0, limit);
+
+    setFlights(mergedRows);
+    setLoading(false);
+    if (mergedRows.length === 0 && errors.length > 0) {
+      setError(errors[0]);
       return;
     }
 
-    const items = data ?? [];
-    const upcomingItems = items
-      .map((item) => ({ item, info: buildBasicFlightListDisplayInfo(item) }))
-      .filter(({ item, info }) => isFutureFlight(item, info))
-      .sort((a, b) => getFlightDateTimeMs(a.item, a.info) - getFlightDateTimeMs(b.item, b.info))
-      .slice(0, limit)
-      .map(({ item }) => item);
-    const infoById = await loadFullFlightListDisplayInfos(upcomingItems, { concurrency: 3 });
-    const rows = upcomingItems.map((item) => ({
-      item,
-      info: infoById[item.id] ?? buildBasicFlightListDisplayInfo(item),
-    }));
-    setFlights(rows);
-    setLoading(false);
+    const savedItems = mergedRows.flatMap((row) => (row.kind === "saved" ? [row.item] : []));
+    if (savedItems.length === 0) return;
+
+    const infoById = await loadFullFlightListDisplayInfos(savedItems, { concurrency: 3 });
+    setFlights((current) =>
+      current
+        .map((row) =>
+          row.kind === "saved"
+            ? {
+                ...row,
+                info: infoById[row.item.id] ?? buildBasicFlightListDisplayInfo(row.item),
+                at: getFlightDateTimeMs(row.item, infoById[row.item.id] ?? row.info),
+              }
+            : row,
+        )
+        .sort((a, b) => a.at - b.at)
+        .slice(0, limit),
+    );
   }, [configured, limit, user]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const nextFlights = useMemo(
-    () =>
-      flights
-        .filter(({ item, info }) => isFutureFlight(item, info))
-        .sort((a, b) => getFlightDateTimeMs(a.item, a.info) - getFlightDateTimeMs(b.item, b.info))
-        .slice(0, limit),
-    [flights, limit],
-  );
+  const nextFlights = useMemo(() => [...flights].sort((a, b) => a.at - b.at).slice(0, limit), [flights, limit]);
 
   return (
     <section className={`${className} min-w-0`}>
@@ -123,52 +217,93 @@ export function UpcomingFlightsCard({
             {error}
           </p>
         ) : nextFlights.length === 0 ? (
-          <p className="py-4 text-sm text-slate-500">Nenhum voo futuro atribuído.</p>
+          <p className="py-4 text-sm text-slate-500">Nenhum voo futuro atribuido.</p>
         ) : (
           <div className="space-y-3">
-            {nextFlights.map(({ item, info }) => {
-              const pending = user?.role === "aluno" ? futureStudentPendingItems(info) : [];
-              return (
-                <article key={item.id} className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500">
-                        {formatFlightDate(info, item)} · {info.startTime || "horário a definir"}
-                      </p>
-                    </div>
-                    <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300 [overflow-wrap:anywhere]">
-                      {info.aircraft}
-                    </span>
-                  </div>
-                  <div className="mt-3 grid gap-2 break-words text-xs text-slate-400 [overflow-wrap:anywhere]">
-                    <p>
-                      Aluno: <span className="text-slate-300">{info.studentName}</span>
-                    </p>
-                    {info.instructorName ? (
-                      <p>
-                        Instrutor: <span className="text-slate-300">{info.instructorName}</span>
-                      </p>
-                    ) : null}
-                    <p>
-                      Rota: <span className="text-slate-300">{info.fromTo}</span>
-                    </p>
-                    <p>
-                      Sugestão INVA:{" "}
-                      <span className="text-slate-300">{info.instructorSuggestionMd ? "preenchida" : "pendente"}</span>
-                    </p>
-                    {pending.length > 0 ? (
-                      <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
-                        <span className="font-semibold">Pendente antes do voo: </span>
-                        {pending.join(" e ")}.
-                      </p>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
+            {nextFlights.map((row) =>
+              row.kind === "saved" ? (
+                <SavedUpcomingFlightArticle key={row.id} item={row.item} info={row.info} isStudent={user?.role === "aluno"} />
+              ) : (
+                <ScheduleUpcomingFlightArticle key={row.id} flight={row.flight} />
+              ),
+            )}
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+function SavedUpcomingFlightArticle({
+  item,
+  info,
+  isStudent,
+}: {
+  item: SavedFlightListItem;
+  info: FlightDisplayInfo;
+  isStudent: boolean;
+}) {
+  const pending = isStudent ? futureStudentPendingItems(info) : [];
+  return (
+    <article className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">
+            {formatFlightDate(info, item)} - {info.startTime || "horario a definir"}
+          </p>
+        </div>
+        <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300 [overflow-wrap:anywhere]">
+          {info.aircraft}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 break-words text-xs text-slate-400 [overflow-wrap:anywhere]">
+        <p>
+          Instrutor: <span className="text-slate-300">{info.instructorName || "a definir"}</span>
+        </p>
+        <p>
+          Rota: <span className="text-slate-300">{info.fromTo}</span>
+        </p>
+        <p>
+          Sugestao INVA: <span className="text-slate-300">{info.instructorSuggestionMd ? "preenchida" : "pendente"}</span>
+        </p>
+        {pending.length > 0 ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+            <span className="font-semibold">Pendente antes do voo: </span>
+            {pending.join(" e ")}.
+          </p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ScheduleUpcomingFlightArticle({ flight }: { flight: PublicScheduleFlight }) {
+  return (
+    <article className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">
+            {formatScheduleFlightDate(flight)} - {flight.startTime || flight.presentationTime || "horario a definir"}
+          </p>
+          <p className="mt-1 text-sm font-semibold text-slate-100">{scheduleStatusLabel(flight.status)}</p>
+        </div>
+        <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300 [overflow-wrap:anywhere]">
+          {flight.aircraftIdent}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 break-words text-xs text-slate-400 [overflow-wrap:anywhere]">
+        <p>
+          Apresentacao: <span className="text-slate-300">{flight.presentationTime || "-"}</span>
+        </p>
+        <p>
+          Instrutor: <span className="text-slate-300">{flight.instructorName || "a definir"}</span>
+        </p>
+        {flight.notes ? (
+          <p>
+            Observacoes: <span className="text-slate-300">{flight.notes}</span>
+          </p>
+        ) : null}
+      </div>
+    </article>
   );
 }

@@ -347,6 +347,7 @@ export function CalendarGrid({
   onEmptySlotClick,
   onPrevWeek,
   onNextWeek,
+  onDayHeaderClick,
   hasPrevWeek,
   hasNextWeek,
   privacyMode = false,
@@ -377,6 +378,7 @@ export function CalendarGrid({
   onEmptySlotClick?: (target: CalendarDropTarget) => void;
   onPrevWeek?: () => void;
   onNextWeek?: () => void;
+  onDayHeaderClick?: (day: number) => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   privacyMode?: boolean;
@@ -620,12 +622,21 @@ export function CalendarGrid({
                   const date = dayOfWeekToDate(weekStart, day);
                   const today = isDateToday(date);
                   const past = isDayPast(day);
+                  const clickable = Boolean(onDayHeaderClick) && !past;
                   return (
-                    <th key={day} colSpan={dayColumns.length} className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""}`}>
-                      <span className="block uppercase">{DAY_LABEL[day]}</span>
-                      <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
-                        {date.getDate()}
-                      </span>
+                    <th key={day} colSpan={dayColumns.length} className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 p-0 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""}`}>
+                      <button
+                        type="button"
+                        disabled={!clickable}
+                        onClick={clickable ? () => onDayHeaderClick?.(day) : undefined}
+                        className={`w-full rounded-t-md pb-1 pt-1 transition-colors ${clickable ? "cursor-pointer hover:bg-sky-500/10 hover:text-sky-300" : "cursor-default"}`}
+                        title={clickable ? "Abrir agenda diaria" : undefined}
+                      >
+                        <span className="block uppercase">{DAY_LABEL[day]}</span>
+                        <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
+                          {date.getDate()}
+                        </span>
+                      </button>
                     </th>
                   );
                 })}
