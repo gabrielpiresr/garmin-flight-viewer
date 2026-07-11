@@ -50,6 +50,7 @@ const WEEKLY_PLANS_COLLECTION_ID =
 const INSTRUCTOR_PREFS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID;
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID;
 const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
+const SCHOOL_PRODUCTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_PRODUCTS_COLLECTION_ID || process.env.APPWRITE_SCHOOL_PRODUCTS_COL_ID || "school_products";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || process.env.APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
 const INSTRUCTOR_COSTS_COLLECTION_ID =
   process.env.APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID || process.env.APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
@@ -10582,19 +10583,29 @@ async function findProfileSearchUserIds(search) {
   if (!needle) return [];
   const raw = cleanString(search);
   const searchableFields = ["full_name", "nickname", "email", "anac_code", "cpf", "phone"];
-  const pages = await Promise.all(
-    searchableFields.map((field) =>
-      databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
-        sdk.Query.equal("school_id", [SCHOOL_ID]),
-        sdk.Query.search(field, raw),
-        sdk.Query.limit(20),
-        ...selectQuery(["user_id"]),
-      ]).catch(() => ({ documents: [] })),
+  const [pages, localProfiles] = await Promise.all([
+    Promise.all(
+      searchableFields.map((field) =>
+        databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+          sdk.Query.equal("school_id", [SCHOOL_ID]),
+          sdk.Query.search(field, raw),
+          sdk.Query.limit(20),
+          ...selectQuery(["user_id"]),
+        ]).catch(() => ({ documents: [] })),
+      ),
     ),
-  );
+    listAllDocuments(PROFILES_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      ...selectQuery(["user_id", ...searchableFields]),
+    ]).catch(() => []),
+  ]);
   return Array.from(new Set(
-    pages
-      .flatMap((page) => page.documents || [])
+    [
+      ...pages.flatMap((page) => page.documents || []),
+      ...localProfiles.filter((profile) =>
+        searchableFields.some((field) => normalizeSearch(profile[field]).includes(needle)),
+      ),
+    ]
       .map((profile) => cleanString(profile.user_id))
       .filter(Boolean),
   ));
@@ -16181,9 +16192,27 @@ function proposalProducts(input) {
     ? input.products.map((item) => ({
         id: cleanString(item?.id),
         name: cleanString(item?.name),
-        price: Math.max(0, Number(item?.price) || 0),
+        price: proposalProductPrice(item),
       }))
     : [];
+}
+
+function proposalProductPrice(item) {
+  const candidates = [
+    item?.price,
+    item?.idealPrice,
+    item?.ideal_price,
+    item?.amountPaid,
+    item?.amount_paid,
+    item?.value,
+    item?.totalValue,
+    item?.total_value,
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value > 0) return Math.round(value * 100) / 100;
+  }
+  return 0;
 }
 
 function proposalInfoPackages(input) {
@@ -16204,6 +16233,20 @@ function proposalProductsFromJson(value) {
   const productsData = parseJsonObject(value, []);
   if (Array.isArray(productsData)) return proposalProducts({ products: productsData });
   return proposalProducts({ products: productsData?.products });
+}
+
+function proposalProductsTotalFromJson(value) {
+  const productsData = parseJsonObject(value, []);
+  const products = Array.isArray(productsData)
+    ? productsData
+    : Array.isArray(productsData?.products)
+      ? productsData.products
+      : [];
+  return Math.round(products.reduce((sum, item) => sum + proposalProductPrice(item), 0) * 100) / 100;
+}
+
+function proposalPaymentTotal(doc) {
+  return Math.round((Number(doc?.total_value || 0) + proposalProductsTotalFromJson(doc?.products_json)) * 100) / 100;
 }
 
 function mapCaktoProposal(doc) {
@@ -16244,8 +16287,7 @@ function mapCaktoProposal(doc) {
 async function createCaktoOfferForProposal(doc) {
   const { token, settings } = await getCaktoAccessToken();
   if (!settings.productId) throw Object.assign(new Error("Produto padrão da Cakto não configurado."), { status: 400 });
-  const products = proposalProductsFromJson(doc.products_json);
-  const price = Math.round((Number(doc.total_value || 0) + products.reduce((sum, item) => sum + (Number(item.price) || 0), 0)) * 100) / 100;
+  const price = proposalPaymentTotal(doc);
   const response = await fetch("https://api.cakto.com.br/public_api/offers/", {
     method: "POST",
     headers: {
@@ -16410,14 +16452,41 @@ async function getFlightCreditPackagesForStudentUserId(studentUserId) {
 async function listStaffCreditPurchaseStudents(search = "") {
   const needle = normalizeSearch(String(search || ""));
   if (needle.length < 3) return [];
-  const page = await listSummaries({ search: String(search || "").trim(), role: "aluno", limit: 25, offset: 0 });
+  const page = await listSummaries({ search: String(search || "").trim(), limit: 50, offset: 0 });
   return (page.users || [])
+    .filter((user) => {
+      const roles = Array.isArray(user.assignedRoleSlugs) ? user.assignedRoleSlugs : Array.isArray(user.roles) ? user.roles : [];
+      return user.role === "aluno" || user.activeRole === "aluno" || roles.includes("aluno");
+    })
     .map((user) => ({
       userId: cleanString(user.userId),
       name: cleanString(user.name),
       email: cleanString(user.email),
     }))
+    .slice(0, 25)
     .filter((user) => user.userId);
+}
+
+async function checkoutExtraProducts(input) {
+  const items = proposalProducts({ products: Array.isArray(input) ? input : [] })
+    .filter((item) => item.id && item.name && item.price > 0)
+    .slice(0, 20);
+  if (!items.length) return [];
+  if (!SCHOOL_PRODUCTS_COLLECTION_ID) return items;
+
+  const resolved = [];
+  for (const item of items) {
+    const doc = await databases.getDocument(DATABASE_ID, SCHOOL_PRODUCTS_COLLECTION_ID, item.id).catch(() => null);
+    if (!doc || doc.deleted_at || doc.active === false || (doc.school_id && doc.school_id !== SCHOOL_ID)) {
+      throw Object.assign(new Error(`Produto indisponivel: ${item.name || item.id}`), { status: 400 });
+    }
+    resolved.push({
+      id: cleanString(doc.$id),
+      name: cleanString(doc.name),
+      price: Math.max(0, Number(doc.ideal_price) || 0),
+    });
+  }
+  return resolved.filter((item) => item.id && item.name && item.price > 0);
 }
 
 async function createFlightCreditCheckoutForUser(
@@ -16425,7 +16494,7 @@ async function createFlightCreditCheckoutForUser(
   packageId,
   customHoursInput = null,
   weekdayOnlyInput = false,
-  { requireStudentPurchasesEnabled = true } = {},
+  { requireStudentPurchasesEnabled = true, extraProductsInput = [] } = {},
 ) {
   const safeUserId = cleanString(targetUserId);
   if (!safeUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
@@ -16467,6 +16536,7 @@ async function createFlightCreditCheckoutForUser(
     ? Math.round(baseHourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
     : baseHourPrice;
   const totalValue = Math.round(finalHours * effectiveHourPrice * 100) / 100;
+  const extraProducts = await checkoutExtraProducts(extraProductsInput);
   const snapshot = {
     packageId: normalized.id,
     referencePackageId: referencePackage.id,
@@ -16501,7 +16571,7 @@ async function createFlightCreditCheckoutForUser(
         packageId: normalized.id,
         creditId,
         snapshot,
-        products: [],
+        products: extraProducts,
       }),
       public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
       status: "draft",
@@ -16541,12 +16611,82 @@ async function createFlightCreditCheckout(actorUserId, packageId, customHoursInp
   return createFlightCreditCheckoutForUser(actorUserId, packageId, customHoursInput, weekdayOnlyInput);
 }
 
-async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null, weekdayOnlyInput = false) {
+async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packageId, customHoursInput = null, customHourPriceInput = null, weekdayOnlyInput = false, extraProductsInput = []) {
   await requireAdmin(actorUserId);
   const safeTargetUserId = cleanString(targetUserId);
   if (!safeTargetUserId) throw Object.assign(new Error("Usuário de destino não informado."), { status: 400 });
   const safePackageId = cleanString(packageId);
-  if (!safePackageId) throw Object.assign(new Error("Pacote não informado."), { status: 400 });
+  const extraProducts = await checkoutExtraProducts(extraProductsInput);
+  if (!safePackageId && extraProducts.length === 0) {
+    throw Object.assign(new Error("Selecione um pacote de horas ou pelo menos um produto adicional."), { status: 400 });
+  }
+  const targetUser = await users.get({ userId: safeTargetUserId });
+  const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
+  if (!safePackageId) {
+    const snapshot = {
+      packageId: "",
+      referencePackageId: "",
+      customHours: null,
+      customHourPrice: null,
+      hours: 0,
+      hourPrice: 0,
+      baseHourPrice: 0,
+      weekdayOnly: false,
+      weekdayDiscountPct: null,
+      totalValue: 0,
+      validityDays: 0,
+      aircraftModelId: "",
+      aircraftModelName: "",
+    };
+    const proposalId = sdk.ID.unique();
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      CRM_PROPOSALS_COLLECTION_ID,
+      proposalId,
+      {
+        school_id: SCHOOL_ID,
+        lead_id: safeTargetUserId,
+        lead_name: cleanString(targetProfile?.full_name) || cleanString(targetUser.name) || "Aluno",
+        lead_email: cleanString(targetUser.email),
+        hours: 0,
+        hour_price: 0,
+        total_value: 0,
+        products_json: JSON.stringify({
+          kind: "student_credit_package",
+          studentUserId: safeTargetUserId,
+          packageId: "",
+          creditId: "",
+          snapshot,
+          products: extraProducts,
+        }),
+        public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+        status: "draft",
+        payment_status: "pending",
+      },
+      [
+        sdk.Permission.read(sdk.Role.any()),
+        sdk.Permission.read(sdk.Role.user(safeTargetUserId)),
+        sdk.Permission.update(sdk.Role.label("admin")),
+        sdk.Permission.delete(sdk.Role.label("admin")),
+      ],
+    );
+    try {
+      const payment = await createCaktoOfferForProposal(doc);
+      const updated = await updateProposalPayment(doc.$id, {
+        cakto_offer_id: payment.offerId,
+        payment_url: payment.paymentUrl,
+        payment_status: "created",
+        payment_error: "",
+      });
+      return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+    } catch (error) {
+      await updateProposalPayment(doc.$id, {
+        payment_status: "failed",
+        payment_error: cleanString(error?.message).slice(0, 2048),
+      });
+      throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+    }
+  }
   const { settings } = await loadFlightCreditSalesConfig();
   const weekdayOnly = weekdayOnlyInput === true;
   const weekdayDiscountPct = parseWeekdayDiscountPct(settings?.weekdayDiscountPct);
@@ -16582,8 +16722,6 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   if (!Number.isFinite(finalHours) || finalHours <= 0) {
     throw Object.assign(new Error("Quantidade de horas inválida."), { status: 400 });
   }
-  const targetUser = await users.get({ userId: safeTargetUserId });
-  const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
   const baseHourPrice = hasCustomHourPrice ? customHourPrice : referencePackage.hourPrice;
   const finalHourPrice = weekdayOnly
     ? Math.round(baseHourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
@@ -16624,7 +16762,7 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
         packageId: normalized.id,
         creditId,
         snapshot,
-        products: [],
+        products: extraProducts,
       }),
       public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
       status: "draft",
@@ -16653,6 +16791,85 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     });
     throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
   }
+}
+
+async function findFlightCreditProposalForPaymentLink(targetUserId, paymentUrl, proposalId = "") {
+  const safeProposalId = cleanString(proposalId);
+  if (safeProposalId) {
+    return databases.getDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, safeProposalId).catch(() => null);
+  }
+  const safeTargetUserId = cleanString(targetUserId);
+  const safePaymentUrl = cleanString(paymentUrl);
+  if (!safeTargetUserId || !safePaymentUrl) return null;
+  try {
+    const page = await databases.listDocuments(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, [
+      sdk.Query.equal("lead_id", [safeTargetUserId]),
+      sdk.Query.orderDesc("$createdAt"),
+      sdk.Query.limit(50),
+    ]);
+    return (page.documents || []).find((doc) => cleanString(doc.payment_url) === safePaymentUrl) || null;
+  } catch {
+    // Fallback for projects without a lead_id index on proposals.
+  }
+  try {
+    const page = await databases.listDocuments(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, [
+      sdk.Query.equal("payment_url", [safePaymentUrl]),
+      sdk.Query.limit(1),
+    ]);
+    return (page.documents || []).find((doc) => cleanString(doc.lead_id) === safeTargetUserId) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendFlightCreditPaymentLinkEmail(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const safeTargetUserId = cleanString(input.targetUserId);
+  const safePaymentUrl = cleanString(input.paymentUrl);
+  if (!safeTargetUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
+  if (!safePaymentUrl) throw Object.assign(new Error("Link de pagamento nao informado."), { status: 400 });
+  try {
+    const parsed = new URL(safePaymentUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("invalid");
+  } catch {
+    throw Object.assign(new Error("Link de pagamento invalido."), { status: 400 });
+  }
+
+  const safeProposalId = cleanString(input.proposalId);
+  const [targetUser, targetProfile, { settings }, { publicSettings: brand }] = await Promise.all([
+    users.get({ userId: safeTargetUserId }),
+    getProfileByUserId(safeTargetUserId).catch(() => null),
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+  const proposal = await findFlightCreditProposalForPaymentLink(safeTargetUserId, safePaymentUrl, safeProposalId);
+  if (!proposal) throw Object.assign(new Error("Proposta do link de pagamento nao encontrada para calcular o valor do email."), { status: 404 });
+  if (proposal && cleanString(proposal.lead_id) && cleanString(proposal.lead_id) !== safeTargetUserId) {
+    throw Object.assign(new Error("O link informado nao pertence ao aluno selecionado."), { status: 400 });
+  }
+  const email = cleanString(targetUser?.email) || cleanString(targetProfile?.email);
+  if (!email) throw Object.assign(new Error("Aluno sem email cadastrado."), { status: 400 });
+  const studentName = cleanString(targetProfile?.full_name) || cleanString(targetUser?.name) || email;
+  const hours = Number(proposal?.hours || 0);
+  const totalValue = proposalPaymentTotal(proposal);
+  const details = [
+    ["Aluno", studentName],
+    hours > 0 ? ["Horas", `${hours.toLocaleString("pt-BR")} h`] : null,
+    totalValue > 0 ? ["Valor", formatMoneyLabel(totalValue, "BRL")] : null,
+  ].filter(Boolean);
+  const result = await sendEmailToUser(settings, brand, { email, name: studentName }, {
+    eyebrow: "Pagamento",
+    title: "Seu link de pagamento esta pronto",
+    intro: "A escola gerou um link de pagamento para voce.",
+    body: "Use o botao abaixo para concluir o pagamento com seguranca. Depois da confirmacao, os creditos e produtos vinculados ao link serao lancados automaticamente.",
+    details,
+    ctaLabel: "Abrir pagamento",
+    url: safePaymentUrl,
+  });
+  if (result.status !== "sent") {
+    throw Object.assign(new Error(result.reason || "Email nao enviado."), { status: 400 });
+  }
+  return { ok: true, email, delivery: result };
 }
 
 async function retryCaktoProposal(proposalId) {
@@ -19263,6 +19480,7 @@ module.exports = async ({ req, res, log, error }) => {
         payload.packageId,
         payload.customHours,
         payload.weekdayOnly === true,
+        { extraProductsInput: payload.extraProducts },
       );
       return jsonResponse(res, 200, { checkout });
     }
@@ -19300,8 +19518,14 @@ module.exports = async ({ req, res, log, error }) => {
         payload.customHours,
         payload.customHourPrice,
         payload.weekdayOnly === true,
+        payload.extraProducts,
       );
       return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "sendFlightCreditPaymentLinkEmail") {
+      const result = await sendFlightCreditPaymentLinkEmail(actorUserId, payload);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "sagaGetLastImportSummary") {

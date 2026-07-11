@@ -13,6 +13,7 @@ const ADMIN_USERS_FUNCTION_ID = process.env.ADMIN_USERS_FUNCTION_ID || "admin-us
 const RECEIPTS_COLLECTION_ID = process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || "cakto_receipts";
 const PROPOSALS_COLLECTION_ID = process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || "crm_proposals";
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || "student_credits";
+const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || "school_costs";
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID || "";
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || "";
@@ -149,6 +150,53 @@ function creditPermissions(userId) {
     sdk.Permission.update(sdk.Role.label("admin")),
     sdk.Permission.delete(sdk.Role.label("admin")),
   ];
+}
+
+function proposalProducts(metadata) {
+  const products = Array.isArray(metadata?.products) ? metadata.products : [];
+  return products
+    .map((item) => ({
+      id: clean(item?.id),
+      name: clean(item?.name),
+      price: Math.max(0, amountFrom(item?.price)),
+    }))
+    .filter((item) => item.id && item.name && item.price > 0);
+}
+
+async function createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId) {
+  const products = proposalProducts(metadata);
+  if (!products.length || !PRODUCT_SALES_COLLECTION_ID) return;
+
+  await Promise.all(products.map(async (product, index) => {
+    const saleId = `ps_${crypto
+      .createHash("sha256")
+      .update(`${proposal.$id}:${index}:${product.id}:${product.price}`)
+      .digest("hex")
+      .slice(0, 29)}`;
+    try {
+      await databases.createDocument(
+        DATABASE_ID,
+        PRODUCT_SALES_COLLECTION_ID,
+        saleId,
+        {
+          school_id: proposal.school_id || SCHOOL_ID,
+          user_id: studentUserId,
+          product_id: product.id,
+          product_name: product.name,
+          ideal_price: product.price,
+          sale_date: purchaseDate,
+          amount_paid: product.price,
+          payment_method: normalized.paymentMethod || "Cakto",
+          notes: `Compra online Cakto. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
+          created_by: "cakto-webhook",
+          deleted_at: null,
+        },
+        ADMIN_PERMS,
+      );
+    } catch (err) {
+      if (Number(err?.code) !== 409) throw err;
+    }
+  }));
 }
 
 function sagaSetCookieHeaders(headers) {
@@ -461,6 +509,20 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
   const validityDays = Math.max(1, Math.round(Number(snapshot.validityDays) || 0));
   const amountPaid = Number(snapshot.totalValue);
   const hours = Number(snapshot.hours);
+  const products = proposalProducts(metadata);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    if (!products.length) throw new Error("Proposta sem horas e sem produtos.");
+    await createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId);
+    await updateFulfillment(receiptId, proposal.$id, {
+      status: "completed",
+      error: "",
+      creditId: "",
+      sagaStatus: "skipped",
+      sagaError: "",
+      sagaMarker: "",
+    });
+    return { applicable: true, creditId: "", sagaStatus: "skipped" };
+  }
   if (!clean(snapshot.aircraftModelId) || !clean(snapshot.aircraftModelName) || !Number.isFinite(amountPaid) || amountPaid <= 0 || !Number.isFinite(hours) || hours <= 0) {
     throw new Error("Snapshot do pacote invalido.");
   }
@@ -498,6 +560,8 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
   } catch (err) {
     if (Number(err?.code) !== 409) throw err;
   }
+
+  await createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId);
 
   await updateFulfillment(receiptId, proposal.$id, {
     status: "pending",
@@ -543,6 +607,7 @@ async function notifyAdminsOfSale(receiptId, normalized, proposal) {
   const metadata = safeParse(proposal?.products_json, null);
   const snapshot = metadata && !Array.isArray(metadata) ? asObject(metadata.snapshot) : {};
   const hours = Number(snapshot.hours);
+  const extraProductLabels = proposalProducts(metadata).map((product) => product.name);
   const productLabel = Number.isFinite(hours) && hours > 0 && clean(snapshot.aircraftModelName)
     ? `${hours}h — ${clean(snapshot.aircraftModelName)}`
     : "";
@@ -561,7 +626,7 @@ async function notifyAdminsOfSale(receiptId, normalized, proposal) {
         paymentMethod: normalized.paymentMethod,
         paymentInstallments: normalized.paymentInstallments,
         orderId: normalized.orderId,
-        productLabel,
+        productLabel: [productLabel, ...extraProductLabels].filter(Boolean).join(" + "),
         eventAt: normalized.eventAt || normalized.receivedAt,
       },
     }),

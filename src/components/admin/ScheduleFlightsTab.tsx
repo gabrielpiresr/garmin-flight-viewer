@@ -4,7 +4,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { listAircrafts } from "../../lib/aircraftDb";
 import { SCHOOL_ID } from "../../lib/appwrite";
 import { decodeFlightRecord, encodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
-import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, FLIGHT_STATUS_OPTIONS, normalizeScheduleFlightStatus, type FlightStatus } from "../../lib/flightsDb";
+import { deleteSavedFlight, getSavedFlight, insertFlight, updateFlight, normalizeScheduleFlightStatus, type FlightStatus } from "../../lib/flightsDb";
 import { dispatchNotificationEvent, syncFlightCalendarEvent } from "../../lib/notificationsDb";
 import { cancelScheduleFlight, confirmScheduleFlight } from "../../lib/scheduleBookingDb";
 import {
@@ -342,6 +342,12 @@ export const FLIGHT_STATUS_CARD_COLOR: Record<string, string> = {
   "Realizado": "bg-sky-600",
   "Não confirmado": "bg-slate-600",
 };
+
+const MODAL_FLIGHT_STATUS_OPTIONS: FlightStatus[] = ["Previsto", "Pendente", "Confirmado", "Cancelado"];
+
+function normalizeModalFlightStatus(status: FlightStatus | undefined | null): FlightStatus {
+  return status && MODAL_FLIGHT_STATUS_OPTIONS.includes(status) ? status : "Confirmado";
+}
 
 function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
   if (item.flightStatus === "Cancelado") return "bg-red-700";
@@ -2514,6 +2520,44 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   const loadWeekRef = useRef(loadWeek);
   loadWeekRef.current = loadWeek;
 
+  useEffect(() => {
+    if (!publicDisplayMode || !actorUserId || !selectedWeekStart) return;
+
+    let disposed = false;
+    let refreshing = false;
+    const refreshCurrentEvents = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      const scrollLeft = window.scrollX;
+      const scrollTop = window.scrollY;
+      try {
+        const weekOption = weekOptionsRef.current.find((row) => row.weekStart === selectedWeekStart);
+        const bundle = await fetchWeekBundle(selectedWeekStart, weekOption, true);
+        if (disposed) return;
+        setFlights(bundle.rows);
+        setWeekData((current) =>
+          current && current.week.weekStart === selectedWeekStart
+            ? { ...current, existingGeneratedFlights: bundle.data.existingGeneratedFlights }
+            : current,
+        );
+        window.requestAnimationFrame(() => window.scrollTo(scrollLeft, scrollTop));
+      } catch {
+        // Public display refresh is intentionally silent; keep the screen exactly as-is on transient failures.
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshCurrentEvents();
+    }, 15 * 60 * 1000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [actorUserId, fetchWeekBundle, publicDisplayMode, selectedWeekStart]);
+
   // Navega ±1 semana mantendo a página no lugar (refresh em segundo plano).
   const goToWeekOffset = useCallback(
     (offset: -1 | 1) => {
@@ -3399,7 +3443,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
         durationHours: row.durationHours,
         isNight: row.isNight ?? false,
         sagaScheduleId: row.sagaScheduleId ?? null,
-        flightStatus: row.flightStatus ?? "Confirmado",
+        flightStatus: normalizeModalFlightStatus(row.flightStatus),
         waiveCancellationPenalty: true,
         notes: row.notes ?? "",
       });
@@ -3437,7 +3481,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       durationHours: row.durationHours,
       isNight: decoded?.header.isNight ?? row.isNight ?? false,
       sagaScheduleId: row.sagaScheduleId ?? null,
-      flightStatus: full.data?.flight_status ?? "Confirmado",
+      flightStatus: normalizeModalFlightStatus(full.data?.flight_status),
       cancellationReason: existingCancellation?.reasonCode ?? "",
       cancellationReasonText: existingCancellation?.reasonText ?? "",
       waiveCancellationPenalty: true,
@@ -4648,23 +4692,38 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
             <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
               {(
                 <div className="md:col-span-2">
-                  <label className="block text-xs text-slate-400">
+                  <div className="block text-xs text-slate-400">
                     Status do voo
-                    <select
-                      value={formDraft.flightStatus ?? "Confirmado"}
-                      onChange={(e) => setFormDraft((prev) => prev ? { ...prev, flightStatus: e.target.value as FlightStatus, cancellationReason: "", cancellationReasonText: "" } : prev)}
-                      className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                    >
+                    <div className="mt-1 flex flex-wrap overflow-hidden rounded-lg border border-slate-700" role="group" aria-label="Status do voo">
                       {(formMode === "create"
                         ? (scheduleRules.sagaOnlySchedule
                           ? (["Previsto", "Pendente", "Confirmado"] as FlightStatus[])
                           : (["Pendente", "Confirmado"] as FlightStatus[]))
-                        : (scheduleRules.sagaOnlySchedule ? (["Previsto", ...FLIGHT_STATUS_OPTIONS] as FlightStatus[]) : FLIGHT_STATUS_OPTIONS)
-                      ).map((s) => (
-                        <option key={s} value={s}>{s === "Previsto" ? "Planejado (Previsto)" : s}</option>
-                      ))}
-                    </select>
-                  </label>
+                        : (scheduleRules.sagaOnlySchedule
+                          ? MODAL_FLIGHT_STATUS_OPTIONS
+                          : (["Pendente", "Confirmado", "Cancelado"] as FlightStatus[]))
+                      ).map((s, index, list) => {
+                        const selected = (formDraft.flightStatus ?? "Confirmado") === s;
+                        const color = FLIGHT_STATUS_CARD_COLOR[s] ?? "bg-slate-600";
+                        return (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setFormDraft((prev) => prev ? { ...prev, flightStatus: s, cancellationReason: "", cancellationReasonText: "" } : prev)}
+                            className={`min-w-[8rem] flex-1 border-slate-700 px-3 py-2 text-sm font-semibold transition ${
+                              index < list.length - 1 ? "border-r" : ""
+                            } ${
+                              selected
+                                ? `${color} text-white`
+                                : "bg-slate-800/80 text-slate-300 hover:bg-slate-800"
+                            }`}
+                          >
+                            {s === "Previsto" ? "Planejado" : s}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   {formDraft.flightStatus === "Cancelado" && (
                     <div className="mt-2 space-y-2 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
                       <label className="block text-xs text-slate-400">

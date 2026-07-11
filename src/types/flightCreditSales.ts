@@ -32,3 +32,9 @@ export type FlightCreditCheckout = {
   proposalId: string;
   paymentUrl: string;
 };
+
+export type FlightCreditCheckoutExtraProduct = {
+  id: string;
+  name: string;
+  price: number;
+};

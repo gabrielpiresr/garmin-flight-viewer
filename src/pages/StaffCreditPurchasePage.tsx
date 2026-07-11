@@ -102,7 +102,15 @@ export function StaffCreditPurchasePage() {
     setStudentDataError(null);
   }
 
-  async function startCheckout(packageId: string, customHours?: number, weekdayOnly?: boolean) {
+  function selectStudent(student: StaffCreditPurchaseStudent) {
+    setSelectedStudent(student);
+  }
+
+  async function startCheckout(
+    packageId: string,
+    customHours?: number,
+    weekdayOnly?: boolean,
+  ) {
     if (!selectedStudent || checkoutBusy) return;
     setCheckoutBusy(true);
     try {
@@ -163,7 +171,7 @@ export function StaffCreditPurchasePage() {
 
         <StaffStudentSelector
           selectedStudent={selectedStudent}
-          onSelectStudent={setSelectedStudent}
+          onSelectStudent={selectStudent}
           onClearStudent={clearSelectedStudent}
         />
 

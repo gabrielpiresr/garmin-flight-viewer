@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { FlightCreditSalesConfig } from "../types/flightCreditSales";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { FlightCreditCheckoutExtraProduct, FlightCreditSalesConfig } from "../types/flightCreditSales";
 import {
   effectiveHourPrice,
   formatHoursLabel,
@@ -11,11 +11,24 @@ import {
 
 type Props = {
   config: FlightCreditSalesConfig;
-  onCheckout: (packageId: string, customHours?: number, weekdayOnly?: boolean) => Promise<void>;
+  onCheckout: (
+    packageId: string,
+    customHours?: number,
+    weekdayOnly?: boolean,
+    extraProducts?: FlightCreditCheckoutExtraProduct[],
+  ) => Promise<void>;
   checkoutBusy?: boolean;
+  extraProducts?: FlightCreditCheckoutExtraProduct[];
+  extraProductsContent?: ReactNode;
 };
 
-export function FlightCreditPurchasePanel({ config, onCheckout, checkoutBusy = false }: Props) {
+export function FlightCreditPurchasePanel({
+  config,
+  onCheckout,
+  checkoutBusy = false,
+  extraProducts = [],
+  extraProductsContent,
+}: Props) {
   const [availability, setAvailability] = useState<CreditAvailability>("any");
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
@@ -120,6 +133,11 @@ export function FlightCreditPurchasePanel({ config, onCheckout, checkoutBusy = f
     summaryPackage && summaryHourPrice != null
       ? Number((summaryHours * summaryHourPrice).toFixed(2))
       : null;
+  const extrasTotal = useMemo(
+    () => Number(extraProducts.reduce((sum, item) => sum + (Number(item.price) || 0), 0).toFixed(2)),
+    [extraProducts],
+  );
+  const checkoutTotal = summaryTotal != null ? Number((summaryTotal + extrasTotal).toFixed(2)) : null;
   const customPurchaseReady =
     isCustomPurchase && customHours >= 0.5 && customReference != null && customTotal != null;
   const packagePurchaseReady = !isCustomPurchase && selectedPackage != null && summaryTotal != null;
@@ -304,9 +322,11 @@ export function FlightCreditPurchasePanel({ config, onCheckout, checkoutBusy = f
         )}
       </section>
 
+      {extraProductsContent ? <section>{extraProductsContent}</section> : null}
+
       <section className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-4">
         <p className="text-sm font-semibold text-slate-200">Resumo da compra</p>
-        {summaryPackage && summaryTotal != null && summaryHourPrice != null ? (
+        {summaryPackage && checkoutTotal != null && summaryHourPrice != null ? (
           <>
             <div className="mt-3 space-y-2 text-sm text-slate-300">
               <p className="font-medium text-slate-100">{formatHoursLabel(summaryHours)} de voo</p>
@@ -326,10 +346,20 @@ export function FlightCreditPurchasePanel({ config, onCheckout, checkoutBusy = f
                 {summaryPackage.validityDays === 1 ? "" : "s"}
               </p>
               <p className="text-slate-400">{formatPurchaseCurrency(summaryHourPrice)} por hora</p>
+              {extraProducts.length > 0 ? (
+                <div className="space-y-1 border-t border-slate-800 pt-2">
+                  {extraProducts.map((product) => (
+                    <p key={product.id} className="flex justify-between gap-3">
+                      <span className="min-w-0 truncate text-slate-400">+ {product.name}</span>
+                      <span className="shrink-0 text-slate-200">{formatPurchaseCurrency(product.price)}</span>
+                    </p>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <div className="mt-4 flex items-end justify-between border-t border-slate-800 pt-4">
               <span className="text-sm text-slate-400">Total</span>
-              <span className="text-2xl font-semibold text-emerald-300">{formatPurchaseCurrency(summaryTotal)}</span>
+              <span className="text-2xl font-semibold text-emerald-300">{formatPurchaseCurrency(checkoutTotal)}</span>
             </div>
           </>
         ) : isCustomPurchase ? (
@@ -357,6 +387,7 @@ export function FlightCreditPurchasePanel({ config, onCheckout, checkoutBusy = f
                 checkoutPackageId,
                 isCustomPurchase ? customHours : undefined,
                 availability === "weekday",
+                extraProducts,
               );
             }}
             disabled={checkoutBusy || !canCheckout || (requiresWeekdayAck && !weekdayAcknowledged)}

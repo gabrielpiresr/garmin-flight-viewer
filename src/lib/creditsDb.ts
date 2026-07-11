@@ -10,6 +10,7 @@ import { decodeFlightRecord } from "./flightRecordCodec";
 import { flightBlockMinutesFromMeta } from "./flightHours";
 import {
   getSavedFlight,
+  isGhostFlightListItem,
   listAllSavedFlights,
   listStudentFlightHistory,
   type SavedFlightFull,
@@ -212,7 +213,9 @@ function modelName(modelId: string | null, modelsById: Map<string, AircraftModel
 
 /** Scheduled imports and explicit pending/confirmed flights are not consumed credits yet. */
 function isCreditStatementScheduledFlight(item: SavedFlightListItem): boolean {
+  if (isGhostFlightListItem(item)) return true;
   const source = String(item.source_filename || "").toLowerCase();
+  if (source.includes("ghost-flight")) return true;
   if (source.includes("saga-schedule") || source.includes("saga-test-schedule")) return true;
   if (item.saga_schedule_id) return true;
   return ["Pendente", "Confirmado", "Previsto"].includes(String(item.flight_status || "").trim());

@@ -1,5 +1,9 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
-import type { FlightCreditCheckout, FlightCreditSalesConfig } from "../types/flightCreditSales";
+import type {
+  FlightCreditCheckout,
+  FlightCreditCheckoutExtraProduct,
+  FlightCreditSalesConfig,
+} from "../types/flightCreditSales";
 
 export type StaffCreditPurchaseStudent = {
   userId: string;
@@ -47,6 +51,7 @@ export async function staffCreateFlightCreditCheckout(
   packageId: string,
   customHours?: number,
   weekdayOnly?: boolean,
+  extraProducts: FlightCreditCheckoutExtraProduct[] = [],
 ): Promise<FlightCreditCheckout> {
   const response = await execute({
     action: "staffCreateFlightCreditCheckout",
@@ -54,6 +59,7 @@ export async function staffCreateFlightCreditCheckout(
     packageId,
     ...(Number.isFinite(customHours) ? { customHours } : {}),
     ...(weekdayOnly === true ? { weekdayOnly: true } : {}),
+    ...(extraProducts.length > 0 ? { extraProducts } : {}),
   });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;

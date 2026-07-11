@@ -1,6 +1,7 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 import type {
   FlightCreditCheckout,
+  FlightCreditCheckoutExtraProduct,
   FlightCreditSalesConfig,
   FlightCreditSalesConfigInput,
 } from "../types/flightCreditSales";
@@ -9,6 +10,7 @@ type FlightCreditSalesResponse = {
   message?: string;
   config?: FlightCreditSalesConfig;
   checkout?: FlightCreditCheckout;
+  email?: string;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<FlightCreditSalesResponse> {
@@ -65,19 +67,36 @@ export async function createFlightCreditCheckout(
 
 export async function adminCreateFlightCreditCheckout(
   targetUserId: string,
-  packageId: string,
+  packageId: string | null | undefined,
   customHours?: number,
   customHourPrice?: number,
   weekdayOnly?: boolean,
+  extraProducts: FlightCreditCheckoutExtraProduct[] = [],
 ): Promise<FlightCreditCheckout> {
   const response = await execute({
     action: "adminCreateFlightCreditCheckout",
     targetUserId,
-    packageId,
+    packageId: packageId || "",
     ...(Number.isFinite(customHours) ? { customHours } : {}),
     ...(Number.isFinite(customHourPrice) ? { customHourPrice } : {}),
     ...(weekdayOnly === true ? { weekdayOnly: true } : {}),
+    ...(extraProducts.length > 0 ? { extraProducts } : {}),
   });
   if (!response.checkout) throw new Error(response.message || "Checkout nao retornado.");
   return response.checkout;
+}
+
+export async function sendFlightCreditPaymentLinkEmail(
+  targetUserId: string,
+  paymentUrl: string,
+  proposalId?: string,
+): Promise<{ email: string }> {
+  const response = await execute({
+    action: "sendFlightCreditPaymentLinkEmail",
+    targetUserId,
+    paymentUrl,
+    ...(proposalId ? { proposalId } : {}),
+  });
+  if (!response.email) throw new Error(response.message || "Email nao retornado.");
+  return { email: response.email };
 }

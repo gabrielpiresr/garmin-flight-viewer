@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listCaktoReceipts } from "../../lib/caktoDb";
 import type { CaktoReceipt, CaktoReceiptPage } from "../../types/cakto";
 import { useToast } from "../ui/ToastProvider";
-import { getFlightCreditSalesConfig, adminCreateFlightCreditCheckout } from "../../lib/flightCreditSalesDb";
-import type { FlightCreditPackage } from "../../types/flightCreditSales";
+import { getFlightCreditSalesConfig, adminCreateFlightCreditCheckout, sendFlightCreditPaymentLinkEmail } from "../../lib/flightCreditSalesDb";
+import type { FlightCreditCheckoutExtraProduct, FlightCreditPackage } from "../../types/flightCreditSales";
+import { listSchoolProducts } from "../../lib/schoolProductsDb";
+import type { SchoolProduct } from "../../types/costs";
 import { listAdminUsers } from "../../lib/adminUsersDb";
 import type { AdminUserSummary } from "../../types/adminUsers";
 
@@ -37,10 +39,17 @@ export function PaymentLinkModal({
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
   const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [productOptions, setProductOptions] = useState<SchoolProduct[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [selectedExtraProductIds, setSelectedExtraProductIds] = useState<string[]>([]);
   const [customHoursInput, setCustomHoursInput] = useState("");
   const [customHourPriceInput, setCustomHourPriceInput] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [sendEmailAfterGenerate, setSendEmailAfterGenerate] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [paymentProposalId, setPaymentProposalId] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -58,6 +67,24 @@ export function PaymentLinkModal({
       }
     })();
   }, [showToast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setProductsLoading(true);
+    void listSchoolProducts(false)
+      .then((products) => {
+        if (!cancelled) setProductOptions(products);
+      })
+      .catch(() => {
+        if (!cancelled) setProductOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setProductsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const searchUsers = useCallback(async (q: string) => {
     if (!q.trim()) { setUsers([]); return; }
@@ -84,17 +111,72 @@ export function PaymentLinkModal({
     return [...sorted].reverse().find((item) => item.hours <= customHours) ?? sorted[0];
   }
 
+  const selectedExtraProducts = useMemo<FlightCreditCheckoutExtraProduct[]>(
+    () =>
+      selectedExtraProductIds
+        .map((id) => {
+          const product = productOptions.find((item) => item.id === id);
+          return product
+            ? {
+                id: product.id,
+                name: product.name,
+                price: product.idealPrice,
+              }
+            : null;
+        })
+        .filter((item): item is FlightCreditCheckoutExtraProduct => item !== null),
+    [productOptions, selectedExtraProductIds],
+  );
+
+  const extrasTotal = useMemo(
+    () => selectedExtraProducts.reduce((sum, item) => sum + item.price, 0),
+    [selectedExtraProducts],
+  );
+
+  function toggleExtraProduct(productId: string) {
+    setSelectedExtraProductIds((current) =>
+      current.includes(productId)
+        ? current.filter((id) => id !== productId)
+        : [...current, productId],
+    );
+  }
+
+  async function sendPaymentEmail(url: string, proposalId: string | null = paymentProposalId) {
+    if (!selectedUser || !url || emailSending) return;
+    setEmailSending(true);
+    try {
+      const result = await sendFlightCreditPaymentLinkEmail(selectedUser.userId, url, proposalId || undefined);
+      setEmailSentTo(result.email);
+      showToast({ variant: "success", message: `Email enviado para ${result.email}.` });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setEmailSending(false);
+    }
+  }
+
   async function handleGenerate(customHours?: number, customHourPrice?: number) {
-    if (!selectedUser || !selectedPackageId) return;
+    if (!selectedUser) return;
+    if (!selectedPackageId && selectedExtraProducts.length === 0) {
+      showToast({ variant: "error", message: "Selecione um pacote de horas ou pelo menos um produto adicional." });
+      return;
+    }
     setGenerating(true);
+    setEmailSentTo(null);
     try {
       const checkout = await adminCreateFlightCreditCheckout(
         selectedUser.userId,
         selectedPackageId,
         customHours,
         customHourPrice,
+        false,
+        selectedExtraProducts,
       );
       setPaymentUrl(checkout.paymentUrl);
+      setPaymentProposalId(checkout.proposalId);
+      if (sendEmailAfterGenerate) {
+        await sendPaymentEmail(checkout.paymentUrl, checkout.proposalId);
+      }
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
@@ -110,10 +192,12 @@ export function PaymentLinkModal({
   const customReference = packageReferenceForCustomHours(packages, customHours);
   const appliedHourPrice = customHourPrice > 0 ? customHourPrice : customReference?.hourPrice ?? 0;
   const customTotal = customReference && customHours > 0 && appliedHourPrice > 0 ? customHours * appliedHourPrice : null;
+  const selectedPackageTotal = selectedPackage ? selectedPackage.hours * selectedPackage.hourPrice : 0;
+  const mainLinkTotal = selectedPackageTotal + extrasTotal;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-950 p-5" onClick={(e) => e.stopPropagation()}>
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-100">Gerar link de pagamento</h2>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300 text-xs">Fechar</button>
@@ -122,6 +206,11 @@ export function PaymentLinkModal({
         {paymentUrl ? (
           <div className="mt-4 space-y-3">
             <p className="text-xs text-emerald-300">Link gerado com sucesso!</p>
+            {emailSentTo ? (
+              <p className="rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200">
+                Email enviado para {emailSentTo}.
+              </p>
+            ) : null}
             <div className="rounded-lg border border-slate-800 bg-black/30 p-3">
               <a href={paymentUrl} target="_blank" rel="noopener noreferrer" className="break-all text-xs text-sky-400 underline">{paymentUrl}</a>
             </div>
@@ -132,6 +221,14 @@ export function PaymentLinkModal({
             >
               Copiar link
             </button>
+            <button
+              type="button"
+              disabled={!selectedUser || emailSending}
+              onClick={() => void sendPaymentEmail(paymentUrl)}
+              className="w-full rounded-lg bg-emerald-600 py-2 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {emailSending ? "Enviando..." : emailSentTo ? "Reenviar por email" : "Enviar por email ao aluno"}
+            </button>
           </div>
         ) : (
           <div className="mt-4 space-y-4">
@@ -139,7 +236,7 @@ export function PaymentLinkModal({
               <label className="block text-xs text-slate-400 mb-1">Aluno</label>
               <input
                 value={selectedUser ? (selectedUser.name || selectedUser.email) : search}
-                onChange={(e) => { setSearch(e.target.value); setSelectedUser(null); setPaymentUrl(null); }}
+                onChange={(e) => { setSearch(e.target.value); setSelectedUser(null); setPaymentUrl(null); setPaymentProposalId(null); setEmailSentTo(null); }}
                 placeholder="Buscar aluno por nome ou e-mail..."
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
               />
@@ -152,7 +249,7 @@ export function PaymentLinkModal({
                       <li key={u.userId}>
                         <button
                           type="button"
-                          onClick={() => { setSelectedUser(u); setSearch(""); setUsers([]); }}
+                          onClick={() => { setSelectedUser(u); setSearch(""); setUsers([]); setEmailSentTo(null); }}
                           className="w-full px-3 py-2 text-left text-xs text-slate-300 hover:bg-slate-800"
                         >
                           <span className="font-medium">{u.name || u.email}</span>
@@ -169,7 +266,7 @@ export function PaymentLinkModal({
                     <p className="text-xs font-medium text-slate-200">{selectedUser.name || selectedUser.email}</p>
                     {selectedUser.name ? <p className="text-[10px] text-slate-500">{selectedUser.email}</p> : null}
                   </div>
-                  <button type="button" onClick={() => setSelectedUser(null)} className="text-[10px] text-slate-500 hover:text-slate-300">Trocar</button>
+                  <button type="button" onClick={() => { setSelectedUser(null); setEmailSentTo(null); }} className="text-[10px] text-slate-500 hover:text-slate-300">Trocar</button>
                 </div>
               )}
             </div>
@@ -178,36 +275,102 @@ export function PaymentLinkModal({
               <label className="block text-xs text-slate-400 mb-1">Pacote de horas</label>
               {packagesLoading ? (
                 <div className="h-9 animate-pulse rounded-lg bg-slate-800" />
-              ) : packages.length === 0 ? (
-                <p className="text-xs text-amber-400">Nenhum pacote ativo configurado em Admin &gt; Configurações &gt; Financeiro.</p>
               ) : (
                 <select
                   value={selectedPackageId}
                   onChange={(e) => setSelectedPackageId(e.target.value)}
                   className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                 >
+                  <option value="">Sem horas - somente produtos adicionais</option>
                   {packages.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.hours}h — {money(p.hours * p.hourPrice)} ({p.aircraftModelName || "—"}){p.isDefault ? " - default" : ""}
+                      {p.hours}h - {money(p.hours * p.hourPrice)} ({p.aircraftModelName || "-"}){p.isDefault ? " - default" : ""}
                     </option>
                   ))}
                 </select>
               )}
+              {!packagesLoading && packages.length === 0 ? (
+                <p className="mt-1 text-[10px] text-amber-400">Nenhum pacote ativo configurado. Ainda e possivel gerar link somente com produtos adicionais.</p>
+              ) : null}
               {selectedPackage && (
                 <p className="mt-1 text-[10px] text-slate-500">
-                  {selectedPackage.hours}h × {money(selectedPackage.hourPrice)}/h = {money(selectedPackage.hours * selectedPackage.hourPrice)} · validade {selectedPackage.validityDays} dias
+                  {selectedPackage.hours}h x {money(selectedPackage.hourPrice)}/h = {money(selectedPackage.hours * selectedPackage.hourPrice)} - validade {selectedPackage.validityDays} dias
                 </p>
               )}
             </div>
 
+            <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold text-slate-300">Produtos adicionais</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">Inclua produtos e servicos no mesmo link.</p>
+                </div>
+                {selectedExtraProducts.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedExtraProductIds([])}
+                    className="shrink-0 text-[11px] font-medium text-slate-500 hover:text-slate-300"
+                  >
+                    Limpar
+                  </button>
+                ) : null}
+              </div>
+              {productsLoading ? (
+                <p className="text-xs text-slate-500">Carregando produtos...</p>
+              ) : productOptions.length === 0 ? (
+                <p className="text-xs text-slate-500">Nenhum produto ativo cadastrado.</p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {productOptions.map((product) => {
+                    const checked = selectedExtraProductIds.includes(product.id);
+                    return (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => toggleExtraProduct(product.id)}
+                        className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition ${
+                          checked
+                            ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-100"
+                            : "border-slate-700/70 bg-slate-950/30 text-slate-300 hover:border-slate-600"
+                        }`}
+                      >
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${
+                          checked ? "border-emerald-400 bg-emerald-500 text-white" : "border-slate-600"
+                        }`}>
+                          {checked ? "x" : ""}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs font-medium">{product.name}</span>
+                          <span className="mt-0.5 block text-[11px] text-emerald-300">{money(product.idealPrice)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedExtraProducts.length > 0 ? (
+                <p className="mt-2 text-[11px] text-slate-400">Extras: {money(extrasTotal)}</p>
+              ) : null}
+            </div>
+
+            <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={sendEmailAfterGenerate}
+                onChange={(e) => setSendEmailAfterGenerate(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500"
+              />
+              Enviar por email ao aluno assim que gerar o link
+            </label>
+
             <button
               type="button"
-              disabled={!selectedUser || !selectedPackageId || generating || packages.length === 0}
+              disabled={!selectedUser || (!selectedPackageId && selectedExtraProducts.length === 0) || generating || emailSending}
               onClick={() => void handleGenerate()}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 py-2 text-xs font-medium text-white hover:bg-sky-500 transition disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {generating && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
-              {generating ? "Gerando..." : "Gerar link"}
+              {(generating || emailSending) && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+              {generating ? "Gerando..." : emailSending ? "Enviando email..." : `Gerar link${mainLinkTotal > 0 ? ` - ${money(mainLinkTotal)}` : ""}`}
             </button>
 
             <div className="rounded-lg border border-emerald-700/40 bg-emerald-950/20 p-3">
@@ -244,12 +407,12 @@ export function PaymentLinkModal({
               )}
               <button
                 type="button"
-                disabled={!selectedUser || generating || packages.length === 0 || customHours < 0.5 || customHourPrice <= 0 || !customReference}
+                disabled={!selectedUser || !selectedPackageId || generating || emailSending || packages.length === 0 || customHours < 0.5 || customHourPrice <= 0 || !customReference}
                 onClick={() => void handleGenerate(customHours, customHourPrice)}
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2 text-xs font-medium text-white hover:bg-emerald-500 transition disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {generating && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
-                {generating ? "Gerando..." : "Gerar link personalizado"}
+                {(generating || emailSending) && <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+                {generating ? "Gerando..." : emailSending ? "Enviando email..." : `Gerar link personalizado${customTotal ? ` - ${money(customTotal + extrasTotal)}` : ""}`}
               </button>
             </div>
           </div>
