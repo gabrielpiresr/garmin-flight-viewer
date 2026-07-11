@@ -63,6 +63,13 @@ import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { useDirectionalSlide } from "../../hooks/useDirectionalSlide";
+import {
+  AIRCRAFT_COLOR_CLASSES,
+  aircraftCardColor,
+  buildAircraftScheduleColorMap,
+} from "../../lib/aircraftColors";
+
+export { AIRCRAFT_COLOR_CLASSES } from "../../lib/aircraftColors";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
@@ -84,19 +91,9 @@ function useIsMobileViewport(): boolean {
   return isMobile;
 }
 
-// Largura mínima por coluna de avião/dia no mobile — a grade passa a rolar na horizontal.
 const MOBILE_MIN_COLUMN_PX = 130;
 const MOBILE_HOURS_GUTTER_PX = 36;
-// Exportada: a visão do aluno usa a mesma paleta (mesma ordem = mesmas cores).
-export const AIRCRAFT_COLOR_CLASSES = [
-  "bg-sky-600 border-sky-400/70",
-  "bg-emerald-600 border-emerald-400/70",
-  "bg-violet-600 border-violet-400/70",
-  "bg-amber-600 border-amber-400/70",
-  "bg-cyan-600 border-cyan-400/70",
-  "bg-fuchsia-600 border-fuchsia-400/70",
-  "bg-rose-600 border-rose-400/70",
-];
+
 const INSTRUCTOR_BORDER_CLASSES = [
   "border-lime-300",
   "border-orange-300",
@@ -181,13 +178,6 @@ function SagaScheduleSyncLogPanel({
       </div>
     </section>
   );
-}
-
-function aircraftCardColor(className: string): string {
-  return className
-    .split(" ")
-    .filter((part) => !part.startsWith("border-"))
-    .join(" ");
 }
 
 const SLOT_BG_TINT: Record<SlotState, string> = {
@@ -2773,12 +2763,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     });
   }, [flights, minGapMinutes, studentLabelMap, weekData]);
 
-  const colorByAircraft = useMemo(() => {
-    const regs = aircraftOptions.map((aircraft) => aircraft.registration);
-    const map = new Map<string, string>();
-    regs.forEach((reg, index) => map.set(reg, AIRCRAFT_COLOR_CLASSES[index % AIRCRAFT_COLOR_CLASSES.length]!));
-    return map;
-  }, [aircraftOptions]);
+  const colorByAircraft = useMemo(
+    () => buildAircraftScheduleColorMap(aircraftOptions.map((aircraft) => aircraft.registration)),
+    [aircraftOptions],
+  );
 
   const calendarAircraftColumns = useMemo<AircraftColumn[]>(
     () =>

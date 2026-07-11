@@ -63,7 +63,7 @@ function sectionIsVisible(sec: ProposalSection, proposal: CrmProposal): boolean 
   return proposal.products.some((p) => p.name.toLowerCase().includes(kw));
 }
 
-export function openProposalPdf(proposal: CrmProposal, config: ProposalConfig): void {
+export function buildProposalPdfHtml(proposal: CrmProposal, config: ProposalConfig): string {
   const primary = config.primaryColor || "#10b981";
   const accent  = config.accentColor  || "#38bdf8";
   const fontImport = config.fontFamily
@@ -255,8 +255,41 @@ ${additionalHtml}
 <script>window.addEventListener("load",function(){setTimeout(function(){window.focus();window.print();},600)});</script>
 </body></html>`;
 
-  const win = window.open("", "_blank");
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
+  return html;
+}
+
+export function writeProposalPdfToWindow(proposal: CrmProposal, config: ProposalConfig, targetWindow: Window): void {
+  targetWindow.document.open();
+  targetWindow.document.write(buildProposalPdfHtml(proposal, config));
+  targetWindow.document.close();
+}
+
+export function openProposalPdf(proposal: CrmProposal, config: ProposalConfig, targetWindow?: Window | null): boolean {
+  const win = targetWindow ?? window.open("about:blank", "_blank");
+  if (!win) return false;
+  writeProposalPdfToWindow(proposal, config, win);
+  return true;
+}
+
+/** Abre a janela de impressão no clique (antes do await) para evitar bloqueio de pop-ups. */
+export async function exportProposalPdf(
+  proposal: CrmProposal,
+  fetchConfig: () => Promise<ProposalConfig | null>,
+): Promise<string | null> {
+  const popup = window.open("about:blank", "_blank");
+  if (!popup) {
+    return "Não foi possível abrir a janela de impressão. Desative o bloqueador de pop-ups.";
+  }
+  try {
+    const config = await fetchConfig();
+    if (!config) {
+      popup.close();
+      return "Configure a proposta em Configurações → Propostas primeiro.";
+    }
+    writeProposalPdfToWindow(proposal, config, popup);
+    return null;
+  } catch (error) {
+    popup.close();
+    return error instanceof Error ? error.message : "Erro ao exportar PDF.";
+  }
 }

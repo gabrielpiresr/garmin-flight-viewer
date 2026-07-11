@@ -50,6 +50,7 @@ import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
 import { PreencherFichaFlow } from "./PreencherFichaFlow";
 import { Skeleton } from "../ui/Skeleton";
+import { getAircraftBadgeColorClass } from "../../lib/aircraftColors";
 import { useToast } from "../ui/ToastProvider";
 
 type View = "list" | "detail" | "create" | "preencher-ficha";
@@ -147,21 +148,6 @@ function SectionTitle({ title, tone }: { title: string; tone: "future" | "past" 
 // No modo saga-only os voos agendados não ficam salvos no sistema, então a seção
 // "Voos futuros" do instrutor lê a agenda do SAGA sob demanda (nada é persistido).
 
-const SAGA_AIRCRAFT_COLORS = [
-  "bg-sky-900/60 text-sky-300 border-sky-600/50",
-  "bg-violet-900/60 text-violet-300 border-violet-600/50",
-  "bg-emerald-900/60 text-emerald-400 border-emerald-600/50",
-  "bg-amber-900/60 text-amber-400 border-amber-600/50",
-  "bg-fuchsia-900/60 text-fuchsia-300 border-fuchsia-600/50",
-];
-
-function sagaAircraftColor(registration: string): string {
-  const key = registration || "unknown";
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) hash = (hash + key.charCodeAt(i) * (i + 1)) % 997;
-  return SAGA_AIRCRAFT_COLORS[hash % SAGA_AIRCRAFT_COLORS.length] ?? SAGA_AIRCRAFT_COLORS[0]!;
-}
-
 function sagaFlightStartMs(flight: PublicScheduleFlight): number {
   const ms = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
   return Number.isFinite(ms) ? ms : 0;
@@ -243,7 +229,7 @@ function InstructorSagaUpcoming({
                     {new Date(`${flight.flightDate}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
-                    <span className={`rounded border px-1.5 py-0.5 ${sagaAircraftColor(flight.aircraftIdent)}`}>{flight.aircraftIdent || "—"}</span>
+                    <span className={`rounded border px-1.5 py-0.5 ${getAircraftBadgeColorClass(flight.aircraftIdent)}`}>{flight.aircraftIdent || "—"}</span>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">{flight.presentationTime || "—"}</td>
                   <td className="px-3 py-2 whitespace-nowrap">{flight.startTime || "—"}</td>
@@ -276,7 +262,7 @@ function InstructorSagaUpcoming({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${sagaAircraftColor(flight.aircraftIdent)}`}>
+                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${getAircraftBadgeColorClass(flight.aircraftIdent)}`}>
                     {flight.aircraftIdent || "—"}
                   </span>
                   <span className="text-xs text-slate-400">

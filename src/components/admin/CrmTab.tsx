@@ -23,6 +23,8 @@ import {
 import { notifyCrmLeadEvent } from "../../lib/notificationsDb";
 import { hasStudentScheduledFlights, hasStudentRealizedFlights } from "../../lib/flightsDb";
 import { getProposalsByLead } from "../../lib/crmProposalsDb";
+import { exportProposalPdf } from "../../lib/proposalPdf";
+import { getProposalConfig } from "../../lib/proposalSettingsDb";
 import { createLeadComment, deleteLeadComment, listLeadComments, type CrmLeadComment } from "../../lib/crmCommentsDb";
 import type { CrmProposal } from "../../types/proposal";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
@@ -1110,6 +1112,7 @@ function LeadDetailDrawer({
   // Propostas
   const [proposals, setProposals] = useState<CrmProposal[]>([]);
   const [proposalsLoading, setProposalsLoading] = useState(false);
+  const [exportingProposalId, setExportingProposalId] = useState<string | null>(null);
 
   // Comentários
   const [comments, setComments] = useState<CrmLeadComment[]>([]);
@@ -1183,6 +1186,18 @@ function LeadDetailDrawer({
       setProposalsLoading(false);
     });
   }, [lead.id]);
+
+  async function handleExportProposalPdf(proposal: CrmProposal) {
+    setExportingProposalId(proposal.id);
+    try {
+      const error = await exportProposalPdf(proposal, getProposalConfig);
+      if (error) {
+        showToast(error, "error");
+      }
+    } finally {
+      setExportingProposalId(null);
+    }
+  }
 
   useEffect(() => {
     setCommentsLoading(true);
@@ -1866,14 +1881,24 @@ function LeadDetailDrawer({
                           </div>
                           <p className="text-[11px] text-slate-500">{new Date(p.createdAt).toLocaleDateString("pt-BR")} · {p.status === "sent" ? "Enviada" : "Rascunho"}</p>
                         </div>
-                        <a
-                          href={`/proposta/${p.publicToken}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="shrink-0 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                        >
-                          Ver
-                        </a>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={exportingProposalId === p.id}
+                            onClick={() => void handleExportProposalPdf(p)}
+                            className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            {exportingProposalId === p.id ? "Exportando..." : "Exportar PDF"}
+                          </button>
+                          <a
+                            href={`/proposta/${p.publicToken}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                          >
+                            Ver
+                          </a>
+                        </div>
                       </div>
                     </div>
                   );

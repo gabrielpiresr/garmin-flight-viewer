@@ -37,6 +37,11 @@ import type {
 } from "../../types/schedule";
 import { useToast } from "../ui/ToastProvider";
 import { StudentSearchSelect } from "./StudentSearchSelect";
+import {
+  AIRCRAFT_GENERATION_COLOR_CLASSES,
+  aircraftCardColor,
+  getAircraftGenerationColorClass,
+} from "../../lib/aircraftColors";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = {
@@ -130,15 +135,6 @@ const INSTRUCTOR_PREFERENCE_LABEL: Record<InstructorWeeklyConfig["preferenceLeve
   high: "Alta",
 };
 
-const AIRCRAFT_COLOR_CLASSES = [
-  "bg-sky-600/90 border-sky-400/70",
-  "bg-emerald-600/90 border-emerald-400/70",
-  "bg-violet-600/90 border-violet-400/70",
-  "bg-amber-600/90 border-amber-400/70",
-  "bg-cyan-600/90 border-cyan-400/70",
-  "bg-fuchsia-600/90 border-fuchsia-400/70",
-  "bg-rose-600/90 border-rose-400/70",
-];
 const RESEND_RATE_LIMIT_INTERVAL_MS = 250;
 const INSTRUCTOR_BORDER_CLASSES = [
   "border-lime-300",
@@ -150,16 +146,10 @@ const INSTRUCTOR_BORDER_CLASSES = [
   "border-yellow-300",
 ];
 
-function aircraftCardColor(className: string): string {
-  return className
-    .split(" ")
-    .filter((part) => !part.startsWith("border-"))
-    .join(" ");
-}
 
 function suggestionCardColor(item: Pick<ScheduledFlightSuggestion, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {
   if (item.flightStatus === "Cancelado") return "bg-red-700/90";
-  return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!);
+  return aircraftCardColor(colorByAircraft.get(item.aircraftRegistration) ?? AIRCRAFT_GENERATION_COLOR_CLASSES[0]!);
 }
 
 const SLOT_BG_TINT: Record<SlotState, string> = {
@@ -1861,7 +1851,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
     const regs = [...new Set((weekData?.supplies ?? []).map((s) => s.aircraftRegistration))];
     const map = new Map<string, string>();
     regs.forEach((reg, index) => {
-      map.set(reg, AIRCRAFT_COLOR_CLASSES[index % AIRCRAFT_COLOR_CLASSES.length]!);
+      map.set(reg, getAircraftGenerationColorClass(reg, index));
     });
     return map;
   }, [weekData]);
@@ -2555,7 +2545,7 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                 <div className="flex flex-wrap gap-2">
                   {weekData?.supplies.map((supply) => {
                     const checked = visibleAircraft.includes(supply.aircraftRegistration);
-                    const color = colorByAircraft.get(supply.aircraftRegistration) ?? AIRCRAFT_COLOR_CLASSES[0]!;
+                    const color = colorByAircraft.get(supply.aircraftRegistration) ?? AIRCRAFT_GENERATION_COLOR_CLASSES[0]!;
                     return (
                       <label
                         key={supply.aircraftId}

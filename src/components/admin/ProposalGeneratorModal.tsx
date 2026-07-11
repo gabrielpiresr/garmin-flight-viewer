@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getProposalsByLead } from "../../lib/crmProposalsDb";
 import { createProposalWithPayment, retryProposalPayment } from "../../lib/caktoDb";
 import { getProposalConfig } from "../../lib/proposalSettingsDb";
-import { openProposalPdf } from "../../lib/proposalPdf";
+import { exportProposalPdf } from "../../lib/proposalPdf";
 import { moveLeadToCrmStatus } from "../../lib/crmDb";
 import { listSchoolProducts } from "../../lib/schoolProductsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
@@ -185,12 +185,10 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
   }
 
   async function handleExportPdf(proposal: CrmProposal) {
-    const config = await getProposalConfig();
-    if (!config) {
-      showToast({ variant: "warning", message: "Configure a proposta em Configurações → Propostas primeiro." });
-      return;
+    const error = await exportProposalPdf(proposal, getProposalConfig);
+    if (error) {
+      showToast({ variant: error.includes("Configure") ? "warning" : "error", message: error });
     }
-    openProposalPdf(proposal, config);
   }
 
   function proposalUrl(token: string): string {

@@ -8,19 +8,15 @@ import {
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
 import { FlightReviewClubBadge } from "../FlightReviewClubBadge";
 import { Skeleton } from "../ui/Skeleton";
+import {
+  AIRCRAFT_COLOR_CLASSES,
+  aircraftCardColor,
+} from "../../lib/aircraftColors";
+
+export { AIRCRAFT_COLOR_CLASSES } from "../../lib/aircraftColors";
 
 export const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 export const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
-
-export const AIRCRAFT_COLOR_CLASSES = [
-  "bg-sky-600 border-sky-400/70",
-  "bg-emerald-600 border-emerald-400/70",
-  "bg-violet-600 border-violet-400/70",
-  "bg-amber-600 border-amber-400/70",
-  "bg-cyan-600 border-cyan-400/70",
-  "bg-fuchsia-600 border-fuchsia-400/70",
-  "bg-rose-600 border-rose-400/70",
-];
 
 export const FLIGHT_STATUS_CARD_COLOR: Record<string, string> = {
   "Confirmado": "bg-emerald-600",
@@ -177,13 +173,6 @@ function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   base.setDate(base.getDate() + offset);
   return base.toISOString().slice(0, 10);
-}
-
-function aircraftCardColor(className: string): string {
-  return className
-    .split(" ")
-    .filter((part) => !part.startsWith("border-"))
-    .join(" ");
 }
 
 function calendarItemColor(item: Pick<CalendarFlightItem, "aircraftRegistration" | "flightStatus">, colorByAircraft: Map<string, string>): string {

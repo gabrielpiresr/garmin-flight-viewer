@@ -24,6 +24,9 @@ import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
 import {
   AIRCRAFT_COLOR_CLASSES,
+  getAircraftScheduleColorClass,
+} from "../lib/aircraftColors";
+import {
   CalendarGrid,
   FLIGHT_STATUS_CARD_COLOR,
   type CalendarDropTarget,
@@ -332,7 +335,7 @@ function StudentAircraftBoard({
   const colorByAircraft = useMemo(
     () => new Map(aircrafts.map((aircraft, index) => [
       aircraft.registration,
-      AIRCRAFT_COLOR_CLASSES[index % AIRCRAFT_COLOR_CLASSES.length]!,
+      getAircraftScheduleColorClass(aircraft.registration, index),
     ])),
     [aircrafts],
   );

@@ -1,18 +1,12 @@
 import { useMemo, useState } from "react";
 import { parseDurationToMinutes, shortName } from "../lib/flightDisplay";
+import { getAircraftBadgeColorClass } from "../lib/aircraftColors";
 import type { SavedFlightListItem } from "../lib/flightsDb";
 import { SLOT_HOURS } from "../types/admin";
 import { FlightReviewClubBadge } from "./FlightReviewClubBadge";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const DAY_LABEL: Record<number, string> = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
-const AIRCRAFT_COLORS = [
-  "bg-sky-900/60 text-sky-200 border-sky-600/50",
-  "bg-violet-900/60 text-violet-200 border-violet-600/50",
-  "bg-emerald-900/60 text-emerald-200 border-emerald-600/50",
-  "bg-amber-900/60 text-amber-200 border-amber-600/50",
-  "bg-fuchsia-900/60 text-fuchsia-200 border-fuchsia-600/50",
-];
 
 export type AgendaFlightInfo = {
   flightDateIso: string | null;
@@ -34,13 +28,6 @@ type AgendaFlightItem = {
   startTime: string;
   endTime: string;
 };
-
-function aircraftColor(registration: string): string {
-  const key = registration || "unknown";
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) hash = (hash + key.charCodeAt(i) * (i + 1)) % 997;
-  return AIRCRAFT_COLORS[hash % AIRCRAFT_COLORS.length] ?? AIRCRAFT_COLORS[0]!;
-}
 
 function addMinutesToTime(startTime: string, minutes: number): string {
   const match = startTime.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -212,7 +199,7 @@ export function FlightsAgendaBoard({
                       const top = Math.min(boardHeight - rowHeight, Math.max(0, (agendaItem.startHour - firstHour) * rowHeight));
                       const height = Math.max(rowHeight, agendaItem.durationHours * rowHeight);
                       const info = agendaItem.info;
-                      const color = aircraftColor(info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "");
+                      const color = getAircraftBadgeColorClass(info?.aircraft ?? agendaItem.flight.aircraft_ident ?? "");
                       const widthOffset = idx % 2 === 0 ? "4px" : "10px";
                       return (
                         <button

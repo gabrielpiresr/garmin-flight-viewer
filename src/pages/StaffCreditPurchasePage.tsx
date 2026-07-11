@@ -20,8 +20,11 @@ const StudentScheduleTab = lazy(() =>
 const ManobrasTab = lazy(() =>
   import("../components/ManobrasTab").then((module) => ({ default: module.ManobrasTab })),
 );
+const ManuaisTab = lazy(() =>
+  import("../components/ManuaisTab").then((module) => ({ default: module.ManuaisTab })),
+);
 
-type TabletTab = "creditos" | "escala" | "manobras";
+type TabletTab = "creditos" | "escala" | "manobras" | "manuais";
 
 export function StaffCreditPurchasePage() {
   const { user } = useAuth();
@@ -130,21 +133,23 @@ export function StaffCreditPurchasePage() {
         <div className="space-y-1">
           <h1 className="text-xl font-semibold text-slate-100 sm:text-2xl">Tablet da escola</h1>
           <p className="text-sm text-slate-500">
-            Auxilie alunos com pagamentos, agendamento de voos e consulta de manobras.
+            Auxilie alunos com pagamentos, agendamento de voos e consulta de manobras e manuais.
           </p>
         </div>
 
-        <div className="flex overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/30 p-1">
+        <div className="overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/30 p-1">
+          <div className="flex min-w-max">
           {([
             ["creditos", "Créditos"],
             ["escala", "Escala"],
             ["manobras", "Manobras"],
+            ["manuais", "Manuais"],
           ] as const).map(([tabId, label]) => (
             <button
               key={tabId}
               type="button"
               onClick={() => setActiveTab(tabId)}
-              className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition ${
+              className={`min-w-[5.5rem] flex-1 rounded-lg px-3 py-2.5 text-sm font-medium transition sm:px-4 ${
                 activeTab === tabId
                   ? "bg-emerald-600/20 text-emerald-300"
                   : "text-slate-400 hover:bg-slate-900/60 hover:text-slate-200"
@@ -153,6 +158,7 @@ export function StaffCreditPurchasePage() {
               {label}
             </button>
           ))}
+          </div>
         </div>
 
         <StaffStudentSelector
@@ -222,7 +228,7 @@ export function StaffCreditPurchasePage() {
               />
             </Suspense>
           )
-        ) : (
+        ) : activeTab === "manobras" ? (
           <Suspense
             fallback={
               <div className="space-y-4">
@@ -232,6 +238,17 @@ export function StaffCreditPurchasePage() {
             }
           >
             <ManobrasTab className="w-full" />
+          </Suspense>
+        ) : (
+          <Suspense
+            fallback={
+              <div className="space-y-4">
+                <Skeleton className="h-10 w-full rounded-xl" />
+                <Skeleton className="h-96 w-full rounded-xl" />
+              </div>
+            }
+          >
+            <ManuaisTab />
           </Suspense>
         )}
       </div>
