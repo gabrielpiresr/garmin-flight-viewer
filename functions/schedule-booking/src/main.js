@@ -401,6 +401,36 @@ function sagaEventStatusLabel(event) {
   return normalizeScheduleFlightStatus(event?.status);
 }
 
+function sagaEventDaySegments(startRaw, endRaw, fallbackStart = "", fallbackEnd = "") {
+  const start = sagaLocalParts(startRaw || fallbackStart);
+  const end = sagaLocalParts(endRaw || fallbackEnd);
+  if (!start.date || !start.time) return [];
+  const endDate = end.date && end.date >= start.date ? end.date : start.date;
+  const startMinute = parseClock(start.time);
+  const endMinute = end.time ? parseClock(end.time) : startMinute + 60;
+  const segments = [];
+  let current = start.date;
+  while (current <= endDate) {
+    const isFirst = current === start.date;
+    const isLast = current === endDate;
+    const segStart = isFirst ? startMinute : 0;
+    let segEnd = isLast ? endMinute : 1440;
+    if (isFirst && isLast && segEnd <= segStart) segEnd = segStart + 60;
+    const durationMinutes = Math.max(1, segEnd - segStart);
+    segments.push({
+      date: current,
+      startTime: clock(segStart),
+      endTime: segEnd >= 1440 ? "23:59" : clock(segEnd),
+      durationMinutes,
+      blockStartMinute: segStart,
+      blockEndMinute: segEnd,
+    });
+    if (current === endDate) break;
+    current = addDays(current, 1);
+  }
+  return segments;
+}
+
 /**
  * Datas/horários derivados de um evento SAGA, no vocabulário da escala local.
  * O horário do SAGA é o BLOCO completo (com briefing/debriefing): saga 10–12 com
@@ -412,23 +442,28 @@ function sagaEventTimes(event, rules) {
   const end = sagaLocalParts(event.endAtRaw || event.endAt);
   if (!start.date || !start.time) return null;
   const blockStartMinute = parseClock(start.time);
-  let blockEndMinute = end.time ? parseClock(end.time) : blockStartMinute + 60;
-  if (end.date && end.date > start.date) blockEndMinute += 1440;
-  const startMinute = Math.min(blockEndMinute, blockStartMinute + rules.bufferBeforeMinutes); // acionamento
-  const cutoffMinute = Math.max(startMinute, blockEndMinute - rules.bufferAfterMinutes); // corte
-  const durationMinutes = Math.max(0, cutoffMinute - startMinute); // tempo de voo (acionamento→corte)
+  const endDate = end.date && end.date >= start.date ? end.date : start.date;
+  const blockEndMinute = end.time ? parseClock(end.time) : blockStartMinute + 60;
+  const occupiedStartMs = dateTimeMs(start.date, clock(blockStartMinute));
+  const occupiedEndMs = dateTimeMs(endDate, clock(blockEndMinute));
+  if (!Number.isFinite(occupiedEndMs) || occupiedEndMs <= occupiedStartMs) return null;
+  const firstDayBlockEnd = endDate === start.date ? blockEndMinute : 1440;
+  const startMinute = Math.min(firstDayBlockEnd, blockStartMinute + rules.bufferBeforeMinutes);
+  const cutoffMinute = Math.max(startMinute, firstDayBlockEnd - rules.bufferAfterMinutes);
+  const durationMinutes = Math.max(0, cutoffMinute - startMinute);
   return {
     flightDate: start.date,
     startMinute,
     durationMinutes,
-    blockDurationMinutes: Math.max(0, blockEndMinute - blockStartMinute),
+    blockDurationMinutes: Math.max(0, Math.round((occupiedEndMs - occupiedStartMs) / 60000)),
     presentationTime: clock(blockStartMinute),
     startTime: clock(Math.min(1439, startMinute)),
     cutoffTime: clock(Math.min(1439, cutoffMinute)),
-    endTime: clock(Math.min(1439, blockEndMinute)),
-    presentationMs: dateTimeMs(start.date, clock(blockStartMinute)),
-    occupiedStartMs: dateTimeMs(start.date, clock(blockStartMinute)),
-    occupiedEndMs: dateTimeMs(start.date, clock(Math.min(1439, blockEndMinute))),
+    endTime: clock(Math.min(1439, firstDayBlockEnd >= 1440 ? 1439 : firstDayBlockEnd)),
+    presentationMs: occupiedStartMs,
+    occupiedStartMs,
+    occupiedEndMs,
+    endDate,
   };
 }
 
@@ -555,11 +590,12 @@ function sagaEventBelongsTo(event, actorId, actorSagaId) {
   return actorId === `saga_${normalizeSagaUserId(event.studentSagaId)}`;
 }
 
-function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
+function publicSagaFlights(event, rules, actorId, actorRole, actorSagaId) {
   const times = sagaEventTimes(event, rules);
-  if (!times) return null;
+  if (!times) return [];
+  const segments = sagaEventDaySegments(event.startAtRaw || event.startAt, event.endAtRaw || event.endAt);
+  if (segments.length === 0) return [];
   const cancelled = sagaEventIsCancelled(event);
-  // "Meu voo": aluno do evento — ou, para instrutores, eventos em que ele é o instrutor.
   const ownAsInstructor = actorRole === "instrutor" && (
     (clean(event.instructorUserId) && clean(event.instructorUserId) === actorId) ||
     (Boolean(actorSagaId) && clean(event.instructorSagaId) === clean(actorSagaId))
@@ -567,28 +603,37 @@ function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
   const own = sagaEventBelongsTo(event, actorId, actorSagaId) || ownAsInstructor;
   const privileged = actorRole === "admin" || actorRole === "instrutor";
   const status = sagaEventStatusLabel(event);
-  return {
-    id: clean(event.id),
-    aircraftIdent: clean(event.aircraft).toUpperCase(),
-    aircraftModelId: null,
-    flightDate: times.flightDate,
-    // Bloco do SAGA = apresentação→encerramento; acionamento/corte derivados pelos buffers.
-    presentationTime: times.presentationTime,
-    startTime: times.startTime,
-    cutoffTime: times.cutoffTime,
-    endTime: times.endTime,
-    durationMinutes: times.durationMinutes,
-    status,
-    isOwn: own,
-    studentUserId: privileged || own ? clean(event.studentUserId) || (own ? actorId : null) : null,
-    instructorUserId: privileged || own ? clean(event.instructorUserId) || null : null,
-    studentName: privileged || own ? clean(event.studentName) : null,
-    instructorName: privileged || own ? clean(event.instructorName) : null,
-    notes: privileged || own ? clean(event.notes) || null : null,
-    // Voo já apresentado não pode mais ser cancelado/alterado pelo aluno — sem o
-    // check a UI mostrava os botões e o servidor rejeitava depois.
-    canCancel: own && !cancelled && times.presentationMs > Date.now(),
-  };
+  const eventId = clean(event.id);
+  return segments.map((segment, index) => {
+    const blockStartMinute = segment.blockStartMinute;
+    const blockEndMinute = segment.blockEndMinute;
+    const startMinute = Math.min(blockEndMinute, blockStartMinute + rules.bufferBeforeMinutes);
+    const cutoffMinute = Math.max(startMinute, blockEndMinute - rules.bufferAfterMinutes);
+    const durationMinutes = Math.max(0, cutoffMinute - startMinute);
+    return {
+      id: index > 0 ? `${eventId}__${segment.date}` : eventId,
+      aircraftIdent: clean(event.aircraft).toUpperCase(),
+      aircraftModelId: null,
+      flightDate: segment.date,
+      presentationTime: clock(blockStartMinute),
+      startTime: clock(Math.min(1439, startMinute)),
+      cutoffTime: clock(Math.min(1439, cutoffMinute)),
+      endTime: segment.endTime,
+      durationMinutes,
+      status,
+      isOwn: own,
+      studentUserId: privileged || own ? clean(event.studentUserId) || (own ? actorId : null) : null,
+      instructorUserId: privileged || own ? clean(event.instructorUserId) || null : null,
+      studentName: privileged || own ? clean(event.studentName) : null,
+      instructorName: privileged || own ? clean(event.instructorName) : null,
+      notes: privileged || own ? clean(event.notes) || null : null,
+      canCancel: own && !cancelled && times.presentationMs > Date.now(),
+    };
+  });
+}
+
+function publicSagaFlight(event, rules, actorId, actorRole, actorSagaId) {
+  return publicSagaFlights(event, rules, actorId, actorRole, actorSagaId)[0] ?? null;
 }
 
 function requireStudentSagaId(profile) {
@@ -646,8 +691,15 @@ async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, 
   return { weekdayHours: weekdayMinutes / 60, weekendHours: weekendMinutes / 60 };
 }
 
+function sagaEventIdFromFlightId(flightId) {
+  const raw = clean(flightId);
+  const match = raw.match(/^(.+)__\d{4}-\d{2}-\d{2}$/);
+  return match ? match[1] : raw;
+}
+
 async function findSagaEventOrFail(events, eventId) {
-  const event = events.find((row) => clean(row.id) === clean(eventId));
+  const normalized = sagaEventIdFromFlightId(eventId);
+  const event = events.find((row) => clean(row.id) === normalized);
   if (!event) fail("Evento não encontrado na agenda SAGA.", 404);
   return event;
 }
@@ -1258,7 +1310,7 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
 
   const publicFlights = (rules.sagaOnlySchedule
     ? flights
-        .map((event) => publicSagaFlight(event, rules, viewActorId, viewActorRole, viewActorSagaId))
+        .flatMap((event) => publicSagaFlights(event, rules, viewActorId, viewActorRole, viewActorSagaId))
         .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
     : flights.map((doc) => publicFlight(doc, viewActorId, viewActorRole))
   ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, viewActorRole));

@@ -49,6 +49,11 @@ import {
   minutesToScheduleHHMM,
   parseScheduleTimeToMinutes,
 } from "../../lib/scheduleTimeGrid";
+import {
+  sagaDirectDateTimeParts,
+  sagaEventDaySegments,
+  sagaEventOverlapsRange,
+} from "../../lib/sagaEventRange";
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
 import type {
@@ -217,12 +222,6 @@ function isSagaEventRowId(id: string): boolean {
   return id.startsWith(SAGA_EVENT_ID_PREFIX);
 }
 
-function sagaDirectDateTimeParts(value: string): { date: string; time: string } {
-  const match = (value || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
-  if (match) return { date: match[1]!, time: match[2]! };
-  return { date: (value || "").slice(0, 10), time: "" };
-}
-
 function sagaEventIsCancelled(item: SagaDirectScheduleItem): boolean {
   const status = (item.status || "").toUpperCase();
   if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(status)) return true;
@@ -252,15 +251,16 @@ function sagaEventIsBlock(item: SagaDirectScheduleItem): boolean {
     || /bloqueio/i.test(String(item.aircraft || ""));
 }
 
-function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingScheduledFlight | null {
-  const start = sagaDirectDateTimeParts(item.startAtRaw || item.startAt);
-  const end = sagaDirectDateTimeParts(item.endAtRaw || item.endAt);
-  if (!start.date || !start.time) return null;
-  const startMinutes = parseScheduleTimeToMinutes(start.time);
-  let endMinutes = end.time ? parseScheduleTimeToMinutes(end.time) : startMinutes + 60;
-  if (end.date && end.date > start.date) endMinutes += 1440;
-  return {
-    id: `${SAGA_EVENT_ID_PREFIX}${item.id}`,
+function sagaEventsToScheduledFlights(item: SagaDirectScheduleItem): ExistingScheduledFlight[] {
+  const segments = sagaEventDaySegments(
+    item.startAtRaw || item.startAt,
+    item.endAtRaw || item.endAt,
+  );
+  if (segments.length === 0) return [];
+  const blocked = sagaEventIsBlock(item);
+  const status = sagaEventStatusLabel(item);
+  return segments.map((segment, index) => ({
+    id: `${SAGA_EVENT_ID_PREFIX}${item.id}${index > 0 ? `__${segment.date}` : ""}`,
     demandId: `saga-${item.id}`,
     studentId: item.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${item.studentSagaId}`,
     studentLabel: item.studentName || null,
@@ -268,16 +268,16 @@ function sagaEventToScheduledFlight(item: SagaDirectScheduleItem): ExistingSched
     instructorLabel: item.instructorName || null,
     instructorAnac: null,
     aircraftRegistration: (item.aircraft || "").toUpperCase() || null,
-    date: start.date,
-    startTime: start.time,
-    durationHours: Math.max(0.25, (endMinutes - startMinutes) / 60),
-    flightStatus: sagaEventStatusLabel(item),
+    date: segment.date,
+    startTime: segment.startTime,
+    durationHours: Math.max(0.25, segment.durationMinutes / 60),
+    flightStatus: status,
     sourceFilename: "saga-schedule",
     sagaScheduleId: item.id,
     notes: item.notes || null,
     isOutsideGenerator: false,
-    isBlocked: sagaEventIsBlock(item),
-  };
+    isBlocked: blocked,
+  }));
 }
 
 /** Tempo efetivo acionamento→corte dentro do bloco completo armazenado no SAGA. */
@@ -2373,10 +2373,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
           const events = await getSagaEvents(force);
           const weekEnd = weekDateFromStart(weekStart, 0); // domingo da semana
           weekFlights = events
-            .map(sagaEventToScheduledFlight)
-            .filter((row): row is ExistingScheduledFlight =>
-              Boolean(row && row.date >= weekStart && row.date <= weekEnd),
-            );
+            .filter((event) =>
+              sagaEventOverlapsRange(
+                event.startAtRaw || event.startAt,
+                event.endAtRaw || event.endAt,
+                weekStart,
+                weekEnd,
+              ),
+            )
+            .flatMap(sagaEventsToScheduledFlights)
+            .filter((row) => row.date >= weekStart && row.date <= weekEnd);
         }
 
         const rows = [...weekFlights].sort((a, b) => {
