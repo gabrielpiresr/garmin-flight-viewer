@@ -122,8 +122,8 @@ export function StaffCreditPurchasePage() {
     : undefined;
 
   return (
-    <div className="staff-tablet-page min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto w-full max-w-6xl space-y-6 px-4 py-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto w-full max-w-6xl space-y-6 px-4 py-8 pb-[max(2rem,env(safe-area-inset-bottom))] [&_.text-\[10px\]]:text-xs [&_.text-\[11px\]]:text-sm [&_.text-xs]:text-sm">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold text-slate-100 sm:text-2xl">Tablet da escola</h1>
           <p className="text-sm text-slate-500">
