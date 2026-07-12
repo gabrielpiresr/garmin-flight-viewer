@@ -666,6 +666,30 @@ function validateSagaStudentOverlap(events, rules, studentSagaId, occupiedStartA
 }
 
 /** Horas de voo futuras já reservadas no SAGA pelo aluno para um modelo (acionamento→corte). */
+function sagaBoundaryStartOffsetMinutes(events, rules, registration, studentSagaId, occupiedStartAt, ignoreEventId = "") {
+  const requestedStart = Date.parse(occupiedStartAt);
+  if (!Number.isFinite(requestedStart)) return 0;
+  const reg = normalizeRegistration(registration);
+  const touchesPreviousEvent = events.some((event) => {
+    if (clean(event.id) === clean(ignoreEventId)) return false;
+    if (sagaEventIsCancelled(event)) return false;
+    const sameAircraft = normalizeRegistration(event.aircraft) === reg;
+    const sameStudent = studentSagaId && sameSagaUserId(event.studentSagaId, studentSagaId);
+    if (!sameAircraft && !sameStudent) return false;
+    const times = sagaEventTimes(event, rules);
+    return Boolean(times && times.occupiedEndMs === requestedStart);
+  });
+  return touchesPreviousEvent ? 1 : 0;
+}
+
+function sagaDirectPayloadTimes(times, totalDurationMinutes, offsetMinutes) {
+  const offset = Math.max(0, Math.round(number(offsetMinutes, 0)));
+  return {
+    startTime: offset > 0 ? clock(parseClock(times.presentationTime) + offset) : times.presentationTime,
+    durationMinutes: Math.max(15, totalDurationMinutes - offset),
+  };
+}
+
 async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, ignoreEventId = "") {
   if (!modelId || !studentSagaId) return { weekdayHours: 0, weekendHours: 0 };
   const aircrafts = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
@@ -1432,6 +1456,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       flexibilityMinutes > 0 ? `Flexibilidade: ±${clock(flexibilityMinutes)}` : "",
       observation ? `Obs: ${observation}` : "",
     ].filter(Boolean).join(" | ");
+    const sagaTotalDuration = rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes;
+    const sagaBoundaryOffset = sagaBoundaryStartOffsetMinutes(events, rules, registration, studentSagaId, times.occupiedStartAt);
+    const sagaPayloadTimes = sagaDirectPayloadTimes(times, sagaTotalDuration, sagaBoundaryOffset);
     let result;
     try {
       result = await execAdminUsers({
@@ -1441,8 +1468,8 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
         studentName: clean(student.full_name || student.email || "Aluno"),
         instructorUserId: actorRole === "instrutor" ? actorId : null,
         date,
-        startTime: times.presentationTime,
-        durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
+        startTime: sagaPayloadTimes.startTime,
+        durationMinutes: sagaPayloadTimes.durationMinutes,
         sagaStatus,
         notes: bookingNotes,
       });
@@ -1592,6 +1619,7 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
+  const ignoreEventId = clean(payload.flightId);
   const waitlistBooking = isWaitlistIdent(rules, registration);
   if (waitlistBooking && !rules.sagaOnlySchedule) fail("A lista de espera está disponível apenas no modo SAGA.");
   const aircraft = waitlistBooking ? null : await getAircraft(registration);
@@ -1605,7 +1633,7 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   let reservedSaga = { weekdayHours: 0, weekendHours: 0 };
   if (rules.sagaOnlySchedule) {
     const events = await listSagaEvents();
-    validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt);
+    validateSagaConflict(events, rules, registration, times.occupiedStartAt, times.occupiedEndAt, ignoreEventId);
     if (waitlistBooking) {
       await validateWaitlistNoAircraftFree(
         events,
@@ -1616,10 +1644,11 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
         startMinute + durationMinutes + rules.bufferAfterMinutes,
         times.occupiedStartAt,
         times.occupiedEndAt,
+        ignoreEventId,
       );
     }
     const profile = await getProfile(studentId);
-    reservedSaga = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraftModelId, rules);
+    reservedSaga = await sagaReservedHoursForModel(events, sagaUserIdOf(profile, studentId), aircraftModelId, rules, ignoreEventId);
   } else {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
@@ -1885,9 +1914,8 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     }
   }
 
-  // Motivo da alteração: obrigatório para o aluno e registrado nas observações.
+  // Observação opcional da alteração: reutiliza o mesmo campo do modal de solicitação.
   const rescheduleReason = clean(payload.reason).slice(0, 180);
-  if (actorRole === "aluno" && !rescheduleReason) fail("Informe o motivo da alteração.");
   const rescheduleNote = `Alterado via plataforma${rescheduleReason ? ` - ${rescheduleReason}` : ""}`;
 
   const currentStatus = clean(event.status).toUpperCase();
@@ -1895,16 +1923,20 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   // Alteração feita pelo aluno volta para "Pendente": a escola precisa reconfirmar
   // o novo horário (antes o voo seguia Confirmado sem ninguém revisar).
   const nextStatus = actorRole === "aluno" && keepStatus === "CONFIRMED" ? "PENDING" : keepStatus;
+  const scheduleStudentSagaId = clean(event.studentSagaId) || actorSagaId;
+  const sagaTotalDuration = rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes;
+  const sagaBoundaryOffset = sagaBoundaryStartOffsetMinutes(events, rules, registration, scheduleStudentSagaId, times.occupiedStartAt, id);
+  const sagaPayloadTimes = sagaDirectPayloadTimes(times, sagaTotalDuration, sagaBoundaryOffset);
   await execAdminUsers({
     action: "sagaUpsertScheduleDirect",
     scheduleId: id,
     aircraftIdent: registration,
-    studentSagaId: clean(event.studentSagaId) || actorSagaId,
+    studentSagaId: scheduleStudentSagaId,
     studentName: clean(event.studentName),
     ...(clean(event.instructorSagaId) ? { instructorSagaId: clean(event.instructorSagaId), instructorName: clean(event.instructorName) } : {}),
     date,
-    startTime: times.presentationTime,
-    durationMinutes: rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes,
+    startTime: sagaPayloadTimes.startTime,
+    durationMinutes: sagaPayloadTimes.durationMinutes,
     sagaStatus: nextStatus,
     // Preserva as notas existentes (obs do aluno, flexibilidade) e registra a alteração.
     ...(clean(event.notes)

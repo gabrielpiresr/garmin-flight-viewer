@@ -855,11 +855,13 @@ export function FlightDetailModal({
   flight,
   onClose,
   onCancel,
+  onEdit,
   editConfig,
 }: {
   flight: PublicScheduleFlight;
   onClose: () => void;
   onCancel: () => void;
+  onEdit?: () => void;
   /** Quando presente e o voo permite (mesmas regras do cancelamento), exibe o fluxo "Alterar voo". */
   editConfig?: FlightEditConfig;
 }) {
@@ -922,10 +924,13 @@ export function FlightDetailModal({
 
         {flight.canCancel && !editing && (
           <div className="flex justify-end gap-2">
-            {editConfig ? (
+            {onEdit || editConfig ? (
               <button
                 type="button"
-                onClick={() => setEditing(true)}
+                onClick={() => {
+                  if (onEdit) onEdit();
+                  else setEditing(true);
+                }}
                 className="rounded-lg border border-sky-700 bg-sky-900/20 px-4 py-2 text-sm font-semibold text-sky-300 hover:bg-sky-900/40"
               >
                 Alterar voo
@@ -1090,6 +1095,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const [weekLoading, setWeekLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [bookingOpen, setBookingOpen] = useState(false);
+  const [editingFlight, setEditingFlight] = useState<PublicScheduleFlight | null>(null);
   // Solicitação em 2 etapas: 1 = voo (aeronave/data/horário), 2 = flexibilidade/obs/ciência.
   const [bookingStep, setBookingStep] = useState<1 | 2>(1);
   const [saving, setSaving] = useState(false);
@@ -1145,7 +1151,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const [zeroCreditConfirmOpen, setZeroCreditConfirmOpen] = useState(false);
   // Modal de confirmação pós-solicitação (substitui o toast): informa o prazo de
   // confirmação/cancelamento; para lista de espera, a janela é de 24h a 48h antes.
-  const [bookingSuccess, setBookingSuccess] = useState<{ waitlist: boolean } | null>(null);
+  const [bookingSuccess, setBookingSuccess] = useState<{ waitlist: boolean; editing?: boolean } | null>(null);
+  const bookingIgnoreFlightId = editingFlight?.id ?? "";
 
   const weekCacheKey = useCallback(
     (weekStartIso: string) => (actingForStudentId ? `${weekStartIso}|student:${actingForStudentId}` : weekStartIso),
@@ -1296,11 +1303,12 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const futureOwnFlights = useMemo(() => {
     const nowMs = Date.now();
     return futureFlights.filter((flight) => {
+      if (editingFlight && flight.id === editingFlight.id) return false;
       if (!resolveFlightOwn(flight, actingForStudentId) || flight.status === "Cancelado") return false;
       const startMs = new Date(`${flight.flightDate}T${flight.startTime || "00:00"}:00`).getTime();
       return Number.isFinite(startMs) && startMs > nowMs;
     });
-  }, [futureFlights, actingForStudentId]);
+  }, [futureFlights, actingForStudentId, editingFlight]);
 
   // Saldo global (LIFO entre modelos): pools − horas futuras de todos os modelos.
   const selectedModelBalance = useMemo(() => {
@@ -1450,8 +1458,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
   const slotFits = useCallback(
     (startMin: number, duration: number): boolean =>
-      slotFitsIntervals(getOccupiedIntervals(aircraftIdent, flightDate), rules, flightDate, startMin, duration),
-    [getOccupiedIntervals, aircraftIdent, flightDate, rules],
+      slotFitsIntervals(getOccupiedIntervals(aircraftIdent, flightDate, bookingIgnoreFlightId), rules, flightDate, startMin, duration),
+    [getOccupiedIntervals, aircraftIdent, flightDate, rules, bookingIgnoreFlightId],
   );
 
   // ─── Lista de espera ─────────────────────────────────────────────────────────
@@ -1472,13 +1480,13 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     if (!waitlistSelected || !flightDate || !startTime) return null;
     for (const aircraft of aircrafts) {
       if (aircraft.isWaitlist || isWaitlistAircraft(aircraft.registration)) continue;
-      const intervals = getOccupiedIntervals(aircraft.registration, flightDate);
+      const intervals = getOccupiedIntervals(aircraft.registration, flightDate, bookingIgnoreFlightId);
       if (slotFitsIntervals(intervals, rules, flightDate, timeToMinutes(startTime), durationMinutes)) {
         return aircraft.registration;
       }
     }
     return null;
-  }, [waitlistSelected, aircrafts, isWaitlistAircraft, getOccupiedIntervals, rules, flightDate, startTime, durationMinutes]);
+  }, [waitlistSelected, aircrafts, isWaitlistAircraft, getOccupiedIntervals, rules, flightDate, startTime, durationMinutes, bookingIgnoreFlightId]);
   const waitlistBlocked = Boolean(waitlistFreeAircraft);
 
   // Disponibilidade dos slots é avaliada com a duração MÍNIMA do dia: assim um horário
@@ -1624,8 +1632,10 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   );
 
   function openBookingAt(target?: CalendarDropTarget) {
+    setEditingFlight(null);
     setBookingAck(false);
     setBookingStep(1);
+    setBookingNotes("");
     if (target) {
       setFlightDate(addDays(weekStart, target.dayOfWeek === 0 ? 6 : target.dayOfWeek - 1));
       setStartTime(addMinutes(target.startTime, rules.bufferBeforeMinutes));
@@ -1638,6 +1648,26 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       setFlightDate(resolveDefaultBookingDate(rules.minBookingLeadDays));
     }
     setBookingOpen(true);
+  }
+
+  function openBookingForEdit(flight: PublicScheduleFlight) {
+    setEditingFlight(flight);
+    setBookingAck(false);
+    setBookingStep(1);
+    setBookingNotes("");
+    setAircraftIdent(flight.aircraftIdent);
+    setFlightDate(flight.flightDate);
+    setStartTime(flight.startTime);
+    setDurationMinutes(flight.durationMinutes || 60);
+    setFlexibilityMinutes(rules.slotMinutes);
+    setDetailFlight(null);
+    setBookingOpen(true);
+  }
+
+  function closeBookingModal() {
+    setBookingOpen(false);
+    setZeroCreditConfirmOpen(false);
+    setEditingFlight(null);
   }
 
   function moveCalendar(direction: -1 | 1) {
@@ -1679,6 +1709,21 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   }
 
   async function confirmBookingRequest() {
+    if (editingFlight) {
+      await rescheduleScheduleFlight({
+        flightId: editingFlight.id,
+        aircraftIdent,
+        flightDate,
+        startTime,
+        durationMinutes,
+        reason: bookingNotes.trim() || undefined,
+      });
+      closeBookingModal();
+      setBookingNotes("");
+      setBookingSuccess({ waitlist: waitlistSelected, editing: true });
+      invalidateAndReload();
+      return;
+    }
     await requestScheduleFlight({
       aircraftIdent,
       flightDate,
@@ -1688,8 +1733,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       notes: bookingNotes.trim() || undefined,
       ...(actingForStudentId ? { studentUserId: actingForStudentId } : {}),
     });
-    setBookingOpen(false);
-    setZeroCreditConfirmOpen(false);
+    closeBookingModal();
     setBookingNotes("");
     // Modal (não toast): informa que é uma solicitação e o prazo da resposta da escola.
     setBookingSuccess({ waitlist: waitlistSelected });
@@ -1775,6 +1819,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
         flightDate,
         startTime,
         durationMinutes,
+        ...(editingFlight ? { flightId: editingFlight.id } : {}),
         ...(actingForStudentId ? { studentUserId: actingForStudentId } : {}),
       });
       if (rules.requireCreditsForBooking && !availability.creditSufficient) {
@@ -2002,19 +2047,9 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
           flight={detailFlight}
           onClose={() => setDetailFlight(null)}
           onCancel={() => setCancelFlight(detailFlight)}
-          editConfig={
+          onEdit={
             mode === "booking" && rules.sagaOnlySchedule && detailFlight.canCancel
-              ? {
-                  aircrafts,
-                  rules,
-                  getOccupiedIntervals,
-                  onSubmit: async (changes) => {
-                    await rescheduleScheduleFlight({ flightId: detailFlight.id, ...changes });
-                    showToast({ variant: "success", message: "Voo alterado." });
-                    setDetailFlight(null);
-                    invalidateAndReload();
-                  },
-                }
+              ? () => openBookingForEdit(detailFlight)
               : undefined
           }
         />
@@ -2089,11 +2124,13 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4">
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-emerald-700/50 bg-slate-900 p-5 shadow-2xl">
             <div>
-              <h3 className="font-semibold text-emerald-300">Solicitação de agendamento enviada</h3>
+              <h3 className="font-semibold text-emerald-300">
+                {bookingSuccess.editing ? "Alteração enviada" : "Solicitação de agendamento enviada"}
+              </h3>
               {bookingSuccess.waitlist ? (
                 <>
                   <p className="mt-2 text-sm text-slate-300">
-                    Sua solicitação de agendamento foi registrada com sucesso na <strong>lista de espera</strong>.
+                    Sua {bookingSuccess.editing ? "alteração" : "solicitação de agendamento"} foi registrada com sucesso na <strong>lista de espera</strong>.
                   </p>
                   <p className="mt-2 rounded-lg border border-amber-700/40 bg-amber-900/20 p-3 text-sm text-amber-200">
                     O voo poderá ser confirmado a depender de ajustes ou cancelamentos de outros voos — até{" "}
@@ -2103,7 +2140,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                 </>
               ) : (
                 <p className="mt-2 text-sm text-slate-300">
-                  Sua solicitação de agendamento foi registrada com sucesso. Até <strong>12h antes do voo</strong> você
+                  Sua {bookingSuccess.editing ? "alteração" : "solicitação de agendamento"} foi registrada com sucesso. Até <strong>12h antes do voo</strong> você
                   receberá a <strong>confirmação ou o cancelamento</strong> da solicitação.
                 </p>
               )}
@@ -2163,7 +2200,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
             <div className="space-y-3">
               <div>
-                <h3 className="font-semibold text-slate-100">Solicitar voo</h3>
+                <h3 className="font-semibold text-slate-100">{editingFlight ? "Alterar voo" : "Solicitar voo"}</h3>
                 <p className="text-xs text-slate-500">
                   {bookingStep === 1 ? "Escolha aeronave, dia e horário." : "Revise os detalhes e confirme a solicitação."}
                 </p>
@@ -2301,7 +2338,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                     <button
                       type="button"
                       onClick={() => {
-                        setBookingOpen(false);
+                        closeBookingModal();
                         if (actingForStudent && onStaffCreditsCta) {
                           onStaffCreditsCta();
                           return;
@@ -2522,7 +2559,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
               <div className="flex justify-end gap-2">
                 {bookingStep === 1 ? (
                   <>
-                    <button type="button" onClick={() => setBookingOpen(false)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
+                    <button type="button" onClick={closeBookingModal} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">Voltar</button>
                     <button
                       type="button"
                       disabled={
@@ -2557,7 +2594,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                       onClick={() => void submitBooking()}
                       className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                     >
-                      {saving ? "Enviando..." : "Solicitar"}
+                      {saving ? "Enviando..." : editingFlight ? "Alterar" : "Solicitar"}
                     </button>
                   </>
                 )}

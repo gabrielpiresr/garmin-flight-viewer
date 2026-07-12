@@ -127,6 +127,7 @@ export async function checkScheduleAvailability(input: {
   startTime: string;
   durationMinutes: number;
   studentUserId?: string;
+  flightId?: string;
 }) {
   const response = await execute({ action: "checkAvailability", ...input });
   return {
