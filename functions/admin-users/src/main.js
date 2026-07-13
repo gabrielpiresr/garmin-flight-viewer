@@ -166,7 +166,7 @@ function isScheduledFlightStatusValue(value) {
   return SCHEDULED_FLIGHT_STATUSES.has(cleanString(value));
 }
 const VALID_INSTRUCTOR_PREFERENCES = new Set(["low", "medium", "high"]);
-const VALID_AVAILABILITY_TYPES = new Set(["available", "preferred"]);
+const VALID_AVAILABILITY_TYPES = new Set(["available", "preferred", "blocked"]);
 const META_PREFIX = "#GFV_META_V1:";
 const TELEMETRY_FILES_PREFIX = "#GFV_TELEMETRY_FILES_V1:";
 const DEFAULT_LIMIT = 25;
@@ -7721,7 +7721,7 @@ function parseInstructorAvailability(value) {
     return parsed.filter(
       (row) =>
         typeof row.dayOfWeek === "number" &&
-        (row.period === "morning" || row.period === "afternoon") &&
+        (row.period === "morning" || row.period === "afternoon" || row.period === "night") &&
         VALID_AVAILABILITY_TYPES.has(row.availabilityType),
     );
   } catch {
@@ -7735,7 +7735,7 @@ function sanitizeInstructorAvailability(value) {
     .filter(
       (row) =>
         typeof row.dayOfWeek === "number" &&
-        (row.period === "morning" || row.period === "afternoon") &&
+        (row.period === "morning" || row.period === "afternoon" || row.period === "night") &&
         VALID_AVAILABILITY_TYPES.has(row.availabilityType),
     )
     .map((row) => ({

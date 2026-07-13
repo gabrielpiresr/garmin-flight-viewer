@@ -174,6 +174,20 @@ export const STUDENT_CRM_STATUSES_COL_ID =
 export const STUDENT_CRM_PROFILES_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_CRM_PROFILES_COL_ID as string | undefined) ?? "student_crm_profiles";
 
+// Admissão de instrutores
+export const INSTRUCTOR_ADMISSION_STAGES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_ADMISSION_STAGES_COL_ID as string | undefined) ??
+  "instructor_admission_stages";
+export const INSTRUCTOR_ADMISSION_FORM_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_ADMISSION_FORM_COL_ID as string | undefined) ??
+  "instructor_admission_form";
+export const INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID as string | undefined) ??
+  "instructor_admission_candidates";
+export const INSTRUCTOR_ADMISSION_COMMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_INSTRUCTOR_ADMISSION_COMMENTS_COL_ID as string | undefined) ??
+  "instructor_admission_comments";
+
 // Flight Review
 export const MANEUVER_TEMPLATES_COL_ID =
   (import.meta.env.VITE_APPWRITE_MANEUVER_TEMPLATES_COL_ID as string | undefined) ?? "maneuver_templates";

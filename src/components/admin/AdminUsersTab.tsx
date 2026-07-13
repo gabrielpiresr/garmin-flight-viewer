@@ -82,7 +82,7 @@ const INSTRUCTOR_PREFERENCE_LABEL: Record<InstructorPreferenceLevel, string> = {
   medium: "Media",
   high: "Alta",
 };
-const AVAIL_CYCLE: Array<AvailabilityType | undefined> = [undefined, "available", "preferred"];
+const AVAIL_CYCLE: Array<AvailabilityType | undefined> = [undefined, "available", "preferred", "blocked"];
 const PROFILE_DOCUMENT_LABELS: Array<{ type: ProfileDocumentType; label: string }> = [
   { type: "identification", label: "Documento de Identificacao" },
   { type: "voterTitle", label: "Titulo de Eleitor" },
@@ -133,6 +133,7 @@ function cycleAvailability(current: AvailabilityType | undefined): AvailabilityT
 function availabilityCellClass(value: AvailabilityType | undefined): string {
   if (value === "preferred") return "bg-emerald-600 border-emerald-500 text-white";
   if (value === "available") return "bg-sky-600 border-sky-500 text-white";
+  if (value === "blocked") return "bg-red-600 border-red-500 text-white";
   return "bg-slate-800/40 border-slate-700/60 text-slate-600 hover:border-slate-600 hover:bg-slate-700/40";
 }
 
@@ -1576,6 +1577,7 @@ export function AdminUsersTab() {
                                     >
                                       {value === "preferred" ? <span className="text-[10px] font-bold">*</span> : null}
                                       {value === "available" ? <span className="text-[10px]">ok</span> : null}
+                                      {value === "blocked" ? <span className="text-[10px] font-bold">✕</span> : null}
                                     </button>
                                   </td>
                                 );

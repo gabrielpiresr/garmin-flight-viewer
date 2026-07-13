@@ -45,6 +45,9 @@ const StaffCreditPurchasePage = lazy(() =>
 const PublicSchedulePage = lazy(() =>
   import("./pages/PublicSchedulePage").then((module) => ({ default: module.PublicSchedulePage })),
 );
+const InstructorAdmissionFormPage = lazy(() =>
+  import("./pages/InstructorAdmissionFormPage").then((module) => ({ default: module.InstructorAdmissionFormPage })),
+);
 
 function normalizeAppPath(path: string): string {
   const pathname = path.split(/[?#]/, 1)[0] ?? "/";
@@ -98,6 +101,7 @@ export default function App() {
   const isCadastroRoute = window.location.pathname === "/cadastro";
   const isProposalRoute = window.location.pathname.startsWith("/proposta/");
   const isApresentacaoRoute = window.location.pathname === "/apresentacao";
+  const isInstructorAdmissionRoute = window.location.pathname === "/admissao-instrutor";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   // Também pré-carrega a aba Escala em segundo plano (ocioso), para que ao abri-la
@@ -170,6 +174,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <PublicProposalPage />
+      </Suspense>
+    );
+  }
+
+  if (isInstructorAdmissionRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <InstructorAdmissionFormPage />
       </Suspense>
     );
   }

@@ -92,6 +92,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
   { label: "DRE", parentKey: "dre" },
   { label: "Recebimentos", parentKey: "receipts" },
   { label: "CRM", parentKey: "crm" },
+  { label: "Instrutores", parentKey: "instructor-admission" },
   { label: "Flight Review", parentKey: "flight-review" },
   {
     label: "Contratos",

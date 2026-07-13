@@ -325,7 +325,12 @@ function normalizeInstructorConfigs(
           (entry) => entry.dayOfWeek === row.dayOfWeek && entry.period === row.period,
         );
         return defaultRow
-          ? { ...row, available: true, availabilityType: defaultRow.availabilityType }
+          ? {
+              ...row,
+              available: defaultRow.availabilityType !== "blocked",
+              availabilityType:
+                defaultRow.availabilityType === "blocked" ? "available" : defaultRow.availabilityType,
+            }
           : { ...row, available: false, availabilityType: "available" as const };
       }),
     };

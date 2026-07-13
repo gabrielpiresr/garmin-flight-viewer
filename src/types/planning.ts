@@ -1,7 +1,7 @@
 export type WeeklyFlightPlanStatus = "draft" | "submitted";
 export type FlexibilityLevel = "low" | "medium" | "high";
 export type AvailabilityPeriod = "morning" | "afternoon" | "night";
-export type AvailabilityType = "available" | "preferred";
+export type AvailabilityType = "available" | "preferred" | "blocked";
 
 export type WeeklyFlightPlan = {
   id: string;

@@ -70,6 +70,9 @@ const ContractsAdminTab = lazy(() =>
   import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
 );
 const CrmTab = lazy(() => import("./CrmTab").then((module) => ({ default: module.CrmTab })));
+const InstructorAdmissionTab = lazy(() =>
+  import("./InstructorAdmissionTab").then((module) => ({ default: module.InstructorAdmissionTab })),
+);
 const CaktoReceiptsTab = lazy(() =>
   import("./CaktoReceiptsTab").then((module) => ({ default: module.CaktoReceiptsTab })),
 );
@@ -91,6 +94,7 @@ type AdminSection =
   | "dre"
   | "contracts"
   | "crm"
+  | "instructor-admission"
   | "disparos"
   | "receipts"
   | "atualizacoes";
@@ -261,6 +265,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "instructor-admission",
+    label: "Instrutores",
+    sublabel: "Admissão, formação e níveis",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.816-6.68-2.1a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 006.13 1.98h.001c2.482 0 4.788-.816 6.68-2.1a.75.75 0 00.364-.63l.001-.122v-.082a48.09 48.09 0 00-3.478-4.442 6.75 6.75 0 00-6.139-1.03l-.002.001z" />
+      </svg>
+    ),
+  },
+  {
     id: "disparos",
     label: "Disparos",
     sublabel: "Email marketing e avisos",
@@ -294,7 +308,7 @@ const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   },
   {
     title: "Comercial & Financeiro",
-    ids: ["crm", "receipts", "dre", "contracts", "disparos"],
+    ids: ["crm", "instructor-admission", "receipts", "dre", "contracts", "disparos"],
   },
 ];
 
@@ -551,6 +565,7 @@ const ADMIN_ROUTES = [
   { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "users", path: "/admin/usuarios" },
   { id: "crm", path: "/admin/crm" },
+  { id: "instructor-admission", path: "/admin/admissao-instrutores" },
   { id: "disparos", path: "/admin/disparos/email-mkt", aliases: DISPAROS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "logbook", path: "/admin/diario-de-bordo" },
   { id: "fuelings", path: "/admin/abastecimentos" },
@@ -729,6 +744,7 @@ export function AdminLayout() {
     if (target === "reports") { setSection(target, { path: pathForRoute(REPORTS_ROUTES, reportsTab) }); return; }
     if (target === "contents") { setSection(target, { path: pathForRoute(CONTENTS_ROUTES, contentsTab) }); return; }
     if (target === "crm") { setSection(target, { path: "/admin/crm" }); return; }
+    if (target === "instructor-admission") { setSection(target, { path: "/admin/admissao-instrutores" }); return; }
     if (target === "disparos") { setSection(target, { path: pathForRoute(DISPAROS_ROUTES, disparosTab) }); return; }
     if (target === "settings") { setSection(target, { path: pathForRoute(SETTINGS_ROUTES, settingsTab) }); return; }
     if (target === "atualizacoes") { setSection(target, { path: pathForRoute(ATUALIZACOES_ROUTES, atualizacoesTab) }); return; }
@@ -1016,6 +1032,9 @@ export function AdminLayout() {
           )}
           {openedSections.has("crm") && (
             <div hidden={section !== "crm"}><LazyTab><CrmTab /></LazyTab></div>
+          )}
+          {openedSections.has("instructor-admission") && (
+            <div hidden={section !== "instructor-admission"}><LazyTab><InstructorAdmissionTab /></LazyTab></div>
           )}
           {openedSections.has("disparos") && (
             <div hidden={section !== "disparos"} className="space-y-4">

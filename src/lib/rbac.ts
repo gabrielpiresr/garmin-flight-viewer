@@ -250,7 +250,7 @@ function parseInstructorAvailability(value: unknown): InstructorIdentity["defaul
         return (
           typeof row.dayOfWeek === "number" &&
           (row.period === "morning" || row.period === "afternoon" || row.period === "night") &&
-          (type === "available" || type === "preferred")
+          (type === "available" || type === "preferred" || type === "blocked")
         );
       })
       .map((row) => ({

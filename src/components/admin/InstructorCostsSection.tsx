@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getInstructorCosts, saveInstructorCosts } from "../../lib/instructorCostsDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import type { AircraftModel } from "../../types/admin";
@@ -67,7 +67,13 @@ function modelCostToInstructorModelCost(draft: ModelCostDraft): InstructorModelC
   };
 }
 
-export function InstructorCostsSection({ instructorUserId }: { instructorUserId: string }) {
+export function InstructorCostsSection({
+  instructorUserId,
+  autoSave = false,
+}: {
+  instructorUserId: string;
+  autoSave?: boolean;
+}) {
   const { user: authUser } = useAuth();
   const { showToast } = useToast();
 
@@ -77,9 +83,12 @@ export function InstructorCostsSection({ instructorUserId }: { instructorUserId:
   const [monthlyFixedCost, setMonthlyFixedCost] = useState("0");
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [modelDrafts, setModelDrafts] = useState<ModelCostDraft[]>([]);
+  const costsSnapshotRef = useRef("");
+  const costsHydratedRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    costsHydratedRef.current = false;
     try {
       const [costs, allModels] = await Promise.all([
         getInstructorCosts(instructorUserId),
@@ -101,6 +110,11 @@ export function InstructorCostsSection({ instructorUserId }: { instructorUserId:
         };
       });
       setModelDrafts(drafts);
+      costsSnapshotRef.current = JSON.stringify({
+        monthlyFixedCost: String(costs?.monthlyFixedCost ?? 0),
+        modelDrafts: drafts,
+      });
+      costsHydratedRef.current = true;
     } catch {
       showToast({ message: "Erro ao carregar custos do instrutor.", variant: "error" });
     } finally {
@@ -116,26 +130,46 @@ export function InstructorCostsSection({ instructorUserId }: { instructorUserId:
     setModelDrafts((prev) => prev.map((d) => (d.modelId === modelId ? { ...d, [field]: value } : d)));
   }
 
-  async function handleSave() {
-    if (!authUser) return;
-    setSaving(true);
-    try {
-      const saved = await saveInstructorCosts(
-        instructorUserId,
-        {
-          monthlyFixedCost: parseCurrency(monthlyFixedCost),
-          modelCosts: modelDrafts.map(modelCostToInstructorModelCost),
-        },
-        authUser.id,
-      );
-      setUpdatedAt(saved.updatedAt);
-      showToast({ message: "Custos salvos.", variant: "success" });
-    } catch {
-      showToast({ message: "Erro ao salvar custos.", variant: "error" });
-    } finally {
-      setSaving(false);
-    }
-  }
+  const handleSave = useCallback(
+    async (silent = false) => {
+      if (!authUser) return;
+      const serialized = JSON.stringify({ monthlyFixedCost, modelDrafts });
+      if (serialized === costsSnapshotRef.current) return;
+
+      setSaving(true);
+      try {
+        const saved = await saveInstructorCosts(
+          instructorUserId,
+          {
+            monthlyFixedCost: parseCurrency(monthlyFixedCost),
+            modelCosts: modelDrafts.map(modelCostToInstructorModelCost),
+          },
+          authUser.id,
+        );
+        setUpdatedAt(saved.updatedAt);
+        costsSnapshotRef.current = serialized;
+        if (!silent) {
+          showToast({ message: "Custos salvos.", variant: "success" });
+        }
+      } catch {
+        showToast({ message: "Erro ao salvar custos.", variant: "error" });
+      } finally {
+        setSaving(false);
+      }
+    },
+    [authUser, instructorUserId, modelDrafts, monthlyFixedCost, showToast],
+  );
+
+  useEffect(() => {
+    if (!autoSave || loading || !costsHydratedRef.current) return;
+    const serialized = JSON.stringify({ monthlyFixedCost, modelDrafts });
+    if (serialized === costsSnapshotRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      void handleSave(true);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [autoSave, handleSave, loading, modelDrafts, monthlyFixedCost]);
 
   if (loading) {
     return (
@@ -159,6 +193,7 @@ export function InstructorCostsSection({ instructorUserId }: { instructorUserId:
         </div>
         <p className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
           Atualizado: {formatUpdatedAt(updatedAt)}
+          {autoSave && saving ? " · Salvando..." : ""}
         </p>
       </div>
 
@@ -203,16 +238,18 @@ export function InstructorCostsSection({ instructorUserId }: { instructorUserId:
         </div>
       )}
 
-      <div className="mt-4 flex justify-end">
-        <button
-          type="button"
-          onClick={() => void handleSave()}
-          disabled={saving}
-          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
-        >
-          {saving ? "Salvando..." : "Salvar custos"}
-        </button>
-      </div>
+      {!autoSave && (
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {saving ? "Salvando..." : "Salvar custos"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

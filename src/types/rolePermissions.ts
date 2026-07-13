@@ -39,6 +39,7 @@ export type AdminTabKey =
   | "dre"
   | "receipts"
   | "crm"
+  | "instructor-admission"
   | "settings"
   | "settings.regras"
   | "settings.email"
@@ -214,6 +215,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "dre": "DRE",
   "receipts": "Recebimentos",
   "crm": "CRM",
+  "instructor-admission": "Instrutores",
   "settings": "Configurações",
   "settings.regras": "Configurações › Regras",
   "settings.email": "Configurações › E-mail",
