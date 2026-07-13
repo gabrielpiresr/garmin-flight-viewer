@@ -7,6 +7,7 @@ import {
   deriveReviewStatus,
   TELEMETRY_FIELD_MAP,
   TELEMETRY_PARAMETER_LABELS,
+  transformHeadingDataPoints,
 } from "../lib/flightManeuverAnalysis";
 import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import {
@@ -105,6 +106,14 @@ function extractFieldPoints(
       t: Math.round((base + row.x - startMs) / 1000),
       v: row[fieldKey] as number,
     }));
+}
+
+function augmentParameterDataPoints(
+  param: AnalyzedParameter,
+  rawPoints: Array<{ t: number; v: number }>,
+): Array<{ t: number; v: number }> {
+  if (param.parameter !== "heading" && param.parameter !== "track") return rawPoints;
+  return transformHeadingDataPoints(rawPoints, param.expected_reference_value);
 }
 
 /** Y-axis domain with 20% padding, also stretching to cover reference lines.
@@ -604,9 +613,72 @@ type ModalTelemetryPoint = {
   alt: number | null;
   ias: number | null;
   rpm: number | null;
+  [key: string]: number | null;
 };
 
+function buildTelemetryPreviewPoints(
+  chartData: ParseResult["chartData"],
+  opts?: { xMin?: number; xMax?: number; maxPoints?: number },
+): ModalTelemetryPoint[] {
+  const scoped = opts?.xMin != null && opts?.xMax != null
+    ? chartData.filter((row) => {
+        const x = row.x as number;
+        return x >= opts.xMin! && x <= opts.xMax!;
+      })
+    : chartData;
+  const maxPoints = opts?.maxPoints ?? 500;
+  const step = Math.max(1, Math.ceil(scoped.length / maxPoints));
+  return scoped
+    .filter((_, i) => i % step === 0)
+    .map((row) => {
+      const point: ModalTelemetryPoint = {
+        x: row.x as number,
+        alt: (row["gpsAltFt"] as number | null) ?? null,
+        ias: (row["iasKt"] as number | null) ?? null,
+        rpm: (row["rpm"] as number | null) ?? null,
+      };
+      for (const [param, fieldKey] of Object.entries(TELEMETRY_FIELD_MAP)) {
+        point[param] = (row[fieldKey] as number | null) ?? null;
+      }
+      return point;
+    });
+}
+
+function formatModalTelemetryValue(parameterKey: string, value: number): string {
+  if (parameterKey === "alt" || parameterKey === "altitude" || parameterKey === "agl") return `${Math.round(value)}ft`;
+  if (parameterKey === "ias" || parameterKey === "groundspeed" || parameterKey === "true_airspeed") return `${Math.round(value)}kt`;
+  if (parameterKey === "rpm") return `${Math.round(value)}`;
+  if (parameterKey === "heading" || parameterKey === "track" || parameterKey === "pitch" || parameterKey === "bank") return `${value.toFixed(1)}°`;
+  return value.toFixed(1);
+}
+
+function isHeadingTurnBand(p: AnalyzedParameter): boolean {
+  return (p.parameter === "heading" || p.parameter === "track")
+    && p.expected_reference_value != null
+    && p.expected_min_delta != null
+    && p.expected_max_delta != null
+    && p.expected_min_delta > 0
+    && p.expected_max_delta > p.expected_min_delta;
+}
+
+function formatExpectedParameterRange(p: AnalyzedParameter): string {
+  if (isHeadingTurnBand(p)) {
+    return `0° → ${p.expected_min_delta}°–${p.expected_max_delta}° (↺ ou ↻)`;
+  }
+  if ((p.parameter === "heading" || p.parameter === "track") && p.expected_reference_value != null) {
+    const ref = `${p.expected_reference_value}° ref.`;
+    if (p.expected_min !== null || p.expected_max !== null) {
+      return `${p.expected_min ?? "–"} – ${p.expected_max ?? "–"} (Δ proa, ${ref})`;
+    }
+  }
+  if (p.expected_min !== null || p.expected_max !== null) {
+    return `${p.expected_min ?? "–"} – ${p.expected_max ?? "–"}`;
+  }
+  return "–";
+}
+
 function ModalTelemetryChart({
+  activeX,
   color,
   data,
   dataKey,
@@ -622,9 +694,10 @@ function ModalTelemetryChart({
   telemetryBaseMs,
   totalMs,
 }: {
+  activeX: number | null;
   color: string;
   data: ModalTelemetryPoint[];
-  dataKey: "alt" | "ias" | "rpm";
+  dataKey: string;
   domain: [number, number] | null;
   extraMarks?: Array<{ x: number; color: string; label: string }>;
   height: number;
@@ -721,7 +794,7 @@ function ModalTelemetryChart({
       }
 
       for (const marker of [
-        { x: selectionStart, color: "#22d3ee", text: "Inicio" },
+        { x: selectionStart, color: "#22d3ee", text: "Início" },
         { x: selectionEnd, color: "#f97316", text: "Fim" },
       ]) {
         if (marker.x === null || marker.x < xMin || marker.x > xMax) continue;
@@ -763,6 +836,32 @@ function ModalTelemetryChart({
         }
       }
 
+      if (activeX !== null && activeX >= xMin && activeX <= xMax) {
+        const activePoint = nearest(activeX);
+        const activeValue = activePoint?.[dataKey];
+        const x = toX(activeX);
+        ctx.save();
+        ctx.strokeStyle = "rgba(226, 232, 240, 0.72)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + plotH);
+        ctx.stroke();
+        if (activeValue !== null && activeValue !== undefined && Number.isFinite(activeValue)) {
+          const y = toY(activeValue);
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#0f172a";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.7;
       ctx.beginPath();
@@ -796,7 +895,7 @@ function ModalTelemetryChart({
       observer.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [color, dataKey, extraMarks, height, selectionEnd, selectionStart, telemetryBaseMs, visibleData, xDomain, yDomain, tickFmt]);
+  }, [activeX, color, dataKey, extraMarks, height, selectionEnd, selectionStart, telemetryBaseMs, visibleData, xDomain, yDomain, tickFmt]);
 
   const xFromClient = (clientX: number): number | null => {
     const shell = shellRef.current;
@@ -808,6 +907,8 @@ function ModalTelemetryChart({
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left - left) / plotW));
     return xDomain[0] + (xDomain[1] - xDomain[0]) * ratio;
   };
+
+  const clampX = (x: number): number => Math.min(xDomain[1], Math.max(xDomain[0], x));
 
   const nearest = (x: number): ModalTelemetryPoint | null => {
     if (data.length === 0) return null;
@@ -825,17 +926,43 @@ function ModalTelemetryChart({
     return best;
   };
 
+  useEffect(() => {
+    const tooltip = tooltipRef.current;
+    const shell = shellRef.current;
+    if (!tooltip || !shell || activeX === null) {
+      tooltipRef.current?.classList.add("hidden");
+      return;
+    }
+    const point = nearest(activeX);
+    if (!point) {
+      tooltip.classList.add("hidden");
+      return;
+    }
+    const value = point[dataKey];
+    tooltip.classList.remove("hidden");
+    tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${formatHHMMSS(activeX, telemetryBaseMs)} - ${value === null ? "-" : tickFmt(value)}</div>`;
+    const rect = shell.getBoundingClientRect();
+    const leftAxis = 48;
+    const right = 10;
+    const plotW = Math.max(1, rect.width - leftAxis - right);
+    const ratio = Math.min(1, Math.max(0, (activeX - xDomain[0]) / ((xDomain[1] - xDomain[0]) || 1)));
+    const x = leftAxis + ratio * plotW;
+    const tooltipWidth = tooltip.offsetWidth || 132;
+    const left = Math.min(Math.max(6, x + 10), Math.max(6, rect.width - tooltipWidth - 6));
+    tooltip.style.transform = `translate(${left}px, 6px)`;
+  }, [activeX, data, dataKey, label, telemetryBaseMs, tickFmt, xDomain]);
+
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const tooltip = tooltipRef.current;
     const shell = shellRef.current;
     const x = xFromClient(event.clientX);
     if (!tooltip || !shell || x === null) return;
-    const point = nearest(x);
-    if (!point) return;
-    onHoverX(point.x);
-    const value = point[dataKey];
+    const clampedX = clampX(x);
+    const point = nearest(clampedX);
+    onHoverX(clampedX);
+    const value = point?.[dataKey] ?? null;
     tooltip.classList.remove("hidden");
-    tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${formatHHMMSS(point.x, telemetryBaseMs)} - ${value === null ? "-" : tickFmt(value)}</div>`;
+    tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${formatHHMMSS(clampedX, telemetryBaseMs)} - ${value === null ? "-" : tickFmt(value)}</div>`;
     const rect = shell.getBoundingClientRect();
     const tooltipWidth = tooltip.offsetWidth || 132;
     const left = Math.min(Math.max(6, event.clientX - rect.left + 10), Math.max(6, rect.width - tooltipWidth - 6));
@@ -851,8 +978,7 @@ function ModalTelemetryChart({
   const handleClick = (event: PointerEvent<HTMLCanvasElement>) => {
     const x = xFromClient(event.clientX);
     if (x === null) return;
-    const point = nearest(x);
-    onSelectX(point?.x ?? x);
+    onSelectX(clampX(x));
   };
 
   return (
@@ -900,6 +1026,7 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
   if (group.length === 0) return { refs: [], domain: [0, 1] };
   const p0 = group[0]!;
   const isBank = p0.parameter === "bank";
+  const isHeadingTrackParam = p0.parameter === "heading" || p0.parameter === "track";
   const data = p0.data_points;
   const refs: ReviewChartReference[] = [];
   let domainMin: number | null = null;
@@ -908,6 +1035,20 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
 
   for (const p of group) {
     const refColor = SEVERITY_LINE_COLORS[p.severity] ?? "#f59e0b";
+    const headingTurnBand = isHeadingTurnBand(p);
+
+    if (headingTurnBand && p.expected_min_delta != null && p.expected_max_delta != null) {
+      const lo = p.expected_min_delta;
+      const hi = p.expected_max_delta;
+      refs.push({ y: 0, color: refColor, label: "0°" });
+      refs.push({ y: 0, y_end: lo, color: refColor, label: `+${lo}°` });
+      refs.push({ y: 0, y_end: hi, color: refColor, label: `+${hi}°` });
+      refs.push({ y: 0, y_end: -hi, color: refColor, label: `-${hi}°` });
+      refs.push({ y: 0, y_end: -lo, color: refColor, label: `-${lo}°` });
+      domainMin = domainMin === null ? -hi : Math.min(domainMin, -hi);
+      domainMax = domainMax === null ? hi : Math.max(domainMax, hi);
+      continue;
+    }
 
     if (p.expected_min !== null) {
       const absMin = Math.abs(p.expected_min);
@@ -917,7 +1058,13 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
         p.expected_max !== null && Math.abs(absMin - Math.abs(p.expected_max)) < 0.01;
       if (!skipBankMin) {
         const yVal = isBank ? absMin : p.expected_min;
-        const lbl = multi ? `mín ${absMin} (${p.label})` : isBank ? `±${absMin}` : `mín ${p.expected_min}`;
+        const lbl = multi
+          ? `mín ${absMin} (${p.label})`
+          : isBank
+            ? `±${absMin}`
+            : headingTurnBand
+              ? `giro ${p.expected_min_delta}°`
+              : `mín ${p.expected_min}`;
         // Positivo: label aqui
         refs.push({
           y: yVal,
@@ -942,7 +1089,13 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
     if (p.expected_max !== null) {
       const absMax = Math.abs(p.expected_max);
       const yVal = isBank ? absMax : p.expected_max;
-      const lbl = multi ? `máx ${absMax} (${p.label})` : isBank ? `±${absMax}` : `máx ${p.expected_max}`;
+      const lbl = multi
+        ? `máx ${absMax} (${p.label})`
+        : isBank
+          ? `±${absMax}`
+          : headingTurnBand
+            ? `giro ${p.expected_max_delta}°`
+            : `máx ${p.expected_max}`;
       // Positivo: label aqui
       refs.push({
         y: yVal,
@@ -964,7 +1117,7 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
     }
   }
 
-  const domain = computeYDomain(data, domainMin, domainMax, isBank);
+  const domain = computeYDomain(data, domainMin, domainMax, isBank || isHeadingTrackParam);
   return { refs, domain };
 }
 
@@ -983,6 +1136,7 @@ function ParameterChart({
   const p0 = params[0]!;
   const isBank = p0.parameter === "bank";
   const isPitch = p0.parameter === "pitch";
+  const isHeadingTrack = p0.parameter === "heading" || p0.parameter === "track";
   const label = params.map((p) => p.label).filter((l, i, arr) => arr.indexOf(l) === i).join(" / ");
   const { refs, domain } = buildGroupedRefs(params);
   void syncId;
@@ -996,7 +1150,7 @@ function ParameterChart({
         domain={domain}
         height={200}
         references={refs}
-        zeroCrossLine={isBank || isPitch}
+        zeroCrossLine={isBank || isPitch || isHeadingTrack}
         formatY={(value) => value.toFixed(1)}
         activeT={activeT}
         onHoverT={onHoverT}
@@ -1421,9 +1575,7 @@ function StepCard({
                         <td className="px-3 py-2 text-right text-slate-400">{p.max_observed !== null ? p.max_observed : "–"}</td>
                         <td className="px-3 py-2 text-right text-slate-400">{p.avg_observed !== null ? p.avg_observed : "–"}</td>
                         <td className="px-3 py-2 text-right text-slate-400">
-                          {p.expected_min !== null || p.expected_max !== null
-                            ? `${p.expected_min ?? "–"} – ${p.expected_max ?? "–"}`
-                            : "–"}
+                          {formatExpectedParameterRange(p)}
                         </td>
                         <td className="px-3 py-2 text-right text-slate-400">{p.time_out_of_range_seconds}</td>
                         <td className="px-3 py-2 text-center"><StatusBadge status={p.status} /></td>
@@ -1558,7 +1710,7 @@ function ManeuverCard({
       const eMs = new Date(step.end_time).getTime();
       const augParams = step.parameters.map((param) => {
         const fieldKey = TELEMETRY_FIELD_MAP[param.parameter] ?? param.parameter;
-        return { ...param, data_points: extractFieldPoints(parsedResult, sMs, eMs, fieldKey) };
+        return { ...param, data_points: augmentParameterDataPoints(param, extractFieldPoints(parsedResult, sMs, eMs, fieldKey)) };
       });
       return { ...step, parameters: augParams };
     });
@@ -1777,6 +1929,9 @@ function MarkStepsModal({
     if (!maneuver.instructor_step_marks?.length) return [];
     return [];
   });
+  const [editingMarkIdx, setEditingMarkIdx] = useState<number | null>(null);
+  const [hoverX, setHoverX] = useState<number | null>(null);
+  const [extraFields, setExtraFields] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const mapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
@@ -1788,20 +1943,18 @@ function MarkStepsModal({
       const { chartData, chartTimeBaseMs, points: flightPoints } = parsed;
       if (!chartTimeBaseMs || chartData.length === 0) return null;
       const totalMs = chartData[chartData.length - 1]?.x ?? 0;
-      const step = Math.max(1, Math.ceil(chartData.length / 500));
-      const points = chartData
-        .filter((_, i) => i % step === 0)
-        .map((row) => ({
-          x: row.x as number,
-          alt: (row["gpsAltFt"] as number | null) ?? null,
-          ias: (row["iasKt"] as number | null) ?? null,
-          rpm: (row["rpm"] as number | null) ?? null,
-        }));
+      const maneuverStartX = new Date(maneuver.start_time).getTime() - chartTimeBaseMs;
+      const maneuverEndX = new Date(maneuver.end_time).getTime() - chartTimeBaseMs;
+      const points = buildTelemetryPreviewPoints(chartData, {
+        xMin: maneuverStartX,
+        xMax: maneuverEndX,
+        maxPoints: 2000,
+      });
       return { points, baseMs: chartTimeBaseMs, totalMs, flightPoints };
     } catch {
       return null;
     }
-  }, [csvText]);
+  }, [csvText, maneuver.start_time, maneuver.end_time]);
 
   // Pré-carrega os marks existentes no estado assim que temos telemetria
   useEffect(() => {
@@ -1843,16 +1996,30 @@ function MarkStepsModal({
 
   const handleChartSelect = useCallback(
     (xMs: number) => {
+      if (editingMarkIdx !== null) {
+        const prevLimit = editingMarkIdx > 0 ? marks[editingMarkIdx - 1]! : maneuverStartX;
+        const nextLimit = editingMarkIdx < marks.length - 1 ? marks[editingMarkIdx + 1]! : maneuverEndX;
+        if (xMs <= prevLimit || xMs >= nextLimit) return;
+        setMarks((prev) => prev.map((mark, i) => (i === editingMarkIdx ? xMs : mark)));
+        setEditingMarkIdx(null);
+        return;
+      }
       if (currentMarkIdx >= marksNeeded) return;
       const minX = marks.length > 0 ? marks[marks.length - 1]! : maneuverStartX;
       if (xMs <= minX || xMs >= maneuverEndX) return;
       setMarks((prev) => [...prev, xMs]);
     },
-    [currentMarkIdx, marksNeeded, marks, maneuverStartX, maneuverEndX],
+    [currentMarkIdx, editingMarkIdx, marksNeeded, marks, maneuverStartX, maneuverEndX],
   );
 
-  const handleUndo = () => setMarks((prev) => prev.slice(0, -1));
-  const handleReset = () => setMarks([]);
+  const handleUndo = () => {
+    setEditingMarkIdx(null);
+    setMarks((prev) => prev.slice(0, -1));
+  };
+  const handleReset = () => {
+    setEditingMarkIdx(null);
+    setMarks([]);
+  };
 
   const handleSave = async () => {
     if (!telemetry) return;
@@ -1880,7 +2047,7 @@ function MarkStepsModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
+    <div className="fixed inset-0 z-[1200] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
       <div className="my-4 w-full max-w-4xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         {/* Header */}
         <div className="mb-4 flex items-center justify-between">
@@ -1909,7 +2076,7 @@ function MarkStepsModal({
               <div className="space-y-1">
                 {stepsToMark.map((step, i) => {
                   const isDone = i < marks.length;
-                  const isCurrent = i === currentMarkIdx;
+                  const isCurrent = editingMarkIdx === i || (editingMarkIdx === null && i === currentMarkIdx);
                   return (
                     <div
                       key={step.id}
@@ -1937,6 +2104,15 @@ function MarkStepsModal({
                           {formatDateTime(new Date(telemetry.baseMs + marks[i]!).toISOString())}
                         </span>
                       )}
+                      {isDone && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingMarkIdx(i)}
+                          className="rounded border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-slate-800"
+                        >
+                          Editar
+                        </button>
+                      )}
                       {isCurrent && (
                         <span className="text-xs text-sky-500">← marque no gráfico</span>
                       )}
@@ -1950,7 +2126,9 @@ function MarkStepsModal({
             <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-                  {currentMarkIdx < marksNeeded
+                  {editingMarkIdx !== null
+                    ? <>Clique para reposicionar: <span className="text-sky-300">{stepsToMark[editingMarkIdx]?.name}</span></>
+                    : currentMarkIdx < marksNeeded
                     ? <>Clique para marcar o fim de: <span className="text-sky-300">{stepsToMark[currentMarkIdx]?.name}</span></>
                     : <span className="text-emerald-400">Todas as etapas marcadas</span>
                   }
@@ -1979,7 +2157,7 @@ function MarkStepsModal({
                   Telemetria não disponível.
                 </p>
               ) : (
-                <div ref={chartContainerRef} className="select-none" style={{ cursor: currentMarkIdx < marksNeeded ? "crosshair" : "default" }}>
+                <div ref={chartContainerRef} className="select-none" style={{ cursor: editingMarkIdx !== null || currentMarkIdx < marksNeeded ? "crosshair" : "default" }}>
                   {telemetry.flightPoints.length > 0 && (
                     <div className="mb-2 overflow-hidden rounded-lg border border-slate-700" style={{ height: 140 }}>
                       <FlightMap
@@ -1990,13 +2168,48 @@ function MarkStepsModal({
                       />
                     </div>
                   )}
+                  <div className="mb-2 flex items-center gap-2">
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const key = e.target.value;
+                        if (!key) return;
+                        setExtraFields((prev) => prev.includes(key) ? prev : [...prev, key]);
+                        e.target.value = "";
+                      }}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
+                    >
+                      <option value="">+ Adicionar gráfico...</option>
+                      {Object.entries(TELEMETRY_PARAMETER_LABELS).map(([key, lbl]) => (
+                        <option key={key} value={key}>{lbl}</option>
+                      ))}
+                    </select>
+                    {extraFields.map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setExtraFields((prev) => prev.filter((item) => item !== key))}
+                        className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+                      >
+                        {TELEMETRY_PARAMETER_LABELS[key] ?? key} x
+                      </button>
+                    ))}
+                  </div>
                   {[
-                    { dataKey: "alt" as const, label: "Altitude (ft)", color: "#94a3b8", height: 120, tickFmt: (v: number) => `${Math.round(v)}ft` },
-                    { dataKey: "ias" as const, label: "IAS (kt)", color: "#38bdf8", height: 80, tickFmt: (v: number) => `${Math.round(v)}kt` },
+                    { dataKey: "alt", label: "Altitude (ft)", color: "#94a3b8", height: 120, tickFmt: (v: number) => `${Math.round(v)}ft` },
+                    { dataKey: "ias", label: "IAS (kt)", color: "#38bdf8", height: 80, tickFmt: (v: number) => `${Math.round(v)}kt` },
+                    ...extraFields.map((key) => ({
+                      dataKey: key,
+                      label: TELEMETRY_PARAMETER_LABELS[key] ?? key,
+                      color: "#a78bfa",
+                      height: 80,
+                      tickFmt: (v: number) => formatModalTelemetryValue(key, v),
+                    })),
                   ].map(({ dataKey, label, color, height, tickFmt }) => (
                     <div key={dataKey}>
                       <p className="mt-1 text-xs font-medium text-slate-500">{label}</p>
                       <ModalTelemetryChart
+                        activeX={hoverX}
                         color={color}
                         data={telemetry.points}
                         dataKey={dataKey}
@@ -2005,6 +2218,7 @@ function MarkStepsModal({
                         height={height}
                         label={label}
                         onHoverX={(xMs) => {
+                          setHoverX(xMs);
                           if (xMs === null) { mapHoverRef.current?.(null); return; }
                           const pos = findHoverPos(telemetry.flightPoints, telemetry.baseMs, xMs);
                           mapHoverRef.current?.(pos);
@@ -2119,6 +2333,8 @@ function AddManeuverModal({
   // Selection: offsets in ms from telemetry start
   const [startX, setStartX] = useState<number | null>(null);
   const [endX, setEndX] = useState<number | null>(null);
+  const [hoverX, setHoverX] = useState<number | null>(null);
+  const [extraFields, setExtraFields] = useState<string[]>([]);
   // "start" = next click sets start marker; "end" = next click sets end marker
   const [phase, setPhase] = useState<"start" | "end">("start");
 
@@ -2130,15 +2346,7 @@ function AddManeuverModal({
       const { chartData, chartTimeBaseMs, points: flightPoints } = parsed;
       if (!chartTimeBaseMs || chartData.length === 0) return null;
       const totalMs = chartData[chartData.length - 1]?.x ?? 0;
-      const step = Math.max(1, Math.ceil(chartData.length / 500));
-      const points = chartData
-        .filter((_, i) => i % step === 0)
-        .map((row) => ({
-          x: row.x as number,
-          alt: (row["gpsAltFt"] as number | null) ?? null,
-          ias: (row["iasKt"] as number | null) ?? null,
-          rpm: (row["rpm"] as number | null) ?? null,
-        }));
+      const points = buildTelemetryPreviewPoints(chartData);
       return { points, baseMs: chartTimeBaseMs, totalMs, flightPoints };
     } catch {
       return null;
@@ -2315,7 +2523,7 @@ function AddManeuverModal({
     "w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
+    <div className="fixed inset-0 z-[1200] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4">
       <div className="my-4 w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         {/* Header */}
         <div className="mb-5 flex items-center justify-between">
@@ -2431,23 +2639,59 @@ function AddManeuverModal({
                   </div>
 
                   {/* Reusable selection overlays */}
+                  <div className="mb-2 flex items-center gap-2">
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const key = e.target.value;
+                        if (!key) return;
+                        setExtraFields((prev) => prev.includes(key) ? prev : [...prev, key]);
+                        e.target.value = "";
+                      }}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:outline-none"
+                    >
+                      <option value="">+ Adicionar gráfico...</option>
+                      {Object.entries(TELEMETRY_PARAMETER_LABELS).map(([key, lbl]) => (
+                        <option key={key} value={key}>{lbl}</option>
+                      ))}
+                    </select>
+                    {extraFields.map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setExtraFields((prev) => prev.filter((item) => item !== key))}
+                        className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+                      >
+                        {TELEMETRY_PARAMETER_LABELS[key] ?? key} x
+                      </button>
+                    ))}
+                  </div>
                   {[
                     { dataKey: "alt", label: "Altitude (ft)", color: "#94a3b8", height: 130, tickFmt: (v: number) => `${Math.round(v)}ft` },
                     { dataKey: "ias", label: "IAS (kt)", color: "#38bdf8", height: 90, tickFmt: (v: number) => `${Math.round(v)}kt` },
                     ...(telemetry.points.some((p) => p.rpm != null)
                       ? [{ dataKey: "rpm", label: "RPM", color: "#a78bfa", height: 90, tickFmt: (v: number) => `${Math.round(v)}` }]
                       : []),
+                    ...extraFields.map((key) => ({
+                      dataKey: key,
+                      label: TELEMETRY_PARAMETER_LABELS[key] ?? key,
+                      color: "#f59e0b",
+                      height: 90,
+                      tickFmt: (v: number) => formatModalTelemetryValue(key, v),
+                    })),
                   ].map(({ dataKey, label, color, height, tickFmt }) => (
                     <div key={dataKey}>
                       <p className="mt-1 text-xs font-medium text-slate-500">{label}</p>
                       <ModalTelemetryChart
+                        activeX={hoverX}
                         color={color}
                         data={telemetry.points}
-                        dataKey={dataKey as "alt" | "ias" | "rpm"}
+                        dataKey={dataKey}
                         domain={chartDomain}
                         height={height}
                         label={label}
                         onHoverX={(xMs) => {
+                          setHoverX(xMs);
                           if (xMs === null) {
                             mapHoverRef.current?.(null);
                             return;
@@ -2729,7 +2973,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
       const eMs = new Date(step.end_time).getTime();
       const augParams = step.parameters.map((param) => {
         const fieldKey = TELEMETRY_FIELD_MAP[param.parameter] ?? param.parameter;
-        return { ...param, data_points: extractFieldPoints(parsedCsvResult, sMs, eMs, fieldKey) };
+        return { ...param, data_points: augmentParameterDataPoints(param, extractFieldPoints(parsedCsvResult, sMs, eMs, fieldKey)) };
       });
       return { ...step, parameters: augParams };
     });
@@ -3067,7 +3311,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
         </div>
       ) : parsedCsvError ? (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
-          Nao foi possivel montar os graficos do Flight Review: {parsedCsvError}
+          Não foi possível montar os gráficos do Flight Review: {parsedCsvError}
         </div>
       ) : null}
 
@@ -3295,9 +3539,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                                 {p.avg_observed !== null ? p.avg_observed.toFixed(1) : "—"}
                               </td>
                               <td className="py-1 text-right text-slate-500">
-                                {p.expected_min !== null || p.expected_max !== null
-                                  ? `${p.expected_min ?? "—"} – ${p.expected_max ?? "—"}`
-                                  : "—"}
+                                {formatExpectedParameterRange(p)}
                               </td>
                               <td className="py-1 text-right text-slate-400">{p.time_out_of_range_seconds}</td>
                               <td className="py-1 text-center"><StatusBadge status={p.status} /></td>
@@ -3486,6 +3728,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                     if (p0.data_points.length === 0) return null;
                     const isBank = p0.parameter === "bank";
                     const isPitch = p0.parameter === "pitch";
+                    const isHeadingTrack = p0.parameter === "heading" || p0.parameter === "track";
                     const { refs, domain } = buildGroupedRefs(group);
                     const chartLabel = group.map((p) => p.label).filter((l, li, arr) => arr.indexOf(l) === li).join(" / ");
                     return (
@@ -3499,7 +3742,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                           height={fsChartH}
                           references={refs}
                           verticalLines={fsStepTdLines}
-                          zeroCrossLine={isBank || isPitch}
+                          zeroCrossLine={isBank || isPitch || isHeadingTrack}
                           formatY={(v) => v.toFixed(1)}
                           activeT={fsHoverT}
                           onHoverT={handleFsHoverT}
@@ -3513,10 +3756,13 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                     if (!fieldMap) return null;
                     const stepStartMs = new Date(fsStep.start_time).getTime();
                     const stepEndMs = new Date(fsStep.end_time).getTime();
-                    const pts = extractFieldPoints(parsedCsvResult, stepStartMs, stepEndMs, fieldMap);
+                    const rawPts = extractFieldPoints(parsedCsvResult, stepStartMs, stepEndMs, fieldMap);
+                    const pts = fieldKey === "heading" || fieldKey === "track"
+                      ? transformHeadingDataPoints(rawPts)
+                      : rawPts;
                     if (pts.length === 0) return null;
                     const extraLabel = TELEMETRY_PARAMETER_LABELS[fieldKey] ?? fieldKey;
-                    const isZeroCross = fieldKey === "bank" || fieldKey === "pitch";
+                    const isZeroCross = fieldKey === "bank" || fieldKey === "pitch" || fieldKey === "heading" || fieldKey === "track";
                     return (
                       <div key={fieldKey}>
                         <p className="mb-1 text-xs font-medium text-slate-400">{extraLabel}</p>

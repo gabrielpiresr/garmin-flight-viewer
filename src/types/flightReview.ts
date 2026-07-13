@@ -27,9 +27,20 @@ export type ParameterSeverity = "low" | "medium" | "high" | "critical";
 export type FlightManeuverStatus = "draft" | "analyzed" | "reviewed" | "invalid";
 export type ReviewStatus = "ok" | "attention" | "critical" | "unavailable";
 
+export type StepEndParameterCondition = {
+  parameter: string;
+  operator: ">=" | "<=" | ">" | "<";
+  value: number;
+};
+
 export type StepEndCondition =
   | { type: "time"; value_seconds: number }
-  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
+  | ({ type: "parameter" } & StepEndParameterCondition)
+  | {
+      type: "parameter_group";
+      relation: "and" | "or";
+      conditions: StepEndParameterCondition[];
+    }
   | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" }
   | { type: "instructor_marked" };
 
@@ -47,6 +58,8 @@ export type StepParameter = {
   min_end?: number;
   /** Máximo esperado no fim da etapa. Se definido junto com max_start, interpola linearmente. */
   max_end?: number;
+  value_mode?: "absolute" | "variation";
+  variation_reference?: "step_start" | "maneuver_start";
   severity: ParameterSeverity;
   /** Mensagem de alerta quando o valor fica abaixo do mínimo configurado. */
   alert_message_min?: string;
@@ -107,6 +120,9 @@ export type AnalyzedParameter = {
   expected_min_end?: number | null;
   /** Valor do limite máximo no fim da etapa (presente apenas quando há interpolação). */
   expected_max_end?: number | null;
+  expected_reference_value?: number | null;
+  expected_min_delta?: number | null;
+  expected_max_delta?: number | null;
   status: "ok" | "warning" | "out_of_range" | "unavailable";
   time_out_of_range_seconds: number;
   severity: ParameterSeverity;

@@ -10,7 +10,7 @@ import type {
   ManeuverTemplateStep,
   ReviewAlert,
   ReviewStatus,
-  StepEndCondition,
+  StepEndParameterCondition,
   StepParameter,
 } from "../types/flightReview";
 import type { FlightSegment, TrafficPatternAnalysis } from "../types/flight";
@@ -73,9 +73,88 @@ export const TELEMETRY_PARAMETER_LABELS: Record<string, string> = {
 const HEADING_TRACK_PARAMS = new Set(["heading", "track"]);
 
 /** Diferença angular com sinal em [-180, 180). Lida com wrap-around 0°/360°. */
-function angularDiff(a: number, b: number): number {
+export function headingAngularDiff(a: number, b: number): number {
   const diff = ((a - b) % 360 + 360) % 360;
   return diff > 180 ? diff - 360 : diff;
+}
+
+function angularDiff(a: number, b: number): number {
+  return headingAngularDiff(a, b);
+}
+
+
+function isHeadingOffsetBand(minStart?: number, maxStart?: number): boolean {
+  return minStart !== undefined && maxStart !== undefined && minStart > 0 && maxStart > minStart;
+}
+
+function headingTrackOutOfRange(
+  value: number,
+  refHeading: number,
+  minStart?: number,
+  maxStart?: number,
+): { belowMin: boolean; aboveMax: boolean } {
+  const signedDiff = angularDiff(value, refHeading);
+  const absDiff = Math.abs(signedDiff);
+
+  if (isHeadingOffsetBand(minStart, maxStart)) {
+    return {
+      belowMin: absDiff < minStart!,
+      aboveMax: absDiff > maxStart!,
+    };
+  }
+
+  if (minStart !== undefined && maxStart !== undefined) {
+    return {
+      belowMin: signedDiff < minStart,
+      aboveMax: signedDiff > maxStart,
+    };
+  }
+
+  if (maxStart !== undefined) {
+    return { belowMin: false, aboveMax: absDiff > maxStart };
+  }
+
+  if (minStart !== undefined) {
+    return { belowMin: absDiff < Math.abs(minStart), aboveMax: false };
+  }
+
+  return { belowMin: false, aboveMax: false };
+}
+
+function headingTrackDeltaDisplayBounds(
+  minStart?: number,
+  maxStart?: number,
+): { min: number | null; max: number | null; min_end?: number | null; max_end?: number | null } {
+  if (isHeadingOffsetBand(minStart, maxStart)) {
+    return { min: 0, max: 0, min_end: minStart!, max_end: maxStart! };
+  }
+
+  if (minStart !== undefined && maxStart !== undefined) {
+    return { min: minStart, max: maxStart };
+  }
+
+  if (maxStart !== undefined) {
+    return { min: -maxStart, max: maxStart };
+  }
+
+  if (minStart !== undefined) {
+    return { min: minStart, max: null };
+  }
+
+  return { min: null, max: null };
+}
+
+/** Converte pontos absolutos de proa/track em variação angular relativa à referência. */
+export function transformHeadingDataPoints(
+  points: Array<{ t: number; v: number }>,
+  referenceHeading?: number | null,
+): Array<{ t: number; v: number }> {
+  if (points.length === 0) return points;
+  const ref = referenceHeading ?? points[0]!.v;
+  return points.map((p) => ({
+    t: p.t,
+    v: Math.round(headingAngularDiff(p.v, ref) * 10) / 10,
+  }));
 }
 
 // Data points are stripped before writing to Appwrite (size limit).
@@ -84,13 +163,22 @@ function sampleDataPoints(pairs: Array<{ t: number; v: number }>) {
   return pairs; // full granularity — caller strips before persistence
 }
 
-function compareOperator(a: number, op: StepEndCondition & { type: "parameter" }, b: number): boolean {
-  switch (op.operator) {
+function compareOperator(a: number, op: StepEndParameterCondition["operator"], b: number): boolean {
+  switch (op) {
     case ">=": return a >= b;
     case "<=": return a <= b;
     case ">": return a > b;
     case "<": return a < b;
   }
+}
+
+function matchesEndParameterCondition(
+  row: Record<string, unknown>,
+  cond: StepEndParameterCondition,
+): boolean {
+  const fieldKey = TELEMETRY_FIELD_MAP[cond.parameter] ?? cond.parameter;
+  const val = row[fieldKey] as number | null | undefined;
+  return val !== null && val !== undefined && compareOperator(val, cond.operator, cond.value);
 }
 
 function deriveStepStatus(params: AnalyzedParameter[]): ReviewStatus {
@@ -130,6 +218,7 @@ function analyzeParameter(
   rows: Array<{ absoluteMs: number; value: number | null }>,
   stepStartMs: number,
   stepEndMs: number,
+  referenceValue?: number | null,
 ): AnalyzedParameter {
   const minStart = paramCfg.min_start !== undefined ? paramCfg.min_start
     : paramCfg.min !== undefined ? paramCfg.min : undefined;
@@ -141,13 +230,17 @@ function analyzeParameter(
   const stepDurationMs = Math.max(1, stepEndMs - stepStartMs);
   const isHeadingTrack = HEADING_TRACK_PARAMS.has(paramCfg.parameter);
   const isBank = paramCfg.parameter === "bank";
+  const isVariation = paramCfg.value_mode === "variation";
+  const refValue = isVariation ? referenceValue : null;
+  const hasVariationReference = isVariation && refValue !== null && refValue !== undefined && Number.isFinite(refValue);
 
   // Para proa/track, min/max são variâncias relativas — sem interpolação
-  const hasInterpolatedMin = !isHeadingTrack && minStart !== undefined && minEnd !== undefined;
-  const hasInterpolatedMax = !isHeadingTrack && maxStart !== undefined && maxEnd !== undefined;
+  const hasInterpolatedMin = !isHeadingTrack && !isVariation && minStart !== undefined && minEnd !== undefined;
+  const hasInterpolatedMax = !isHeadingTrack && !isVariation && maxStart !== undefined && maxEnd !== undefined;
 
   const effectiveMin = (absoluteMs: number): number | undefined => {
     if (isHeadingTrack || minStart === undefined) return undefined;
+    if (hasVariationReference) return refValue! + minStart;
     if (!hasInterpolatedMin) return minStart;
     const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
     return minStart + (minEnd! - minStart) * ratio;
@@ -155,6 +248,7 @@ function analyzeParameter(
 
   const effectiveMax = (absoluteMs: number): number | undefined => {
     if (isHeadingTrack || maxStart === undefined) return undefined;
+    if (hasVariationReference) return refValue! + maxStart;
     if (!hasInterpolatedMax) return maxStart;
     const ratio = Math.min(1, Math.max(0, (absoluteMs - stepStartMs) / stepDurationMs));
     return maxStart + (maxEnd! - maxStart) * ratio;
@@ -163,16 +257,23 @@ function analyzeParameter(
   const valid = rows.filter((r): r is { absoluteMs: number; value: number } => r.value !== null);
 
   if (valid.length === 0) {
+    const unavailableExpectedMin = hasVariationReference && minStart !== undefined ? refValue! + minStart : minStart;
+    const unavailableExpectedMax = hasVariationReference && maxStart !== undefined ? refValue! + maxStart : maxStart;
     return {
       parameter: paramCfg.parameter,
       label: paramCfg.label,
       min_observed: null,
       max_observed: null,
       avg_observed: null,
-      expected_min: minStart ?? null,
-      expected_max: maxStart ?? null,
+      expected_min: unavailableExpectedMin ?? null,
+      expected_max: unavailableExpectedMax ?? null,
       ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
       ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
+      ...(hasVariationReference ? {
+        expected_reference_value: Math.round(refValue! * 10) / 10,
+        expected_min_delta: minStart ?? null,
+        expected_max_delta: maxStart ?? null,
+      } : {}),
       status: "unavailable",
       time_out_of_range_seconds: 0,
       severity: paramCfg.severity,
@@ -180,18 +281,57 @@ function analyzeParameter(
     };
   }
 
-  const values = valid.map((r) => r.value);
-  const minObs = Math.min(...values);
-  const maxObs = Math.max(...values);
-  const avgObs = values.reduce((a, b) => a + b, 0) / values.length;
+  if (valid.length === 0) {
+    const headingBounds = isHeadingTrack ? headingTrackDeltaDisplayBounds(minStart, maxStart) : null;
+    const unavailableExpectedMin = isHeadingTrack
+      ? headingBounds?.min ?? null
+      : hasVariationReference && minStart !== undefined
+        ? refValue! + minStart
+        : minStart;
+    const unavailableExpectedMax = isHeadingTrack
+      ? headingBounds?.max ?? null
+      : hasVariationReference && maxStart !== undefined
+        ? refValue! + maxStart
+        : maxStart;
+    return {
+      parameter: paramCfg.parameter,
+      label: paramCfg.label,
+      min_observed: null,
+      max_observed: null,
+      avg_observed: null,
+      expected_min: unavailableExpectedMin ?? null,
+      expected_max: unavailableExpectedMax ?? null,
+      ...(isHeadingTrack && isHeadingOffsetBand(minStart, maxStart)
+        ? { expected_min_end: minStart ?? null, expected_max_end: maxStart ?? null }
+        : {}),
+      ...(hasInterpolatedMin && !isHeadingTrack ? { expected_min_end: minEnd } : {}),
+      ...(hasInterpolatedMax && !isHeadingTrack ? { expected_max_end: maxEnd } : {}),
+      ...(hasVariationReference ? {
+        expected_reference_value: Math.round(refValue! * 10) / 10,
+        expected_min_delta: minStart ?? null,
+        expected_max_delta: maxStart ?? null,
+      } : {}),
+      status: "unavailable",
+      time_out_of_range_seconds: 0,
+      severity: paramCfg.severity,
+      data_points: [],
+    };
+  }
+
+  // Para proa/track: proa de referência = primeiro valor válido da etapa
+  const refHeading = isHeadingTrack ? valid[0].value : 0;
+
+  const deltaValues = isHeadingTrack
+    ? valid.map((r) => angularDiff(r.value, refHeading))
+    : valid.map((r) => r.value);
+  const minObs = Math.min(...deltaValues);
+  const maxObs = Math.max(...deltaValues);
+  const avgObs = deltaValues.reduce((a, b) => a + b, 0) / deltaValues.length;
 
   let sampleIntervalMs = 1000;
   if (valid.length > 1) {
     sampleIntervalMs = (valid[valid.length - 1].absoluteMs - valid[0].absoluteMs) / (valid.length - 1);
   }
-
-  // Para proa/track: proa de referência = primeiro valor válido da etapa
-  const refHeading = isHeadingTrack ? valid[0].value : 0;
 
   let timeOutMs = 0;
   let hasHardLimit = false;
@@ -199,10 +339,11 @@ function analyzeParameter(
     let belowMin: boolean;
     let aboveMax: boolean;
     if (isHeadingTrack) {
-      // min/max representam variância máxima/mínima em graus a partir da proa de referência
-      const deviation = Math.abs(angularDiff(r.value, refHeading));
-      aboveMax = maxStart !== undefined && deviation > maxStart;
-      belowMin = minStart !== undefined && minStart > 0 && deviation < minStart;
+      ({ belowMin, aboveMax } = headingTrackOutOfRange(r.value, refHeading, minStart, maxStart));
+    } else if (hasVariationReference) {
+      const delta = r.value - refValue!;
+      belowMin = minStart !== undefined && delta < minStart;
+      aboveMax = maxStart !== undefined && delta > maxStart;
     } else if (isBank) {
       const absV = Math.abs(r.value);
       const eMin = effectiveMin(r.absoluteMs);
@@ -227,15 +368,25 @@ function analyzeParameter(
     paramStatus = hasHardLimit ? "out_of_range" : "warning";
   }
 
-  const rawPoints = valid.map((r) => ({ t: Math.round((r.absoluteMs - stepStartMs) / 1000), v: r.value }));
+  const rawPoints = valid.map((r) => ({
+    t: Math.round((r.absoluteMs - stepStartMs) / 1000),
+    v: isHeadingTrack ? angularDiff(r.value, refHeading) : r.value,
+  }));
   const data_points = sampleDataPoints(rawPoints);
 
-  // Para proa/track: exibe limites absolutos calculados a partir da proa de referência ± variância
+  const headingBounds = isHeadingTrack
+    ? headingTrackDeltaDisplayBounds(minStart, maxStart)
+    : null;
+  const headingOffsetBand = isHeadingTrack && isHeadingOffsetBand(minStart, maxStart);
   const displayExpMin = isHeadingTrack
-    ? (maxStart !== undefined ? Math.round((refHeading - maxStart) * 10) / 10 : null)
+    ? headingBounds!.min
+    : hasVariationReference && minStart !== undefined
+      ? Math.round((refValue! + minStart) * 10) / 10
     : minStart ?? null;
   const displayExpMax = isHeadingTrack
-    ? (maxStart !== undefined ? Math.round((refHeading + maxStart) * 10) / 10 : null)
+    ? headingBounds!.max
+    : hasVariationReference && maxStart !== undefined
+      ? Math.round((refValue! + maxStart) * 10) / 10
     : maxStart ?? null;
 
   return {
@@ -246,8 +397,21 @@ function analyzeParameter(
     avg_observed: Math.round(avgObs * 10) / 10,
     expected_min: displayExpMin,
     expected_max: displayExpMax,
-    ...(hasInterpolatedMin ? { expected_min_end: minEnd } : {}),
-    ...(hasInterpolatedMax ? { expected_max_end: maxEnd } : {}),
+    ...(headingOffsetBand
+      ? { expected_min_end: headingBounds!.min_end ?? null, expected_max_end: headingBounds!.max_end ?? null }
+      : {}),
+    ...(hasInterpolatedMin && !isHeadingTrack ? { expected_min_end: minEnd } : {}),
+    ...(hasInterpolatedMax && !isHeadingTrack ? { expected_max_end: maxEnd } : {}),
+    ...(hasVariationReference ? {
+      expected_reference_value: Math.round(refValue! * 10) / 10,
+      expected_min_delta: minStart ?? null,
+      expected_max_delta: maxStart ?? null,
+    } : {}),
+    ...(isHeadingTrack ? {
+      expected_reference_value: Math.round(refHeading * 10) / 10,
+      expected_min_delta: minStart ?? null,
+      expected_max_delta: maxStart ?? null,
+    } : {}),
     status: paramStatus,
     time_out_of_range_seconds: timeOutSec,
     severity: paramCfg.severity,
@@ -364,10 +528,18 @@ export function analyzeFlightManeuver(
           }
         }
       } else if (cond.type === "parameter") {
-        const fieldKey = TELEMETRY_FIELD_MAP[cond.parameter] ?? cond.parameter;
         for (let i = stepStartCursor; i < maneuverRows.length; i++) {
-          const val = maneuverRows[i]!.row[fieldKey] as number | null | undefined;
-          if (val !== null && val !== undefined && compareOperator(val, cond, cond.value)) {
+          if (matchesEndParameterCondition(maneuverRows[i]!.row, cond)) {
+            stepEndIdx = i;
+            break;
+          }
+        }
+      } else if (cond.type === "parameter_group") {
+        const conditions = cond.conditions.filter((c) => c.parameter);
+        for (let i = stepStartCursor; i < maneuverRows.length; i++) {
+          const matches = conditions.map((c) => matchesEndParameterCondition(maneuverRows[i]!.row, c));
+          const ok = cond.relation === "or" ? matches.some(Boolean) : matches.length > 0 && matches.every(Boolean);
+          if (ok) {
             stepEndIdx = i;
             break;
           }
@@ -429,7 +601,16 @@ export function analyzeFlightManeuver(
         absoluteMs,
         value: (row[fieldKey] as number | null | undefined) ?? null,
       }));
-      return analyzeParameter(paramCfg, rowValues, stepStartMs, stepEndMs);
+      let referenceValue: number | null = null;
+      if (paramCfg.value_mode === "variation") {
+        const refRows = paramCfg.variation_reference === "maneuver_start" ? maneuverRows : stepRows;
+        const ref = refRows.find(({ row }) => {
+          const value = row[fieldKey] as number | null | undefined;
+          return value !== null && value !== undefined && Number.isFinite(value);
+        });
+        referenceValue = ref ? (ref.row[fieldKey] as number) : null;
+      }
+      return analyzeParameter(paramCfg, rowValues, stepStartMs, stepEndMs, referenceValue);
     });
 
     // Step alerts

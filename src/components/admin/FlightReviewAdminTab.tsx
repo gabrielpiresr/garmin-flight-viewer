@@ -6,6 +6,8 @@ import {
   createManeuverTemplate,
   createManeuverTemplateStep,
   deleteManeuverTemplateStep,
+  duplicateManeuverTemplate,
+  duplicateManeuverTemplateStep,
   listManeuverTemplates,
   listManeuverTemplateSteps,
   updateManeuverTemplate,
@@ -17,6 +19,7 @@ import type {
   ManeuverTemplate,
   ManeuverTemplateStep,
   ParameterSeverity,
+  StepEndParameterCondition,
   StepParameter,
 } from "../../types/flightReview";
 import { MANEUVER_CATEGORY_LABELS } from "../../types/flightReview";
@@ -71,7 +74,7 @@ type TemplateFormData = {
 type EndConditionForm =
   | { type: "none" }
   | { type: "time"; value_seconds: number }
-  | { type: "parameter"; parameter: string; operator: ">=" | "<=" | ">" | "<"; value: number }
+  | { type: "parameter"; relation: "and" | "or"; conditions: StepEndParameterCondition[] }
   | { type: "traffic_pattern_leg"; leg: "downwind" | "base" | "final" }
   | { type: "instructor_marked" };
 
@@ -82,6 +85,8 @@ type ParameterForm = {
   max: string;
   min_end: string;
   max_end: string;
+  value_mode: "absolute" | "variation";
+  variation_reference: "step_start" | "maneuver_start";
   severity: ParameterSeverity;
   alert_message_min: string;
   alert_message_max: string;
@@ -110,6 +115,8 @@ function emptyParameterForm(param = ""): ParameterForm {
     max: "",
     min_end: "",
     max_end: "",
+    value_mode: "absolute",
+    variation_reference: "step_start",
     severity: "high",
     alert_message_min: "",
     alert_message_max: "",
@@ -137,12 +144,23 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
     end_condition = { type: "traffic_pattern_leg", leg: step.end_condition.leg };
   } else if (step.end_condition.type === "instructor_marked") {
     end_condition = { type: "instructor_marked" };
+  } else if (step.end_condition.type === "parameter_group") {
+    end_condition = {
+      type: "parameter",
+      relation: step.end_condition.relation,
+      conditions: step.end_condition.conditions.length > 0
+        ? step.end_condition.conditions
+        : [{ parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 }],
+    };
   } else {
     end_condition = {
       type: "parameter",
-      parameter: step.end_condition.parameter,
-      operator: step.end_condition.operator,
-      value: step.end_condition.value,
+      relation: "and",
+      conditions: [{
+        parameter: step.end_condition.parameter,
+        operator: step.end_condition.operator,
+        value: step.end_condition.value,
+      }],
     };
   }
   return {
@@ -162,6 +180,8 @@ function stepToForm(step: ManeuverTemplateStep): StepFormData {
         : "",
       min_end: p.min_end !== undefined ? String(p.min_end) : "",
       max_end: p.max_end !== undefined ? String(p.max_end) : "",
+      value_mode: p.value_mode ?? "absolute",
+      variation_reference: p.variation_reference ?? "step_start",
       severity: p.severity,
       alert_message_min: p.alert_message_min ?? "",
       alert_message_max: p.alert_message_max ?? "",
@@ -175,8 +195,8 @@ function formToParameters(pfs: ParameterForm[]): StepParameter[] {
     .map((p) => {
       const hasMin = p.min !== "" && !isNaN(Number(p.min));
       const hasMax = p.max !== "" && !isNaN(Number(p.max));
-      const hasMinEnd = p.min_end !== "" && !isNaN(Number(p.min_end));
-      const hasMaxEnd = p.max_end !== "" && !isNaN(Number(p.max_end));
+      const hasMinEnd = p.value_mode !== "variation" && p.min_end !== "" && !isNaN(Number(p.min_end));
+      const hasMaxEnd = p.value_mode !== "variation" && p.max_end !== "" && !isNaN(Number(p.max_end));
       return {
         parameter: p.parameter,
         label: p.label || TELEMETRY_PARAMETER_LABELS[p.parameter] || p.parameter,
@@ -184,6 +204,10 @@ function formToParameters(pfs: ParameterForm[]): StepParameter[] {
         ...(hasMax ? { max_start: Number(p.max), max: Number(p.max) } : {}),
         ...(hasMinEnd ? { min_end: Number(p.min_end) } : {}),
         ...(hasMaxEnd ? { max_end: Number(p.max_end) } : {}),
+        ...(p.value_mode === "variation" ? {
+          value_mode: "variation" as const,
+          variation_reference: p.variation_reference,
+        } : {}),
         severity: p.severity,
         ...(p.alert_message_min.trim() ? { alert_message_min: p.alert_message_min.trim() } : {}),
         ...(p.alert_message_max.trim() ? { alert_message_max: p.alert_message_max.trim() } : {}),
@@ -215,6 +239,114 @@ const labelCls = "mb-1 block text-xs font-semibold uppercase tracking-widest tex
 
 // ---------- EndConditionEditor ----------
 
+function EndParameterConditionsEditor({
+  value,
+  onChange,
+}: {
+  value: Extract<EndConditionForm, { type: "parameter" }>;
+  onChange: (v: EndConditionForm) => void;
+}) {
+  const setCondition = (index: number, patch: Partial<StepEndParameterCondition>) => {
+    onChange({
+      ...value,
+      conditions: value.conditions.map((condition, i) =>
+        i === index ? { ...condition, ...patch } : condition,
+      ),
+    });
+  };
+
+  const addCondition = () =>
+    onChange({
+      ...value,
+      conditions: [...value.conditions, { parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 }],
+    });
+
+  const removeCondition = (index: number) => {
+    const conditions = value.conditions.filter((_, i) => i !== index);
+    onChange({
+      ...value,
+      conditions: conditions.length > 0
+        ? conditions
+        : [{ parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 }],
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-end justify-between gap-2">
+        <label className="w-64">
+          <span className={labelCls}>Relação entre critérios</span>
+          <select
+            value={value.relation}
+            onChange={(e) => onChange({ ...value, relation: e.target.value as "and" | "or" })}
+            className={inputCls}
+          >
+            <option value="and">AND - todos os critérios</option>
+            <option value="or">OR - qualquer critério</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={addCondition}
+          className="rounded-lg border border-dashed border-slate-700 px-2 py-2 text-xs text-slate-400 hover:border-sky-500/40 hover:text-sky-400"
+        >
+          + Critério
+        </button>
+      </div>
+
+      {value.conditions.map((condition, index) => (
+        <div key={index} className="grid grid-cols-[1fr_150px_1fr_auto] gap-2">
+          <label>
+            <span className={labelCls}>Parâmetro</span>
+            <select
+              value={condition.parameter}
+              onChange={(e) => setCondition(index, { parameter: e.target.value })}
+              className={inputCls}
+            >
+              {AVAILABLE_PARAMS.map((p) => (
+                <option key={p} value={p}>
+                  {TELEMETRY_PARAMETER_LABELS[p] ?? p}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className={labelCls}>Operador</span>
+            <select
+              value={condition.operator}
+              onChange={(e) => setCondition(index, { operator: e.target.value as ">=" | "<=" | ">" | "<" })}
+              className={inputCls}
+            >
+              {OPERATOR_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className={labelCls}>Valor</span>
+            <input
+              type="number"
+              value={condition.value}
+              onChange={(e) => setCondition(index, { value: Number(e.target.value) })}
+              className={inputCls}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => removeCondition(index)}
+            className="mt-5 shrink-0 rounded-lg border border-red-800/40 p-1.5 text-red-400 hover:bg-red-950/30"
+            title="Remover critério"
+          >
+            x
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EndConditionEditor({
   value,
   onChange,
@@ -231,7 +363,11 @@ function EndConditionEditor({
     else if (type === "time") onChange({ type: "time", value_seconds: 30 });
     else if (type === "traffic_pattern_leg") onChange({ type: "traffic_pattern_leg", leg: "final" });
     else if (type === "instructor_marked") onChange({ type: "instructor_marked" });
-    else onChange({ type: "parameter", parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 });
+    else onChange({
+      type: "parameter",
+      relation: "and",
+      conditions: [{ parameter: AVAILABLE_PARAMS[0] ?? "ias", operator: ">=", value: 0 }],
+    });
   };
 
   return (
@@ -269,49 +405,8 @@ function EndConditionEditor({
       )}
 
       {value.type === "parameter" && (
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <span className={labelCls}>Parâmetro</span>
-            <select
-              value={value.parameter}
-              onChange={(e) => onChange({ ...value, parameter: e.target.value })}
-              className={inputCls}
-            >
-              {AVAILABLE_PARAMS.map((p) => (
-                <option key={p} value={p}>
-                  {TELEMETRY_PARAMETER_LABELS[p] ?? p}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <span className={labelCls}>Operador</span>
-            <select
-              value={value.operator}
-              onChange={(e) =>
-                onChange({ ...value, operator: e.target.value as ">=" | "<=" | ">" | "<" })
-              }
-              className={inputCls}
-            >
-              {OPERATOR_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <span className={labelCls}>Valor</span>
-            <input
-              type="number"
-              value={value.value}
-              onChange={(e) => onChange({ ...value, value: Number(e.target.value) })}
-              className={inputCls}
-            />
-          </div>
-        </div>
+        <EndParameterConditionsEditor value={value} onChange={onChange} />
       )}
-
       {value.type === "instructor_marked" && (
         <p className="text-xs text-slate-400">
           O instrutor marcará manualmente no gráfico de telemetria o momento em que esta etapa termina, durante a análise do voo.
@@ -361,6 +456,7 @@ function ParameterCard({
   };
 
   const isHeadingTrack = param.parameter === "heading" || param.parameter === "track";
+  const isVariation = param.value_mode === "variation";
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 space-y-2">
@@ -414,9 +510,34 @@ function ParameterCard({
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
+        <label>
+          <span className={labelCls}>Tipo de limite</span>
+          <select
+            value={param.value_mode}
+            onChange={(e) => set({ value_mode: e.target.value as "absolute" | "variation" })}
+            className={inputCls}
+          >
+            <option value="absolute">Valor absoluto</option>
+            <option value="variation">Variação</option>
+          </select>
+        </label>
+        <label>
+          <span className={labelCls}>Referência</span>
+          <select
+            value={param.variation_reference}
+            onChange={(e) => set({ variation_reference: e.target.value as "step_start" | "maneuver_start" })}
+            disabled={!isVariation}
+            className={`${inputCls} disabled:opacity-50`}
+          >
+            <option value="step_start">Início da etapa</option>
+            <option value="maneuver_start">Início da manobra</option>
+          </select>
+        </label>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
         <div>
           <span className={labelCls}>
-            {isHeadingTrack ? "Variância mín. (°)" : "Mín. esperado (início)"}
+            {isVariation ? "Variação mín." : isHeadingTrack ? "Variância mín. (°)" : "Mín. esperado (início)"}
           </span>
           <input
             type="number"
@@ -428,7 +549,7 @@ function ParameterCard({
         </div>
         <div>
           <span className={labelCls}>
-            {isHeadingTrack ? "Variância máx. (°)" : "Máx. esperado (início)"}
+            {isVariation ? "Variação máx." : isHeadingTrack ? "Variância máx. (°)" : "Máx. esperado (início)"}
           </span>
           <input
             type="number"
@@ -439,9 +560,13 @@ function ParameterCard({
           />
         </div>
       </div>
-      {isHeadingTrack ? (
+      {isVariation ? (
         <p className="text-xs text-sky-400/80">
-          Para proa/track, o limite é relativo à proa inicial da etapa. Ex: variância máx. 10° → piloto pode variar ±10° da proa no início da etapa.
+          Use deltas em relação à referência. Ex: -500 e 500 para aceitar uma variação de altitude de até 500 ft para baixo ou para cima.
+        </p>
+      ) : isHeadingTrack ? (
+        <p className="text-xs text-sky-400/80">
+          Para proa/track, offset somado à proa no início da etapa. Só máx. 10° → ±10° (voo reto). Mín. 170° e máx. 190° → curva de ~180° em qualquer lado (valida giro de 170° a 190°, esquerda ou direita). Para forçar um lado só: use mín. negativo (ex.: -190° e -170° para curva à esquerda).
         </p>
       ) : (
         <>
@@ -502,11 +627,15 @@ function ParameterCard({
 
 function StepRow({
   step,
+  duplicating,
   onEdit,
+  onDuplicate,
   onDelete,
 }: {
   step: ManeuverTemplateStep;
+  duplicating: boolean;
   onEdit: (step: ManeuverTemplateStep) => void;
+  onDuplicate: (step: ManeuverTemplateStep) => void;
   onDelete: (id: string) => void;
 }) {
   return (
@@ -529,7 +658,9 @@ function StepRow({
                     ? `perna ${LEG_LABELS_PT[step.end_condition.leg]}`
                     : step.end_condition.type === "instructor_marked"
                       ? "definido pelo instrutor"
-                      : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`
+                      : step.end_condition.type === "parameter_group"
+                        ? `${step.end_condition.conditions.length} critÃ©rios (${step.end_condition.relation.toUpperCase()})`
+                        : `quando ${TELEMETRY_PARAMETER_LABELS[step.end_condition.parameter] ?? step.end_condition.parameter} ${step.end_condition.operator} ${step.end_condition.value}`
               }`
             : ""}
         </p>
@@ -541,6 +672,14 @@ function StepRow({
           className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
         >
           Editar
+        </button>
+        <button
+          type="button"
+          onClick={() => onDuplicate(step)}
+          disabled={duplicating}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+        >
+          {duplicating ? "Duplicando..." : "Duplicar"}
         </button>
         <button
           type="button"
@@ -604,7 +743,7 @@ function StepModal({
     }
     if (
       form.end_condition.type === "parameter" &&
-      !form.end_condition.parameter
+      form.end_condition.conditions.some((condition) => !condition.parameter)
     ) {
       showToast({ variant: "error", message: "Selecione o parâmetro da condição de fim." });
       return;
@@ -621,12 +760,18 @@ function StepModal({
               ? { type: "traffic_pattern_leg" as const, leg: form.end_condition.leg }
               : form.end_condition.type === "instructor_marked"
                 ? { type: "instructor_marked" as const }
-                : {
-                    type: "parameter" as const,
-                    parameter: form.end_condition.parameter,
-                    operator: form.end_condition.operator,
-                    value: form.end_condition.value,
-                  };
+                : form.end_condition.conditions.length <= 1
+                  ? {
+                      type: "parameter" as const,
+                      parameter: form.end_condition.conditions[0]?.parameter ?? AVAILABLE_PARAMS[0] ?? "ias",
+                      operator: form.end_condition.conditions[0]?.operator ?? ">=",
+                      value: form.end_condition.conditions[0]?.value ?? 0,
+                    }
+                  : {
+                      type: "parameter_group" as const,
+                      relation: form.end_condition.relation,
+                      conditions: form.end_condition.conditions,
+                    };
 
       const stepData = {
         template_id: templateId,
@@ -654,7 +799,7 @@ function StepModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
+    <div className="fixed inset-0 z-[1200] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
       <div
         className="w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
         style={{ maxHeight: "92vh" }}
@@ -785,6 +930,7 @@ function StepsList({ template }: { template: ManeuverTemplate }) {
   const { showToast } = useToast();
   const [steps, setSteps] = useState<ManeuverTemplateStep[]>([]);
   const [loading, setLoading] = useState(true);
+  const [duplicatingStepId, setDuplicatingStepId] = useState<string | null>(null);
   const [editingStep, setEditingStep] = useState<{ step?: ManeuverTemplateStep; nextOrder: number } | null>(null);
 
   const load = useCallback(async () => {
@@ -826,6 +972,19 @@ function StepsList({ template }: { template: ManeuverTemplate }) {
     setEditingStep(null);
   };
 
+  const handleDuplicate = async (step: ManeuverTemplateStep) => {
+    setDuplicatingStepId(step.id);
+    try {
+      const duplicated = await duplicateManeuverTemplateStep(step.id, template.id);
+      handleSaved(duplicated);
+      showToast({ variant: "success", message: "Etapa duplicada." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setDuplicatingStepId(null);
+    }
+  };
+
   return (
     <div className="mt-3 space-y-2 border-t border-slate-800 pt-3">
       {loading ? (
@@ -837,7 +996,9 @@ function StepsList({ template }: { template: ManeuverTemplate }) {
           <StepRow
             key={step.id}
             step={step}
+            duplicating={duplicatingStepId === step.id}
             onEdit={(s) => setEditingStep({ step: s, nextOrder: steps.length + 1 })}
+            onDuplicate={(s) => void handleDuplicate(s)}
             onDelete={(id) => void handleDelete(id)}
           />
         ))
@@ -868,14 +1029,17 @@ function TemplateCard({
   template,
   models,
   onUpdated,
+  onDuplicated,
 }: {
   template: ManeuverTemplate;
   models: AircraftModel[];
   onUpdated: (t: ManeuverTemplate) => void;
+  onDuplicated: (t: ManeuverTemplate) => void;
 }) {
   const { showToast } = useToast();
   const [showSteps, setShowSteps] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
 
   const modelName = models.find((m) => m.id === template.aircraft_model_id)?.name ?? template.aircraft_model_id;
 
@@ -892,6 +1056,19 @@ function TemplateCard({
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
       setToggling(false);
+    }
+  };
+
+  const handleDuplicate = async () => {
+    setDuplicating(true);
+    try {
+      const duplicated = await duplicateManeuverTemplate(template.id);
+      onDuplicated(duplicated);
+      showToast({ variant: "success", message: "Manobra duplicada (inativa por padrão)." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setDuplicating(false);
     }
   };
 
@@ -919,6 +1096,14 @@ function TemplateCard({
             className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50"
           >
             {template.is_active ? "Desativar" : "Ativar"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDuplicate()}
+            disabled={duplicating}
+            className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {duplicating ? "Duplicando..." : "Duplicar"}
           </button>
           <button
             type="button"
@@ -992,7 +1177,7 @@ function TemplateModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
+    <div className="fixed inset-0 z-[1200] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
       <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-100">
@@ -1126,6 +1311,10 @@ export function FlightReviewAdminTab() {
     setModalOpen(null);
   };
 
+  const handleDuplicated = (saved: ManeuverTemplate) => {
+    setTemplates((prev) => [saved, ...prev]);
+  };
+
   const active = templates.filter((t) => t.is_active);
   const inactive = templates.filter((t) => !t.is_active);
 
@@ -1164,7 +1353,13 @@ export function FlightReviewAdminTab() {
                 Ativas ({active.length})
               </p>
               {active.map((t) => (
-                <TemplateCard key={t.id} template={t} models={models} onUpdated={handleSaved} />
+                <TemplateCard
+                  key={t.id}
+                  template={t}
+                  models={models}
+                  onUpdated={handleSaved}
+                  onDuplicated={handleDuplicated}
+                />
               ))}
             </section>
           )}
@@ -1174,7 +1369,13 @@ export function FlightReviewAdminTab() {
                 Inativas ({inactive.length})
               </p>
               {inactive.map((t) => (
-                <TemplateCard key={t.id} template={t} models={models} onUpdated={handleSaved} />
+                <TemplateCard
+                  key={t.id}
+                  template={t}
+                  models={models}
+                  onUpdated={handleSaved}
+                  onDuplicated={handleDuplicated}
+                />
               ))}
             </section>
           )}

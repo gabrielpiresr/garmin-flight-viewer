@@ -147,6 +147,8 @@ export const CRM_LEADS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CRM_LEADS_COL_ID as string | undefined) ?? "crm_leads";
 export const CRM_STATUS_SETTINGS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CRM_STATUS_SETTINGS_COL_ID as string | undefined) ?? "crm_status_settings";
+export const CRM_AUTOMATION_SETTINGS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CRM_AUTOMATION_SETTINGS_COL_ID as string | undefined) ?? "crm_automation_settings";
 export const PROPOSAL_CONFIG_COL_ID =
   (import.meta.env.VITE_APPWRITE_PROPOSAL_CONFIG_COL_ID as string | undefined) ?? "proposal_config";
 export const CRM_PROPOSALS_COL_ID =

@@ -117,6 +117,34 @@ export async function updateManeuverTemplate(
   return toTemplate(doc as Record<string, unknown>);
 }
 
+export async function duplicateManeuverTemplate(templateId: string): Promise<ManeuverTemplate> {
+  const template = await getManeuverTemplate(templateId);
+  if (!template) throw new Error("Template não encontrado");
+
+  const steps = await listManeuverTemplateSteps(templateId);
+  const created = await createManeuverTemplate({
+    name: `${template.name} (cópia)`,
+    category: template.category,
+    aircraft_model_id: template.aircraft_model_id,
+    description: template.description,
+    is_active: false,
+  });
+
+  for (const step of steps) {
+    await createManeuverTemplateStep({
+      template_id: created.id,
+      order_index: step.order_index,
+      name: step.name,
+      description: step.description,
+      expected_execution_text: step.expected_execution_text,
+      end_condition: step.end_condition,
+      parameters: step.parameters.map((p) => ({ ...p })),
+    });
+  }
+
+  return created;
+}
+
 // ---------- Steps ----------
 
 
@@ -175,4 +203,24 @@ export async function updateManeuverTemplateStep(
 export async function deleteManeuverTemplateStep(id: string): Promise<void> {
   if (!isStepsReady()) throw new Error("Appwrite not configured");
   await databases!.deleteDocument(DB_ID, MANEUVER_TEMPLATE_STEPS_COL_ID!, id);
+}
+
+export async function duplicateManeuverTemplateStep(
+  stepId: string,
+  templateId: string,
+): Promise<ManeuverTemplateStep> {
+  const steps = await listManeuverTemplateSteps(templateId);
+  const step = steps.find((s) => s.id === stepId);
+  if (!step) throw new Error("Etapa não encontrada");
+
+  const maxOrder = steps.reduce((max, s) => Math.max(max, s.order_index), 0);
+  return createManeuverTemplateStep({
+    template_id: templateId,
+    order_index: maxOrder + 1,
+    name: `${step.name} (cópia)`,
+    description: step.description,
+    expected_execution_text: step.expected_execution_text,
+    end_condition: step.end_condition,
+    parameters: step.parameters.map((p) => ({ ...p })),
+  });
 }

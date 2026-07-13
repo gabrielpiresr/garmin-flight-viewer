@@ -1166,9 +1166,10 @@ async function fetchSagaCreditPreview(usersList, cookieJar, logs, statuses, html
     htmlLengths[`credits:${sagaUserId}`] = creditPage.html.length;
     const parsed = translateSagaCreditRows(creditPage.html);
     if (!headers.length && parsed.headers.length) headers = parsed.headers;
-    for (const row of parsed.rows) {
+    for (const [rowIndex, row] of parsed.rows.entries()) {
       rows.push({
         ...row,
+        sagaRowIndex: rowIndex,
         sagaUserId,
         studentName: cleanString(user.nome),
         studentEmail: cleanString(user.email),
@@ -2745,9 +2746,10 @@ async function fetchSagaCreditsForUsers(usersList, cookieJar, logs = []) {
     }
     fetchedSagaUserIds.push(sagaUserId);
     const parsed = translateSagaCreditRows(creditPage.html);
-    for (const row of parsed.rows) {
+    for (const [rowIndex, row] of parsed.rows.entries()) {
       rows.push({
         ...row,
+        sagaRowIndex: rowIndex,
         sagaUserId,
         studentName: cleanString(user.nome),
         studentEmail: cleanString(user.email),
@@ -3334,9 +3336,37 @@ async function syncSagaUserAnac(userId, sagaUser) {
   }
 }
 
+function sagaCreditRowBaseKey(userId, credit) {
+  const stableTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
+  return [
+    cleanString(userId),
+    cleanString(credit.model),
+    cleanString(credit.purchaseDate),
+    cleanString(credit.expiresAt),
+    stableTotalValue,
+    sagaHoursValue(credit.hours || credit.hoursHhmm).toFixed(2),
+  ].join("|");
+}
+
+function assignSagaCreditRowOccurrences(userId, credits) {
+  const occurrenceCounts = new Map();
+  return (credits || []).map((credit, index) => {
+    const sagaRowIndex = Number.isInteger(credit?.sagaRowIndex) ? credit.sagaRowIndex : index;
+    const baseKey = sagaCreditRowBaseKey(userId, credit);
+    const sagaRowOccurrence = occurrenceCounts.get(baseKey) || 0;
+    occurrenceCounts.set(baseKey, sagaRowOccurrence + 1);
+    return { ...credit, sagaRowIndex, sagaRowOccurrence };
+  });
+}
+
 function sagaCreditDocId(testMode, userId, credit) {
   const segment = credit?.segmentPart === "night" || credit?.isNight === true ? "night" : "day";
   const stableTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
+  const sagaRowIndex = Number.isInteger(credit?.sagaRowIndex)
+    ? credit.sagaRowIndex
+    : Number.isInteger(credit?._sourceCredit?.sagaRowIndex)
+      ? credit._sourceCredit.sagaRowIndex
+      : 0;
   const raw = [
     userId,
     cleanString(credit.model),
@@ -3344,6 +3374,7 @@ function sagaCreditDocId(testMode, userId, credit) {
     cleanString(credit.expiresAt),
     stableTotalValue,
     segment,
+    `row:${sagaRowIndex}`,
   ].join("|");
   const hash = crypto.createHash("sha1").update(raw).digest("hex").slice(0, 20);
   const prefix = testMode ? "saga_test_credit" : "saga_credit";
@@ -3453,6 +3484,13 @@ async function findExistingCreditForSagaImport(userId, credit, modelId, { testMo
     }
   }
 
+  const sourceCredit = credit._sourceCredit || credit;
+  const occurrenceIndex = Number.isInteger(credit.sagaRowOccurrence)
+    ? credit.sagaRowOccurrence
+    : Number.isInteger(sourceCredit.sagaRowOccurrence)
+      ? sourceCredit.sagaRowOccurrence
+      : 0;
+
   const targetFingerprint = sagaCreditImportFingerprint(safeUserId, credit, modelId);
   const docs = await databases.listDocuments(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
@@ -3461,15 +3499,24 @@ async function findExistingCreditForSagaImport(userId, credit, modelId, { testMo
     sdk.Query.limit(200),
   ]).catch(() => ({ documents: [] }));
 
+  const matchingDocs = [];
   for (const doc of docs.documents || []) {
     const docId = cleanString(doc.$id);
-    if (isSagaManagedCreditDocId(docId, testMode)) continue;
-    if (localCreditImportFingerprint(doc) === targetFingerprint) {
-      return { docId, reason: "already_exists_local_match" };
-    }
     if (markerCreditId && extractGfvCaktoCreditId(doc.notes) === markerCreditId) {
       return { docId, reason: "already_exists_via_cakto" };
     }
+    if (localCreditImportFingerprint(doc) !== targetFingerprint) continue;
+    // Somente creditos locais (nao gerenciados pelo SAGA) entram na deduplicacao
+    // entre sistemas. Creditos saga_* sao identificados pelo sagaRowIndex no docId.
+    if (isSagaManagedCreditDocId(docId, testMode)) continue;
+    matchingDocs.push(doc);
+  }
+
+  matchingDocs.sort((a, b) => cleanString(a.$id).localeCompare(cleanString(b.$id)));
+
+  if (matchingDocs.length > occurrenceIndex) {
+    const matched = matchingDocs[occurrenceIndex];
+    return { docId: cleanString(matched.$id), reason: "already_exists_local_match" };
   }
   return null;
 }
@@ -3592,6 +3639,8 @@ function buildSagaEffectiveCreditRow(credit, { hours, isNight, segmentPart, segm
   const originalTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
   return {
     sagaUserId: credit.sagaUserId,
+    sagaRowIndex: credit.sagaRowIndex,
+    sagaRowOccurrence: credit.sagaRowOccurrence,
     studentName: credit.studentName,
     studentEmail: credit.studentEmail,
     studentAnac: credit.studentAnac,
@@ -6476,6 +6525,9 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
         list.push({ ...credit, userId, modelId: cleanString(mapping.creditAircraftBySaga?.[cleanString(credit.model)]) });
         creditRowsByUserId.set(userId, list);
       }
+      for (const [userId, userCredits] of creditRowsByUserId.entries()) {
+        creditRowsByUserId.set(userId, assignSagaCreditRowOccurrences(userId, userCredits));
+      }
       const { settings: creditSalesSettings } = await loadFlightCreditSalesConfig();
       const segmentNightHours = creditSalesSettings.nightHoursDifferentFromDay !== false;
 
@@ -6538,6 +6590,11 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
             summary.creditsSkipped += 1;
             if (result.covered) {
               coveredCreditFingerprints.add(sagaCreditFingerprint(userId, credit._sourceCredit || credit));
+            }
+            if (result.docId) {
+              const set = expectedSagaCreditDocIdsByUserId.get(userId) || new Set();
+              set.add(cleanString(result.docId));
+              expectedSagaCreditDocIdsByUserId.set(userId, set);
             }
             if (result.reason === "missing_credit_aircraft_mapping") summary.missing.creditAircrafts.push(cleanString(result.aircraft));
             summary.skippedCredits.push({
@@ -6737,6 +6794,7 @@ function sagaImportCreditSkipReasonLabel(reason) {
   if (reason === "already_exists") return "Credito ja importado anteriormente.";
   if (reason === "already_exists_via_cakto") return "Credito ja lancado via Cakto; ignorado para evitar duplicacao.";
   if (reason === "already_exists_local_match") return "Credito ja existe no sistema com os mesmos dados.";
+  if (reason === "already_exists_saga_match") return "Credito ja importado do SAGA com os mesmos dados.";
   return "Motivo nao identificado.";
 }
 
@@ -19028,7 +19086,10 @@ async function sagaImportSelfCredits(actorUserId, runtimeLog) {
     logs,
   };
 
-  const creditRowsWithUser = creditRows.map((c) => ({ ...c, userId: actorUserId }));
+  const creditRowsWithUser = assignSagaCreditRowOccurrences(
+    actorUserId,
+    creditRows.map((c) => ({ ...c, userId: actorUserId })),
+  );
   let effectiveCredits = buildSagaUnsegmentedCredits(creditRowsWithUser);
   if (segmentNightHours && creditRowsWithUser.length > 0) {
     try {
@@ -19072,6 +19133,7 @@ async function sagaImportSelfCredits(actorUserId, runtimeLog) {
       if (result.docId) expectedDocIds.add(cleanString(result.docId));
     } else {
       summary.creditsSkipped += 1;
+      if (result.docId) expectedDocIds.add(cleanString(result.docId));
       summary.skippedCredits.push({
         student: cleanString(credit.studentName),
         model: cleanString(credit.model),

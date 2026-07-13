@@ -1,5 +1,7 @@
 import { Query } from "appwrite";
 import { CRM_LEADS_COL_ID, CRM_STATUS_SETTINGS_COL_ID, databases, ID, isAppwriteConfigured, Permission, Role } from "./appwrite";
+import { getCrmAutomationSettings } from "./crmAutomationDb";
+import { applyQualFollowupRules } from "./crmQualFollowups";
 import { buildFollowupsForStatus, buildLeadStatusMove, getStatusSetting } from "./crmStatusMove";
 import type {
   CrmLead,
@@ -125,8 +127,9 @@ function parseLeadFollowups(value: string | null | undefined): CrmLeadFollowup[]
         const triggeredAt = String(item?.triggeredAt || "").trim();
         const completedAt = item?.completedAt ? String(item.completedAt) : null;
         const manual = Boolean(item?.manual);
+        const qualAuto = Boolean(item?.qualAuto);
         if (!id || !title || !triggeredAt) return null;
-        return { id, status, title, triggeredAt, completedAt, manual: manual || undefined };
+        return { id, status, title, triggeredAt, completedAt, manual: manual || undefined, qualAuto: qualAuto || undefined };
       })
       .filter((item): item is CrmLeadFollowup => Boolean(item));
   } catch {
@@ -482,18 +485,24 @@ export async function upsertLeadByEmail(
     if (safeReferralSource) qualPayload.referral_source = safeReferralSource;
 
     const { data: statusSettings } = await listCrmStatusSettings();
+    const { data: automationSettings } = await getCrmAutomationSettings();
     const enteredAt = new Date().toISOString();
 
     let doc;
     if (res.total > 0 && res.documents[0]) {
       const existingDoc = res.documents[0] as unknown as CrmLeadDoc;
       const currentStatus = normalizeCrmStatus(existingDoc.crm_status);
+      const existingFollowups = parseLeadFollowups(existingDoc.followups_json);
+      let nextFollowups = existingFollowups;
+      let targetStatus = currentStatus;
+
       if (currentStatus === "novo_lead" || currentStatus === "aguardando_qualificacao") {
-        const targetStatus: CrmStatus = "aguardando_proposta";
+        targetStatus = "aguardando_proposta";
         const move = buildLeadStatusMove(
           {
             crmStatus: currentStatus,
             funnelEnteredAt: existingDoc.funnel_entered_at ?? null,
+            followups: existingFollowups,
           },
           targetStatus,
           statusSettings,
@@ -502,8 +511,40 @@ export async function upsertLeadByEmail(
         qualPayload.crm_status = move.crmStatus;
         qualPayload.status_entered_at = move.statusEnteredAt;
         qualPayload.funnel_entered_at = existingDoc.funnel_entered_at || move.funnelEnteredAt;
-        qualPayload.followups_json = JSON.stringify(move.followups);
+        nextFollowups = move.followups;
       }
+
+      const qualLead = {
+        startDate: (qualPayload.start_date as string | undefined) ?? existingDoc.start_date ?? null,
+        desiredCourse: (qualPayload.desired_course as string | undefined) ?? existingDoc.desired_course ?? null,
+        weeklyHours:
+          typeof qualPayload.weekly_hours === "number"
+            ? qualPayload.weekly_hours
+            : typeof existingDoc.weekly_hours === "number"
+              ? existingDoc.weekly_hours
+              : null,
+        availablePeriod: normalizeAvailablePeriod(
+          (qualPayload.available_period as string | undefined) ?? existingDoc.available_period ?? null,
+        ),
+        theoreticalExamDone:
+          typeof qualPayload.theoretical_exam_done === "boolean"
+            ? qualPayload.theoretical_exam_done
+            : typeof existingDoc.theoretical_exam_done === "boolean"
+              ? existingDoc.theoretical_exam_done
+              : null,
+        theoreticalStudyStatus:
+          (qualPayload.theoretical_study_status as string | undefined) ?? existingDoc.theoretical_study_status ?? null,
+        followups: nextFollowups,
+      };
+
+      qualPayload.followups_json = JSON.stringify(
+        applyQualFollowupRules(
+          qualLead,
+          automationSettings.qualFollowupRules,
+          enteredAt,
+          targetStatus,
+        ),
+      );
       if (!existingDoc.referrer_user_id && safeReferrer) {
         qualPayload.referrer_user_id = safeReferrer;
       }
@@ -514,6 +555,22 @@ export async function upsertLeadByEmail(
     } else {
       const targetStatus: CrmStatus = "aguardando_proposta";
       const move = buildLeadStatusMove({ crmStatus: targetStatus, funnelEnteredAt: null }, targetStatus, statusSettings, { enteredAt });
+      const qualLead = {
+        startDate: (qualPayload.start_date as string | undefined) ?? null,
+        desiredCourse: (qualPayload.desired_course as string | undefined) ?? null,
+        weeklyHours: typeof qualPayload.weekly_hours === "number" ? qualPayload.weekly_hours : null,
+        availablePeriod: normalizeAvailablePeriod((qualPayload.available_period as string | undefined) ?? null),
+        theoreticalExamDone:
+          typeof qualPayload.theoretical_exam_done === "boolean" ? qualPayload.theoretical_exam_done : null,
+        theoreticalStudyStatus: (qualPayload.theoretical_study_status as string | undefined) ?? null,
+        followups: move.followups,
+      };
+      const followups = applyQualFollowupRules(
+        qualLead,
+        automationSettings.qualFollowupRules,
+        enteredAt,
+        targetStatus,
+      );
       doc = await databases!.createDocument(
         DB_ID!,
         CRM_LEADS_COL_ID!,
@@ -525,7 +582,7 @@ export async function upsertLeadByEmail(
           crm_status: move.crmStatus,
           status_entered_at: move.statusEnteredAt,
           funnel_entered_at: move.funnelEnteredAt,
-          followups_json: JSON.stringify(move.followups),
+          followups_json: JSON.stringify(followups),
           referrer_user_id: safeReferrer,
           referral_source: safeReferralSource,
           ...qualPayload,

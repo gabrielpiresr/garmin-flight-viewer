@@ -437,7 +437,7 @@ export function ProposalSettingsPanel() {
                         <img src={getProposalImageUrl(imgId)} alt="" className="h-full w-full object-cover"
                           onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.3"; }} />
                         <button type="button" onClick={() => removeSectionImage(sec.id, imgId)}
-                          className="absolute top-1 right-1 hidden group-hover:flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white text-xs">×</button>
+                          className="desktop-group-hover-flex absolute top-1 right-1 items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white text-xs">×</button>
                       </div>
                     ))}
                   </div>

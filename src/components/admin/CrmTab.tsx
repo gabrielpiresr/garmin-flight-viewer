@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { ReactNode } from "react";
 import { ProposalGeneratorModal } from "./ProposalGeneratorModal";
 import { useAuth } from "../../contexts/AuthContext";
@@ -8,6 +8,12 @@ import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, moveLeadToCrmStatus, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
+import { DEFAULT_CRM_AUTOMATION_SETTINGS, getCrmAutomationSettings, saveCrmAutomationSettings } from "../../lib/crmAutomationDb";
+import { EMPTY_CRM_LEAD_FILTERS, filterCrmLeads } from "../../lib/crmLeadFilters";
+import { computeLeadScore, leadScoreColor } from "../../lib/crmLeadScore";
+import { CrmAutomationSettingsModal } from "./crm/CrmAutomationSettingsModal";
+import { CrmFiltersPanel } from "./crm/CrmFiltersPanel";
+import { CrmListView } from "./crm/CrmListView";
 import {
   applyLeadStatusMove,
   buildFollowupsForStatus,
@@ -47,7 +53,7 @@ import {
   CRM_STATUS_PILL,
   AVAILABLE_DAY_LABELS,
 } from "../../types/crm";
-import type { CrmLead, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
+import type { CrmAutomationSettings, CrmLead, CrmLeadFilters, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
 import type { AvailableDay, AvailablePeriod } from "../../types/crm";
 
 // ─── Card field settings ──────────────────────────────────────────────────────
@@ -63,7 +69,8 @@ type CardFieldKey =
   | "expired"
   | "expirationDays"
   | "funnelEnteredAt"
-  | "statusEnteredAt";
+  | "statusEnteredAt"
+  | "leadScore";
 
 const CARD_FIELD_DEFS: { key: CardFieldKey; label: string }[] = [
   { key: "email",        label: "E-mail" },
@@ -80,10 +87,14 @@ CARD_FIELD_DEFS.push(
   { key: "expirationDays", label: "Dias ate expiracao" },
   { key: "funnelEnteredAt", label: "Entrada no funil" },
   { key: "statusEnteredAt", label: "Entrada no status" },
+  { key: "leadScore", label: "Lead score" },
 );
 
 const DEFAULT_CARD_FIELDS = new Set<CardFieldKey>(["email", "qualBadge", "accountBadge", "course"]);
 const LS_KEY = "crm_card_visible_fields";
+const VIEW_MODE_LS_KEY = "crm_view_mode";
+
+type CrmViewMode = "kanban" | "list";
 
 function useCardFieldSettings() {
   const [visibleFields, setVisibleFields] = useState<Set<CardFieldKey>>(() => {
@@ -179,6 +190,7 @@ function LeadCard({
   lead,
   visibleFields,
   statusSettings,
+  scoreRules,
   onDragStart,
   onClick,
   onEdit,
@@ -190,6 +202,7 @@ function LeadCard({
   lead: CrmLead;
   visibleFields: Set<CardFieldKey>;
   statusSettings: CrmStatusSetting[];
+  scoreRules: CrmAutomationSettings["scoreRules"];
   onDragStart: (lead: CrmLead) => void;
   onClick: (lead: CrmLead) => void;
   onEdit: (lead: CrmLead) => void;
@@ -214,6 +227,7 @@ function LeadCard({
   const expirationAt = getExpirationAt(lead, statusSettings);
   const expirationDaysLeft = expirationAt ? daysUntil(expirationAt) : null;
   const expired = isLeadStatusExpired(lead, statusSettings);
+  const leadScore = computeLeadScore(lead, scoreRules).total;
 
   return (
     <div
@@ -304,6 +318,11 @@ function LeadCard({
                 Funil {formatDateShort(lead.funnelEnteredAt)}
               </span>
             )}
+            {visibleFields.has("leadScore") && (
+              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold bg-slate-800 ${leadScoreColor(leadScore)}`}>
+                Score {leadScore}
+              </span>
+            )}
             {visibleFields.has("statusEnteredAt") && lead.statusEnteredAt && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-slate-800 text-slate-400">
                 Status {formatDateShort(lead.statusEnteredAt)}
@@ -313,7 +332,7 @@ function LeadCard({
         </button>
 
         {/* Menu ⋯ */}
-        <div ref={menuRef} className="relative shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div ref={menuRef} className="desktop-group-hover-reveal relative shrink-0 transition-opacity">
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
@@ -353,13 +372,14 @@ function LeadCard({
 // ─── Kanban Column (Notion-style) ─────────────────────────────────────────────
 
 function KanbanColumn({
-  status, leads, visibleFields, statusSettings, onDrop, onDragStart, onClick, onEdit, onDelete,
+  status, leads, visibleFields, statusSettings, scoreRules, onDrop, onDragStart, onClick, onEdit, onDelete,
   onCopyQualLink, onSendCadastro, onApprove, onQuickAdd, onConfigureStatus,
 }: {
   status: CrmStatus;
   leads: CrmLead[];
   visibleFields: Set<CardFieldKey>;
   statusSettings: CrmStatusSetting[];
+  scoreRules: CrmAutomationSettings["scoreRules"];
   onDrop: (status: CrmStatus) => void;
   onDragStart: (lead: CrmLead) => void;
   onClick: (lead: CrmLead) => void;
@@ -411,6 +431,7 @@ function KanbanColumn({
             lead={lead}
             visibleFields={visibleFields}
             statusSettings={statusSettings}
+            scoreRules={scoreRules}
             onDragStart={onDragStart}
             onClick={onClick}
             onEdit={onEdit}
@@ -1052,6 +1073,7 @@ function LeadDetailDrawer({
   lead,
   currentUserName,
   statusSettings,
+  scoreRules,
   onClose,
   onLeadPatched,
   onSendCadastro,
@@ -1063,6 +1085,7 @@ function LeadDetailDrawer({
   lead: CrmLead;
   currentUserName: string;
   statusSettings: CrmStatusSetting[];
+  scoreRules: CrmAutomationSettings["scoreRules"];
   onClose: () => void;
   onLeadPatched: (lead: CrmLead) => void;
   onSendCadastro: (lead: CrmLead) => void;
@@ -1258,6 +1281,7 @@ function LeadDetailDrawer({
   const statusExpired = isLeadStatusExpired(lead, statusSettings);
   const openFollowupCount = countOverdueFollowups(lead.followups);
   const pendingFollowupCount = countPendingFollowups(lead.followups);
+  const leadScoreResult = computeLeadScore(lead, scoreRules);
 
   useEffect(() => {
     if (!leadReady.current) return;
@@ -1723,6 +1747,25 @@ function LeadDetailDrawer({
             </section>
           )}
 
+          <section className="mt-6 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Lead score</p>
+            <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-3">
+              <p className={`text-2xl font-bold ${leadScoreColor(leadScoreResult.total)}`}>{leadScoreResult.total}</p>
+              {leadScoreResult.breakdown.length === 0 ? (
+                <p className="mt-1 text-xs text-slate-500">Nenhuma regra de pontuação aplicada a este lead.</p>
+              ) : (
+                <ul className="mt-2 space-y-1">
+                  {leadScoreResult.breakdown.map((item) => (
+                    <li key={item.ruleId} className="flex items-center justify-between text-xs text-slate-400">
+                      <span>{item.label}</span>
+                      <span className="font-medium text-slate-200">+{item.points}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
           <section className="mt-6 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups e expiração</p>
@@ -1804,6 +1847,9 @@ function LeadDetailDrawer({
                         <p className="text-xs font-medium text-slate-200">{item.title}</p>
                         {item.manual && (
                           <span className="rounded px-1 py-0.5 text-[10px] bg-violet-900/50 text-violet-300">Manual</span>
+                        )}
+                        {item.qualAuto && (
+                          <span className="rounded px-1 py-0.5 text-[10px] bg-teal-900/50 text-teal-300">Qualificação</span>
                         )}
                         {isPending && (
                           <span className="rounded px-1 py-0.5 text-[10px] bg-sky-900/50 text-sky-300">Pendente</span>
@@ -1929,7 +1975,7 @@ function LeadDetailDrawer({
                       <button
                         type="button"
                         onClick={() => void handleDeleteComment(c.id)}
-                        className="shrink-0 rounded p-0.5 text-slate-700 opacity-0 group-hover:opacity-100 hover:text-red-400 transition"
+                        className="desktop-group-hover-reveal shrink-0 rounded p-0.5 text-slate-700 hover:text-red-400 transition"
                         title="Excluir comentário"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
@@ -2398,6 +2444,19 @@ export function CrmTab() {
   const [statusSettingsModal, setStatusSettingsModal] = useState<CrmStatus | null>(null);
   const [statusSettingsSaving, setStatusSettingsSaving] = useState(false);
   const [groundPaymentModal, setGroundPaymentModal] = useState<{ lead: CrmLead } | null>(null);
+  const [filters, setFilters] = useState<CrmLeadFilters>(EMPTY_CRM_LEAD_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<CrmViewMode>(() => {
+    try {
+      const stored = localStorage.getItem(VIEW_MODE_LS_KEY);
+      return stored === "list" ? "list" : "kanban";
+    } catch {
+      return "kanban";
+    }
+  });
+  const [automationSettings, setAutomationSettings] = useState<CrmAutomationSettings>(DEFAULT_CRM_AUTOMATION_SETTINGS);
+  const [automationModalOpen, setAutomationModalOpen] = useState(false);
+  const [automationSaving, setAutomationSaving] = useState(false);
   const { visibleFields, toggle: toggleField } = useCardFieldSettings();
 
   const { toast, show: showToast } = useToast();
@@ -2434,9 +2493,14 @@ export function CrmTab() {
 
   useEffect(() => {
     void (async () => {
-      const [leadsResult, settingsResult] = await Promise.all([listLeads(), listCrmStatusSettings()]);
+      const [leadsResult, settingsResult, automationResult] = await Promise.all([
+        listLeads(),
+        listCrmStatusSettings(),
+        getCrmAutomationSettings(),
+      ]);
       const { data, error } = leadsResult;
       if (!settingsResult.error) setStatusSettings(settingsResult.data);
+      if (!automationResult.error) setAutomationSettings(automationResult.data);
       if (!error && data) {
         const promoted = await autoPromoteToAnac(data, settingsResult.data);
         setLeads(promoted);
@@ -2445,17 +2509,18 @@ export function CrmTab() {
     })();
   }, []);
 
+  const filteredLeads = useMemo(
+    () => filterCrmLeads(leads, filters, searchQuery, statusSettings, automationSettings.scoreRules),
+    [leads, filters, searchQuery, statusSettings, automationSettings.scoreRules],
+  );
+
   function leadsByStatus(status: CrmStatus) {
-    const q = searchQuery.trim().toLowerCase();
-    return leads.filter((l) => {
-      if (l.crmStatus !== status) return false;
-      if (!q) return true;
-      return (
-        l.name.toLowerCase().includes(q) ||
-        l.email.toLowerCase().includes(q) ||
-        (l.phone && l.phone.toLowerCase().includes(q))
-      );
-    });
+    return filterCrmLeads(leads, filters, searchQuery, statusSettings, automationSettings.scoreRules, status);
+  }
+
+  function setViewModeAndPersist(mode: CrmViewMode) {
+    setViewMode(mode);
+    localStorage.setItem(VIEW_MODE_LS_KEY, mode);
   }
 
   async function persistStatusMove(lead: CrmLead, targetStatus: CrmStatus): Promise<boolean> {
@@ -2642,6 +2707,19 @@ export function CrmTab() {
     setCreditModal({ lead, targetStatus: "ground_agendado" });
   }
 
+  async function handleSaveAutomationSettings(settings: CrmAutomationSettings) {
+    setAutomationSaving(true);
+    const { data, error } = await saveCrmAutomationSettings(settings);
+    setAutomationSaving(false);
+    if (error) {
+      showToast(error.message || "Erro ao salvar automações.", "error");
+      return;
+    }
+    if (data) setAutomationSettings(data);
+    setAutomationModalOpen(false);
+    showToast("Automações salvas.");
+  }
+
   async function handleSaveStatusSetting(setting: Pick<CrmStatusSetting, "status" | "followups" | "expirationDays">) {
     setStatusSettingsSaving(true);
     const { data, error } = await saveCrmStatusSetting(setting);
@@ -2765,7 +2843,32 @@ export function CrmTab() {
       {/* Header */}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <p className="text-xs text-slate-600 shrink-0">{leads.length} lead{leads.length !== 1 ? "s" : ""}</p>
+          <p className="text-xs text-slate-600 shrink-0">
+            {filteredLeads.length} de {leads.length} lead{leads.length !== 1 ? "s" : ""}
+          </p>
+          <CrmFiltersPanel
+            filters={filters}
+            onChange={setFilters}
+            open={filtersOpen}
+            onToggle={() => setFiltersOpen((v) => !v)}
+            scoreRules={automationSettings.scoreRules}
+          />
+          <div className="flex rounded-lg border border-slate-700 p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewModeAndPersist("kanban")}
+              className={`rounded-md px-2.5 py-1 text-xs transition ${viewMode === "kanban" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              Kanban
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewModeAndPersist("list")}
+              className={`rounded-md px-2.5 py-1 text-xs transition ${viewMode === "list" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              Lista
+            </button>
+          </div>
           <div className="relative">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
               <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
@@ -2785,6 +2888,14 @@ export function CrmTab() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAutomationModalOpen(true)}
+            title="FUPs automáticos e lead score"
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 transition"
+          >
+            Automações
+          </button>
           <button
             type="button"
             onClick={() => setCardSettingsOpen(true)}
@@ -2833,7 +2944,15 @@ export function CrmTab() {
         </div>
       </div>
 
-      {/* Kanban Board */}
+      {/* Kanban / Lista */}
+      {viewMode === "list" ? (
+        <CrmListView
+          leads={filteredLeads}
+          statusSettings={statusSettings}
+          scoreRules={automationSettings.scoreRules}
+          onClick={(lead) => setDetailModal(lead)}
+        />
+      ) : (
       <div ref={boardRef} onDragOver={handleBoardDragOver} className="flex gap-3 overflow-x-auto pb-4">
         {CRM_STATUSES.map((status) => (
           <KanbanColumn
@@ -2842,6 +2961,7 @@ export function CrmTab() {
             leads={leadsByStatus(status)}
             visibleFields={visibleFields}
             statusSettings={statusSettings}
+            scoreRules={automationSettings.scoreRules}
             onDrop={handleDrop}
             onDragStart={setDraggedLead}
             onClick={(lead) => setDetailModal(lead)}
@@ -2855,6 +2975,7 @@ export function CrmTab() {
           />
         ))}
       </div>
+      )}
 
       {/* Modais */}
       {detailModal && (
@@ -2862,6 +2983,7 @@ export function CrmTab() {
           lead={detailModal}
           currentUserName={user?.name ?? user?.email ?? "Admin"}
           statusSettings={statusSettings}
+          scoreRules={automationSettings.scoreRules}
           onClose={() => setDetailModal(null)}
           onLeadPatched={(lead) => {
             setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));
@@ -2906,6 +3028,15 @@ export function CrmTab() {
           visibleFields={visibleFields}
           onToggle={toggleField}
           onClose={() => setCardSettingsOpen(false)}
+        />
+      )}
+
+      {automationModalOpen && (
+        <CrmAutomationSettingsModal
+          settings={automationSettings}
+          saving={automationSaving}
+          onClose={() => setAutomationModalOpen(false)}
+          onSave={(settings) => void handleSaveAutomationSettings(settings)}
         />
       )}
 

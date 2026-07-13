@@ -190,8 +190,13 @@ async function cleanupObsoleteContent() {
 
 async function main() {
   console.log("=== Seed Instructor Help Center ===");
-  console.log("Cleaning obsolete sections and articles...\n");
-  await cleanupObsoleteContent();
+  const cleanup = process.argv.includes("--cleanup") || process.env.SEED_INSTRUCTOR_HELP_CLEANUP === "1";
+  if (cleanup) {
+    console.log("Cleaning obsolete sections and articles...\n");
+    await cleanupObsoleteContent();
+  } else {
+    console.log("Skipping cleanup to preserve custom articles. Use --cleanup to remove items not in seed data.\n");
+  }
   console.log(`\nImporting ${INSTRUCTOR_HELP_SECTIONS.length} sections...\n`);
   for (const section of INSTRUCTOR_HELP_SECTIONS) {
     const sectionId = await upsertSection(section);

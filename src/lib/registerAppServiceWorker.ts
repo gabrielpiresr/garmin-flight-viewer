@@ -6,14 +6,26 @@ export function registerAppServiceWorker(): void {
   if (import.meta.env.DEV) {
     void navigator.serviceWorker
       .getRegistrations()
-      .then((registrations) => {
+      .then(async (registrations) => {
+        let removedAppWorker = false;
         for (const registration of registrations) {
           const scriptUrl =
             registration.active?.scriptURL ||
             registration.waiting?.scriptURL ||
             registration.installing?.scriptURL ||
             "";
-          if (scriptUrl.endsWith("/app-sw.js")) void registration.unregister();
+          if (scriptUrl.endsWith("/app-sw.js")) {
+            removedAppWorker = (await registration.unregister()) || removedAppWorker;
+          }
+        }
+        if (removedAppWorker && navigator.serviceWorker.controller) {
+          const reloadKey = "gfv-dev-sw-clean-reload";
+          if (sessionStorage.getItem(reloadKey) !== "1") {
+            sessionStorage.setItem(reloadKey, "1");
+            window.location.reload();
+          }
+        } else {
+          sessionStorage.removeItem("gfv-dev-sw-clean-reload");
         }
       })
       .catch(() => {});

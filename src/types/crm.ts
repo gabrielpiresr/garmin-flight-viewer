@@ -124,6 +124,144 @@ export type CrmLeadFollowup = {
   completedAt: string | null;
   /** FUP criado manualmente no lead (preservado ao mudar de status). */
   manual?: boolean;
+  /** FUP gerado automaticamente a partir das respostas da qualificação. */
+  qualAuto?: boolean;
+};
+
+/** Campos da qualificação usados em regras de FUP automático. */
+export type CrmQualRuleField =
+  | "startDate"
+  | "desiredCourse"
+  | "weeklyHours"
+  | "availablePeriod"
+  | "theoreticalExamDone"
+  | "theoreticalStudyStatus";
+
+/** Campos usados em regras de lead score (inclui numéricos e dias). */
+export type CrmScoreRuleField =
+  | CrmQualRuleField
+  | "weightKg"
+  | "heightCm"
+  | "availableDays";
+
+export type CrmScoreCompareOp = "eq" | "gt" | "lt";
+
+export type CrmScoreDaysMatchMode = "all" | "any";
+
+export const CRM_QUAL_RULE_FIELD_LABELS: Record<CrmQualRuleField, string> = {
+  startDate: "Quando quer começar a voar",
+  desiredCourse: "Curso desejado",
+  weeklyHours: "Horas por semana",
+  availablePeriod: "Período disponível",
+  theoreticalExamDone: "Banca teórica (PPL)",
+  theoreticalStudyStatus: "Status dos estudos teóricos",
+};
+
+export const CRM_SCORE_RULE_FIELD_LABELS: Record<CrmScoreRuleField, string> = {
+  ...CRM_QUAL_RULE_FIELD_LABELS,
+  weightKg: "Peso do aluno (kg)",
+  heightCm: "Altura do aluno (cm)",
+  availableDays: "Dias disponíveis para voar",
+};
+
+export const CRM_SCORE_COMPARE_LABELS: Record<CrmScoreCompareOp, string> = {
+  eq: "Igual a",
+  gt: "Maior que",
+  lt: "Menor que",
+};
+
+export const CRM_SCORE_DAYS_MATCH_LABELS: Record<CrmScoreDaysMatchMode, string> = {
+  all: "Lead tem todos os dias selecionados",
+  any: "Lead tem pelo menos um dos dias",
+};
+
+export const CRM_AVAILABLE_DAYS: AvailableDay[] = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"];
+
+export const CRM_START_DATE_OPTIONS = [
+  { value: "imediato", label: "Imediatamente" },
+  { value: "30_dias", label: "Nos próximos 30 dias" },
+  { value: "60_dias", label: "Em até 60 dias" },
+  { value: "mais_60", label: "Mais de 60 dias" },
+] as const;
+
+export const CRM_COURSE_OPTIONS = [
+  "Piloto Privado",
+  "Piloto Comercial",
+  "INVA",
+  "Recheque",
+  "Aperfeiçoamento",
+] as const;
+
+export const CRM_WEEKLY_HOURS_OPTIONS = [1, 2, 4, 6, 8] as const;
+
+export const CRM_AVAILABLE_PERIOD_OPTIONS = [
+  { value: "manha", label: "Manhã" },
+  { value: "tarde", label: "Tarde" },
+  { value: "ambos", label: "Manhã e tarde" },
+] as const;
+
+export type CrmQualFollowupTemplate = {
+  id: string;
+  title: string;
+  /** Dias após o preenchimento da qualificação. */
+  days: number;
+};
+
+export type CrmQualFollowupRule = {
+  id: string;
+  field: CrmQualRuleField;
+  answerValue: string;
+  followups: CrmQualFollowupTemplate[];
+};
+
+export type CrmLeadScoreRule = {
+  id: string;
+  field: CrmScoreRuleField;
+  /** Valor exato, limiar numérico ou dias separados por vírgula (seg,ter,...). */
+  answerValue: string;
+  /** Comparador para campos numéricos (peso, altura). */
+  compareOp?: CrmScoreCompareOp;
+  /** Para dias disponíveis: exige todos ou qualquer um dos dias. */
+  matchMode?: CrmScoreDaysMatchMode;
+  points: number;
+};
+
+export type CrmAutomationSettings = {
+  qualFollowupRules: CrmQualFollowupRule[];
+  scoreRules: CrmLeadScoreRule[];
+};
+
+export type CrmLeadScoreBreakdownItem = {
+  ruleId: string;
+  field: CrmScoreRuleField;
+  answerValue: string;
+  label: string;
+  points: number;
+};
+
+export type CrmLeadScoreResult = {
+  total: number;
+  breakdown: CrmLeadScoreBreakdownItem[];
+};
+
+export type CrmLeadFilters = {
+  desiredCourses: string[];
+  startDates: string[];
+  weeklyHours: string[];
+  availableDays: AvailableDay[];
+  availablePeriods: string[];
+  theoreticalExam: Array<"true" | "false" | "unknown">;
+  accountStatuses: Array<"created" | "pending">;
+  transferStatuses: Array<"yes" | "no">;
+  qualStatuses: Array<"filled" | "pending">;
+  fupStatuses: Array<"overdue" | "pending" | "none">;
+  expiredStatuses: Array<"expired" | "active">;
+  weightMin: number | null;
+  weightMax: number | null;
+  heightMin: number | null;
+  heightMax: number | null;
+  scoreMin: number | null;
+  scoreMax: number | null;
 };
 
 export type CrmLead = {

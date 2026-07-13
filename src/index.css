@@ -329,6 +329,36 @@ body {
   opacity: 1;
 }
 
+/* Controles que ficavam ocultos ate hover precisam considerar PCs hibridos
+   com touch. `any-hover` preserva hover no desktop e deixa a acao visivel em tablet. */
+.desktop-group-hover-reveal {
+  opacity: 1;
+}
+
+.desktop-group-hover-flex {
+  display: flex;
+}
+
+@media (any-hover: hover) {
+  .desktop-group-hover-reveal {
+    opacity: 0;
+  }
+
+  .group:hover .desktop-group-hover-reveal,
+  .desktop-group-hover-reveal:focus-within {
+    opacity: 1;
+  }
+
+  .desktop-group-hover-flex {
+    display: none;
+  }
+
+  .group:hover .desktop-group-hover-flex,
+  .desktop-group-hover-flex:focus-within {
+    display: flex;
+  }
+}
+
 @keyframes telemetry-progress-slide {
   0% {
     transform: translateX(-100%);

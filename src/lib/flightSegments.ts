@@ -291,7 +291,7 @@ function hasSustainedLowGroundSpeed(
 }
 
 function hasGroundRollBeforeTakeoff(data: ChartRow[], rotIdx: number): boolean {
-  for (let i = rotIdx; i >= Math.max(0, rotIdx - 90); i--) {
+  for (let i = rotIdx; i >= Math.max(0, rotIdx - 60); i--) {
     const gs = get(data[i]!, "gsKt");
     if (gs !== null && gs < 25) return true;
   }
