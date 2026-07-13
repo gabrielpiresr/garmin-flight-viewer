@@ -1,15 +1,17 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { CrmLead, CrmLeadScoreRule, CrmStatus, CrmStatusSetting } from "../../../types/crm";
 import { CRM_START_DATE_OPTIONS, CRM_STATUS_LABELS } from "../../../types/crm";
+import type { CrmLeadSortKey } from "../../../lib/crmLeadSort";
 import { computeLeadScore, leadScoreColor } from "../../../lib/crmLeadScore";
 import { countOverdueFollowups, countPendingFollowups, isLeadStatusExpired } from "../../../lib/crmStatusMove";
-
-type SortKey = "name" | "status" | "course" | "startDate" | "score" | "createdAt" | "overdueFups";
 
 type Props = {
   leads: CrmLead[];
   statusSettings: CrmStatusSetting[];
   scoreRules: CrmLeadScoreRule[];
+  sortKey: CrmLeadSortKey;
+  sortAsc: boolean;
+  onSortChange: (key: CrmLeadSortKey, asc?: boolean) => void;
   onClick: (lead: CrmLead) => void;
 };
 
@@ -25,52 +27,15 @@ function startDateLabel(value: string | null): string {
   return CRM_START_DATE_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
-export function CrmListView({ leads, statusSettings, scoreRules, onClick }: Props) {
-  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
-  const [sortAsc, setSortAsc] = useState(false);
+export function CrmListView({ leads, statusSettings, scoreRules, sortKey, sortAsc, onSortChange, onClick }: Props) {
+  const sorted = useMemo(() => leads, [leads]);
 
-  const sorted = useMemo(() => {
-    const copy = [...leads];
-    copy.sort((a, b) => {
-      let cmp = 0;
-      switch (sortKey) {
-        case "name":
-          cmp = a.name.localeCompare(b.name, "pt-BR");
-          break;
-        case "status":
-          cmp = a.crmStatus.localeCompare(b.crmStatus);
-          break;
-        case "course":
-          cmp = (a.desiredCourse ?? "").localeCompare(b.desiredCourse ?? "", "pt-BR");
-          break;
-        case "startDate":
-          cmp = (a.startDate ?? "").localeCompare(b.startDate ?? "");
-          break;
-        case "score":
-          cmp = computeLeadScore(a, scoreRules).total - computeLeadScore(b, scoreRules).total;
-          break;
-        case "overdueFups":
-          cmp = countOverdueFollowups(a.followups) - countOverdueFollowups(b.followups);
-          break;
-        case "createdAt":
-        default:
-          cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-          break;
-      }
-      return sortAsc ? cmp : -cmp;
-    });
-    return copy;
-  }, [leads, sortKey, sortAsc, scoreRules]);
-
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) setSortAsc((v) => !v);
-    else {
-      setSortKey(key);
-      setSortAsc(key === "name" || key === "course");
-    }
+  function toggleSort(key: CrmLeadSortKey) {
+    if (sortKey === key) onSortChange(key, !sortAsc);
+    else onSortChange(key);
   }
 
-  function SortBtn({ label, col }: { label: string; col: SortKey }) {
+  function SortBtn({ label, col }: { label: string; col: CrmLeadSortKey }) {
     const active = sortKey === col;
     return (
       <button
@@ -98,7 +63,7 @@ export function CrmListView({ leads, statusSettings, scoreRules, onClick }: Prop
         <thead className="sticky top-0 z-10 bg-[var(--panel)]">
           <tr className="border-b border-slate-800">
             <th className="px-3 py-2.5"><SortBtn label="Lead" col="name" /></th>
-            <th className="px-3 py-2.5"><SortBtn label="Status" col="status" /></th>
+            <th className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Status</th>
             <th className="px-3 py-2.5"><SortBtn label="Curso" col="course" /></th>
             <th className="px-3 py-2.5"><SortBtn label="Início" col="startDate" /></th>
             <th className="px-3 py-2.5"><SortBtn label="Score" col="score" /></th>

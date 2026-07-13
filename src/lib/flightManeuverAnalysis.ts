@@ -71,6 +71,7 @@ export const TELEMETRY_PARAMETER_LABELS: Record<string, string> = {
 };
 
 const HEADING_TRACK_PARAMS = new Set(["heading", "track"]);
+const PARAMETER_ALERT_GRACE_SECONDS = 5;
 
 /** Diferença angular com sinal em [-180, 180). Lida com wrap-around 0°/360°. */
 export function headingAngularDiff(a: number, b: number): number {
@@ -142,6 +143,57 @@ function headingTrackDeltaDisplayBounds(
   }
 
   return { min: null, max: null };
+}
+
+function isBankSignedEnvelope(min?: number | null, max?: number | null): boolean {
+  return min !== null && min !== undefined && max !== null && max !== undefined && min < 0 && max > 0;
+}
+
+function bankOutOfRange(
+  value: number,
+  min?: number,
+  max?: number,
+): { belowMin: boolean; aboveMax: boolean } {
+  if (isBankSignedEnvelope(min, max)) {
+    return {
+      belowMin: min !== undefined && value < min,
+      aboveMax: max !== undefined && value > max,
+    };
+  }
+
+  const absV = Math.abs(value);
+  return {
+    belowMin: min !== undefined && Math.abs(min) > 0 && absV < Math.abs(min),
+    aboveMax: max !== undefined && absV > Math.abs(max),
+  };
+}
+
+function bankObservedOutOfRange(param: AnalyzedParameter): { isBelowMin: boolean; isAboveMax: boolean } {
+  if (isBankSignedEnvelope(param.expected_min, param.expected_max)) {
+    return {
+      isBelowMin:
+        param.min_observed !== null &&
+        param.expected_min !== null &&
+        param.min_observed < param.expected_min,
+      isAboveMax:
+        param.max_observed !== null &&
+        param.expected_max !== null &&
+        param.max_observed > param.expected_max,
+    };
+  }
+
+  return {
+    isBelowMin:
+      param.min_observed !== null &&
+      param.expected_min !== null &&
+      Math.abs(param.expected_min) > 0 &&
+      Math.min(Math.abs(param.max_observed ?? Infinity), Math.abs(param.min_observed)) < Math.abs(param.expected_min),
+    isAboveMax:
+      param.max_observed !== null &&
+      param.expected_max !== null &&
+      Math.max(Math.abs(param.max_observed), param.min_observed !== null ? Math.abs(param.min_observed) : 0) >
+        Math.abs(param.expected_max),
+  };
 }
 
 /** Converte pontos absolutos de proa/track em variação angular relativa à referência. */
@@ -345,11 +397,9 @@ function analyzeParameter(
       belowMin = minStart !== undefined && delta < minStart;
       aboveMax = maxStart !== undefined && delta > maxStart;
     } else if (isBank) {
-      const absV = Math.abs(r.value);
       const eMin = effectiveMin(r.absoluteMs);
       const eMax = effectiveMax(r.absoluteMs);
-      aboveMax = eMax !== undefined && absV > Math.abs(eMax);
-      belowMin = eMin !== undefined && Math.abs(eMin) > 0 && absV < Math.abs(eMin);
+      ({ belowMin, aboveMax } = bankOutOfRange(r.value, eMin, eMax));
     } else {
       const eMin = effectiveMin(r.absoluteMs);
       const eMax = effectiveMax(r.absoluteMs);
@@ -364,7 +414,7 @@ function analyzeParameter(
 
   const timeOutSec = Math.round(timeOutMs / 1000);
   let paramStatus: AnalyzedParameter["status"] = "ok";
-  if (timeOutSec > 0) {
+  if (timeOutSec > PARAMETER_ALERT_GRACE_SECONDS) {
     paramStatus = hasHardLimit ? "out_of_range" : "warning";
   }
 
@@ -620,11 +670,12 @@ export function analyzeFlightManeuver(
       const paramCfg = step.parameters[pi];
       if (p.status === "out_of_range" && p.time_out_of_range_seconds > 0) {
         const pIsBank = p.parameter === "bank";
+        const bankRange = pIsBank ? bankObservedOutOfRange(p) : null;
         const isAboveMax = pIsBank
-          ? p.max_observed !== null && p.expected_max !== null && Math.max(Math.abs(p.max_observed), p.min_observed !== null ? Math.abs(p.min_observed) : 0) > Math.abs(p.expected_max)
+          ? bankRange!.isAboveMax
           : p.max_observed !== null && p.expected_max !== null && p.max_observed > p.expected_max;
         const isBelowMin = pIsBank
-          ? p.min_observed !== null && p.expected_min !== null && Math.abs(p.expected_min) > 0 && Math.min(Math.abs(p.max_observed ?? Infinity), p.min_observed !== null ? Math.abs(p.min_observed) : Infinity) < Math.abs(p.expected_min)
+          ? bankRange!.isBelowMin
           : p.min_observed !== null && p.expected_min !== null && p.min_observed < p.expected_min;
         let message: string;
         if (isAboveMax && !isBelowMin && paramCfg?.alert_message_max) {

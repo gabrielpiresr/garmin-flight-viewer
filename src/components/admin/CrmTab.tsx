@@ -11,9 +11,19 @@ import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, l
 import { DEFAULT_CRM_AUTOMATION_SETTINGS, getCrmAutomationSettings, saveCrmAutomationSettings } from "../../lib/crmAutomationDb";
 import { EMPTY_CRM_LEAD_FILTERS, filterCrmLeads } from "../../lib/crmLeadFilters";
 import { computeLeadScore, leadScoreColor } from "../../lib/crmLeadScore";
+import {
+  CRM_LEAD_SORT_OPTIONS,
+  DEFAULT_CRM_LEAD_SORT,
+  defaultSortAscForKey,
+  sortCrmLeads,
+  type CrmLeadSortKey,
+} from "../../lib/crmLeadSort";
 import { CrmAutomationSettingsModal } from "./crm/CrmAutomationSettingsModal";
 import { CrmFiltersPanel } from "./crm/CrmFiltersPanel";
+import { CrmFupsView } from "./crm/CrmFupsView";
 import { CrmListView } from "./crm/CrmListView";
+import { CrmSortControl } from "./crm/CrmSortControl";
+import { collectOpenFupTasks, countOpenFupTasks } from "../../lib/crmFupTasks";
 import {
   applyLeadStatusMove,
   buildFollowupsForStatus,
@@ -91,30 +101,42 @@ CARD_FIELD_DEFS.push(
 );
 
 const DEFAULT_CARD_FIELDS = new Set<CardFieldKey>(["email", "qualBadge", "accountBadge", "course"]);
-const LS_KEY = "crm_card_visible_fields";
 const VIEW_MODE_LS_KEY = "crm_view_mode";
+const SORT_KEY_LS_KEY = "crm_lead_sort_key";
+const SORT_ASC_LS_KEY = "crm_lead_sort_asc";
 
-type CrmViewMode = "kanban" | "list";
+type CrmViewMode = "kanban" | "list" | "fups";
 
-function useCardFieldSettings() {
-  const [visibleFields, setVisibleFields] = useState<Set<CardFieldKey>>(() => {
-    try {
-      const stored = localStorage.getItem(LS_KEY);
-      if (stored) {
-        const arr = JSON.parse(stored) as string[];
-        const valid = new Set(arr.filter((k): k is CardFieldKey => CARD_FIELD_DEFS.some((d) => d.key === k)));
-        return valid.size > 0 ? valid : new Set(DEFAULT_CARD_FIELDS);
-      }
-    } catch { /* ignore */ }
-    return new Set(DEFAULT_CARD_FIELDS);
-  });
+function cardFieldsStorageKey(userId: string | undefined): string {
+  return userId ? `crm_card_visible_fields_${userId}` : "crm_card_visible_fields_guest";
+}
+
+function loadCardFields(storageKey: string): Set<CardFieldKey> {
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      const arr = JSON.parse(stored) as string[];
+      const valid = new Set(arr.filter((k): k is CardFieldKey => CARD_FIELD_DEFS.some((d) => d.key === k)));
+      return valid.size > 0 ? valid : new Set(DEFAULT_CARD_FIELDS);
+    }
+  } catch { /* ignore */ }
+  return new Set(DEFAULT_CARD_FIELDS);
+}
+
+function useCardFieldSettings(userId: string | undefined) {
+  const storageKey = cardFieldsStorageKey(userId);
+  const [visibleFields, setVisibleFields] = useState<Set<CardFieldKey>>(() => loadCardFields(storageKey));
+
+  useEffect(() => {
+    setVisibleFields(loadCardFields(storageKey));
+  }, [storageKey]);
 
   function toggle(key: CardFieldKey) {
     setVisibleFields((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      localStorage.setItem(LS_KEY, JSON.stringify(Array.from(next)));
+      localStorage.setItem(storageKey, JSON.stringify(Array.from(next)));
       return next;
     });
   }
@@ -2449,15 +2471,33 @@ export function CrmTab() {
   const [viewMode, setViewMode] = useState<CrmViewMode>(() => {
     try {
       const stored = localStorage.getItem(VIEW_MODE_LS_KEY);
-      return stored === "list" ? "list" : "kanban";
+      if (stored === "list" || stored === "fups") return stored;
+      return "kanban";
     } catch {
       return "kanban";
     }
   });
+  const [sortKey, setSortKey] = useState<CrmLeadSortKey>(() => {
+    try {
+      const stored = localStorage.getItem(SORT_KEY_LS_KEY);
+      if (stored && CRM_LEAD_SORT_OPTIONS.some((o) => o.value === stored)) {
+        return stored as CrmLeadSortKey;
+      }
+    } catch { /* ignore */ }
+    return DEFAULT_CRM_LEAD_SORT;
+  });
+  const [sortAsc, setSortAsc] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SORT_ASC_LS_KEY);
+      if (stored === "true" || stored === "false") return stored === "true";
+    } catch { /* ignore */ }
+    return defaultSortAscForKey(DEFAULT_CRM_LEAD_SORT);
+  });
   const [automationSettings, setAutomationSettings] = useState<CrmAutomationSettings>(DEFAULT_CRM_AUTOMATION_SETTINGS);
   const [automationModalOpen, setAutomationModalOpen] = useState(false);
   const [automationSaving, setAutomationSaving] = useState(false);
-  const { visibleFields, toggle: toggleField } = useCardFieldSettings();
+  const [completingFupId, setCompletingFupId] = useState<string | null>(null);
+  const { visibleFields, toggle: toggleField } = useCardFieldSettings(user?.id);
 
   const { toast, show: showToast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
@@ -2514,13 +2554,55 @@ export function CrmTab() {
     [leads, filters, searchQuery, statusSettings, automationSettings.scoreRules],
   );
 
+  const sortedFilteredLeads = useMemo(
+    () => sortCrmLeads(filteredLeads, sortKey, sortAsc, automationSettings.scoreRules, statusSettings),
+    [filteredLeads, sortKey, sortAsc, automationSettings.scoreRules, statusSettings],
+  );
+
+  const fupCounts = useMemo(() => countOpenFupTasks(filteredLeads), [filteredLeads]);
+  const fupTasks = useMemo(() => collectOpenFupTasks(sortedFilteredLeads), [sortedFilteredLeads]);
+
   function leadsByStatus(status: CrmStatus) {
-    return filterCrmLeads(leads, filters, searchQuery, statusSettings, automationSettings.scoreRules, status);
+    return sortCrmLeads(
+      filterCrmLeads(leads, filters, searchQuery, statusSettings, automationSettings.scoreRules, status),
+      sortKey,
+      sortAsc,
+      automationSettings.scoreRules,
+      statusSettings,
+    );
   }
 
   function setViewModeAndPersist(mode: CrmViewMode) {
     setViewMode(mode);
     localStorage.setItem(VIEW_MODE_LS_KEY, mode);
+  }
+
+  function handleSortChange(key: CrmLeadSortKey, asc?: boolean) {
+    const nextAsc = asc ?? defaultSortAscForKey(key);
+    setSortKey(key);
+    setSortAsc(nextAsc);
+    localStorage.setItem(SORT_KEY_LS_KEY, key);
+    localStorage.setItem(SORT_ASC_LS_KEY, String(nextAsc));
+  }
+
+  async function handleCompleteFup(lead: CrmLead, followupId: string) {
+    const rowKey = `${lead.id}:${followupId}`;
+    setCompletingFupId(rowKey);
+    const nextFollowups = lead.followups.map((item) =>
+      item.id === followupId ? { ...item, completedAt: new Date().toISOString() } : item,
+    );
+    const nextLead = { ...lead, followups: nextFollowups };
+    setLeads((ls) => ls.map((item) => item.id === lead.id ? nextLead : item));
+    if (detailModal?.id === lead.id) setDetailModal(nextLead);
+    const { error } = await updateLead(lead.id, { followups: nextFollowups });
+    setCompletingFupId(null);
+    if (error) {
+      setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));
+      if (detailModal?.id === lead.id) setDetailModal(lead);
+      showToast("Erro ao marcar FUP como feito.", "error");
+      return;
+    }
+    showToast("FUP marcado como feito.");
   }
 
   async function persistStatusMove(lead: CrmLead, targetStatus: CrmStatus): Promise<boolean> {
@@ -2709,7 +2791,7 @@ export function CrmTab() {
 
   async function handleSaveAutomationSettings(settings: CrmAutomationSettings) {
     setAutomationSaving(true);
-    const { data, error } = await saveCrmAutomationSettings(settings);
+    const { data, error, warning } = await saveCrmAutomationSettings(settings);
     setAutomationSaving(false);
     if (error) {
       showToast(error.message || "Erro ao salvar automações.", "error");
@@ -2717,6 +2799,10 @@ export function CrmTab() {
     }
     if (data) setAutomationSettings(data);
     setAutomationModalOpen(false);
+    if (warning) {
+      showToast(warning, "warning");
+      return;
+    }
     showToast("Automações salvas.");
   }
 
@@ -2868,7 +2954,22 @@ export function CrmTab() {
             >
               Lista
             </button>
+            <button
+              type="button"
+              onClick={() => setViewModeAndPersist("fups")}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition ${viewMode === "fups" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              FUPs
+              {fupCounts.total > 0 && (
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                  fupCounts.overdue > 0 ? "bg-amber-600 text-white" : "bg-sky-600 text-white"
+                }`}>
+                  {fupCounts.total}
+                </span>
+              )}
+            </button>
           </div>
+          <CrmSortControl sortKey={sortKey} sortAsc={sortAsc} onSortChange={handleSortChange} />
           <div className="relative">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
               <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
@@ -2945,11 +3046,24 @@ export function CrmTab() {
       </div>
 
       {/* Kanban / Lista */}
-      {viewMode === "list" ? (
+      {viewMode === "fups" ? (
+        <CrmFupsView
+          tasks={fupTasks}
+          sortKey={sortKey}
+          sortAsc={sortAsc}
+          scoreRules={automationSettings.scoreRules}
+          completingId={completingFupId}
+          onComplete={(lead, followupId) => void handleCompleteFup(lead, followupId)}
+          onOpenLead={(lead) => setDetailModal(lead)}
+        />
+      ) : viewMode === "list" ? (
         <CrmListView
-          leads={filteredLeads}
+          leads={sortedFilteredLeads}
           statusSettings={statusSettings}
           scoreRules={automationSettings.scoreRules}
+          sortKey={sortKey}
+          sortAsc={sortAsc}
+          onSortChange={handleSortChange}
           onClick={(lead) => setDetailModal(lead)}
         />
       ) : (

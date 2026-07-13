@@ -203,14 +203,23 @@ type ReviewChartRange = {
   x1: number;
   x2: number;
   color: string;
+  label?: string;
 };
 
 type ReviewChartReference = {
   y: number;
   /** Se definido, a linha é diagonal — sobe/desce de y (início) até y_end (fim do chart). */
   y_end?: number;
+  x1?: number;
+  x2?: number;
   color: string;
   label?: string;
+};
+
+type ReviewChartTooltipSegment = {
+  x1: number;
+  x2: number;
+  label: string;
 };
 
 type ReviewChartVerticalLine = {
@@ -227,6 +236,7 @@ function CanvasReviewChart({
   height,
   ranges = [],
   references = [],
+  tooltipSegments = [],
   verticalLines = [],
   zeroCrossLine = false,
   formatY,
@@ -240,6 +250,7 @@ function CanvasReviewChart({
   height: number;
   ranges?: ReviewChartRange[];
   references?: ReviewChartReference[];
+  tooltipSegments?: ReviewChartTooltipSegment[];
   verticalLines?: ReviewChartVerticalLine[];
   /** Se true, traça uma linha horizontal pontilhada em y=0 (útil para ângulos como rolagem). */
   zeroCrossLine?: boolean;
@@ -332,23 +343,33 @@ function CanvasReviewChart({
       }
 
       for (const reference of references) {
-        const yStart = reference.y;
+        const refX1 = reference.x1 ?? xMin;
+        const refX2 = reference.x2 ?? xMax;
+        if (refX2 < xMin || refX1 > xMax) continue;
+        const xStartVal = Math.max(xMin, refX1);
+        const xEndVal = Math.min(xMax, refX2);
         const yEndVal = reference.y_end ?? reference.y;
-        if (yStart < yMin && yEndVal < yMin) continue;
-        if (yStart > yMax && yEndVal > yMax) continue;
+        const ratioStart = refX2 === refX1 ? 0 : (xStartVal - refX1) / (refX2 - refX1);
+        const ratioEnd = refX2 === refX1 ? 1 : (xEndVal - refX1) / (refX2 - refX1);
+        const yStart = reference.y + (yEndVal - reference.y) * ratioStart;
+        const yEndClipped = reference.y + (yEndVal - reference.y) * ratioEnd;
+        if (yStart < yMin && yEndClipped < yMin) continue;
+        if (yStart > yMax && yEndClipped > yMax) continue;
+        const xPixStart = toX(xStartVal);
+        const xPixEnd = toX(xEndVal);
         const yPixStart = toY(yStart);
-        const yPixEnd = toY(yEndVal);
+        const yPixEnd = toY(yEndClipped);
         ctx.save();
         ctx.strokeStyle = reference.color;
         ctx.setLineDash([5, 3]);
         ctx.beginPath();
-        ctx.moveTo(left, yPixStart);
-        ctx.lineTo(width - right, yPixEnd);
+        ctx.moveTo(xPixStart, yPixStart);
+        ctx.lineTo(xPixEnd, yPixEnd);
         ctx.stroke();
         ctx.restore();
         if (reference.label) {
           ctx.fillStyle = reference.color;
-          ctx.fillText(reference.label, left + 4, Math.max(top, yPixStart - 12));
+          ctx.fillText(reference.label, Math.min(xPixStart + 4, width - right - 48), Math.max(top, yPixStart - 12));
         }
       }
 
@@ -503,8 +524,9 @@ function CanvasReviewChart({
     const ySpan = domain[1] - domain[0] || 1;
     const x = left + ((point.t - xMin) / xSpan) * plotW;
     const y = top + plotH - ((point.v - domain[0]) / ySpan) * plotH;
-    showReviewTooltip(tooltip, label, point.t, formatY(point.v), x, y, rect.width);
-  }, [activeT, data, domain, formatY, height, label]);
+    const segmentLabel = tooltipSegments.find((segment) => point.t >= segment.x1 && point.t <= segment.x2)?.label;
+    showReviewTooltip(tooltip, label, point.t, formatY(point.v), x, y, rect.width, segmentLabel);
+  }, [activeT, data, domain, formatY, height, label, tooltipSegments]);
 
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     if (event.pointerType === "touch") return;
@@ -591,9 +613,12 @@ function showReviewTooltip(
   x: number,
   y: number,
   width: number,
+  segmentLabel?: string,
 ) {
   tooltip.classList.remove("hidden");
-  tooltip.innerHTML = `<div class="font-medium text-slate-100">${label}</div><div>${Math.round(t)}s - ${value}</div>`;
+  tooltip.innerHTML = `${
+    segmentLabel ? `<div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">${segmentLabel}</div>` : ""
+  }<div class="font-medium text-slate-100">${label}</div><div>${Math.round(t)}s - ${value}</div>`;
   const tooltipWidth = tooltip.offsetWidth || 112;
   // Flipa para esquerda quando o ponto está no terço direito do gráfico
   const preferLeft = x > width * 0.65;
@@ -1121,6 +1146,49 @@ function buildGroupedRefs(group: AnalyzedParameter[]): {
   return { refs, domain };
 }
 
+function referenceDomainBounds(refs: ReviewChartReference[]): { min: number | null; max: number | null } {
+  let min: number | null = null;
+  let max: number | null = null;
+  for (const ref of refs) {
+    for (const value of [ref.y, ref.y_end ?? ref.y]) {
+      if (!Number.isFinite(value)) continue;
+      min = min === null ? value : Math.min(min, value);
+      max = max === null ? value : Math.max(max, value);
+    }
+  }
+  return { min, max };
+}
+
+function buildFullManeuverParameterRefs(
+  steps: AnalyzedStep[],
+  parameter: string,
+  maneuverStartMs: number,
+): ReviewChartReference[] {
+  const refs: ReviewChartReference[] = [];
+  const windows = steps.map((step) => ({
+    start: Math.max(0, (new Date(step.start_time).getTime() - maneuverStartMs) / 1000),
+    end: Math.max(0, (new Date(step.end_time).getTime() - maneuverStartMs) / 1000),
+  }));
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i]!;
+    const group = step.parameters.filter((p) => p.parameter === parameter);
+    if (group.length === 0) continue;
+    const current = windows[i]!;
+    const prev = windows[i - 1];
+    const next = windows[i + 1];
+    const stepStart = prev ? (prev.end + current.start) / 2 : current.start;
+    const stepEnd = next ? (current.end + next.start) / 2 : current.end;
+    const built = buildGroupedRefs(group).refs.map((ref) => ({
+      ...ref,
+      x1: stepStart,
+      x2: Math.max(stepStart, stepEnd),
+    }));
+    refs.push(...built);
+  }
+  return refs;
+}
+
 function ParameterChart({
   params,
   syncId,
@@ -1365,8 +1433,28 @@ function ManeuverOverview({
 
   const syncId = "maneuver-overview";
   const [hoverT, setHoverT] = useState<number | null>(null);
-  const altDomain = useMemo(() => computeYDomain(altPoints, null, null), [altPoints]);
-  const iasDomain = useMemo(() => computeYDomain(iasPoints, null, null), [iasPoints]);
+  const [showLimits, setShowLimits] = useState(true);
+  const tooltipSegments = useMemo<ReviewChartTooltipSegment[]>(
+    () => stepRanges.map((s) => ({ x1: s.startSec, x2: s.endSec, label: s.name })),
+    [stepRanges],
+  );
+  const limitRefsByParameter = useMemo<Record<string, ReviewChartReference[]>>(() => {
+    const params = new Set<string>();
+    for (const step of review.analysis.steps) {
+      for (const p of step.parameters) params.add(p.parameter);
+    }
+    const out: Record<string, ReviewChartReference[]> = {};
+    for (const parameter of params) {
+      out[parameter] = buildFullManeuverParameterRefs(review.analysis.steps, parameter, maneuverStartMs);
+    }
+    return out;
+  }, [review.analysis.steps, maneuverStartMs]);
+  const altRefs = showLimits ? (limitRefsByParameter.altitude ?? []) : [];
+  const iasRefs = showLimits ? (limitRefsByParameter.ias ?? []) : [];
+  const altRefBounds = useMemo(() => referenceDomainBounds(altRefs), [altRefs]);
+  const iasRefBounds = useMemo(() => referenceDomainBounds(iasRefs), [iasRefs]);
+  const altDomain = useMemo(() => computeYDomain(altPoints, altRefBounds.min, altRefBounds.max), [altPoints, altRefBounds]);
+  const iasDomain = useMemo(() => computeYDomain(iasPoints, iasRefBounds.min, iasRefBounds.max), [iasPoints, iasRefBounds]);
   const chartRanges = useMemo(() => {
     if (legRanges && legRanges.length > 0) {
       // Pernas do circuito + etapas após a última perna (ex: rolagem após pouso)
@@ -1393,6 +1481,15 @@ function ManeuverOverview({
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
           Visão geral da manobra
         </p>
+        <label className="flex items-center gap-1.5 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={showLimits}
+            onChange={(e) => setShowLimits(e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900"
+          />
+          <span>Limites</span>
+        </label>
         {/* Leg legend (when traffic pattern detected) or step legend */}
         {legRanges && legRanges.length > 0 ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -1452,6 +1549,8 @@ function ManeuverOverview({
             domain={altDomain}
             height={130}
             ranges={chartRanges}
+            references={altRefs}
+            tooltipSegments={tooltipSegments}
             verticalLines={touchdownVertLines}
             formatY={(value) => `${Math.round(value)}ft`}
             activeT={hoverT}
@@ -1471,6 +1570,8 @@ function ManeuverOverview({
             domain={iasDomain}
             height={110}
             ranges={chartRanges}
+            references={iasRefs}
+            tooltipSegments={tooltipSegments}
             verticalLines={touchdownVertLines}
             formatY={(value) => `${value.toFixed(1)}kt`}
             activeT={hoverT}
@@ -2809,6 +2910,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   const [fsStepIdx, setFsStepIdx] = useState(-1); // -1 = "Completa" (visão geral)
   const [fsHoverT, setFsHoverT] = useState<number | null>(null);
   const [fsExtraFields, setFsExtraFields] = useState<Record<number, string[]>>({});
+  const [fsShowFullLimits, setFsShowFullLimits] = useState(true);
   const fsContainerRef = useRef<HTMLDivElement>(null);
   const fsMapHoverRef = useRef<((pos: [number, number] | null) => void) | null>(null);
   const csvWorkerRef = useRef<Worker | null>(null);
@@ -3043,15 +3145,39 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
 
   const fsManChartRanges = useMemo<ReviewChartRange[]>(() => {
     if (fsManLegRanges && fsManLegRanges.length > 0) {
-      const legPart = fsManLegRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+      const legPart = fsManLegRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color, label: r.label }));
       const lastLegX2 = fsManLegRanges[fsManLegRanges.length - 1]!.x2;
       const postLeg = fsManStepRanges
         .filter((r) => r.x2 > lastLegX2)
-        .map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+        .map((r) => ({ x1: r.x1, x2: r.x2, color: r.color, label: r.name }));
       return [...legPart, ...postLeg];
     }
-    return fsManStepRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color }));
+    return fsManStepRanges.map((r) => ({ x1: r.x1, x2: r.x2, color: r.color, label: r.name }));
   }, [fsManLegRanges, fsManStepRanges]);
+
+  const fsManTooltipSegments = useMemo<ReviewChartTooltipSegment[]>(
+    () => fsManStepRanges.map((r) => ({ x1: r.x1, x2: r.x2, label: r.name })),
+    [fsManStepRanges],
+  );
+
+  const fsFullLimitRefsByParameter = useMemo<Record<string, ReviewChartReference[]>>(() => {
+    if (!fsLiveReview || !fsManeuver) return {};
+    const maneuverStartMs = new Date(fsManeuver.start_time).getTime();
+    const params = new Set<string>();
+    for (const step of fsLiveReview.analysis.steps) {
+      for (const p of step.parameters) params.add(p.parameter);
+    }
+    const out: Record<string, ReviewChartReference[]> = {};
+    for (const parameter of params) {
+      out[parameter] = buildFullManeuverParameterRefs(fsLiveReview.analysis.steps, parameter, maneuverStartMs);
+    }
+    return out;
+  }, [fsLiveReview, fsManeuver]);
+
+  const fsManAltRefs = fsShowFullLimits ? (fsFullLimitRefsByParameter.altitude ?? []) : [];
+  const fsManIasRefs = fsShowFullLimits ? (fsFullLimitRefsByParameter.ias ?? []) : [];
+  const fsManAltRefBounds = useMemo(() => referenceDomainBounds(fsManAltRefs), [fsManAltRefs]);
+  const fsManIasRefBounds = useMemo(() => referenceDomainBounds(fsManIasRefs), [fsManIasRefs]);
 
   // Segmentos coloridos para o FlightMap fullscreen (etapas quando não há circuito de tráfego)
   const fsMapColoredSegments = useMemo(() => {
@@ -3085,6 +3211,11 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     return t >= 0 && t <= stepDuration ? [{ t, color: "#94a3b8", label: "TD" }] : [];
   }, [fsLiveReview, parsedCsvResult, fsStep]);
 
+  const fsStepTooltipSegments = useMemo<ReviewChartTooltipSegment[]>(() => {
+    if (!fsStep) return [];
+    return [{ x1: 0, x2: Math.max(0, fsStep.duration_seconds), label: fsStep.name }];
+  }, [fsStep]);
+
   // Janela de viewport para calcular altura ideal de gráficos
   const [fsWindowH, setFsWindowH] = useState(typeof window !== "undefined" ? window.innerHeight : 600);
   useEffect(() => {
@@ -3117,8 +3248,8 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
   const fsChartH = useMemo(() => {
     const rows = Math.max(1, Math.ceil(fsTotalCharts / 2));
     const availH = fsWindowH / 2 - 60 - 16; // metade da tela - barra de tags (~48px) - padding vertical
-    const labelH = 18; // altura da label acima de cada chart
-    const gapH = 4;   // gap-1
+    const labelH = 16; // altura da label acima de cada chart
+    const gapH = 2;   // gap-y-0.5
     const h = Math.floor((availH - rows * labelH - (rows - 1) * gapH) / rows);
     return Math.max(100, h);
   }, [fsWindowH, fsTotalCharts]);
@@ -3452,10 +3583,20 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
             {/* Vista "Completa": legenda de pernas / etapas */}
             {fsStepIdx === -1 && fsLiveReview && (
               <>
+                <label className="flex items-center gap-2 rounded border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={fsShowFullLimits}
+                    onChange={(e) => setFsShowFullLimits(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900"
+                  />
+                  <span>Limites operacionais na visão completa</span>
+                </label>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 {/* Pernas do circuito (quando há traffic pattern) */}
                 {fsManLegRanges && fsManLegRanges.map((r, i) => (
-                  <div key={`leg-${i}`} className="flex items-center gap-2">
-                    <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
+                  <div key={`leg-${i}`} className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
                     <span className="text-xs" style={{ color: r.color }}>{r.label}</span>
                   </div>
                 ))}
@@ -3463,12 +3604,13 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                 {fsManStepRanges
                   .filter((r) => !fsManLegRanges?.length || r.x2 > (fsManLegRanges[fsManLegRanges.length - 1]?.x2 ?? -Infinity))
                   .map((r, i) => (
-                    <div key={`step-${i}`} className="flex items-center gap-2">
-                      <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
+                    <div key={`step-${i}`} className="flex items-center gap-1.5">
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
                       <span className="text-xs text-slate-300">{r.name}</span>
                     </div>
                   ))
                 }
+                </div>
                 {fsLiveReview.analysis.alerts.length > 0 && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500">Alertas gerais</p>
@@ -3612,17 +3754,19 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {fsStepIdx === -1 && fsManeuver ? (
             /* Vista "Completa": alt + IAS com ranges de etapa/perna + touchdown */
-            <div className={`overflow-y-auto flex-1 p-1 grid gap-1 ${fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+            <div className={`overflow-y-auto flex-1 p-1 grid gap-x-1 gap-y-0.5 ${fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
               {fsManAltPoints.length > 0 && (
                 <div>
-                  <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
+                  <p className="mb-0.5 text-xs font-medium text-slate-400">Altitude (ft)</p>
                   <CanvasReviewChart
                     data={fsManAltPoints}
                     label="Altitude (ft)"
                     color="#94a3b8"
-                    domain={computeYDomain(fsManAltPoints, null, null)}
+                    domain={computeYDomain(fsManAltPoints, fsManAltRefBounds.min, fsManAltRefBounds.max)}
                     height={fsChartH}
                     ranges={fsManChartRanges}
+                    references={fsManAltRefs}
+                    tooltipSegments={fsManTooltipSegments}
                     verticalLines={fsManTdLines}
                     formatY={(v) => `${Math.round(v)}ft`}
                     activeT={fsHoverT}
@@ -3632,14 +3776,16 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
               )}
               {fsManIasPoints.length > 0 && (
                 <div>
-                  <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
+                  <p className="mb-0.5 text-xs font-medium text-slate-400">IAS (kt)</p>
                   <CanvasReviewChart
                     data={fsManIasPoints}
                     label="IAS (kt)"
                     color="#38bdf8"
-                    domain={computeYDomain(fsManIasPoints, null, null)}
+                    domain={computeYDomain(fsManIasPoints, fsManIasRefBounds.min, fsManIasRefBounds.max)}
                     height={fsChartH}
                     ranges={fsManChartRanges}
+                    references={fsManIasRefs}
+                    tooltipSegments={fsManTooltipSegments}
                     verticalLines={fsManTdLines}
                     formatY={(v) => `${v.toFixed(1)}kt`}
                     activeT={fsHoverT}
@@ -3657,16 +3803,22 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                 if (pts.length === 0) return null;
                 const extraLabel = TELEMETRY_PARAMETER_LABELS[fieldKey] ?? fieldKey;
                 const isZeroCross = fieldKey === "bank" || fieldKey === "pitch";
+                const refs = fsShowFullLimits && fieldKey !== "heading" && fieldKey !== "track"
+                  ? (fsFullLimitRefsByParameter[fieldKey] ?? [])
+                  : [];
+                const refBounds = referenceDomainBounds(refs);
                 return (
                   <div key={fieldKey}>
-                    <p className="mb-1 text-xs font-medium text-slate-400">{extraLabel}</p>
+                    <p className="mb-0.5 text-xs font-medium text-slate-400">{extraLabel}</p>
                     <CanvasReviewChart
                       data={pts}
                       label={extraLabel}
                       color="#a78bfa"
-                      domain={computeYDomain(pts, null, null, isZeroCross)}
+                      domain={computeYDomain(pts, refBounds.min, refBounds.max, isZeroCross)}
                       height={fsChartH}
                       ranges={fsManChartRanges}
+                      references={refs}
+                      tooltipSegments={fsManTooltipSegments}
                       verticalLines={fsManTdLines}
                       zeroCrossLine={isZeroCross}
                       formatY={(v) => v.toFixed(1)}
@@ -3690,16 +3842,17 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
               const showIas = !paramKeys.has("ias") && fsStepIasPoints.length > 0;
               const cols = fsTotalCharts > 1 ? "grid-cols-2" : "grid-cols-1";
               return (
-                <div className={`overflow-y-auto flex-1 p-1 grid gap-1 ${cols}`}>
+                <div className={`overflow-y-auto flex-1 p-1 grid gap-x-1 gap-y-0.5 ${cols}`}>
                   {showAlt && (
                     <div>
-                      <p className="mb-1 text-xs font-medium text-slate-400">Altitude (ft)</p>
+                      <p className="mb-0.5 text-xs font-medium text-slate-400">Altitude (ft)</p>
                       <CanvasReviewChart
                         data={fsStepAltPoints}
                         label="Altitude (ft)"
                         color="#94a3b8"
                         domain={computeYDomain(fsStepAltPoints, null, null)}
                         height={fsChartH}
+                        tooltipSegments={fsStepTooltipSegments}
                         verticalLines={fsStepTdLines}
                         formatY={(v) => `${Math.round(v)}ft`}
                         activeT={fsHoverT}
@@ -3709,13 +3862,14 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                   )}
                   {showIas && (
                     <div>
-                      <p className="mb-1 text-xs font-medium text-slate-400">IAS (kt)</p>
+                      <p className="mb-0.5 text-xs font-medium text-slate-400">IAS (kt)</p>
                       <CanvasReviewChart
                         data={fsStepIasPoints}
                         label="IAS (kt)"
                         color="#38bdf8"
                         domain={computeYDomain(fsStepIasPoints, null, null)}
                         height={fsChartH}
+                        tooltipSegments={fsStepTooltipSegments}
                         verticalLines={fsStepTdLines}
                         formatY={(v) => `${v.toFixed(1)}kt`}
                         activeT={fsHoverT}
@@ -3733,7 +3887,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                     const chartLabel = group.map((p) => p.label).filter((l, li, arr) => arr.indexOf(l) === li).join(" / ");
                     return (
                       <div key={i}>
-                        <p className="mb-1 text-xs font-medium text-slate-400">{chartLabel}</p>
+                        <p className="mb-0.5 text-xs font-medium text-slate-400">{chartLabel}</p>
                         <CanvasReviewChart
                           data={p0.data_points}
                           label={chartLabel}
@@ -3741,6 +3895,7 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                           domain={domain}
                           height={fsChartH}
                           references={refs}
+                          tooltipSegments={fsStepTooltipSegments}
                           verticalLines={fsStepTdLines}
                           zeroCrossLine={isBank || isPitch || isHeadingTrack}
                           formatY={(v) => v.toFixed(1)}
@@ -3765,13 +3920,14 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
                     const isZeroCross = fieldKey === "bank" || fieldKey === "pitch" || fieldKey === "heading" || fieldKey === "track";
                     return (
                       <div key={fieldKey}>
-                        <p className="mb-1 text-xs font-medium text-slate-400">{extraLabel}</p>
+                        <p className="mb-0.5 text-xs font-medium text-slate-400">{extraLabel}</p>
                         <CanvasReviewChart
                           data={pts}
                           label={extraLabel}
                           color="#a78bfa"
                           domain={computeYDomain(pts, null, null, isZeroCross)}
                           height={fsChartH}
+                          tooltipSegments={fsStepTooltipSegments}
                           verticalLines={fsStepTdLines}
                           zeroCrossLine={isZeroCross}
                           formatY={(v) => v.toFixed(1)}

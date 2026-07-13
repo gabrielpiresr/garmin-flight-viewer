@@ -161,14 +161,19 @@ export async function getCrmAutomationSettings(): Promise<{ data: CrmAutomationS
   }
 }
 
+function isAppwriteNotFoundError(e: unknown): boolean {
+  const msg = String((e as Error)?.message || e).toLowerCase();
+  return msg.includes("not found") || msg.includes("could not be found");
+}
+
 export async function saveCrmAutomationSettings(
   settings: CrmAutomationSettings,
-): Promise<{ data: CrmAutomationSettings | null; error: Error | null }> {
+): Promise<{ data: CrmAutomationSettings | null; error: Error | null; warning: string | null }> {
   const normalized = normalizeSettings(settings);
   writeLocalSettings(normalized);
 
   if (!configured()) {
-    return { data: normalized, error: null };
+    return { data: normalized, error: null, warning: null };
   }
 
   try {
@@ -176,15 +181,21 @@ export async function saveCrmAutomationSettings(
     try {
       await databases!.updateDocument(DB_ID!, CRM_AUTOMATION_SETTINGS_COL_ID!, DOC_ID, payload);
     } catch (e) {
-      const msg = String((e as Error)?.message || e).toLowerCase();
-      if (msg.includes("not found") || msg.includes("could not be found")) {
+      if (!isAppwriteNotFoundError(e)) throw e;
+      try {
         await databases!.createDocument(DB_ID!, CRM_AUTOMATION_SETTINGS_COL_ID!, DOC_ID, payload);
-      } else {
-        throw e;
+      } catch (createErr) {
+        if (!isAppwriteNotFoundError(createErr)) throw createErr;
+        return {
+          data: normalized,
+          error: null,
+          warning:
+            "Salvo neste navegador. A collection crm_automation_settings ainda não existe no Appwrite — rode: node scripts/setup-crm-automation.mjs",
+        };
       }
     }
-    return { data: normalized, error: null };
+    return { data: normalized, error: null, warning: null };
   } catch (e) {
-    return { data: normalized, error: e as Error };
+    return { data: normalized, error: e as Error, warning: null };
   }
 }
