@@ -868,7 +868,7 @@ export function FlightDetailModal({
   const statusCls = STATUS_COLOR[flight.status] ?? "bg-slate-600/90 border-slate-500/60";
   const [editing, setEditing] = useState(false);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4">
       <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -995,7 +995,7 @@ export function CancellationModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4">
       <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         <div>
           <h3 className="font-semibold text-red-300">Cancelar voo</h3>
@@ -2057,7 +2057,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
       {/* Alteração proposta via arrasto */}
       {proposedChange && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4">
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
             <div>
               <h3 className="font-semibold text-sky-300">Alterar voo</h3>
@@ -2195,7 +2195,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
       {/* Booking modal — tela cheia no mobile; caixa centralizada no desktop */}
       {bookingOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
+        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4">
           <div className="flex max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden bg-slate-900 shadow-2xl sm:max-h-[calc(100vh-2rem)] sm:rounded-2xl sm:border sm:border-slate-700">
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
             <div className="space-y-3">
@@ -2541,7 +2541,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
             </div>
 
             {/* Footer fixo: navegação das etapas (no mobile fica flutuante na base) */}
-            <div className="space-y-3 border-t border-slate-800 bg-slate-900 p-4 sm:rounded-b-2xl">
+            <div className="space-y-3 border-t border-slate-800 bg-slate-900 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-b-2xl">
               {bookingStep === 2 && (
                 <label className="flex items-start gap-2 text-xs text-slate-300">
                   <input
