@@ -2540,7 +2540,8 @@ function proposeSagaImportMapping(flights, savedMapping, catalogs, credits = [],
     const registration =
       mappedRegistration ||
       cleanString(aircraftByRegistration.get(normalizeAircraftIdent(sagaAircraft))?.registration) ||
-      extractSagaAircraftRegistration(sagaAircraft);
+      extractSagaAircraftRegistration(sagaAircraft) ||
+      sagaAircraft;
     const normalizedRegistration = normalizeAircraftIdent(registration);
     if (normalizedRegistration && !aircraftIdByRegistration[normalizedRegistration]) {
       aircraftIdByRegistration[normalizedRegistration] = sagaAircraftId;
@@ -17152,28 +17153,76 @@ async function listCaktoReceipts(input) {
   return { receipts: rows.slice(offset, offset + limit), total: rows.length, limit, offset, summary };
 }
 
-function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
+function scheduleAircraftLookupKey(value) {
+  return normalizeSearch(value).replace(/[^a-z0-9]/g, "");
+}
+
+function mappedScheduleAircraftIdByIdent(aircraftIdByRegistration, aircraftIdent) {
+  const map = aircraftIdByRegistration && typeof aircraftIdByRegistration === "object" ? aircraftIdByRegistration : {};
   const normalizedIdent = normalizeAircraftIdent(aircraftIdent);
   const rawIdent = cleanString(aircraftIdent);
   const direct =
-    cleanString(mapping.aircraftIdByRegistration?.[normalizedIdent]) ||
-    cleanString(mapping.aircraftIdByRegistration?.[rawIdent]) ||
-    cleanString(mapping.aircraftIdByRegistration?.[rawIdent.toLowerCase()]) ||
-    cleanString(mapping.aircraftIdByRegistration?.[rawIdent.toUpperCase()]);
+    cleanString(map[normalizedIdent]) ||
+    cleanString(map[rawIdent]) ||
+    cleanString(map[rawIdent.toLowerCase()]) ||
+    cleanString(map[rawIdent.toUpperCase()]);
+  if (direct) return direct;
+
+  const lookupKey = scheduleAircraftLookupKey(aircraftIdent);
+  if (!lookupKey) return "";
+  for (const [mappedIdent, mappedId] of Object.entries(map)) {
+    if (scheduleAircraftLookupKey(mappedIdent) !== lookupKey) continue;
+    const cleanMappedId = cleanString(mappedId);
+    if (cleanMappedId) return cleanMappedId;
+  }
+  return "";
+}
+
+function resolveSagaScheduleAircraftId(aircraftIdent, mapping) {
+  const normalizedIdent = normalizeAircraftIdent(aircraftIdent);
+  const lookupIdent = scheduleAircraftLookupKey(aircraftIdent);
+  const direct = mappedScheduleAircraftIdByIdent(mapping.aircraftIdByRegistration, aircraftIdent);
   if (direct) return direct;
 
   for (const [sagaAircraftKey, localAircraftIdent] of Object.entries(mapping.aircraftBySaga || {})) {
-    if (normalizeAircraftIdent(localAircraftIdent) !== normalizedIdent) continue;
+    if (
+      normalizeAircraftIdent(localAircraftIdent) !== normalizedIdent &&
+      scheduleAircraftLookupKey(localAircraftIdent) !== lookupIdent
+    ) continue;
     const cleanSagaKey = cleanString(sagaAircraftKey);
     if (/^\d+$/.test(cleanSagaKey)) return cleanSagaKey;
-    const sagaKeyId =
-      cleanString(mapping.aircraftIdByRegistration?.[normalizeAircraftIdent(cleanSagaKey)]) ||
-      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey]) ||
-      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey.toLowerCase()]) ||
-      cleanString(mapping.aircraftIdByRegistration?.[cleanSagaKey.toUpperCase()]);
+    const sagaKeyId = mappedScheduleAircraftIdByIdent(mapping.aircraftIdByRegistration, cleanSagaKey);
     if (sagaKeyId) return sagaKeyId;
   }
   return "";
+}
+
+async function resolveSagaScheduleAircraftIdFromSchedules(aircraftIdent, mapping) {
+  const targetKey = scheduleAircraftLookupKey(aircraftIdent);
+  if (!targetKey) return { aircraftId: "", mapping };
+
+  const { cookieJar } = await loadSagaAuthSession();
+  const schedules = await fetchSagaScheduledFlights(cookieJar, [], {
+    skipFutureFilter: true,
+    monthCount: 6,
+  }).catch(() => []);
+  const match = (schedules || []).find((row) => {
+    const rowName = cleanString(row.aircraft);
+    if (rowName && scheduleAircraftLookupKey(rowName) === targetKey) return true;
+    return scheduleAircraftLookupKey(resolveScheduleAircraftIdent(row, mapping, { aircrafts: [] })) === targetKey;
+  });
+  const aircraftId = cleanString(match?.aircraftSagaId);
+  if (!aircraftId) return { aircraftId: "", mapping };
+
+  const nextMapping = {
+    ...mapping,
+    aircraftIdByRegistration: {
+      ...(mapping.aircraftIdByRegistration || {}),
+      [normalizeAircraftIdent(aircraftIdent)]: aircraftId,
+    },
+  };
+  await saveSagaImportMapping(nextMapping).catch(() => null);
+  return { aircraftId, mapping: nextMapping };
 }
 
 function sagaScheduleSummaryPayload(ctx, mapping, payload = {}) {
@@ -17513,10 +17562,15 @@ function sagaDirectScheduleDateTimes(date, startTime, durationMinutes) {
 
 async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   if (actorUserId) await requireInstructorOrAdmin(actorUserId);
-  const mapping = await loadSagaImportMapping();
+  let mapping = await loadSagaImportMapping();
   const scheduleId = cleanString(payload.scheduleId);
   const aircraftIdent = normalizeAircraftIdent(payload.aircraftIdent);
-  const aircraftId = resolveSagaScheduleAircraftId(payload.aircraftIdent, mapping);
+  let aircraftId = resolveSagaScheduleAircraftId(payload.aircraftIdent, mapping);
+  if (!aircraftId) {
+    const resolved = await resolveSagaScheduleAircraftIdFromSchedules(payload.aircraftIdent, mapping);
+    aircraftId = resolved.aircraftId;
+    mapping = resolved.mapping;
+  }
   if (!aircraftId) {
     throw Object.assign(new Error(`ID SAGA da aeronave ${aircraftIdent || "informada"} nao encontrado no de-para.`), { status: 422 });
   }
