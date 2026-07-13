@@ -309,6 +309,7 @@ export type CrmLeadInput = {
   name: string;
   email: string;
   phone: string;
+  anacCode?: string | null;
   crmStatus?: CrmStatus;
   statusEnteredAt?: string | null;
   funnelEnteredAt?: string | null;

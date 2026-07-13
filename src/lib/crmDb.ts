@@ -290,6 +290,7 @@ export async function createLead(input: CrmLeadInput): Promise<{ data: CrmLead |
         name: input.name,
         email: input.email,
         phone: input.phone,
+        anac_code: input.anacCode ?? null,
         crm_status: crmStatus,
         status_entered_at: statusEnteredAt,
         funnel_entered_at: input.funnelEnteredAt ?? statusEnteredAt,

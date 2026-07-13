@@ -578,29 +578,36 @@ function LeadModal({
   const [name, setName] = useState(lead?.name ?? "");
   const [email, setEmail] = useState(lead?.email ?? "");
   const [phone, setPhone] = useState(lead?.phone ?? "");
+  const [anacCode, setAnacCode] = useState(lead?.anacCode ?? "");
   const [status, setStatus] = useState<CrmStatus>(lead?.crmStatus ?? initialStatus);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const inputCls = "w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
+  function normalizeAnacCode(value: string): string | null {
+    const digits = value.replace(/\D/g, "");
+    return digits || null;
+  }
+
   async function handleSave() {
     if (!name.trim() || !email.trim()) { setError("Nome e e-mail são obrigatórios."); return; }
     setSaving(true);
     setError(null);
+    const anac = normalizeAnacCode(anacCode);
     if (lead) {
       if (status !== lead.crmStatus) {
         const { data, error: err } = await moveLeadToCrmStatus(lead.id, status, {
           currentLead: lead,
           settings: statusSettings,
-          extraUpdates: { name, email, phone },
+          extraUpdates: { name, email, phone, anacCode: anac },
         });
         if (err || !data) { setError(err?.message ?? "Erro ao atualizar."); setSaving(false); return; }
         onSaved(data);
       } else {
-        const { error: err } = await updateLead(lead.id, { name, email, phone });
+        const { error: err } = await updateLead(lead.id, { name, email, phone, anacCode: anac });
         if (err) { setError(err.message); setSaving(false); return; }
-        onSaved({ ...lead, name, email, phone });
+        onSaved({ ...lead, name, email, phone, anacCode: anac });
       }
     } else {
       const enteredAt = new Date().toISOString();
@@ -610,6 +617,7 @@ function LeadModal({
         name,
         email,
         phone,
+        anacCode: anac,
         crmStatus: status,
         statusEnteredAt: enteredAt,
         funnelEnteredAt: enteredAt,
@@ -645,6 +653,18 @@ function LeadModal({
           <div>
             <label className="mb-1 block text-xs text-slate-500">Telefone</label>
             <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} placeholder="(11) 99999-9999" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">Código ANAC <span className="text-slate-600">(opcional)</span></label>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={anacCode}
+              onChange={(e) => setAnacCode(e.target.value.replace(/\D/g, ""))}
+              className={inputCls}
+              placeholder="Ex: 123456"
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-500">Estágio</label>
@@ -2927,18 +2947,84 @@ export function CrmTab() {
       )}
 
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 space-y-2">
         <div className="flex items-center gap-2">
-          <p className="text-xs text-slate-600 shrink-0">
-            {filteredLeads.length} de {leads.length} lead{leads.length !== 1 ? "s" : ""}
-          </p>
-          <CrmFiltersPanel
-            filters={filters}
-            onChange={setFilters}
-            open={filtersOpen}
-            onToggle={() => setFiltersOpen((v) => !v)}
-            scoreRules={automationSettings.scoreRules}
-          />
+          <div className="relative min-w-0 flex-1 max-w-md">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
+              <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar..."
+              className="w-full rounded-lg border border-slate-700 bg-[var(--bg)] py-1.5 pl-8 pr-8 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+            />
+            {searchQuery && (
+              <button type="button" onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" /></svg>
+              </button>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setAutomationModalOpen(true)}
+              title="Automações"
+              className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path d="M15.98 1.804a1 1 0 00-1.96 0l-.24 1.192a1 1 0 01-.784.785l-1.192.238a1 1 0 000 1.962l1.192.238a1 1 0 01.785.785l.238 1.192a1 1 0 001.962 0l.238-1.192a1 1 0 01.785-.785l1.192-.238a1 1 0 000-1.962l-1.192-.238a1 1 0 01-.785-.785l-.238-1.192zM6.949 5.684a1 1 0 00-1.898 0l-.683 2.051a1 1 0 01-.633.633l-2.051.683a1 1 0 000 1.898l2.051.684a1 1 0 01.633.632l.683 2.051a1 1 0 001.898 0l.683-2.051a1 1 0 01.633-.633l2.051-.683a1 1 0 000-1.898l-2.051-.683a1 1 0 01-.633-.633L6.95 5.684zM13.949 13.684a1 1 0 00-1.898 0l-.184.551a1 1 0 01-.632.633l-.551.183a1 1 0 000 1.898l.551.183a1 1 0 01.633.633l.183.551a1 1 0 001.898 0l.184-.551a1 1 0 01.632-.633l.551-.183a1 1 0 000-1.898l-.551-.183a1 1 0 01-.633-.633l-.184-.551z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCardSettingsOpen(true)}
+              title="Campos do card"
+              className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              title="Copiar link de qualificação"
+              onClick={() => {
+                const url = `${window.location.origin}/qualificacao`;
+                void navigator.clipboard.writeText(url).then(() => showToast("Link copiado!"));
+              }}
+              className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4">
+                <path d="M7.752 2.5a.75.75 0 000 1.5h3.69l-8.97 8.97a.75.75 0 001.06 1.06l8.97-8.97v3.69a.75.75 0 001.5 0v-5.5a.75.75 0 00-.75-.75h-5.5z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => void reloadLeads()}
+              disabled={refreshing}
+              title="Atualizar"
+              className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition disabled:opacity-50"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}>
+                <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.389zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditModal({ lead: null, initialStatus: "novo_lead" })}
+              className="flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-500 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+                <path d="M8.75 3.75a.75.75 0 00-1.5 0v3.5h-3.5a.75.75 0 000 1.5h3.5v3.5a.75.75 0 001.5 0v-3.5h3.5a.75.75 0 000-1.5h-3.5v-3.5z" />
+              </svg>
+              <span className="hidden sm:inline">Novo</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-lg border border-slate-700 p-0.5">
             <button
               type="button"
@@ -2957,11 +3043,11 @@ export function CrmTab() {
             <button
               type="button"
               onClick={() => setViewModeAndPersist("fups")}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition ${viewMode === "fups" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs transition ${viewMode === "fups" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
             >
               FUPs
               {fupCounts.total > 0 && (
-                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ${
                   fupCounts.overdue > 0 ? "bg-amber-600 text-white" : "bg-sky-600 text-white"
                 }`}>
                   {fupCounts.total}
@@ -2969,79 +3055,21 @@ export function CrmTab() {
               )}
             </button>
           </div>
+
+          <div className="h-4 w-px bg-slate-800" />
+
+          <CrmFiltersPanel
+            filters={filters}
+            onChange={setFilters}
+            open={filtersOpen}
+            onToggle={() => setFiltersOpen((v) => !v)}
+            scoreRules={automationSettings.scoreRules}
+          />
           <CrmSortControl sortKey={sortKey} sortAsc={sortAsc} onSortChange={handleSortChange} />
-          <div className="relative">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
-              <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
-            </svg>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar lead ou aluno..."
-              className="w-52 rounded-lg border border-slate-700 bg-[var(--bg)] py-1.5 pl-8 pr-3 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-            />
-            {searchQuery && (
-              <button type="button" onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" /></svg>
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setAutomationModalOpen(true)}
-            title="FUPs automáticos e lead score"
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 transition"
-          >
-            Automações
-          </button>
-          <button
-            type="button"
-            onClick={() => setCardSettingsOpen(true)}
-            title="Configurar campos do card"
-            className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-              <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            title="Copiar link de qualificação"
-            onClick={() => {
-              const url = `${window.location.origin}/qualificacao`;
-              void navigator.clipboard.writeText(url).then(() => showToast("Link de qualificação copiado!"));
-            }}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 transition"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
-              <path d="M7.752 2.5a.75.75 0 000 1.5h3.69l-8.97 8.97a.75.75 0 001.06 1.06l8.97-8.97v3.69a.75.75 0 001.5 0v-5.5a.75.75 0 00-.75-.75h-5.5z" />
-            </svg>
-            Link qualificação
-          </button>
-          <button
-            type="button"
-            onClick={() => void reloadLeads()}
-            disabled={refreshing}
-            title="Atualizar leads"
-            className="rounded-lg border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition disabled:opacity-50"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}>
-              <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.389zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditModal({ lead: null, initialStatus: "novo_lead" })}
-            className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 transition"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
-              <path d="M8.75 3.75a.75.75 0 00-1.5 0v3.5h-3.5a.75.75 0 000 1.5h3.5v3.5a.75.75 0 001.5 0v-3.5h3.5a.75.75 0 000-1.5h-3.5v-3.5z" />
-            </svg>
-            Novo lead
-          </button>
+
+          <span className="ml-auto text-[11px] tabular-nums text-slate-500">
+            {filteredLeads.length}<span className="text-slate-600">/{leads.length}</span>
+          </span>
         </div>
       </div>
 

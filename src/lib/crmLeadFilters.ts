@@ -23,25 +23,26 @@ export const EMPTY_CRM_LEAD_FILTERS: CrmLeadFilters = {
 };
 
 export function hasActiveFilters(filters: CrmLeadFilters): boolean {
-  return (
-    filters.desiredCourses.length > 0 ||
-    filters.startDates.length > 0 ||
-    filters.weeklyHours.length > 0 ||
-    filters.availableDays.length > 0 ||
-    filters.availablePeriods.length > 0 ||
-    filters.theoreticalExam.length > 0 ||
-    filters.accountStatuses.length > 0 ||
-    filters.transferStatuses.length > 0 ||
-    filters.qualStatuses.length > 0 ||
-    filters.fupStatuses.length > 0 ||
-    filters.expiredStatuses.length > 0 ||
-    filters.weightMin != null ||
-    filters.weightMax != null ||
-    filters.heightMin != null ||
-    filters.heightMax != null ||
-    filters.scoreMin != null ||
-    filters.scoreMax != null
-  );
+  return countActiveFilters(filters) > 0;
+}
+
+export function countActiveFilters(filters: CrmLeadFilters): number {
+  let count = 0;
+  if (filters.desiredCourses.length > 0) count += 1;
+  if (filters.startDates.length > 0) count += 1;
+  if (filters.weeklyHours.length > 0) count += 1;
+  if (filters.availableDays.length > 0) count += 1;
+  if (filters.availablePeriods.length > 0) count += 1;
+  if (filters.theoreticalExam.length > 0) count += 1;
+  if (filters.accountStatuses.length > 0) count += 1;
+  if (filters.transferStatuses.length > 0) count += 1;
+  if (filters.qualStatuses.length > 0) count += 1;
+  if (filters.fupStatuses.length > 0) count += 1;
+  if (filters.expiredStatuses.length > 0) count += 1;
+  if (filters.weightMin != null || filters.weightMax != null) count += 1;
+  if (filters.heightMin != null || filters.heightMax != null) count += 1;
+  if (filters.scoreMin != null || filters.scoreMax != null) count += 1;
+  return count;
 }
 
 function matchesAnyQualStatus(lead: CrmLead, statuses: CrmLeadFilters["qualStatuses"]): boolean {
