@@ -26,6 +26,10 @@ const COL_ID =
   process.env.APPWRITE_FLIGHT_EVALUATIONS_COL_ID ||
   localEnv.VITE_APPWRITE_FLIGHT_EVALUATIONS_COL_ID ||
   "flight_evaluations";
+const DISMISSALS_COL_ID =
+  process.env.APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID ||
+  localEnv.VITE_APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID ||
+  "flight_evaluation_dismissals";
 
 if (!ENDPOINT || !PROJECT_ID || !API_KEY || !DB_ID) {
   throw new Error("Defina APPWRITE_API_KEY e as configurações Appwrite.");
@@ -56,6 +60,17 @@ async function tryCreateIndex(fn, label) {
   } catch (e) {
     if (e.code === 409) console.log(`  ~ index ${label} (já existe)`);
     else console.error(`  ✗ index ${label}: ${e.message}`);
+  }
+}
+
+async function tryDeleteIndex(collectionId, key, label) {
+  try {
+    await db.deleteIndex(DB_ID, collectionId, key);
+    await sleep(1500);
+    console.log(`  ✓ removed index ${label}`);
+  } catch (e) {
+    if (e.code === 404) console.log(`  ~ index ${label} (não existe)`);
+    else console.error(`  ✗ remove index ${label}: ${e.message}`);
   }
 }
 
@@ -116,6 +131,50 @@ await tryCreateIndex(
   "fe_school_created_idx",
 );
 
-console.log(`\nPronto. Collection ID: ${COL_ID}`);
+console.log(`\n▶ Coleção ${DISMISSALS_COL_ID}...`);
+try {
+  await db.createCollection(DB_ID, DISMISSALS_COL_ID, "Avaliações de voo ignoradas (aluno)", perms, false, true);
+  console.log(`  ✓ Coleção criada`);
+} catch (e) {
+  if (e.code === 409) {
+    await db.updateCollection(DB_ID, DISMISSALS_COL_ID, "Avaliações de voo ignoradas (aluno)", perms, false, true);
+    console.log(`  ~ Coleção já existe (perms atualizadas)`);
+  } else {
+    throw e;
+  }
+}
+await sleep(1200);
+
+for (const [fn, label] of [
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "flight_id", 64, true), "flight_id"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "student_user_id", 64, true), "student_user_id"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "instructor_user_id", 64, false), "instructor_user_id"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "school_id", 64, true), "school_id"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "dismissed_at", 64, true), "dismissed_at"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "created_at", 64, true), "created_at"],
+  [() => db.createStringAttribute(DB_ID, DISMISSALS_COL_ID, "updated_at", 64, true), "updated_at"],
+]) {
+  await tryCreateAttribute(fn, `dismissal.${label}`);
+  await sleep(400);
+}
+
+await sleep(1500);
+
+await tryDeleteIndex(DISMISSALS_COL_ID, "fed_flight_student_unique", "fed_flight_student_unique");
+await tryCreateIndex(
+  () => db.createIndex(DB_ID, DISMISSALS_COL_ID, "fed_flight_student_idx", "key", ["flight_id", "student_user_id"], ["ASC", "ASC"]),
+  "fed_flight_student_idx",
+);
+await tryCreateIndex(
+  () => db.createIndex(DB_ID, DISMISSALS_COL_ID, "fed_student_idx", "key", ["student_user_id"], ["ASC"]),
+  "fed_student_idx",
+);
+await tryCreateIndex(
+  () => db.createIndex(DB_ID, DISMISSALS_COL_ID, "fed_school_created_idx", "key", ["school_id", "created_at"], ["ASC", "DESC"]),
+  "fed_school_created_idx",
+);
+
+console.log(`\nPronto. Collection IDs: ${COL_ID}, ${DISMISSALS_COL_ID}`);
 console.log(`Adicione ao .env.local se quiser fixar:`);
 console.log(`VITE_APPWRITE_FLIGHT_EVALUATIONS_COL_ID=${COL_ID}`);
+console.log(`VITE_APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID=${DISMISSALS_COL_ID}`);

@@ -29,6 +29,17 @@ export type FlightEvaluation = {
   updatedAt: string;
 };
 
+export type FlightEvaluationDismissal = {
+  id: string;
+  flightId: string;
+  studentUserId: string;
+  instructorUserId: string | null;
+  schoolId: string;
+  dismissedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type FlightEvaluationInput = {
   flightId: string;
   instructorUserId?: string | null;

@@ -14,10 +14,10 @@ import {
   formatMinutes,
   getDateBase,
   getFlightDateTimeMs,
-  isFutureFlight,
   shortName,
   type FlightDisplayInfo,
 } from "../lib/flightDisplay";
+import { isFlightEvaluationEligible, isScheduledFlightStatus } from "../lib/flightEvaluationEligibility";
 import {
   deleteSavedFlight,
   getSavedFlight,
@@ -93,15 +93,6 @@ function groupFlights(
 function formatDecimalHours(minutes: number | null | undefined): string {
   if (!minutes || minutes <= 0) return "—";
   return (minutes / 60).toFixed(1) + "h";
-}
-
-function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
-  return ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) && isFutureFlight(item, info);
-}
-
-function isFlightEvaluationEligible(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
-  if (item.flight_status === "Cancelado") return false;
-  return !isScheduledFlightStatus(item, info);
 }
 
 function FlightStatusBadge({ status }: { status: SavedFlightListItem["flight_status"] }) {

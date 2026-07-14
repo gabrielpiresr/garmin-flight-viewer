@@ -7,10 +7,20 @@ import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { getReferAndEarnPublic, programConfigForRole } from "../lib/referAndEarnDb";
 import { getOnboardingPublic } from "../lib/onboardingDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import { buildFlightDisplayInfo, shortName, type FlightDisplayInfo } from "../lib/flightDisplay";
+import { getEvaluationForFlight } from "../lib/flightEvaluationsDb";
+import {
+  dismissFlightEvaluation,
+  listEvaluationDismissalsForFlight,
+} from "../lib/flightEvaluationDismissalsDb";
+import { isFlightEvaluationEligible } from "../lib/flightEvaluationEligibility";
+import { listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
+import type { FlightEvaluation } from "../types/flightEvaluation";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
 import { StudentTabSkeleton } from "./student/StudentExperience";
+import { FlightEvaluationModal } from "./FlightEvaluationModal";
 import type { StudentTabKey } from "../types/rolePermissions";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
@@ -230,6 +240,8 @@ const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
 ];
 
 const MOBILE_PRIMARY_NAV: Section[] = ["home", "schedule", "meus-voos", "jornada"];
+const PENDING_EVALUATION_MAX_PROMPTS = 2;
+const PENDING_EVALUATION_PROMPT_INTERVAL_MS = 60 * 60 * 1000;
 
 function skeletonKind(section: Section): "default" | "home" | "schedule" | "credits" | "journey" {
   if (section === "home") return "home";
@@ -241,6 +253,137 @@ function skeletonKind(section: Section): "default" | "home" | "schedule" | "cred
 
 function LazyTab({ section, children }: { section: Section; children: ReactNode }) {
   return <Suspense fallback={<StudentTabSkeleton kind={skeletonKind(section)} />}>{children}</Suspense>;
+}
+
+function formatPendingEvaluationDate(info: FlightDisplayInfo | null, flight: SavedFlightListItem): string {
+  const iso = info?.flightDateIso ?? flight.flight_date;
+  if (!iso) return "Data não informada";
+  const date = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString("pt-BR");
+}
+
+function PendingFlightEvaluationPrompt({
+  flight,
+  info,
+  onEvaluate,
+  onDismiss,
+}: {
+  flight: SavedFlightListItem;
+  info: FlightDisplayInfo | null;
+  onEvaluate: () => void;
+  onDismiss: () => void;
+}) {
+  const date = formatPendingEvaluationDate(info, flight);
+  const aircraft = info?.aircraft ?? flight.aircraft_ident ?? "Aeronave";
+  const startTime = info?.startTime || flight.start_time || "";
+  const instructor = shortName(info?.instructorName || "", "");
+  const route = info?.fromTo && info.fromTo !== "—" ? info.fromTo : "";
+  const duration = info?.totalFlight && info.totalFlight !== "00:00" ? info.totalFlight : "";
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/80 p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pending-flight-eval-title"
+    >
+      <div className="absolute inset-0" aria-hidden="true" />
+      <div className="relative z-10 w-full max-w-md overflow-hidden rounded-t-2xl border border-slate-700 bg-slate-900 shadow-2xl sm:rounded-2xl pb-[env(safe-area-inset-bottom)]">
+        <div className="border-b border-slate-800 px-4 py-4 sm:px-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest text-amber-300">Avaliação pendente</p>
+              <h2 id="pending-flight-eval-title" className="mt-1 text-base font-semibold text-slate-100">
+                Ficou pendente avaliar seu último voo
+              </h2>
+              <p className="mt-1 text-sm leading-5 text-slate-400">
+                Sua avaliação ajuda a escola a acompanhar a experiência de instrução.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              aria-label="Fechar"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-4 px-4 py-4 sm:px-5">
+          <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded border border-slate-600 px-2 py-0.5 text-xs font-semibold text-slate-200">
+                {aircraft}
+              </span>
+              <span className="text-slate-300">{date}</span>
+              {startTime ? <span className="text-slate-500">{startTime}</span> : null}
+            </div>
+            <div className="mt-2 space-y-1 text-xs text-slate-500">
+              {instructor ? (
+                <p>
+                  Instrutor: <span className="text-slate-300">{instructor}</span>
+                </p>
+              ) : null}
+              {route ? (
+                <p className="truncate">
+                  Rota: <span className="text-slate-300">{route}</span>
+                </p>
+              ) : null}
+              {duration ? (
+                <p>
+                  Duração: <span className="text-slate-300">{duration}</span>
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-800 px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+          >
+            Agora não
+          </button>
+          <button
+            type="button"
+            onClick={onEvaluate}
+            className="rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-amber-400"
+          >
+            Avaliar agora
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function findLatestEligibleEvaluationFlight(studentUserId: string): Promise<SavedFlightListItem | null> {
+  let cursor: string | null = null;
+  for (let safety = 0; safety < 5; safety += 1) {
+    const page = await listSavedFlights({ userId: studentUserId, role: "aluno" }, { limit: 50, cursor });
+    if (page.error) throw page.error;
+    const eligible = (page.data ?? []).find((flight) => isFlightEvaluationEligible(flight));
+    if (eligible) return eligible;
+    if (!page.nextCursor || (page.data?.length ?? 0) === 0) break;
+    cursor = page.nextCursor;
+  }
+  return null;
+}
+
+function shouldShowPendingEvaluationPrompt(dismissals: Array<{ dismissedAt: string; createdAt: string }>): boolean {
+  if (dismissals.length >= PENDING_EVALUATION_MAX_PROMPTS) return false;
+  const latest = dismissals[0];
+  if (!latest) return true;
+  const latestAt = new Date(latest.dismissedAt || latest.createdAt).getTime();
+  if (Number.isNaN(latestAt)) return true;
+  return Date.now() - latestAt >= PENDING_EVALUATION_PROMPT_INTERVAL_MS;
 }
 
 export function MainLayout() {
@@ -255,6 +398,9 @@ export function MainLayout() {
   const [referProgramLoaded, setReferProgramLoaded] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [pendingEvaluationFlight, setPendingEvaluationFlight] = useState<SavedFlightListItem | null>(null);
+  const [pendingEvaluationExisting, setPendingEvaluationExisting] = useState<FlightEvaluation | null>(null);
+  const [pendingEvaluationFormOpen, setPendingEvaluationFormOpen] = useState(false);
 
   const visibleNavItems = useMemo(
     () =>
@@ -368,6 +514,75 @@ export function MainLayout() {
       setSection(availableNavItems[0]!.id, { replace: true });
     }
   }, [availableNavItems, section, permissionsLoading, referProgramLoaded]);
+
+  useEffect(() => {
+    if (!user?.id || user.role !== "aluno" || !rules.flightEvaluation.enabled) {
+      setPendingEvaluationFlight(null);
+      setPendingEvaluationExisting(null);
+      setPendingEvaluationFormOpen(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const latestFlight = await findLatestEligibleEvaluationFlight(user.id);
+        if (cancelled) return;
+        if (!latestFlight) {
+          setPendingEvaluationFlight(null);
+          setPendingEvaluationExisting(null);
+          setPendingEvaluationFormOpen(false);
+          return;
+        }
+
+        const [evaluation, dismissals] = await Promise.all([
+          getEvaluationForFlight(latestFlight.id),
+          listEvaluationDismissalsForFlight(user.id, latestFlight.id),
+        ]);
+        if (cancelled) return;
+        if (evaluation || !shouldShowPendingEvaluationPrompt(dismissals)) {
+          setPendingEvaluationFlight(null);
+          setPendingEvaluationExisting(evaluation);
+          setPendingEvaluationFormOpen(false);
+          return;
+        }
+
+        setPendingEvaluationFlight(latestFlight);
+        setPendingEvaluationExisting(null);
+        setPendingEvaluationFormOpen(false);
+      } catch {
+        if (!cancelled) {
+          setPendingEvaluationFlight(null);
+          setPendingEvaluationExisting(null);
+          setPendingEvaluationFormOpen(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rules.flightEvaluation.enabled, user?.id, user?.role]);
+
+  const pendingEvaluationInfo = useMemo(
+    () => (pendingEvaluationFlight ? buildFlightDisplayInfo(pendingEvaluationFlight, null) : null),
+    [pendingEvaluationFlight],
+  );
+
+  function closePendingEvaluationModal() {
+    setPendingEvaluationFlight(null);
+    setPendingEvaluationExisting(null);
+    setPendingEvaluationFormOpen(false);
+  }
+
+  function dismissPendingEvaluationModal() {
+    const flight = pendingEvaluationFlight;
+    closePendingEvaluationModal();
+    if (!user?.id || !flight) return;
+    void dismissFlightEvaluation(user.id, flight).catch(() => {
+      // Se a gravacao falhar, o modal pode voltar em um proximo acesso.
+    });
+  }
 
   const clubLpUrl = rules.flightReviewClub.landingPageType === "external_url"
     ? rules.flightReviewClub.externalUrl
@@ -763,6 +978,30 @@ export function MainLayout() {
         </nav>
       </div>
     </div>
+    {pendingEvaluationFlight && !pendingEvaluationFormOpen ? (
+      <PendingFlightEvaluationPrompt
+        flight={pendingEvaluationFlight}
+        info={pendingEvaluationInfo}
+        onEvaluate={() => setPendingEvaluationFormOpen(true)}
+        onDismiss={dismissPendingEvaluationModal}
+      />
+    ) : null}
+    {pendingEvaluationFlight && pendingEvaluationFormOpen && user?.id ? (
+      <FlightEvaluationModal
+        open={Boolean(pendingEvaluationFlight)}
+        flight={pendingEvaluationFlight}
+        info={pendingEvaluationInfo}
+        rules={rules.flightEvaluation}
+        studentUserId={user.id}
+        existing={pendingEvaluationExisting}
+        onClose={closePendingEvaluationModal}
+        onDismiss={dismissPendingEvaluationModal}
+        onSubmitted={(evaluation) => {
+          setPendingEvaluationExisting(evaluation);
+          closePendingEvaluationModal();
+        }}
+      />
+    ) : null}
     </FlightReviewClubProvider>
   );
 }

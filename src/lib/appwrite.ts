@@ -201,6 +201,9 @@ export const FLIGHT_MANEUVER_REVIEWS_COL_ID =
 // Avaliação do voo (aluno)
 export const FLIGHT_EVALUATIONS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FLIGHT_EVALUATIONS_COL_ID as string | undefined) ?? "flight_evaluations";
+export const FLIGHT_EVALUATION_DISMISSALS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID as string | undefined) ??
+  "flight_evaluation_dismissals";
 
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 

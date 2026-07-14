@@ -59,6 +59,15 @@ function evaluationPermissions(studentUserId: string) {
   return [Permission.read(Role.users()), Permission.read(Role.user(studentUserId))];
 }
 
+function isSchemaAttributeError(error: unknown): boolean {
+  const message = ((error as { message?: string })?.message ?? String(error)).toLowerCase();
+  return (
+    message.includes("unknown attribute") ||
+    message.includes("attribute not found") ||
+    message.includes("invalid document structure")
+  );
+}
+
 export async function getFlightEvaluationRules(): Promise<FlightEvaluationRules> {
   const cached = getCachedSchoolRules();
   if (cached) return cached.flightEvaluation;
@@ -152,7 +161,14 @@ export async function submitFlightEvaluation(
     updated_at: now,
   };
 
-  const doc = await db.createDocument(dbId, colId, ID.unique(), payload, evaluationPermissions(studentUserId));
+  let doc;
+  try {
+    doc = await db.createDocument(dbId, colId, ID.unique(), payload, evaluationPermissions(studentUserId));
+  } catch (error) {
+    if (!isSchemaAttributeError(error)) throw error;
+    const { criteria_snapshot_json: _criteriaSnapshotJson, ...fallbackPayload } = payload;
+    doc = await db.createDocument(dbId, colId, ID.unique(), fallbackPayload, evaluationPermissions(studentUserId));
+  }
   const evaluation = toEvaluation(doc as Record<string, unknown> & { $id: string });
   if (!evaluation) throw new Error("Falha ao salvar avaliação.");
   return evaluation;
