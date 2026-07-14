@@ -2160,7 +2160,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
       {/* Aviso da exceção "1h com crédito zerado" */}
       {zeroCreditConfirmOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4">
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-amber-600/50 bg-slate-900 p-5 shadow-2xl">
             <div>
               <h3 className="font-semibold text-amber-300">Crédito insuficiente</h3>
