@@ -83,7 +83,7 @@ await createCollection(FORM_COL, "Admissão Instrutores - Formulário", [
 for (const [fn, label] of [
   [() => db.createStringAttribute(DB_ID, FORM_COL, "title", 255, false, "Candidatura de Instrutor"), "title"],
   [() => db.createStringAttribute(DB_ID, FORM_COL, "description", 2000, false, ""), "description"],
-  [() => db.createStringAttribute(DB_ID, FORM_COL, "fields_json", 8192, false, "[]"), "fields_json"],
+  [() => db.createStringAttribute(DB_ID, FORM_COL, "fields_json", 65535, false, "[]"), "fields_json"],
   [() => db.createBooleanAttribute(DB_ID, FORM_COL, "published", false, false), "published"],
 ]) {
   await tryCreateAttribute(fn, label);
@@ -104,6 +104,7 @@ for (const [fn, label] of [
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "phone", 50, false, ""), "phone"],
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "notes", 4000, false, ""), "notes"],
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "responses_json", 32000, false, "{}"), "responses_json"],
+  [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "referral_source", 255, false, ""), "referral_source"],
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "source", 20, false, "manual"), "source"],
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "status_entered_at", 64, false), "status_entered_at"],
   [() => db.createStringAttribute(DB_ID, CANDIDATES_COL, "registration_token", 64, false, ""), "registration_token"],

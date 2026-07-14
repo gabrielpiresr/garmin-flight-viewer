@@ -21,6 +21,7 @@ import type {
   InstructorAdmissionForm,
   InstructorAdmissionFormField,
   InstructorAdmissionFormInput,
+  InstructorAdmissionScoreRule,
   InstructorAdmissionStage,
   InstructorAdmissionStageInput,
 } from "../types/instructorAdmission";
@@ -35,6 +36,7 @@ import { getAdminUserDetail, listAdminUserSummaries, updateAdminUserProfile } fr
 import type { AdminUserDetail, AdminUserSummary } from "../types/adminUsers";
 import { extractAdmissionFieldsFromResponses } from "./instructorAdmissionFormFields";
 import type { InstructorHoursMap } from "./instructorAdmissionMetrics";
+import { isAvailabilityComplete, normalizeAvailabilityValue } from "./availabilityPresets";
 
 function userHasInstructorPortal(user: AdminUserSummary | AdminUserDetail): boolean {
   const slugs = user.assignedRoleSlugs?.length
@@ -114,45 +116,138 @@ function commentsConfigured(): boolean {
 
 // ─── Parsers ──────────────────────────────────────────────────────────────────
 
-function parseFormFields(value: string | null | undefined): InstructorAdmissionFormField[] {
-  if (!value) return [];
+function parseFormFieldsArray(parsed: unknown[]): InstructorAdmissionFormField[] {
+  return parsed
+    .map((item): InstructorAdmissionFormField | null => {
+      const id = String((item as { id?: unknown })?.id || "").trim();
+      const label = String((item as { label?: unknown })?.label || "").trim();
+      const type = String((item as { type?: unknown })?.type || "text").trim();
+      if (!id || !label) return null;
+        const validTypes = [
+          "text",
+          "email",
+          "phone",
+          "number",
+          "date",
+          "textarea",
+          "select",
+          "multiselect",
+          "availability",
+          "checkbox",
+          "attachment",
+          "hidden",
+        ];
+      if (!validTypes.includes(type)) return null;
+      const validProperties = new Set(INSTRUCTOR_ADMISSION_SYSTEM_PROPERTIES);
+      const systemProperty = (item as { systemProperty?: unknown })?.systemProperty
+        ? String((item as { systemProperty?: unknown }).systemProperty).trim()
+        : undefined;
+      const row = item as {
+        required?: unknown;
+        placeholder?: unknown;
+        helpText?: unknown;
+        options?: unknown;
+        order?: unknown;
+        queryKey?: unknown;
+        defaultValue?: unknown;
+      };
+      return {
+        id,
+        label,
+        type: type as InstructorAdmissionFormField["type"],
+        required: type === "hidden" ? false : Boolean(row.required),
+        placeholder: row.placeholder ? String(row.placeholder) : undefined,
+        helpText: row.helpText ? String(row.helpText) : undefined,
+        options: Array.isArray(row.options)
+          ? row.options.map((o: unknown) => String(o).trim()).filter(Boolean)
+          : undefined,
+        order: Math.round(Number(row.order) || 0),
+        systemProperty:
+          systemProperty && validProperties.has(systemProperty as InstructorAdmissionSystemProperty)
+            ? (systemProperty as InstructorAdmissionSystemProperty)
+            : undefined,
+        queryKey: row.queryKey ? String(row.queryKey).trim().slice(0, 64) : undefined,
+        defaultValue:
+          row.defaultValue != null && String(row.defaultValue).trim()
+            ? String(row.defaultValue).trim().slice(0, 2000)
+            : undefined,
+      };
+    })
+    .filter((item): item is InstructorAdmissionFormField => Boolean(item))
+    .sort((a, b) => a.order - b.order);
+}
+
+function parseScoreRulesArray(parsed: unknown[]): InstructorAdmissionScoreRule[] {
+  return parsed
+    .map((item): InstructorAdmissionScoreRule | null => {
+      const row = item as {
+        id?: unknown;
+        fieldId?: unknown;
+        answerValue?: unknown;
+        points?: unknown;
+        compareOp?: unknown;
+        matchMode?: unknown;
+        availabilityAspect?: unknown;
+      };
+      const id = String(row?.id || "").trim();
+      const fieldId = String(row?.fieldId || "").trim();
+      const answerValue = String(row?.answerValue ?? "").trim();
+      const points = Math.round(Number(row?.points) || 0);
+      if (!id || !fieldId || !answerValue || !Number.isFinite(points) || points === 0) return null;
+      const compareOpRaw = row?.compareOp ? String(row.compareOp).trim() : "";
+      const compareOp =
+        compareOpRaw === "eq" || compareOpRaw === "gt" || compareOpRaw === "lt"
+          ? compareOpRaw
+          : undefined;
+      const matchModeRaw = row?.matchMode ? String(row.matchMode).trim() : "";
+      const matchMode =
+        matchModeRaw === "all" || matchModeRaw === "any" ? matchModeRaw : undefined;
+      const aspectRaw = row?.availabilityAspect ? String(row.availabilityAspect).trim() : "";
+      const availabilityAspect =
+        aspectRaw === "days" || aspectRaw === "period" || aspectRaw === "preset"
+          ? aspectRaw
+          : undefined;
+      return { id, fieldId, answerValue, points, compareOp, matchMode, availabilityAspect };
+    })
+    .filter((item): item is InstructorAdmissionScoreRule => Boolean(item));
+}
+
+/** fields_json aceita array legado ou envelope `{ v:2, fields, scoreRules }`. */
+function parseFormDocument(value: string | null | undefined): {
+  fields: InstructorAdmissionFormField[];
+  scoreRules: InstructorAdmissionScoreRule[];
+} {
+  if (!value) return { fields: [], scoreRules: [] };
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item): InstructorAdmissionFormField | null => {
-        const id = String(item?.id || "").trim();
-        const label = String(item?.label || "").trim();
-        const type = String(item?.type || "text").trim();
-        if (!id || !label) return null;
-        const validTypes = ["text", "email", "phone", "number", "date", "textarea", "select", "checkbox", "attachment"];
-        if (!validTypes.includes(type)) return null;
-        const validProperties = new Set(INSTRUCTOR_ADMISSION_SYSTEM_PROPERTIES);
-        const systemProperty = item?.systemProperty
-          ? String(item.systemProperty).trim()
-          : undefined;
-        return {
-          id,
-          label,
-          type: type as InstructorAdmissionFormField["type"],
-          required: Boolean(item?.required),
-          placeholder: item?.placeholder ? String(item.placeholder) : undefined,
-          helpText: item?.helpText ? String(item.helpText) : undefined,
-          options: Array.isArray(item?.options)
-            ? item.options.map((o: unknown) => String(o).trim()).filter(Boolean)
-            : undefined,
-          order: Math.round(Number(item?.order) || 0),
-          systemProperty:
-            systemProperty && validProperties.has(systemProperty as InstructorAdmissionSystemProperty)
-              ? (systemProperty as InstructorAdmissionSystemProperty)
-              : undefined,
-        };
-      })
-      .filter((item): item is InstructorAdmissionFormField => Boolean(item))
-      .sort((a, b) => a.order - b.order);
+    if (Array.isArray(parsed)) {
+      return { fields: parseFormFieldsArray(parsed), scoreRules: [] };
+    }
+    if (parsed && typeof parsed === "object") {
+      const fieldsRaw = Array.isArray(parsed.fields) ? parsed.fields : [];
+      const rulesRaw = Array.isArray(parsed.scoreRules) ? parsed.scoreRules : [];
+      return {
+        fields: parseFormFieldsArray(fieldsRaw),
+        scoreRules: parseScoreRulesArray(rulesRaw),
+      };
+    }
+    return { fields: [], scoreRules: [] };
   } catch {
-    return [];
+    return { fields: [], scoreRules: [] };
   }
+}
+
+function serializeFormDocument(
+  fields: InstructorAdmissionFormField[],
+  scoreRules: InstructorAdmissionScoreRule[],
+): string {
+  return JSON.stringify({
+    v: 2,
+    fields: fields
+      .map((f, index) => ({ ...f, order: f.order ?? index * 10 }))
+      .sort((a, b) => a.order - b.order),
+    scoreRules: scoreRules || [],
+  });
 }
 
 function parseResponses(value: string | null | undefined): Record<string, InstructorAdmissionFieldValue> {
@@ -195,6 +290,7 @@ function mapCandidate(doc: {
   email?: string;
   phone?: string;
   notes?: string;
+  referral_source?: string;
   responses_json?: string;
   source?: string;
   registration_token?: string;
@@ -204,6 +300,7 @@ function mapCandidate(doc: {
   $updatedAt?: string;
 }): InstructorAdmissionCandidate {
   const source = doc.source === "form" ? "form" : doc.source === "instructor" ? "instructor" : "manual";
+  const referral = doc.referral_source ? String(doc.referral_source).trim() : "";
   return {
     id: doc.$id,
     stageId: String(doc.stage_id || "").trim(),
@@ -213,6 +310,7 @@ function mapCandidate(doc: {
     email: String(doc.email || "").trim(),
     phone: doc.phone ? String(doc.phone).trim() : undefined,
     notes: doc.notes ? String(doc.notes).trim() : undefined,
+    referralSource: referral || null,
     responses: parseResponses(doc.responses_json),
     source,
     registrationToken: doc.registration_token ? String(doc.registration_token).trim() : undefined,
@@ -231,11 +329,13 @@ function mapForm(doc: {
   published?: boolean;
   $updatedAt?: string;
 }): InstructorAdmissionForm {
+  const { fields, scoreRules } = parseFormDocument(doc.fields_json);
   return {
     id: doc.$id,
     title: String(doc.title || "Candidatura de Instrutor").trim(),
     description: String(doc.description || "").trim(),
-    fields: parseFormFields(doc.fields_json),
+    fields,
+    scoreRules,
     published: Boolean(doc.published),
     updatedAt: String(doc.$updatedAt || new Date().toISOString()),
   };
@@ -415,11 +515,7 @@ export async function saveInstructorAdmissionForm(
   const data = {
     title: input.title.trim() || "Candidatura de Instrutor",
     description: input.description.trim(),
-    fields_json: JSON.stringify(
-      input.fields
-        .map((f, index) => ({ ...f, order: f.order ?? index * 10 }))
-        .sort((a, b) => a.order - b.order),
-    ),
+    fields_json: serializeFormDocument(input.fields, input.scoreRules || []),
     published: input.published,
   };
 
@@ -464,7 +560,7 @@ export async function createInstructorAdmissionCandidate(
   if (!configured()) throw new Error("Appwrite não configurado.");
 
   const now = new Date().toISOString();
-  const data = {
+  const base = {
     stage_id: input.stageId,
     user_id: input.userId?.trim() || "",
     nickname: input.nickname?.trim() || "",
@@ -476,15 +572,32 @@ export async function createInstructorAdmissionCandidate(
     source: input.source || "manual",
     status_entered_at: now,
   };
+  const withReferral = {
+    ...base,
+    referral_source: input.referralSource?.trim().slice(0, 255) || "",
+  };
 
-  const doc = await databases!.createDocument(
-    DB_ID!,
-    INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!,
-    ID.unique(),
-    data,
-    publicCandidateDocumentPermissions(),
-  );
-  return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  try {
+    const doc = await databases!.createDocument(
+      DB_ID!,
+      INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!,
+      ID.unique(),
+      withReferral,
+      publicCandidateDocumentPermissions(),
+    );
+    return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/referral_source/i.test(message)) throw error;
+    const doc = await databases!.createDocument(
+      DB_ID!,
+      INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!,
+      ID.unique(),
+      base,
+      publicCandidateDocumentPermissions(),
+    );
+    return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  }
 }
 
 export async function updateInstructorAdmissionCandidate(
@@ -501,13 +614,29 @@ export async function updateInstructorAdmissionCandidate(
   if (patch.email !== undefined) data.email = patch.email.trim().toLowerCase();
   if (patch.phone !== undefined) data.phone = patch.phone?.trim() || "";
   if (patch.notes !== undefined) data.notes = patch.notes?.trim() || "";
+  if (patch.referralSource !== undefined) {
+    data.referral_source = patch.referralSource?.trim().slice(0, 255) || "";
+  }
   if (patch.responses !== undefined) data.responses_json = JSON.stringify(patch.responses);
   if (patch.source !== undefined) data.source = patch.source;
   if (patch.registrationToken !== undefined) data.registration_token = patch.registrationToken?.trim() || "";
   if (patch.formFilledAt !== undefined) data.form_filled_at = patch.formFilledAt || "";
 
-  const doc = await databases!.updateDocument(DB_ID!, INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!, id, data);
-  return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  try {
+    const doc = await databases!.updateDocument(DB_ID!, INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!, id, data);
+    return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!data.referral_source || !/referral_source/i.test(message)) throw error;
+    const { referral_source: _ignored, ...withoutReferral } = data;
+    const doc = await databases!.updateDocument(
+      DB_ID!,
+      INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!,
+      id,
+      withoutReferral,
+    );
+    return mapCandidate(doc as Parameters<typeof mapCandidate>[0]);
+  }
 }
 
 export async function moveInstructorAdmissionCandidate(
@@ -567,7 +696,11 @@ async function syncCandidateProfileFromResponses(
 
 export async function submitInstructorAdmissionForm(
   responses: Record<string, InstructorAdmissionFieldValue>,
-  options?: { token?: string; stages?: InstructorAdmissionStage[] },
+  options?: {
+    token?: string;
+    stages?: InstructorAdmissionStage[];
+    referralSource?: string | null;
+  },
 ): Promise<InstructorAdmissionCandidate> {
   const form = await getPublicInstructorAdmissionForm();
   if (!form) throw new Error("Formulário não disponível no momento.");
@@ -581,15 +714,28 @@ export async function submitInstructorAdmissionForm(
   if (!defaultStage) throw new Error("Nenhuma etapa configurada.");
 
   for (const field of form.fields) {
+    if (field.type === "hidden") continue;
     if (!field.required) continue;
     const value = responses[field.id];
     if (field.type === "checkbox") {
-      if (value !== true) throw new Error(`O campo "${field.label}" é obrigatório.`);
+      if (typeof value !== "boolean") throw new Error(`O campo "${field.label}" é obrigatório.`);
       continue;
     }
     if (field.type === "attachment") {
       const file = value as InstructorAdmissionFileValue | undefined;
       if (!file?.fileId) throw new Error(`O anexo "${field.label}" é obrigatório.`);
+      continue;
+    }
+    if (field.type === "multiselect") {
+      if (!Array.isArray(value) || value.length === 0) {
+        throw new Error(`O campo "${field.label}" é obrigatório.`);
+      }
+      continue;
+    }
+    if (field.type === "availability") {
+      if (!isAvailabilityComplete(normalizeAvailabilityValue(value))) {
+        throw new Error(`O campo "${field.label}" é obrigatório.`);
+      }
       continue;
     }
     if (!value || (typeof value === "string" && !value.trim())) {
@@ -602,6 +748,7 @@ export async function submitInstructorAdmissionForm(
   const email = extracted.email?.trim().toLowerCase() || "";
   const phone = extracted.phone?.trim();
   const nickname = extracted.nickname?.trim();
+  const referralSource = options?.referralSource?.trim().slice(0, 255) || null;
 
   if (!name) throw new Error("Informe seu nome completo.");
   if (!email) throw new Error("Informe seu e-mail.");
@@ -619,6 +766,7 @@ export async function submitInstructorAdmissionForm(
       responses,
       source: "form",
       formFilledAt: now,
+      referralSource: existing.referralSource || referralSource,
     });
     if (updated.userId) {
       await syncCandidateProfileFromResponses(updated.userId, form, responses);
@@ -635,6 +783,7 @@ export async function submitInstructorAdmissionForm(
     responses,
     source: "form",
     formFilledAt: now,
+    referralSource,
   });
   if (created.userId) {
     await syncCandidateProfileFromResponses(created.userId, form, responses);

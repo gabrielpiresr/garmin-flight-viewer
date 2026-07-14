@@ -2,6 +2,11 @@ import type { NotificationEventType } from "./notification";
 import type { ScheduleStudentHelpConfig } from "./scheduleStudentHelp";
 import { defaultScheduleStudentHelp } from "../lib/scheduleStudentHelpDefaults";
 import { normalizeScheduleStudentHelp } from "../lib/scheduleStudentHelp";
+import {
+  DEFAULT_FLIGHT_EVALUATION_RULES,
+  normalizeFlightEvaluationRules,
+  type FlightEvaluationRules,
+} from "./flightEvaluation";
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
@@ -109,6 +114,7 @@ export type SchoolRules = {
   scheduleStudentHelp: ScheduleStudentHelpConfig;
   emailNotifications: Record<NotificationEventType, EmailNotificationRule>;
   flightReviewClub: FlightReviewClubRules;
+  flightEvaluation: FlightEvaluationRules;
   updatedAt: string | null;
 };
 
@@ -228,6 +234,7 @@ export const DEFAULT_SCHOOL_RULES: SchoolRules = {
   scheduleStudentHelp: DEFAULT_SCHEDULE_STUDENT_HELP,
   emailNotifications: DEFAULT_EMAIL_NOTIFICATION_RULES,
   flightReviewClub: DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
+  flightEvaluation: DEFAULT_FLIGHT_EVALUATION_RULES,
   updatedAt: null,
 };
 
@@ -384,6 +391,7 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
         trialFlightCount: (() => { const n = Number(club?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
       };
     })(),
+    flightEvaluation: normalizeFlightEvaluationRules(raw.flightEvaluation),
     updatedAt: raw.updatedAt ?? null,
   };
 }

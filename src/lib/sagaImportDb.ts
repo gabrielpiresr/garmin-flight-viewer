@@ -239,6 +239,29 @@ export type SagaImportPendingMission = {
   missionOptions?: SagaMissionOption[];
 };
 
+export type SagaMissingMissionMapping = {
+  lookupKey: string;
+  rawMission: string;
+  missionCode: string;
+  course: string;
+  trainingTrackId: string;
+  trackName: string;
+  count: number;
+  sampleFlightIds: string[];
+  latestFlightDate: string | null;
+};
+
+export type SagaMissingMissionMappingsResult = {
+  ok: boolean;
+  missingMissions: SagaMissingMissionMapping[];
+  lookupKeys: string[];
+  scannedFlights: number;
+  sagaFlightsScanned: number;
+  withoutMission: number;
+  catalogs: SagaImportCatalogs;
+  message?: string;
+};
+
 export type SagaImportProgress = {
   runId: string;
   status: "running" | "completed" | "failed" | "awaiting_mission_mapping" | string;
@@ -522,14 +545,85 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+type AppwriteExecution = {
+  $id: string;
+  status: string;
+  responseStatusCode?: number;
+  responseBody?: string;
+};
+
+const SAGA_IMPORT_STILL_RUNNING_MESSAGE =
+  "A importacao ainda esta em andamento no Appwrite. Aguarde um pouco e confira as execucoes da Function.";
+
+function isExecutionNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("execution with the requested id could not be found") ||
+    message.includes("execution_not_found") ||
+    message.includes("requested id could not be found")
+  );
+}
+
+function isSagaExecutionTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes(SAGA_IMPORT_STILL_RUNNING_MESSAGE);
+}
+
+function isRecoverableSagaPollingError(error: unknown): boolean {
+  return isSagaExecutionTimeoutError(error) || isExecutionNotFoundError(error);
+}
+
+async function createAdminFunctionExecution(
+  body: Record<string, unknown>,
+  async: boolean,
+): Promise<AppwriteExecution> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+  const execution = (await fn.createExecution({
+    functionId,
+    body: JSON.stringify(body),
+    async,
+  })) as AppwriteExecution;
+  const executionId = String(execution?.$id || "").trim();
+  if (!executionId) {
+    throw new Error("A execucao da function admin-users nao retornou um ID valido.");
+  }
+  return execution;
+}
+
+async function getAdminFunctionExecution(functionId: string, executionId: string): Promise<AppwriteExecution> {
+  const { functions: fn } = getAdminFunctionClient();
+  return (await fn.getExecution({ functionId, executionId })) as AppwriteExecution;
+}
+
+async function getAdminFunctionExecutionWithRetry(
+  functionId: string,
+  executionId: string,
+  attempts = 6,
+): Promise<AppwriteExecution> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await getAdminFunctionExecution(functionId, executionId);
+    } catch (error) {
+      lastError = error;
+      if (!isExecutionNotFoundError(error) || attempt >= attempts - 1) throw error;
+      await sleep(500 + attempt * 500);
+    }
+  }
+  throw lastError;
+}
+
+function throwRecoverableSagaPollingError(progressRunId?: string): never {
+  if (progressRunId) {
+    throw new Error(SAGA_IMPORT_STILL_RUNNING_MESSAGE);
+  }
+  throw new Error("Nao foi possivel consultar o status da execucao no Appwrite.");
+}
+
 export async function fetchSagaImportProgress(runId: string): Promise<SagaImportProgress | null> {
   if (!runId) return null;
-  const { functions: fn, functionId } = getAdminFunctionClient();
-  const execution = await fn.createExecution(
-    functionId,
-    JSON.stringify({ action: "sagaGetImportProgress", runId }),
-    false,
-  );
+  const execution = await createAdminFunctionExecution({ action: "sagaGetImportProgress", runId }, false);
   const response = parseJsonBody<{ progress?: SagaImportProgress | null }>(execution.responseBody, {});
   return response.progress ?? null;
 }
@@ -540,19 +634,28 @@ async function waitForFunctionExecution(
   timeoutMs = 90000,
   options: { progressRunId?: string; onProgress?: (progress: SagaImportProgress) => void } = {},
 ) {
-  const { functions: fn } = getAdminFunctionClient();
   const startedAt = Date.now();
-  let lastExecution = await fn.getExecution(functionId, executionId);
+  let lastExecution: AppwriteExecution;
+  try {
+    lastExecution = await getAdminFunctionExecutionWithRetry(functionId, executionId);
+  } catch (error) {
+    if (isExecutionNotFoundError(error)) throwRecoverableSagaPollingError(options.progressRunId);
+    throw error;
+  }
 
   while (lastExecution.status === "processing" || lastExecution.status === "waiting") {
     if (Date.now() - startedAt > timeoutMs) {
-      throw new Error("A importacao ainda esta em andamento no Appwrite. Aguarde um pouco e confira as execucoes da Function.");
+      throw new Error(SAGA_IMPORT_STILL_RUNNING_MESSAGE);
     }
     await sleep(2000);
-    const [nextExecution, progress] = await Promise.all([
-      fn.getExecution(functionId, executionId),
-      options.progressRunId ? fetchSagaImportProgress(options.progressRunId).catch(() => null) : Promise.resolve(null),
-    ]);
+    let nextExecution: AppwriteExecution;
+    try {
+      nextExecution = await getAdminFunctionExecutionWithRetry(functionId, executionId, 3);
+    } catch (error) {
+      if (isExecutionNotFoundError(error)) throwRecoverableSagaPollingError(options.progressRunId);
+      throw error;
+    }
+    const progress = options.progressRunId ? await fetchSagaImportProgress(options.progressRunId).catch(() => null) : null;
     if (progress && options.onProgress) options.onProgress(progress);
     lastExecution = nextExecution;
   }
@@ -562,11 +665,6 @@ async function waitForFunctionExecution(
     if (progress) options.onProgress(progress);
   }
   return lastExecution;
-}
-
-function isSagaExecutionTimeoutError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.message.includes("A importacao ainda esta em andamento no Appwrite");
 }
 
 function summaryMatchesRunId(summary: SagaImportSummary | null | undefined, runId?: string): boolean {
@@ -636,7 +734,7 @@ export async function fetchSagaUsers(params: { email: string; password: string; 
     false,
   );
   const response = parseResponse(execution.responseBody);
-  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
     const error = new Error(response.message || "Falha ao buscar usuarios no SAGA.") as Error & {
       sagaResult?: SagaImportResult;
     };
@@ -658,7 +756,7 @@ export async function getSagaImportSettings(): Promise<SagaImportSettings> {
     execution.responseBody,
     {},
   );
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.mapping) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.mapping) {
     throw new Error(response.message || "Falha ao carregar configuracoes do import SAGA.");
   }
   return {
@@ -699,10 +797,44 @@ export async function saveSagaImportMapping(mapping: SagaImportMapping): Promise
   const response = parseJsonBody<{ ok?: boolean; mapping?: SagaImportMapping; message?: string }>(execution.responseBody, {
     mapping: EMPTY_MAPPING,
   });
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.mapping) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.mapping) {
     throw new Error(response.message || "Falha ao salvar de-para do SAGA.");
   }
   return response.mapping;
+}
+
+export async function refreshSagaMissingMissionMappings(
+  mapping: SagaImportMapping,
+): Promise<SagaMissingMissionMappingsResult> {
+  const { functions: fn, functionId } = getAdminFunctionClient();
+
+  const execution = await fn.createExecution(
+    functionId,
+    JSON.stringify({ action: "sagaListMissingMissionMappingsFromImportedFlights", mapping }),
+    false,
+  );
+  const response = parseJsonBody<SagaMissingMissionMappingsResult>(execution.responseBody, {
+    ok: false,
+    missingMissions: [],
+    lookupKeys: [],
+    scannedFlights: 0,
+    sagaFlightsScanned: 0,
+    withoutMission: 0,
+    catalogs: { aircrafts: [], aircraftModels: [], trainingTracks: [] },
+  });
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
+    throw new Error(response.message || "Falha ao atualizar missoes SAGA sem de-para.");
+  }
+  return {
+    ...response,
+    missingMissions: Array.isArray(response.missingMissions) ? response.missingMissions : [],
+    lookupKeys: Array.isArray(response.lookupKeys) ? response.lookupKeys : [],
+    catalogs: {
+      aircrafts: Array.isArray(response.catalogs?.aircrafts) ? response.catalogs.aircrafts : [],
+      aircraftModels: Array.isArray(response.catalogs?.aircraftModels) ? response.catalogs.aircraftModels : [],
+      trainingTracks: Array.isArray(response.catalogs?.trainingTracks) ? response.catalogs.trainingTracks : [],
+    },
+  };
 }
 
 export type SagaScheduleSyncMode = "upsert" | "cancel";
@@ -749,7 +881,7 @@ export async function syncSagaScheduleEvent(
     flightId,
     logs: [],
   });
-  if (execution.status === "failed" || execution.responseStatusCode >= 500) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 500) {
     return {
       ...response,
       ok: false,
@@ -820,7 +952,7 @@ export async function fetchSagaSyncHistory(): Promise<SagaSyncHistoryEntry[]> {
     false,
   );
   const response = parseJsonBody<{ history?: SagaSyncHistoryEntry[]; message?: string }>(execution.responseBody, {});
-  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
     throw new Error(response.message || "Falha ao carregar o historico de sincronizacoes.");
   }
   return Array.isArray(response.history) ? response.history : [];
@@ -839,7 +971,7 @@ export async function runSagaScheduleSyncNow(force = false): Promise<SagaSchedul
     message: "Resposta da sincronizacao de escala nao estava em JSON valido.",
     logs: [],
   });
-  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400) {
     throw new Error(response.message || "Falha ao executar sincronizacao manual da escala SAGA.");
   }
   return response;
@@ -865,7 +997,7 @@ export async function runSagaAllUsersSyncNow(
     message: "Resposta da sincronizacao geral SAGA nao estava em JSON valido.",
     logs: [],
   });
-  if (execution.status !== "failed" && execution.responseStatusCode < 400 && !response.importRunId) {
+  if (execution.status !== "failed" && (execution.responseStatusCode ?? 0) < 400 && !response.importRunId) {
     const historyEntry = (await fetchSagaSyncHistory().catch(() => []))
       .find((entry) => entry.runId === importRunId);
     if (historyEntry) {
@@ -885,7 +1017,7 @@ export async function runSagaAllUsersSyncNow(
       };
     }
   }
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || response.ok === false) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || response.ok === false) {
     throw new Error(response.message || "Falha ao executar sincronizacao geral do SAGA.");
   }
   return response;
@@ -910,7 +1042,7 @@ export async function runSagaAllUsersFlightsOnlyNow(
     message: "Resposta da sincronizacao de voos SAGA nao estava em JSON valido.",
     logs: [],
   });
-  if (execution.status !== "failed" && execution.responseStatusCode < 400 && !response.importRunId) {
+  if (execution.status !== "failed" && (execution.responseStatusCode ?? 0) < 400 && !response.importRunId) {
     const historyEntry = (await fetchSagaSyncHistory().catch(() => []))
       .find((entry) => entry.runId === importRunId);
     if (historyEntry) {
@@ -931,7 +1063,7 @@ export async function runSagaAllUsersFlightsOnlyNow(
       };
     }
   }
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || response.ok === false) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || response.ok === false) {
     throw new Error(response.message || "Falha ao sincronizar somente os voos do SAGA.");
   }
   return response;
@@ -977,7 +1109,7 @@ export async function listSagaSchedulesDirect(monthCount = 3): Promise<SagaDirec
     execution.responseBody,
     { ok: false, schedules: [] },
   );
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
     throw new Error(response.message || "Falha ao buscar a escala no SAGA.");
   }
   return response.schedules;
@@ -1010,7 +1142,7 @@ export async function upsertSagaScheduleDirect(input: SagaUpsertScheduleDirectIn
     false,
   );
   const response = parseJsonBody<{ ok: boolean; scheduleId?: string | null; message?: string }>(execution.responseBody, { ok: false });
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
     throw new Error(response.message || "Falha ao salvar o evento na agenda SAGA.");
   }
   return { scheduleId: response.scheduleId ?? null, message: response.message || "Evento SAGA salvo." };
@@ -1025,7 +1157,7 @@ export async function cancelSagaScheduleDirect(scheduleId: string): Promise<{ me
     false,
   );
   const response = parseJsonBody<{ ok: boolean; message?: string }>(execution.responseBody, { ok: false });
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
     throw new Error(response.message || "Falha ao remover o evento na agenda SAGA.");
   }
   return { message: response.message || "Evento SAGA removido." };
@@ -1042,7 +1174,7 @@ export async function fetchSagaSchedules(): Promise<{ ok: boolean; schedules: Sa
     execution.responseBody,
     { ok: false, schedules: [], logs: [] },
   );
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
     throw new Error(response.message || "Falha ao buscar agendamentos do SAGA.");
   }
   return response;
@@ -1302,13 +1434,9 @@ export async function importSagaData(params: {
 export async function importSelfFlightsFromSaga(
   options: { onProgress?: (progress: SagaImportProgress) => void } = {},
 ): Promise<SagaImportSummary> {
-  const { functions: fn, functionId } = getAdminFunctionClient();
+  const { functionId } = getAdminFunctionClient();
   const importRunId = crypto.randomUUID();
-  const createdExecution = await fn.createExecution(
-    functionId,
-    JSON.stringify({ action: "sagaImportSelfFlights", importRunId }),
-    true,
-  );
+  const createdExecution = await createAdminFunctionExecution({ action: "sagaImportSelfFlights", importRunId }, true);
   let execution: Awaited<ReturnType<typeof waitForFunctionExecution>> | null = null;
   let timedOut = false;
   try {
@@ -1317,7 +1445,7 @@ export async function importSelfFlightsFromSaga(
       onProgress: options.onProgress,
     });
   } catch (error) {
-    if (!isSagaExecutionTimeoutError(error)) throw error;
+    if (!isRecoverableSagaPollingError(error)) throw error;
     timedOut = true;
   }
 
@@ -1358,11 +1486,10 @@ export async function importSelfFlightsFromSaga(
 export async function importAllInstructorFlightsFromSaga(
   options: { onProgress?: (progress: SagaImportProgress) => void } = {},
 ): Promise<SagaImportSummary> {
-  const { functions: fn, functionId } = getAdminFunctionClient();
+  const { functionId } = getAdminFunctionClient();
   const importRunId = crypto.randomUUID();
-  const createdExecution = await fn.createExecution(
-    functionId,
-    JSON.stringify({ action: "sagaImportAllInstructorFlights", importRunId }),
+  const createdExecution = await createAdminFunctionExecution(
+    { action: "sagaImportAllInstructorFlights", importRunId },
     true,
   );
   let execution: Awaited<ReturnType<typeof waitForFunctionExecution>> | null = null;
@@ -1373,7 +1500,7 @@ export async function importAllInstructorFlightsFromSaga(
       onProgress: options.onProgress,
     });
   } catch (error) {
-    if (!isSagaExecutionTimeoutError(error)) throw error;
+    if (!isRecoverableSagaPollingError(error)) throw error;
     timedOut = true;
   }
 
@@ -1469,7 +1596,7 @@ export async function lookupSagaFlight(sagaFlightId: string): Promise<SagaLookup
     execution.responseBody,
     { ok: false, flight: null, statuses: {}, locations: {}, htmlLengths: {}, logs: [] },
   );
-  if (execution.status === "failed" || execution.responseStatusCode >= 400 || !response.ok) {
+  if (execution.status === "failed" || (execution.responseStatusCode ?? 0) >= 400 || !response.ok) {
     throw new Error(response.message || "Falha ao buscar voo no SAGA.");
   }
   return response;

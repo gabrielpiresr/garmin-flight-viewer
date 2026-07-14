@@ -37,11 +37,12 @@ type SortDirection = "asc" | "desc";
 type ReportRow = AdminFlightReportRow | GroupedReportRow;
 type PeriodPresetKey = "custom" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "lastYear" | "all";
 type MultiFilterKey = "models" | "aircrafts" | "instructors" | "students";
-type ColumnCategory = "base" | "operation" | "aggregate" | "telemetry" | "landing" | "flight" | "wind" | "engine";
+type ColumnCategory = "base" | "operation" | "aggregate" | "telemetry" | "landing" | "flight" | "wind" | "engine" | "evaluation";
 type SummaryMode = "sum" | "min" | "max";
 type ChartDatum = { label: string } & Record<string, string | number>;
 type ChartSeries = { key: string; label: string; color: string };
 type ChartExportFormat = "svg" | "pdf" | "png";
+type EvaluationFilter = "all" | "evaluated" | "pending";
 const REPORT_PAGE_SIZE = 100;
 
 type SavedReportPreset = {
@@ -120,6 +121,12 @@ type GroupedReportRow = {
   minFuelQty: number | null;
   maxOatC: number | null;
   operationalLimits: AdminFlightReportRow["operationalLimits"] | null;
+  evaluationPresent?: boolean;
+  evalScoreInstruction?: number | null;
+  evalScoreSafety?: number | null;
+  evalScoreLearning?: number | null;
+  evalScoreAverage?: number | null;
+  evalComment?: string;
 };
 
 type ColumnDef = {
@@ -457,6 +464,63 @@ const COLUMNS: ColumnDef[] = [
   { key: "maxFuelPressurePsi", label: "Max fuel (PSI)", category: "engine", compact: true, sortable: true, format: (row) => fmtNumber(telemetryValue(row, "maxFuelPressurePsi"), 1), sortValue: (row) => Number(telemetryValue(row, "maxFuelPressurePsi") ?? 0) },
   { key: "minFuelQty", label: "Mín fuel", category: "engine", compact: true, sortable: true, format: (row) => fmtNumber(telemetryValue(row, "minFuelQty"), 1), sortValue: (row) => Number(telemetryValue(row, "minFuelQty") ?? 0) },
   { key: "maxOatC", label: "Max OAT (C)", category: "engine", compact: true, sortable: true, format: (row) => fmtNumber(telemetryValue(row, "maxOatC"), 1), sortValue: (row) => Number(telemetryValue(row, "maxOatC") ?? 0) },
+  {
+    key: "evaluationPresent",
+    label: "Avaliado",
+    category: "evaluation",
+    detailOnly: true,
+    compact: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : row.evaluationPresent ? "Sim" : "Não"),
+    sortValue: (row) => (isGroupedRow(row) ? 0 : row.evaluationPresent ? 1 : 0),
+  },
+  {
+    key: "evalScoreInstruction",
+    label: "Nota instrução",
+    category: "evaluation",
+    detailOnly: true,
+    compact: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : fmtNumber(row.evalScoreInstruction ?? null, 0)),
+    sortValue: (row) => (isGroupedRow(row) ? 0 : row.evalScoreInstruction ?? 0),
+  },
+  {
+    key: "evalScoreSafety",
+    label: "Nota segurança",
+    category: "evaluation",
+    detailOnly: true,
+    compact: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : fmtNumber(row.evalScoreSafety ?? null, 0)),
+    sortValue: (row) => (isGroupedRow(row) ? 0 : row.evalScoreSafety ?? 0),
+  },
+  {
+    key: "evalScoreLearning",
+    label: "Nota aproveitamento",
+    category: "evaluation",
+    detailOnly: true,
+    compact: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : fmtNumber(row.evalScoreLearning ?? null, 0)),
+    sortValue: (row) => (isGroupedRow(row) ? 0 : row.evalScoreLearning ?? 0),
+  },
+  {
+    key: "evalScoreAverage",
+    label: "Média avaliação",
+    category: "evaluation",
+    detailOnly: true,
+    compact: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : fmtNumber(row.evalScoreAverage ?? null, 1)),
+    sortValue: (row) => (isGroupedRow(row) ? 0 : row.evalScoreAverage ?? 0),
+  },
+  {
+    key: "evalComment",
+    label: "Comentário avaliação",
+    category: "evaluation",
+    detailOnly: true,
+    format: (row) => (isGroupedRow(row) ? "" : row.evalComment || ""),
+  },
 ];
 
 const CATEGORY_LABELS: Record<ColumnCategory, string> = {
@@ -468,6 +532,7 @@ const CATEGORY_LABELS: Record<ColumnCategory, string> = {
   flight: "Voo",
   wind: "Vento",
   engine: "Motor e ambiente",
+  evaluation: "Avaliação do aluno",
 };
 
 function aggregateRows(rows: AdminFlightReportRow[], groups: FlightReportGroupKey[]): ReportRow[] {
@@ -1169,6 +1234,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [instructors, setInstructors] = useState<string[]>([]);
   const [students, setStudents] = useState<string[]>([]);
   const [status, setStatus] = useState<AdminFlightReportStatus | "all">("all");
+  const [evaluationFilter, setEvaluationFilter] = useState<EvaluationFilter>("all");
   const [temporalGroup, setTemporalGroup] = useState<TemporalGroupKey | "">("");
   const [dimensionGroups, setDimensionGroups] = useState<DimensionGroupKey[]>([]);
   const [selectedColumns, setSelectedColumns] = useState<ReportColumnKey[]>(DEFAULT_COLUMNS);
@@ -1284,9 +1350,11 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
         if (!lockedInstructorId && instructors.length && !instructors.includes(row.instructorName)) return false;
         if (students.length && !students.includes(row.studentName)) return false;
         if (status !== "all" && row.status !== status) return false;
+        if (evaluationFilter === "evaluated" && !row.evaluationPresent) return false;
+        if (evaluationFilter === "pending" && row.evaluationPresent) return false;
         return true;
       }),
-    [aircrafts, fromDate, instructors, lockedInstructorId, models, rows, status, students, toDate],
+    [aircrafts, evaluationFilter, fromDate, instructors, lockedInstructorId, models, rows, status, students, toDate],
   );
 
   const reportRows = useMemo(() => aggregateRows(filtered, activeGroups), [activeGroups, filtered]);
@@ -1342,6 +1410,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     if (!lockedInstructorId) setInstructors([]);
     setStudents([]);
     setStatus("all");
+    setEvaluationFilter("all");
   }
 
   function handleSort(column: ColumnDef) {
@@ -1499,6 +1568,25 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
               {(["all", "Pendente", "Confirmado", "Cancelado", "Realizado"] as const).map((item) => (
                 <button key={item} type="button" onClick={() => setStatus(item)} className={`rounded px-3 py-1.5 text-xs font-medium ${status === item ? "bg-emerald-500/15 text-emerald-300" : "text-slate-400 hover:text-slate-200"}`}>
                   {item === "all" ? "Todos status" : item}
+                </button>
+              ))}
+            </div>
+
+            <div className="inline-flex rounded border border-slate-700 bg-slate-950 p-1">
+              {(
+                [
+                  { key: "all", label: "Todas avaliações" },
+                  { key: "evaluated", label: "Avaliados" },
+                  { key: "pending", label: "Não avaliados" },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setEvaluationFilter(item.key)}
+                  className={`rounded px-3 py-1.5 text-xs font-medium ${evaluationFilter === item.key ? "bg-amber-500/15 text-amber-300" : "text-slate-400 hover:text-slate-200"}`}
+                >
+                  {item.label}
                 </button>
               ))}
             </div>
@@ -1733,7 +1821,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
               <input value={columnSearch} onChange={(e) => setColumnSearch(e.target.value)} placeholder="Pesquisar coluna" className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500" />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              {(["base", "operation", "aggregate", "telemetry", "landing", "flight", "wind", "engine"] as ColumnCategory[]).map((category) => {
+              {(["base", "operation", "aggregate", "telemetry", "landing", "flight", "wind", "engine", "evaluation"] as ColumnCategory[]).map((category) => {
                 const categoryColumns = searchableColumns.filter((column) => column.category === category);
                 if (!categoryColumns.length) return null;
                 return (

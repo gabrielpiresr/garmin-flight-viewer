@@ -2,6 +2,8 @@
 // Admissão e gestão de instrutores
 // ============================================================
 
+import type { AvailabilityValue } from "./availability";
+
 export type InstructorAdmissionFieldType =
   | "text"
   | "email"
@@ -10,8 +12,11 @@ export type InstructorAdmissionFieldType =
   | "date"
   | "textarea"
   | "select"
+  | "multiselect"
+  | "availability"
   | "checkbox"
-  | "attachment";
+  | "attachment"
+  | "hidden";
 
 export const FIELD_TYPE_LABELS: Record<InstructorAdmissionFieldType, string> = {
   text: "Texto curto",
@@ -21,8 +26,60 @@ export const FIELD_TYPE_LABELS: Record<InstructorAdmissionFieldType, string> = {
   date: "Data",
   textarea: "Texto longo",
   select: "Lista de opções",
+  multiselect: "Múltipla seleção",
+  availability: "Disponibilidade",
   checkbox: "Sim/Não",
   attachment: "Anexo (arquivo)",
+  hidden: "Oculto (não aparece ao candidato)",
+};
+
+export type InstructorAdmissionScoreCompareOp = "eq" | "gt" | "lt";
+export type InstructorAdmissionScoreMatchMode = "all" | "any";
+export type InstructorAdmissionScoreAvailabilityAspect = "days" | "period" | "preset";
+
+export const INSTRUCTOR_ADMISSION_SCORE_COMPARE_LABELS: Record<
+  InstructorAdmissionScoreCompareOp,
+  string
+> = {
+  eq: "Igual a",
+  gt: "Maior que",
+  lt: "Menor que",
+};
+
+export const INSTRUCTOR_ADMISSION_SCORE_MATCH_LABELS: Record<
+  InstructorAdmissionScoreMatchMode,
+  string
+> = {
+  all: "Tem todas as opções selecionadas",
+  any: "Tem pelo menos uma das opções",
+};
+
+/** Regra de pontuação baseada nas respostas do formulário. */
+export type InstructorAdmissionScoreRule = {
+  id: string;
+  fieldId: string;
+  /** Valor exato, limiar numérico, opções/dias separados por vírgula, período ou preset. */
+  answerValue: string;
+  /** Comparador para campos numéricos. */
+  compareOp?: InstructorAdmissionScoreCompareOp;
+  /** Para multiselect / dias de disponibilidade: exige todos ou qualquer um. */
+  matchMode?: InstructorAdmissionScoreMatchMode;
+  /** Qual aspecto da disponibilidade pontuar. */
+  availabilityAspect?: InstructorAdmissionScoreAvailabilityAspect;
+  points: number;
+};
+
+export type InstructorAdmissionScoreBreakdownItem = {
+  ruleId: string;
+  fieldId: string;
+  answerValue: string;
+  label: string;
+  points: number;
+};
+
+export type InstructorAdmissionScoreResult = {
+  total: number;
+  breakdown: InstructorAdmissionScoreBreakdownItem[];
 };
 
 export type InstructorAdmissionSystemProperty =
@@ -64,6 +121,13 @@ export type InstructorAdmissionFormField = {
   options?: string[];
   order: number;
   systemProperty?: InstructorAdmissionSystemProperty;
+  /**
+   * Parâmetro de URL para pré-preencher o campo (ex.: ?campanha=instagram).
+   * Em campos ocultos, o valor vem só da URL/default — não aparece ao candidato.
+   */
+  queryKey?: string;
+  /** Valor padrão quando não houver query param (útil em campos ocultos). */
+  defaultValue?: string;
 };
 
 export type InstructorAdmissionForm = {
@@ -71,6 +135,7 @@ export type InstructorAdmissionForm = {
   title: string;
   description: string;
   fields: InstructorAdmissionFormField[];
+  scoreRules: InstructorAdmissionScoreRule[];
   published: boolean;
   updatedAt: string;
 };
@@ -79,6 +144,7 @@ export type InstructorAdmissionFormInput = {
   title: string;
   description: string;
   fields: InstructorAdmissionFormField[];
+  scoreRules: InstructorAdmissionScoreRule[];
   published: boolean;
 };
 
@@ -111,7 +177,9 @@ export type InstructorAdmissionFieldValue =
   | string
   | number
   | boolean
-  | InstructorAdmissionFileValue;
+  | string[]
+  | InstructorAdmissionFileValue
+  | AvailabilityValue;
 
 export type InstructorAdmissionCandidateSource = "manual" | "form" | "instructor";
 
@@ -124,6 +192,8 @@ export type InstructorAdmissionCandidate = {
   email: string;
   phone?: string;
   notes?: string;
+  /** Origem de campanha/atribuição (ex.: ?referral=instagram). Não aparece no formulário. */
+  referralSource?: string | null;
   responses: Record<string, InstructorAdmissionFieldValue>;
   source: InstructorAdmissionCandidateSource;
   registrationToken?: string;
@@ -141,6 +211,7 @@ export type InstructorAdmissionCandidateInput = {
   email: string;
   phone?: string;
   notes?: string;
+  referralSource?: string | null;
   responses?: Record<string, InstructorAdmissionFieldValue>;
   source?: InstructorAdmissionCandidateSource;
   registrationToken?: string;

@@ -18,6 +18,11 @@ import type {
 import { candidateDisplayName, stagePillStyle } from "../../../types/instructorAdmission";
 import type { InstructorHoursMap } from "../../../lib/instructorAdmissionMetrics";
 import { formatHoursLabel } from "../../../lib/instructorAdmissionMetrics";
+import {
+  computeInstructorAdmissionScore,
+  instructorAdmissionScoreColor,
+} from "../../../lib/instructorAdmissionScore";
+import { formatAvailabilitySummary } from "../../../lib/availabilityPresets";
 import { InstructorDetailSection } from "./InstructorDetailSection";
 import { useToast } from "../../ui/ToastProvider";
 
@@ -50,12 +55,37 @@ function ResponseValue({
 }) {
   const field = form?.fields.find((f) => f.id === fieldId);
   const label = field?.label || fieldId;
+  const hidden = field?.type === "hidden";
 
   if (typeof value === "boolean") {
     return (
       <div className="text-sm text-slate-300">
-        <span className="text-slate-500">{label}: </span>
+        <span className="text-slate-500">
+          {label}
+          {hidden ? " (oculto)" : ""}:{" "}
+        </span>
         {value ? "Sim" : "Não"}
+      </div>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return (
+      <div className="text-sm text-slate-300">
+        <span className="text-slate-500">
+          {label}
+          {hidden ? " (oculto)" : ""}:{" "}
+        </span>
+        {value.length ? value.join(", ") : "—"}
+      </div>
+    );
+  }
+
+  if (value && typeof value === "object" && "kind" in value && value.kind === "availability") {
+    return (
+      <div className="text-sm text-slate-300">
+        <span className="text-slate-500">{label}: </span>
+        {formatAvailabilitySummary(value)}
       </div>
     );
   }
@@ -78,7 +108,10 @@ function ResponseValue({
 
   return (
     <div className="text-sm text-slate-300">
-      <span className="text-slate-500">{label}: </span>
+      <span className="text-slate-500">
+        {label}
+        {hidden ? " (oculto)" : ""}:{" "}
+      </span>
       {String(value)}
     </div>
   );
@@ -135,6 +168,11 @@ export function CandidateDetailDrawer({
 
   const stage = stages.find((s) => s.id === stageId);
   const hours = candidate.userId ? hoursMap?.[candidate.userId] : undefined;
+  const scoreResult = computeInstructorAdmissionScore(
+    candidate.responses,
+    form?.scoreRules || [],
+    form?.fields || [],
+  );
 
   useEffect(() => {
     setName(candidate.name);
@@ -345,41 +383,6 @@ export function CandidateDetailDrawer({
             </section>
           )}
 
-          {candidate.userId ? (
-            <InstructorDetailSection userId={candidate.userId} />
-          ) : (
-            <section className="rounded-xl border border-dashed border-amber-800/50 bg-amber-950/10 p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-400">
-                Vincular a um usuário instrutor
-              </h3>
-              <p className="mt-1 text-xs text-slate-500">
-                Quando o candidato virar instrutor no sistema, vincule pelo e-mail ou nome. A sincronização automática também tenta pelo e-mail.
-              </p>
-              <input
-                value={linkQuery}
-                onChange={(e) => setLinkQuery(e.target.value)}
-                placeholder="Buscar instrutor por nome ou e-mail..."
-                className="mt-3 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white"
-              />
-              {linkOptions.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {linkOptions.map((option) => (
-                    <button
-                      key={option.userId}
-                      type="button"
-                      disabled={linking}
-                      onClick={() => void linkToUser(option.userId)}
-                      className="flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-left hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      <span className="text-sm text-slate-200">{option.label}</span>
-                      <span className="text-xs text-slate-500">{option.email}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Dados do candidato</h3>
             <div className="mt-3 grid gap-3">
@@ -430,6 +433,15 @@ export function CandidateDetailDrawer({
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white"
                 />
               </label>
+              <label className="text-xs text-slate-400">
+                Referral
+                <input
+                  value={candidate.referralSource ?? ""}
+                  readOnly
+                  className="mt-1 w-full cursor-default rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-400"
+                  placeholder="Não informado"
+                />
+              </label>
             </div>
           </section>
 
@@ -449,6 +461,71 @@ export function CandidateDetailDrawer({
           {form && form.fields.length > 0 && responseEntries.length === 0 && candidate.source === "manual" && (
             <section className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-500">
               Candidato cadastrado manualmente — sem respostas de formulário.
+            </section>
+          )}
+
+          {(Boolean(form?.scoreRules?.length) || Boolean(candidate.referralSource)) && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex items-start justify-between gap-4">
+                {form?.scoreRules?.length ? (
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Score</h3>
+                    <p className={`mt-1 text-2xl font-bold ${instructorAdmissionScoreColor(scoreResult.total)}`}>
+                      {scoreResult.total}
+                    </p>
+                    {scoreResult.breakdown.length === 0 ? (
+                      <p className="mt-1 text-xs text-slate-600">Nenhuma regra bateu.</p>
+                    ) : (
+                      <ul className="mt-2 space-y-0.5">
+                        {scoreResult.breakdown.map((item) => (
+                          <li key={item.ruleId} className="text-xs text-slate-400">
+                            +{item.points} · {item.label}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+                <div className={form?.scoreRules?.length ? "text-right" : ""}>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Referral</h3>
+                  <p className="mt-1 text-sm text-slate-300">{candidate.referralSource || "—"}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {candidate.userId ? (
+            <InstructorDetailSection userId={candidate.userId} />
+          ) : (
+            <section className="rounded-xl border border-dashed border-amber-800/50 bg-amber-950/10 p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-400">
+                Vincular a um usuário instrutor
+              </h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Quando o candidato virar instrutor no sistema, vincule pelo e-mail ou nome. A sincronização automática também tenta pelo e-mail.
+              </p>
+              <input
+                value={linkQuery}
+                onChange={(e) => setLinkQuery(e.target.value)}
+                placeholder="Buscar instrutor por nome ou e-mail..."
+                className="mt-3 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white"
+              />
+              {linkOptions.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {linkOptions.map((option) => (
+                    <button
+                      key={option.userId}
+                      type="button"
+                      disabled={linking}
+                      onClick={() => void linkToUser(option.userId)}
+                      className="flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-left hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      <span className="text-sm text-slate-200">{option.label}</span>
+                      <span className="text-xs text-slate-500">{option.email}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
@@ -520,7 +597,7 @@ export function CandidateDetailDrawer({
             onClick={() => onSendRegistrationLink(candidate)}
             className="rounded border border-sky-700/50 bg-sky-600/10 px-3 py-2 text-xs text-sky-400 hover:bg-sky-600/20"
           >
-            Link registro
+            Link cadastro
           </button>
           <button type="button" onClick={handleClose} className="rounded px-4 py-2 text-sm text-slate-400 hover:text-slate-200">
             Fechar

@@ -5,12 +5,15 @@ import { getReferralWelcome } from "../lib/referAndEarnDb";
 import { executeSagaAnacLookup } from "../lib/sagaAnacSync";
 import type { AvailableDay, AvailablePeriod } from "../types/crm";
 import { AVAILABLE_DAY_LABELS } from "../types/crm";
+import {
+  AVAILABILITY_ALL_DAYS,
+  AVAILABILITY_PRESETS,
+  type AvailabilityPresetId,
+} from "../lib/availabilityPresets";
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
-const ALL_DAYS: AvailableDay[] = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"];
-const WEEK_DAYS: AvailableDay[] = ["seg", "ter", "qua", "qui", "sex"];
-const WEEKEND_DAYS: AvailableDay[] = ["sab", "dom"];
+const ALL_DAYS = AVAILABILITY_ALL_DAYS;
 
 const COURSES = [
   { value: "Piloto Privado",   label: "Piloto Privado" },
@@ -29,23 +32,7 @@ const START_OPTIONS = [
   { value: "mais_60",  label: "Mais de 60 dias" },
 ];
 
-type PresetId = "fds" | "uteis" | "manhas" | "tardes" | "todos" | "personalizado";
-
-const AVAILABILITY_PRESETS: {
-  id: PresetId;
-  label: string;
-  sub: string;
-  icon: string;
-  days: AvailableDay[];
-  period?: AvailablePeriod;
-}[] = [
-  { id: "fds",          label: "Finais de semana", sub: "Sáb e Dom",            icon: "🏖️", days: WEEKEND_DAYS },
-  { id: "uteis",        label: "Dias úteis",        sub: "Seg a Sex",            icon: "💼", days: WEEK_DAYS },
-  { id: "manhas",       label: "Todas as manhãs",   sub: "Todos os dias, manhã", icon: "☀️", days: ALL_DAYS, period: "manha" },
-  { id: "tardes",       label: "Todas as tardes",   sub: "Todos os dias, tarde", icon: "🌆", days: ALL_DAYS, period: "tarde" },
-  { id: "todos",        label: "Todos os dias",     sub: "Seg a Dom, ambos",     icon: "🗓️", days: ALL_DAYS, period: "ambos" },
-  { id: "personalizado",label: "Personalizado",     sub: "Escolha os dias",      icon: "✏️", days: [] },
-];
+type PresetId = AvailabilityPresetId;
 
 function onlyDigits(value: string): string {
   return value.replace(/\D/g, "");

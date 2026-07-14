@@ -7,7 +7,16 @@ import {
   uploadInstructorAdmissionFile,
 } from "../lib/instructorAdmissionDb";
 import { buildInitialResponsesFromCandidate } from "../lib/instructorAdmissionFormFields";
+import {
+  applyQueryPrefillToResponses,
+  isVisibleInstructorAdmissionField,
+} from "../lib/instructorAdmissionScore";
 import { getCachedBrandSettings, getEmailBrandSettings } from "../lib/notificationsDb";
+import {
+  AvailabilityPicker,
+  isAvailabilityComplete,
+} from "../components/AvailabilityPicker";
+import { normalizeAvailabilityValue } from "../lib/availabilityPresets";
 import type {
   InstructorAdmissionCandidate,
   InstructorAdmissionFieldValue,
@@ -26,6 +35,45 @@ function formatPhoneInput(value: string): string {
   if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function MultiSelectChips({
+  options,
+  value,
+  onChange,
+  disabled,
+}: {
+  options: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {options.map((option) => {
+        const selected = value.includes(option);
+        return (
+          <button
+            key={option}
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onChange(
+                selected ? value.filter((item) => item !== option) : [...value, option],
+              )
+            }
+            className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+              selected
+                ? "bg-sky-600 text-white"
+                : "border border-slate-700 text-slate-400 hover:bg-slate-800"
+            }`}
+          >
+            {option}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function FieldInput({
@@ -60,16 +108,26 @@ function FieldInput({
 
   if (field.type === "checkbox") {
     return (
-      <label className="mt-2 inline-flex items-center gap-2 text-sm text-slate-300">
-        <input
-          type="checkbox"
-          checked={value === true}
-          onChange={(e) => onChange(e.target.checked)}
-          disabled={disabled}
-          className="h-4 w-4 accent-sky-500"
-        />
-        {field.placeholder || "Sim"}
-      </label>
+      <div className="mt-2 flex gap-2">
+        {[
+          { value: true, label: field.placeholder?.trim() || "Sim" },
+          { value: false, label: "Não" },
+        ].map((opt) => (
+          <button
+            key={String(opt.value)}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            className={`flex-1 rounded-xl border py-2.5 text-sm font-medium transition disabled:opacity-50 ${
+              value === opt.value
+                ? "border-sky-500 bg-sky-500/20 text-sky-200"
+                : "border-slate-700 bg-slate-800/40 text-slate-400 hover:border-slate-600"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
     );
   }
 
@@ -88,6 +146,32 @@ function FieldInput({
           </option>
         ))}
       </select>
+    );
+  }
+
+  if (field.type === "multiselect") {
+    const selected = Array.isArray(value) ? value.map(String) : [];
+    return (
+      <MultiSelectChips
+        options={field.options || []}
+        value={selected}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+  }
+
+  if (field.type === "availability") {
+    return (
+      <AvailabilityPicker
+        value={normalizeAvailabilityValue(value)}
+        disabled={disabled}
+        helpText={
+          field.helpText ||
+          "Selecione os dias e horários que você costuma ter livres durante a semana."
+        }
+        onChange={onChange}
+      />
     );
   }
 
@@ -144,6 +228,7 @@ export function InstructorAdmissionFormPage() {
   const params = new URLSearchParams(window.location.search);
   const tokenHint = params.get("token")?.trim() || "";
   const emailHint = params.get("email")?.trim() || "";
+  const referralSource = params.get("referral")?.trim().slice(0, 255) || null;
 
   const [brand, setBrand] = useState(() => getCachedBrandSettings());
   const logoUrl = brand?.logoDataUrl || brand?.logoUrl || "";
@@ -173,6 +258,7 @@ export function InstructorAdmissionFormPage() {
 
   useEffect(() => {
     void (async () => {
+      const searchParams = new URLSearchParams(window.location.search);
       try {
         const [nextForm, stages, candidate] = await Promise.all([
           getPublicInstructorAdmissionForm(),
@@ -193,7 +279,7 @@ export function InstructorAdmissionFormPage() {
         }
         setForm(nextForm);
         setLinkedCandidate(candidate);
-        const initial = candidate
+        let initial = candidate
           ? buildInitialResponsesFromCandidate(nextForm, candidate)
           : {};
         if (!candidate && emailHint) {
@@ -202,6 +288,7 @@ export function InstructorAdmissionFormPage() {
           );
           if (emailField) initial[emailField.id] = emailHint;
         }
+        initial = applyQueryPrefillToResponses(nextForm.fields, searchParams, initial);
         setResponses(initial);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "Falha ao carregar formulário.");
@@ -212,10 +299,16 @@ export function InstructorAdmissionFormPage() {
   }, [emailHint, tokenHint]);
 
   function isFieldEmpty(field: InstructorAdmissionFormField, value: InstructorAdmissionFieldValue | undefined): boolean {
-    if (field.type === "checkbox") return value !== true;
+    if (field.type === "checkbox") return typeof value !== "boolean";
     if (field.type === "attachment") {
       const file = value as InstructorAdmissionFileValue | undefined;
       return !file?.fileId;
+    }
+    if (field.type === "multiselect") {
+      return !Array.isArray(value) || value.length === 0;
+    }
+    if (field.type === "availability") {
+      return !isAvailabilityComplete(normalizeAvailabilityValue(value));
     }
     if (value === undefined || value === null) return true;
     if (typeof value === "string") return !value.trim();
@@ -226,6 +319,7 @@ export function InstructorAdmissionFormPage() {
     if (!form) return {};
     const next: Record<string, string> = {};
     for (const field of form.fields) {
+      if (!isVisibleInstructorAdmissionField(field)) continue;
       if (!field.required) continue;
       if (isFieldEmpty(field, responses[field.id])) {
         next[field.id] = `O campo "${field.label}" é obrigatório.`;
@@ -249,7 +343,10 @@ export function InstructorAdmissionFormPage() {
     setSubmitError(null);
     setFieldErrors({});
     try {
-      await submitInstructorAdmissionForm(responses, { token: tokenHint || undefined });
+      await submitInstructorAdmissionForm(responses, {
+        token: tokenHint || undefined,
+        referralSource,
+      });
       setSubmitted(true);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Falha ao enviar candidatura.");
@@ -319,13 +416,13 @@ export function InstructorAdmissionFormPage() {
           onSubmit={(e) => void handleSubmit(e)}
           className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/60 p-6"
         >
-          {form.fields.map((field) => (
+          {form.fields.filter(isVisibleInstructorAdmissionField).map((field) => (
             <label key={field.id} className="block text-sm text-slate-300">
               <span>
                 {field.label}
                 {field.required && <span className="ml-1 text-red-400">*</span>}
               </span>
-              {field.helpText && (
+              {field.helpText && field.type !== "availability" && (
                 <span className="mt-0.5 block text-xs text-slate-500">{field.helpText}</span>
               )}
               <FieldInput

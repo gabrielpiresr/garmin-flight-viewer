@@ -3,9 +3,29 @@ import { account, ID } from "../lib/appwrite";
 import { ensureProfile, getProfile, uploadProfileDocumentAttachment } from "../lib/rbac";
 import { executeAnacSync } from "../lib/anacSync";
 import { getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
+import {
+  getInstructorAdmissionCandidateByRegistrationToken,
+  updateInstructorAdmissionCandidate,
+} from "../lib/instructorAdmissionDb";
 import { getCachedBrandSettings } from "../lib/notificationsDb";
 import type { CrmLead } from "../types/crm";
 import type { ProfileDocumentType } from "../lib/rbac";
+
+/** Convite de cadastro — CRM ou admissão de instrutor (mesmo /cadastro?token=). */
+type CadastroInvite = {
+  source: "crm" | "instructor";
+  id: string;
+  email: string;
+  name: string;
+  phone: string | null;
+  userId: string | null;
+  referrerUserId: string | null;
+  cpf: string | null;
+  birthDate: string | null;
+  weightKg: number | null;
+  heightCm: number | null;
+  anacCode: string | null;
+};
 
 function onlyDigits(v: string) { return v.replace(/\D/g, ""); }
 
@@ -236,7 +256,8 @@ export function CadastroPage() {
   const logoUrl = brand?.logoUrl ?? "";
 
   const [loading, setLoading] = useState(true);
-  const [lead, setLead] = useState<CrmLead | null>(null);
+  const [invite, setInvite] = useState<CadastroInvite | null>(null);
+  const [crmLead, setCrmLead] = useState<CrmLead | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [alreadyDone, setAlreadyDone] = useState(false);
   const [done, setDone] = useState(false);
@@ -277,21 +298,68 @@ export function CadastroPage() {
   useEffect(() => {
     if (!token) { setNotFound(true); setLoading(false); return; }
     void (async () => {
-      const { data } = await getLeadByToken(token);
-      if (!data) {
+      const { data: lead } = await getLeadByToken(token);
+      if (lead) {
+        if (lead.userId) {
+          setAlreadyDone(true);
+        } else {
+          setCrmLead(lead);
+          setInvite({
+            source: "crm",
+            id: lead.id,
+            email: lead.email,
+            name: lead.name,
+            phone: lead.phone,
+            userId: lead.userId,
+            referrerUserId: lead.referrerUserId,
+            cpf: lead.cpf,
+            birthDate: lead.birthDate,
+            weightKg: lead.weightKg,
+            heightCm: lead.heightCm,
+            anacCode: lead.anacCode,
+          });
+          setS1({
+            fullName: lead.name ?? "",
+            cpf: lead.cpf ? formatCpf(lead.cpf) : "",
+            phone: lead.phone ? formatPhone(lead.phone) : "",
+            birthDate: lead.birthDate ?? "",
+            weightKg: lead.weightKg != null ? String(lead.weightKg) : "",
+            heightCm: lead.heightCm != null ? String(lead.heightCm) : "",
+            anacCode: lead.anacCode ?? "",
+          });
+        }
+        setLoading(false);
+        return;
+      }
+
+      const candidate = await getInstructorAdmissionCandidateByRegistrationToken(token);
+      if (!candidate) {
         setNotFound(true);
-      } else if (data.userId) {
+      } else if (candidate.userId) {
         setAlreadyDone(true);
       } else {
-        setLead(data);
+        setInvite({
+          source: "instructor",
+          id: candidate.id,
+          email: candidate.email,
+          name: candidate.name,
+          phone: candidate.phone ?? null,
+          userId: candidate.userId ?? null,
+          referrerUserId: null,
+          cpf: null,
+          birthDate: null,
+          weightKg: null,
+          heightCm: null,
+          anacCode: null,
+        });
         setS1({
-          fullName: data.name ?? "",
-          cpf: data.cpf ? formatCpf(data.cpf) : "",
-          phone: data.phone ? formatPhone(data.phone) : "",
-          birthDate: data.birthDate ?? "",
-          weightKg: data.weightKg != null ? String(data.weightKg) : "",
-          heightCm: data.heightCm != null ? String(data.heightCm) : "",
-          anacCode: data.anacCode ?? "",
+          fullName: candidate.name ?? "",
+          cpf: "",
+          phone: candidate.phone ? formatPhone(candidate.phone) : "",
+          birthDate: "",
+          weightKg: "",
+          heightCm: "",
+          anacCode: "",
         });
       }
       setLoading(false);
@@ -365,7 +433,7 @@ export function CadastroPage() {
   }
 
   async function handleSubmit() {
-    if (!lead || !account) return;
+    if (!invite || !account) return;
 
     // Validar docs obrigatórios (certificado militar obrigatório para homens)
     const missingDocs = DOC_DEFS.filter((d) => {
@@ -392,13 +460,13 @@ export function CadastroPage() {
       // 1. Criar conta Appwrite
       setBusyMsg("Criando sua conta...");
       try {
-        const created = await account.create(ID.unique(), lead.email, s2.password, s1.fullName.trim());
+        const created = await account.create(ID.unique(), invite.email, s2.password, s1.fullName.trim());
         userId = created.$id;
       } catch (e) {
         const appErr = e as { code?: number };
         if (appErr.code === 409) {
           try {
-            await account.createEmailPasswordSession(lead.email, s2.password);
+            await account.createEmailPasswordSession(invite.email, s2.password);
             const u = await account.get();
             userId = u.$id;
           } catch {
@@ -412,13 +480,14 @@ export function CadastroPage() {
       }
 
       // 2. Criar sessão
-      try { await account.createEmailPasswordSession(lead.email, s2.password); } catch { /* já existe */ }
+      try { await account.createEmailPasswordSession(invite.email, s2.password); } catch { /* já existe */ }
 
       // 3. Criar perfil
       setBusyMsg("Salvando seus dados...");
-      await ensureProfile(userId, lead.email, "aluno", {
+      const profileRole = invite.source === "instructor" ? "instrutor" : "aluno";
+      await ensureProfile(userId, invite.email, profileRole, {
         full_name: s1.fullName.trim(),
-        ...(lead.referrerUserId ? { referrer_user_id: lead.referrerUserId } : {}),
+        ...(invite.referrerUserId ? { referrer_user_id: invite.referrerUserId } : {}),
         cpf: cpfDigits,
         phone: phoneDigits,
         birth_date: s1.birthDate,
@@ -468,18 +537,27 @@ export function CadastroPage() {
       // 6. ANAC sync (best-effort)
       void executeAnacSync({ cpf: cpfDigits, anacCode: anacDigits, birthDate: s1.birthDate });
 
-      // 7. Vincular userId ao lead e mover para Registro Preenchido
-      await moveLeadToCrmStatus(lead.id, "registro_preenchido", {
-        currentLead: lead,
-        extraUpdates: {
+      // 7. Vincular userId ao lead/candidato
+      if (invite.source === "crm" && crmLead) {
+        await moveLeadToCrmStatus(crmLead.id, "registro_preenchido", {
+          currentLead: crmLead,
+          extraUpdates: {
+            userId,
+            name: s1.fullName.trim(),
+            phone: phoneDigits,
+            weightKg: weight,
+            heightCm: height,
+            qualFilledAt: new Date().toISOString(),
+          },
+        });
+      } else if (invite.source === "instructor") {
+        await updateInstructorAdmissionCandidate(invite.id, {
           userId,
           name: s1.fullName.trim(),
           phone: phoneDigits,
-          weightKg: weight,
-          heightCm: height,
-          qualFilledAt: new Date().toISOString(),
-        },
-      });
+          formFilledAt: new Date().toISOString(),
+        });
+      }
 
       // 8. Encerrar sessão
       await account.deleteSession("current").catch(() => undefined);
@@ -551,7 +629,7 @@ export function CadastroPage() {
     );
   }
 
-  if (!lead) return null;
+  if (!invite) return null;
 
   const inputCls = "mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
@@ -603,7 +681,7 @@ export function CadastroPage() {
             {/* E-mail sempre visível */}
             <label className="block text-xs text-slate-500">
               E-mail
-              <div className={`${inputCls} text-slate-400 cursor-default`}>{lead.email}</div>
+              <div className={`${inputCls} text-slate-400 cursor-default`}>{invite.email}</div>
             </label>
 
             {/* ── Conteúdo do step com animação ── */}

@@ -1,14 +1,20 @@
 import { useRef, useState } from "react";
 import type {
   InstructorAdmissionCandidate,
+  InstructorAdmissionForm,
   InstructorAdmissionStage,
 } from "../../../types/instructorAdmission";
 import { candidateDisplayName, stageColumnBg, stagePillStyle } from "../../../types/instructorAdmission";
 import type { InstructorHoursMap } from "../../../lib/instructorAdmissionMetrics";
 import { formatHoursLabel } from "../../../lib/instructorAdmissionMetrics";
+import {
+  computeInstructorAdmissionScore,
+  instructorAdmissionScoreColor,
+} from "../../../lib/instructorAdmissionScore";
 
 export function CandidateCard({
   candidate,
+  form,
   hoursMap,
   hoursLoading,
   onDragStart,
@@ -18,6 +24,7 @@ export function CandidateCard({
   onSendRegistrationLink,
 }: {
   candidate: InstructorAdmissionCandidate;
+  form?: InstructorAdmissionForm | null;
   hoursMap?: InstructorHoursMap;
   hoursLoading?: boolean;
   onDragStart: (candidate: InstructorAdmissionCandidate) => void;
@@ -29,6 +36,10 @@ export function CandidateCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const hours = candidate.userId ? hoursMap?.[candidate.userId] : undefined;
+  const score =
+    form?.scoreRules?.length
+      ? computeInstructorAdmissionScore(candidate.responses, form.scoreRules, form.fields).total
+      : null;
 
   return (
     <div
@@ -74,6 +85,18 @@ export function CandidateCard({
             </p>
           )}
           <div className="mt-1.5 flex flex-wrap gap-1">
+            {score != null && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold bg-slate-800 ${instructorAdmissionScoreColor(score)}`}
+              >
+                Score {score}
+              </span>
+            )}
+            {candidate.referralSource && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] bg-violet-900/40 text-violet-300 truncate max-w-[140px]">
+                {candidate.referralSource}
+              </span>
+            )}
             {candidate.source === "form" && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-emerald-900/50 text-emerald-400">
                 Via formulário
@@ -110,7 +133,7 @@ export function CandidateCard({
               {[
                 { label: "Abrir detalhes", action: () => onClick(candidate), cls: "text-slate-200" },
                 { label: "Editar", action: () => onEdit(candidate), cls: "text-slate-200" },
-                { label: "Enviar link de registro", action: () => onSendRegistrationLink(candidate), cls: "text-sky-400" },
+                { label: "Enviar link de cadastro", action: () => onSendRegistrationLink(candidate), cls: "text-sky-400" },
                 { label: "Excluir", action: () => onDelete(candidate), cls: "text-red-400" },
               ].map((item) => (
                 <button
@@ -136,6 +159,7 @@ export function CandidateCard({
 export function KanbanColumn({
   stage,
   candidates,
+  form,
   hoursMap,
   hoursLoading,
   candidatesLoading,
@@ -150,6 +174,7 @@ export function KanbanColumn({
 }: {
   stage: InstructorAdmissionStage;
   candidates: InstructorAdmissionCandidate[];
+  form?: InstructorAdmissionForm | null;
   hoursMap?: InstructorHoursMap;
   hoursLoading?: boolean;
   candidatesLoading?: boolean;
@@ -193,7 +218,11 @@ export function KanbanColumn({
             className="rounded p-0.5 text-slate-600 hover:bg-slate-800 hover:text-slate-300"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
-              <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
           <span className="text-xs text-slate-600 font-medium">{candidates.length}</span>
@@ -221,18 +250,19 @@ export function KanbanColumn({
           </div>
         ) : (
           candidates.map((candidate) => (
-          <CandidateCard
-            key={candidate.id}
-            candidate={candidate}
-            hoursMap={hoursMap}
-            hoursLoading={hoursLoading}
-            onDragStart={onDragStart}
-            onClick={onClick}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onSendRegistrationLink={onSendRegistrationLink}
-          />
-        ))
+            <CandidateCard
+              key={candidate.id}
+              candidate={candidate}
+              form={form}
+              hoursMap={hoursMap}
+              hoursLoading={hoursLoading}
+              onDragStart={onDragStart}
+              onClick={onClick}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onSendRegistrationLink={onSendRegistrationLink}
+            />
+          ))
         )}
         <button
           type="button"

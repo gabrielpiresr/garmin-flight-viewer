@@ -8,6 +8,7 @@ import {
   getSagaImportSettings,
   importSagaData,
   normalizeSagaCreditColumnMap,
+  refreshSagaMissingMissionMappings,
   runSagaScheduleSyncNow,
   runSagaAllUsersSyncNow,
   runSagaAllUsersFlightsOnlyNow,
@@ -483,12 +484,18 @@ function MappingPanel({
   onMappingChange,
   onSave,
   saving,
+  extraMissionLookupKeys,
+  onRefreshMissingMissions,
+  refreshingMissingMissions,
 }: {
   result: SagaImportResult;
   mapping: SagaImportMapping;
   onMappingChange: (mapping: SagaImportMapping) => void;
   onSave: () => void;
   saving: boolean;
+  extraMissionLookupKeys: string[];
+  onRefreshMissingMissions: () => void;
+  refreshingMissingMissions: boolean;
 }) {
   const [showOnlyMissingMissions, setShowOnlyMissingMissions] = useState(false);
   const mappedFlights = applyColumnMapToFlights(result.flights, mapping.flightColumnMap);
@@ -511,6 +518,7 @@ function MappingPanel({
   }));
   const missionValues = unique([
     ...collectMissionLookupKeysFromFlights(mappedFlights),
+    ...extraMissionLookupKeys,
     ...Object.keys(mapping.missionBySaga ?? {}).filter((key) => !isScopedSagaMissionKey(key)),
   ]);
   const missionOptions = allMissionOptions(result.catalogs);
@@ -559,14 +567,24 @@ function MappingPanel({
             Ajuste aeronaves, cursos e missoes antes de gravar voos. O de-para fica salvo para as proximas execucoes.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={saving}
-          className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {saving ? "Salvando..." : "Salvar de-para"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onRefreshMissingMissions}
+            disabled={refreshingMissingMissions}
+            className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {refreshingMissingMissions ? "Atualizando..." : "Atualizar missoes das fichas"}
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Salvando..." : "Salvar de-para"}
+          </button>
+        </div>
       </div>
 
       {(missingAircrafts.length || missingCourses.length || missingCreditAircrafts.length || missingMissions.length) ? (
@@ -876,6 +894,8 @@ export function AdminImportTab() {
   const [syncingScheduleNow, setSyncingScheduleNow] = useState(false);
   const [syncingAllUsersNow, setSyncingAllUsersNow] = useState(false);
   const [syncingAllFlightsNow, setSyncingAllFlightsNow] = useState(false);
+  const [refreshingMissingMissions, setRefreshingMissingMissions] = useState(false);
+  const [extraMissionLookupKeys, setExtraMissionLookupKeys] = useState<string[]>([]);
   const [syncHistory, setSyncHistory] = useState<SagaSyncHistoryEntry[]>([]);
   const [syncHistoryLoading, setSyncHistoryLoading] = useState(true);
   const {
@@ -898,7 +918,7 @@ export function AdminImportTab() {
   );
   const financialEntries = result?.financialEntries ?? [];
   const logs = result?.logs ?? [];
-  const mappingPanelResult = result ?? emptySagaImportResult(catalogs);
+  const mappingPanelResult = result ? { ...result, catalogs } : emptySagaImportResult(catalogs);
   const importModeLabel = importing === "selection" ? "Selecao" : importing === "test" ? "Teste" : "Completo";
   const displayPendingMission = pendingMission ?? importProgress?.pendingMission ?? null;
 
@@ -1049,6 +1069,37 @@ export function AdminImportTab() {
       setError(err instanceof Error ? err.message : "Falha ao salvar de-para.");
     } finally {
       setSavingMapping(false);
+    }
+  }
+
+  async function handleRefreshMissingMissionsFromImportedFlights() {
+    setRefreshingMissingMissions(true);
+    setError(null);
+    try {
+      const refreshed = await refreshSagaMissingMissionMappings({
+        ...mappingDraft,
+        creditColumnMap: normalizeSagaCreditColumnMap(mappingDraft.creditColumnMap),
+      });
+      setCatalogs((current) => ({
+        aircrafts: refreshed.catalogs.aircrafts.length ? refreshed.catalogs.aircrafts : current.aircrafts,
+        aircraftModels: refreshed.catalogs.aircraftModels.length ? refreshed.catalogs.aircraftModels : current.aircraftModels,
+        trainingTracks: refreshed.catalogs.trainingTracks.length ? refreshed.catalogs.trainingTracks : current.trainingTracks,
+      }));
+      setExtraMissionLookupKeys(refreshed.lookupKeys);
+      setMappingDraft((current) => {
+        const missionBySaga = { ...(current.missionBySaga ?? {}) };
+        for (const key of refreshed.lookupKeys) {
+          if (!(key in missionBySaga)) missionBySaga[key] = "";
+        }
+        return { ...current, missionBySaga };
+      });
+      setError(
+        `Missoes atualizadas pelas fichas importadas: ${refreshed.lookupKeys.length} sem de-para em ${refreshed.sagaFlightsScanned} voo(s) SAGA verificado(s).`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao atualizar missoes das fichas importadas.");
+    } finally {
+      setRefreshingMissingMissions(false);
     }
   }
 
@@ -1480,6 +1531,9 @@ export function AdminImportTab() {
         onMappingChange={setMappingDraft}
         onSave={handleSaveMapping}
         saving={savingMapping}
+        extraMissionLookupKeys={extraMissionLookupKeys}
+        onRefreshMissingMissions={handleRefreshMissingMissionsFromImportedFlights}
+        refreshingMissingMissions={refreshingMissingMissions}
       />
 
       {result ? (

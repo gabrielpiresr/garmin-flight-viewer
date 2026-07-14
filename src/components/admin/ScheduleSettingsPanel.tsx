@@ -285,6 +285,7 @@ export function ScheduleSettingsPanel() {
         },
         emailNotifications: rules.emailNotifications,
         flightReviewClub: rules.flightReviewClub,
+        flightEvaluation: rules.flightEvaluation,
         scheduleStudentHelp: rules.scheduleStudentHelp,
       });
       setRules(saved);

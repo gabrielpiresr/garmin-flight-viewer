@@ -11,6 +11,12 @@ import {
   type SchoolRules,
   type SchoolRulesInput,
 } from "../../types/schoolRules";
+import {
+  DEFAULT_FLIGHT_EVALUATION_RULES,
+  FLIGHT_EVALUATION_CRITERION_KEYS,
+  type FlightEvaluationCriterionKey,
+  type FlightEvaluationRules,
+} from "../../types/flightEvaluation";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
@@ -47,6 +53,16 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
     schedule: { ...settings.schedule },
     scheduleStudentHelp: { ...settings.scheduleStudentHelp },
     flightReviewClub: { ...settings.flightReviewClub },
+    flightEvaluation: {
+      enabled: settings.flightEvaluation.enabled,
+      criteria: {
+        instruction: { ...settings.flightEvaluation.criteria.instruction },
+        safety: { ...settings.flightEvaluation.criteria.safety },
+        learning: { ...settings.flightEvaluation.criteria.learning },
+      },
+      comment: { ...settings.flightEvaluation.comment },
+      disclaimer: settings.flightEvaluation.disclaimer,
+    },
     emailNotifications: Object.fromEntries(
       EMAIL_NOTIFICATION_EVENT_OPTIONS.map((item) => [item.id, { ...settings.emailNotifications[item.id] }]),
     ) as SchoolRulesInput["emailNotifications"],
@@ -845,6 +861,199 @@ export function FlightReviewClubPanel() {
       <div className="flex justify-end">
         <button type="button" onClick={() => void handleSave()} disabled={saving} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50">
           {saving ? "Salvando..." : "Salvar Flight Review Club"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+const EVAL_CRITERION_LABELS: Record<FlightEvaluationCriterionKey, string> = {
+  instruction: "Critério 1",
+  safety: "Critério 2",
+  learning: "Critério 3",
+};
+
+export function FlightEvaluationSettingsPanel() {
+  const { showToast } = useToast();
+  const [settings, setSettings] = useState<SchoolRules | null>(null);
+  const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const evaluation: FlightEvaluationRules = form.flightEvaluation ?? DEFAULT_FLIGHT_EVALUATION_RULES;
+
+  const setEvaluation = (patch: Partial<FlightEvaluationRules>) =>
+    setForm((prev) => ({
+      ...prev,
+      flightEvaluation: {
+        ...(prev.flightEvaluation ?? DEFAULT_FLIGHT_EVALUATION_RULES),
+        ...patch,
+      },
+    }));
+
+  const setCriterion = (key: FlightEvaluationCriterionKey, patch: { title?: string; description?: string }) => {
+    setEvaluation({
+      criteria: {
+        ...evaluation.criteria,
+        [key]: { ...evaluation.criteria[key], ...patch },
+      },
+    });
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await getSchoolRules();
+      setSettings(next);
+      setForm(toRulesForm(next));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (error) showToast({ variant: "error", message: error });
+  }, [error, showToast]);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const current = await getSchoolRules();
+      const saved = await saveSchoolRules({ ...toRulesForm(current), flightEvaluation: evaluation });
+      setSettings(saved);
+      setForm(toRulesForm(saved));
+      showToast({ variant: "success", message: "Configurações de avaliação do voo salvas." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <SettingsSkeleton rows={4} />;
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Avaliação do voo</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Permitir que o aluno avalie os voos com 3 critérios (1 a 5 estrelas) e um comentário aberto.
+            </p>
+          </div>
+          <p className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
+            Atualizado: {formatUpdatedAt(settings?.updatedAt ?? null)}
+          </p>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200">
+            <input
+              type="checkbox"
+              checked={evaluation.enabled}
+              onChange={(e) => setEvaluation({ enabled: e.target.checked })}
+              className="h-4 w-4 accent-amber-500"
+            />
+            Ativar avaliação do voo pelo aluno
+          </label>
+
+          {evaluation.enabled ? (
+            <div className="space-y-4">
+              {FLIGHT_EVALUATION_CRITERION_KEYS.map((key) => (
+                <div key={key} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    {EVAL_CRITERION_LABELS[key]}
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="text-xs text-slate-400">
+                      Título
+                      <input
+                        type="text"
+                        value={evaluation.criteria[key].title}
+                        onChange={(e) => setCriterion(key, { title: e.target.value })}
+                        maxLength={120}
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+                      />
+                    </label>
+                    <label className="text-xs text-slate-400 sm:col-span-2">
+                      Descrição
+                      <textarea
+                        value={evaluation.criteria[key].description}
+                        onChange={(e) => setCriterion(key, { description: e.target.value })}
+                        rows={2}
+                        maxLength={500}
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ))}
+
+              <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Campo aberto</p>
+                <div className="grid gap-3">
+                  <label className="text-xs text-slate-400">
+                    Título
+                    <input
+                      type="text"
+                      value={evaluation.comment.title}
+                      onChange={(e) => setEvaluation({ comment: { ...evaluation.comment, title: e.target.value } })}
+                      maxLength={120}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Descrição / placeholder
+                    <textarea
+                      value={evaluation.comment.description}
+                      onChange={(e) =>
+                        setEvaluation({ comment: { ...evaluation.comment, description: e.target.value } })
+                      }
+                      rows={2}
+                      maxLength={500}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Disclaimer</p>
+                <label className="text-xs text-slate-400">
+                  Texto de aviso no modal (opcional)
+                  <textarea
+                    value={evaluation.disclaimer}
+                    onChange={(e) => setEvaluation({ disclaimer: e.target.value })}
+                    rows={3}
+                    maxLength={2000}
+                    placeholder="Ex.: Sua avaliação é confidencial e ajuda a melhorar a qualidade da instrução."
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
+        >
+          {saving ? "Salvando..." : "Salvar avaliação do voo"}
         </button>
       </div>
     </section>

@@ -335,6 +335,7 @@ export function InstructorAdmissionTab() {
                 key={stage.id}
                 stage={stage}
                 candidates={candidatesByStage.get(stage.id) || []}
+                form={form}
                 hoursMap={hoursMap}
                 hoursLoading={hoursLoading}
                 candidatesLoading={candidatesLoading}

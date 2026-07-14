@@ -57,7 +57,13 @@ export type FlightReportColumnKey =
   | "maxFuelFlowGph"
   | "maxFuelPressurePsi"
   | "minFuelQty"
-  | "maxOatC";
+  | "maxOatC"
+  | "evaluationPresent"
+  | "evalScoreInstruction"
+  | "evalScoreSafety"
+  | "evalScoreLearning"
+  | "evalScoreAverage"
+  | "evalComment";
 
 export type AdminFlightTelemetrySummary = {
   telemetryPresent: boolean;
@@ -150,6 +156,12 @@ export type AdminFlightReportRow = {
   lastArrIcao: string | null;
   telemetryPresentOnDoc: boolean;
   telemetry: AdminFlightTelemetrySummary | null;
+  evaluationPresent?: boolean;
+  evalScoreInstruction?: number | null;
+  evalScoreSafety?: number | null;
+  evalScoreLearning?: number | null;
+  evalScoreAverage?: number | null;
+  evalComment?: string;
 };
 
 export type AdminFlightReportPage = {

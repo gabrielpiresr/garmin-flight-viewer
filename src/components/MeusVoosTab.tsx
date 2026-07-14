@@ -50,12 +50,23 @@ import {
   type PublicScheduleFlight,
 } from "../lib/scheduleBookingDb";
 import { getSchoolRules } from "../lib/schoolRulesDb";
+import { listEvaluationsByStudent } from "../lib/flightEvaluationsDb";
 import { navigateToTab } from "../lib/routedTabs";
 import { getAircraftBadgeColorClass } from "../lib/aircraftColors";
 import type { FlightScheduleRules } from "../types/schoolRules";
+import {
+  DEFAULT_FLIGHT_EVALUATION_RULES,
+  type FlightEvaluation,
+  type FlightEvaluationRules,
+} from "../types/flightEvaluation";
 import { CancellationModal, FlightDetailModal } from "./StudentScheduleTab";
 import { FlightsAgendaBoard } from "./FlightsAgendaBoard";
 import { FlightDetailView, type FlightDetailSubTab } from "./FlightDetailView";
+import {
+  FlightEvaluationDoneBadge,
+  FlightEvaluationModal,
+  FlightEvaluationPendingBadge,
+} from "./FlightEvaluationModal";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
 import { NovoVooFlow } from "./NovoVooFlow";
 import type { NovoVooStepId } from "./NovoVooFlow";
@@ -86,6 +97,11 @@ function formatDecimalHours(minutes: number | null | undefined): string {
 
 function isScheduledFlightStatus(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
   return ["Pendente", "Confirmado", "Previsto"].includes(item.flight_status) && isFutureFlight(item, info);
+}
+
+function isFlightEvaluationEligible(item: SavedFlightListItem, info?: FlightDisplayInfo): boolean {
+  if (item.flight_status === "Cancelado") return false;
+  return !isScheduledFlightStatus(item, info);
 }
 
 function FlightStatusBadge({ status }: { status: SavedFlightListItem["flight_status"] }) {
@@ -539,6 +555,10 @@ export function MeusVoosTab() {
   const [studentSuggestionDraft, setStudentSuggestionDraft] = useState("");
   const [studentSuggestionSaving, setStudentSuggestionSaving] = useState(false);
   const [studentSuggestionError, setStudentSuggestionError] = useState<string | null>(null);
+  const [flightEvaluationEnabled, setFlightEvaluationEnabled] = useState(false);
+  const [flightEvaluationRules, setFlightEvaluationRules] = useState<FlightEvaluationRules>(DEFAULT_FLIGHT_EVALUATION_RULES);
+  const [evaluationsByFlightId, setEvaluationsByFlightId] = useState<Record<string, FlightEvaluation>>({});
+  const [evaluationFlightId, setEvaluationFlightId] = useState<string | null>(null);
   const [sagaImporting, setSagaImporting] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SagaImportProgress | null>(null);
   const [syncOverlayVisible, setSyncOverlayVisible] = useState(false);
@@ -570,6 +590,24 @@ export function MeusVoosTab() {
         // Aba Escala visível p/ o aluno (regra da escola E permissão da role) — controla
         // o modal reaproveitado da Escala e o botão "Agendar novo voo".
         setScheduleTabEnabled(rules.studentTabs.schedule === true && canTab("schedule"));
+        setFlightEvaluationEnabled(rules.flightEvaluation.enabled);
+        setFlightEvaluationRules(rules.flightEvaluation);
+        if (rules.flightEvaluation.enabled && user.id) {
+          void listEvaluationsByStudent(user.id)
+            .then((map) => {
+              if (cancelled) return;
+              const next: Record<string, FlightEvaluation> = {};
+              map.forEach((evaluation, flightId) => {
+                next[flightId] = evaluation;
+              });
+              setEvaluationsByFlightId(next);
+            })
+            .catch(() => {
+              if (!cancelled) setEvaluationsByFlightId({});
+            });
+        } else {
+          setEvaluationsByFlightId({});
+        }
         if (!rules.schedule.sagaOnlySchedule) return;
         setSagaOnlySchedule(true);
         setScheduleRules(rules.schedule);
@@ -1058,6 +1096,10 @@ export function MeusVoosTab() {
     setStudentSuggestionError(null);
   };
 
+  const openFlightEvaluationModal = (id: string) => {
+    setEvaluationFlightId(id);
+  };
+
   const closeStudentSuggestionModal = () => {
     if (studentSuggestionSaving) return;
     setStudentSuggestionFlightId(null);
@@ -1129,6 +1171,10 @@ export function MeusVoosTab() {
     ? items.find((item) => item.id === studentSuggestionFlightId) ?? null
     : null;
   const studentSuggestionInfo = studentSuggestionFlightId ? infoById[studentSuggestionFlightId] : undefined;
+  const evaluationFlight = evaluationFlightId
+    ? items.find((item) => item.id === evaluationFlightId) ?? null
+    : null;
+  const evaluationInfo = evaluationFlightId ? infoById[evaluationFlightId] : undefined;
 
   if (view === "create") {
     return (
@@ -1427,6 +1473,9 @@ export function MeusVoosTab() {
             onDelete={canManageFlights ? (id) => void handleDelete(id) : undefined}
             onReloadSaga={(flight) => void handleReloadSagaFlight(flight)}
             reloadingSagaFlightId={reloadingSagaFlightId}
+            evaluationEnabled={isStudentView && flightEvaluationEnabled}
+            evaluationsByFlightId={evaluationsByFlightId}
+            onEvaluate={isStudentView && flightEvaluationEnabled ? openFlightEvaluationModal : undefined}
           />
           <FlightListPagingActions
             hasMore={Boolean(nextCursor)}
@@ -1761,6 +1810,16 @@ export function MeusVoosTab() {
                                     {pastAircraft || "—"}
                                   </span>
                                   {pastStartTime ? <span className="text-xs text-slate-500">{pastStartTime}</span> : null}
+                                  {isStudentView && flightEvaluationEnabled && isFlightEvaluationEligible(f, info) ? (
+                                    evaluationsByFlightId[f.id] ? (
+                                      <FlightEvaluationDoneBadge
+                                        average={evaluationsByFlightId[f.id]?.average}
+                                        onClick={() => openFlightEvaluationModal(f.id)}
+                                      />
+                                    ) : (
+                                      <FlightEvaluationPendingBadge onClick={() => openFlightEvaluationModal(f.id)} />
+                                    )
+                                  ) : null}
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
                                 <div className="relative">
@@ -2000,6 +2059,20 @@ export function MeusVoosTab() {
       )}
       {shareFlightId ? (
         <FlightShareStickersModal flightId={shareFlightId} onClose={() => setShareFlightId(null)} />
+      ) : null}
+      {evaluationFlight && user ? (
+        <FlightEvaluationModal
+          open={Boolean(evaluationFlightId)}
+          flight={evaluationFlight}
+          info={evaluationInfo}
+          rules={flightEvaluationRules}
+          studentUserId={user.id}
+          existing={evaluationsByFlightId[evaluationFlight.id] ?? null}
+          onClose={() => setEvaluationFlightId(null)}
+          onSubmitted={(evaluation) => {
+            setEvaluationsByFlightId((prev) => ({ ...prev, [evaluation.flightId]: evaluation }));
+          }}
+        />
       ) : null}
       {/* Modal da Escala reaproveitado para voos futuros do SAGA */}
       {sagaDetailFlight && !sagaCancelFlight && (
@@ -2243,6 +2316,9 @@ function FlightTableSection({
   onStudentWeightBalance,
   showStudentPending = false,
   hideStudentColumn = false,
+  evaluationEnabled = false,
+  evaluationsByFlightId = {},
+  onEvaluate,
 }: {
   title: string;
   groups: { label: string; flights: SavedFlightListItem[] }[];
@@ -2264,6 +2340,9 @@ function FlightTableSection({
   showStudentPending?: boolean;
   /** Visão do aluno: a coluna "Aluno" é redundante. */
   hideStudentColumn?: boolean;
+  evaluationEnabled?: boolean;
+  evaluationsByFlightId?: Record<string, FlightEvaluation>;
+  onEvaluate?: (id: string) => void;
 }) {
   const [openActionFlightId, setOpenActionFlightId] = useState<string | null>(null);
   const tableMinWidth = showStudentPending ? "min-w-[1060px]" : "min-w-[1120px]";
@@ -2315,6 +2394,7 @@ function FlightTableSection({
                     <th className="px-3 py-2 font-semibold">Video</th>
                     <th className="px-3 py-2 font-semibold">Telemetria</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
+                    {evaluationEnabled ? <th className="px-3 py-2 font-semibold">Avaliação</th> : null}
                     {showActionColumn ? <th className="px-3 py-2 font-semibold">Acoes</th> : null}
                   </tr>
                 </thead>
@@ -2408,6 +2488,22 @@ function FlightTableSection({
                         <td className="px-3 py-2">
                           <FlightStatusBadge status={item.flight_status} />
                         </td>
+                        {evaluationEnabled ? (
+                          <td className="px-3 py-2">
+                            {isFlightEvaluationEligible(item, info) ? (
+                              evaluationsByFlightId[item.id] ? (
+                                <FlightEvaluationDoneBadge
+                                  average={evaluationsByFlightId[item.id]?.average}
+                                  onClick={onEvaluate ? () => onEvaluate(item.id) : undefined}
+                                />
+                              ) : (
+                                <FlightEvaluationPendingBadge onClick={() => onEvaluate?.(item.id)} />
+                              )
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
+                          </td>
+                        ) : null}
                         {showActionColumn ? (
                           <td className="px-3 py-2">
                             {rowHasActions ? (

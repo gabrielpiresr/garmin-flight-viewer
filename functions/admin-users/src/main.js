@@ -41,6 +41,10 @@ const FLIGHT_SIGNATURES_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_SIGNATURES_COLLECTION_ID ||
   process.env.APPWRITE_FLIGHT_SIGNATURES_COL_ID ||
   "flight_signatures";
+const FLIGHT_EVALUATIONS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_EVALUATIONS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_EVALUATIONS_COL_ID ||
+  "flight_evaluations";
 const AUDIT_EVENTS_COLLECTION_ID =
   process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
   process.env.APPWRITE_AUDIT_EVENTS_COL_ID ||
@@ -5361,6 +5365,109 @@ function sagaResolveTrainingMission(trainingTrackId, catalogs, rawMission, missi
   };
 }
 
+function sagaMissionMappedIdForTrack(mapping, trainingTrackId, rawMission) {
+  const missionBySaga = mapping?.missionBySaga || {};
+  const lookupKey = sagaMissionLookupKeyV2(rawMission);
+  const scopedLookupKey = sagaMissionScopedKey(trainingTrackId, lookupKey);
+  return cleanString(
+    missionBySaga?.[scopedLookupKey] ||
+      missionBySaga?.[lookupKey] ||
+      missionBySaga?.[sagaMissionKey(rawMission)] ||
+      missionBySaga?.[cleanString(rawMission)],
+  );
+}
+
+function sagaExtractRawMissionFromFlightDoc(doc) {
+  const snapshot = parseTrainingSnapshot(doc?.training_snapshot_json);
+  const rawMission = cleanString(
+    snapshot?.rawMission ||
+      snapshot?.mission ||
+      snapshot?.sagaMission ||
+      snapshot?.missionName,
+  );
+  const course = cleanString(snapshot?.course || snapshot?.sagaCourse);
+  return { rawMission, course, snapshot };
+}
+
+async function sagaListMissingMissionMappingsFromImportedFlights(payload = {}) {
+  const savedMapping = await loadSagaImportMapping();
+  const mapping = sanitizeSagaImportMapping(payload.mapping || savedMapping);
+  const catalogs = await listSagaImportCatalogs();
+  const validMissionIds = new Set(sagaAllMissionOptions(catalogs).map((option) => cleanString(option.value)).filter(Boolean));
+  const docs = await safeListAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery([
+      "$id",
+      "name",
+      "source_filename",
+      "flight_date",
+      "saga_flight_id",
+      "training_track_id",
+      "training_mission_id",
+      "training_snapshot_json",
+    ]),
+  ]);
+
+  const byLookupKey = new Map();
+  let sagaFlightsScanned = 0;
+  let withoutMission = 0;
+
+  for (const doc of docs) {
+    const source = cleanString(doc?.source_filename).toLowerCase();
+    const sagaFlightId = cleanString(doc?.saga_flight_id);
+    if (!sagaFlightId && !source.includes("saga")) continue;
+    sagaFlightsScanned += 1;
+
+    const extracted = sagaExtractRawMissionFromFlightDoc(doc);
+    const rawMission = extracted.rawMission;
+    if (!rawMission) {
+      withoutMission += 1;
+      continue;
+    }
+
+    const course = extracted.course;
+    const trainingTrackId = cleanString(
+      extracted.snapshot?.trackId ||
+        doc?.training_track_id ||
+        mapping.courseBySaga?.[course],
+    );
+    const lookupKey = sagaMissionLookupKeyV2(rawMission);
+    if (!lookupKey) continue;
+
+    const mappedMissionId = sagaMissionMappedIdForTrack(mapping, trainingTrackId, rawMission);
+    if (mappedMissionId && validMissionIds.has(mappedMissionId)) continue;
+
+    const previous = byLookupKey.get(lookupKey);
+    byLookupKey.set(lookupKey, {
+      lookupKey,
+      rawMission,
+      missionCode: sagaMissionCodeV2(rawMission),
+      course,
+      trainingTrackId,
+      trackName: cleanString(extracted.snapshot?.trackName) || course,
+      count: (previous?.count || 0) + 1,
+      sampleFlightIds: Array.from(new Set([...(previous?.sampleFlightIds || []), cleanString(doc?.$id)].filter(Boolean))).slice(0, 5),
+      latestFlightDate: [previous?.latestFlightDate, cleanString(doc?.flight_date)].filter(Boolean).sort().pop() || null,
+    });
+  }
+
+  const missingMissions = Array.from(byLookupKey.values())
+    .sort((left, right) =>
+      cleanString(left.course).localeCompare(cleanString(right.course), "pt-BR") ||
+      cleanString(left.lookupKey).localeCompare(cleanString(right.lookupKey), "pt-BR"),
+    );
+
+  return {
+    ok: true,
+    missingMissions,
+    lookupKeys: missingMissions.map((item) => item.lookupKey),
+    scannedFlights: docs.length,
+    sagaFlightsScanned,
+    withoutMission,
+    catalogs,
+  };
+}
+
 async function sagaRunConcurrent(items, limit, worker) {
   const safeLimit = Math.max(1, Math.min(Math.round(Number(limit) || 1), 8));
   const results = new Array(items.length);
@@ -10516,13 +10623,16 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
   const flightIds = flights.map((flight) => flight.$id);
   const userIds = Array.from(new Set(flights.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]).filter(Boolean)));
 
-  const [usersList, profilesByUserId, aircrafts, models, telemetrySummaries, landingMetrics] = await Promise.all([
+  const [usersList, profilesByUserId, aircrafts, models, telemetrySummaries, landingMetrics, evaluations] = await Promise.all([
     getUsersByIds(userIds),
     getProfilesByUserIds(userIds),
     listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
     listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
     listDocumentsByFieldIn(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", flightIds, selectQuery(TELEMETRY_SUMMARY_SELECT)),
     listDocumentsByFieldIn(FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", flightIds, selectQuery(LANDING_METRIC_SELECT)),
+    FLIGHT_EVALUATIONS_COLLECTION_ID
+      ? listDocumentsByFieldIn(FLIGHT_EVALUATIONS_COLLECTION_ID, "flight_id", flightIds).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const usersById = new Map(usersList.map((user) => [user.$id, user]));
@@ -10531,6 +10641,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
   );
   const telemetryByFlightId = new Map(telemetrySummaries.map((doc) => [doc.flight_id, doc]));
+  const evaluationByFlightId = new Map((evaluations || []).map((doc) => [doc.flight_id, doc]));
   const fastestLandingIasByFlightId = new Map();
   for (const landing of landingMetrics) {
     if (!landing.flight_id || typeof landing.td_ias_kt !== "number") continue;
@@ -10553,6 +10664,18 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     const status = flight.flightStatus;
     const durationSec = flight.durationSec ?? telemetry?.telemetryDurationSec ?? null;
     const distanceNm = flight.distanceNm || telemetry?.telemetryDistanceNm || 0;
+    const evaluationDoc = evaluationByFlightId.get(flight.id);
+    const scoreInstruction = Number(evaluationDoc?.score_instruction);
+    const scoreSafety = Number(evaluationDoc?.score_safety);
+    const scoreLearning = Number(evaluationDoc?.score_learning);
+    const hasEvaluation =
+      Boolean(evaluationDoc) &&
+      Number.isFinite(scoreInstruction) &&
+      Number.isFinite(scoreSafety) &&
+      Number.isFinite(scoreLearning);
+    const evalScoreAverage = hasEvaluation
+      ? Math.round(((scoreInstruction + scoreSafety + scoreLearning) / 3) * 10) / 10
+      : null;
 
     return {
       ...flight,
@@ -10570,6 +10693,12 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       studentName: userDisplayName(flight.studentUserId, usersById, profilesByUserId, flight.studentName),
       instructorName: userDisplayName(flight.instructorUserId, usersById, profilesByUserId, flight.instructorName),
       telemetry,
+      evaluationPresent: hasEvaluation,
+      evalScoreInstruction: hasEvaluation ? scoreInstruction : null,
+      evalScoreSafety: hasEvaluation ? scoreSafety : null,
+      evalScoreLearning: hasEvaluation ? scoreLearning : null,
+      evalScoreAverage,
+      evalComment: hasEvaluation ? cleanString(evaluationDoc?.comment || "") : "",
     };
   });
 
@@ -14064,6 +14193,46 @@ function publicSchoolRules(settings, updatedAt) {
       ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
       trialFlightCount: (() => { const n = Number(settings?.flightReviewClub?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
     },
+    flightEvaluation: (() => {
+      const defaults = {
+        enabled: false,
+        criteria: {
+          instruction: {
+            title: "Qualidade da instrução",
+            description: "O instrutor explicou, demonstrou e corrigiu de forma clara?",
+          },
+          safety: {
+            title: "Segurança e confiança",
+            description: "Você se sentiu seguro, respeitado e confortável durante o voo?",
+          },
+          learning: {
+            title: "Aproveitamento do voo",
+            description: "O voo contribuiu para seu aprendizado e evolução?",
+          },
+        },
+        comment: {
+          title: "Sua experiência",
+          description: "Conte como foi sua experiência ou deixe alguma sugestão para os próximos voos.",
+        },
+      };
+      const raw = settings?.flightEvaluation && typeof settings.flightEvaluation === "object" ? settings.flightEvaluation : {};
+      const criteria = raw.criteria && typeof raw.criteria === "object" ? raw.criteria : {};
+      const comment = raw.comment && typeof raw.comment === "object" ? raw.comment : {};
+      const pickField = (source, fallback) => ({
+        title: cleanString(source?.title || fallback.title).slice(0, 120) || fallback.title,
+        description: cleanString(source?.description || fallback.description).slice(0, 500) || fallback.description,
+      });
+      return {
+        enabled: Boolean(raw.enabled ?? false),
+        criteria: {
+          instruction: pickField(criteria.instruction, defaults.criteria.instruction),
+          safety: pickField(criteria.safety, defaults.criteria.safety),
+          learning: pickField(criteria.learning, defaults.criteria.learning),
+        },
+        comment: pickField(comment, defaults.comment),
+        disclaimer: cleanString(raw.disclaimer).slice(0, 2000),
+      };
+    })(),
     updatedAt: updatedAt || null,
   };
 }
@@ -19771,6 +19940,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "sagaSaveImportMapping") {
       const mapping = await saveSagaImportMappingForActor(actorUserId, payload.mapping || payload);
       return jsonResponse(res, 200, { ok: true, mapping });
+    }
+
+    if (action === "sagaListMissingMissionMappingsFromImportedFlights") {
+      await requireAdmin(actorUserId);
+      const result = await sagaListMissingMissionMappingsFromImportedFlights(payload);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "sagaSyncAllUsersFromSagaJob") {
