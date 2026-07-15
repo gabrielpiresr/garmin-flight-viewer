@@ -751,6 +751,86 @@ async function resolveLocalUserIdBySagaId(sagaUserId) {
   return null;
 }
 
+function profilePersonLabel(profile, fallback = "") {
+  return clean(profile?.nickname) || clean(profile?.full_name) || clean(fallback) || null;
+}
+
+/** Carrega perfis por user_id e saga_user_id para exibir nickname na agenda pública. */
+async function loadProfilesForPersonLabels(userIds, sagaIds) {
+  const byUserId = new Map();
+  const bySagaId = new Map();
+  const uniqueUserIds = Array.from(new Set((userIds || []).map(clean).filter(Boolean)));
+  const uniqueSagaIds = Array.from(new Set((sagaIds || []).map(clean).filter(Boolean)));
+
+  const remember = (doc) => {
+    if (!doc) return;
+    const userId = clean(doc.user_id);
+    const sagaId = clean(doc.saga_user_id);
+    if (userId) byUserId.set(userId, doc);
+    if (sagaId) bySagaId.set(sagaId, doc);
+  };
+
+  for (let i = 0; i < uniqueUserIds.length; i += 25) {
+    const chunk = uniqueUserIds.slice(i, i + 25);
+    const res = await databases.listDocuments(DATABASE_ID, PROFILES_ID, [
+      sdk.Query.equal("user_id", chunk),
+      sdk.Query.limit(chunk.length),
+    ]).catch(() => null);
+    for (const doc of res?.documents || []) remember(doc);
+  }
+
+  const missingSagaIds = uniqueSagaIds.filter((id) => !bySagaId.has(id));
+  for (let i = 0; i < missingSagaIds.length; i += 25) {
+    const chunk = missingSagaIds.slice(i, i + 25);
+    const res = await databases.listDocuments(DATABASE_ID, PROFILES_ID, [
+      sdk.Query.equal("saga_user_id", chunk),
+      sdk.Query.limit(chunk.length),
+    ]).catch(() => null);
+    for (const doc of res?.documents || []) remember(doc);
+  }
+
+  return { byUserId, bySagaId };
+}
+
+/**
+ * Voos futuros da escala SAGA chegam com nome completo do SAGA e, em geral,
+ * sem instructorUserId local. Resolve o perfil Appwrite (via userId ou sagaId)
+ * e prioriza nickname no label público.
+ */
+async function enrichSagaPublicFlightNames(publicFlights, events) {
+  if (!Array.isArray(publicFlights) || publicFlights.length === 0) return publicFlights;
+  const eventById = new Map((events || []).map((event) => [clean(event.id), event]));
+  const userIds = [];
+  const sagaIds = [];
+  for (const flight of publicFlights) {
+    if (flight.instructorUserId) userIds.push(flight.instructorUserId);
+    if (flight.studentUserId) userIds.push(flight.studentUserId);
+    const event = eventById.get(sagaEventIdFromFlightId(flight.id));
+    if (event?.instructorSagaId) sagaIds.push(event.instructorSagaId);
+    if (event?.studentSagaId) sagaIds.push(event.studentSagaId);
+  }
+  const { byUserId, bySagaId } = await loadProfilesForPersonLabels(userIds, sagaIds);
+
+  return publicFlights.map((flight) => {
+    const event = eventById.get(sagaEventIdFromFlightId(flight.id));
+    const instructorProfile =
+      (flight.instructorUserId && byUserId.get(clean(flight.instructorUserId))) ||
+      (event?.instructorSagaId && bySagaId.get(clean(event.instructorSagaId))) ||
+      null;
+    const studentProfile =
+      (flight.studentUserId && byUserId.get(clean(flight.studentUserId))) ||
+      (event?.studentSagaId && bySagaId.get(clean(event.studentSagaId))) ||
+      null;
+    return {
+      ...flight,
+      instructorUserId: flight.instructorUserId || clean(instructorProfile?.user_id) || null,
+      studentUserId: flight.studentUserId || clean(studentProfile?.user_id) || null,
+      instructorName: profilePersonLabel(instructorProfile, flight.instructorName),
+      studentName: profilePersonLabel(studentProfile, flight.studentName),
+    };
+  });
+}
+
 async function validateBlockedSlot(aircraftId, date, startMinute, endMinute) {
   try {
     const result = await databases.listDocuments(DATABASE_ID, OP_WEEKS_ID, [
@@ -1332,12 +1412,16 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     (slot) => !aircraftHiddenForRole(rules, slot.aircraftRegistration, viewActorRole),
   );
 
-  const publicFlights = (rules.sagaOnlySchedule
+  let publicFlights = (rules.sagaOnlySchedule
     ? flights
         .flatMap((event) => publicSagaFlights(event, rules, viewActorId, viewActorRole, viewActorSagaId))
         .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
     : flights.map((doc) => publicFlight(doc, viewActorId, viewActorRole))
   ).filter((flight) => flight && !aircraftHiddenForRole(rules, flight.aircraftIdent, viewActorRole));
+
+  if (rules.sagaOnlySchedule) {
+    publicFlights = await enrichSagaPublicFlightNames(publicFlights, flights);
+  }
 
   const publicAircrafts = aircrafts.documents
     .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, viewActorRole))

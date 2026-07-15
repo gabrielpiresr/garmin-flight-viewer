@@ -4806,7 +4806,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 >
                   <option value="">Sem instrutor</option>
-                  {weekData.instructors.map((instructor) => (
+                  {[...weekData.instructors]
+                    .sort((a, b) => {
+                      const aName = instructorDisplayName(a.userId, a.label) ?? a.label;
+                      const bName = instructorDisplayName(b.userId, b.label) ?? b.label;
+                      return aName.localeCompare(bName, "pt-BR", { sensitivity: "base" });
+                    })
+                    .map((instructor) => (
                     <option key={instructor.userId} value={instructor.userId}>
                       {shortName(
                         instructorDisplayName(instructor.userId, instructor.label) ?? instructor.label,

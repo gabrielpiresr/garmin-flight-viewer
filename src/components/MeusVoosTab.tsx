@@ -51,6 +51,7 @@ import {
 } from "../lib/scheduleBookingDb";
 import { getSchoolRules } from "../lib/schoolRulesDb";
 import { listEvaluationsByStudent } from "../lib/flightEvaluationsDb";
+import { listProfileNicknamesByUserIds } from "../lib/rbac";
 import { navigateToTab } from "../lib/routedTabs";
 import { getAircraftBadgeColorClass } from "../lib/aircraftColors";
 import type { FlightScheduleRules } from "../types/schoolRules";
@@ -358,6 +359,43 @@ function readStoredDisplayMode(userId?: string): DisplayMode {
   return stored === "cards" || stored === "calendar" || stored === "table" ? stored : defaultDisplayMode();
 }
 
+function applyProfileNicknamesToInfos(
+  infos: Record<string, FlightCardInfo>,
+  items: SavedFlightListItem[],
+  nicknames: Record<string, string>,
+): Record<string, FlightCardInfo> {
+  const next = { ...infos };
+  for (const item of items) {
+    const info = next[item.id];
+    if (!info) continue;
+    const studentNick = (item.student_user_id && nicknames[item.student_user_id]?.trim()) || "";
+    const instructorNick = (item.instructor_user_id && nicknames[item.instructor_user_id]?.trim()) || "";
+    if (!studentNick && !instructorNick) continue;
+    next[item.id] = {
+      ...info,
+      ...(studentNick ? { studentName: studentNick } : {}),
+      ...(instructorNick ? { instructorName: instructorNick } : {}),
+    };
+  }
+  return next;
+}
+
+function withPreferredNicknames(
+  flights: PublicScheduleFlight[],
+  nicknames: Record<string, string>,
+): PublicScheduleFlight[] {
+  return flights.map((flight) => {
+    const instructorNick = (flight.instructorUserId && nicknames[flight.instructorUserId]?.trim()) || "";
+    const studentNick = (flight.studentUserId && nicknames[flight.studentUserId]?.trim()) || "";
+    if (!instructorNick && !studentNick) return flight;
+    return {
+      ...flight,
+      ...(instructorNick ? { instructorName: instructorNick } : {}),
+      ...(studentNick ? { studentName: studentNick } : {}),
+    };
+  });
+}
+
 function selectFullInfoPreloadItems(
   items: SavedFlightListItem[],
   infoById: Record<string, FlightDisplayInfo>,
@@ -607,11 +645,15 @@ export function MeusVoosTab() {
         if (cancelled) return;
         setSagaAircrafts(data.aircrafts);
         const minStartMs = Date.now() + 60 * 60 * 1000;
-        setSagaUpcoming(
-          data.flights
-            .filter((flight) => flight.isOwn && flight.status !== "Cancelado" && sagaFlightStartMs(flight) >= minStartMs)
-            .sort((a, b) => sagaFlightStartMs(b) - sagaFlightStartMs(a)),
+        const upcoming = data.flights
+          .filter((flight) => flight.isOwn && flight.status !== "Cancelado" && sagaFlightStartMs(flight) >= minStartMs)
+          .sort((a, b) => sagaFlightStartMs(b) - sagaFlightStartMs(a));
+        const nicknameIds = Array.from(
+          new Set(upcoming.flatMap((flight) => [flight.instructorUserId, flight.studentUserId].filter(Boolean) as string[])),
         );
+        const nicknames = nicknameIds.length ? await listProfileNicknamesByUserIds(nicknameIds) : {};
+        if (cancelled) return;
+        setSagaUpcoming(withPreferredNicknames(upcoming, nicknames));
       })
       .catch(() => {
         if (!cancelled) setSagaUpcoming([]);
@@ -865,6 +907,11 @@ export function MeusVoosTab() {
     void (async () => {
       const lightInfos = await loadLightFlightListDisplayInfos(items);
       if (cancelled) return;
+      const nicknameIds = Array.from(
+        new Set(items.flatMap((item) => [item.student_user_id, item.instructor_user_id].filter(Boolean) as string[])),
+      );
+      const nicknames = nicknameIds.length ? await listProfileNicknamesByUserIds(nicknameIds) : {};
+      if (cancelled) return;
       setInfoById((prev) => {
         const next = { ...prev };
         for (const item of items) {
@@ -873,7 +920,7 @@ export function MeusVoosTab() {
             videoOk: prev[item.id]?.videoOk ?? false,
           };
         }
-        return next;
+        return applyProfileNicknamesToInfos(next, items, nicknames);
       });
 
       const preloadItems = selectFullInfoPreloadItems(items, lightInfos);
@@ -890,7 +937,7 @@ export function MeusVoosTab() {
             videoOk: videoFlags[item.id] ?? prev[item.id]?.videoOk ?? false,
           };
         }
-        return next;
+        return applyProfileNicknamesToInfos(next, items, nicknames);
       });
     })();
     return () => {
