@@ -64,7 +64,11 @@ const adminPerms = [
   Permission.update(Role.label("instrutor")),
 ];
 
-await createCollection(STAGES_COL, "Admissão Instrutores - Etapas", adminPerms);
+await createCollection(STAGES_COL, "Admissão Instrutores - Etapas", [
+  ...adminPerms,
+  // Visitantes leem etapas para encontrar a inicial no formulário público.
+  Permission.read(Role.any()),
+]);
 for (const [fn, label] of [
   [() => db.createStringAttribute(DB_ID, STAGES_COL, "name", 255, true), "name"],
   [() => db.createStringAttribute(DB_ID, STAGES_COL, "color", 20, false, "#64748b"), "color"],

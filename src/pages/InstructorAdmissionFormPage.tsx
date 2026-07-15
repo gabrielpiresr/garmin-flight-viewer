@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   getInstructorAdmissionCandidateByRegistrationToken,
   getPublicInstructorAdmissionForm,
-  listInstructorAdmissionStages,
   submitInstructorAdmissionForm,
   uploadInstructorAdmissionFile,
 } from "../lib/instructorAdmissionDb";
@@ -260,23 +259,21 @@ export function InstructorAdmissionFormPage() {
     void (async () => {
       const searchParams = new URLSearchParams(window.location.search);
       try {
-        const [nextForm, stages, candidate] = await Promise.all([
-          getPublicInstructorAdmissionForm(),
-          listInstructorAdmissionStages(),
-          tokenHint ? getInstructorAdmissionCandidateByRegistrationToken(tokenHint) : Promise.resolve(null),
-        ]);
+        const nextForm = await getPublicInstructorAdmissionForm();
         if (!nextForm) {
           setLoadError("O formulário de candidatura não está disponível no momento.");
           return;
         }
-        if (!stages.length) {
-          setLoadError("O processo seletivo ainda não foi configurado.");
-          return;
-        }
+
+        const candidate = tokenHint
+          ? await getInstructorAdmissionCandidateByRegistrationToken(tokenHint)
+          : null;
+
         if (tokenHint && !candidate) {
           setLoadError("Link de registro inválido ou expirado.");
           return;
         }
+
         setForm(nextForm);
         setLinkedCandidate(candidate);
         let initial = candidate

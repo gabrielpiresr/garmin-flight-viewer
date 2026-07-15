@@ -519,25 +519,38 @@ export async function saveInstructorAdmissionForm(
     published: input.published,
   };
 
+  const publicFormPermissions = [
+    Permission.read(Role.label("admin")),
+    Permission.update(Role.label("admin")),
+    Permission.read(Role.any()),
+  ];
+
   try {
-    const doc = await databases!.updateDocument(
-      DB_ID!,
-      INSTRUCTOR_ADMISSION_FORM_COL_ID!,
-      FORM_DOC_ID,
-      data,
-    );
-    return mapForm(doc as Parameters<typeof mapForm>[0]);
+    try {
+      const doc = await databases!.updateDocument(
+        DB_ID!,
+        INSTRUCTOR_ADMISSION_FORM_COL_ID!,
+        FORM_DOC_ID,
+        data,
+        publicFormPermissions,
+      );
+      return mapForm(doc as Parameters<typeof mapForm>[0]);
+    } catch {
+      const doc = await databases!.updateDocument(
+        DB_ID!,
+        INSTRUCTOR_ADMISSION_FORM_COL_ID!,
+        FORM_DOC_ID,
+        data,
+      );
+      return mapForm(doc as Parameters<typeof mapForm>[0]);
+    }
   } catch {
     const doc = await databases!.createDocument(
       DB_ID!,
       INSTRUCTOR_ADMISSION_FORM_COL_ID!,
       FORM_DOC_ID,
       data,
-      [
-        Permission.read(Role.label("admin")),
-        Permission.update(Role.label("admin")),
-        Permission.read(Role.any()),
-      ],
+      publicFormPermissions,
     );
     return mapForm(doc as Parameters<typeof mapForm>[0]);
   }
@@ -711,7 +724,11 @@ export async function submitInstructorAdmissionForm(
   }
   const defaultStage =
     activeStages.find((s) => s.isDefault) || activeStages.sort((a, b) => a.order - b.order)[0];
-  if (!defaultStage) throw new Error("Nenhuma etapa configurada.");
+  if (!defaultStage) {
+    throw new Error(
+      "Nenhuma etapa configurada ou sem permissão para listar etapas. Peça ao admin para publicar o processo seletivo.",
+    );
+  }
 
   for (const field of form.fields) {
     if (field.type === "hidden") continue;
