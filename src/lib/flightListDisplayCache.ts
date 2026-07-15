@@ -5,13 +5,18 @@ import { getProfile, listProfileSummariesByUserIds, type PilotProfile } from "./
 
 export type FlightListDisplayInfo = FlightDisplayInfo & { videoOk: boolean };
 
-type ProfileSummary = Pick<PilotProfile, "fullName" | "anacCode">;
+type ProfileSummary = Pick<PilotProfile, "fullName" | "nickname" | "anacCode">;
 type ProfileFallback = {
   studentName?: string;
   studentAnac?: string;
   instructorName?: string;
   instructorAnac?: string;
 };
+
+function profileDisplayName(profile: ProfileSummary | null | undefined): string | undefined {
+  const name = (profile?.nickname || profile?.fullName || "").trim();
+  return name || undefined;
+}
 
 const profileCache = new Map<string, Promise<ProfileSummary | null>>();
 const fullInfoCache = new Map<string, Promise<FlightDisplayInfo>>();
@@ -79,6 +84,7 @@ async function getCachedProfile(userId: string | null | undefined): Promise<Prof
       if (!res.data) return null;
       return {
         fullName: res.data.fullName,
+        nickname: res.data.nickname,
         anacCode: res.data.anacCode,
       };
     })
@@ -95,9 +101,9 @@ async function getProfileFallback(item: SavedFlightListItem): Promise<ProfileFal
   ]);
 
   return {
-    studentName: studentProfile?.fullName,
+    studentName: profileDisplayName(studentProfile),
     studentAnac: studentProfile?.anacCode,
-    instructorName: instructorProfile?.fullName,
+    instructorName: profileDisplayName(instructorProfile),
     instructorAnac: instructorProfile?.anacCode,
   };
 }

@@ -10075,7 +10075,14 @@ function userDisplayName(userId, usersById, profilesByUserId, fallback) {
   if (!userId) return fallback || "";
   const profile = profilesByUserId.get(userId);
   const user = usersById.get(userId);
-  return profile?.full_name || user?.name || user?.email || fallback || userId;
+  return (
+    cleanString(profile?.nickname) ||
+    profile?.full_name ||
+    user?.name ||
+    user?.email ||
+    fallback ||
+    userId
+  );
 }
 
 function dashboardOptionalDate(value) {
@@ -10148,7 +10155,7 @@ function dashboardAircraftMeta(aircraftIdent, aircraftByRegistration, modelsById
 function dashboardProfileName(userId, profilesByUserId, fallback = "") {
   if (!userId) return fallback || "";
   const profile = profilesByUserId.get(userId);
-  return profile?.full_name || profile?.email || fallback || userId;
+  return cleanString(profile?.nickname) || profile?.full_name || profile?.email || fallback || userId;
 }
 
 function dashboardFlightRow(doc, telemetryByFlightId, aircraftByRegistration, modelsById, profilesByUserId) {

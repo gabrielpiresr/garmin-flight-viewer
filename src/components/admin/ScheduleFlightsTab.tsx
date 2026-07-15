@@ -4808,7 +4808,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   <option value="">Sem instrutor</option>
                   {weekData.instructors.map((instructor) => (
                     <option key={instructor.userId} value={instructor.userId}>
-                      {shortName(instructor.label, instructor.label)}
+                      {shortName(
+                        instructorDisplayName(instructor.userId, instructor.label) ?? instructor.label,
+                        instructor.label,
+                      )}
                     </option>
                   ))}
                 </select>

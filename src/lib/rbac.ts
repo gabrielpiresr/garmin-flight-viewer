@@ -65,6 +65,7 @@ export type PilotProfile = {
   email: string;
   role: UserRole;
   fullName: string;
+  nickname: string;
   cpf: string;
   rg: string;
   rgOrgaoExpedidor: string;
@@ -104,7 +105,7 @@ export type PilotProfile = {
   approvalStatus: ApprovalStatus;
 };
 
-export type PilotProfileSummary = Pick<PilotProfile, "fullName" | "anacCode">;
+export type PilotProfileSummary = Pick<PilotProfile, "fullName" | "nickname" | "anacCode">;
 
 export type StudentOption = {
   userId: string;
@@ -595,6 +596,7 @@ export async function getProfile(userId: string): Promise<{ data: PilotProfile |
         email: doc.email ?? "",
         role,
         fullName: doc.full_name ?? "",
+        nickname: doc.nickname?.trim() || "",
         cpf: doc.cpf ?? "",
         rg: doc.rg ?? "",
         rgOrgaoExpedidor: doc.rg_orgao_expedidor ?? "",
@@ -687,6 +689,7 @@ export async function listProfileSummariesByUserIds(
       if (!userId) continue;
       out[userId] = {
         fullName: (doc.full_name as string | undefined) ?? "",
+        nickname: ((doc.nickname as string | undefined) ?? "").trim(),
         anacCode: (doc.anac_code as string | undefined) ?? "",
       };
     }

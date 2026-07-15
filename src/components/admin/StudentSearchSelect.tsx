@@ -11,10 +11,14 @@ type StudentSearchSelectProps = {
   className?: string;
 };
 
+function studentDisplayName(student: StudentIdentity): string {
+  return (student.nickname || "").trim() || student.label;
+}
+
 function formatStudentLabel(student: StudentIdentity): string {
   const email = student.email || "sem email";
   const anac = student.anacCode || "sem ANAC";
-  return `${student.label} · ${email} · ${anac}`;
+  return `${studentDisplayName(student)} · ${email} · ${anac}`;
 }
 
 function normalizeSearch(value: string): string {
@@ -26,7 +30,9 @@ function normalizeSearch(value: string): string {
 }
 
 function studentSearchText(student: StudentIdentity): string {
-  return normalizeSearch([student.label, student.email, student.anacCode, student.userId].filter(Boolean).join(" "));
+  return normalizeSearch(
+    [student.nickname, student.label, student.email, student.anacCode, student.userId].filter(Boolean).join(" "),
+  );
 }
 
 export function StudentSearchSelect({
@@ -35,7 +41,7 @@ export function StudentSearchSelect({
   value,
   onChange,
   disabled = false,
-  placeholder = "Pesquise por nome, email ou ANAC",
+  placeholder = "Pesquise por nickname, nome, email ou ANAC",
   className = "",
 }: StudentSearchSelectProps) {
   const [query, setQuery] = useState("");
@@ -52,7 +58,9 @@ export function StudentSearchSelect({
 
   const filteredStudents = useMemo(() => {
     const normalizedQuery = normalizeSearch(query);
-    const sorted = [...students].sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+    const sorted = [...students].sort((a, b) =>
+      studentDisplayName(a).localeCompare(studentDisplayName(b), "pt-BR"),
+    );
     if (!normalizedQuery || (selectedStudent?.userId === value && query === formatStudentLabel(selectedStudent))) {
       return sorted.slice(0, 30);
     }
@@ -91,7 +99,7 @@ export function StudentSearchSelect({
                 }}
                 className="w-full border-b border-slate-800 px-3 py-2 text-left text-sm hover:bg-slate-800/80"
               >
-                <p className="font-medium text-slate-100">{student.label}</p>
+                <p className="font-medium text-slate-100">{studentDisplayName(student)}</p>
                 <p className="text-xs text-slate-500">
                   {student.email || "Sem email"} · ANAC {student.anacCode || "—"}
                 </p>

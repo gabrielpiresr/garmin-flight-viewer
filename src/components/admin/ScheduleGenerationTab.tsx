@@ -2983,7 +2983,10 @@ export function ScheduleGenerationTab({ onScalePublished }: ScheduleGenerationTa
                   <option value="">Sem instrutor</option>
                   {weekData.instructors.map((instructor) => (
                     <option key={instructor.userId} value={instructor.userId}>
-                      {shortName(instructor.label, instructor.label)}
+                      {shortName(
+                        (instructor.nickname || "").trim() || instructor.label,
+                        instructor.label,
+                      )}
                     </option>
                   ))}
                 </select>
