@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listCaktoReceipts } from "../../lib/caktoDb";
 import type { CaktoReceipt, CaktoReceiptPage } from "../../types/cakto";
 import { useToast } from "../ui/ToastProvider";
@@ -23,6 +23,7 @@ const eventLabels: Record<string, string> = {
 };
 const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const defaultEventTypes = ["purchase_approved", "saga_credit_created"];
+const allEventTypes = Object.keys(eventLabels);
 
 export function PaymentLinkModal({
   onClose,
@@ -426,8 +427,10 @@ export function CaktoReceiptsTab() {
   const { showToast } = useToast();
   const [page, setPage] = useState<CaktoReceiptPage>({ receipts: [], total: 0, limit: 25, offset: 0, summary: { approved: 0, refunded: 0, pending: 0 } });
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [source, setSource] = useState<"all" | "cakto" | "saga">("all");
   const [eventTypes, setEventTypes] = useState<string[]>(defaultEventTypes);
+  const [fullScan, setFullScan] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -435,17 +438,36 @@ export function CaktoReceiptsTab() {
   const [selected, setSelected] = useState<CaktoReceipt | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const loadSeqRef = useRef(0);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedSearch(search), 350);
+    return () => window.clearTimeout(timeout);
+  }, [search]);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
-      setPage(await listCaktoReceipts({ search, source, eventTypes, paymentMethod, dateFrom, dateTo, limit: 25, offset }));
+      const nextPage = await listCaktoReceipts({
+        search: debouncedSearch,
+        source,
+        eventTypes,
+        paymentMethod,
+        dateFrom,
+        dateTo,
+        limit: 25,
+        offset,
+        fullScan,
+        recentLimit: 80,
+      });
+      if (seq === loadSeqRef.current) setPage(nextPage);
     } catch (error) {
-      showToast({ variant: "error", message: (error as Error).message });
+      if (seq === loadSeqRef.current) showToast({ variant: "error", message: (error as Error).message });
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, [dateFrom, dateTo, eventTypes, offset, paymentMethod, search, showToast, source]);
+  }, [dateFrom, dateTo, debouncedSearch, eventTypes, fullScan, offset, paymentMethod, showToast, source]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -492,6 +514,38 @@ export function CaktoReceiptsTab() {
           >
             Gerar link de pagamento
           </button>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/30 px-3 py-2">
+        <span className="text-xs text-slate-400">
+          {fullScan ? "Histórico completo" : "Últimos lançamentos"}
+        </span>
+        <div className="flex flex-wrap gap-2">
+          {!fullScan ? (
+            <button
+              type="button"
+              onClick={() => {
+                setFullScan(true);
+                setEventTypes(allEventTypes);
+                setOffset(0);
+              }}
+              className="rounded-lg border border-sky-700/60 px-3 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-950/40"
+            >
+              Carregar todos os eventos
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setFullScan(false);
+                setEventTypes(defaultEventTypes);
+                setOffset(0);
+              }}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+            >
+              Ver últimos lançamentos
+            </button>
+          )}
         </div>
       </div>
       <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/30 p-3">

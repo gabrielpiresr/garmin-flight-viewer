@@ -50,6 +50,8 @@ export type CaktoReceiptFilters = {
   dateTo?: string;
   limit?: number;
   offset?: number;
+  fullScan?: boolean;
+  recentLimit?: number;
 };
 
 export type CaktoReceiptPage = {

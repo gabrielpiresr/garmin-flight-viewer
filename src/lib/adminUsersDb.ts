@@ -49,6 +49,7 @@ type AdminUsersResponse = {
   deletion?: AdminUserDeletionSummary;
   createdContracts?: number;
   nextStatus?: string;
+  executionId?: string;
   saga?: EnrollmentSagaResult;
   creditSaga?: CreditSagaResult;
   data?: SagaAnacPerson;
@@ -136,7 +137,7 @@ async function executeAdminUsersAsync(payload: Record<string, unknown>, timeoutM
   let execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
   while (execution.status === "processing" || execution.status === "waiting") {
     if (Date.now() - startedAt > timeoutMs) {
-      throw new Error("A exclusao ainda esta em andamento no Appwrite. Aguarde um pouco e confira as execucoes da Function.");
+      throw new Error("A execucao ainda esta em andamento no Appwrite. Aguarde um pouco e confira novamente.");
     }
     await sleep(2000);
     execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
@@ -183,7 +184,7 @@ export async function runEnrollmentAutomation(input: {
   ignoreSagaDuplicates?: boolean;
   useStudentEmail?: boolean;
 }): Promise<{ createdContracts: number; nextStatus: string; saga?: EnrollmentSagaResult }> {
-  const response = await executeAdminUsers({
+  const response = await executeAdminUsersAsync({
     action: "runEnrollmentAutomation",
     leadId: input.leadId,
     trainingTrackId: input.trainingTrackId,
@@ -192,7 +193,7 @@ export async function runEnrollmentAutomation(input: {
     createInSaga: input.createInSaga !== false,
     ignoreSagaDuplicates: input.ignoreSagaDuplicates === true,
     useStudentEmail: input.useStudentEmail === true,
-  });
+  }, 15 * 60 * 1000);
   return {
     createdContracts: response.createdContracts ?? 0,
     nextStatus: response.nextStatus ?? "aguardando_assinatura_pagamento",

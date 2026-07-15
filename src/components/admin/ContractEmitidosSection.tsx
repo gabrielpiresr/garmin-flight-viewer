@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useToast } from "../ui/ToastProvider";
-import { listContracts } from "../../lib/contractsDb";
+import { bulkDeleteContractsViaAdminFunction, bulkSignContractsViaAdminFunction, listContracts } from "../../lib/contractsDb";
 import type { Contract, ContractStatus } from "../../types/contracts";
 import { CONTRACT_STATUS_LABELS, CONTRACT_STATUS_COLORS } from "../../types/contracts";
 import { ContractCreateModal } from "./ContractCreateModal";
@@ -31,6 +31,8 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
   const [filter, setFilter] = useState<FilterOption>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [viewContract, setViewContract] = useState<Contract | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<"sign" | "delete" | null>(null);
 
   async function load(cursor?: string | null) {
     const isInitial = !cursor;
@@ -41,6 +43,7 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
       const result = await listContracts(schoolId, { status, cursor });
       if (isInitial) {
         setContracts(result.items);
+        setSelectedIds(new Set());
       } else {
         setContracts((prev) => [...prev, ...result.items]);
       }
@@ -66,6 +69,77 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
   function handleSigned(updated: Contract) {
     setContracts((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     setViewContract(updated);
+  }
+
+  function toggleSelected(contractId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(contractId)) next.delete(contractId);
+      else next.add(contractId);
+      return next;
+    });
+  }
+
+  const visibleIds = contracts.map((contract) => contract.id);
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  const selectedContracts = contracts.filter((contract) => selectedIds.has(contract.id));
+  const signableSelected = selectedContracts.filter((contract) => contract.status !== "cancelled" && !contract.signedByAdminAt);
+
+  function toggleAllVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  async function handleBulkSign() {
+    const ids = signableSelected.map((contract) => contract.id);
+    if (!ids.length) {
+      showToast({ variant: "warning", message: "Nenhum contrato selecionado pode ser assinado pela escola." });
+      return;
+    }
+    setBulkAction("sign");
+    try {
+      const result = await bulkSignContractsViaAdminFunction(ids);
+      setContracts((prev) => prev.map((contract) => result.signed.find((item) => item.id === contract.id) ?? contract));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        result.signed.forEach((contract) => next.delete(contract.id));
+        return next;
+      });
+      const failureText = result.failures.length ? ` ${result.failures.length} falharam.` : "";
+      showToast({ variant: result.failures.length ? "warning" : "success", message: `${result.signed.length} contrato(s) assinado(s).${failureText}` });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message || "Erro ao assinar contratos." });
+    } finally {
+      setBulkAction(null);
+    }
+  }
+
+  async function handleBulkDelete() {
+    const ids = selectedContracts.map((contract) => contract.id);
+    if (!ids.length) return;
+    if (!window.confirm(`Excluir ${ids.length} contrato(s) selecionado(s)? Esta ação remove os contratos da lista.`)) return;
+    setBulkAction("delete");
+    try {
+      const result = await bulkDeleteContractsViaAdminFunction(ids);
+      const deleted = new Set(result.deletedIds);
+      setContracts((prev) => prev.filter((contract) => !deleted.has(contract.id)));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        result.deletedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      const failureText = result.failures.length ? ` ${result.failures.length} falharam.` : "";
+      showToast({ variant: result.failures.length ? "warning" : "success", message: `${result.deletedIds.length} contrato(s) excluído(s).${failureText}` });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message || "Erro ao excluir contratos." });
+    } finally {
+      setBulkAction(null);
+    }
   }
 
   return (
@@ -105,6 +179,40 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
         ))}
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-300">
+            {selectedIds.size} selecionado(s) · {signableSelected.length} apto(s) para assinatura da escola
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              disabled={bulkAction !== null}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              Limpar
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleBulkSign()}
+              disabled={bulkAction !== null || signableSelected.length === 0}
+              className="rounded-lg border border-emerald-800/50 px-3 py-1.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-950/40 disabled:opacity-50"
+            >
+              {bulkAction === "sign" ? "Assinando..." : "Assinar selecionados"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleBulkDelete()}
+              disabled={bulkAction !== null}
+              className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-medium text-red-300 transition hover:bg-red-950/40 disabled:opacity-50"
+            >
+              {bulkAction === "delete" ? "Excluindo..." : "Excluir selecionados"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
@@ -117,11 +225,26 @@ export function ContractEmitidosSection({ schoolId, adminUserId }: Props) {
         </div>
       ) : (
         <div className="space-y-2">
+          <label className="flex items-center gap-2 px-1 text-xs text-slate-500">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleAllVisible}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-sky-500 focus:ring-sky-500"
+            />
+            Selecionar todos desta página
+          </label>
           {contracts.map((contract) => (
             <div
               key={contract.id}
-              className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+              className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
             >
+              <input
+                type="checkbox"
+                checked={selectedIds.has(contract.id)}
+                onChange={() => toggleSelected(contract.id)}
+                className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-900 text-sky-500 focus:ring-sky-500"
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="text-sm font-medium text-slate-100">{contract.recipientName}</p>

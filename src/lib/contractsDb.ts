@@ -232,6 +232,10 @@ export async function markContractEmailSent(id: string): Promise<void> {
 
 function parseFunctionResponse(body: string | undefined): {
   contract?: Record<string, unknown>;
+  contracts?: Record<string, unknown>[];
+  signed?: Record<string, unknown>[];
+  deletedIds?: string[];
+  failures?: Array<{ id: string; message: string }>;
   fileId?: string;
   message?: string;
 } {
@@ -283,4 +287,72 @@ export async function signContractViaAdminFunction(input: {
     throw new Error(response.message || "Falha ao assinar contrato.");
   }
   return docToContract(response.contract);
+}
+
+async function getContractActionExecution(executionId: string) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      return await functions!.getExecution(ADMIN_USERS_FUNCTION_ID!, executionId);
+    } catch (error) {
+      lastError = error;
+      const message = String((error as Error)?.message || "");
+      if (!/not be found|not found|404/i.test(message)) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Execução não encontrada.");
+}
+
+async function executeContractAdminAction(payload: Record<string, unknown>): Promise<ReturnType<typeof parseFunctionResponse>> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    throw new Error("Função administrativa não configurada.");
+  }
+  const ids = Array.isArray(payload.contractIds) ? payload.contractIds : [];
+  if (ids.length <= 10) {
+    const execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
+    const response = parseFunctionResponse(execution.responseBody);
+    if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+      throw new Error(response.message || "Falha ao executar ação em massa.");
+    }
+    return response;
+  }
+
+  const created = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), true);
+  let execution = await getContractActionExecution(created.$id);
+  const startedAt = Date.now();
+  while (execution.status === "processing" || execution.status === "waiting") {
+    if (Date.now() - startedAt > 5 * 60 * 1000) {
+      throw new Error("A ação em massa ainda está em andamento. Aguarde um pouco e atualize a lista.");
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    execution = await getContractActionExecution(created.$id);
+  }
+  const response = parseFunctionResponse(execution.responseBody);
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw new Error(response.message || "Falha ao executar ação em massa.");
+  }
+  return response;
+}
+
+export async function bulkSignContractsViaAdminFunction(contractIds: string[]): Promise<{
+  signed: Contract[];
+  failures: Array<{ id: string; message: string }>;
+}> {
+  const response = await executeContractAdminAction({ action: "bulkSignContracts", contractIds, signerRole: "admin" });
+  return {
+    signed: (response.signed ?? response.contracts ?? []).map(docToContract),
+    failures: response.failures ?? [],
+  };
+}
+
+export async function bulkDeleteContractsViaAdminFunction(contractIds: string[]): Promise<{
+  deletedIds: string[];
+  failures: Array<{ id: string; message: string }>;
+}> {
+  const response = await executeContractAdminAction({ action: "bulkDeleteContracts", contractIds });
+  return {
+    deletedIds: response.deletedIds ?? [],
+    failures: response.failures ?? [],
+  };
 }

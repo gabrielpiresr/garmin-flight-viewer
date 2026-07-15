@@ -2143,6 +2143,11 @@ function EnrollmentAutomationModal({
           <div>
             <h2 className="text-sm font-semibold text-slate-100">Automação de matrícula</h2>
             <p className="mt-1 text-xs text-slate-500">{lead.name}</p>
+            {loading && (
+              <p className="mt-2 text-[11px] text-sky-300">
+                Processando em segundo plano. Esta etapa pode levar alguns minutos quando cria aluno no SAGA e gera PDFs.
+              </p>
+            )}
           </div>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
@@ -2309,7 +2314,7 @@ function EnrollmentAutomationModal({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
             )}
-            {loading ? "Gerando..." : "Gerar e enviar"}
+            {loading ? "Processando..." : "Gerar e enviar"}
           </button>
         </div>
       </div>

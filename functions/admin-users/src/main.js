@@ -364,6 +364,35 @@ const CREDIT_SELECT = [
   "created_by",
   "updated_by",
 ];
+const CAKTO_RECEIPT_LIST_SELECT = [
+  "$id",
+  "$createdAt",
+  "$updatedAt",
+  "event_id",
+  "event_type",
+  "order_id",
+  "offer_id",
+  "product_id",
+  "proposal_id",
+  "customer_name",
+  "customer_email",
+  "amount",
+  "currency",
+  "payment_method",
+  "status",
+  "fulfillment_status",
+  "fulfillment_error",
+  "fulfillment_updated_at",
+  "credit_id",
+  "saga_status",
+  "saga_error",
+  "saga_credit_marker",
+  "saga_updated_at",
+  "event_at",
+  "received_at",
+];
+const RECEIPTS_SOURCE_ROW_LIMIT = Number(process.env.RECEIPTS_SOURCE_ROW_LIMIT || 750);
+const RECEIPTS_RECENT_SOURCE_ROW_LIMIT = Number(process.env.RECEIPTS_RECENT_SOURCE_ROW_LIMIT || 80);
 const DASHBOARD_TELEMETRY_SELECT = [
   "$id",
   "flight_id",
@@ -7988,6 +8017,25 @@ async function listAllDocuments(collectionId, extraQueries = []) {
   return out;
 }
 
+async function listDocumentsLimited(collectionId, extraQueries = [], maxRows = 500) {
+  if (!collectionId) return [];
+  const out = [];
+  const safeMax = Math.max(1, Math.round(Number(maxRows) || 500));
+  let offset = 0;
+  while (out.length < safeMax) {
+    const limit = Math.min(100, safeMax - out.length);
+    const res = await databases.listDocuments(DATABASE_ID, collectionId, [
+      ...extraQueries,
+      sdk.Query.limit(limit),
+      sdk.Query.offset(offset),
+    ]);
+    out.push(...(res.documents || []));
+    if (!res.documents || res.documents.length < limit || out.length >= (res.total || 0)) break;
+    offset += limit;
+  }
+  return out;
+}
+
 async function listDocumentsPage(collectionId, queries = []) {
   if (!collectionId) return { documents: [], total: 0 };
   const res = await databases.listDocuments(DATABASE_ID, collectionId, queries);
@@ -9388,6 +9436,60 @@ async function signContract(actorUserId, payload = {}) {
     updated = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
   }
   return updated;
+}
+
+async function bulkSignContracts(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const ids = Array.from(new Set((Array.isArray(payload.contractIds) ? payload.contractIds : [])
+    .map(cleanString)
+    .filter(Boolean)));
+  if (!ids.length) throw Object.assign(new Error("Nenhum contrato selecionado."), { status: 400 });
+
+  const signed = [];
+  const failures = [];
+  for (const contractId of ids) {
+    try {
+      const updated = await signContract(actorUserId, { contractId, signerRole: "admin" });
+      signed.push(updated);
+    } catch (err) {
+      failures.push({ id: contractId, message: err?.message || "Falha ao assinar contrato." });
+    }
+  }
+  return { signed, failures };
+}
+
+async function deleteContractWithSignatures(contractId) {
+  const contract = await databases.getDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+  if (contract.school_id && contract.school_id !== SCHOOL_ID) {
+    throw Object.assign(new Error("Contrato de outra escola."), { status: 403 });
+  }
+  const signatures = await listAllDocuments(CONTRACT_SIGNATURES_COLLECTION_ID, [
+    sdk.Query.equal("contract_id", [contractId]),
+  ]);
+  for (const signature of signatures) {
+    await databases.deleteDocument(DATABASE_ID, CONTRACT_SIGNATURES_COLLECTION_ID, signature.$id).catch(() => undefined);
+  }
+  await databases.deleteDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contractId);
+}
+
+async function bulkDeleteContracts(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  const ids = Array.from(new Set((Array.isArray(payload.contractIds) ? payload.contractIds : [])
+    .map(cleanString)
+    .filter(Boolean)));
+  if (!ids.length) throw Object.assign(new Error("Nenhum contrato selecionado."), { status: 400 });
+
+  const deletedIds = [];
+  const failures = [];
+  for (const contractId of ids) {
+    try {
+      await deleteContractWithSignatures(contractId);
+      deletedIds.push(contractId);
+    } catch (err) {
+      failures.push({ id: contractId, message: err?.message || "Falha ao excluir contrato." });
+    }
+  }
+  return { deletedIds, failures };
 }
 
 async function ensureEnrollmentFormPreviewForActor(actorUserId, payload = {}) {
@@ -17183,10 +17285,18 @@ function caktoPayloadReceipt(payload) {
   };
 }
 
-function mapCaktoReceipt(doc) {
-  const payloadJson = doc.payload_json || "{}";
-  const payload = parseJsonObject(payloadJson, {});
-  const normalized = caktoPayloadReceipt(payload);
+function mapCaktoReceipt(doc, options = {}) {
+  const includePayload = options.includePayload !== false;
+  const payloadJson = includePayload ? doc.payload_json || "{}" : "{}";
+  const shouldParsePayload = includePayload && doc.payload_json && (
+    !doc.event_type ||
+    !doc.order_id ||
+    !doc.customer_email ||
+    doc.amount == null ||
+    !doc.payment_method ||
+    !doc.event_at
+  );
+  const normalized = shouldParsePayload ? caktoPayloadReceipt(parseJsonObject(payloadJson, {})) : {};
   return {
     id: doc.$id,
     source: "cakto",
@@ -17214,6 +17324,43 @@ function mapCaktoReceipt(doc) {
     receivedAt: doc.received_at || doc.$createdAt,
     payloadJson,
   };
+}
+
+function receiptEventDate(row) {
+  return String(row.eventAt || row.receivedAt || "");
+}
+
+function receiptMatchesFilters(row, input, eventTypes, search, from, to) {
+  if (eventTypes.length > 0) {
+    if (!eventTypes.includes(row.eventType)) return false;
+  } else if (input?.eventType && row.eventType !== input.eventType) {
+    return false;
+  }
+  if (input?.paymentMethod && row.paymentMethod !== input.paymentMethod) return false;
+  const date = receiptEventDate(row);
+  if (from && date < `${from}T00:00:00`) return false;
+  if (to && date > `${to}T23:59:59.999`) return false;
+  if (search && ![
+    row.customerName,
+    row.customerEmail,
+    row.orderId,
+    row.offerId,
+  ].some((value) => String(value || "").toLowerCase().includes(search))) return false;
+  return true;
+}
+
+async function hydrateCaktoReceiptPayloads(rows) {
+  const hydrated = new Map();
+  const caktoRows = rows.filter((row) => row.source === "cakto");
+  await Promise.all(caktoRows.map(async (row) => {
+    try {
+      const doc = await databases.getDocument(DATABASE_ID, CAKTO_RECEIPTS_COLLECTION_ID, row.id);
+      hydrated.set(row.id, mapCaktoReceipt(doc, { includePayload: true }));
+    } catch {
+      hydrated.set(row.id, row);
+    }
+  }));
+  return rows.map((row) => row.source === "cakto" ? hydrated.get(row.id) || row : row);
 }
 
 function isSagaCreditDocument(doc) {
@@ -17279,32 +17426,59 @@ async function listCaktoReceipts(input) {
   const sourceFilter = cleanString(input?.source || "all").toLowerCase();
   const includeCakto = sourceFilter === "" || sourceFilter === "all" || sourceFilter === "cakto";
   const includeSaga = sourceFilter === "" || sourceFilter === "all" || sourceFilter === "saga";
+  const search = cleanString(input?.search).toLowerCase();
+  const from = cleanString(input?.dateFrom);
+  const to = cleanString(input?.dateTo);
+  const eventTypes = Array.isArray(input?.eventTypes)
+    ? Array.from(new Set(input.eventTypes.map((value) => cleanString(value)).filter(Boolean)))
+    : [];
+  const hasEventTypes = eventTypes.length > 0;
+  const fullScan = input?.fullScan === true;
+  const sourceRowLimit = fullScan
+    ? RECEIPTS_SOURCE_ROW_LIMIT
+    : Math.min(RECEIPTS_SOURCE_ROW_LIMIT, Math.max(25, Number(input?.recentLimit) || RECEIPTS_RECENT_SOURCE_ROW_LIMIT));
   let rows = [];
 
   if (includeCakto) {
-    const docs = await listAllDocuments(CAKTO_RECEIPTS_COLLECTION_ID, [
+    const baseQueries = [
       sdk.Query.equal("school_id", [SCHOOL_ID]),
       sdk.Query.orderDesc("received_at"),
-      sdk.Query.limit(500),
-    ]);
-    rows.push(...docs.map(mapCaktoReceipt));
+      ...selectQuery(CAKTO_RECEIPT_LIST_SELECT),
+    ];
+    const queries = [...baseQueries];
+    if (hasEventTypes) {
+      queries.push(sdk.Query.equal("event_type", eventTypes));
+    } else if (input?.eventType) {
+      queries.push(sdk.Query.equal("event_type", [input.eventType]));
+    }
+    if (input?.paymentMethod) queries.push(sdk.Query.equal("payment_method", [input.paymentMethod]));
+    const docs = await listDocumentsLimited(CAKTO_RECEIPTS_COLLECTION_ID, queries, sourceRowLimit)
+      .catch(() => listDocumentsLimited(CAKTO_RECEIPTS_COLLECTION_ID, baseQueries, sourceRowLimit));
+    rows.push(...docs.map((doc) => mapCaktoReceipt(doc, { includePayload: false })));
   }
 
   if (includeSaga) {
-    const sagaCredits = await listAllDocuments(STUDENT_CREDITS_COLLECTION_ID, [
-        sdk.Query.equal("school_id", [SCHOOL_ID]),
+    const wantsSagaCredits = !hasEventTypes || eventTypes.includes("saga_credit_created") || eventTypes.includes("saga_imported_receipt");
+    const sagaQueries = [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
       sdk.Query.orderDesc("purchase_date"),
       ...selectQuery(CREDIT_SELECT),
-    ]).catch(() => []);
+    ];
+    if (from && typeof sdk.Query.greaterThanEqual === "function") {
+      sagaQueries.push(sdk.Query.greaterThanEqual("purchase_date", from));
+    }
+    if (to && typeof sdk.Query.lessThanEqual === "function") {
+      sagaQueries.push(sdk.Query.lessThanEqual("purchase_date", to));
+    }
+    const sagaCredits = wantsSagaCredits
+      ? await listDocumentsLimited(STUDENT_CREDITS_COLLECTION_ID, sagaQueries, sourceRowLimit).catch(() => [])
+      : [];
     const payments = sagaCredits.filter(isSagaCreditDocument).filter((doc) => Number(doc.amount_paid || 0) > 0);
     const sagaStudentUserIds = Array.from(
       new Set(payments.map((doc) => cleanString(doc.user_id)).filter(Boolean)),
     );
-    const [usersList, profilesByUserId] = await Promise.all([
-      getUsersByIds(sagaStudentUserIds),
-      getProfilesByUserIds(sagaStudentUserIds),
-    ]);
-    const usersById = new Map((usersList || []).map((user) => [user.$id, user]));
+    const profilesByUserId = await getProfilesByUserIds(sagaStudentUserIds);
+    const usersById = new Map();
     rows.push(...payments.map((doc) => mapSagaImportedReceipt(doc, usersById, profilesByUserId)));
   }
 
@@ -17316,32 +17490,8 @@ async function listCaktoReceipts(input) {
   );
   rows = rows.filter((row) => !(row.source === "saga" && cleanString(row.creditId) && caktoCreditsById.has(cleanString(row.creditId))));
 
-  const search = cleanString(input?.search).toLowerCase();
-  const from = cleanString(input?.dateFrom);
-  const to = cleanString(input?.dateTo);
-  const eventTypes = Array.isArray(input?.eventTypes)
-    ? Array.from(new Set(input.eventTypes.map((value) => cleanString(value)).filter(Boolean)))
-    : [];
-  const hasEventTypes = eventTypes.length > 0;
-  rows = rows.filter((row) => {
-    if (hasEventTypes) {
-      if (!eventTypes.includes(row.eventType)) return false;
-    } else if (input?.eventType && row.eventType !== input.eventType) {
-      return false;
-    }
-    if (input?.paymentMethod && row.paymentMethod !== input.paymentMethod) return false;
-    const date = row.eventAt || row.receivedAt;
-    if (from && date < `${from}T00:00:00`) return false;
-    if (to && date > `${to}T23:59:59.999`) return false;
-    if (search && ![
-      row.customerName,
-      row.customerEmail,
-      row.orderId,
-      row.offerId,
-    ].some((value) => value.toLowerCase().includes(search))) return false;
-    return true;
-  });
-  rows.sort((a, b) => String(b.eventAt || b.receivedAt || "").localeCompare(String(a.eventAt || a.receivedAt || "")));
+  rows = rows.filter((row) => receiptMatchesFilters(row, input, eventTypes, search, from, to));
+  rows.sort((a, b) => receiptEventDate(b).localeCompare(receiptEventDate(a)));
   const summary = rows.reduce((acc, row) => {
     if (row.eventType === "purchase_approved" || row.eventType === "saga_imported_receipt" || row.eventType === "saga_credit_created") acc.approved += row.amount;
     else if (row.eventType === "refund" || row.eventType === "chargeback") acc.refunded += row.amount;
@@ -17350,7 +17500,8 @@ async function listCaktoReceipts(input) {
   }, { approved: 0, refunded: 0, pending: 0 });
   const limit = Math.min(100, Math.max(1, Number(input?.limit) || 25));
   const offset = Math.max(0, Number(input?.offset) || 0);
-  return { receipts: rows.slice(offset, offset + limit), total: rows.length, limit, offset, summary };
+  const receipts = await hydrateCaktoReceiptPayloads(rows.slice(offset, offset + limit));
+  return { receipts, total: rows.length, limit, offset, summary };
 }
 
 function scheduleAircraftLookupKey(value) {
@@ -19734,6 +19885,16 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "signContract") {
       const contract = await signContract(actorUserId, payload);
       return jsonResponse(res, 200, { ok: true, contract });
+    }
+
+    if (action === "bulkSignContracts") {
+      const result = await bulkSignContracts(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "bulkDeleteContracts") {
+      const result = await bulkDeleteContracts(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
     }
 
     if (action === "ensureEnrollmentFormPreview") {
