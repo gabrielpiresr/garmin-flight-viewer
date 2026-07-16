@@ -48,6 +48,9 @@ const PublicSchedulePage = lazy(() =>
 const InstructorAdmissionFormPage = lazy(() =>
   import("./pages/InstructorAdmissionFormPage").then((module) => ({ default: module.InstructorAdmissionFormPage })),
 );
+const PublicLiabilityWaiverPage = lazy(() =>
+  import("./pages/PublicLiabilityWaiverPage").then((module) => ({ default: module.PublicLiabilityWaiverPage })),
+);
 
 function normalizeAppPath(path: string): string {
   const pathname = path.split(/[?#]/, 1)[0] ?? "/";
@@ -102,6 +105,7 @@ export default function App() {
   const isProposalRoute = window.location.pathname.startsWith("/proposta/");
   const isApresentacaoRoute = window.location.pathname === "/apresentacao";
   const isInstructorAdmissionRoute = window.location.pathname === "/admissao-instrutor";
+  const isLiabilityWaiverRoute = window.location.pathname === "/termo-isencao";
 
   // After login, refresh brand cache and reapply theme with latest settings.
   // Também pré-carrega a aba Escala em segundo plano (ocioso), para que ao abri-la
@@ -182,6 +186,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <InstructorAdmissionFormPage />
+      </Suspense>
+    );
+  }
+
+  if (isLiabilityWaiverRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <PublicLiabilityWaiverPage />
       </Suspense>
     );
   }

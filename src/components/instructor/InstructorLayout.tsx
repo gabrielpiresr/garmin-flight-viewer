@@ -8,6 +8,7 @@ import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab
 import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
+import { SidebarBrand } from "../SidebarBrand";
 import type { InstructorTabKey } from "../../types/rolePermissions";
 
 const HelpCenterTab = lazy(() => import("../HelpCenterTab").then((module) => ({ default: module.HelpCenterTab })));
@@ -375,9 +376,12 @@ export function InstructorLayout() {
       <aside className={`sticky top-0 hidden h-screen flex-col border-r border-slate-800 bg-slate-950/80 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
         <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
-          <span className={`${sidebarCollapsed ? "hidden" : ""} rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400`}>
-            Instrutor
-          </span>
+            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+              <SidebarBrand
+                fallbackLabel="Instrutor"
+                fallbackClassName="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400"
+              />
+            </div>
             <button
               type="button"
               onClick={() => setSidebarCollapsed((value) => !value)}

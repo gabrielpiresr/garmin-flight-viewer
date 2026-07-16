@@ -298,6 +298,64 @@ function brDate(iso) {
   return match ? `${match[3]}/${match[2]}/${match[1]}` : String(iso || "");
 }
 
+function brNowStamp() {
+  const iso = new Date(Date.now() - 3 * 3600000).toISOString();
+  return `${brDate(iso.slice(0, 10))} às ${iso.slice(11, 16)}`;
+}
+
+function studentActionNote(action, studentLabel) {
+  return `${action} pelo aluno em ${brNowStamp()}`;
+}
+
+function appendNotes(existing, note, maxLength = 255) {
+  const current = cleanScheduleHistoryNotes(existing);
+  const next = clean(note);
+  if (!next) return current.slice(0, maxLength);
+  if (!current) return next.slice(0, maxLength);
+  const separator = " | ";
+  const combined = `${current}${separator}${next}`;
+  if (combined.length <= maxLength) return combined;
+  const availableForCurrent = maxLength - separator.length - next.length;
+  if (availableForCurrent <= 0) return next.slice(0, maxLength);
+  const keptCurrent = current.length <= availableForCurrent
+    ? current
+    : availableForCurrent <= 3
+      ? current.slice(-availableForCurrent)
+    : `...${current.slice(Math.max(0, current.length - availableForCurrent + 3))}`;
+  return `${keptCurrent}${separator}${next}`;
+}
+
+function cleanScheduleHistoryNotes(value) {
+  return clean(value)
+    .split("|")
+    .map((part) => clean(part))
+    .filter((part) => {
+      if (!part) return false;
+      if (part === "GFV escala") return false;
+      if (/^Aluno:/i.test(part)) return false;
+      if (/^Aeronave:/i.test(part)) return false;
+      return true;
+    })
+    .map((part) => {
+      if (/^Agendado via plataforma$/i.test(part)) return "Via NS";
+      return part
+        .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno\s+.+?\s+em\s+(\d{2}\/\d{2}\/\d{4})\s+(?:as|às)\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
+        .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno em (\d{2}\/\d{2}\/\d{4})\s+as\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
+        .replace(/^Flexibilidade:/i, "Flex.:");
+    })
+    .join(" | ");
+}
+
+function bookingHistoryNotes({ waitlistBooking = false, actorRole = "", studentLabel = "", flexibilityMinutes = 0, observation = "" } = {}) {
+  return [
+    waitlistBooking ? "LISTA DE ESPERA" : "",
+    "Via NS",
+    actorRole === "aluno" ? studentActionNote("Solicitado", studentLabel) : "",
+    flexibilityMinutes > 0 ? `Flex.: ±${clock(flexibilityMinutes)}` : "",
+    observation ? `Obs: ${observation}` : "",
+  ].filter(Boolean).join(" | ").slice(0, 255);
+}
+
 /** Aviso aos admins quando o ALUNO solicita/altera/cancela um voo (fire-and-forget). */
 function notifyAdminsStudentAction(kind, data) {
   if (!ADMIN_USERS_FUNCTION_ID) return;
@@ -1328,6 +1386,7 @@ function publicFlight(doc, actorId, actorRole) {
     isOwn: own,
     studentUserId: privileged ? doc.student_user_id : own ? actorId : null,
     instructorUserId: privileged || own ? doc.instructor_user_id || null : null,
+    notes: privileged || own ? clean(doc.notes) || null : null,
     // Voo já apresentado não pode mais ser cancelado pelo aluno.
     canCancel: own && ACTIVE_STATUSES.includes(cancelStatus) && presentationMs > Date.now(),
   };
@@ -1458,6 +1517,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   const studentId = actorRole === "aluno" ? actorId : clean(payload.studentUserId);
   if (!studentId) fail("Aluno não informado.");
   const student = actorRole === "aluno" ? profile : await getProfile(studentId);
+  const studentLabel = clean(student.full_name || student.email || "Aluno");
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
@@ -1487,6 +1547,15 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   if (!waitlistBooking) {
     await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
   }
+  const flexibilityMinutes = integer(payload.flexibilityMinutes, 0, 0, 8 * 60);
+  const observation = clean(payload.notes).slice(0, 180);
+  const bookingNotes = bookingHistoryNotes({
+    waitlistBooking,
+    actorRole,
+    studentLabel,
+    flexibilityMinutes,
+    observation,
+  });
 
   if (rules.sagaOnlySchedule) {
     // Mesmas regras, mas o evento vive apenas na agenda SAGA — nada é salvo no sistema.
@@ -1532,14 +1601,6 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     // O evento no SAGA armazena o bloco completo (apresentação→encerramento).
     // Solicitação de aluno entra como PENDING (pendente de confirmação da escola).
     const sagaStatus = actorRole === "aluno" ? "PENDING" : "PLANNED";
-    const flexibilityMinutes = integer(payload.flexibilityMinutes, 0, 0, 8 * 60);
-    const observation = clean(payload.notes).slice(0, 180);
-    const bookingNotes = [
-      waitlistBooking ? "LISTA DE ESPERA" : "",
-      "Agendado via plataforma",
-      flexibilityMinutes > 0 ? `Flexibilidade: ±${clock(flexibilityMinutes)}` : "",
-      observation ? `Obs: ${observation}` : "",
-    ].filter(Boolean).join(" | ");
     const sagaTotalDuration = rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes;
     const sagaBoundaryOffset = sagaBoundaryStartOffsetMinutes(events, rules, registration, studentSagaId, times.occupiedStartAt);
     const sagaPayloadTimes = sagaDirectPayloadTimes(times, sagaTotalDuration, sagaBoundaryOffset);
@@ -1549,7 +1610,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
         action: "sagaUpsertScheduleDirect",
         aircraftIdent: registration,
         studentSagaId,
-        studentName: clean(student.full_name || student.email || "Aluno"),
+        studentName: studentLabel,
         instructorUserId: actorRole === "instrutor" ? actorId : null,
         date,
         startTime: sagaPayloadTimes.startTime,
@@ -1568,7 +1629,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
     if (actorRole === "aluno") {
       notifyAdminsStudentAction("requested", {
-        studentName: clean(student.full_name || student.email || "Aluno"),
+        studentName: studentLabel,
         aircraft: registration,
         flightDate: date,
         startTime: times.startTime,
@@ -1646,7 +1707,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   try {
     const record = buildRecord({
       studentId,
-      studentLabel: clean(student.full_name || student.email || "Aluno"),
+      studentLabel,
       registration,
       date,
       times,
@@ -1678,11 +1739,12 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
       schedule_demand_id: `booking-${id}`,
       flight_status: "Pendente",
       is_night: isNight,
+      notes: bookingNotes || null,
     }, flightPermissions(studentId, actorRole === "instrutor" ? actorId : null));
     void triggerSagaSync(id); // fire-and-forget — errors caught internally
     if (actorRole === "aluno") {
       notifyAdminsStudentAction("requested", {
-        studentName: clean(student.full_name || student.email || "Aluno"),
+        studentName: studentLabel,
         aircraft: registration,
         flightDate: date,
         startTime: times.startTime,
@@ -1854,7 +1916,11 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
   }
 
   // O evento NÃO é excluído do SAGA: o status vira CANCELED e a nota registra quem cancelou.
-  const cancelNote = `Cancelado via plataforma (${actorRole})${clean(payload.reason) ? ` - ${clean(payload.reason)}` : ""}`;
+  const cancelReason = clean(payload.reason);
+  const cancelStudentLabel = clean(event.studentName) || clean(profile.full_name || profile.email || "Aluno");
+  const cancelNote = actorRole === "aluno"
+    ? `${studentActionNote("Cancelado", cancelStudentLabel)}${cancelReason ? ` - ${cancelReason}` : ""}`
+    : `Cancelado via plataforma (${actorRole})${cancelReason ? ` - ${cancelReason}` : ""}`;
   try {
     await execAdminUsers({
       action: "sagaUpsertScheduleDirect",
@@ -1869,7 +1935,7 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
       startTime: times.presentationTime,
       durationMinutes: times.blockDurationMinutes,
       sagaStatus: "CANCELED",
-      rawNotes: [clean(event.notes), cancelNote].filter(Boolean).join(" | "),
+      rawNotes: appendNotes(event.notes, cancelNote),
     });
   } catch {
     // Fallback: se o SAGA recusar a alteração de status, remove o evento para não deixar o voo ativo.
@@ -2000,7 +2066,10 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
 
   // Observação opcional da alteração: reutiliza o mesmo campo do modal de solicitação.
   const rescheduleReason = clean(payload.reason).slice(0, 180);
-  const rescheduleNote = `Alterado via plataforma${rescheduleReason ? ` - ${rescheduleReason}` : ""}`;
+  const rescheduleStudentLabel = clean(event.studentName) || clean(profile.full_name || profile.email || "Aluno");
+  const rescheduleNote = actorRole === "aluno"
+    ? `${studentActionNote("Alterado", rescheduleStudentLabel)}${rescheduleReason ? ` - ${rescheduleReason}` : ""}`
+    : `Alterado via plataforma${rescheduleReason ? ` - ${rescheduleReason}` : ""}`;
 
   const currentStatus = clean(event.status).toUpperCase();
   const keepStatus = ["PLANNED", "PENDING", "CONFIRMED"].includes(currentStatus) ? currentStatus : "PLANNED";
@@ -2008,6 +2077,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   // o novo horário (antes o voo seguia Confirmado sem ninguém revisar).
   const nextStatus = actorRole === "aluno" && keepStatus === "CONFIRMED" ? "PENDING" : keepStatus;
   const scheduleStudentSagaId = clean(event.studentSagaId) || actorSagaId;
+  const rescheduleStudentUserId =
+    clean(event.studentUserId) ||
+    (own ? actorId : await resolveLocalUserIdBySagaId(scheduleStudentSagaId));
   const sagaTotalDuration = rules.bufferBeforeMinutes + durationMinutes + rules.bufferAfterMinutes;
   const sagaBoundaryOffset = sagaBoundaryStartOffsetMinutes(events, rules, registration, scheduleStudentSagaId, times.occupiedStartAt, id);
   const sagaPayloadTimes = sagaDirectPayloadTimes(times, sagaTotalDuration, sagaBoundaryOffset);
@@ -2023,10 +2095,35 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     durationMinutes: sagaPayloadTimes.durationMinutes,
     sagaStatus: nextStatus,
     // Preserva as notas existentes (obs do aluno, flexibilidade) e registra a alteração.
-    ...(clean(event.notes)
-      ? { rawNotes: `${clean(event.notes)} | ${rescheduleNote}` }
-      : { notes: rescheduleNote }),
+    rawNotes: appendNotes(event.notes, rescheduleNote),
   });
+
+  if (rescheduleStudentUserId) {
+    const auditReason = [
+      `De ${brDate(currentTimes.flightDate)} ${currentTimes.startTime} ${clean(event.aircraft).toUpperCase()}`,
+      `para ${brDate(date)} ${times.startTime} ${registration}`,
+      rescheduleReason ? `Motivo: ${rescheduleReason}` : "",
+    ].filter(Boolean).join(" | ");
+    await databases.createDocument(DATABASE_ID, AUDIT_ID, sdk.ID.unique(), {
+      school_id: SCHOOL_ID,
+      flight_id: `saga-${id}`,
+      student_user_id: rescheduleStudentUserId,
+      event_type: "rescheduled",
+      actor_user_id: actorId,
+      actor_role: actorRole,
+      reason: auditReason.slice(0, 1024),
+      penalty_percentage: 0,
+      penalty_hours: 0,
+      penalty_waived: false,
+      occurred_at: new Date().toISOString(),
+    }, [
+      sdk.Permission.read(sdk.Role.user(rescheduleStudentUserId)),
+      sdk.Permission.read(sdk.Role.label("admin")),
+      sdk.Permission.read(sdk.Role.label("instrutor")),
+    ]).catch((error) => {
+      if (error?.code !== 409) throw error;
+    });
+  }
 
   if (actorRole === "aluno") {
     notifyAdminsStudentAction("rescheduled", {
@@ -2136,9 +2233,14 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
   ]).catch((error) => {
     if (error?.code !== 409) throw error;
   });
+  const localCancelReason = clean(payload.reason);
+  const localCancelNote = actorRole === "aluno"
+    ? `${studentActionNote("Cancelado", clean(profile?.full_name || profile?.email || "Aluno"))}${localCancelReason ? ` - ${localCancelReason}` : ""}`
+    : `Cancelado via plataforma (${actorRole})${localCancelReason ? ` - ${localCancelReason}` : ""}`;
   const updated = await databases.updateDocument(DATABASE_ID, FLIGHTS_ID, id, {
     flight_status: "Cancelado",
     cancelled_at: new Date().toISOString(),
+    notes: appendNotes(doc.notes, localCancelNote),
   });
   await releaseLocks(id);
   if (actorRole === "aluno") {

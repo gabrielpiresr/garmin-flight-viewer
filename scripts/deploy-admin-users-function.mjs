@@ -272,6 +272,7 @@ async function main() {
   const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
   const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
   const appUrl = process.env.APP_URL || env.VITE_APP_URL || "";
+  const adminUserId = process.env.ADMIN_USER_ID || env.ADMIN_USER_ID || env.VITE_ADMIN_USER_ID || "";
   const cfWorkerUrl = process.env.CF_WORKER_URL || env.VITE_CF_WORKER_URL || "";
   const workerSecret = process.env.WORKER_SECRET || env.WORKER_SECRET || env.VITE_CF_WORKER_SECRET || "";
   const googleCalendarServiceAccountJson =
@@ -386,6 +387,7 @@ async function main() {
   if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);
   if (appUrl) await upsertVariable(functions, "APP_URL", appUrl);
+  if (adminUserId) await upsertVariable(functions, "ADMIN_USER_ID", adminUserId);
   await upsertVariable(functions, "CF_WORKER_URL", cfWorkerUrl);
   await upsertVariable(functions, "WORKER_SECRET", workerSecret, true);
   if (googleCalendarServiceAccountJson) {

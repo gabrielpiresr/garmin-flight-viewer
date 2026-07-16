@@ -280,9 +280,9 @@ body{font-family:"Times New Roman",Times,Georgia,serif;color:#111;background:#ff
 
 <!-- Metadados -->
 <div class="meta">
-  <div class="mrow"><span class="mk">Contratante:</span><span class="mv">${esc(schoolName || "Escola")}</span></div>
+  <div class="mrow"><span class="mk">Contratante:</span><span class="mv">${esc(contract.recipientName)}</span></div>
   <div class="mrow"><span class="mk">Status:</span><span class="${isSigned ? "ms-ok" : "ms-pending"}">${esc(statusLabel)}</span></div>
-  <div class="mrow"><span class="mk">Contratado(a):</span><span class="mv">${esc(contract.recipientName)}</span></div>
+  <div class="mrow"><span class="mk">Contratada:</span><span class="mv">${esc(schoolName || "Escola")}</span></div>
   <div class="mrow"><span class="mk">Emissão:</span><span class="mv">${fmtDate(contract.createdAt)}</span></div>
   ${contract.signedByRecipientAt ? `<div class="mrow"><span class="mk">Assin. aluno:</span><span class="mv">${fmtDate(contract.signedByRecipientAt)}</span></div>` : ""}
   ${contract.signedByAdminAt ? `<div class="mrow"><span class="mk">Assin. escola:</span><span class="mv">${fmtDate(contract.signedByAdminAt)}</span></div>` : ""}
@@ -294,11 +294,11 @@ body{font-family:"Times New Roman",Times,Georgia,serif;color:#111;background:#ff
 <!-- Assinaturas -->
 <div class="sig-title">Assinaturas</div>
 <div class="sig-grid">
-  ${sigBlock({ label:"Contratado(a)", name:contract.recipientName, role:"Aluno / Instrutor",
+  ${sigBlock({ label:"Contratante", name:contract.recipientName, role:"Aluno / Preenchente",
     signed:!!contract.signedByRecipientAt,
     signedAt:contract.signedByRecipientAt ?? recipientSig?.signedAt ?? null,
     code:recipientCode })}
-  ${sigBlock({ label:"Contratante (Escola)", name:schoolName||"Escola", role:"Representante Legal",
+  ${sigBlock({ label:"Contratada (Escola)", name:schoolName||"Escola", role:"Representante Legal",
     signed:!!contract.signedByAdminAt,
     signedAt:contract.signedByAdminAt ?? adminSig?.signedAt ?? null,
     code:adminCode })}

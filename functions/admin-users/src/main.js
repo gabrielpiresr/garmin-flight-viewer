@@ -8297,6 +8297,35 @@ function richTextDoc(text) {
   });
 }
 
+function richTextText(text, marks = []) {
+  const node = { type: "text", text: cleanString(text) };
+  if (marks.length) node.marks = marks;
+  return node;
+}
+
+function richTextParagraph(parts) {
+  const content = Array.isArray(parts) ? parts : [richTextText(parts)];
+  return { type: "paragraph", content: content.filter((item) => item?.text || item?.content) };
+}
+
+function richTextHeading(text, level = 2) {
+  return { type: "heading", attrs: { level }, content: [richTextText(text)] };
+}
+
+function richTextBulletList(items) {
+  return {
+    type: "bulletList",
+    content: items.map((text) => ({
+      type: "listItem",
+      content: [richTextParagraph(text)],
+    })),
+  };
+}
+
+function richTextDocFromNodes(content) {
+  return JSON.stringify({ type: "doc", content });
+}
+
 function sagaOnlyDigits(value) {
   return cleanString(value).replace(/\D/g, "");
 }
@@ -9385,6 +9414,112 @@ async function attachEnrollmentFormToProfile(contract) {
     signed_pdf_file_id: uploaded.$id,
   });
   return uploaded.$id;
+}
+
+function formatPublicWaiverLocationDate(city, signedAt) {
+  const safeCity = cleanString(city) || "Jundiaí";
+  return `${safeCity}, ${formatDateBr(signedAt)}`;
+}
+
+function buildPublicLiabilityWaiverContent(data, signedAt) {
+  const fullName = cleanString(data.fullName).toUpperCase();
+  const cpf = cleanString(data.cpf);
+  const emergencyName = cleanString(data.emergencyName);
+  const emergencyPhone = cleanString(data.emergencyPhone);
+  const emergencyRelation = cleanString(data.emergencyRelation);
+  const acceptedAt = formatDateBr(signedAt);
+  return richTextDocFromNodes([
+    richTextHeading("TERMO DE ISENÇÃO DE RESPONSABILIDADE", 2),
+    richTextParagraph("Advertência: O voo, bem como todas as demais atividades a ele relacionadas, é perigoso e há riscos envolvidos na sua participação. Mesmo praticado com estrita observância de todas as recomendações de segurança, existe chance de que seus praticantes venham a sofrer sérios danos ou até acidente fatal em decorrência de sua prática."),
+    richTextParagraph([
+      richTextText("Eu "),
+      richTextText(fullName, [{ type: "bold" }]),
+      richTextText(`, portador(a) do CPF nº ${cpf}, afirmo ser maior de idade e ter decidido, por livre e espontânea vontade, participar de um voo junto à EPEAC - ESCOLA PRÁTICA EAD AVIAÇÃO CIVIL LTDA.; e firmo o presente termo de isenção de responsabilidade da escola, declarando expressamente estar de acordo com o inteiro teor de todas as cláusulas abaixo:`),
+    ]),
+    richTextBulletList([
+      "Declaração - Declaro ter recebido integralmente as informações a respeito e ter pleno conhecimento do significado do voo.",
+      "Risco - Declaro ter pleno conhecimento da natureza, finalidade e risco da prática do voo, e que decido realizar esta atividade voluntariamente.",
+      "Cláusula de não indenizar - Ao assinar o presente termo, isento a EPEAC - ESCOLA PRÁTICA EAD AVIAÇÃO CIVIL LTDA., bem como todos os seus dirigentes, funcionários, representantes, instrutores e prepostos de qualquer natureza, de qualquer responsabilidade por danos materiais, pessoais, morais, à imagem ou de qualquer outra espécie que venham a ser causados à minha pessoa ou aos meus bens.",
+      "Desistência - Declaro estar ciente de que, caso o voo não ocorra por questões meteorológicas, manutenção não programada ou outros motivos, o voo será cancelado, descabendo qualquer obrigação civil de cunho reparatório ou indenizatório, sendo reagendado para uma nova data, exceto em caso de desistência do ocupante.",
+      "Responsabilidade - O ocupante se responsabiliza por todo e qualquer dano material, moral ou de qualquer outra espécie que, por sua ação ou omissão, venha a ser causado à escola.",
+      "Saúde - Declaro que gozo de bom estado geral de saúde, não sendo portador(a) de enfermidade, distúrbio físico ou psíquico; que não me submeto a tratamento médico que impossibilite a prática de voo; que não sou portador(a) de distúrbios cardíacos ou pulmonares, diabetes, problemas nervosos ou psíquicos; que não sofro de desmaio frequente ou convulsões, pressão alta ou baixa; que não sofro de qualquer outra enfermidade que, por sua natureza, torne incompatível a realização do voo e, ainda, que não estou sob efeito de drogas ou álcool.",
+      "Imagem - O ocupante poderá tirar fotos e vídeos desde que tenha prévia autorização do instrutor e do aluno em comando da aeronave.",
+    ]),
+    richTextParagraph(formatPublicWaiverLocationDate(data.city, signedAt)),
+    richTextParagraph(`Em caso de emergência, contatar: ${[emergencyPhone, emergencyName, emergencyRelation].filter(Boolean).join(" - ")}`),
+    richTextHeading("Aceite digital", 3),
+    richTextParagraph(`O preenchente marcou o termo de aceite no formulário público em ${acceptedAt}, declarando que leu, compreendeu e concordou integralmente com este termo. Este aceite registra a assinatura digital do preenchente para fins de controle interno da escola.`),
+    richTextParagraph(`E-mail informado: ${cleanString(data.email) || "Não informado"}. Telefone informado: ${cleanString(data.phone) || "Não informado"}.`),
+  ]);
+}
+
+async function createPublicLiabilityWaiverContract(payload = {}, req = {}) {
+  if (!CONTRACTS_COLLECTION_ID) throw Object.assign(new Error("Coleção de contratos não configurada."), { status: 500 });
+  const adminUserId = cleanString(process.env.ADMIN_USER_ID || process.env.VITE_ADMIN_USER_ID);
+  if (!adminUserId) throw Object.assign(new Error("Admin padrão não configurado para indexar o termo."), { status: 500 });
+
+  const data = payload.form && typeof payload.form === "object" ? payload.form : payload;
+  const required = [
+    ["fullName", "nome completo"],
+    ["cpf", "CPF"],
+    ["birthDate", "data de nascimento"],
+    ["email", "e-mail"],
+    ["phone", "telefone"],
+    ["emergencyName", "contato de emergência"],
+    ["emergencyPhone", "telefone de emergência"],
+  ];
+  const missing = required
+    .filter(([key]) => !cleanString(data[key]))
+    .map(([, label]) => label);
+  if (missing.length) {
+    throw Object.assign(new Error(`Preencha: ${missing.join(", ")}.`), { status: 400 });
+  }
+  if (data.acceptedTerms !== true) {
+    throw Object.assign(new Error("Aceite do termo obrigatório."), { status: 400 });
+  }
+
+  const now = new Date().toISOString();
+  const clientIp = cleanString(req.headers?.["x-forwarded-for"] || req.headers?.["x-real-ip"]).split(",")[0].trim();
+  const userAgent = cleanString(req.headers?.["user-agent"]).slice(0, 255);
+  const customValues = {
+    fullName: cleanString(data.fullName),
+    cpf: cleanString(data.cpf),
+    email: cleanString(data.email),
+    phone: cleanString(data.phone),
+    birthDate: cleanString(data.birthDate),
+    city: cleanString(data.city),
+    emergencyName: cleanString(data.emergencyName),
+    emergencyPhone: cleanString(data.emergencyPhone),
+    emergencyRelation: cleanString(data.emergencyRelation),
+    acceptedTerms: "true",
+    acceptedAt: now,
+    source: "public_liability_waiver_form",
+    ip: clientIp,
+    userAgent,
+  };
+
+  const contract = await createContractDocument({
+    school_id: SCHOOL_ID,
+    template_id: "public_liability_waiver",
+    template_name: "Termo de Isenção de Responsabilidade",
+    lead_id: null,
+    standard_type: "",
+    contract_kind: "standard_contract",
+    recipient_user_id: adminUserId,
+    recipient_name: cleanString(data.fullName),
+    content_resolved_json: buildPublicLiabilityWaiverContent(data, now),
+    custom_var_values_json: JSON.stringify(customValues),
+    status: "signed_recipient",
+    created_by: "public-liability-waiver-form",
+    created_at: now,
+    signed_by_recipient_at: now,
+  }, adminUserId);
+
+  return {
+    contractId: contract.$id,
+    createdAt: contract.created_at,
+    status: contract.status,
+  };
 }
 
 async function signContract(actorUserId, payload = {}) {
@@ -17604,18 +17739,10 @@ function sagaScheduleSummaryPayload(ctx, mapping, payload = {}) {
     throw Object.assign(new Error(`ID SAGA do instrutor ${cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name) || cleanString(flight.instructor_user_id)} nao encontrado no perfil.`), { status: 422 });
   }
   const { startAt, endAt } = sagaScheduleDateTimes(flight);
-  const studentName = cleanString(studentProfile?.full_name) || cleanString(studentUser?.name) || "Aluno";
   const instructorName = cleanString(instructorProfile?.full_name) || cleanString(instructorUser?.name);
   const notes = Object.prototype.hasOwnProperty.call(payload, "notes")
-    ? cleanString(payload.notes)
-    : [
-        `GFV ${flight.$id}`,
-        `Aluno: ${studentName}`,
-        instructorName ? `Instrutor: ${instructorName}` : "",
-        aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
-        cleanString(flight.flight_date) ? `Data: ${cleanString(flight.flight_date)}` : "",
-        cleanString(flight.start_time) ? `Horario: ${cleanString(flight.start_time).slice(0, 5)}` : "",
-      ].filter(Boolean).join(" | ");
+    ? cleanSagaScheduleDirectNotes(payload.notes)
+    : cleanSagaScheduleDirectNotes(flight.notes);
   return {
     aircraft_id: aircraftId,
     student_id: studentSagaId,
@@ -17927,6 +18054,27 @@ function sagaDirectScheduleDateTimes(date, startTime, durationMinutes) {
   return { startAt: `${safeDate}T${start}`, endAt: `${endDate}T${endTime}` };
 }
 
+function cleanSagaScheduleDirectNotes(value) {
+  return cleanString(value)
+    .split("|")
+    .map((part) => cleanString(part))
+    .filter((part) => {
+      if (!part) return false;
+      if (part === "GFV escala") return false;
+      if (/^Aluno:/i.test(part)) return false;
+      if (/^Aeronave:/i.test(part)) return false;
+      return true;
+    })
+    .map((part) => {
+      if (/^Agendado via plataforma$/i.test(part)) return "Via NS";
+      return part
+        .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno\s+.+?\s+em\s+(\d{2}\/\d{2}\/\d{4})\s+(?:as|às)\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
+        .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno em (\d{2}\/\d{2}\/\d{4})\s+as\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
+        .replace(/^Flexibilidade:/i, "Flex.:");
+    })
+    .join(" | ");
+}
+
 async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   if (actorUserId) await requireInstructorOrAdmin(actorUserId);
   let mapping = await loadSagaImportMapping();
@@ -17973,13 +18121,9 @@ async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   const { startAt, endAt } = sagaDirectScheduleDateTimes(payload.date, payload.startTime, payload.durationMinutes);
   // rawNotes substitui o texto inteiro (usado p/ preservar notas existentes em alteração/cancelamento).
   const notes = Object.prototype.hasOwnProperty.call(payload, "rawNotes")
-    ? cleanString(payload.rawNotes)
+    ? cleanSagaScheduleDirectNotes(payload.rawNotes)
     : [
-        "GFV escala",
-        studentName ? `Aluno: ${studentName}` : "",
-        instructorName ? `Instrutor: ${instructorName}` : "",
-        aircraftIdent ? `Aeronave: ${aircraftIdent}` : "",
-        cleanString(payload.notes),
+        cleanSagaScheduleDirectNotes(payload.notes),
       ].filter(Boolean).join(" | ");
 
   const requestPayload = {
@@ -19856,6 +20000,11 @@ module.exports = async ({ req, res, log, error }) => {
       }
       const share = await getPublicFlightReviewShare(payload);
       return jsonResponse(res, 200, { share });
+    }
+
+    if (action === "createPublicLiabilityWaiverContract") {
+      const result = await createPublicLiabilityWaiverContract(payload, req);
+      return jsonResponse(res, 200, { ok: true, ...result });
     }
 
     if (action === "createFlightPublicShare") {

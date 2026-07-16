@@ -12,6 +12,7 @@ import {
 import { PortalShellHeader } from "../PortalShellHeader";
 import { AdminCommandBar } from "./AdminCommandBar";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
+import { SidebarBrand } from "../SidebarBrand";
 import { Tabs } from "../ui/Tabs";
 import type { SettingsSubTab } from "./PlatformSettingsTab";
 import type { ScheduleSubTab } from "./ScheduleAdminTab";
@@ -770,9 +771,12 @@ export function AdminLayout() {
       <aside className={`sticky top-0 hidden h-screen flex-col border-r border-slate-800 bg-slate-950/80 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
         <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
-            <span className={`${sidebarCollapsed ? "hidden" : ""} rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-400`}>
-              Admin
-            </span>
+            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+              <SidebarBrand
+                fallbackLabel="Admin"
+                fallbackClassName="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-400"
+              />
+            </div>
             <button
               type="button"
               onClick={() => setSidebarCollapsed((value) => !value)}
