@@ -3,13 +3,84 @@ import type {
   InstructorAdmissionCandidate,
   InstructorAdmissionFieldValue,
   InstructorAdmissionForm,
+  InstructorAdmissionFormField,
   InstructorAdmissionSystemProperty,
 } from "../types/instructorAdmission";
+
+export const INSTRUCTOR_ADMISSION_SAGA_ANAC_RESPONSE_KEY = "__saga_anac_json";
+export const INSTRUCTOR_ADMISSION_SAGA_ANAC_LOOKUP_AT_KEY = "__saga_anac_lookup_at";
+export const INSTRUCTOR_ADMISSION_SAGA_ANAC_MESSAGE_KEY = "__saga_anac_message";
 
 function stringValue(value: InstructorAdmissionFieldValue | undefined): string {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
+}
+
+function normal(value: string | undefined): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function fieldMatchesSystemProperty(
+  field: InstructorAdmissionFormField,
+  property: InstructorAdmissionSystemProperty,
+): boolean {
+  if (field.systemProperty === property) return true;
+  const haystack = `${normal(field.id)} ${normal(field.label)}`;
+  switch (property) {
+    case "fullName":
+      return field.type === "text" && /\bnome\b/.test(haystack);
+    case "nickname":
+      return /apelido|nickname/.test(haystack);
+    case "email":
+      return field.type === "email" || /e-?mail|email/.test(haystack);
+    case "phone":
+      return field.type === "phone" || /telefone|celular|whatsapp|phone/.test(haystack);
+    case "cpf":
+      return /\bcpf\b/.test(haystack);
+    case "anacCode":
+      return /anac|canac/.test(haystack);
+    case "birthDate":
+      return /nascimento|birth|data de nasc/.test(haystack);
+  }
+}
+
+export function admissionValueForSystemProperty(
+  form: InstructorAdmissionForm | null,
+  responses: Record<string, InstructorAdmissionFieldValue>,
+  property: InstructorAdmissionSystemProperty,
+): string {
+  const field = form?.fields.find((item) => fieldMatchesSystemProperty(item, property));
+  return field ? stringValue(responses[field.id]) : "";
+}
+
+export function getInstructorCandidateSagaAnacJson(
+  candidate: InstructorAdmissionCandidate,
+): string | null {
+  const value = candidate.responses[INSTRUCTOR_ADMISSION_SAGA_ANAC_RESPONSE_KEY];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function isInstructorAdmissionInternalResponseKey(key: string): boolean {
+  return key === INSTRUCTOR_ADMISSION_SAGA_ANAC_RESPONSE_KEY ||
+    key === INSTRUCTOR_ADMISSION_SAGA_ANAC_LOOKUP_AT_KEY ||
+    key === INSTRUCTOR_ADMISSION_SAGA_ANAC_MESSAGE_KEY;
+}
+
+export function withInstructorCandidateSagaAnacResponse(
+  responses: Record<string, InstructorAdmissionFieldValue>,
+  data: unknown,
+  message?: string,
+): Record<string, InstructorAdmissionFieldValue> {
+  return {
+    ...responses,
+    [INSTRUCTOR_ADMISSION_SAGA_ANAC_RESPONSE_KEY]: JSON.stringify(data),
+    [INSTRUCTOR_ADMISSION_SAGA_ANAC_LOOKUP_AT_KEY]: new Date().toISOString(),
+    [INSTRUCTOR_ADMISSION_SAGA_ANAC_MESSAGE_KEY]: message || "Dados ANAC obtidos no SAGA.",
+  };
 }
 
 function applySystemProperty(
@@ -89,6 +160,11 @@ export function extractAdmissionFieldsFromResponses(
     const phoneField = form.fields.find((field) => field.type === "phone");
     if (phoneField) result.phone = stringValue(responses[phoneField.id]);
   }
+  for (const property of ["cpf", "anacCode", "birthDate"] as const) {
+    if (result.profilePatch[property]) continue;
+    const value = admissionValueForSystemProperty(form, responses, property);
+    if (value) applySystemProperty(property, value, result);
+  }
 
   return result;
 }
@@ -115,6 +191,10 @@ export function buildInitialResponsesFromCandidate(
       case "phone":
         if (candidate.phone) responses[field.id] = candidate.phone;
         break;
+      case "cpf":
+      case "anacCode":
+      case "birthDate":
+        break;
       default:
         break;
     }
@@ -136,6 +216,10 @@ export function candidateValueForSystemProperty(
       return candidate.email;
     case "phone":
       return candidate.phone || "";
+    case "cpf":
+    case "anacCode":
+    case "birthDate":
+      return admissionValueForSystemProperty(null, candidate.responses, property);
     default:
       return "";
   }

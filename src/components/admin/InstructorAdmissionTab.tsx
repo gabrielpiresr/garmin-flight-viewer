@@ -384,6 +384,10 @@ export function InstructorAdmissionTab() {
             setCandidates((current) => current.map((c) => (c.id === updated.id ? updated : c)));
             setSelected(updated);
           }}
+          onChanged={(updated) => {
+            setCandidates((current) => current.map((c) => (c.id === updated.id ? updated : c)));
+            setSelected(updated);
+          }}
           onSendRegistrationLink={setRegistrationModal}
           onSave={async (patch) => {
             const updated = await updateInstructorAdmissionCandidate(selected.id, patch);

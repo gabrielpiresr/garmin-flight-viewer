@@ -5,7 +5,21 @@ import {
   instructorAdmissionFileUrl,
   linkCandidateToInstructorUser,
   listInstructorAdmissionComments,
+  updateInstructorAdmissionCandidate,
 } from "../../../lib/instructorAdmissionDb";
+import { lookupSagaAnacPersonAdmin } from "../../../lib/adminUsersDb";
+import {
+  buildSagaAnacPostFields,
+  hasSagaAnacPerson,
+  parseSagaAnacPerson,
+  sagaAnacMissingEnrollmentFields,
+} from "../../../lib/sagaAnacSync";
+import {
+  admissionValueForSystemProperty,
+  getInstructorCandidateSagaAnacJson,
+  isInstructorAdmissionInternalResponseKey,
+  withInstructorCandidateSagaAnacResponse,
+} from "../../../lib/instructorAdmissionFormFields";
 import { searchFlightPickerUsers } from "../../../lib/adminUsersDb";
 import type {
   InstructorAdmissionCandidate,
@@ -127,6 +141,7 @@ export function CandidateDetailDrawer({
   onSave,
   onMoveStage,
   onLinked,
+  onChanged,
   onSendRegistrationLink,
 }: {
   candidate: InstructorAdmissionCandidate;
@@ -144,6 +159,7 @@ export function CandidateDetailDrawer({
   }) => Promise<void>;
   onMoveStage: (stageId: string) => Promise<void>;
   onLinked: (candidate: InstructorAdmissionCandidate) => void;
+  onChanged: (candidate: InstructorAdmissionCandidate) => void;
   onSendRegistrationLink: (candidate: InstructorAdmissionCandidate) => void;
 }) {
   const AUTOSAVE_DELAY_MS = 600;
@@ -162,6 +178,8 @@ export function CandidateDetailDrawer({
   const [linkQuery, setLinkQuery] = useState("");
   const [linkOptions, setLinkOptions] = useState<Array<{ userId: string; label: string; email: string }>>([]);
   const [linking, setLinking] = useState(false);
+  const [sagaAnacJson, setSagaAnacJson] = useState(getInstructorCandidateSagaAnacJson(candidate));
+  const [sagaAnacLoading, setSagaAnacLoading] = useState(false);
   const snapshotRef = useRef("");
   const hydratedRef = useRef(false);
   const stageIdRef = useRef(candidate.stageId);
@@ -180,6 +198,7 @@ export function CandidateDetailDrawer({
     setPhone(candidate.phone || "");
     setNotes(candidate.notes || "");
     setStageId(candidate.stageId);
+    setSagaAnacJson(getInstructorCandidateSagaAnacJson(candidate));
     stageIdRef.current = candidate.stageId;
     snapshotRef.current = JSON.stringify({
       name: candidate.name,
@@ -324,7 +343,50 @@ export function CandidateDetailDrawer({
     });
   }
 
-  const responseEntries = Object.entries(candidate.responses);
+  async function handleLookupSagaAnac() {
+    const anacCode = admissionValueForSystemProperty(form, candidate.responses, "anacCode").replace(/\D/g, "");
+    const cpf = admissionValueForSystemProperty(form, candidate.responses, "cpf").replace(/\D/g, "");
+    const birthDate = admissionValueForSystemProperty(form, candidate.responses, "birthDate");
+    if (!anacCode || cpf.length !== 11 || !birthDate) {
+      showToast({
+        variant: "error",
+        message: "Informe ANAC, CPF e data de nascimento no formulario do candidato antes de consultar.",
+      });
+      return;
+    }
+
+    setSagaAnacLoading(true);
+    try {
+      const result = await lookupSagaAnacPersonAdmin({
+        leadId: "",
+        userId: candidate.userId,
+        anacCode,
+        cpf,
+        birthDate,
+      });
+      if (!result.ok || !result.data) {
+        showToast({ variant: "error", message: result.message });
+        return;
+      }
+      const responses = withInstructorCandidateSagaAnacResponse(candidate.responses, result.data, result.message);
+      const updated = await updateInstructorAdmissionCandidate(candidate.id, { responses });
+      setSagaAnacJson(getInstructorCandidateSagaAnacJson(updated));
+      onChanged(updated);
+      showToast({ variant: "success", message: "Dados ANAC obtidos no SAGA." });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha ao consultar ANAC no SAGA.",
+      });
+    } finally {
+      setSagaAnacLoading(false);
+    }
+  }
+
+  const responseEntries = Object.entries(candidate.responses).filter(
+    ([fieldId]) => !isInstructorAdmissionInternalResponseKey(fieldId),
+  );
+  const sagaAnac = parseSagaAnacPerson(sagaAnacJson);
 
   return (
     <div
@@ -457,6 +519,50 @@ export function CandidateDetailDrawer({
               </div>
             </section>
           )}
+
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                SAGA / ANAC
+              </h3>
+              <button
+                type="button"
+                disabled={sagaAnacLoading}
+                onClick={() => void handleLookupSagaAnac()}
+                className="rounded-lg border border-sky-700/50 bg-sky-600/10 px-2.5 py-1 text-[11px] font-medium text-sky-300 hover:bg-sky-600/20 disabled:opacity-50"
+              >
+                {sagaAnacLoading ? "Consultando..." : "Consultar ANAC no SAGA"}
+              </button>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs">
+              {sagaAnac ? (
+                <div className="space-y-3 text-slate-300">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Payload enviado ao SAGA
+                  </p>
+                  <dl className="space-y-1.5">
+                    {buildSagaAnacPostFields(sagaAnac).map((field) => (
+                      <div key={field.key}>
+                        <dt className="font-mono text-[10px] text-sky-400/90">{field.key}</dt>
+                        <dd className="mt-0.5 break-words text-[11px] text-slate-200">{field.value || "-"}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {hasSagaAnacPerson(sagaAnacJson) ? (
+                    <p className="text-emerald-400">Todos os campos ANAC obrigatorios estao presentes.</p>
+                  ) : (
+                    <p className="text-amber-300">
+                      Campos faltando: {sagaAnacMissingEnrollmentFields(sagaAnac).join(", ")}. Consulte ANAC novamente.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-amber-300/90">
+                  Dados ANAC do SAGA ainda nao consultados. O candidato precisa ter ANAC, CPF e nascimento preenchidos.
+                </p>
+              )}
+            </div>
+          </section>
 
           {form && form.fields.length > 0 && responseEntries.length === 0 && candidate.source === "manual" && (
             <section className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-500">

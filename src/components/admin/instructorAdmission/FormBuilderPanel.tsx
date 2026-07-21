@@ -644,22 +644,25 @@ export function FormBuilderPanel({
     form?.fields?.length
       ? form.fields
       : [
-          { id: crypto.randomUUID(), label: "Nome completo", type: "text", required: true, order: 10 },
-          { id: crypto.randomUUID(), label: "E-mail", type: "email", required: true, order: 20 },
-          { id: crypto.randomUUID(), label: "Telefone", type: "phone", required: false, order: 30 },
+          { id: "system_fullName", label: "Nome completo", type: "text", required: true, order: 10, systemProperty: "fullName" },
+          { id: "system_email", label: "E-mail", type: "email", required: true, order: 20, systemProperty: "email" },
+          { id: "system_phone", label: "Telefone", type: "phone", required: false, order: 30, systemProperty: "phone" },
+          { id: "system_anacCode", label: "Código ANAC", type: "text", required: true, order: 40, systemProperty: "anacCode", placeholder: "Somente números", helpText: "Usado para consultar seus dados de licença e CMA na ANAC." },
+          { id: "system_cpf", label: "CPF", type: "text", required: true, order: 50, systemProperty: "cpf", placeholder: "000.000.000-00", helpText: "Necessário para validar a consulta ANAC." },
+          { id: "system_birthDate", label: "Data de nascimento", type: "date", required: true, order: 60, systemProperty: "birthDate", helpText: "Necessária para validar a consulta ANAC." },
           {
             id: crypto.randomUUID(),
             label: "Experiência como piloto",
             type: "textarea",
             required: false,
-            order: 40,
+            order: 70,
           },
           {
             id: crypto.randomUUID(),
             label: "Currículo ou documentos",
             type: "attachment",
             required: false,
-            order: 50,
+            order: 80,
           },
         ],
   );

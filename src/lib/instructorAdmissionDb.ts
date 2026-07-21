@@ -212,6 +212,90 @@ function parseScoreRulesArray(parsed: unknown[]): InstructorAdmissionScoreRule[]
     .filter((item): item is InstructorAdmissionScoreRule => Boolean(item));
 }
 
+function normalizeForMatch(value: string | undefined): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function existingSystemField(
+  fields: InstructorAdmissionFormField[],
+  property: InstructorAdmissionSystemProperty,
+): InstructorAdmissionFormField | undefined {
+  return fields.find((field) => {
+    if (field.systemProperty === property) return true;
+    const haystack = `${normalizeForMatch(field.id)} ${normalizeForMatch(field.label)}`;
+    if (property === "cpf") return /\bcpf\b/.test(haystack);
+    if (property === "anacCode") return /anac|canac/.test(haystack);
+    if (property === "birthDate") return /nascimento|birth|data de nasc/.test(haystack);
+    if (property === "fullName") return field.type === "text" && /\bnome\b/.test(haystack);
+    if (property === "email") return field.type === "email" || /e-?mail|email/.test(haystack);
+    if (property === "phone") return field.type === "phone" || /telefone|celular|whatsapp|phone/.test(haystack);
+    if (property === "nickname") return /apelido|nickname/.test(haystack);
+    return false;
+  });
+}
+
+function systemFieldSeed(
+  property: InstructorAdmissionSystemProperty,
+  order: number,
+): InstructorAdmissionFormField {
+  const common = {
+    id: `system_${property}`,
+    required: true,
+    order,
+    systemProperty: property,
+  };
+  if (property === "anacCode") {
+    return {
+      ...common,
+      label: "Código ANAC",
+      type: "text",
+      placeholder: "Somente números",
+      helpText: "Usado para consultar seus dados de licença e CMA na ANAC.",
+    };
+  }
+  if (property === "cpf") {
+    return {
+      ...common,
+      label: "CPF",
+      type: "text",
+      placeholder: "000.000.000-00",
+      helpText: "Necessário para validar a consulta ANAC.",
+    };
+  }
+  return {
+    ...common,
+    label: "Data de nascimento",
+    type: "date",
+    helpText: "Necessária para validar a consulta ANAC.",
+  };
+}
+
+function ensureInstructorAdmissionLookupFields(
+  fields: InstructorAdmissionFormField[],
+): InstructorAdmissionFormField[] {
+  const next = fields.map((field) => ({ ...field }));
+  for (const property of ["fullName", "email", "phone"] as const) {
+    const field = existingSystemField(next, property);
+    if (field && !field.systemProperty) field.systemProperty = property;
+  }
+  let maxOrder = next.reduce((max, field) => Math.max(max, Number(field.order) || 0), 0);
+  for (const property of ["anacCode", "cpf", "birthDate"] as const) {
+    const field = existingSystemField(next, property);
+    if (field) {
+      field.systemProperty = property;
+      field.required = true;
+      if (property === "birthDate") field.type = "date";
+      continue;
+    }
+    maxOrder += 10;
+    next.push(systemFieldSeed(property, maxOrder));
+  }
+  return next.sort((a, b) => a.order - b.order);
+}
+
 /** fields_json aceita array legado ou envelope `{ v:2, fields, scoreRules }`. */
 function parseFormDocument(value: string | null | undefined): {
   fields: InstructorAdmissionFormField[];
@@ -334,7 +418,7 @@ function mapForm(doc: {
     id: doc.$id,
     title: String(doc.title || "Candidatura de Instrutor").trim(),
     description: String(doc.description || "").trim(),
-    fields,
+    fields: ensureInstructorAdmissionLookupFields(fields),
     scoreRules,
     published: Boolean(doc.published),
     updatedAt: String(doc.$updatedAt || new Date().toISOString()),

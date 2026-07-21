@@ -3,9 +3,15 @@ import {
   getInstructorAdmissionCandidateByRegistrationToken,
   getPublicInstructorAdmissionForm,
   submitInstructorAdmissionForm,
+  updateInstructorAdmissionCandidate,
   uploadInstructorAdmissionFile,
 } from "../lib/instructorAdmissionDb";
-import { buildInitialResponsesFromCandidate } from "../lib/instructorAdmissionFormFields";
+import {
+  admissionValueForSystemProperty,
+  buildInitialResponsesFromCandidate,
+  withInstructorCandidateSagaAnacResponse,
+} from "../lib/instructorAdmissionFormFields";
+import { executeSagaAnacLookup } from "../lib/sagaAnacSync";
 import {
   applyQueryPrefillToResponses,
   isVisibleInstructorAdmissionField,
@@ -28,12 +34,34 @@ function onlyDigits(value: string): string {
   return value.replace(/\D/g, "");
 }
 
+function formatCpfInput(value: string): string {
+  const digits = onlyDigits(value).slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+}
+
 function formatPhoneInput(value: string): string {
   const digits = onlyDigits(value).slice(0, 11);
   if (digits.length <= 2) return digits ? `(${digits}` : "";
   if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function isValidCpf(value: string): boolean {
+  const cpf = onlyDigits(value);
+  if (cpf.length !== 11 || /^(\d)\1{10}$/.test(cpf)) return false;
+  const calculateDigit = (length: number) => {
+    let sum = 0;
+    for (let index = 0; index < length; index += 1) {
+      sum += Number(cpf[index]) * (length + 1 - index);
+    }
+    const mod = (sum * 10) % 11;
+    return mod === 10 ? 0 : mod;
+  };
+  return calculateDigit(9) === Number(cpf[9]) && calculateDigit(10) === Number(cpf[10]);
 }
 
 function MultiSelectChips({
@@ -213,10 +241,17 @@ function FieldInput({
       value={typeof value === "string" || typeof value === "number" ? String(value) : ""}
       onChange={(e) => {
         if (field.type === "phone") onChange(formatPhoneInput(e.target.value));
+        else if (field.systemProperty === "cpf") onChange(formatCpfInput(e.target.value));
+        else if (field.systemProperty === "anacCode") onChange(e.target.value.replace(/\D/g, ""));
         else if (field.type === "number") onChange(e.target.value ? Number(e.target.value) : "");
         else onChange(e.target.value);
       }}
       placeholder={field.placeholder}
+      inputMode={
+        field.systemProperty === "cpf" || field.systemProperty === "anacCode"
+          ? "numeric"
+          : undefined
+      }
       disabled={disabled}
       className={baseClass}
     />
@@ -322,7 +357,28 @@ export function InstructorAdmissionFormPage() {
         next[field.id] = `O campo "${field.label}" é obrigatório.`;
       }
     }
+    const cpfField = form.fields.find((field) => field.systemProperty === "cpf");
+    if (cpfField && responses[cpfField.id] && !isValidCpf(String(responses[cpfField.id]))) {
+      next[cpfField.id] = "Informe um CPF válido.";
+    }
     return next;
+  }
+
+  function lookupSagaAnacForCandidate(candidateId: string) {
+    if (!form) return;
+    const anacCode = admissionValueForSystemProperty(form, responses, "anacCode").replace(/\D/g, "");
+    const cpf = onlyDigits(admissionValueForSystemProperty(form, responses, "cpf"));
+    const birthDate = admissionValueForSystemProperty(form, responses, "birthDate");
+    if (!anacCode || cpf.length !== 11 || !birthDate) return;
+
+    void executeSagaAnacLookup({ anacCode, cpf, birthDate })
+      .then((result) => {
+        if (!result.ok || !result.data) return undefined;
+        return updateInstructorAdmissionCandidate(candidateId, {
+          responses: withInstructorCandidateSagaAnacResponse(responses, result.data, result.message),
+        });
+      })
+      .catch(() => undefined);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -340,10 +396,11 @@ export function InstructorAdmissionFormPage() {
     setSubmitError(null);
     setFieldErrors({});
     try {
-      await submitInstructorAdmissionForm(responses, {
+      const candidate = await submitInstructorAdmissionForm(responses, {
         token: tokenHint || undefined,
         referralSource,
       });
+      lookupSagaAnacForCandidate(candidate.id);
       setSubmitted(true);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Falha ao enviar candidatura.");
