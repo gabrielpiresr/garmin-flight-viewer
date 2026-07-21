@@ -86,6 +86,7 @@ function parseLeadFollowups(value) {
           triggeredAt,
           completedAt: item?.completedAt ? String(item.completedAt) : null,
           manual: Boolean(item?.manual),
+          qualAuto: Boolean(item?.qualAuto),
         };
       })
       .filter(Boolean);
@@ -99,14 +100,14 @@ function buildLeadStatusMove(lead, targetStatus, settings, options = {}) {
   const normalizedTarget = normalizeCrmStatus(targetStatus);
   const setting = getStatusSetting(settings, normalizedTarget);
   const existingFollowups = parseLeadFollowups(lead.followups_json);
-  const manualFollowups = existingFollowups.filter((item) => item.manual);
+  const preservedFollowups = existingFollowups.filter((item) => item.manual || item.qualAuto);
   return {
     crm_status: normalizedTarget,
     status_entered_at: enteredAt,
     funnel_entered_at: lead.funnel_entered_at || lead.funnelEnteredAt || enteredAt,
     followups_json: JSON.stringify([
       ...buildFollowupsForStatus(normalizedTarget, enteredAt, setting.followups || []),
-      ...manualFollowups,
+      ...preservedFollowups,
     ]),
   };
 }

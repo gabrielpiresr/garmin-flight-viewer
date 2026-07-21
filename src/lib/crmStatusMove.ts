@@ -73,12 +73,12 @@ export function buildLeadStatusMove(
 ): CrmStatusMoveFields {
   const enteredAt = options?.enteredAt ?? new Date().toISOString();
   const setting = getStatusSetting(settings, targetStatus);
-  const manualFollowups = (lead.followups ?? []).filter((item) => item.manual);
+  const preservedFollowups = (lead.followups ?? []).filter((item) => item.manual || item.qualAuto);
   return {
     crmStatus: targetStatus,
     statusEnteredAt: enteredAt,
     funnelEnteredAt: lead.funnelEnteredAt || enteredAt,
-    followups: [...buildFollowupsForStatus(targetStatus, enteredAt, setting.followups), ...manualFollowups],
+    followups: [...buildFollowupsForStatus(targetStatus, enteredAt, setting.followups), ...preservedFollowups],
   };
 }
 
