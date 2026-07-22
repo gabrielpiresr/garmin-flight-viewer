@@ -81,7 +81,7 @@ function findUtcTimeColumn(headers: string[]): string | undefined {
 
 function findDateColumn(headers: string[]): string | undefined {
   return (
-    findColumn(headers, [/^date\s*\(yyyy/i, /^lcl\s*date$/i, /^local\s*date$/i, /^utc\s*date$/i]) ??
+    findColumn(headers, [/^date\s*\(yyyy/i, /^lcl\s*date\b/i, /^local\s*date\b/i, /^utc\s*date\b/i]) ??
     findColumn(headers, [/^date$/i])
   );
 }
@@ -185,9 +185,9 @@ function parseRowInstant(row: Record<string, unknown>, headers: string[]): numbe
   const colLocalTime = findLocalTimeColumn(headers);
   const colUtcTime = findUtcTimeColumn(headers);
   const colLclDate =
-    findColumn(headers, [/^lcl\s*date$/i, /^local\s*date$/i]) ?? findColumn(headers, [/^utc\s*date$/i]);
+    findColumn(headers, [/^lcl\s*date\b/i, /^local\s*date\b/i]) ?? findColumn(headers, [/^utc\s*date\b/i]);
   const colLclTime =
-    findColumn(headers, [/^lcl\s*time$/i, /^local\s*time$/i]) ?? findColumn(headers, [/^utc\s*time$/i]);
+    findColumn(headers, [/^lcl\s*time\b/i, /^local\s*time\b/i]) ?? findColumn(headers, [/^utc\s*time\b/i]);
   const colTime = findColumn(headers, [/^timestamp$/, /^time$/, /date\s*&\s*time/, /^datetime$/, /^elapsed/]);
 
   const dateForInstant = colDate ?? colLclDate;
