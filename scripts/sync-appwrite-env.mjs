@@ -36,6 +36,7 @@ const collectionEnvByName = {
   instructor_preferences: "VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID",
   student_credits: "VITE_APPWRITE_STUDENT_CREDITS_COL_ID",
   flight_telemetry_summaries: "VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID",
+  flight_photos: "VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID",
   flight_landings: "VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID",
   flight_takeoffs: "VITE_APPWRITE_FLIGHT_TAKEOFFS_COL_ID",
   telemetry_alert_rules: "VITE_APPWRITE_TELEMETRY_ALERT_RULES_COL_ID",

@@ -6,11 +6,12 @@ import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { getSavedFlight, type SavedFlightFull } from "../lib/flightsDb";
 import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
 import { FlightReviewTab } from "./FlightReviewTab";
+import { PhotosTab } from "./PhotosTab";
 import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
 import { Tabs } from "./ui/Tabs";
 
-type JourneyFlightReviewTab = "resumo" | "telemetria" | "flight-review" | "videos";
+type JourneyFlightReviewTab = "resumo" | "telemetria" | "flight-review" | "videos" | "fotos";
 
 type Props = {
   flightId: string;
@@ -24,6 +25,7 @@ const REVIEW_TABS: Array<{ id: JourneyFlightReviewTab; label: string; icon?: Rea
   { id: "telemetria", label: "Telemetria" },
   { id: "flight-review", label: "Flight Review" },
   { id: "videos", label: "Vídeos" },
+  { id: "fotos", label: "Fotos" },
 ];
 
 function formatDate(value: string | null | undefined): string {
@@ -181,6 +183,7 @@ export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, o
           {activeTab === "telemetria" ? (gatedByClub ? <FlightReviewClubGate /> : <TelemetriaTab flightId={flightId} />) : null}
           {activeTab === "flight-review" ? (gatedByClub ? <FlightReviewClubGate /> : <FlightReviewTab flightId={flightId} />) : null}
           {activeTab === "videos" ? (gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />) : null}
+          {activeTab === "fotos" ? (gatedByClub ? <FlightReviewClubGate /> : <PhotosTab flightId={flightId} />) : null}
         </>
       ) : null}
     </div>

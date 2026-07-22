@@ -149,6 +149,10 @@ async function main() {
     process.env.APPWRITE_VIDEOS_COLLECTION_ID ||
     env.VITE_APPWRITE_VIDEOS_COLLECTION_ID ||
     "6a0200bf00297bfc2231";
+  const flightPhotosCollectionId =
+    process.env.APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID ||
+    "6a6120330027b95dee1e";
   const weeklyPlansCollectionId =
     process.env.APPWRITE_WEEKLY_PLANS_COLLECTION_ID || env.VITE_APPWRITE_WEEKLY_PLANS_COL_ID;
   const instructorPrefsCollectionId =
@@ -284,6 +288,12 @@ async function main() {
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
   const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
+  const adminUsersSecurityModeRaw =
+    process.env.ADMIN_USERS_SECURITY_MODE ||
+    env.ADMIN_USERS_SECURITY_MODE ||
+    env.VITE_ADMIN_USERS_SECURITY_MODE ||
+    "compat";
+  const adminUsersSecurityMode = String(adminUsersSecurityModeRaw).toLowerCase() === "strict" ? "strict" : "compat";
 
   const missing = [];
   if (!endpoint) missing.push("VITE_APPWRITE_ENDPOINT");
@@ -324,6 +334,7 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID", profileDocumentsCollectionId);
   await upsertVariable(functions, "APPWRITE_FLIGHTS_COLLECTION_ID", flightsCollectionId);
   await upsertVariable(functions, "APPWRITE_VIDEOS_COLLECTION_ID", videosCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID", flightPhotosCollectionId);
   await upsertVariable(functions, "APPWRITE_WEEKLY_PLANS_COLLECTION_ID", weeklyPlansCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_PREFS_COLLECTION_ID", instructorPrefsCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_CREDITS_COLLECTION_ID", studentCreditsCollectionId);
@@ -401,6 +412,7 @@ async function main() {
   }
   await upsertVariable(functions, "SCHOOL_ID", schoolId);
   await upsertVariable(functions, "SCHOOL_TIMEZONE", schoolTimezone);
+  await upsertVariable(functions, "ADMIN_USERS_SECURITY_MODE", adminUsersSecurityMode);
 
   const buffer = fs.readFileSync(archivePath);
   const code = InputFile.fromBuffer(buffer, "admin-users-function.tar.gz");

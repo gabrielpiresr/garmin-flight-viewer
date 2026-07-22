@@ -399,15 +399,22 @@ export function CalendarGrid({
       aircraftRegistration: registration,
     }));
   }, [colorByAircraft, columns, items]);
-  const gridColumns = useMemo(
-    () =>
-      calendarDays.flatMap((day) =>
-        baseColumns
-          .filter((column) => items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)))
-          .map((column) => ({ day, column })),
-      ),
-    [baseColumns, calendarDays, items],
-  );
+  // Sempre renderiza uma coluna por dia visível — dias sem eventos ficam com
+  // células vazias (igual à visão diária), em vez de sumirem da grade.
+  const gridColumns = useMemo(() => {
+    if (baseColumns.length > 0) {
+      return calendarDays.flatMap((day) => baseColumns.map((column) => ({ day, column })));
+    }
+    return calendarDays.map((day) => ({
+      day,
+      column: {
+        key: `__empty-${day}`,
+        label: "—",
+        colorClass: AIRCRAFT_COLOR_CLASSES[0]!,
+        groupBy: "none" as const,
+      } satisfies ScheduleColumn,
+    }));
+  }, [baseColumns, calendarDays]);
   const columnsByDay = useMemo(() => {
     const map = new Map<number, ScheduleColumn[]>();
     for (const day of calendarDays) {
@@ -597,8 +604,8 @@ export function CalendarGrid({
           <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
         </p>
       ) : null}
-      {gridColumns.length === 0 ? (
-        <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">Nenhum voo no período.</p>
+      {calendarDays.length === 0 ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">Nenhum dia no período.</p>
       ) : (
         <div className="w-full overflow-x-auto">
           <table className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1" style={isMobile ? { minWidth: `${gridColumns.length * MOBILE_MIN_COLUMN_PX + MOBILE_HOURS_GUTTER_PX}px` } : undefined}>
@@ -635,23 +642,33 @@ export function CalendarGrid({
                 {gridColumns.map(({ day, column }) => {
                   const key = `${day}|${column.key}`;
                   const totals = cellTotals.get(key) ?? { flights: 0, hours: 0 };
-                  const projectionCell = groupBy === "aircraft" ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day] : undefined;
+                  const projectionCell =
+                    groupBy === "aircraft" && column.groupBy === "aircraft" && column.aircraftRegistration
+                      ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]
+                      : undefined;
                   const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
+                  const isEmptyPlaceholder = column.groupBy === "none" && column.key.startsWith("__empty-");
                   return (
                     <th key={`${day}-${column.key}`} className={`bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}>
-                      <div className="flex items-center justify-center gap-1">
-                        <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
-                        <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
-                      </div>
-                      <p className="truncate text-[10px] font-normal text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
-                      {projectionLoading && groupBy === "aircraft" ? (
-                        <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
-                      ) : projectionCell ? (
-                        <p className={`mx-auto mt-1 truncate rounded border px-1 py-0.5 text-[11px] font-semibold ${aircraftProjectionCellClass(projectionCell.maintenance)}`}>
-                          {projectionCell.hours == null ? "—" : `${projectionCell.hours.toFixed(1)}h`}
-                          {projectionCell.maintenance ? ` · ${projectionCell.maintenance}` : ""}
-                        </p>
-                      ) : null}
+                      {isEmptyPlaceholder ? (
+                        <p className="py-1 text-[10px] font-normal text-slate-600">Sem voos</p>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-center gap-1">
+                            <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
+                            <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
+                          </div>
+                          <p className="truncate text-[10px] font-normal text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
+                          {projectionLoading && groupBy === "aircraft" ? (
+                            <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
+                          ) : projectionCell ? (
+                            <p className={`mx-auto mt-1 truncate rounded border px-1 py-0.5 text-[11px] font-semibold ${aircraftProjectionCellClass(projectionCell.maintenance)}`}>
+                              {projectionCell.hours == null ? "—" : `${projectionCell.hours.toFixed(1)}h`}
+                              {projectionCell.maintenance ? ` · ${projectionCell.maintenance}` : ""}
+                            </p>
+                          ) : null}
+                        </>
+                      )}
                     </th>
                   );
                 })}

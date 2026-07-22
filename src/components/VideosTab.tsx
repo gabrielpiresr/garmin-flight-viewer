@@ -2613,7 +2613,7 @@ function TelemetryVideoPlayer({
       {exportError && !exportProgress && (
         <HelperOfflinePanel error={exportError} />
       )}
-      {video.telemetry_source === "gopro" && !video.telemetry_present && (
+      {!publicMode && !isStudent && video.telemetry_source === "gopro" && !video.telemetry_present && (
         <p className="rounded-md border border-amber-500/30 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200">
           Track GoPro detectado, mas o parser GPMF completo ainda nao extraiu pontos para overlay.
         </p>

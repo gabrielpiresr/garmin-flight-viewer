@@ -9,6 +9,6 @@ bucket_name = "flight-videos"
 
 [vars]
 R2_PUBLIC_URL = "https://pub-51af81af31584250882eafca3f31d54d.r2.dev"
-ALLOWED_ORIGINS = "http://localhost:5174"
+ALLOWED_ORIGINS = "*"
 
 # WORKER_SECRET é configurado via: npx wrangler secret put WORKER_SECRET

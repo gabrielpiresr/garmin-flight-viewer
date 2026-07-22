@@ -205,6 +205,10 @@ export const FLIGHT_EVALUATION_DISMISSALS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID as string | undefined) ??
   "flight_evaluation_dismissals";
 
+// Fotos dos voos
+export const FLIGHT_PHOTOS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID as string | undefined) ?? "6a6120330027b95dee1e";
+
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 
 export let client: Client | null = null;

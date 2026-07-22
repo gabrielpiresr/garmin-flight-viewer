@@ -1,4 +1,5 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
+import type { FlightPhoto } from "./flightPhotosDb";
 import type { FlightVideo } from "./flightVideosDb";
 import type { SavedFlightFull } from "./flightsDb";
 import type { FlightManeuver, FlightManeuverReview, ManeuverTemplate } from "../types/flightReview";
@@ -8,6 +9,7 @@ export type PublicFlightReviewShare = {
   flight: SavedFlightFull;
   missionName: string;
   videos: FlightVideo[];
+  photos: FlightPhoto[];
   maneuvers: FlightManeuver[];
   maneuverReviews: FlightManeuverReview[];
   maneuverTemplates: ManeuverTemplate[];

@@ -13,6 +13,7 @@ interface ImportMetaEnv {
   readonly VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID?: string;
   readonly VITE_WEB_PUSH_PUBLIC_KEY?: string;
   readonly VITE_APPWRITE_VIDEOS_COLLECTION_ID?: string;
+  readonly VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID?: string;
   readonly VITE_APPWRITE_NOTICES_COL_ID?: string;
   readonly VITE_APPWRITE_NOTICES_BUCKET_ID?: string;
   readonly VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID?: string;
@@ -26,6 +27,7 @@ interface ImportMetaEnv {
   readonly VITE_APPWRITE_FLIGHT_MANEUVER_REVIEWS_COL_ID?: string;
   readonly VITE_APPWRITE_FLIGHT_EVALUATIONS_COL_ID?: string;
   readonly VITE_APPWRITE_FLIGHT_EVALUATION_DISMISSALS_COL_ID?: string;
+  readonly VITE_ADMIN_USERS_SECURITY_MODE?: "compat" | "strict";
 }
 
 interface ImportMeta {

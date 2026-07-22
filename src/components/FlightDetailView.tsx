@@ -15,9 +15,10 @@ import { FlightReviewTab } from "./FlightReviewTab";
 import { NovoVooFlow, type NovoVooStepId } from "./NovoVooFlow";
 import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
+import { PhotosTab } from "./PhotosTab";
 import { Tabs } from "./ui/Tabs";
 
-export type FlightDetailSubTab = "telemetria" | "videos" | "ficha" | "aluno" | "auditoria" | "flight-review";
+export type FlightDetailSubTab = "telemetria" | "videos" | "fotos" | "ficha" | "aluno" | "auditoria" | "flight-review";
 type SubTab = FlightDetailSubTab;
 
 type SubTabConfig = { id: SubTab; label: string; icon: ReactNode };
@@ -45,6 +46,14 @@ const SUB_TAB_CONFIG: Record<SubTab, Omit<SubTabConfig, "id">> = {
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M4.75 4A1.75 1.75 0 003 5.75v8.5C3 15.216 3.784 16 4.75 16h7.5A1.75 1.75 0 0014 14.25v-8.5A1.75 1.75 0 0012.25 4h-7.5zM15 7.25l2.47-1.65A1 1 0 0119 6.43v7.14a1 1 0 01-1.53.83L15 12.75v-5.5z" />
+      </svg>
+    ),
+  },
+  fotos: {
+    label: "Fotos",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M4.75 3.5A1.75 1.75 0 003 5.25v9.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0017 14.75v-9.5a1.75 1.75 0 00-1.75-1.75H4.75zm0 1.5h10.5c.138 0 .25.112.25.25v5.44l-2.02-2.02a1.75 1.75 0 00-2.475 0L8.5 10.174l-.52-.52a1.75 1.75 0 00-2.475 0L4.5 10.659V5.25c0-.138.112-.25.25-.25zM15.5 14.75a.25.25 0 01-.25.25H4.75a.25.25 0 01-.25-.25v-1.97l1.066-1.066a.25.25 0 01.354 0l.874.873a1 1 0 001.414 0l1.858-1.858a.25.25 0 01.354 0l3.08 3.08v.94zM13 6.75a1.25 1.25 0 11-2.5 0 1.25 1.25 0 012.5 0z" />
       </svg>
     ),
   },
@@ -167,6 +176,7 @@ export function FlightDetailView({
     ];
     if (flightId) tabs.push(buildTab("flight-review"));
     tabs.push(buildTab("videos"));
+    tabs.push(buildTab("fotos"));
     if (canSeeStudentContext && studentUserId) tabs.push(buildTab("aluno"));
     if (canSeeAuditLog) tabs.push(buildTab("auditoria"));
     if (!allowedSubTabs?.length) return tabs;
@@ -341,6 +351,12 @@ export function FlightDetailView({
         {visitedSubTabs.has("videos") ? (
           <div hidden={activeSubTab !== "videos"} className="min-h-0 min-w-0">
             {gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />}
+          </div>
+        ) : null}
+
+        {visitedSubTabs.has("fotos") ? (
+          <div hidden={activeSubTab !== "fotos"} className="min-h-0 min-w-0">
+            {gatedByClub ? <FlightReviewClubGate /> : <PhotosTab flightId={flightId} />}
           </div>
         ) : null}
 

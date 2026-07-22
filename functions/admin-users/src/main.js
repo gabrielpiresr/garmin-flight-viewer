@@ -8,6 +8,8 @@ const webpush = require("web-push");
 const pdfParse = require("pdf-parse");
 const { createStudentAutomationService } = require("./studentAutomations");
 const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
+const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
+const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -28,6 +30,8 @@ const PROFILE_DOCUMENTS_COLLECTION_ID =
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
 const FLIGHT_VIDEOS_COLLECTION_ID =
   process.env.APPWRITE_VIDEOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_VIDEOS_COLLECTION_ID || "6a0200bf00297bfc2231";
+const FLIGHT_PHOTOS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_PHOTOS_COL_ID || "6a6120330027b95dee1e";
 const MANEUVER_TEMPLATES_COLLECTION_ID =
   process.env.APPWRITE_MANEUVER_TEMPLATES_COLLECTION_ID || process.env.APPWRITE_MANEUVER_TEMPLATES_COL_ID || "6a1464c9000cf7c9d709";
 const FLIGHT_MANEUVERS_COLLECTION_ID =
@@ -137,6 +141,7 @@ const STUDENT_CRM_STATUSES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_STAT
 const STUDENT_CRM_PROFILES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || "student_crm_profiles";
 const INSTRUCTOR_STUDENTS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
 const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users";
+const ADMIN_USERS_SECURITY_MODE = getSecurityMode(process.env);
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
 const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
@@ -2921,15 +2926,7 @@ async function reauthenticateAdminByEmail(email, password) {
 }
 
 async function createStudentImpersonationToken(payload = {}, req = null) {
-  const adminEmail = cleanString(payload.adminEmail).toLowerCase();
-  const studentEmail = cleanString(payload.studentEmail).toLowerCase();
-  const password = String(payload.password || "");
-  if (!adminEmail || !studentEmail || !password) {
-    throw Object.assign(new Error("Informe adminEmail, studentEmail e password."), { status: 400 });
-  }
-  if (adminEmail === studentEmail) {
-    throw Object.assign(new Error("O e-mail do admin e do aluno devem ser diferentes."), { status: 400 });
-  }
+  const { adminEmail, studentEmail, password } = validateRootAccessPayload(payload);
 
   const [adminUser, targetUser] = await Promise.all([
     reauthenticateAdminByEmail(adminEmail, password),
@@ -2940,11 +2937,7 @@ async function createStudentImpersonationToken(payload = {}, req = null) {
   }
 
   const targetRole = await getActorRole(targetUser.$id);
-  if (!["aluno", "instrutor"].includes(targetRole)) {
-    throw Object.assign(new Error("Login root permitido apenas para acessar contas de alunos ou instrutores."), {
-      status: 403,
-    });
-  }
+  assertCanImpersonateTargetRole(targetRole);
 
   const token = await users.createToken({ userId: targetUser.$id, length: 64, expire: 60 });
   const auditEvent = await createAuditEvent(adminUser.$id, {
@@ -7315,6 +7308,21 @@ function hasDecodedTelemetry(decoded) {
   return Boolean(cleanString(decoded?.telemetryCsv)) || (Array.isArray(decoded?.telemetryFiles) && decoded.telemetryFiles.length > 0);
 }
 
+function publicTelemetryCsvText(csvText) {
+  const decoded = decodeFlightRecordCsv(csvText);
+  if (!decoded.meta) return cleanString(decoded.telemetryCsv);
+  const meta = JSON.parse(JSON.stringify(decoded.meta || {}));
+  if (meta.header && typeof meta.header === "object") {
+    meta.header.studentUserId = "";
+    meta.header.instructorUserId = "";
+  }
+  return encodeFlightRecordCsv({
+    meta,
+    telemetryCsv: decoded.telemetryCsv,
+    telemetryFiles: decoded.telemetryFiles,
+  });
+}
+
 function ghostObservationFromMeta(meta) {
   return cleanString(meta?.preFlight?.objectiveMd || meta?.risk?.commentsMd);
 }
@@ -9424,6 +9432,7 @@ function formatPublicWaiverLocationDate(city, signedAt) {
 function buildPublicLiabilityWaiverContent(data, signedAt) {
   const fullName = cleanString(data.fullName).toUpperCase();
   const cpf = cleanString(data.cpf);
+  const weightKg = cleanString(data.weightKg);
   const emergencyName = cleanString(data.emergencyName);
   const emergencyPhone = cleanString(data.emergencyPhone);
   const emergencyRelation = cleanString(data.emergencyRelation);
@@ -9446,6 +9455,7 @@ function buildPublicLiabilityWaiverContent(data, signedAt) {
       "Imagem - O ocupante poderá tirar fotos e vídeos desde que tenha prévia autorização do instrutor e do aluno em comando da aeronave.",
     ]),
     richTextParagraph(formatPublicWaiverLocationDate(data.city, signedAt)),
+    richTextParagraph(`Peso informado pelo ocupante: ${weightKg} kg.`),
     richTextParagraph(`Em caso de emergência, contatar: ${[emergencyPhone, emergencyName, emergencyRelation].filter(Boolean).join(" - ")}`),
     richTextHeading("Aceite digital", 3),
     richTextParagraph(`O preenchente marcou o termo de aceite no formulário público em ${acceptedAt}, declarando que leu, compreendeu e concordou integralmente com este termo. Este aceite registra a assinatura digital do preenchente para fins de controle interno da escola.`),
@@ -9463,6 +9473,7 @@ async function createPublicLiabilityWaiverContract(payload = {}, req = {}) {
     ["fullName", "nome completo"],
     ["cpf", "CPF"],
     ["birthDate", "data de nascimento"],
+    ["weightKg", "peso em kg"],
     ["email", "e-mail"],
     ["phone", "telefone"],
     ["emergencyName", "contato de emergência"],
@@ -9473,6 +9484,10 @@ async function createPublicLiabilityWaiverContract(payload = {}, req = {}) {
     .map(([, label]) => label);
   if (missing.length) {
     throw Object.assign(new Error(`Preencha: ${missing.join(", ")}.`), { status: 400 });
+  }
+  const weightKg = Number(cleanString(data.weightKg).replace(",", "."));
+  if (!Number.isFinite(weightKg) || weightKg <= 0) {
+    throw Object.assign(new Error("Informe o peso em kg."), { status: 400 });
   }
   if (data.acceptedTerms !== true) {
     throw Object.assign(new Error("Aceite do termo obrigatório."), { status: 400 });
@@ -9487,6 +9502,7 @@ async function createPublicLiabilityWaiverContract(payload = {}, req = {}) {
     email: cleanString(data.email),
     phone: cleanString(data.phone),
     birthDate: cleanString(data.birthDate),
+    weightKg: cleanString(data.weightKg),
     city: cleanString(data.city),
     emergencyName: cleanString(data.emergencyName),
     emergencyPhone: cleanString(data.emergencyPhone),
@@ -13611,7 +13627,9 @@ async function getActorRole(actorUserId) {
   return deriveRoleFromLabels(actor?.labels || []);
 }
 
-function publicFlightFields(doc, csvText) {
+function publicFlightFields(doc, csvText, options = {}) {
+  const includeSensitive = options.includeSensitive !== false;
+  const publicCsvText = includeSensitive ? csvText || "" : publicTelemetryCsvText(csvText || "");
   return {
     id: doc.$id,
     source_filename: doc.source_filename || "",
@@ -13620,8 +13638,8 @@ function publicFlightFields(doc, csvText) {
     duration_sec: typeof doc.duration_sec === "number" ? doc.duration_sec : null,
     flight_date: doc.flight_date || null,
     start_time: doc.start_time || null,
-    student_user_id: doc.student_user_id || doc.user_id || null,
-    instructor_user_id: doc.instructor_user_id || null,
+    student_user_id: includeSensitive ? doc.student_user_id || doc.user_id || null : null,
+    instructor_user_id: includeSensitive ? doc.instructor_user_id || null : null,
     training_track_id: doc.training_track_id || null,
     training_stage_id: doc.training_stage_id || null,
     training_mission_id: doc.training_mission_id || null,
@@ -13647,7 +13665,7 @@ function publicFlightFields(doc, csvText) {
     admin_operator_signed: typeof doc.admin_operator_signed === "boolean" ? doc.admin_operator_signed : null,
     instructor_signed_at: doc.instructor_signed_at || null,
     flight_status: doc.flight_status || "Confirmado",
-    csv_text: csvText || "",
+    csv_text: publicCsvText,
   };
 }
 
@@ -13671,6 +13689,22 @@ function toPublicVideo(doc) {
     processing_error: doc.processing_error || "",
     video_key: doc.video_key || "",
     processing_updated_at: doc.processing_updated_at || "",
+    created_at: doc.$createdAt || doc.created_at || "",
+  };
+}
+
+function toPublicPhoto(doc) {
+  const fileUrl = doc.file_url || "";
+  return {
+    id: doc.$id,
+    flight_id: doc.flight_id || "",
+    uploaded_by: doc.uploaded_by || "",
+    r2_key: doc.r2_key || "",
+    file_name: doc.file_name || "foto-do-voo.jpg",
+    mime_type: doc.mime_type || "image/jpeg",
+    file_size: typeof doc.file_size === "number" ? doc.file_size : null,
+    file_url: fileUrl,
+    download_url: doc.download_url || fileUrl,
     created_at: doc.$createdAt || doc.created_at || "",
   };
 }
@@ -13824,10 +13858,20 @@ async function getPublicFlightReviewShare(payload = {}) {
   const flightDoc = await findPublicShareFlight(token, FLIGHT_DETAIL_SELECT);
 
   const flightId = flightDoc.$id;
-  const [videoDocs, maneuverDocs, reviewDocs, brandLoaded] = await Promise.all([
+  const [videoDocs, photoDocs, maneuverDocs, reviewDocs, brandLoaded] = await Promise.all([
     FLIGHT_VIDEOS_COLLECTION_ID
       ? databases
           .listDocuments(DATABASE_ID, FLIGHT_VIDEOS_COLLECTION_ID, [
+            sdk.Query.equal("flight_id", [flightId]),
+            sdk.Query.orderDesc("$createdAt"),
+            sdk.Query.limit(100),
+          ])
+          .then((r) => r.documents)
+          .catch(() => [])
+      : Promise.resolve([]),
+    FLIGHT_PHOTOS_COLLECTION_ID
+      ? databases
+          .listDocuments(DATABASE_ID, FLIGHT_PHOTOS_COLLECTION_ID, [
             sdk.Query.equal("flight_id", [flightId]),
             sdk.Query.orderDesc("$createdAt"),
             sdk.Query.limit(100),
@@ -13876,9 +13920,10 @@ async function getPublicFlightReviewShare(payload = {}) {
     "Flight Review";
 
   return {
-    flight: publicFlightFields(flightDoc, csvText),
+    flight: publicFlightFields(flightDoc, csvText, { includeSensitive: ADMIN_USERS_SECURITY_MODE !== "strict" }),
     missionName,
     videos: videoDocs.map(toPublicVideo).filter((video) => video.processing_status === "ready" && video.file_url),
+    photos: photoDocs.map(toPublicPhoto).filter((photo) => photo.file_url),
     maneuvers: maneuverDocs.map(toPublicManeuver),
     maneuverReviews: reviewDocs.map(toPublicReview),
     maneuverTemplates: templateDocs.map(toPublicTemplate),
@@ -13918,6 +13963,8 @@ async function requireVideoUploader(actorUserId, flightId, { studentExport = fal
   throw Object.assign(new Error("Apenas admin ou instrutor pode enviar videos."), { status: 403 });
 }
 
+const PHOTO_KEY_RE = /^flight-[A-Za-z0-9_-]+-photo-[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp|gif|heic|heif)$/i;
+
 async function getVideoWorkerConfig(actorUserId, payload) {
   if (!CF_WORKER_URL || !WORKER_SECRET) {
     throw Object.assign(new Error("Worker de video nao configurado."), { status: 500 });
@@ -13948,6 +13995,26 @@ async function getVideoWorkerConfig(actorUserId, payload) {
     return {
       workerUrl: CF_WORKER_URL,
       uploadToken: signWorkerToken({ ...base, action: "upload", key: `flights/${rawKey}` }),
+    };
+  }
+
+  if (mode === "photoUpload" || mode === "photoDelete") {
+    const rawKey = cleanString(payload.key);
+    if (!rawKey || rawKey.includes("..") || rawKey.includes("/") || !PHOTO_KEY_RE.test(rawKey)) {
+      throw Object.assign(new Error("Chave de foto invalida."), { status: 400 });
+    }
+    const expectedPrefix = `flight-${flightId}-photo-`;
+    if (!rawKey.startsWith(expectedPrefix)) {
+      throw Object.assign(new Error("Chave de foto fora do escopo do voo."), { status: 400 });
+    }
+    await requireVideoUploader(actorUserId, flightId);
+    return {
+      workerUrl: CF_WORKER_URL,
+      uploadToken: signWorkerToken({
+        ...base,
+        action: mode === "photoDelete" ? "delete" : "upload",
+        key: `flights/${rawKey}`,
+      }),
     };
   }
 
@@ -16760,6 +16827,23 @@ function mapCaktoProposal(doc) {
       ? productsData
       : null;
   const notes = isObject ? cleanString(productsData?.notes || "") : "";
+  const infoPackages = Array.isArray(productsData?.infoPackages)
+    ? productsData.infoPackages
+      .map((item) => {
+        const hours = Number(item?.hours);
+        const hourPrice = Number(item?.hourPrice);
+        const validityDays = Number(item?.validityDays);
+        if (!Number.isFinite(hours) || !Number.isFinite(hourPrice) || !Number.isFinite(validityDays)) return null;
+        return {
+          id: cleanString(item?.id),
+          hours,
+          hourPrice,
+          validityDays,
+          aircraftModelName: cleanString(item?.aircraftModelName),
+        };
+      })
+      .filter(Boolean)
+    : [];
   return {
     id: doc.$id,
     schoolId: doc.school_id || SCHOOL_ID,
@@ -16770,6 +16854,7 @@ function mapCaktoProposal(doc) {
     hourPrice: Number(doc.hour_price) || 0,
     totalValue: Number(doc.total_value) || 0,
     products: Array.isArray(productsData) ? productsData : Array.isArray(productsData?.products) ? productsData.products : [],
+    infoPackages,
     notes,
     publicToken: doc.public_token || "",
     status: doc.status === "sent" ? "sent" : "draft",
@@ -16785,6 +16870,22 @@ function mapCaktoProposal(doc) {
     creditId: cleanString(packageMetadata?.creditId),
     createdAt: doc.$createdAt || "",
   };
+}
+
+async function getPublicProposal(payload = {}) {
+  if (!CRM_PROPOSALS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de propostas nao configurada."), { status: 500 });
+  }
+  const token = cleanString(payload.token);
+  if (!token) throw Object.assign(new Error("Link de proposta invalido."), { status: 400 });
+
+  const res = await databases.listDocuments(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, [
+    sdk.Query.equal("public_token", [token]),
+    sdk.Query.limit(1),
+  ]);
+  const proposal = res.documents[0];
+  if (!proposal) throw Object.assign(new Error("Proposta nao encontrada ou link invalido."), { status: 404 });
+  return mapCaktoProposal(proposal);
 }
 
 async function createCaktoOfferForProposal(doc) {
@@ -19741,6 +19842,15 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, automationEvent: appwriteEvent, ...result });
     }
 
+    const securityDecision = authorizeGuestAction({ action, actorUserId, env: process.env });
+    if (!securityDecision.allowed) {
+      log(`[security] blocked guest action=${securityDecision.action} mode=${securityDecision.mode}`);
+      return jsonResponse(res, 401, { message: "Autenticacao necessaria." });
+    }
+    if (!actorUserId && shouldLogGuestAction(securityDecision)) {
+      log(`[security] guest action=${securityDecision.action} mode=${securityDecision.mode} category=${securityDecision.category}`);
+    }
+
     if (!actorUserId && action === "listSummaries") {
       const [reminderResult, scheduleResult, automationScan] = await Promise.all([
         runFlightReminderScan("system"),
@@ -20000,6 +20110,11 @@ module.exports = async ({ req, res, log, error }) => {
       }
       const share = await getPublicFlightReviewShare(payload);
       return jsonResponse(res, 200, { share });
+    }
+
+    if (action === "getPublicProposal") {
+      const proposal = await getPublicProposal(payload);
+      return jsonResponse(res, 200, { proposal });
     }
 
     if (action === "createPublicLiabilityWaiverContract") {

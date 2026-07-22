@@ -226,7 +226,7 @@ function FlightReviewFlightModal({
             backLabel="Fechar"
             showStudentTab={false}
             initialSubTab={initialSubTab}
-            allowedSubTabs={["ficha", "telemetria", "flight-review", "videos"]}
+            allowedSubTabs={["ficha", "telemetria", "flight-review", "videos", "fotos"]}
           />
         </div>
       </div>

@@ -2,7 +2,9 @@ import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 
 type VideoWorkerMode =
   | { mode: "upload"; flightId: string; key: string }
-  | { mode: "list"; flightId: string; prefix: string };
+  | { mode: "list"; flightId: string; prefix: string }
+  | { mode: "photoUpload"; flightId: string; key: string }
+  | { mode: "photoDelete"; flightId: string; key: string };
 
 type VideoWorkerConfigResponse = {
   workerUrl?: string;

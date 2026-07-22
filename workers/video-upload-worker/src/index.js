@@ -46,6 +46,20 @@ function videoContentType(key) {
   return types[extension] || "application/octet-stream";
 }
 
+function contentTypeForKey(key) {
+  const extension = String(key || "").split(".").pop()?.toLowerCase();
+  const imageTypes = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    gif: "image/gif",
+    heic: "image/heic",
+    heif: "image/heif",
+  };
+  return imageTypes[extension] || videoContentType(key);
+}
+
 function base64UrlDecode(value) {
   const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
@@ -118,8 +132,16 @@ export default {
       return handleComplete(request, env);
     }
 
+    if (url.pathname === "/upload/file" && request.method === "PUT") {
+      return handleFilePut(request, env);
+    }
+
     if (url.pathname === "/storage/list" && request.method === "POST") {
       return handleList(request, env);
+    }
+
+    if (url.pathname === "/storage/object" && request.method === "DELETE") {
+      return handleDeleteObject(request, env);
     }
 
     if (url.pathname === "/download" && (request.method === "GET" || request.method === "HEAD")) {
@@ -176,6 +198,24 @@ async function handleComplete(request, env) {
   return json(request, env, { fileUrl });
 }
 
+async function handleFilePut(request, env) {
+  const key = request.headers.get("x-upload-key");
+  const token = request.headers.get("x-token");
+  if (!key) return err(request, env, "x-upload-key obrigatorio", 400);
+  if (!key.startsWith("flights/") || key.includes("..")) return err(request, env, "Chave invalida", 400);
+  if (!(await verifyToken(env, token, { action: "upload", key }))) return err(request, env, "Unauthorized", 401);
+
+  const contentType = request.headers.get("Content-Type") || contentTypeForKey(key);
+  await env.FLIGHT_VIDEOS.put(key, request.body, {
+    httpMetadata: {
+      contentType,
+      contentDisposition: "inline",
+    },
+  });
+
+  return json(request, env, { key, fileUrl: `${env.R2_PUBLIC_URL}/${key}` });
+}
+
 // Download com Content-Disposition: attachment. O bucket já é público para
 // leitura (R2_PUBLIC_URL), então esta rota não amplia o acesso — só força o
 // browser a salvar o arquivo em vez de reproduzir inline.
@@ -188,7 +228,7 @@ async function handleDownload(request, env, url) {
   const filename = (key.split("/").pop() || "video.mp4").replace(/["\\]/g, "");
   const baseHeaders = {
     ...corsHeaders(request, env),
-    "Content-Type": videoContentType(key),
+    "Content-Type": contentTypeForKey(key),
     "Content-Disposition": `attachment; filename="${filename}"`,
   };
 
@@ -205,6 +245,15 @@ async function handleDownload(request, env, url) {
   return new Response(object.body, {
     headers: { ...baseHeaders, "Content-Length": String(object.size) },
   });
+}
+
+async function handleDeleteObject(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = String(body?.key || "");
+  if (!key.startsWith("flights/") || key.includes("..")) return err(request, env, "Chave invalida", 400);
+  if (!(await verifyToken(env, body?.token, { action: "delete", key }))) return err(request, env, "Unauthorized", 401);
+  await env.FLIGHT_VIDEOS.delete(key);
+  return json(request, env, { ok: true });
 }
 
 async function handleList(request, env) {

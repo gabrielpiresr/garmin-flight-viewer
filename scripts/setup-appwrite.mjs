@@ -15,6 +15,7 @@ const PROFILES_COL_NAME = "profiles";
 const PROFILE_DOCUMENTS_COL_NAME = "profile_documents";
 const REL_COL_NAME = "instructor_students";
 const FLIGHT_VIDEOS_COL_NAME = "flight_videos";
+const FLIGHT_PHOTOS_COL_NAME = "flight_photos";
 const FLIGHT_TELEMETRY_SUMMARIES_COL_NAME = "flight_telemetry_summaries";
 const FLIGHT_LANDINGS_COL_NAME = "flight_landings";
 const FLIGHT_TAKEOFFS_COL_NAME = "flight_takeoffs";
@@ -34,6 +35,17 @@ const FLIGHT_DATA_PERMISSIONS = [
   Permission.read(Role.label("instrutor")),
   Permission.update(Role.label("instrutor")),
 ];
+const FLIGHT_PHOTOS_COLLECTION_PERMISSIONS = [
+  Permission.read(Role.users()),
+  Permission.create(Role.label("admin")),
+  Permission.read(Role.label("admin")),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
+  Permission.create(Role.label("instrutor")),
+  Permission.read(Role.label("instrutor")),
+  Permission.update(Role.label("instrutor")),
+  Permission.delete(Role.label("instrutor")),
+];
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,19 +58,19 @@ async function ensureDatabase() {
   return db.create(ID.unique(), DB_NAME);
 }
 
-async function ensureCollection(databaseId, name) {
+async function ensureCollection(databaseId, name, permissions = FLIGHT_DATA_PERMISSIONS) {
   const list = await db.listCollections(databaseId);
   const found = list.collections.find((collection) => collection.name === name);
   if (found) {
     // Always enforce required permissions (replace, not union) so stale/extra perms are removed
     const sortedCurrent = [...(found.$permissions ?? [])].sort().join(",");
-    const sortedRequired = [...FLIGHT_DATA_PERMISSIONS].sort().join(",");
+    const sortedRequired = [...permissions].sort().join(",");
     if (sortedCurrent !== sortedRequired) {
-      return db.updateCollection(databaseId, found.$id, found.name, FLIGHT_DATA_PERMISSIONS, found.documentSecurity, found.enabled);
+      return db.updateCollection(databaseId, found.$id, found.name, permissions, found.documentSecurity, found.enabled);
     }
     return found;
   }
-  return db.createCollection(databaseId, ID.unique(), name, FLIGHT_DATA_PERMISSIONS, true, true);
+  return db.createCollection(databaseId, ID.unique(), name, permissions, true, true);
 }
 
 async function safeCreateAttribute(createFn, label) {
@@ -250,6 +262,20 @@ async function configureFlightVideos(databaseId, collectionId) {
   );
 }
 
+async function configureFlightPhotos(databaseId, collectionId) {
+  console.log("\nConfiguring flight_photos collection...");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "flight_id", 64, true), "flight_id");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "uploaded_by", 64, true), "uploaded_by");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "r2_key", 512, true), "r2_key");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "file_name", 255, true), "file_name");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "mime_type", 128, false), "mime_type");
+  await safeCreateAttribute(() => db.createIntegerAttribute(databaseId, collectionId, "file_size", false), "file_size");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "file_url", 2048, true), "file_url");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "download_url", 2048, false), "download_url");
+  await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "created_at", 64, true), "created_at");
+  await safeCreateIndex(databaseId, collectionId, "flight_photos_flight_idx", ["flight_id"]);
+}
+
 async function configureTelemetrySummaries(databaseId, collectionId) {
   console.log("\nConfiguring flight_telemetry_summaries collection...");
   await safeCreateAttribute(() => db.createStringAttribute(databaseId, collectionId, "flight_id", 64, true), "flight_id");
@@ -375,6 +401,7 @@ async function main() {
   const profileDocuments = await ensureCollection(database.$id, PROFILE_DOCUMENTS_COL_NAME);
   const relationships = await ensureCollection(database.$id, REL_COL_NAME);
   const flightVideos = await ensureCollection(database.$id, FLIGHT_VIDEOS_COL_NAME);
+  const flightPhotos = await ensureCollection(database.$id, FLIGHT_PHOTOS_COL_NAME, FLIGHT_PHOTOS_COLLECTION_PERMISSIONS);
   const telemetrySummaries = await ensureCollection(database.$id, FLIGHT_TELEMETRY_SUMMARIES_COL_NAME);
   const landings = await ensureCollection(database.$id, FLIGHT_LANDINGS_COL_NAME);
   const takeoffs = await ensureCollection(database.$id, FLIGHT_TAKEOFFS_COL_NAME);
@@ -384,6 +411,7 @@ async function main() {
   await configureProfileDocuments(database.$id, profileDocuments.$id);
   await configureInstructorStudents(database.$id, relationships.$id);
   await configureFlightVideos(database.$id, flightVideos.$id);
+  await configureFlightPhotos(database.$id, flightPhotos.$id);
   await configureTelemetrySummaries(database.$id, telemetrySummaries.$id);
   await configureLandings(database.$id, landings.$id);
   await configureTakeoffs(database.$id, takeoffs.$id);
@@ -397,6 +425,7 @@ async function main() {
   console.log(`VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID=${profileDocuments.$id}`);
   console.log(`VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID=${relationships.$id}`);
   console.log(`VITE_APPWRITE_VIDEOS_COLLECTION_ID=${flightVideos.$id}`);
+  console.log(`VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID=${flightPhotos.$id}`);
   console.log(`VITE_APPWRITE_FLIGHT_TELEMETRY_SUMMARIES_COL_ID=${telemetrySummaries.$id}`);
   console.log(`VITE_APPWRITE_FLIGHT_LANDINGS_COL_ID=${landings.$id}`);
   console.log(`VITE_APPWRITE_FLIGHT_TAKEOFFS_COL_ID=${takeoffs.$id}`);
