@@ -7,6 +7,8 @@ import {
   Role,
   CRM_PROPOSALS_COL_ID,
   DEFAULT_SCHOOL_ID,
+  ADMIN_USERS_FUNCTION_ID,
+  functions,
 } from "./appwrite";
 import type { CrmProposal, CrmProposalInput, ProposalProduct, ProposalInfoPackage } from "../types/proposal";
 
@@ -15,6 +17,11 @@ const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
 function configured(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID && CRM_PROPOSALS_COL_ID);
 }
+
+type PublicProposalFunctionResponse = {
+  proposal?: Partial<CrmProposal>;
+  message?: string;
+};
 
 type ProposalDoc = {
   $id: string;
@@ -113,6 +120,37 @@ function toProposal(doc: ProposalDoc): CrmProposal {
   };
 }
 
+function normalizePublicProposal(proposal: Partial<CrmProposal>): CrmProposal {
+  return {
+    id: proposal.id ?? "",
+    schoolId: proposal.schoolId ?? DEFAULT_SCHOOL_ID,
+    leadId: proposal.leadId ?? "",
+    leadName: proposal.leadName ?? "",
+    leadEmail: proposal.leadEmail ?? "",
+    hours: Number(proposal.hours) || 0,
+    hourPrice: Number(proposal.hourPrice) || 0,
+    totalValue: Number(proposal.totalValue) || 0,
+    products: Array.isArray(proposal.products) ? proposal.products : [],
+    infoPackages: Array.isArray(proposal.infoPackages) ? proposal.infoPackages : [],
+    notes: proposal.notes ?? "",
+    publicToken: proposal.publicToken ?? "",
+    status: proposal.status === "sent" ? "sent" : "draft",
+    caktoOfferId: proposal.caktoOfferId ?? "",
+    paymentUrl: proposal.paymentUrl ?? "",
+    paymentStatus: ["created", "paid", "failed"].includes(proposal.paymentStatus || "")
+      ? proposal.paymentStatus as CrmProposal["paymentStatus"]
+      : "pending",
+    paymentError: proposal.paymentError ?? "",
+    paymentUpdatedAt: proposal.paymentUpdatedAt ?? null,
+    proposalType: proposal.proposalType === "student_credit_package" ? "student_credit_package" : "commercial",
+    studentUserId: proposal.studentUserId ?? "",
+    creditPackageId: proposal.creditPackageId ?? "",
+    creditPackageSnapshot: proposal.creditPackageSnapshot ?? null,
+    creditId: proposal.creditId ?? "",
+    createdAt: proposal.createdAt ?? "",
+  };
+}
+
 export async function createProposal(input: CrmProposalInput): Promise<{ data: CrmProposal | null; error: Error | null }> {
   if (!configured() || !databases) return { data: null, error: new Error("Appwrite não configurado") };
   try {
@@ -158,6 +196,38 @@ export async function getProposalByToken(token: string): Promise<{ data: CrmProp
     return { data: toProposal(res.documents[0] as unknown as ProposalDoc), error: null };
   } catch (e) {
     return { data: null, error: e as Error };
+  }
+}
+
+function publicProposalCompatFallbackEnabled(): boolean {
+  return String(import.meta.env.VITE_ADMIN_USERS_SECURITY_MODE || "compat").toLowerCase() !== "strict";
+}
+
+export async function getPublicProposalByToken(token: string): Promise<{ data: CrmProposal | null; error: Error | null }> {
+  if (!functions || !ADMIN_USERS_FUNCTION_ID) {
+    if (publicProposalCompatFallbackEnabled()) return getProposalByToken(token);
+    return { data: null, error: new Error("Funcao administrativa nao configurada.") };
+  }
+
+  try {
+    const execution = await functions.createExecution(
+      ADMIN_USERS_FUNCTION_ID,
+      JSON.stringify({ action: "getPublicProposal", token }),
+      false,
+    );
+    let body: PublicProposalFunctionResponse = {};
+    try {
+      body = JSON.parse(execution.responseBody || "{}") as PublicProposalFunctionResponse;
+    } catch {
+      body = {};
+    }
+    if (execution.status === "failed" || execution.responseStatusCode >= 400 || !body.proposal) {
+      throw new Error(body.message || "Proposta nao encontrada ou link invalido.");
+    }
+    return { data: normalizePublicProposal(body.proposal), error: null };
+  } catch (error) {
+    if (publicProposalCompatFallbackEnabled()) return getProposalByToken(token);
+    return { data: null, error: error as Error };
   }
 }
 

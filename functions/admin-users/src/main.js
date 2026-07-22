@@ -225,6 +225,19 @@ const FLIGHT_DETAIL_SELECT = [
   "flight_seq_number",
 ];
 const FLIGHT_REPORT_SELECT = FLIGHT_DETAIL_SELECT.filter((field) => field !== "csv_text");
+const FLIGHT_REPORT_BASE_SELECT = FLIGHT_REPORT_SELECT.filter(
+  (field) => field !== "training_snapshot_json" && field !== "training_mission_ids_json",
+);
+const PROFILE_REPORT_SELECT = ["user_id", "full_name", "nickname"];
+const TELEMETRY_SUMMARY_LEAN_SELECT = [
+  "$id",
+  "flight_id",
+  "telemetry_present",
+  "duration_sec",
+  "distance_nm",
+  "hard_landing_count",
+  "max_touchdown_g",
+];
 const PROFILE_SELECT = [
   "$id",
   "school_id",
@@ -8081,16 +8094,17 @@ async function getUsersByIds(userIds) {
   return out;
 }
 
-async function getProfilesByUserIds(userIds) {
+async function getProfilesByUserIds(userIds, fields = PROFILE_SELECT) {
   if (!userIds.length) return new Map();
   const docs = [];
   const batchSize = 50;
+  const selectFields = Array.isArray(fields) && fields.length ? fields : PROFILE_SELECT;
   for (let i = 0; i < userIds.length; i += batchSize) {
     const batch = userIds.slice(i, i + batchSize);
     docs.push(
       ...(await listAllDocuments(PROFILES_COLLECTION_ID, [
         sdk.Query.equal("user_id", batch),
-        ...selectQuery(PROFILE_SELECT),
+        ...selectQuery(selectFields),
       ])),
     );
   }
@@ -10830,10 +10844,105 @@ async function listScheduleWeekFlights(weekStart) {
   return [...byId.values()];
 }
 
+const REPORT_LEAN_TELEMETRY_COLUMNS = new Set(["hardLandingCount", "maxTouchdownG"]);
+const REPORT_FULL_TELEMETRY_COLUMNS = new Set([
+  "takeoffCount",
+  "landingCount",
+  "tglCount",
+  "smoothLandingCount",
+  "mediumLandingCount",
+  "bestTouchdownVertSpeedFpm",
+  "slowestLandingIasKt",
+  "maxDescentRateFpm",
+  "longestTakeoffGroundRollFt",
+  "shortestTakeoffGroundRollFt",
+  "fastestTakeoffIasKt",
+  "maxHeadwindKt",
+  "maxTailwindKt",
+  "maxCrosswindKt",
+  "aerodromeCount",
+  "aerodromes",
+  "maxOilPressurePsi",
+  "maxOilTempF",
+  "maxNormalG",
+  "maxLateralG",
+  "maxChtF",
+  "maxEgtF",
+  "maxRpm",
+  "maxMapInHg",
+  "maxFuelFlowGph",
+  "maxFuelPressurePsi",
+  "minFuelQty",
+  "maxOatC",
+]);
+const REPORT_EVALUATION_COLUMNS = new Set([
+  "evaluationPresent",
+  "evalScoreInstruction",
+  "evalScoreSafety",
+  "evalScoreLearning",
+  "evalScoreAverage",
+  "evalComment",
+]);
+
+let reportFleetCache = { at: 0, aircrafts: null, models: null };
+const REPORT_FLEET_TTL_MS = 5 * 60 * 1000;
+
+function resolveFlightReportHydration(params = {}) {
+  const explicit = params.hydration && typeof params.hydration === "object" ? params.hydration : null;
+  if (explicit) {
+    const telemetryRaw = cleanString(explicit.telemetry || "none");
+    return {
+      telemetry: ["none", "lean", "full"].includes(telemetryRaw) ? telemetryRaw : "none",
+      landings: Boolean(explicit.landings),
+      evaluations: Boolean(explicit.evaluations),
+      mission: Boolean(explicit.mission),
+    };
+  }
+
+  const columns = Array.isArray(params.columns) ? params.columns.map((item) => cleanString(item)).filter(Boolean) : null;
+  if (!columns || !columns.length) {
+    return { telemetry: "none", landings: false, evaluations: false, mission: false };
+  }
+
+  const set = new Set(columns);
+  let telemetry = "none";
+  if ([...set].some((key) => REPORT_FULL_TELEMETRY_COLUMNS.has(key))) telemetry = "full";
+  else if ([...set].some((key) => REPORT_LEAN_TELEMETRY_COLUMNS.has(key))) telemetry = "lean";
+
+  const evaluationFilter = cleanString(params.evaluationFilter || params.evaluation);
+  return {
+    telemetry,
+    landings: set.has("fastestLandingIasKt"),
+    evaluations:
+      [...set].some((key) => REPORT_EVALUATION_COLUMNS.has(key)) ||
+      evaluationFilter === "evaluated" ||
+      evaluationFilter === "pending",
+    mission: set.has("missionName"),
+  };
+}
+
+async function getReportFleetMaps() {
+  const now = Date.now();
+  if (
+    reportFleetCache.aircrafts &&
+    reportFleetCache.models &&
+    now - reportFleetCache.at < REPORT_FLEET_TTL_MS
+  ) {
+    return reportFleetCache;
+  }
+  const [aircrafts, models] = await Promise.all([
+    listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
+    listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
+  ]);
+  reportFleetCache = { at: now, aircrafts, models };
+  return reportFleetCache;
+}
+
 async function listFlightReports(params = {}, actorUserId = "", actorRole = "") {
   const limit = clampReportLimit(params.limit);
   const cursor = String(params.cursor || "").trim();
   const safeActorRole = cleanString(actorRole);
+  const hydration = resolveFlightReportHydration(params);
   const filters = {
     fromDate: String(params.fromDate || "").trim(),
     toDate: String(params.toDate || "").trim(),
@@ -10848,6 +10957,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     filters.instructors = [actorUserId];
   }
 
+  const flightSelect = hydration.mission ? FLIGHT_REPORT_SELECT : FLIGHT_REPORT_BASE_SELECT;
   const flightQueries = [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
     ...dateQuery("flight_date", filters.fromDate, filters.toDate),
@@ -10857,7 +10967,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     sdk.Query.orderDesc("flight_date"),
     sdk.Query.orderDesc("start_time"),
     sdk.Query.limit(limit),
-    ...selectQuery(FLIGHT_REPORT_SELECT),
+    ...selectQuery(flightSelect),
   ];
   if (cursor) flightQueries.push(sdk.Query.cursorAfter(cursor));
 
@@ -10883,22 +10993,36 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
   const flightIds = flights.map((flight) => flight.$id);
   const userIds = Array.from(new Set(flights.flatMap((doc) => [doc.student_user_id || doc.user_id, doc.instructor_user_id]).filter(Boolean)));
 
-  const [usersList, profilesByUserId, aircrafts, models, telemetrySummaries, landingMetrics, evaluations] = await Promise.all([
-    getUsersByIds(userIds),
-    getProfilesByUserIds(userIds),
-    listAllDocuments(AIRCRAFTS_COLLECTION_ID, selectQuery(AIRCRAFT_SELECT)),
-    listAllDocuments(AIRCRAFT_MODELS_COLLECTION_ID, selectQuery(AIRCRAFT_MODEL_SELECT)),
-    listDocumentsByFieldIn(FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", flightIds, selectQuery(TELEMETRY_SUMMARY_SELECT)),
-    listDocumentsByFieldIn(FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", flightIds, selectQuery(LANDING_METRIC_SELECT)),
-    FLIGHT_EVALUATIONS_COLLECTION_ID
+  const telemetrySelect =
+    hydration.telemetry === "full"
+      ? TELEMETRY_SUMMARY_SELECT
+      : hydration.telemetry === "lean"
+        ? TELEMETRY_SUMMARY_LEAN_SELECT
+        : null;
+
+  const [profilesByUserId, fleet, telemetrySummaries, landingMetrics, evaluations] = await Promise.all([
+    getProfilesByUserIds(userIds, PROFILE_REPORT_SELECT),
+    getReportFleetMaps(),
+    telemetrySelect && flightIds.length
+      ? listDocumentsByFieldIn(
+          FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID,
+          "flight_id",
+          flightIds,
+          selectQuery(telemetrySelect),
+        )
+      : Promise.resolve([]),
+    hydration.landings && flightIds.length
+      ? listDocumentsByFieldIn(FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", flightIds, selectQuery(LANDING_METRIC_SELECT))
+      : Promise.resolve([]),
+    hydration.evaluations && FLIGHT_EVALUATIONS_COLLECTION_ID && flightIds.length
       ? listDocumentsByFieldIn(FLIGHT_EVALUATIONS_COLLECTION_ID, "flight_id", flightIds).catch(() => [])
       : Promise.resolve([]),
   ]);
 
-  const usersById = new Map(usersList.map((user) => [user.$id, user]));
-  const modelsById = new Map(models.map((model) => [model.$id, model]));
+  const usersById = new Map();
+  const modelsById = new Map(fleet.models.map((model) => [model.$id, model]));
   const aircraftByRegistration = new Map(
-    aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
+    fleet.aircrafts.map((aircraft) => [normalizeAircraftIdent(aircraft.registration), aircraft]),
   );
   const telemetryByFlightId = new Map(telemetrySummaries.map((doc) => [doc.flight_id, doc]));
   const evaluationByFlightId = new Map((evaluations || []).map((doc) => [doc.flight_id, doc]));
@@ -10917,7 +11041,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     const aircraftIdent = normalizeAircraftIdent(flight.aircraftIdent);
     const aircraft = aircraftByRegistration.get(aircraftIdent);
     const model = aircraft ? modelsById.get(aircraft.model_id) : null;
-    const telemetry = toTelemetrySummary(telemetryByFlightId.get(flight.id));
+    const telemetry = hydration.telemetry === "none" ? null : toTelemetrySummary(telemetryByFlightId.get(flight.id));
     if (telemetry && fastestLandingIasByFlightId.has(flight.id)) {
       telemetry.fastestLandingIasKt = fastestLandingIasByFlightId.get(flight.id);
     }
@@ -10937,6 +11061,25 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       ? Math.round(((scoreInstruction + scoreSafety + scoreLearning) / 3) * 10) / 10
       : null;
 
+    let missionName = "";
+    if (hydration.mission) {
+      const snapshot = flight.trainingSnapshot && typeof flight.trainingSnapshot === "object"
+        ? flight.trainingSnapshot
+        : null;
+      const missionNames = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(snapshot?.snapshots)
+              ? snapshot.snapshots.map((item) => cleanString(item?.missionName || item?.mission?.name || item?.mission?.title))
+              : []),
+            cleanString(snapshot?.missionName),
+            cleanString(snapshot?.mission?.name || snapshot?.mission?.title),
+          ].filter(Boolean),
+        ),
+      );
+      missionName = missionNames.join(", ");
+    }
+
     return {
       ...flight,
       status,
@@ -10950,6 +11093,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       durationSec,
       hours: durationSec ? Number((durationSec / 3600).toFixed(2)) : 0,
       distanceNm: Number(distanceNm.toFixed(1)),
+      missionName,
       studentName: userDisplayName(flight.studentUserId, usersById, profilesByUserId, flight.studentName),
       instructorName: userDisplayName(flight.instructorUserId, usersById, profilesByUserId, flight.instructorName),
       telemetry,
@@ -10975,6 +11119,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     total: flightsPage.total,
     limit,
     nextCursor: flights.length === limit ? flights[flights.length - 1]?.$id || null : null,
+    hydration,
   };
 }
 
@@ -11003,21 +11148,65 @@ function groupDataByUserId(flights, plans) {
 }
 
 function matchesSearch(record, search) {
-  const needle = normalizeSearch(search);
-  if (!needle) return true;
-  const haystack = normalizeSearch(
+  return fieldsMatchSearch(
     [
       record.email,
       record.name,
       record.userId,
-      record.role,
-      record.profile.fullName,
-      record.profile.cpf,
-      record.profile.phone,
-      record.profile.anacCode,
-    ].join(" "),
+      record.profile?.fullName,
+      record.profile?.nickname,
+      record.profile?.cpf,
+      record.profile?.phone,
+      record.profile?.anacCode,
+    ],
+    search,
   );
-  return haystack.includes(needle);
+}
+
+function authUserMatchesSearch(user, search) {
+  return fieldsMatchSearch([user?.email, user?.name, user?.$id], search);
+}
+
+function fieldsMatchSearch(fields, search) {
+  const needle = normalizeSearch(search);
+  if (!needle) return true;
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
+  const normalizedFields = (Array.isArray(fields) ? fields : [])
+    .map((field) => normalizeSearch(field))
+    .filter(Boolean);
+  if (!normalizedFields.length) return false;
+  return tokens.every((token) => normalizedFields.some((field) => tokenMatchesField(field, token)));
+}
+
+function tokenMatchesField(field, token) {
+  if (!field || !token) return false;
+  if (field === token) return true;
+
+  // CPF / telefone / códigos numéricos: substring nos dígitos
+  if (/^\d+$/.test(token)) {
+    const digits = field.replace(/\D/g, "");
+    return digits.includes(token) || field.includes(token);
+  }
+
+  const words = field.split(/[^a-z0-9]+/).filter(Boolean);
+  // Tokens curtos só batem no início de uma palavra (evita "ana" em "semana")
+  if (token.length < 3) {
+    return words.some((word) => word.startsWith(token)) || field.startsWith(token);
+  }
+
+  // Prefixo de palavra (ex.: "sil" → "silva")
+  if (words.some((word) => word.startsWith(token))) return true;
+
+  // Tokens longos também podem bater no início de um segmento (ex.: domínio de e-mail)
+  if (token.length >= 4) {
+    for (let index = field.indexOf(token); index !== -1; index = field.indexOf(token, index + 1)) {
+      const prev = index === 0 ? "" : field[index - 1];
+      if (!prev || /[^a-z0-9]/.test(prev)) return true;
+    }
+  }
+
+  return false;
 }
 
 async function buildRecords({ search = "", onlyUserId = null } = {}) {
@@ -11060,31 +11249,19 @@ async function buildRecords({ search = "", onlyUserId = null } = {}) {
 async function findProfileSearchUserIds(search) {
   const needle = normalizeSearch(search);
   if (!needle) return [];
-  const raw = cleanString(search);
-  const searchableFields = ["full_name", "nickname", "email", "anac_code", "cpf", "phone"];
-  const [pages, localProfiles] = await Promise.all([
-    Promise.all(
-      searchableFields.map((field) =>
-        databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
-          sdk.Query.equal("school_id", [SCHOOL_ID]),
-          sdk.Query.search(field, raw),
-          sdk.Query.limit(20),
-          ...selectQuery(["user_id"]),
-        ]).catch(() => ({ documents: [] })),
-      ),
-    ),
-    listAllDocuments(PROFILES_COLLECTION_ID, [
-      sdk.Query.equal("school_id", [SCHOOL_ID]),
-      ...selectQuery(["user_id", ...searchableFields]),
-    ]).catch(() => []),
-  ]);
+  const searchableFields = ["full_name", "nickname", "email", "anac_code", "cpf", "phone", "user_id"];
+  const localProfiles = await listAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery(["user_id", ...searchableFields]),
+  ]).catch(() => []);
   return Array.from(new Set(
-    [
-      ...pages.flatMap((page) => page.documents || []),
-      ...localProfiles.filter((profile) =>
-        searchableFields.some((field) => normalizeSearch(profile[field]).includes(needle)),
-      ),
-    ]
+    localProfiles
+      .filter((profile) =>
+        fieldsMatchSearch(
+          searchableFields.map((field) => profile[field]),
+          search,
+        ),
+      )
       .map((profile) => cleanString(profile.user_id))
       .filter(Boolean),
   ));
@@ -11406,7 +11583,7 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
         findProfileSearchUserIds(search),
       ]);
       const searchIds = new Set([
-        ...(authRes.users || []).map((user) => user.$id),
+        ...(authRes.users || []).filter((user) => authUserMatchesSearch(user, search)).map((user) => user.$id),
         ...profileSearchUserIds,
       ]);
       matchingUserIds = matchingUserIds.filter((userId) => searchIds.has(userId));
@@ -11427,7 +11604,7 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
       }).catch(() => ({ users: [], total: 0 })),
       findProfileSearchUserIds(search),
     ]);
-    const authUsers = authRes.users || [];
+    const authUsers = (authRes.users || []).filter((user) => authUserMatchesSearch(user, search));
     const existingIds = new Set(authUsers.map((user) => user.$id));
     const extraIds = profileUserIds.filter((userId) => !existingIds.has(userId));
     const extraUsers = await getUsersByIds(extraIds);
@@ -11495,7 +11672,7 @@ async function searchFlightPickerUsers(actorUserId, payload = {}) {
       findProfileSearchUserIds(search).catch(() => []),
     ]);
     userIds = Array.from(new Set([
-      ...(authRes.users || []).map((user) => user.$id),
+      ...(authRes.users || []).filter((user) => authUserMatchesSearch(user, search)).map((user) => user.$id),
       ...profileSearchUserIds,
     ].filter(Boolean)));
   } else {

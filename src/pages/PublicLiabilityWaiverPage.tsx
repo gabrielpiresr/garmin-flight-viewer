@@ -10,6 +10,7 @@ const emptyForm: PublicLiabilityWaiverForm = {
   email: "",
   phone: "",
   birthDate: "",
+  weightKg: "",
   city: "Jundiaí",
   emergencyName: "",
   emergencyPhone: "",
@@ -39,6 +40,14 @@ function formatPhoneInput(value: string): string {
   if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function formatWeightInput(value: string): string {
+  const normalized = value.replace(",", ".").replace(/[^\d.]/g, "");
+  const [integer = "", decimal = ""] = normalized.split(".");
+  const safeInteger = integer.slice(0, 3);
+  if (!normalized.includes(".")) return safeInteger;
+  return `${safeInteger}.${decimal.slice(0, 1)}`;
 }
 
 function isValidCpf(value: string): boolean {
@@ -106,6 +115,8 @@ export function PublicLiabilityWaiverPage() {
     if (!form.fullName.trim()) next.fullName = "Informe o nome completo.";
     if (!isValidCpf(form.cpf)) next.cpf = "Informe um CPF válido.";
     if (!form.birthDate) next.birthDate = "Informe a data de nascimento.";
+    const weightKg = Number(form.weightKg);
+    if (!Number.isFinite(weightKg) || weightKg <= 0) next.weightKg = "Informe o peso em kg.";
     if (!/^\S+@\S+\.\S+$/.test(form.email.trim())) next.email = "Informe um e-mail válido.";
     if (onlyDigits(form.phone).length < 10) next.phone = "Informe um telefone válido.";
     if (!form.emergencyName.trim()) next.emergencyName = "Informe o contato de emergência.";
@@ -184,6 +195,11 @@ export function PublicLiabilityWaiverPage() {
                 <FieldLabel>Data de nascimento</FieldLabel>
                 <input type="date" value={form.birthDate} onChange={(event) => set("birthDate", event.target.value)} className={fieldClass("birthDate")} />
                 {fieldErrors.birthDate ? <p className="mt-1 text-xs text-red-400">{fieldErrors.birthDate}</p> : null}
+              </label>
+              <label>
+                <FieldLabel>Peso (kg)</FieldLabel>
+                <input value={form.weightKg} onChange={(event) => set("weightKg", formatWeightInput(event.target.value))} className={fieldClass("weightKg")} inputMode="decimal" placeholder="Ex.: 75" />
+                {fieldErrors.weightKg ? <p className="mt-1 text-xs text-red-400">{fieldErrors.weightKg}</p> : null}
               </label>
               <label>
                 <FieldLabel>E-mail</FieldLabel>

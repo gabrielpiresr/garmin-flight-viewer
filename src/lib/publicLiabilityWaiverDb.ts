@@ -6,6 +6,7 @@ export type PublicLiabilityWaiverForm = {
   email: string;
   phone: string;
   birthDate: string;
+  weightKg: string;
   city: string;
   emergencyName: string;
   emergencyPhone: string;

@@ -626,6 +626,7 @@ export function AdminUsersTab() {
     }
     let cancelled = false;
     setLoadingDetail(true);
+    setSelectedDetail(null);
     setError(null);
     void getAdminUserDetail(selectedId)
       .then((detail) => {
@@ -1229,17 +1230,39 @@ export function AdminUsersTab() {
             </button>
           ) : null}
           {selectedSummary ? (
-            !selectedDetail ? (
-              <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
-                Carregando detalhe de {displayName(selectedSummary)}...
+            loadingDetail || !selectedDetail ? (
+              loadingDetail ? (
+              <section className="space-y-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                  <Skeleton className="h-32 w-24 rounded-lg" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Skeleton className="h-3 w-28" />
+                    <Skeleton className="h-6 w-56" />
+                    <Skeleton className="h-4 w-44" />
+                    <Skeleton className="mt-2 h-5 w-24 rounded-full" />
+                    <Skeleton className="h-3 w-64" />
+                    <Skeleton className="h-3 w-40" />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  {Array.from({ length: 5 }).map((_, index) => (
+                    <Skeleton key={index} className="h-24 rounded-xl" />
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-3/4" />
+                </div>
               </section>
+              ) : (
+                <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
+                  Não foi possível carregar os detalhes deste usuário.
+                </section>
+              )
             ) : (
-              <div className={`space-y-4 transition-opacity duration-200 ${loadingDetail ? "opacity-80" : "opacity-100"}`}>
-                {loadingDetail ? (
-                  <section className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-xs text-cyan-200">
-                    Atualizando detalhes de {displayName(selectedSummary)}...
-                  </section>
-                ) : null}
+              <div className="space-y-4">
                 <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                   <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-start">
                     <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">

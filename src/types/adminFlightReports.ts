@@ -15,6 +15,7 @@ export type FlightReportColumnKey =
   | "modelName"
   | "sourceFilename"
   | "route"
+  | "missionName"
   | "durationSec"
   | "hours"
   | "landings"
@@ -142,6 +143,7 @@ export type AdminFlightReportRow = {
   flightDate: string | null;
   startTime: string | null;
   route: string;
+  missionName?: string;
   landings: number;
   distanceNm: number;
   studentName: string;
@@ -182,4 +184,13 @@ export type AdminFlightReportParams = {
   ghostMode?: "exclude" | "include" | "only";
   limit?: number;
   cursor?: string | null;
+  /** When set, backend hydrates only what these columns need. */
+  columns?: string[];
+  evaluationFilter?: "all" | "evaluated" | "pending";
+  hydration?: {
+    telemetry?: "none" | "lean" | "full";
+    landings?: boolean;
+    evaluations?: boolean;
+    mission?: boolean;
+  };
 };

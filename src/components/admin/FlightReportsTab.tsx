@@ -18,6 +18,12 @@ import {
 } from "recharts";
 import { listAdminFlightReports } from "../../lib/adminUsersDb";
 import { downloadCsv } from "../../lib/csvExport";
+import {
+  BUILTIN_FLIGHT_REPORT_PRESETS,
+  deriveFlightReportHydration,
+  flightReportHydrationKey,
+  type FlightReportHydration,
+} from "../../lib/flightReportHydration";
 import type {
   AdminFlightReportRow,
   AdminFlightReportStatus,
@@ -25,6 +31,7 @@ import type {
   FlightReportGroupKey,
   FlightReportMetricKey,
 } from "../../types/adminFlightReports";
+import { FlightDetailView } from "../FlightDetailView";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
@@ -220,8 +227,6 @@ const DEFAULT_COLUMNS: ReportColumnKey[] = [
   "landings",
   "distanceNm",
   "telemetryPresent",
-  "hardLandingCount",
-  "maxTouchdownG",
 ];
 
 function isGroupedRow(row: ReportRow): row is GroupedReportRow {
@@ -424,6 +429,15 @@ const COLUMNS: ColumnDef[] = [
   { key: "modelName", label: "Modelo", category: "base", groupKey: "model", sortable: true, format: (row) => row.modelName || "", sortValue: (row) => row.modelName || "" },
   { key: "sourceFilename", label: "Arquivo", category: "base", detailOnly: true, format: (row) => row.sourceFilename || "" },
   { key: "route", label: "Rota", category: "operation", detailOnly: true, format: (row) => row.route || "" },
+  {
+    key: "missionName",
+    label: "Missão",
+    category: "operation",
+    detailOnly: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : row.missionName || ""),
+    sortValue: (row) => (isGroupedRow(row) ? "" : row.missionName || ""),
+  },
   { key: "durationSec", label: "Duração", category: "operation", compact: true, sortable: true, format: (row) => formatDuration(row.durationSec), sortValue: (row) => row.durationSec ?? 0 },
   { key: "hours", label: "Duração", category: "operation", compact: true, sortable: true, format: (row) => row.hours != null && Number.isFinite(row.hours) ? fmtNumber(row.hours, 1) + "h" : "", sortValue: (row) => row.hours ?? 0 },
   { key: "landings", label: "Pousos", category: "operation", compact: true, sortable: true, format: (row) => fmtInt(row.landings), sortValue: (row) => row.landings ?? 0 },
@@ -432,7 +446,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "executedCount", label: "Realizados", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.executedCount : row.status === "Realizado" ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.executedCount : row.status === "Realizado" ? 1 : 0) },
   { key: "futureCount", label: "Agendados", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0) },
   { key: "telemetryCount", label: "Com telemetria", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0) },
-  { key: "telemetryPresent", label: "Telemetria", category: "telemetry", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.telemetry?.telemetryPresent ? "Sim" : "Não"), sortValue: (row) => (isGroupedRow(row) ? 0 : row.telemetry?.telemetryPresent ? 1 : 0) },
+  { key: "telemetryPresent", label: "Telemetria", category: "telemetry", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? "Sim" : "Não"), sortValue: (row) => (isGroupedRow(row) ? 0 : row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? 1 : 0) },
   { key: "takeoffCount", label: "Decol.", category: "telemetry", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "takeoffCount")), sortValue: numberSort("takeoffCount", "takeoffCount") },
   { key: "landingCount", label: "Pousos detect.", category: "landing", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "landingCount")), sortValue: numberSort("landingCount", "landingCount") },
   { key: "tglCount", label: "TGL", category: "landing", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "tglCount")), sortValue: numberSort("tglCount", "tglCount") },
@@ -615,12 +629,12 @@ function aggregateRows(rows: AdminFlightReportRow[], groups: FlightReportGroupKe
     next.flightCount += 1;
     next.executedCount += row.status === "Realizado" ? 1 : 0;
     next.futureCount += isScheduledReportStatus(row.status) ? 1 : 0;
-    next.telemetryCount += telemetry?.telemetryPresent ? 1 : 0;
+    next.telemetryCount += telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? 1 : 0;
     next.durationSec += row.durationSec ?? 0;
     next.hours = Number((next.durationSec / 3600).toFixed(2));
     next.landings += row.landings || 0;
     next.distanceNm = Number((next.distanceNm + (row.distanceNm || 0)).toFixed(1));
-    next.telemetryPresent = next.telemetryPresent || Boolean(telemetry?.telemetryPresent);
+    next.telemetryPresent = next.telemetryPresent || Boolean(telemetry?.telemetryPresent || row.telemetryPresentOnDoc);
     next.pointCount += telemetry?.pointCount ?? 0;
     next.takeoffCount += telemetry?.takeoffCount ?? 0;
     next.landingCount += telemetry?.landingCount ?? 0;
@@ -988,6 +1002,7 @@ function columnDescription(column: ColumnDef): string {
     modelName: "Modelo da aeronave associado ao cadastro.",
     sourceFilename: "Arquivo de origem da telemetria ou ficha.",
     route: "Rota informada no voo.",
+    missionName: "Missão de treinamento vinculada ao voo.",
     durationSec: "Duração total do voo.",
     hours: "Duração convertida para horas decimais.",
     landings: "Quantidade de pousos registrada na ficha do voo.",
@@ -1226,9 +1241,9 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [metric, setMetric] = useState<ChartMetricKey>("hours");
-  const [periodPreset, setPeriodPreset] = useState<PeriodPresetKey>("all");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [periodPreset, setPeriodPreset] = useState<PeriodPresetKey>("last30");
+  const [fromDate, setFromDate] = useState(() => periodForPreset("last30").fromDate);
+  const [toDate, setToDate] = useState(() => periodForPreset("last30").toDate);
   const [models, setModels] = useState<string[]>([]);
   const [aircrafts, setAircrafts] = useState<string[]>([]);
   const [instructors, setInstructors] = useState<string[]>([]);
@@ -1238,6 +1253,8 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [temporalGroup, setTemporalGroup] = useState<TemporalGroupKey | "">("");
   const [dimensionGroups, setDimensionGroups] = useState<DimensionGroupKey[]>([]);
   const [selectedColumns, setSelectedColumns] = useState<ReportColumnKey[]>(DEFAULT_COLUMNS);
+  const [activeBuiltinPresetId, setActiveBuiltinPresetId] = useState<string>("operacional");
+  const [loadedHydration, setLoadedHydration] = useState<FlightReportHydration | null>(null);
   const [showColumns, setShowColumns] = useState(false);
   const [columnSearch, setColumnSearch] = useState("");
   const [sortKey, setSortKey] = useState<ReportColumnKey>("flightDate");
@@ -1246,6 +1263,32 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [presetName, setPresetName] = useState("");
   const [presetToDelete, setPresetToDelete] = useState<string | null>(null);
   const [openFilter, setOpenFilter] = useState<MultiFilterKey | null>(null);
+  const [activeFlightId, setActiveFlightId] = useState<string | null>(null);
+
+  const neededHydration = useMemo(
+    () => deriveFlightReportHydration(selectedColumns, evaluationFilter),
+    [evaluationFilter, selectedColumns],
+  );
+  const neededHydrationKey = flightReportHydrationKey(neededHydration);
+
+  const buildReportParams = useCallback(
+    (cursor?: string | null) => ({
+      limit: REPORT_PAGE_SIZE,
+      cursor: cursor || undefined,
+      instructors: serverInstructorsFilter,
+      fromDate: fromDate || undefined,
+      toDate: toDate || undefined,
+      status,
+      columns: selectedColumns.filter((key) => key !== "group" && key !== "telemetryCount"),
+      evaluationFilter,
+      hydration: neededHydration,
+    }),
+    [evaluationFilter, fromDate, neededHydration, selectedColumns, serverInstructorsFilter, status, toDate],
+  );
+  const buildReportParamsRef = useRef(buildReportParams);
+  buildReportParamsRef.current = buildReportParams;
+  const neededHydrationRef = useRef(neededHydration);
+  neededHydrationRef.current = neededHydration;
 
   useEffect(() => {
     if (awaitingInstructorId) return;
@@ -1253,12 +1296,13 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     let cancelled = false;
     setLoading(true);
     setError(null);
-    listAdminFlightReports({ limit: REPORT_PAGE_SIZE, instructors: serverInstructorsFilter })
+    listAdminFlightReports(buildReportParamsRef.current())
       .then((page) => {
         if (cancelled) return;
         setRows(page.flights);
         setNextCursor(page.nextCursor);
         setTotalRows(page.total);
+        setLoadedHydration(neededHydrationRef.current);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -1272,13 +1316,21 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     return () => {
       cancelled = true;
     };
-  }, [awaitingInstructorId, serverInstructorsFilter, showToast]);
+  }, [
+    awaitingInstructorId,
+    fromDate,
+    neededHydrationKey,
+    serverInstructorsFilter,
+    showToast,
+    status,
+    toDate,
+  ]);
 
   const loadMoreReports = useCallback(async () => {
     if (!nextCursor || loadingMore || loadingAll) return;
     setLoadingMore(true);
     try {
-      const page = await listAdminFlightReports({ limit: REPORT_PAGE_SIZE, cursor: nextCursor, instructors: serverInstructorsFilter });
+      const page = await listAdminFlightReports(buildReportParams(nextCursor));
       setRows((current) => {
         const byId = new Map(current.map((row) => [row.id, row]));
         for (const row of page.flights) byId.set(row.id, row);
@@ -1286,6 +1338,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       });
       setNextCursor(page.nextCursor);
       setTotalRows(page.total);
+      setLoadedHydration(neededHydration);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Nao foi possivel carregar mais relatorios.";
       setError(message);
@@ -1293,7 +1346,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingAll, loadingMore, nextCursor, serverInstructorsFilter, showToast]);
+  }, [buildReportParams, loadingAll, loadingMore, neededHydration, nextCursor, showToast]);
 
   const loadAllReports = useCallback(async () => {
     if (!nextCursor || loadingMore || loadingAll) return;
@@ -1304,7 +1357,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       let latestTotal = totalRows;
       const byId = new Map(rows.map((row) => [row.id, row]));
       while (cursor && safety < 200) {
-        const page = await listAdminFlightReports({ limit: REPORT_PAGE_SIZE, cursor, instructors: serverInstructorsFilter });
+        const page = await listAdminFlightReports(buildReportParams(cursor));
         for (const row of page.flights) byId.set(row.id, row);
         latestTotal = page.total;
         if (page.nextCursor === cursor) break;
@@ -1314,6 +1367,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       setRows([...byId.values()]);
       setNextCursor(cursor);
       setTotalRows(latestTotal);
+      setLoadedHydration(neededHydration);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Nao foi possivel carregar todos os relatorios.";
       setError(message);
@@ -1321,7 +1375,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     } finally {
       setLoadingAll(false);
     }
-  }, [loadingAll, loadingMore, nextCursor, rows, serverInstructorsFilter, showToast, totalRows]);
+  }, [buildReportParams, loadingAll, loadingMore, neededHydration, nextCursor, rows, showToast, totalRows]);
 
   const activeGroups = useMemo(
     () => [...(temporalGroup ? [temporalGroup] : []), ...dimensionGroups],
@@ -1367,7 +1421,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const totalLandings = filtered.reduce((acc, row) => acc + (row.landings || 0), 0);
   const totalDistance = filtered.reduce((acc, row) => acc + (row.distanceNm || 0), 0);
   const totalFuture = filtered.filter((row) => isScheduledReportStatus(row.status)).length;
-  const totalTelemetry = filtered.filter((row) => row.telemetry?.telemetryPresent).length;
+  const totalTelemetry = filtered.filter((row) => row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc).length;
   const metricLabel = METRIC_OPTIONS.find((item) => item.key === metric)?.label ?? "Horas";
 
   const chartModel = useMemo(
@@ -1396,21 +1450,33 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   }
 
   function toggleColumn(column: ReportColumnKey) {
+    setActiveBuiltinPresetId("");
     setSelectedColumns((current) =>
       current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
     );
   }
 
   function clearFilters() {
-    setPeriodPreset("all");
-    setFromDate("");
-    setToDate("");
+    setPeriodPreset("last30");
+    const next = periodForPreset("last30");
+    setFromDate(next.fromDate);
+    setToDate(next.toDate);
     setModels([]);
     setAircrafts([]);
     if (!lockedInstructorId) setInstructors([]);
     setStudents([]);
     setStatus("all");
     setEvaluationFilter("all");
+  }
+
+  function applyBuiltinPreset(presetId: string) {
+    const preset = BUILTIN_FLIGHT_REPORT_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    setActiveBuiltinPresetId(preset.id);
+    setSelectedColumns(sanitizeSelectedColumns(preset.selectedColumns));
+    setView("table");
+    setTemporalGroup("");
+    setDimensionGroups([]);
   }
 
   function handleSort(column: ColumnDef) {
@@ -1465,6 +1531,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   function loadPreset(name: string) {
     const preset = savedPresets.find((item) => item.name === name);
     if (!preset) return;
+    setActiveBuiltinPresetId("");
     setFromDate(preset.fromDate);
     setToDate(preset.toDate);
     setModels(preset.models ?? []);
@@ -1514,6 +1581,14 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
           <p className="mt-1 text-xs text-slate-500">
             {filtered.length} voos · {fmtNumber(totalHours, 1)} h · {fmtInt(totalLandings)} pousos · {fmtNumber(totalDistance, 1)} NM · {totalFuture} previstos · {totalTelemetry} com telemetria
           </p>
+          {loadedHydration ? (
+            <p className="mt-1 text-[11px] text-slate-600">
+              Carga: telemetria {loadedHydration.telemetry}
+              {loadedHydration.landings ? " · pousos detalhados" : ""}
+              {loadedHydration.evaluations ? " · avaliações" : ""}
+              {loadedHydration.mission ? " · missões" : ""}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           {nextCursor ? (
@@ -1544,6 +1619,30 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
           </button>
         </div>
       </div>
+
+      <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+        <div className="mb-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Presets padrão</p>
+          <p className="text-xs text-slate-500">Cada preset carrega só os dados necessários das colunas.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {BUILTIN_FLIGHT_REPORT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              title={preset.description}
+              onClick={() => applyBuiltinPreset(preset.id)}
+              className={`rounded border px-3 py-1.5 text-xs font-medium transition ${
+                activeBuiltinPresetId === preset.id
+                  ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-300"
+                  : "border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              }`}
+            >
+              {preset.name}
+            </button>
+          ))}
+        </div>
+      </section>
 
       <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
@@ -1757,7 +1856,15 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
               ) : (
                 <>
                   {sortedRows.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-800/60 odd:bg-slate-950/20 hover:bg-slate-800/40">
+                    <tr
+                      key={row.id}
+                      className={`border-b border-slate-800/60 odd:bg-slate-950/20 hover:bg-slate-800/40 ${
+                        isGroupedRow(row) ? "" : "cursor-pointer"
+                      }`}
+                      onClick={() => {
+                        if (!isGroupedRow(row)) setActiveFlightId(row.id);
+                      }}
+                    >
                       {visibleColumns.map((column) => {
                         const severity = severityForColumn(row, column.key);
                         const severityHint = severityHintForColumn(row, column.key);
@@ -1776,7 +1883,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
                                 {column.format(row)}
                               </span>
                             ) : column.key === "telemetryPresent" && !isGroupedRow(row) ? (
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${row.telemetry?.telemetryPresent ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>
                                 {column.format(row)}
                               </span>
                             ) : column.key === "mediumLandingCount" ? (
@@ -1862,6 +1969,27 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
                 Excluir
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeFlightId ? (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="mx-auto max-w-7xl rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-2xl">
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setActiveFlightId(null)}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Fechar ficha
+              </button>
+            </div>
+            <FlightDetailView
+              flightId={activeFlightId}
+              onBack={() => setActiveFlightId(null)}
+              backLabel="Voltar aos relatórios"
+            />
           </div>
         </div>
       ) : null}

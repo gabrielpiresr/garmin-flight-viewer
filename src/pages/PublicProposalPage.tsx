@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getProposalByToken } from "../lib/crmProposalsDb";
+import { getPublicProposalByToken } from "../lib/crmProposalsDb";
 import { getProposalConfig, getProposalImageUrl } from "../lib/proposalSettingsDb";
 import { richContentToHtml } from "../lib/maneuverContent";
 import type { CrmProposal, ProposalConfig, ProposalSection } from "../types/proposal";
@@ -52,7 +52,7 @@ export function PublicProposalPage() {
 
   useEffect(() => {
     if (!token) { setError("Proposta não encontrada."); setLoading(false); return; }
-    Promise.all([getProposalByToken(token), getProposalConfig()]).then(([proposalRes, configRes]) => {
+    Promise.all([getPublicProposalByToken(token), getProposalConfig()]).then(([proposalRes, configRes]) => {
       if (proposalRes.error || !proposalRes.data) {
         setError("Proposta não encontrada ou link inválido.");
       } else {

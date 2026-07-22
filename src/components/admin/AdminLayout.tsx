@@ -9,6 +9,7 @@ import {
   useRoutedTab,
   type TabRoute,
 } from "../../lib/routedTabs";
+import { sidebarMotionClass, sidebarRevealClass, useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { AdminCommandBar } from "./AdminCommandBar";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
@@ -675,7 +676,16 @@ export function AdminLayout() {
   const { canTab, isLoading: permissionsLoading } = usePermissions();
   const [section, setSection] = useRoutedTab(ADMIN_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const {
+    collapsed: sidebarPinned,
+    compact: sidebarCollapsed,
+    isPeeking,
+    toggleCollapsed,
+    onSidebarMouseEnter,
+    onSidebarMouseLeave,
+    railWidthClass,
+    panelWidthClass,
+  } = useCollapsibleSidebar();
 
   // Filtra itens de navegação pelas permissões do role
   const visibleNavItems = useMemo(
@@ -768,10 +778,19 @@ export function AdminLayout() {
   return (
     <div className="flex min-h-screen bg-slate-950">
       {/* Sidebar */}
-      <aside className={`sticky top-0 hidden h-screen flex-col border-r border-slate-800 bg-slate-950/80 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
-        <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
+      <div
+        className={`relative sticky top-0 z-30 hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+      >
+      <aside
+        onMouseEnter={onSidebarMouseEnter}
+        onMouseLeave={onSidebarMouseLeave}
+        className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950/95 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
+          isPeeking ? "z-40 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
+        }`}
+      >
+        <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
-            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+            <div className={sidebarRevealClass(sidebarCollapsed)}>
               <SidebarBrand
                 fallbackLabel="Admin"
                 fallbackClassName="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-400"
@@ -779,13 +798,13 @@ export function AdminLayout() {
             </div>
             <button
               type="button"
-              onClick={() => setSidebarCollapsed((value) => !value)}
-              title={sidebarCollapsed ? "Expandir menu" : "Ocultar menu"}
-              aria-label={sidebarCollapsed ? "Expandir menu lateral" : "Ocultar menu lateral"}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+              onClick={toggleCollapsed}
+              title={sidebarPinned ? "Expandir menu" : "Ocultar menu"}
+              aria-label={sidebarPinned ? "Expandir menu lateral" : "Ocultar menu lateral"}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
             >
               <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                {sidebarCollapsed ? (
+                {sidebarPinned ? (
                   <path fillRule="evenodd" d="M7.22 4.22a.75.75 0 011.06 0l5.25 5.25a.75.75 0 010 1.06l-5.25 5.25a.75.75 0 11-1.06-1.06L11.94 10 7.22 5.28a.75.75 0 010-1.06z" clipRule="evenodd" />
                 ) : (
                   <path fillRule="evenodd" d="M12.78 4.22a.75.75 0 010 1.06L8.06 10l4.72 4.72a.75.75 0 11-1.06 1.06l-5.25-5.25a.75.75 0 010-1.06l5.25-5.25a.75.75 0 011.06 0z" clipRule="evenodd" />
@@ -793,8 +812,8 @@ export function AdminLayout() {
               </svg>
             </button>
           </div>
-          <p className={`${sidebarCollapsed ? "hidden" : ""} mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500`}>Controle Operacional</p>
-          <p className={`${sidebarCollapsed ? "hidden" : ""} text-sm font-semibold text-slate-200`}>Gestão de Frota</p>
+          <p className={`${sidebarRevealClass(sidebarCollapsed, "")} mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500`}>Controle Operacional</p>
+          <p className={`${sidebarRevealClass(sidebarCollapsed, "")} text-sm font-semibold text-slate-200`}>Gestão de Frota</p>
         </div>
 
         <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
@@ -815,9 +834,7 @@ export function AdminLayout() {
                 if (!groupItems.length) return null;
                 return (
                   <div key={group.title} className="mb-2">
-                    {!sidebarCollapsed ? (
-                      <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500">{group.title}</p>
-                    ) : null}
+                    <p className={`px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500 ${sidebarRevealClass(sidebarCollapsed, "")}`}>{group.title}</p>
                     <div className="space-y-1">
                       {groupItems.map((item) => {
                         const isActive = section === item.id;
@@ -835,7 +852,7 @@ export function AdminLayout() {
                             }`}
                           >
                             <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
-                            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                            <div className={sidebarRevealClass(sidebarCollapsed)}>
                               <p className="text-sm font-medium leading-none">{item.label}</p>
                             </div>
                           </button>
@@ -863,7 +880,7 @@ export function AdminLayout() {
                     }`}
                   >
                     <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{settingsItem.icon}</span>
-                    <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                    <div className={sidebarRevealClass(sidebarCollapsed)}>
                       <p className="text-sm font-medium leading-none">{settingsItem.label}</p>
                     </div>
                   </button>
@@ -890,6 +907,7 @@ export function AdminLayout() {
           </button>
         </div>
       </aside>
+      </div>
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">

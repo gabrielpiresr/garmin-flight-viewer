@@ -4,6 +4,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
 import { getReferAndEarnPublic, programConfigForRole } from "../../lib/referAndEarnDb";
 import { getOnboardingPublic } from "../../lib/onboardingDb";
+import { sidebarMotionClass, sidebarRevealClass, useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
 import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab";
 import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
@@ -304,7 +305,16 @@ export function InstructorLayout() {
   const { canTab } = usePermissions();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const {
+    collapsed: sidebarPinned,
+    compact: sidebarCollapsed,
+    isPeeking,
+    toggleCollapsed,
+    onSidebarMouseEnter,
+    onSidebarMouseLeave,
+    railWidthClass,
+    panelWidthClass,
+  } = useCollapsibleSidebar();
   const [referProgramActive, setReferProgramActive] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
   const activeNav = NAV_ITEMS.find((item) => item.id === section) ?? {
@@ -373,10 +383,19 @@ export function InstructorLayout() {
 
   return (
     <div className="flex min-h-screen bg-slate-950">
-      <aside className={`sticky top-0 hidden h-screen flex-col border-r border-slate-800 bg-slate-950/80 transition-[width] duration-200 lg:flex ${sidebarCollapsed ? "w-20" : "w-64"}`}>
-        <div className={`border-b border-slate-800 py-5 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
+      <div
+        className={`relative sticky top-0 z-30 hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+      >
+      <aside
+        onMouseEnter={onSidebarMouseEnter}
+        onMouseLeave={onSidebarMouseLeave}
+        className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950/95 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
+          isPeeking ? "z-40 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
+        }`}
+      >
+        <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
-            <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+            <div className={sidebarRevealClass(sidebarCollapsed)}>
               <SidebarBrand
                 fallbackLabel="Instrutor"
                 fallbackClassName="rounded bg-sky-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-400"
@@ -384,13 +403,13 @@ export function InstructorLayout() {
             </div>
             <button
               type="button"
-              onClick={() => setSidebarCollapsed((value) => !value)}
-              title={sidebarCollapsed ? "Expandir menu" : "Ocultar menu"}
-              aria-label={sidebarCollapsed ? "Expandir menu lateral" : "Ocultar menu lateral"}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+              onClick={toggleCollapsed}
+              title={sidebarPinned ? "Expandir menu" : "Ocultar menu"}
+              aria-label={sidebarPinned ? "Expandir menu lateral" : "Ocultar menu lateral"}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
             >
               <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                {sidebarCollapsed ? (
+                {sidebarPinned ? (
                   <path fillRule="evenodd" d="M7.22 4.22a.75.75 0 011.06 0l5.25 5.25a.75.75 0 010 1.06l-5.25 5.25a.75.75 0 11-1.06-1.06L11.94 10 7.22 5.28a.75.75 0 010-1.06z" clipRule="evenodd" />
                 ) : (
                   <path fillRule="evenodd" d="M12.78 4.22a.75.75 0 010 1.06L8.06 10l4.72 4.72a.75.75 0 11-1.06 1.06l-5.25-5.25a.75.75 0 010-1.06l5.25-5.25a.75.75 0 011.06 0z" clipRule="evenodd" />
@@ -398,8 +417,8 @@ export function InstructorLayout() {
               </svg>
             </button>
           </div>
-          <p className={`${sidebarCollapsed ? "hidden" : ""} mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500`}>Operação de voo</p>
-          <p className={`${sidebarCollapsed ? "hidden" : ""} text-sm font-semibold text-slate-200`}>Portal do INVA</p>
+          <p className={`${sidebarRevealClass(sidebarCollapsed, "")} mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500`}>Operação de voo</p>
+          <p className={`${sidebarRevealClass(sidebarCollapsed, "")} text-sm font-semibold text-slate-200`}>Portal do INVA</p>
         </div>
 
         <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
@@ -419,7 +438,7 @@ export function InstructorLayout() {
                 }`}
               >
                 <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
-                <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+                <div className={sidebarRevealClass(sidebarCollapsed)}>
                   <p className="text-sm font-medium leading-none">{item.label}</p>
                 </div>
               </button>
@@ -439,7 +458,7 @@ export function InstructorLayout() {
                   <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                 </svg>
               </span>
-              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+              <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">Manual do Aluno</p>
               </div>
             </a>
@@ -461,7 +480,7 @@ export function InstructorLayout() {
                   <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                 </svg>
               </span>
-              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+              <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">Manual do instrutor</p>
               </div>
             </button>
@@ -482,7 +501,7 @@ export function InstructorLayout() {
               }`}
             >
               <span className={section === helpNavItem.id ? "" : "opacity-60 group-hover:opacity-100"}>{helpNavItem.icon}</span>
-              <div className={sidebarCollapsed ? "hidden" : "min-w-0"}>
+              <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">{helpNavItem.label}</p>
               </div>
             </button>
@@ -505,6 +524,7 @@ export function InstructorLayout() {
           </button>
         </div>
       </aside>
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-sm">
