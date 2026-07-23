@@ -2493,8 +2493,8 @@ function TelemetryVideoPlayer({
         )}
       </div>
 
-      {/* Botão de download — sempre visível (baixa o arquivo completo) */}
-      {!publicMode && !SHOW_VIDEO_EDIT_TOOLS && (
+      {/* Botão de download — sempre visível (baixa o arquivo completo), inclusive no link público */}
+      {(publicMode || !SHOW_VIDEO_EDIT_TOOLS) && video.file_url && (
         <button
           type="button"
           onClick={() => void downloadVideoFile(video.file_url!)}
