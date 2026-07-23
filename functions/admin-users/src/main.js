@@ -7603,6 +7603,7 @@ async function deleteGhostFlight(actorUserId, input = {}) {
   await deleteDocsByEqual(summary, FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, "flight_id", [flightId]);
   await deleteDocsByEqual(summary, FLIGHT_MANEUVERS_COLLECTION_ID, "flight_id", [flightId]);
   await deleteDocsByEqual(summary, FLIGHT_VIDEOS_COLLECTION_ID, "flight_id", [flightId]);
+  await deleteDocsByEqual(summary, FLIGHT_PHOTOS_COLLECTION_ID, "flight_id", [flightId]);
   await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", [flightId]);
   await deleteDocsByEqual(summary, FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", [flightId]);
   await deleteDocsByEqual(summary, FLIGHT_TAKEOFFS_COLLECTION_ID, "flight_id", [flightId]);
@@ -7711,6 +7712,127 @@ async function reassignFlightChildren(collectionId, fromFlightId, toFlightId, pa
   return docs.length;
 }
 
+function workerDownloadUrl(workerUrl, key) {
+  return `${cleanString(workerUrl).replace(/\/+$/, "")}/download?key=${encodeURIComponent(key)}`;
+}
+
+function remapPhotoR2Key(r2Key, fromFlightId, toFlightId) {
+  const rawKey = cleanString(r2Key).replace(/^flights\//, "");
+  const expectedPrefix = `flight-${fromFlightId}-photo-`;
+  if (!rawKey.startsWith(expectedPrefix) || !PHOTO_KEY_RE.test(rawKey)) return "";
+  return `flights/flight-${toFlightId}-photo-${rawKey.slice(expectedPrefix.length)}`;
+}
+
+function signWorkerStorageToken(action, key) {
+  const now = Math.floor(Date.now() / 1000);
+  return signWorkerToken({
+    sub: "admin-users",
+    mode: "photoMerge",
+    action,
+    key,
+    iat: now,
+    exp: now + 48 * 60 * 60,
+    nonce: crypto.randomUUID(),
+  });
+}
+
+async function moveFlightPhotoObject(photo, fromFlightId, toFlightId) {
+  if (!CF_WORKER_URL || !WORKER_SECRET) return null;
+  const oldKey = cleanString(photo.r2_key);
+  const newKey = remapPhotoR2Key(oldKey, fromFlightId, toFlightId);
+  if (!oldKey || !newKey || oldKey === newKey) return null;
+
+  const workerUrl = CF_WORKER_URL.replace(/\/+$/, "");
+  const sourceUrl = cleanString(photo.file_url) || workerDownloadUrl(workerUrl, oldKey);
+  const downloadResponse = await fetch(sourceUrl);
+  if (!downloadResponse.ok) {
+    throw new Error(`Falha ao baixar foto ${photo.$id} para mover no R2 (${downloadResponse.status}).`);
+  }
+
+  const uploadResponse = await fetch(`${workerUrl}/upload/file`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": cleanString(photo.mime_type) || downloadResponse.headers.get("content-type") || "image/jpeg",
+      "x-upload-key": newKey,
+      "x-token": signWorkerStorageToken("upload", newKey),
+    },
+    body: Buffer.from(await downloadResponse.arrayBuffer()),
+  });
+  const uploadBody = await uploadResponse.json().catch(() => ({}));
+  if (!uploadResponse.ok || !uploadBody.fileUrl) {
+    throw new Error(uploadBody.error || `Falha ao reenviar foto ${photo.$id} para o voo real.`);
+  }
+
+  await fetch(`${workerUrl}/storage/object`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: oldKey, token: signWorkerStorageToken("delete", oldKey) }),
+  }).catch(() => undefined);
+
+  const oldThumbKey = oldKey.replace(/(\.[^.]+)$/i, "-thumb.jpg");
+  const newThumbKey = newKey.replace(/(\.[^.]+)$/i, "-thumb.jpg");
+  let thumbUrl = "";
+  if (oldThumbKey !== oldKey && newThumbKey !== newKey) {
+    try {
+      const thumbSource =
+        cleanString(photo.thumb_url) ||
+        (cleanString(photo.file_url).includes(oldKey)
+          ? cleanString(photo.file_url).replace(oldKey, oldThumbKey)
+          : "");
+      if (thumbSource) {
+        const thumbResponse = await fetch(thumbSource);
+        if (thumbResponse.ok) {
+          const thumbUpload = await fetch(`${workerUrl}/upload/file`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "image/jpeg",
+              "x-upload-key": newThumbKey,
+              "x-token": signWorkerStorageToken("upload", newThumbKey),
+            },
+            body: Buffer.from(await thumbResponse.arrayBuffer()),
+          });
+          const thumbBody = await thumbUpload.json().catch(() => ({}));
+          if (thumbUpload.ok && thumbBody.fileUrl) {
+            thumbUrl = thumbBody.fileUrl;
+            await fetch(`${workerUrl}/storage/object`, {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ key: oldThumbKey, token: signWorkerStorageToken("delete", oldThumbKey) }),
+            }).catch(() => undefined);
+          }
+        }
+      }
+    } catch {
+      // Thumb move is best-effort; gallery can regenerate client-side.
+    }
+  }
+
+  return {
+    r2_key: newKey,
+    file_url: uploadBody.fileUrl,
+    download_url: workerDownloadUrl(workerUrl, newKey),
+    ...(thumbUrl ? { thumb_url: thumbUrl } : {}),
+  };
+}
+
+async function reassignFlightPhotos(fromFlightId, toFlightId) {
+  if (!FLIGHT_PHOTOS_COLLECTION_ID) return 0;
+  const docs = await listAllDocuments(FLIGHT_PHOTOS_COLLECTION_ID, [sdk.Query.equal("flight_id", [fromFlightId])]);
+  for (const doc of docs) {
+    let objectPatch = null;
+    try {
+      objectPatch = await moveFlightPhotoObject(doc, fromFlightId, toFlightId);
+    } catch (err) {
+      console.warn(`[ghost-merge] foto ${doc.$id}: ${err?.message || err}`);
+    }
+    await updateDocumentCompat(FLIGHT_PHOTOS_COLLECTION_ID, doc.$id, {
+      flight_id: toFlightId,
+      ...(objectPatch || {}),
+    });
+  }
+  return docs.length;
+}
+
 async function finalizeGhostFlightMerge(actorUserId, input = {}) {
   await requireAdmin(actorUserId);
   const ghostFlightId = cleanString(input.ghostFlightId);
@@ -7779,6 +7901,7 @@ async function finalizeGhostFlightMerge(actorUserId, input = {}) {
       aircraft_ident: real.aircraft_ident || null,
     }),
     reviews: await reassignFlightChildren(FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, ghostFlightId, realFlightId),
+    photos: await reassignFlightPhotos(ghostFlightId, realFlightId),
   };
 
   if (ghost.csv_file_id && FLIGHTS_CSV_BUCKET_ID) {
@@ -10917,7 +11040,7 @@ function resolveFlightReportHydration(params = {}) {
       [...set].some((key) => REPORT_EVALUATION_COLUMNS.has(key)) ||
       evaluationFilter === "evaluated" ||
       evaluationFilter === "pending",
-    mission: set.has("missionName"),
+    mission: set.has("missionName") || set.has("trainingTrackName"),
   };
 }
 
@@ -11000,7 +11123,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
         ? TELEMETRY_SUMMARY_LEAN_SELECT
         : null;
 
-  const [profilesByUserId, fleet, telemetrySummaries, landingMetrics, evaluations] = await Promise.all([
+  const [profilesByUserId, fleet, telemetrySummaries, landingMetrics, evaluations, videoDocs] = await Promise.all([
     getProfilesByUserIds(userIds, PROFILE_REPORT_SELECT),
     getReportFleetMaps(),
     telemetrySelect && flightIds.length
@@ -11017,6 +11140,14 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     hydration.evaluations && FLIGHT_EVALUATIONS_COLLECTION_ID && flightIds.length
       ? listDocumentsByFieldIn(FLIGHT_EVALUATIONS_COLLECTION_ID, "flight_id", flightIds).catch(() => [])
       : Promise.resolve([]),
+    FLIGHT_VIDEOS_COLLECTION_ID && flightIds.length
+      ? listDocumentsByFieldIn(
+          FLIGHT_VIDEOS_COLLECTION_ID,
+          "flight_id",
+          flightIds,
+          selectQuery(["flight_id", "processing_status", "file_url"]),
+        ).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const usersById = new Map();
@@ -11026,6 +11157,11 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
   );
   const telemetryByFlightId = new Map(telemetrySummaries.map((doc) => [doc.flight_id, doc]));
   const evaluationByFlightId = new Map((evaluations || []).map((doc) => [doc.flight_id, doc]));
+  const readyVideoCountByFlightId = new Map();
+  for (const video of videoDocs || []) {
+    if (cleanString(video.processing_status) !== "ready" || !cleanString(video.file_url)) continue;
+    readyVideoCountByFlightId.set(video.flight_id, (readyVideoCountByFlightId.get(video.flight_id) || 0) + 1);
+  }
   const fastestLandingIasByFlightId = new Map();
   for (const landing of landingMetrics) {
     if (!landing.flight_id || typeof landing.td_ias_kt !== "number") continue;
@@ -11062,22 +11198,32 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       : null;
 
     let missionName = "";
+    let trainingTrackName = "";
     if (hydration.mission) {
       const snapshot = flight.trainingSnapshot && typeof flight.trainingSnapshot === "object"
         ? flight.trainingSnapshot
         : null;
+      const snapshotRows = Array.isArray(snapshot?.snapshots) ? snapshot.snapshots : [];
       const missionNames = Array.from(
         new Set(
           [
-            ...(Array.isArray(snapshot?.snapshots)
-              ? snapshot.snapshots.map((item) => cleanString(item?.missionName || item?.mission?.name || item?.mission?.title))
-              : []),
+            ...snapshotRows.map((item) => cleanString(item?.missionName || item?.mission?.name || item?.mission?.title)),
             cleanString(snapshot?.missionName),
             cleanString(snapshot?.mission?.name || snapshot?.mission?.title),
           ].filter(Boolean),
         ),
       );
+      const trackNames = Array.from(
+        new Set(
+          [
+            ...snapshotRows.map((item) => cleanString(item?.trackName || item?.track?.name)),
+            cleanString(snapshot?.trackName),
+            cleanString(snapshot?.track?.name),
+          ].filter(Boolean),
+        ),
+      );
       missionName = missionNames.join(", ");
+      trainingTrackName = trackNames.join(", ") || cleanString(flight.trainingTrackId);
     }
 
     return {
@@ -11094,9 +11240,11 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       hours: durationSec ? Number((durationSec / 3600).toFixed(2)) : 0,
       distanceNm: Number(distanceNm.toFixed(1)),
       missionName,
+      trainingTrackName,
       studentName: userDisplayName(flight.studentUserId, usersById, profilesByUserId, flight.studentName),
       instructorName: userDisplayName(flight.instructorUserId, usersById, profilesByUserId, flight.instructorName),
       telemetry,
+      videoPresent: Boolean(readyVideoCountByFlightId.get(flight.id)),
       evaluationPresent: hasEvaluation,
       evalScoreInstruction: hasEvaluation ? scoreInstruction : null,
       evalScoreSafety: hasEvaluation ? scoreSafety : null,
@@ -13872,15 +14020,25 @@ function toPublicVideo(doc) {
 
 function toPublicPhoto(doc) {
   const fileUrl = doc.file_url || "";
+  const r2Key = doc.r2_key || "";
+  const storedThumb = doc.thumb_url || "";
+  const thumbUrl =
+    storedThumb ||
+    (fileUrl && r2Key
+      ? fileUrl.includes(r2Key)
+        ? fileUrl.replace(r2Key, r2Key.replace(/(\.[^.]+)$/i, "-thumb.jpg"))
+        : fileUrl.replace(/(\.[^.]+)$/i, "-thumb.jpg")
+      : "");
   return {
     id: doc.$id,
     flight_id: doc.flight_id || "",
     uploaded_by: doc.uploaded_by || "",
-    r2_key: doc.r2_key || "",
+    r2_key: r2Key,
     file_name: doc.file_name || "foto-do-voo.jpg",
     mime_type: doc.mime_type || "image/jpeg",
     file_size: typeof doc.file_size === "number" ? doc.file_size : null,
     file_url: fileUrl,
+    thumb_url: thumbUrl,
     download_url: doc.download_url || fileUrl,
     created_at: doc.$createdAt || doc.created_at || "",
   };

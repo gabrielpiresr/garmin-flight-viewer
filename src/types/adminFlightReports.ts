@@ -15,6 +15,7 @@ export type FlightReportColumnKey =
   | "modelName"
   | "sourceFilename"
   | "route"
+  | "trainingTrackName"
   | "missionName"
   | "durationSec"
   | "hours"
@@ -25,6 +26,7 @@ export type FlightReportColumnKey =
   | "executedCount"
   | "futureCount"
   | "telemetryPresent"
+  | "videoPresent"
   | "pointCount"
   | "takeoffCount"
   | "landingCount"
@@ -144,6 +146,7 @@ export type AdminFlightReportRow = {
   startTime: string | null;
   route: string;
   missionName?: string;
+  trainingTrackName?: string;
   landings: number;
   distanceNm: number;
   studentName: string;
@@ -157,6 +160,7 @@ export type AdminFlightReportRow = {
   firstDepIcao: string | null;
   lastArrIcao: string | null;
   telemetryPresentOnDoc: boolean;
+  videoPresent: boolean;
   telemetry: AdminFlightTelemetrySummary | null;
   evaluationPresent?: boolean;
   evalScoreInstruction?: number | null;

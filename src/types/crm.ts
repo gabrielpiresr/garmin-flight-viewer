@@ -229,7 +229,22 @@ export type CrmLeadScoreRule = {
 export type CrmAutomationSettings = {
   qualFollowupRules: CrmQualFollowupRule[];
   scoreRules: CrmLeadScoreRule[];
+  /** Motivos padronizados ao marcar lead como perdido. */
+  lossReasons: string[];
 };
+
+/** Lista padrão de motivos de perda (editável nas automações do CRM). */
+export const DEFAULT_CRM_LOSS_REASONS: string[] = [
+  "Não retornou contato",
+  "Optou por outra escola",
+  "Preço / condição comercial",
+  "Sem disponibilidade de horário",
+  "Desistiu do curso",
+  "Fora do perfil / não qualificado",
+  "Mudança de planos pessoais",
+  "Duplicidade / lead inválido",
+  "Outro",
+];
 
 export type CrmLeadScoreBreakdownItem = {
   ruleId: string;
@@ -283,6 +298,10 @@ export type CrmLead = {
   startDate: string | null;
   weeklyHours: number | null;
   notes: string | null;
+  /** Motivo padronizado selecionado ao marcar como perdido. */
+  lossReason: string | null;
+  /** Texto complementar do motivo de perda (não mistura com observações). */
+  lossReasonNotes: string | null;
   // Novos campos do form de qualificação
   anacCode: string | null;          // código ANAC ou "" se não tem
   birthDate: string | null;         // data de nascimento

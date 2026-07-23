@@ -41,6 +41,11 @@ type CrmLeadDoc = {
   start_date?: string | null;
   weekly_hours?: number | null;
   notes?: string | null;
+  motivo_perda?: string | null;
+  motivo_perda_notas?: string | null;
+  /** @deprecated atributos travados no Appwrite; mantido só para leitura legada */
+  loss_reason?: string | null;
+  loss_reason_notes?: string | null;
   anac_code?: string | null;
   birth_date?: string | null;
   cpf?: string | null;
@@ -168,7 +173,75 @@ function toStatusSettingFromDoc(doc: CrmStatusSettingDoc): CrmStatusSetting {
   };
 }
 
+const LOSS_BLOCK_RE = /(?:^|\r?\n\r?\n)---CRM_LOSS---\r?\n([\s\S]*?)\r?\n---END_CRM_LOSS---\s*$/;
+
+/** Motivo de perda fica em campos separados na UI; no Appwrite vai embutido em `notes`
+ * enquanto atributos dedicados estão indisponíveis (fila de attrs travada). */
+function splitStoredNotes(raw: string | null | undefined): {
+  notes: string | null;
+  lossReason: string | null;
+  lossReasonNotes: string | null;
+} {
+  if (!raw) return { notes: null, lossReason: null, lossReasonNotes: null };
+  const text = raw.replace(/^\uFEFF/, "");
+  const blockMatch = text.match(LOSS_BLOCK_RE);
+  if (blockMatch && blockMatch.index != null) {
+    const notes = text.slice(0, blockMatch.index).trim() || null;
+    const payload = blockMatch[1].trim();
+    try {
+      const parsed = JSON.parse(payload) as { reason?: unknown; notes?: unknown };
+      return {
+        notes,
+        lossReason: String(parsed.reason ?? "").trim() || null,
+        lossReasonNotes: String(parsed.notes ?? "").trim() || null,
+      };
+    } catch {
+      // fallback linha a linha: reason=... / notes=...
+      const lines = payload.split(/\r?\n/);
+      let reason = "";
+      let detail = "";
+      for (const line of lines) {
+        if (line.startsWith("reason=")) reason = line.slice("reason=".length);
+        else if (line.startsWith("notes=")) detail = line.slice("notes=".length);
+        else if (!reason) reason = line;
+        else detail = detail ? `${detail}\n${line}` : line;
+      }
+      return {
+        notes,
+        lossReason: reason.trim() || null,
+        lossReasonNotes: detail.trim() || null,
+      };
+    }
+  }
+
+  // Formato antigo: "Motivo de perda: ..." prepended into notes
+  const legacy = text.match(/^Motivo de perda:\s*([\s\S]+?)(?:\n\n---\n([\s\S]*))?$/);
+  if (legacy) {
+    return {
+      notes: legacy[2]?.trim() || null,
+      lossReason: "Outro",
+      lossReasonNotes: legacy[1].trim() || null,
+    };
+  }
+
+  return { notes: text, lossReason: null, lossReasonNotes: null };
+}
+
+function joinStoredNotes(
+  notes: string | null | undefined,
+  lossReason: string | null | undefined,
+  lossReasonNotes: string | null | undefined,
+): string | null {
+  const base = (notes ?? "").trim();
+  const reason = (lossReason ?? "").trim();
+  const detail = (lossReasonNotes ?? "").trim();
+  if (!reason && !detail) return base || null;
+  const block = `---CRM_LOSS---\n${JSON.stringify({ reason, notes: detail })}\n---END_CRM_LOSS---`;
+  return base ? `${base}\n\n${block}` : block;
+}
+
 function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
+  const fromNotes = splitStoredNotes(doc.notes);
   return {
     id: doc.$id,
     userId: doc.user_id ?? null,
@@ -186,7 +259,9 @@ function toLeadFromDoc(doc: CrmLeadDoc): CrmLead {
     availablePeriod: normalizeAvailablePeriod(doc.available_period),
     startDate: doc.start_date ?? null,
     weeklyHours: typeof doc.weekly_hours === "number" ? doc.weekly_hours : null,
-    notes: doc.notes ?? null,
+    notes: fromNotes.notes,
+    lossReason: doc.motivo_perda ?? doc.loss_reason ?? fromNotes.lossReason,
+    lossReasonNotes: doc.motivo_perda_notas ?? doc.loss_reason_notes ?? fromNotes.lossReasonNotes,
     anacCode: doc.anac_code ?? null,
     birthDate: doc.birth_date ?? null,
     cpf: doc.cpf ?? null,
@@ -349,7 +424,10 @@ export async function moveLeadToCrmStatus(
     if (extraUpdates.name !== undefined) payload.name = extraUpdates.name;
     if (extraUpdates.email !== undefined) payload.email = extraUpdates.email;
     if (extraUpdates.phone !== undefined) payload.phone = extraUpdates.phone;
-    if (extraUpdates.notes !== undefined) payload.notes = extraUpdates.notes;
+    if (extraUpdates.notes !== undefined) {
+      // currentLead já vem com notes/loss separados; reembute o bloco ao gravar
+      payload.notes = joinStoredNotes(extraUpdates.notes, currentLead.lossReason, currentLead.lossReasonNotes);
+    }
     if (extraUpdates.userId !== undefined) payload.user_id = extraUpdates.userId;
     if (extraUpdates.qualToken !== undefined) payload.qual_token = extraUpdates.qualToken;
     if (extraUpdates.qualFilledAt !== undefined) payload.qual_filled_at = extraUpdates.qualFilledAt;
@@ -407,6 +485,8 @@ export async function updateLead(
     funnelEnteredAt: string | null;
     followups: CrmLeadFollowup[];
     payInPerson: boolean;
+    lossReason: string | null;
+    lossReasonNotes: string | null;
   }> & CrmLeadQualInput,
 ): Promise<{ error: Error | null }> {
   if (!configured()) return { error: new Error("CRM não configurado.") };
@@ -430,7 +510,33 @@ export async function updateLead(
     if (updates.availablePeriod !== undefined) payload.available_period = updates.availablePeriod;
     if (updates.startDate !== undefined) payload.start_date = updates.startDate;
     if (updates.weeklyHours !== undefined) payload.weekly_hours = updates.weeklyHours;
-    if (updates.notes !== undefined) payload.notes = updates.notes;
+    if (
+      updates.notes !== undefined
+      || updates.lossReason !== undefined
+      || updates.lossReasonNotes !== undefined
+    ) {
+      let notes = updates.notes;
+      let lossReason = updates.lossReason;
+      let lossReasonNotes = updates.lossReasonNotes;
+      if (notes === undefined || lossReason === undefined || lossReasonNotes === undefined) {
+        const current = await databases!.getDocument(DB_ID!, CRM_LEADS_COL_ID!, id);
+        const parsed = splitStoredNotes((current as { notes?: string | null }).notes);
+        if (notes === undefined) notes = parsed.notes;
+        if (lossReason === undefined) {
+          lossReason =
+            (current as { motivo_perda?: string | null; loss_reason?: string | null }).motivo_perda
+            ?? (current as { loss_reason?: string | null }).loss_reason
+            ?? parsed.lossReason;
+        }
+        if (lossReasonNotes === undefined) {
+          lossReasonNotes =
+            (current as { motivo_perda_notas?: string | null; loss_reason_notes?: string | null }).motivo_perda_notas
+            ?? (current as { loss_reason_notes?: string | null }).loss_reason_notes
+            ?? parsed.lossReasonNotes;
+        }
+      }
+      payload.notes = joinStoredNotes(notes ?? null, lossReason ?? null, lossReasonNotes ?? null);
+    }
     if (updates.anacCode !== undefined) payload.anac_code = updates.anacCode;
     if (updates.birthDate !== undefined) payload.birth_date = updates.birthDate;
     if (updates.theoreticalExamDone !== undefined) payload.theoretical_exam_done = updates.theoreticalExamDone;
@@ -478,7 +584,15 @@ export async function upsertLeadByEmail(
     if (input.theoreticalExamDone !== undefined) qualPayload.theoretical_exam_done = input.theoreticalExamDone;
     if (input.theoreticalStudyStatus !== undefined) qualPayload.theoretical_study_status = input.theoreticalStudyStatus;
     if (input.transferSchool !== undefined) qualPayload.transfer_school = input.transferSchool;
-    if (input.notes !== undefined) qualPayload.notes = input.notes;
+    if (input.notes !== undefined) {
+      // Preserva bloco de motivo de perda embutido, se existir.
+      if (res.total > 0 && res.documents[0]) {
+        const existing = splitStoredNotes((res.documents[0] as unknown as CrmLeadDoc).notes);
+        qualPayload.notes = joinStoredNotes(input.notes, existing.lossReason, existing.lossReasonNotes);
+      } else {
+        qualPayload.notes = input.notes;
+      }
+    }
     qualPayload.qual_filled_at = new Date().toISOString();
     const safeReferrer = input.referrerUserId?.trim() || null;
     const safeReferralSource = input.referralSource?.trim().slice(0, 255) || null;

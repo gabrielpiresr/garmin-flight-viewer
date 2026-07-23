@@ -94,6 +94,7 @@ type Props = {
   hideFichaStepMenu?: boolean;
   initialSubTab?: SubTab;
   allowedSubTabs?: SubTab[];
+  allowPublicLink?: boolean;
   /**
    * Posição cronológica (0-based) deste voo entre os voos do aluno. Usada para o
    * "Voos de trial": os primeiros N voos ficam liberados sem membership do Club.
@@ -111,6 +112,7 @@ export function FlightDetailView({
   hideFichaStepMenu = false,
   initialSubTab,
   allowedSubTabs,
+  allowPublicLink = false,
   trialFlightIndex,
 }: Props) {
   const { user } = useAuth();
@@ -137,6 +139,7 @@ export function FlightDetailView({
 
   const canSeeStudentContext = showStudentTab && (user?.role === "instrutor" || user?.role === "admin");
   const canSeeAuditLog = Boolean(flightId && user?.role === "admin");
+  const canCreatePublicLink = Boolean(flightId && (isClubMember || isTrial || allowPublicLink));
 
   useEffect(() => {
     if (!flightId || !canSeeStudentContext) {
@@ -260,6 +263,10 @@ export function FlightDetailView({
               </svg>
               Compartilhar
             </button>
+          </>
+        )}
+        {canCreatePublicLink && (
+          <>
             <button
               type="button"
               onClick={() => void handleCopyPublicFlightReviewLink()}

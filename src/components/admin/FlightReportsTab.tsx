@@ -43,13 +43,14 @@ type ChartMetricKey = Extract<ReportColumnKey, FlightReportMetricKey | "duration
 type SortDirection = "asc" | "desc";
 type ReportRow = AdminFlightReportRow | GroupedReportRow;
 type PeriodPresetKey = "custom" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "lastYear" | "all";
-type MultiFilterKey = "models" | "aircrafts" | "instructors" | "students";
+type MultiFilterKey = "models" | "aircrafts" | "instructors" | "students" | "missions" | "media";
 type ColumnCategory = "base" | "operation" | "aggregate" | "telemetry" | "landing" | "flight" | "wind" | "engine" | "evaluation";
 type SummaryMode = "sum" | "min" | "max";
 type ChartDatum = { label: string } & Record<string, string | number>;
 type ChartSeries = { key: string; label: string; color: string };
 type ChartExportFormat = "svg" | "pdf" | "png";
 type EvaluationFilter = "all" | "evaluated" | "pending";
+type MediaRequirement = "video" | "telemetry";
 const REPORT_PAGE_SIZE = 100;
 
 type SavedReportPreset = {
@@ -60,7 +61,11 @@ type SavedReportPreset = {
   aircrafts: string[];
   instructors: string[];
   students: string[];
+  missions?: string[];
+  textSearch?: string;
   status: AdminFlightReportStatus | "all";
+  mediaFilters?: MediaRequirement[];
+  mediaFilter?: "all" | "telemetry" | "video" | "any" | "both" | "none";
   temporalGroup: TemporalGroupKey | "";
   dimensionGroups: DimensionGroupKey[];
   selectedColumns: ReportColumnKey[];
@@ -430,6 +435,15 @@ const COLUMNS: ColumnDef[] = [
   { key: "sourceFilename", label: "Arquivo", category: "base", detailOnly: true, format: (row) => row.sourceFilename || "" },
   { key: "route", label: "Rota", category: "operation", detailOnly: true, format: (row) => row.route || "" },
   {
+    key: "trainingTrackName",
+    label: "Trilha",
+    category: "operation",
+    detailOnly: true,
+    sortable: true,
+    format: (row) => (isGroupedRow(row) ? "" : row.trainingTrackName || ""),
+    sortValue: (row) => (isGroupedRow(row) ? "" : row.trainingTrackName || ""),
+  },
+  {
     key: "missionName",
     label: "Missão",
     category: "operation",
@@ -447,6 +461,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "futureCount", label: "Agendados", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.futureCount : isScheduledReportStatus(row.status) ? 1 : 0) },
   { key: "telemetryCount", label: "Com telemetria", category: "aggregate", compact: true, groupOnly: true, sortable: true, format: (row) => fmtInt(isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0), sortValue: (row) => (isGroupedRow(row) ? row.telemetryCount : row.telemetry?.telemetryPresent ? 1 : 0) },
   { key: "telemetryPresent", label: "Telemetria", category: "telemetry", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? "Sim" : "Não"), sortValue: (row) => (isGroupedRow(row) ? 0 : row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? 1 : 0) },
+  { key: "videoPresent", label: "Vídeo", category: "telemetry", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.videoPresent ? "Sim" : "Não"), sortValue: (row) => (isGroupedRow(row) ? 0 : row.videoPresent ? 1 : 0) },
   { key: "takeoffCount", label: "Decol.", category: "telemetry", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "takeoffCount")), sortValue: numberSort("takeoffCount", "takeoffCount") },
   { key: "landingCount", label: "Pousos detect.", category: "landing", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "landingCount")), sortValue: numberSort("landingCount", "landingCount") },
   { key: "tglCount", label: "TGL", category: "landing", compact: true, sortable: true, format: (row) => fmtInt(telemetryValue(row, "tglCount")), sortValue: numberSort("tglCount", "tglCount") },
@@ -855,13 +870,61 @@ function uniqueOptions(rows: AdminFlightReportRow[], getValue: (row: AdminFlight
   );
 }
 
+function splitOptionValues(value: string | null | undefined): string[] {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function uniqueSplitOptions(rows: AdminFlightReportRow[], getValue: (row: AdminFlightReportRow) => string | null | undefined) {
+  return Array.from(new Set(rows.flatMap((row) => splitOptionValues(getValue(row))))).sort((a, b) => a.localeCompare(b));
+}
+
+function rowHasTelemetry(row: AdminFlightReportRow): boolean {
+  return Boolean(row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc);
+}
+
+function rowMatchesTextSearch(row: AdminFlightReportRow, search: string): boolean {
+  const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
+  const haystack = [
+    row.status,
+    row.flightDate,
+    row.startTime,
+    row.aircraftIdent,
+    row.aircraftNickname,
+    row.modelName,
+    row.studentName,
+    row.instructorName,
+    row.trainingTrackName,
+    row.missionName,
+    row.route,
+    row.sourceFilename,
+  ].join(" ").toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function sanitizeMediaFilters(value: unknown, legacyValue?: unknown): MediaRequirement[] {
+  const raw = Array.isArray(value) ? value : [];
+  const normalized = raw.filter((item): item is MediaRequirement => item === "video" || item === "telemetry");
+  if (normalized.length) return Array.from(new Set(normalized));
+  if (legacyValue === "both") return ["video", "telemetry"];
+  if (legacyValue === "video") return ["video"];
+  if (legacyValue === "telemetry") return ["telemetry"];
+  return [];
+}
+
 function loadSavedPresets(): SavedReportPreset[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed)
-      ? parsed.map((preset) => ({
+        ? parsed.map((preset) => ({
           ...preset,
+          missions: Array.isArray(preset?.missions) ? preset.missions : [],
+          textSearch: typeof preset?.textSearch === "string" ? preset.textSearch : "",
+          mediaFilters: sanitizeMediaFilters(preset?.mediaFilters, preset?.mediaFilter),
           selectedColumns: sanitizeSelectedColumns(preset?.selectedColumns),
           view: preset?.view === "area" || preset?.view === "donut" ? preset.view : preset?.view === "line" || preset?.view === "bar" || preset?.view === "table" ? preset.view : "table",
           metric: sanitizeChartMetric(preset?.metric),
@@ -1002,6 +1065,7 @@ function columnDescription(column: ColumnDef): string {
     modelName: "Modelo da aeronave associado ao cadastro.",
     sourceFilename: "Arquivo de origem da telemetria ou ficha.",
     route: "Rota informada no voo.",
+    trainingTrackName: "Trilha de treinamento vinculada ao voo.",
     missionName: "Missão de treinamento vinculada ao voo.",
     durationSec: "Duração total do voo.",
     hours: "Duração convertida para horas decimais.",
@@ -1012,6 +1076,7 @@ function columnDescription(column: ColumnDef): string {
     futureCount: "Quantidade de voos futuros dentro do agrupamento.",
     telemetryCount: "Quantidade de voos com telemetria dentro do agrupamento.",
     telemetryPresent: "Indica se o voo possui telemetria processada.",
+    videoPresent: "Indica se o voo possui video pronto.",
     takeoffCount: "Quantidade de decolagens detectadas na telemetria.",
     landingCount: "Quantidade de pousos detectados na telemetria.",
     tglCount: "Quantidade de touch-and-go detectados.",
@@ -1154,8 +1219,10 @@ function FilterMultiSelect({
   onOpen: () => void;
   onChange: (value: string[]) => void;
 }) {
+  const [search, setSearch] = useState("");
   const selected = new Set(value);
   const buttonLabel = value.length === 0 ? `Todas ${label.toLowerCase()}` : value.length === 1 ? value[0] : `${value.length} selecionados`;
+  const visibleOptions = options.filter((item) => item.toLowerCase().includes(search.trim().toLowerCase()));
 
   function toggle(item: string) {
     const next = new Set(selected);
@@ -1165,7 +1232,7 @@ function FilterMultiSelect({
   }
 
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <button
         type="button"
         onClick={onOpen}
@@ -1181,6 +1248,12 @@ function FilterMultiSelect({
       </button>
       {open ? (
         <div className="absolute z-30 mt-1 max-h-72 w-full min-w-64 overflow-y-auto rounded border border-slate-700 bg-slate-950 p-2 shadow-2xl shadow-slate-950">
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={`Pesquisar ${label.toLowerCase()}`}
+            className="mb-2 h-9 w-full rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500"
+          />
           <button
             type="button"
             onClick={() => onChange([])}
@@ -1191,13 +1264,83 @@ function FilterMultiSelect({
             </span>
             Todas
           </button>
-          {options.map((item) => (
+          {visibleOptions.map((item) => (
             <label key={item} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-xs text-slate-300 hover:bg-slate-800">
               <input type="checkbox" checked={selected.has(item)} onChange={() => toggle(item)} className="h-4 w-4 accent-emerald-500" />
               <span className="min-w-0 truncate">{item}</span>
             </label>
           ))}
-          {!options.length ? <p className="px-2 py-3 text-xs text-slate-500">Nenhuma opção disponível.</p> : null}
+          {!visibleOptions.length ? <p className="px-2 py-3 text-xs text-slate-500">Nenhuma opção encontrada.</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MediaFilterSelect({
+  value,
+  open,
+  onOpen,
+  onChange,
+}: {
+  value: MediaRequirement[];
+  open: boolean;
+  onOpen: () => void;
+  onChange: (value: MediaRequirement[]) => void;
+}) {
+  const selected = new Set(value);
+  const buttonLabel =
+    value.length === 0
+      ? "Todos"
+      : value.length === 2
+        ? "Vídeo e telemetria"
+        : value[0] === "video"
+          ? "Possuem vídeo"
+          : "Possuem telemetria";
+
+  function toggle(item: MediaRequirement) {
+    const next = new Set(selected);
+    if (next.has(item)) next.delete(item);
+    else next.add(item);
+    onChange(Array.from(next));
+  }
+
+  return (
+    <div className="relative min-w-0">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex h-10 w-full items-center justify-between gap-2 rounded border border-slate-700 bg-slate-950 px-3 text-left text-sm text-slate-100 outline-none hover:border-slate-600"
+      >
+        <span className="min-w-0 truncate">
+          <span className="text-slate-500">Mídia: </span>
+          {buttonLabel}
+        </span>
+        <svg className={`h-4 w-4 shrink-0 text-slate-500 transition ${open ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 011.06 0L10 10.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 8.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="absolute z-30 mt-1 w-full min-w-64 rounded border border-slate-700 bg-slate-950 p-2 shadow-2xl shadow-slate-950">
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className={`mb-1 flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs ${value.length === 0 ? "bg-emerald-500/10 text-emerald-300" : "text-slate-300 hover:bg-slate-800"}`}
+          >
+            <span className={`flex h-4 w-4 items-center justify-center rounded border ${value.length === 0 ? "border-emerald-400 bg-emerald-500/20" : "border-slate-600"}`}>
+              {value.length === 0 ? "✓" : ""}
+            </span>
+            Todos
+          </button>
+          {[
+            { key: "video", label: "Possuem vídeo" },
+            { key: "telemetry", label: "Possuem telemetria" },
+          ].map((item) => (
+            <label key={item.key} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-xs text-slate-300 hover:bg-slate-800">
+              <input type="checkbox" checked={selected.has(item.key as MediaRequirement)} onChange={() => toggle(item.key as MediaRequirement)} className="h-4 w-4 accent-emerald-500" />
+              <span className="min-w-0 truncate">{item.label}</span>
+            </label>
+          ))}
         </div>
       ) : null}
     </div>
@@ -1248,7 +1391,10 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [aircrafts, setAircrafts] = useState<string[]>([]);
   const [instructors, setInstructors] = useState<string[]>([]);
   const [students, setStudents] = useState<string[]>([]);
+  const [missions, setMissions] = useState<string[]>([]);
+  const [textSearch, setTextSearch] = useState("");
   const [status, setStatus] = useState<AdminFlightReportStatus | "all">("all");
+  const [mediaFilters, setMediaFilters] = useState<MediaRequirement[]>([]);
   const [evaluationFilter, setEvaluationFilter] = useState<EvaluationFilter>("all");
   const [temporalGroup, setTemporalGroup] = useState<TemporalGroupKey | "">("");
   const [dimensionGroups, setDimensionGroups] = useState<DimensionGroupKey[]>([]);
@@ -1266,7 +1412,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
   const [activeFlightId, setActiveFlightId] = useState<string | null>(null);
 
   const neededHydration = useMemo(
-    () => deriveFlightReportHydration(selectedColumns, evaluationFilter),
+    () => ({ ...deriveFlightReportHydration(selectedColumns, evaluationFilter), mission: true }),
     [evaluationFilter, selectedColumns],
   );
   const neededHydrationKey = flightReportHydrationKey(neededHydration);
@@ -1388,6 +1534,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       aircrafts: uniqueOptions(rows, (row) => row.aircraftIdent),
       instructors: uniqueOptions(rows, (row) => row.instructorName),
       students: uniqueOptions(rows, (row) => row.studentName),
+      missions: uniqueSplitOptions(rows, (row) => row.missionName),
     }),
     [rows],
   );
@@ -1403,12 +1550,21 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
         if (lockedInstructorId && row.instructorUserId !== lockedInstructorId) return false;
         if (!lockedInstructorId && instructors.length && !instructors.includes(row.instructorName)) return false;
         if (students.length && !students.includes(row.studentName)) return false;
+        if (missions.length) {
+          const rowMissions = splitOptionValues(row.missionName);
+          if (!missions.some((mission) => rowMissions.includes(mission))) return false;
+        }
+        const hasTelemetry = rowHasTelemetry(row);
+        const hasVideo = row.videoPresent;
+        if (mediaFilters.includes("telemetry") && !hasTelemetry) return false;
+        if (mediaFilters.includes("video") && !hasVideo) return false;
         if (status !== "all" && row.status !== status) return false;
         if (evaluationFilter === "evaluated" && !row.evaluationPresent) return false;
         if (evaluationFilter === "pending" && row.evaluationPresent) return false;
+        if (!rowMatchesTextSearch(row, textSearch)) return false;
         return true;
       }),
-    [aircrafts, evaluationFilter, fromDate, instructors, lockedInstructorId, models, rows, status, students, toDate],
+    [aircrafts, evaluationFilter, fromDate, instructors, lockedInstructorId, mediaFilters, missions, models, rows, status, students, textSearch, toDate],
   );
 
   const reportRows = useMemo(() => aggregateRows(filtered, activeGroups), [activeGroups, filtered]);
@@ -1465,7 +1621,10 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     setAircrafts([]);
     if (!lockedInstructorId) setInstructors([]);
     setStudents([]);
+    setMissions([]);
+    setTextSearch("");
     setStatus("all");
+    setMediaFilters([]);
     setEvaluationFilter("all");
   }
 
@@ -1477,6 +1636,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     setView("table");
     setTemporalGroup("");
     setDimensionGroups([]);
+    setEvaluationFilter(preset.id === "treinamento" ? "evaluated" : "all");
   }
 
   function handleSort(column: ColumnDef) {
@@ -1509,7 +1669,10 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       aircrafts,
       instructors,
       students,
+      missions,
+      textSearch,
       status,
+      mediaFilters,
       temporalGroup,
       dimensionGroups,
       selectedColumns,
@@ -1538,7 +1701,10 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     setAircrafts(preset.aircrafts ?? []);
     setInstructors(preset.instructors ?? []);
     setStudents(preset.students ?? []);
+    setMissions(preset.missions ?? []);
+    setTextSearch(preset.textSearch ?? "");
     setStatus(preset.status);
+    setMediaFilters(sanitizeMediaFilters(preset.mediaFilters, preset.mediaFilter));
     setTemporalGroup(preset.temporalGroup);
     setDimensionGroups(preset.dimensionGroups);
     setSelectedColumns(sanitizeSelectedColumns(preset.selectedColumns));
@@ -1554,7 +1720,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
     setPresetToDelete(null);
   }
 
-  if (loading || awaitingInstructorId) {
+  if ((loading && rows.length === 0) || awaitingInstructorId) {
     return (
       <div className="w-full space-y-4">
         <Skeleton className="h-28 rounded-xl" />
@@ -1645,17 +1811,20 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
       </section>
 
       <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
-          <select value={periodPreset} onChange={(e) => setPresetPeriod(e.target.value as PeriodPresetKey)} className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
+          <select value={periodPreset} onChange={(e) => setPresetPeriod(e.target.value as PeriodPresetKey)} className="h-10 min-w-0 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500">
             {PERIOD_PRESETS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
           </select>
-          <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPeriodPreset("custom"); }} className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
-          <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPeriodPreset("custom"); }} className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
+          <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPeriodPreset("custom"); }} className="h-10 min-w-0 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
+          <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPeriodPreset("custom"); }} className="h-10 min-w-0 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500" />
+          <input value={textSearch} onChange={(e) => setTextSearch(e.target.value)} placeholder="Pesquisar texto" className="h-10 min-w-0 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500" />
           <FilterMultiSelect label="Modelos" options={options.models} value={models} open={openFilter === "models"} onOpen={() => setOpenFilter((current) => current === "models" ? null : "models")} onChange={setModels} />
           <FilterMultiSelect label="Aviões" options={options.aircrafts} value={aircrafts} open={openFilter === "aircrafts"} onOpen={() => setOpenFilter((current) => current === "aircrafts" ? null : "aircrafts")} onChange={setAircrafts} />
           {!hideInstructorFilter && !lockedInstructorId ? (
             <FilterMultiSelect label="Instrutores" options={options.instructors} value={instructors} open={openFilter === "instructors"} onOpen={() => setOpenFilter((current) => current === "instructors" ? null : "instructors")} onChange={setInstructors} />
           ) : null}
+          <FilterMultiSelect label="Missões" options={options.missions} value={missions} open={openFilter === "missions"} onOpen={() => setOpenFilter((current) => current === "missions" ? null : "missions")} onChange={setMissions} />
+          <MediaFilterSelect value={mediaFilters} open={openFilter === "media"} onOpen={() => setOpenFilter((current) => current === "media" ? null : "media")} onChange={setMediaFilters} />
           <FilterMultiSelect label="Alunos" options={options.students} value={students} open={openFilter === "students"} onOpen={() => setOpenFilter((current) => current === "students" ? null : "students")} onChange={setStudents} />
         </div>
 
@@ -1886,6 +2055,10 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${row.telemetry?.telemetryPresent || row.telemetryPresentOnDoc ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>
                                 {column.format(row)}
                               </span>
+                            ) : column.key === "videoPresent" && !isGroupedRow(row) ? (
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${row.videoPresent ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>
+                                {column.format(row)}
+                              </span>
                             ) : column.key === "mediumLandingCount" ? (
                               <span className="font-semibold text-orange-300">{column.format(row)}</span>
                             ) : column.key === "hardLandingCount" ? (
@@ -1988,6 +2161,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
             <FlightDetailView
               flightId={activeFlightId}
               onBack={() => setActiveFlightId(null)}
+              allowPublicLink
               backLabel="Voltar aos relatórios"
             />
           </div>

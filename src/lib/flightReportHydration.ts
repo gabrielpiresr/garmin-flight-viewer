@@ -79,7 +79,7 @@ export function deriveFlightReportHydration(
       [...set].some((key) => EVALUATION_COLUMNS.has(key)) ||
       evaluationFilter === "evaluated" ||
       evaluationFilter === "pending",
-    mission: set.has("missionName"),
+    mission: set.has("missionName") || set.has("trainingTrackName"),
   };
 }
 
@@ -236,6 +236,7 @@ export const BUILTIN_FLIGHT_REPORT_PRESETS: BuiltinReportPreset[] = [
       "aircraftIdent",
       "studentName",
       "instructorName",
+      "trainingTrackName",
       "missionName",
       "route",
       "hours",

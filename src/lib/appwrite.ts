@@ -155,6 +155,8 @@ export const CRM_PROPOSALS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CRM_PROPOSALS_COL_ID as string | undefined) ?? "crm_proposals";
 export const CRM_LEAD_COMMENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_CRM_LEAD_COMMENTS_COL_ID as string | undefined) ?? "crm_lead_comments";
+export const CRM_LEAD_LOSS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CRM_LEAD_LOSS_COL_ID as string | undefined) ?? "crm_lead_loss";
 
 // CRM de alunos e automações
 export const STUDENT_AUTOMATIONS_COL_ID =

@@ -4,6 +4,7 @@ import type {
   CrmQualFollowupRule,
   CrmQualFollowupTemplate,
 } from "../types/crm";
+import { DEFAULT_CRM_LOSS_REASONS } from "../types/crm";
 import { CRM_AUTOMATION_SETTINGS_COL_ID, databases, isAppwriteConfigured } from "./appwrite";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
@@ -11,6 +12,7 @@ const LS_KEY = "crm_automation_settings_v1";
 const DOC_ID = "default";
 
 export const DEFAULT_CRM_AUTOMATION_SETTINGS: CrmAutomationSettings = {
+  lossReasons: [...DEFAULT_CRM_LOSS_REASONS],
   qualFollowupRules: [
     {
       id: "rule-start-60",
@@ -118,10 +120,27 @@ function parseScoreRules(value: unknown): CrmLeadScoreRule[] {
     .filter((item): item is CrmLeadScoreRule => Boolean(item));
 }
 
+function parseLossReasons(value: unknown): string[] {
+  if (!Array.isArray(value)) return [...DEFAULT_CRM_LOSS_REASONS];
+  const items = value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const item of items) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique.length > 0 ? unique : [...DEFAULT_CRM_LOSS_REASONS];
+}
+
 function normalizeSettings(raw: Partial<CrmAutomationSettings> | null | undefined): CrmAutomationSettings {
   return {
     qualFollowupRules: parseQualFollowupRules(raw?.qualFollowupRules),
     scoreRules: parseScoreRules(raw?.scoreRules),
+    lossReasons: parseLossReasons(raw?.lossReasons),
   };
 }
 

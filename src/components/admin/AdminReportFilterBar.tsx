@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 export type PeriodPresetKey = "custom" | "last3" | "thisWeek" | "thisMonth" | "last30" | "thisYear" | "lastYear" | "all";
 
 export type MultiFilterKey = "instructors" | "students" | "aircrafts";
@@ -67,9 +69,11 @@ export function FilterMultiSelect({
   onOpen: () => void;
   onChange: (value: string[]) => void;
 }) {
+  const [search, setSearch] = useState("");
   const selected = new Set(value);
   const buttonLabel =
     value.length === 0 ? `Todas ${label.toLowerCase()}` : value.length === 1 ? value[0] : `${value.length} selecionados`;
+  const visibleOptions = options.filter((item) => item.toLowerCase().includes(search.trim().toLowerCase()));
 
   function toggle(item: string) {
     const next = new Set(selected);
@@ -95,6 +99,12 @@ export function FilterMultiSelect({
       </button>
       {open ? (
         <div className="absolute z-30 mt-1 max-h-72 w-full min-w-64 overflow-y-auto rounded border border-slate-700 bg-slate-950 p-2 shadow-2xl shadow-slate-950">
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={`Pesquisar ${label.toLowerCase()}`}
+            className="mb-2 h-9 w-full rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500"
+          />
           <button
             type="button"
             onClick={() => onChange([])}
@@ -105,13 +115,13 @@ export function FilterMultiSelect({
             </span>
             Todas
           </button>
-          {options.map((item) => (
+          {visibleOptions.map((item) => (
             <label key={item} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-xs text-slate-300 hover:bg-slate-800">
               <input type="checkbox" checked={selected.has(item)} onChange={() => toggle(item)} className="h-4 w-4 accent-emerald-500" />
               <span className="min-w-0 truncate">{item}</span>
             </label>
           ))}
-          {!options.length ? <p className="px-2 py-3 text-xs text-slate-500">Nenhuma opção disponível.</p> : null}
+          {!visibleOptions.length ? <p className="px-2 py-3 text-xs text-slate-500">Nenhuma opção encontrada.</p> : null}
         </div>
       ) : null}
     </div>

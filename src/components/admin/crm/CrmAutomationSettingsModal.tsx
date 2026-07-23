@@ -237,9 +237,11 @@ function ScoreRuleEditor({
 }
 
 export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }: Props) {
-  const [tab, setTab] = useState<"fups" | "score">("fups");
+  const [tab, setTab] = useState<"fups" | "score" | "perda">("fups");
   const [qualRules, setQualRules] = useState(settings.qualFollowupRules);
   const [scoreRules, setScoreRules] = useState(settings.scoreRules);
+  const [lossReasons, setLossReasons] = useState(settings.lossReasons);
+  const [newLossReason, setNewLossReason] = useState("");
 
   function addQualRule() {
     setQualRules((prev) => [
@@ -275,6 +277,17 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
     setScoreRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
+  function addLossReason() {
+    const label = newLossReason.trim();
+    if (!label) return;
+    if (lossReasons.some((item) => item.toLowerCase() === label.toLowerCase())) {
+      setNewLossReason("");
+      return;
+    }
+    setLossReasons((prev) => [...prev, label]);
+    setNewLossReason("");
+  }
+
   function submit() {
     const cleanedQual = qualRules
       .map((rule) => ({
@@ -293,7 +306,13 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
       }))
       .filter((r) => r.answerValue && (isDaysScoreField(r.field) ? parseSelectedDays(r.answerValue).length > 0 : true));
 
-    onSave({ qualFollowupRules: cleanedQual, scoreRules: cleanedScore });
+    const cleanedLossReasons = lossReasons.map((item) => item.trim()).filter(Boolean);
+
+    onSave({
+      qualFollowupRules: cleanedQual,
+      scoreRules: cleanedScore,
+      lossReasons: cleanedLossReasons,
+    });
   }
 
   return (
@@ -302,7 +321,7 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
         <div className="flex items-start justify-between border-b border-slate-800 px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-slate-100">Automações do CRM</h2>
-            <p className="mt-1 text-xs text-slate-500">FUPs por resposta da qualificação e pontuação de leads</p>
+            <p className="mt-1 text-xs text-slate-500">FUPs, pontuação e motivos de perda</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
@@ -315,6 +334,7 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
           {([
             ["fups", "FUPs automáticos"],
             ["score", "Lead score"],
+            ["perda", "Motivos de perda"],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -463,7 +483,7 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
                 Adicionar regra de FUP
               </button>
             </div>
-          ) : (
+          ) : tab === "score" ? (
             <div className="space-y-3">
               <p className="text-xs text-slate-500">
                 Configure pontos por resposta, peso, altura ou dias disponíveis. O score do lead é a soma de todas as regras que batem.
@@ -485,6 +505,61 @@ export function CrmAutomationSettingsModal({ settings, saving, onClose, onSave }
               <button type="button" onClick={addScoreRule} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
                 Adicionar regra de pontos
               </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs text-slate-500">
+                Motivos padronizados exibidos ao marcar um lead como perdido. O select é obrigatório.
+              </p>
+              {lossReasons.length === 0 ? (
+                <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">
+                  Nenhum motivo configurado.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {lossReasons.map((item, index) => (
+                    <div key={`${item}-${index}`} className="flex items-center gap-2">
+                      <input
+                        value={item}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setLossReasons((prev) => prev.map((current, i) => (i === index ? value : current)));
+                        }}
+                        className={inputCls}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setLossReasons((prev) => prev.filter((_, i) => i !== index))}
+                        className="shrink-0 rounded-lg border border-red-900/50 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-950/30"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  value={newLossReason}
+                  onChange={(e) => setNewLossReason(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addLossReason();
+                    }
+                  }}
+                  placeholder="Novo motivo de perda"
+                  className={inputCls}
+                />
+                <button
+                  type="button"
+                  onClick={addLossReason}
+                  disabled={!newLossReason.trim()}
+                  className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  Adicionar
+                </button>
+              </div>
             </div>
           )}
         </div>

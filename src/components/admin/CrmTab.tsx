@@ -1116,6 +1116,7 @@ function LeadDetailDrawer({
   currentUserName,
   statusSettings,
   scoreRules,
+  lossReasons,
   onClose,
   onLeadPatched,
   onSendCadastro,
@@ -1128,6 +1129,7 @@ function LeadDetailDrawer({
   currentUserName: string;
   statusSettings: CrmStatusSetting[];
   scoreRules: CrmAutomationSettings["scoreRules"];
+  lossReasons: string[];
   onClose: () => void;
   onLeadPatched: (lead: CrmLead) => void;
   onSendCadastro: (lead: CrmLead) => void;
@@ -1139,6 +1141,7 @@ function LeadDetailDrawer({
   const fileInputs = useRef<Partial<Record<ProfileDocumentType, HTMLInputElement | null>>>({});
   const leadReady = useRef(false);
   const profileReady = useRef(false);
+  const [drawerTab, setDrawerTab] = useState<"detalhes" | "historico" | "comentarios">("detalhes");
   const [leadForm, setLeadForm] = useState(() => ({
     name: lead.name,
     email: lead.email,
@@ -1159,6 +1162,8 @@ function LeadDetailDrawer({
     theoreticalStudyStatus: lead.theoreticalStudyStatus ?? "",
     transferSchool: lead.transferSchool ?? "",
     notes: lead.notes ?? "",
+    lossReason: lead.lossReason ?? "",
+    lossReasonNotes: lead.lossReasonNotes ?? "",
   }));
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileEnrollmentForm>(emptyProfileEnrollmentForm);
@@ -1200,6 +1205,7 @@ function LeadDetailDrawer({
 
   useEffect(() => {
     leadReady.current = false;
+    setDrawerTab("detalhes");
     setLeadForm({
       name: lead.name,
       email: lead.email,
@@ -1220,9 +1226,23 @@ function LeadDetailDrawer({
       theoreticalStudyStatus: lead.theoreticalStudyStatus ?? "",
       transferSchool: lead.transferSchool ?? "",
       notes: lead.notes ?? "",
+      lossReason: lead.lossReason ?? "",
+      lossReasonNotes: lead.lossReasonNotes ?? "",
     });
     window.setTimeout(() => { leadReady.current = true; }, 0);
   }, [lead.id]);
+
+  useEffect(() => {
+    setLeadForm((prev) => {
+      if (prev.crmStatus === lead.crmStatus) return prev;
+      return {
+        ...prev,
+        crmStatus: lead.crmStatus,
+        lossReason: lead.lossReason ?? "",
+        lossReasonNotes: lead.lossReasonNotes ?? "",
+      };
+    });
+  }, [lead.crmStatus, lead.lossReason, lead.lossReasonNotes]);
 
   useEffect(() => {
     profileReady.current = false;
@@ -1349,6 +1369,8 @@ function LeadDetailDrawer({
         theoreticalStudyStatus: textOrNull(leadForm.theoreticalStudyStatus),
         transferSchool: textOrNull(leadForm.transferSchool),
         notes: textOrNull(leadForm.notes),
+        lossReason: textOrNull(leadForm.lossReason),
+        lossReasonNotes: textOrNull(leadForm.lossReasonNotes),
       };
       setLeadSaveState("saving");
       onLeadPatched(nextLead);
@@ -1372,6 +1394,8 @@ function LeadDetailDrawer({
         theoreticalStudyStatus: nextLead.theoreticalStudyStatus,
         transferSchool: nextLead.transferSchool,
         notes: nextLead.notes,
+        lossReason: nextLead.lossReason,
+        lossReasonNotes: nextLead.lossReasonNotes,
       }).then(({ error }) => setLeadSaveState(error ? "error" : "saved"));
     }, 700);
     return () => window.clearTimeout(timer);
@@ -1526,7 +1550,27 @@ function LeadDetailDrawer({
             </svg>
           </button>
         </div>
+        <div className="flex gap-1 border-b border-slate-800 px-5 pt-2">
+          {([
+            ["detalhes", "Detalhes"],
+            ["historico", "Histórico"],
+            ["comentarios", `Comentários${comments.length > 0 ? ` (${comments.length})` : ""}`],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setDrawerTab(id)}
+              className={`rounded-t-lg px-3 py-2 text-xs font-medium transition ${
+                drawerTab === id ? "bg-slate-800 text-sky-300" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {drawerTab === "detalhes" && (
+          <>
           <section className="space-y-3">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Lead</p>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -1593,6 +1637,35 @@ function LeadDetailDrawer({
               </div>
             </div>
             <DrawerField label="Observacoes"><textarea value={leadForm.notes} onChange={(e) => setLeadField("notes", e.target.value)} className={`${drawerFieldCls} min-h-24 resize-y`} /></DrawerField>
+            {(leadForm.crmStatus === "lead_perdido" || leadForm.lossReason || leadForm.lossReasonNotes) && (
+              <div className="space-y-3 rounded-lg border border-zinc-700/50 bg-zinc-900/30 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Motivo de perda</p>
+                <DrawerField label="Motivo">
+                  <select
+                    value={leadForm.lossReason}
+                    onChange={(e) => setLeadField("lossReason", e.target.value)}
+                    className={drawerFieldCls}
+                  >
+                    <option value="">— Selecione —</option>
+                    {(
+                      leadForm.lossReason && !lossReasons.includes(leadForm.lossReason)
+                        ? [leadForm.lossReason, ...lossReasons]
+                        : lossReasons
+                    ).map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </select>
+                </DrawerField>
+                <DrawerField label="Detalhes do motivo">
+                  <textarea
+                    value={leadForm.lossReasonNotes}
+                    onChange={(e) => setLeadField("lossReasonNotes", e.target.value)}
+                    className={`${drawerFieldCls} min-h-20 resize-y`}
+                    placeholder="Complemento do motivo de perda"
+                  />
+                </DrawerField>
+              </div>
+            )}
           </section>
 
           <section className="mt-6 space-y-3">
@@ -1808,7 +1881,12 @@ function LeadDetailDrawer({
             </div>
           </section>
 
-          <section className="mt-6 space-y-3">
+          </>
+          )}
+
+          {drawerTab === "historico" && (
+          <>
+          <section className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Follow-ups e expiração</p>
               <label className="flex items-center gap-2 text-xs text-cyan-300">
@@ -1995,8 +2073,11 @@ function LeadDetailDrawer({
             )}
           </section>
 
-          {/* Comentários */}
-          <section className="mt-6 space-y-3 pb-6">
+          </>
+          )}
+
+          {drawerTab === "comentarios" && (
+          <section className="space-y-3 pb-6">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Comentários</p>
             {commentsLoading ? (
               <p className="text-xs text-slate-500">Carregando comentários...</p>
@@ -2048,6 +2129,7 @@ function LeadDetailDrawer({
               </button>
             </div>
           </section>
+          )}
         </div>
         <div className="flex flex-wrap gap-2 border-t border-slate-800 px-5 py-3">
           <button type="button" onClick={() => { onCopyQualLink(lead); close(); }} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 transition">Link qual.</button>
@@ -2392,14 +2474,18 @@ function ProposalAcceptModal({
 
 function LostReasonModal({
   lead,
+  lossReasons,
   onClose,
   onConfirm,
 }: {
   lead: CrmLead;
+  lossReasons: string[];
   onClose: () => void;
-  onConfirm: (reason: string) => void;
+  onConfirm: (reason: string, notes: string) => void;
 }) {
   const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const options = lossReasons.length > 0 ? lossReasons : ["Outro"];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
@@ -2418,11 +2504,24 @@ function LostReasonModal({
           </p>
           <label className="block text-xs text-slate-500">
             Motivo *
-            <textarea
+            <select
               autoFocus
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Ex: Não retornou contato, optou por outra escola..."
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="">— Selecione —</option>
+              {options.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs text-slate-500">
+            Detalhes (opcional)
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Complemente o motivo, se quiser..."
               className="mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none min-h-20 resize-y"
             />
           </label>
@@ -2435,7 +2534,7 @@ function LostReasonModal({
           <button
             type="button"
             disabled={!reason.trim()}
-            onClick={() => onConfirm(reason.trim())}
+            onClick={() => onConfirm(reason.trim(), notes.trim())}
             className="rounded-lg bg-zinc-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-500 disabled:opacity-50 transition"
           >
             Confirmar como perdido
@@ -2773,21 +2872,27 @@ export function CrmTab() {
     setCadastroModal(lead);
   }
 
-  async function confirmMoveLost(lead: CrmLead, reason: string) {
+  async function confirmMoveLost(lead: CrmLead, reason: string, notes: string) {
     setLostReasonModal(null);
-    const existingNotes = lead.notes ? lead.notes.trim() : "";
-    const notes = `Motivo de perda: ${reason}${existingNotes ? `\n\n---\n${existingNotes}` : ""}`;
-    const nextLead = { ...applyLeadStatusMove(lead, "lead_perdido", statusSettings), notes };
+    const lossReasonNotes = notes.trim() || null;
+    const nextLead = {
+      ...applyLeadStatusMove(lead, "lead_perdido", statusSettings),
+      lossReason: reason,
+      lossReasonNotes,
+    };
     setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
+    if (detailModal?.id === lead.id) setDetailModal(nextLead);
     const { error } = await updateLead(lead.id, {
       crmStatus: "lead_perdido",
-      notes,
+      lossReason: reason,
+      lossReasonNotes,
       statusEnteredAt: nextLead.statusEnteredAt,
       funnelEnteredAt: nextLead.funnelEnteredAt,
       followups: nextLead.followups,
     });
     if (error) {
       setLeads((ls) => ls.map((l) => l.id === lead.id ? lead : l));
+      if (detailModal?.id === lead.id) setDetailModal(lead);
       showToast("Erro ao mover lead.", "error");
     }
   }
@@ -3131,6 +3236,7 @@ export function CrmTab() {
           currentUserName={user?.name ?? user?.email ?? "Admin"}
           statusSettings={statusSettings}
           scoreRules={automationSettings.scoreRules}
+          lossReasons={automationSettings.lossReasons}
           onClose={() => setDetailModal(null)}
           onLeadPatched={(lead) => {
             setLeads((ls) => ls.map((item) => item.id === lead.id ? lead : item));
@@ -3200,8 +3306,9 @@ export function CrmTab() {
       {lostReasonModal && (
         <LostReasonModal
           lead={lostReasonModal.lead}
+          lossReasons={automationSettings.lossReasons}
           onClose={() => setLostReasonModal(null)}
-          onConfirm={(reason) => void confirmMoveLost(lostReasonModal.lead, reason)}
+          onConfirm={(reason, notes) => void confirmMoveLost(lostReasonModal.lead, reason, notes)}
         />
       )}
 
