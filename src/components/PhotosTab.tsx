@@ -6,6 +6,13 @@ import {
   uploadFlightPhoto,
   type FlightPhoto,
 } from "../lib/flightPhotosDb";
+import {
+  createLocalPreviewUrl,
+  deriveThumbUrl,
+  getDownscaledPreviewUrl,
+  probeImageUrl,
+  UPLOAD_PREVIEW_MAX_EDGE,
+} from "../lib/photoThumbnails";
 import { Skeleton } from "./ui/Skeleton";
 
 type UploadItemStatus = "queued" | "uploading" | "done" | "error";
@@ -64,8 +71,8 @@ async function downloadPhoto(photo: FlightPhoto): Promise<void> {
   }
 }
 
-const STAFF_PHOTO_BATCH_SIZE = 32;
-const VIEWER_PHOTO_BATCH_SIZE = 16;
+const STAFF_PHOTO_BATCH_SIZE = 12;
+const VIEWER_PHOTO_BATCH_SIZE = 8;
 
 export function PhotosTab({
   flightId,
@@ -138,17 +145,35 @@ export function PhotosTab({
       return;
     }
     setError(null);
+
     setUploadItems((current) => {
       const existing = new Set(current.map((item) => fileKey(item.file)));
-      const next = nextFiles
+      const added = nextFiles
         .filter((file) => !existing.has(fileKey(file)))
         .map((file) => ({
           id: `${fileKey(file)}-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
           file,
-          previewUrl: URL.createObjectURL(file),
+          previewUrl: "",
           status: "queued" as const,
         }));
-      return [...current, ...next];
+
+      for (const item of added) {
+        void (async () => {
+          try {
+            const previewUrl = await createLocalPreviewUrl(item.file, UPLOAD_PREVIEW_MAX_EDGE, 0.65);
+            setUploadItems((entries) =>
+              entries.map((entry) => (entry.id === item.id ? { ...entry, previewUrl } : entry)),
+            );
+          } catch {
+            const previewUrl = URL.createObjectURL(item.file);
+            setUploadItems((entries) =>
+              entries.map((entry) => (entry.id === item.id ? { ...entry, previewUrl } : entry)),
+            );
+          }
+        })();
+      }
+
+      return [...current, ...added];
     });
   }
 
@@ -246,7 +271,7 @@ export function PhotosTab({
         if (!entries.some((entry) => entry.isIntersecting)) return;
         setVisiblePhotoCount((current) => Math.min(current + photoBatchSize, photos.length));
       },
-      { rootMargin: "900px 0px" },
+      { rootMargin: "240px 0px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
@@ -303,13 +328,17 @@ export function PhotosTab({
                 {uploadItems.map((item) => (
                   <div key={item.id} className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950/50">
                     <div className="aspect-[4/3] bg-slate-900">
-                      <img
-                        src={item.previewUrl}
-                        alt={item.file.name}
-                        className="h-full w-full object-cover"
-                        decoding="async"
-                        loading="lazy"
-                      />
+                      {item.previewUrl ? (
+                        <img
+                          src={item.previewUrl}
+                          alt={item.file.name}
+                          className="h-full w-full object-cover"
+                          decoding="async"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <Skeleton className="h-full w-full rounded-none" />
+                      )}
                     </div>
                     <div className="space-y-1.5 p-2">
                       <p className="truncate text-xs font-semibold text-slate-200" title={item.file.name}>{item.file.name}</p>
@@ -391,7 +420,12 @@ export function PhotosTab({
                   onClick={() => setActivePhotoId(photo.id)}
                   className="block aspect-[4/3] w-full overflow-hidden bg-slate-900"
                 >
-                  <LazyPhotoImage src={photo.file_url} alt={photo.file_name} />
+                  <LazyPhotoImage
+                    thumbSrc={photo.thumb_url || deriveThumbUrl(photo.file_url, photo.r2_key)}
+                    fullSrc={photo.file_url}
+                    decodeSrc={photo.download_url || photo.file_url}
+                    alt={photo.file_name}
+                  />
                 </button>
                 <div className={galleryInfoClass}>
                   <p className={galleryTitleClass} title={photo.file_name}>{photo.file_name}</p>
@@ -465,15 +499,29 @@ function UploadStatus({ status }: { status: UploadItemStatus }) {
   return <span>Na fila</span>;
 }
 
-function LazyPhotoImage({ src, alt }: { src: string; alt: string }) {
+function LazyPhotoImage({
+  thumbSrc,
+  fullSrc,
+  decodeSrc,
+  alt,
+}: {
+  thumbSrc?: string;
+  fullSrc: string;
+  /** CORS-friendly URL used only to build a small in-memory preview. */
+  decodeSrc?: string;
+  alt: string;
+}) {
   const [shouldLoad, setShouldLoad] = useState(false);
+  const [displaySrc, setDisplaySrc] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const sourceForDecode = decodeSrc || fullSrc;
 
   useEffect(() => {
     setShouldLoad(false);
+    setDisplaySrc(null);
     setLoaded(false);
-  }, [src]);
+  }, [thumbSrc, fullSrc, sourceForDecode]);
 
   useEffect(() => {
     const node = wrapperRef.current;
@@ -489,18 +537,50 @@ function LazyPhotoImage({ src, alt }: { src: string; alt: string }) {
         setShouldLoad(true);
         observer.disconnect();
       },
-      { rootMargin: "700px 0px" },
+      { rootMargin: "180px 0px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!shouldLoad || !fullSrc) return;
+    let cancelled = false;
+
+    void (async () => {
+      const candidateThumb = (thumbSrc || "").trim();
+      if (candidateThumb && candidateThumb !== fullSrc) {
+        const thumbOk = await probeImageUrl(candidateThumb);
+        if (cancelled) return;
+        if (thumbOk) {
+          setDisplaySrc(candidateThumb);
+          return;
+        }
+      }
+
+      try {
+        const previewUrl = await getDownscaledPreviewUrl(sourceForDecode);
+        if (cancelled) return;
+        setDisplaySrc(previewUrl);
+      } catch {
+        if (cancelled) return;
+        // Last resort: never paint dozens of full-res bitmaps at once — keep skeleton-ish
+        // by still pointing at fullSrc only for the few visible cells.
+        setDisplaySrc(fullSrc);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldLoad, thumbSrc, fullSrc, sourceForDecode]);
+
   return (
-    <div ref={wrapperRef} className="relative h-full w-full overflow-hidden bg-slate-900">
+    <div ref={wrapperRef} className="relative h-full w-full overflow-hidden bg-slate-900 [content-visibility:auto] [contain-intrinsic-size:240px_180px]">
       {!loaded ? <Skeleton className="absolute inset-0 h-full w-full rounded-none" /> : null}
-      {shouldLoad ? (
+      {displaySrc ? (
         <img
-          src={src}
+          src={displaySrc}
           alt={alt}
           className={`h-full w-full object-cover transition-opacity duration-150 ${loaded ? "opacity-100" : "opacity-0"}`}
           decoding="async"
