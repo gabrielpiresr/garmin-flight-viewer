@@ -227,6 +227,7 @@ function FlightReviewFlightModal({
             showStudentTab={false}
             initialSubTab={initialSubTab}
             allowedSubTabs={["ficha", "telemetria", "flight-review", "videos", "fotos"]}
+            allowPublicLink
           />
         </div>
       </div>

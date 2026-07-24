@@ -481,7 +481,7 @@ function FlightModal({ flightId, onClose }: { flightId: string; onClose: () => v
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/85 p-4 backdrop-blur-sm">
       <div className="mx-auto max-w-7xl rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-2xl">
         <div className="mb-3 flex justify-end"><button type="button" onClick={onClose} className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">Fechar ficha</button></div>
-        <FlightDetailView flightId={flightId} onBack={onClose} backLabel="Voltar ao aluno" />
+        <FlightDetailView flightId={flightId} onBack={onClose} backLabel="Voltar ao aluno" allowPublicLink />
       </div>
     </div>
   );

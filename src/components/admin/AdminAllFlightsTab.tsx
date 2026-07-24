@@ -255,6 +255,7 @@ export function AdminAllFlightsTab() {
           setRefreshKey((key) => key + 1);
         }}
         backLabel="Todos os voos"
+        allowPublicLink
       />
     );
   }

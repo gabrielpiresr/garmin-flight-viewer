@@ -1797,7 +1797,7 @@ export function AdminUsersTab() {
                 Fechar ficha
               </button>
             </div>
-            <FlightDetailView flightId={activeFlightId} onBack={() => setActiveFlightId(null)} backLabel="Voltar ao usuário" />
+            <FlightDetailView flightId={activeFlightId} onBack={() => setActiveFlightId(null)} backLabel="Voltar ao usuário" allowPublicLink />
           </div>
         </div>
       ) : null}

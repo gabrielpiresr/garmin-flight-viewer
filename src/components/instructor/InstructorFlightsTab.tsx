@@ -25,6 +25,7 @@ import {
 import { decodeFlightRecord, type FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { validateFlightForInstructorSign } from "../../lib/flightSignValidation";
 import { exportFlightFichaPdf } from "../../lib/flightFichaPdf";
+import { createFlightPublicShare } from "../../lib/publicFlightReviewShare";
 import {
   buildBasicFlightListDisplayInfo,
   invalidateFlightListDisplayCache,
@@ -45,6 +46,7 @@ import {
 } from "../../lib/sagaImportDb";
 import { allMissionOptions, missionOptionsForTrack } from "../../lib/sagaMissionMappingUi";
 import { FlightDetailView } from "../FlightDetailView";
+import { FlightShareStickersModal } from "../FlightShareStickersModal";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
 import { NovoVooFlow } from "../NovoVooFlow";
@@ -370,6 +372,9 @@ function FlightCard({
   onPreencherFicha,
   onExportFicha,
   exportingFicha,
+  onShare,
+  onPublicLink,
+  publicLinkBusy,
   sigs,
   onSign,
   canSignAsInstructor,
@@ -387,6 +392,9 @@ function FlightCard({
   onPreencherFicha?: () => void;
   onExportFicha?: () => void;
   exportingFicha?: boolean;
+  onShare?: () => void;
+  onPublicLink?: () => void;
+  publicLinkBusy?: boolean;
   sigs?: FlightSignaturesForFlight | null;
   onSign?: () => void;
   canSignAsInstructor?: boolean;
@@ -504,6 +512,31 @@ function FlightCard({
               {exportingFicha ? "Gerando..." : "Ficha"}
             </button>
           ) : null}
+          {!future && onShare ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onShare();
+              }}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-xs font-semibold text-pink-300 hover:bg-pink-500/20"
+            >
+              Compartilhar
+            </button>
+          ) : null}
+          {!future && onPublicLink ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPublicLink();
+              }}
+              disabled={publicLinkBusy}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-600/10 px-3 py-2 text-xs font-semibold text-sky-400 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-70"
+            >
+              {publicLinkBusy ? "Gerando link..." : "Link publico"}
+            </button>
+          ) : null}
           {onReloadSaga ? (
             <button
               type="button"
@@ -587,6 +620,8 @@ export function InstructorFlightsTab() {
   const [suggestionSaving, setSuggestionSaving] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [exportingFichaId, setExportingFichaId] = useState<string | null>(null);
+  const [shareFlightId, setShareFlightId] = useState<string | null>(null);
+  const [publicLinkFlightId, setPublicLinkFlightId] = useState<string | null>(null);
   const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
   const [signingFlightId, setSigningFlightId] = useState<string | null>(null);
   const [signingFlightMeta, setSigningFlightMeta] = useState<FlightRecordMeta | null>(null);
@@ -812,6 +847,22 @@ export function InstructorFlightsTab() {
   const openFlight = (id: string) => {
     setSelectedFlightId(id);
     setView("detail");
+  };
+
+  const generatePublicLink = async (id: string) => {
+    setPublicLinkFlightId(id);
+    try {
+      const url = await createFlightPublicShare(id);
+      await navigator.clipboard?.writeText(url);
+      showToast({ variant: "success", message: "Link publico gerado e copiado." });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Nao foi possivel gerar o link publico.",
+      });
+    } finally {
+      setPublicLinkFlightId(null);
+    }
   };
 
   const exportFicha = async (id: string) => {
@@ -1172,7 +1223,7 @@ export function InstructorFlightsTab() {
   }
 
   if (view === "detail") {
-    return <FlightDetailView flightId={selectedFlightId} onBack={() => setView("list")} />;
+    return <FlightDetailView flightId={selectedFlightId} onBack={() => setView("list")} allowPublicLink />;
   }
 
   const suggestionFlight = suggestionFlightId ? items.find((item) => item.id === suggestionFlightId) : null;
@@ -1383,6 +1434,9 @@ export function InstructorFlightsTab() {
             }}
             onExportFicha={(id) => void exportFicha(id)}
             exportingFichaId={exportingFichaId}
+            onShare={(id) => setShareFlightId(id)}
+            onPublicLink={(id) => void generatePublicLink(id)}
+            publicLinkFlightId={publicLinkFlightId}
             signaturesByFlightId={signaturesByFlightId}
             clubMemberByStudentId={clubMemberByStudentId}
             onSign={(id) => void openSignModal(id)}
@@ -1470,6 +1524,9 @@ export function InstructorFlightsTab() {
                         }
                         onExportFicha={() => void exportFicha(item.id)}
                         exportingFicha={exportingFichaId === item.id}
+                        onShare={() => setShareFlightId(item.id)}
+                        onPublicLink={() => void generatePublicLink(item.id)}
+                        publicLinkBusy={publicLinkFlightId === item.id}
                         sigs={signaturesByFlightId[item.id] ?? null}
                         onSign={() => void openSignModal(item.id)}
                         canSignAsInstructor={
@@ -1525,6 +1582,10 @@ export function InstructorFlightsTab() {
           </div>
         </div>
       )}
+
+      {shareFlightId ? (
+        <FlightShareStickersModal flightId={shareFlightId} onClose={() => setShareFlightId(null)} />
+      ) : null}
 
       {signingFlightId && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
@@ -1875,6 +1936,9 @@ function FlightTableSection({
   onPreencherFicha,
   onExportFicha,
   exportingFichaId,
+  onShare,
+  onPublicLink,
+  publicLinkFlightId,
   signaturesByFlightId,
   clubMemberByStudentId,
   onSign,
@@ -1894,6 +1958,9 @@ function FlightTableSection({
   onPreencherFicha?: (id: string) => void;
   onExportFicha?: (id: string) => void;
   exportingFichaId?: string | null;
+  onShare?: (id: string) => void;
+  onPublicLink?: (id: string) => void;
+  publicLinkFlightId?: string | null;
   signaturesByFlightId?: Record<string, FlightSignaturesForFlight>;
   clubMemberByStudentId?: Record<string, boolean>;
   onSign?: (id: string) => void;
@@ -2042,6 +2109,31 @@ function FlightTableSection({
                                   <path d="M4.25 14.5a.75.75 0 000 1.5h11.5a.75.75 0 000-1.5H4.25z" />
                                 </svg>
                                 {exportingFichaId === item.id ? "Gerando..." : "Ficha"}
+                              </button>
+                            ) : null}
+                            {!isFutureSection && onShare ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onShare(item.id);
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-pink-500/30 bg-pink-500/10 px-2 py-1 text-xs font-semibold text-pink-300 hover:bg-pink-500/20"
+                              >
+                                Compartilhar
+                              </button>
+                            ) : null}
+                            {!isFutureSection && onPublicLink ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onPublicLink(item.id);
+                                }}
+                                disabled={publicLinkFlightId === item.id}
+                                className="inline-flex items-center gap-1 rounded border border-sky-600/40 bg-sky-600/10 px-2 py-1 text-xs font-semibold text-sky-400 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-70"
+                              >
+                                {publicLinkFlightId === item.id ? "Gerando link..." : "Link publico"}
                               </button>
                             ) : null}
                             {item.saga_flight_id && onReloadSaga ? (

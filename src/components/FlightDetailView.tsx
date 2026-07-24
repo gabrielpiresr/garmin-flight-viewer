@@ -139,7 +139,8 @@ export function FlightDetailView({
 
   const canSeeStudentContext = showStudentTab && (user?.role === "instrutor" || user?.role === "admin");
   const canSeeAuditLog = Boolean(flightId && user?.role === "admin");
-  const canCreatePublicLink = Boolean(flightId && (isClubMember || isTrial || allowPublicLink));
+  const canShareFlight = Boolean(flightId && (isClubMember || isTrial || allowPublicLink));
+  const canCreatePublicLink = canShareFlight;
 
   useEffect(() => {
     if (!flightId || !canSeeStudentContext) {
@@ -249,7 +250,7 @@ export function FlightDetailView({
         <p className="text-sm text-slate-400">
           {flightId ? "Detalhes do voo" : "Novo voo"}
         </p>
-        {flightId && (isClubMember || isTrial) && (
+        {canShareFlight && (
           <>
             <button
               type="button"
