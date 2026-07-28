@@ -2156,6 +2156,8 @@ function EnrollmentAutomationModal({
   loading,
   onClose,
   onSubmit,
+  onLeadPatched,
+  showToast,
 }: {
   lead: CrmLead;
   templates: ContractTemplate[];
@@ -2169,6 +2171,8 @@ function EnrollmentAutomationModal({
     ignoreSagaDuplicates: boolean;
     useStudentEmail: boolean;
   }) => void;
+  onLeadPatched: (lead: CrmLead) => void;
+  showToast: (message: string, variant?: "success" | "error") => void;
 }) {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(
     () => new Set(templates.map((template) => template.id)),
@@ -2184,7 +2188,36 @@ function EnrollmentAutomationModal({
   const [tracks, setTracks] = useState<{ id: string; name: string }[]>([]);
   const [tracksLoading, setTracksLoading] = useState(true);
   const [trainingTrackId, setTrainingTrackId] = useState("");
-  const sagaAnacReady = hasSagaAnacPerson(lead.sagaAnacJson);
+  const [sagaAnacJson, setSagaAnacJson] = useState(lead.sagaAnacJson);
+  const [sagaAnacLoading, setSagaAnacLoading] = useState(false);
+  const sagaAnac = parseSagaAnacPerson(sagaAnacJson);
+  const sagaAnacReady = hasSagaAnacPerson(sagaAnacJson);
+  const sagaAnacMissing = sagaAnacMissingEnrollmentFields(sagaAnac);
+
+  useEffect(() => {
+    setSagaAnacJson(lead.sagaAnacJson);
+  }, [lead.id, lead.sagaAnacJson]);
+
+  async function handleLookupSagaAnac() {
+    setSagaAnacLoading(true);
+    const result = await lookupSagaAnacPersonAdmin({
+      leadId: lead.id,
+      userId: lead.userId,
+      anacCode: lead.anacCode || undefined,
+      birthDate: lead.birthDate || undefined,
+      cpf: lead.cpf || undefined,
+    });
+    setSagaAnacLoading(false);
+    if (!result.ok || !result.data) {
+      showToast(result.message, "error");
+      return;
+    }
+    const json = JSON.stringify(result.data);
+    const nextLead = { ...lead, sagaAnacJson: json };
+    setSagaAnacJson(json);
+    onLeadPatched(nextLead);
+    showToast("Dados ANAC obtidos no SAGA.", "success");
+  }
 
   function toggleTemplate(templateId: string) {
     setSelectedTemplateIds((prev) => {
@@ -2346,11 +2379,38 @@ function EnrollmentAutomationModal({
                 </span>
               </span>
             </label>
-          )}          {!sagaAnacReady && (
-            <p className="rounded-lg border border-amber-800/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-              Consulte os dados ANAC no detalhe do lead (SAGA / ANAC) antes de enviar a matrícula.
-            </p>
           )}
+          <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2.5">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-medium text-slate-200">SAGA / ANAC</p>
+                {sagaAnacReady ? (
+                  <p className="mt-1 text-[11px] text-emerald-400">
+                    Dados ANAC consultados{sagaAnac?.name ? `: ${sagaAnac.name}` : ""}.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-amber-200">
+                    {!sagaAnacJson
+                      ? "Consulte os dados ANAC antes de enviar a matrícula."
+                      : `Consulta incompleta${sagaAnacMissing.length ? `: ${sagaAnacMissing.join(", ")}` : ""}.`}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={sagaAnacLoading || loading}
+                onClick={() => void handleLookupSagaAnac()}
+                className="shrink-0 rounded-lg border border-sky-700/50 bg-sky-600/10 px-2.5 py-1 text-[11px] font-medium text-sky-300 hover:bg-sky-600/20 disabled:opacity-50"
+              >
+                {sagaAnacLoading ? "Consultando..." : sagaAnacReady ? "Consultar novamente" : "Consultar ANAC"}
+              </button>
+            </div>
+            {!lead.anacCode || !lead.cpf || !lead.birthDate ? (
+              <p className="mt-2 text-[11px] text-slate-500">
+                Precisa de código ANAC, CPF e data de nascimento no lead (ou no perfil vinculado).
+              </p>
+            ) : null}
+          </div>
           {variables.length > 0 ? (
             <div className="space-y-3">
               {variables.map((v) => (
@@ -2757,7 +2817,8 @@ export function CrmTab() {
     if (targetStatus === "matricula_enviada") {
       try {
         const templates = await listStandardContractTemplates(user?.schoolId ?? DEFAULT_SCHOOL_ID, "matricula");
-        setEnrollmentModal({ lead, templates });
+        const latestLead = leads.find((item) => item.id === lead.id) ?? lead;
+        setEnrollmentModal({ lead: latestLead, templates });
       } catch (e) {
         showToast((e as Error).message || "Erro ao preparar automacao de matricula.", "error");
       }
@@ -2831,7 +2892,8 @@ export function CrmTab() {
     if (targetStatus === "matricula_enviada") {
       try {
         const templates = await listStandardContractTemplates(user?.schoolId ?? DEFAULT_SCHOOL_ID, "matricula");
-        setEnrollmentModal({ lead, templates });
+        const latestLead = leads.find((item) => item.id === lead.id) ?? lead;
+        setEnrollmentModal({ lead: latestLead, templates });
       } catch (e) {
         showToast((e as Error).message || "Erro ao preparar automação de matrícula.", "error");
       }
@@ -3273,6 +3335,12 @@ export function CrmTab() {
           onClose={() => {
             if (!automationRunning) setEnrollmentModal(null);
           }}
+          onLeadPatched={(patched) => {
+            setLeads((ls) => ls.map((item) => (item.id === patched.id ? patched : item)));
+            if (detailModal?.id === patched.id) setDetailModal(patched);
+            setEnrollmentModal((prev) => (prev ? { ...prev, lead: patched } : prev));
+          }}
+          showToast={showToast}
           onSubmit={(input) => void executeEnrollmentAutomation(enrollmentModal.lead, input)}
         />
       )}

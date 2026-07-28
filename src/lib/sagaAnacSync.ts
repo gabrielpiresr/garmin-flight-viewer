@@ -18,18 +18,17 @@ export type SagaAnacPostField = {
   value: string;
 };
 
+/**
+ * Campos mínimos para matrícula no SAGA após consulta ANAC.
+ * Alunos novos costumam vir sem CMA/licenças/habilitações/idiomas — arrays vazios e
+ * remarks null são válidos; o que importa é ter consultado (nome presente).
+ */
 export function sagaAnacMissingEnrollmentFields(data: SagaAnacPerson | null | undefined): string[] {
-  if (!data) return ["name"];
+  if (!data || !clean(data.name)) return ["name"];
   const missing: string[] = [];
-  if (!clean(data.name)) missing.push("name");
-  const cma = data.cma || {};
-  if (!clean(cma.class)) missing.push("medical_certificate[class]");
-  if (!clean(cma.val)) missing.push("medical_certificate[val]");
-  if (!clean(cma.issued_by)) missing.push("medical_certificate[issued_by]");
-  if (typeof cma.remarks !== "string") missing.push("medical_certificate[remarks]");
-  if (!Array.isArray(data.licenses) || data.licenses.length === 0) missing.push("licenses");
-  if (!Array.isArray(data.types) || data.types.length === 0) missing.push("types");
-  if (!Array.isArray(data.languages) || data.languages.length === 0) missing.push("languages");
+  if (data.licenses != null && !Array.isArray(data.licenses)) missing.push("licenses");
+  if (data.types != null && !Array.isArray(data.types)) missing.push("types");
+  if (data.languages != null && !Array.isArray(data.languages)) missing.push("languages");
   return missing;
 }
 

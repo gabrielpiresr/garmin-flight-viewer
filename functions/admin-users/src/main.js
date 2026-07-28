@@ -8575,15 +8575,9 @@ function appendSagaAnacFieldsToForm(form, sagaAnac) {
   form.set("medical_certificate[val]", cleanString(cma.val));
   form.set("medical_certificate[issued_by]", cleanString(cma.issued_by));
   form.set("medical_certificate[remarks]", typeof cma.remarks === "string" ? cma.remarks : "");
-  if (Array.isArray(sagaAnac.licenses)) {
-    form.set("licenses", JSON.stringify(sagaAnac.licenses));
-  }
-  if (Array.isArray(sagaAnac.types)) {
-    form.set("types", JSON.stringify(sagaAnac.types));
-  }
-  if (Array.isArray(sagaAnac.languages)) {
-    form.set("languages", JSON.stringify(sagaAnac.languages));
-  }
+  form.set("licenses", JSON.stringify(Array.isArray(sagaAnac.licenses) ? sagaAnac.licenses : []));
+  form.set("types", JSON.stringify(Array.isArray(sagaAnac.types) ? sagaAnac.types : []));
+  form.set("languages", JSON.stringify(Array.isArray(sagaAnac.languages) ? sagaAnac.languages : []));
   const anacName = cleanString(sagaAnac.name);
   if (anacName) {
     form.set("name", anacName);
@@ -8621,18 +8615,17 @@ async function persistSagaAnacJsonOnProfile(recipientUserId, sagaAnac) {
   }
 }
 
+/**
+ * Campos mínimos para matrícula no SAGA após consulta ANAC.
+ * Alunos novos costumam vir sem CMA/licenças/habilitações/idiomas — arrays vazios e
+ * remarks null são válidos; o que importa é ter consultado (nome presente).
+ */
 function sagaAnacEnrollmentMissingFields(sagaAnac) {
-  if (!sagaAnac || typeof sagaAnac !== "object") return ["name"];
+  if (!sagaAnac || typeof sagaAnac !== "object" || !cleanString(sagaAnac.name)) return ["name"];
   const missing = [];
-  if (!cleanString(sagaAnac.name)) missing.push("name");
-  const cma = sagaAnac.cma && typeof sagaAnac.cma === "object" ? sagaAnac.cma : {};
-  if (!cleanString(cma.class)) missing.push("medical_certificate[class]");
-  if (!cleanString(cma.val)) missing.push("medical_certificate[val]");
-  if (!cleanString(cma.issued_by)) missing.push("medical_certificate[issued_by]");
-  if (typeof cma.remarks !== "string") missing.push("medical_certificate[remarks]");
-  if (!Array.isArray(sagaAnac.licenses) || sagaAnac.licenses.length === 0) missing.push("licenses");
-  if (!Array.isArray(sagaAnac.types) || sagaAnac.types.length === 0) missing.push("types");
-  if (!Array.isArray(sagaAnac.languages) || sagaAnac.languages.length === 0) missing.push("languages");
+  if (sagaAnac.licenses != null && !Array.isArray(sagaAnac.licenses)) missing.push("licenses");
+  if (sagaAnac.types != null && !Array.isArray(sagaAnac.types)) missing.push("types");
+  if (sagaAnac.languages != null && !Array.isArray(sagaAnac.languages)) missing.push("languages");
   return missing;
 }
 
