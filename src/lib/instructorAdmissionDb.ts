@@ -78,14 +78,9 @@ function staffDocumentPermissions(): string[] {
   ];
 }
 
+/** Permissões que visitantes (sem login) podem atribuir ao criar candidatura. */
 function publicCandidateDocumentPermissions(): string[] {
-  return [
-    Permission.read(Role.label("admin")),
-    Permission.update(Role.label("admin")),
-    Permission.delete(Role.label("admin")),
-    Permission.read(Role.any()),
-    Permission.update(Role.any()),
-  ];
+  return [Permission.read(Role.any()), Permission.update(Role.any())];
 }
 
 function commentDocumentPermissions(): string[] {
@@ -1033,7 +1028,6 @@ export async function deleteInstructorAdmissionComment(id: string): Promise<void
 export async function uploadInstructorAdmissionFile(file: File): Promise<InstructorAdmissionFileValue> {
   if (!storage || !BUCKET_ID) throw new Error("Storage não configurado.");
   const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), file, [
-    Permission.read(Role.label("admin")),
     Permission.read(Role.any()),
   ]);
   return {
