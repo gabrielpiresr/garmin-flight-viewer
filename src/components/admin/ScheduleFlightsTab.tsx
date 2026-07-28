@@ -48,7 +48,15 @@ import {
   calendarTopPx,
   minutesToScheduleHHMM,
   parseScheduleTimeToMinutes,
+  SCHEDULE_DAY_END_MINUTE,
+  SCHEDULE_GRID_ORIGIN_MINUTE,
 } from "../../lib/scheduleTimeGrid";
+import {
+  computeFlexibleFit,
+  FLEXIBLE_ADJUST_MAX_MINUTES,
+  type FlexibleFitResult,
+  type FlexibleFitShift,
+} from "../../lib/scheduleFlexibleFit";
 import {
   sagaDirectDateTimeParts,
   sagaEventDaySegments,
@@ -285,6 +293,35 @@ function sagaEffectiveFlightMinutes(blockMinutes: number, rules: FlightScheduleR
   return Math.max(0, blockMinutes - rules.bufferBeforeMinutes - rules.bufferAfterMinutes);
 }
 
+/** Tamanho de bloco da agenda (preview ao passar o mouse em espaço vazio). */
+type AgendaBlockSize = "off" | 1 | 2 | 3;
+
+const AGENDA_BLOCK_SIZE_OPTIONS: Array<{ value: AgendaBlockSize; label: string }> = [
+  { value: "off", label: "Off" },
+  { value: 1, label: "1h" },
+  { value: 2, label: "2h" },
+  { value: 3, label: "3h" },
+];
+
+/** Presets de tempo de voo no modal SAGA (acionamento→corte). */
+const MODAL_FLIGHT_HOURS_PRESETS = [1, 1.5, 2, 2.5, 3] as const;
+
+function scheduleBuffersHours(rules: FlightScheduleRules): number {
+  return (rules.bufferBeforeMinutes + rules.bufferAfterMinutes) / 60;
+}
+
+/** Duração armazenada no formulário a partir do tempo de voo desejado. */
+function flightHoursToStoredDuration(flightHours: number, rules: FlightScheduleRules): number {
+  if (!rules.sagaOnlySchedule) return flightHours;
+  return flightHours + scheduleBuffersHours(rules);
+}
+
+/** Altura/largura visual do preview (sempre inclui briefing + debriefing). */
+function agendaBlockPreviewDurationHours(blockSize: AgendaBlockSize, rules: FlightScheduleRules): number | null {
+  if (blockSize === "off") return null;
+  return blockSize + scheduleBuffersHours(rules);
+}
+
 type FlightFormDraft = {
   id?: string;
   demandId: string;
@@ -436,11 +473,19 @@ function isDateToday(date: Date): boolean {
   return date.getDate() === t.getDate() && date.getMonth() === t.getMonth() && date.getFullYear() === t.getFullYear();
 }
 
+function formatLocalDateISO(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
   const base = new Date(`${weekStart}T12:00:00`);
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   base.setDate(base.getDate() + offset);
-  return base.toISOString().slice(0, 10);
+  // Usa data local — toISOString() muda o dia em alguns timezones e quebra o match com row.date.
+  return formatLocalDateISO(base);
 }
 
 function hoursToHHMM(hours: number): string {
@@ -504,8 +549,8 @@ function snapCalendarPointerToStartMinute(
   endHour: number,
 ): number {
   const minutesFromOrigin = Math.max(0, ((clientY - boardTop) / rowHeightPerHour) * 60);
-  const snapped = Math.round(minutesFromOrigin / 30) * 30;
-  const maxOffset = Math.max(0, (endHour - CALENDAR_START_HOUR) * 60 - 30);
+  const snapped = Math.round(minutesFromOrigin / 15) * 15;
+  const maxOffset = Math.max(0, (endHour - CALENDAR_START_HOUR) * 60 - 15);
   return CALENDAR_START_HOUR * 60 + Math.min(snapped, maxOffset);
 }
 
@@ -635,6 +680,28 @@ type ScheduleColumn = {
   instructorId?: string | null;
 };
 
+const EMPTY_AIRCRAFT_IDENT_SET: ReadonlySet<string> = new Set();
+
+function flexibleSlotPreviewClass(status: FlexibleFitResult["status"] | null | undefined): string {
+  if (status === "blocked") return "border-red-400/80 bg-red-500/25 text-red-100 ring-2 ring-red-400/40";
+  if (status === "adjust") return "border-amber-400/80 bg-amber-500/25 text-amber-50 ring-2 ring-amber-400/40";
+  return "border-sky-400/70 bg-sky-500/15 text-sky-100/90";
+}
+
+function formatFlexibleShiftLabel(fromMinute: number, toMinute: number): string {
+  const delta = toMinute - fromMinute;
+  const sign = delta > 0 ? "+" : "";
+  return `${minutesToScheduleHHMM(fromMinute)} → ${minutesToScheduleHHMM(toMinute)} (${sign}${delta} min)`;
+}
+
+/** Colunas de avião real (type=aviao) ficam visíveis mesmo sem eventos; ground/espera/visita só com eventos. */
+function scheduleColumnAlwaysVisible(column: ScheduleColumn, alwaysVisibleAircraftIdents: ReadonlySet<string>): boolean {
+  if (column.groupBy === "none") return true;
+  if (column.groupBy !== "aircraft") return false;
+  const ident = normalizeAircraftIdent(column.aircraftRegistration ?? column.key);
+  return Boolean(ident) && alwaysVisibleAircraftIdents.has(ident);
+}
+
 export type CalendarDropTarget = {
   dayOfWeek: number;
   startHour: number;
@@ -676,12 +743,73 @@ function AircraftProjectionCell({ cell }: { cell?: ProjectionCell }) {
 
 function scheduleColumnItemMatches(item: CalendarFlightItem, column: ScheduleColumn): boolean {
   if (column.groupBy === "none") return true;
-  if (column.groupBy === "aircraft") return item.aircraftRegistration === column.aircraftRegistration;
+  if (column.groupBy === "aircraft") {
+    return (
+      normalizeAircraftIdent(item.aircraftRegistration) ===
+      normalizeAircraftIdent(column.aircraftRegistration ?? column.key)
+    );
+  }
   return (item.instructorId ?? "__none__") === (column.instructorId ?? "__none__");
 }
 
+function calendarItemsToFlexiblePeers(
+  items: CalendarFlightItem[],
+  excludeFlightId?: string,
+): Array<{ id: string; label: string; startMinute: number; durationMinutes: number; immovable: boolean }> {
+  return items
+    .filter((item) => {
+      if (item.flightStatus === "Cancelado") return false;
+      if (
+        excludeFlightId &&
+        (item.id === excludeFlightId || item.id.startsWith(`${excludeFlightId}__`))
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map((item) => {
+      const fromDuration = Math.round(item.durationHours * 60);
+      const fromClock =
+        parseScheduleTimeToMinutes(item.endTime) - parseScheduleTimeToMinutes(item.startTime);
+      return {
+        id: item.id,
+        label: item.studentLabel || item.studentId,
+        startMinute: parseScheduleTimeToMinutes(item.startTime),
+        durationMinutes: Math.max(15, fromDuration > 0 ? fromDuration : fromClock),
+        immovable: Boolean(item.isBlocked),
+      };
+    });
+}
+
+/**
+ * SAGA rejeita blocos colados (fim == início) com "Aeronave ocupada neste horário!".
+ * Mesmo ajuste do schedule-booking: atrasa 1 min o início e encurta 1 min a duração.
+ */
+function sagaBoundaryPayloadTimes(
+  startMinute: number,
+  durationMinutes: number,
+  touchesPreviousEnd: boolean,
+): { startTime: string; durationMinutes: number } {
+  const offset = touchesPreviousEnd ? 1 : 0;
+  return {
+    startTime: minutesToScheduleHHMM(startMinute + offset),
+    durationMinutes: Math.max(15, durationMinutes - offset),
+  };
+}
+
+function flightEndsAtMinute(
+  row: { startTime: string; durationHours: number; flightStatus?: string | null },
+  endMinute: number,
+): boolean {
+  if (row.flightStatus === "Cancelado") return false;
+  const start = parseScheduleTimeToMinutes(row.startTime);
+  return start + Math.round(row.durationHours * 60) === endMinute;
+}
+
 function scheduleColumnTarget(column: ScheduleColumn): Partial<CalendarDropTarget> {
-  if (column.groupBy === "aircraft") return { targetAircraftRegistration: column.aircraftRegistration };
+  if (column.groupBy === "aircraft") {
+    return { targetAircraftRegistration: column.aircraftRegistration || column.key };
+  }
   if (column.groupBy === "none") return {};
   return { targetInstructorId: column.instructorId ?? null };
 }
@@ -818,6 +946,9 @@ export function CalendarGrid({
   projectionLoading = false,
   pastBeforeDate,
   onDayHeaderClick,
+  slotPreviewDurationHours = null,
+  alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
+  resolveFlexibleFit,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -857,6 +988,16 @@ export function CalendarGrid({
   pastBeforeDate?: string;
   /** Semanal/3 dias: clicar no cabeçalho do dia abre a visão diária naquele dia. */
   onDayHeaderClick?: (day: number) => void;
+  /** Preview semi-transparente ao passar o mouse em espaço vazio (horas do bloco completo). */
+  slotPreviewDurationHours?: number | null;
+  /** Idents de aviões reais que devem manter coluna mesmo sem eventos. */
+  alwaysVisibleAircraftIdents?: ReadonlySet<string>;
+  /** Quando definido, avalia encaixe flexível no hover do preview. */
+  resolveFlexibleFit?: (
+    target: CalendarDropTarget,
+    durationHours: number,
+    options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
+  ) => FlexibleFitResult | null;
 }) {
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
@@ -880,15 +1021,30 @@ export function CalendarGrid({
       aircraftRegistration: registration,
     }));
   }, [colorByAircraft, columns, items]);
-  const gridColumns = useMemo(
-    () =>
-      calendarDays.flatMap((day) =>
+  // Aviões reais (type=aviao) sempre aparecem; ground/espera/visita só no dia em que há eventos.
+  const alwaysVisibleIdents = alwaysVisibleAircraftIdents;
+  const gridColumns = useMemo<Array<{ day: number; column: ScheduleColumn }>>(() => {
+    if (baseColumns.length > 0) {
+      return calendarDays.flatMap((day) =>
         baseColumns
-          .filter((column) => items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)))
+          .filter(
+            (column) =>
+              scheduleColumnAlwaysVisible(column, alwaysVisibleIdents) ||
+              items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)),
+          )
           .map((column) => ({ day, column })),
-      ),
-    [baseColumns, calendarDays, items],
-  );
+      );
+    }
+    return calendarDays.map((day) => ({
+      day,
+      column: {
+        key: `__empty-${day}`,
+        label: "—",
+        colorClass: AIRCRAFT_COLOR_CLASSES[0]!,
+        groupBy: "none",
+      },
+    }));
+  }, [alwaysVisibleIdents, baseColumns, calendarDays, items]);
   const columnsByDay = useMemo(() => {
     const map = new Map<number, ScheduleColumn[]>();
     for (const day of calendarDays) {
@@ -1014,8 +1170,21 @@ export function CalendarGrid({
   const dragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
   const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
+  const [slotHover, setSlotHover] = useState<{
+    cellKey: string;
+    startTime: string;
+    fit: FlexibleFitResult | null;
+    fitKey: string;
+  } | null>(null);
   const draggable = Boolean(onItemDrop);
   const dragThresholdPx = 5;
+  const showSlotPreview = Boolean(slotPreviewDurationHours && slotPreviewDurationHours > 0);
+  const flexibleShiftStarts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!slotHover?.fit?.ok) return map;
+    for (const shift of slotHover.fit.shifts) map.set(shift.id, shift.toStartMinute);
+    return map;
+  }, [slotHover]);
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -1205,6 +1374,49 @@ export function CalendarGrid({
                       const target = resolveDropTarget(e.clientX, e.clientY);
                       if (target) onEmptySlotClick(target);
                     }}
+                    onMouseMove={(e) => {
+                      if (cellPast || !showSlotPreview || dragState) {
+                        if (slotHover) setSlotHover(null);
+                        return;
+                      }
+                      // Em modo preview o Y do mouse manda — mesmo sobre o corpo dos cards.
+                      // Só o título do evento captura o mouse para o popup de detalhes.
+                      if ((e.target as HTMLElement).closest("[data-schedule-event-title]")) {
+                        if (slotHover) setSlotHover(null);
+                        return;
+                      }
+                      const board = cellBoardRefs.current.get(cellKey);
+                      if (!board) return;
+                      const r = board.getBoundingClientRect();
+                      const startMinute = snapCalendarPointerToStartMinute(e.clientY, r.top, rowHeight, calendarEndHour);
+                      const startTime = minutesToScheduleHHMM(startMinute);
+                      const target: CalendarDropTarget = {
+                        dayOfWeek: day,
+                        startHour: startMinute / 60,
+                        startTime,
+                        isNight: startMinute >= nightStartHour * 60,
+                        ...scheduleColumnTarget(column),
+                      };
+                      const cellItems = byCell.get(cellKey) ?? [];
+                      const fit =
+                        resolveFlexibleFit && slotPreviewDurationHours
+                          ? resolveFlexibleFit(target, slotPreviewDurationHours, { cellItems })
+                          : null;
+                      const fitKey = fit?.ok
+                        ? `${fit.status}:${fit.shifts.map((s) => `${s.id}:${s.toStartMinute}`).join(",")}`
+                        : fit?.status ?? "none";
+                      if (
+                        !slotHover ||
+                        slotHover.cellKey !== cellKey ||
+                        slotHover.startTime !== startTime ||
+                        slotHover.fitKey !== fitKey
+                      ) {
+                        setSlotHover({ cellKey, startTime, fit, fitKey });
+                      }
+                    }}
+                    onMouseLeave={() => {
+                      if (slotHover?.cellKey === cellKey) setSlotHover(null);
+                    }}
                   >
                     {cellPast ? <div className="pointer-events-none absolute inset-0 z-20 bg-slate-950/55" /> : null}
                     {nightStartHour < calendarEndHour ? (
@@ -1259,22 +1471,25 @@ export function CalendarGrid({
                     {(layoutByCell.get(cellKey) ?? []).map((entry) => {
                       const item = entry.item;
                       if (dragState?.hasMoved && dragState.item.id === item.id) return null;
-                      const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
+                      const shiftedStart = flexibleShiftStarts.get(item.id);
+                      const displayStartMinute = shiftedStart ?? parseScheduleTimeToMinutes(item.startTime);
+                      const top = calendarTopPx(displayStartMinute, rowHeight);
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
                       const itemDraggable = draggable && (canDragItem ? canDragItem(item) : true);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
+                      const isFlexShifted = shiftedStart != null;
                       return (
                         <div
                           key={item.id}
                           role="button"
                           tabIndex={0}
-                          {...scheduleTooltipHandlers(item, setTooltip)}
+                          {...(showSlotPreview ? {} : scheduleTooltipHandlers(item, setTooltip))}
                           onPointerDown={(e) => {
                             // Arrastar para alterar é exclusivo do desktop (mouse);
                             // no celular o toque apenas abre os detalhes via clique.
-                            if (!itemDraggable || e.pointerType !== "mouse") return;
+                            if (!itemDraggable || e.pointerType !== "mouse" || showSlotPreview) return;
                             e.preventDefault();
                             e.stopPropagation();
                             dragEndedRef.current = false;
@@ -1289,6 +1504,7 @@ export function CalendarGrid({
                           }}
                           onClick={(e) => {
                             e.stopPropagation();
+                            if (showSlotPreview) return;
                             if (dragEndedRef.current) {
                               dragEndedRef.current = false;
                               e.preventDefault();
@@ -1305,15 +1521,29 @@ export function CalendarGrid({
                             }
                             onItemClick(item);
                           }}
-                          className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable)}`}
+                          className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable && !showSlotPreview)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${showSlotPreview ? "pointer-events-none" : ""}`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
                             left: `calc(${leftPercent}% + 4px)`,
                             width: `calc(${widthPercent}% - 8px)`,
+                            transition: showSlotPreview ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
                           }}
                         >
-                          <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                          <p
+                            data-schedule-event-title
+                            className={`flex min-w-0 items-center gap-1 font-semibold text-white ${showSlotPreview ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
+                            {...(showSlotPreview ? scheduleTooltipHandlers(item, setTooltip) : {})}
+                            onClick={(e) => {
+                              if (!showSlotPreview) return;
+                              e.stopPropagation();
+                              if (tooltipOnlyClick) {
+                                setTooltip({ item, x: e.clientX, y: e.clientY });
+                                return;
+                              }
+                              onItemClick(item);
+                            }}
+                          >
                             <span className="truncate">
                               {privacyMode
                                 ? (item.isBlocked || item.isOwn ? item.studentLabel : "Ocupado")
@@ -1357,6 +1587,24 @@ export function CalendarGrid({
                         >
                           <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
                           <p className="truncate opacity-80">Solte para confirmar</p>
+                        </div>
+                      );
+                    })() : null}
+                    {showSlotPreview && !dragState && slotHover?.cellKey === cellKey ? (() => {
+                      const top = calendarTopPx(parseScheduleTimeToMinutes(slotHover.startTime), rowHeight);
+                      const height = Math.max(rowHeight / 2, (slotPreviewDurationHours ?? 1) * rowHeight);
+                      const fitStatus = slotHover.fit?.status;
+                      return (
+                        <div
+                          key="slot-preview"
+                          className={`pointer-events-none absolute inset-x-1 z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] ${flexibleSlotPreviewClass(fitStatus)}`}
+                          style={{ top: `${top}px`, height: `${height - 4}px`, transition: "top 120ms linear, background-color 160ms ease" }}
+                        >
+                          <p className="truncate font-semibold">{slotHover.startTime}</p>
+                          <p className="truncate opacity-80">
+                            {(slotPreviewDurationHours ?? 1).toFixed(2).replace(/\.?0+$/, "")}h
+                            {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
+                          </p>
                         </div>
                       );
                     })() : null}
@@ -1409,6 +1657,9 @@ function DailyCalendarGrid({
   getItemColor,
   projectionRows,
   projectionLoading = false,
+  slotPreviewDurationHours = null,
+  alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
+  resolveFlexibleFit,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
@@ -1435,6 +1686,13 @@ function DailyCalendarGrid({
   clubMemberByStudentId?: Record<string, boolean>;
   projectionRows?: AircraftProjectionRow[];
   projectionLoading?: boolean;
+  slotPreviewDurationHours?: number | null;
+  alwaysVisibleAircraftIdents?: ReadonlySet<string>;
+  resolveFlexibleFit?: (
+    target: CalendarDropTarget,
+    durationHours: number,
+    options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
+  ) => FlexibleFitResult | null;
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
   const isMobile = useIsMobileViewport();
@@ -1450,6 +1708,7 @@ function DailyCalendarGrid({
     [items, selectedDay],
   );
 
+  // Aviões reais sempre; ground/espera/visita só com eventos no dia.
   const columns = useMemo<DailyCol[]>(() => {
     return inputColumns
       .map((column) => ({
@@ -1459,8 +1718,10 @@ function DailyCalendarGrid({
         column,
         items: dayItems.filter((item) => scheduleColumnItemMatches(item, column)),
       }))
-      .filter((column) => column.items.length > 0);
-  }, [dayItems, inputColumns]);
+      .filter(
+        (col) => scheduleColumnAlwaysVisible(col.column, alwaysVisibleAircraftIdents) || col.items.length > 0,
+      );
+  }, [alwaysVisibleAircraftIdents, dayItems, inputColumns]);
 
   const layoutByCol = useMemo(() => {
     const out = new Map<string, Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }>>();
@@ -1525,7 +1786,20 @@ function DailyCalendarGrid({
   const dragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
   const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
+  const [slotHover, setSlotHover] = useState<{
+    cellKey: string;
+    startTime: string;
+    fit: FlexibleFitResult | null;
+    fitKey: string;
+  } | null>(null);
   const dragThresholdPx = 5;
+  const showSlotPreview = Boolean(slotPreviewDurationHours && slotPreviewDurationHours > 0);
+  const flexibleShiftStarts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!slotHover?.fit?.ok) return map;
+    for (const shift of slotHover.fit.shifts) map.set(shift.id, shift.toStartMinute);
+    return map;
+  }, [slotHover]);
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -1545,7 +1819,7 @@ function DailyCalendarGrid({
       }
       return null;
     },
-    [calendarEndHour, columns, nightStartHour, selectedDay],
+    [calendarEndHour, columns, nightStartHour, rowHeight, selectedDay],
   );
 
   useEffect(() => {
@@ -1709,6 +1983,48 @@ function DailyCalendarGrid({
                           const t = resolveDropTarget(e.clientX, e.clientY);
                           if (t) onEmptySlotClick(t);
                         }}
+                        onMouseMove={(e) => {
+                          if (!showSlotPreview || dragState) {
+                            if (slotHover) setSlotHover(null);
+                            return;
+                          }
+                          if ((e.target as HTMLElement).closest("[data-schedule-event-title]")) {
+                            if (slotHover) setSlotHover(null);
+                            return;
+                          }
+                          const board = boardRefs.current.get(col.key);
+                          if (!board) return;
+                          const r = board.getBoundingClientRect();
+                          const startMinute = snapCalendarPointerToStartMinute(e.clientY, r.top, rowHeight, calendarEndHour);
+                          const startTime = minutesToScheduleHHMM(startMinute);
+                          const target: CalendarDropTarget = {
+                            dayOfWeek: selectedDay,
+                            startHour: startMinute / 60,
+                            startTime,
+                            isNight: startMinute >= nightStartHour * 60,
+                            ...scheduleColumnTarget(col.column),
+                          };
+                          const fit =
+                            resolveFlexibleFit && slotPreviewDurationHours
+                              ? resolveFlexibleFit(target, slotPreviewDurationHours, {
+                                  cellItems: col.items,
+                                })
+                              : null;
+                          const fitKey = fit?.ok
+                            ? `${fit.status}:${fit.shifts.map((s) => `${s.id}:${s.toStartMinute}`).join(",")}`
+                            : fit?.status ?? "none";
+                          if (
+                            !slotHover ||
+                            slotHover.cellKey !== col.key ||
+                            slotHover.startTime !== startTime ||
+                            slotHover.fitKey !== fitKey
+                          ) {
+                            setSlotHover({ cellKey: col.key, startTime, fit, fitKey });
+                          }
+                        }}
+                        onMouseLeave={() => {
+                          if (slotHover?.cellKey === col.key) setSlotHover(null);
+                        }}
                       >
                         {nightStartHour < calendarEndHour ? (
                           <div
@@ -1747,21 +2063,24 @@ function DailyCalendarGrid({
                         {entries.map((entry) => {
                           if (dragState?.hasMoved && dragState.item.id === entry.item.id) return null;
                           const item = entry.item;
-                          const top = calendarTopPx(parseScheduleTimeToMinutes(item.startTime), rowHeight);
+                          const shiftedStart = flexibleShiftStarts.get(item.id);
+                          const displayStartMinute = shiftedStart ?? parseScheduleTimeToMinutes(item.startTime);
+                          const top = calendarTopPx(displayStartMinute, rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                           const color = getItemColor ? getItemColor(item) : calendarItemColor(item, colorByAircraft);
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
+                          const isFlexShifted = shiftedStart != null;
                           return (
                             <div
                               key={item.id}
                               role="button"
                               tabIndex={0}
-                              {...scheduleTooltipHandlers(item, setTooltip)}
+                              {...(showSlotPreview ? {} : scheduleTooltipHandlers(item, setTooltip))}
                               onPointerDown={(e) => {
                                 // Arrastar para alterar é exclusivo do desktop (mouse);
                                 // no celular o toque apenas abre os detalhes via clique.
-                                if (!draggable || e.pointerType !== "mouse") return;
+                                if (!draggable || e.pointerType !== "mouse" || showSlotPreview) return;
                                 e.preventDefault();
                                 e.stopPropagation();
                                 dragEndedRef.current = false;
@@ -1776,6 +2095,7 @@ function DailyCalendarGrid({
                               }}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                if (showSlotPreview) return;
                                 if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
                                 if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                 if (tooltipOnlyClick) {
@@ -1784,15 +2104,29 @@ function DailyCalendarGrid({
                                 }
                                 onItemClick(item);
                               }}
-                              className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable)}`}
+                              className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable && !showSlotPreview)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${showSlotPreview ? "pointer-events-none" : ""}`}
                               style={{
                                 top: `${top}px`,
                                 height: `${height - 4}px`,
                                 left: `calc(${leftPercent}% + 4px)`,
                                 width: `calc(${widthPercent}% - 8px)`,
+                                transition: showSlotPreview ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
                               }}
                             >
-                              <p className="flex min-w-0 items-center gap-1 font-semibold text-white">
+                              <p
+                                data-schedule-event-title
+                                className={`flex min-w-0 items-center gap-1 font-semibold text-white ${showSlotPreview ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
+                                {...(showSlotPreview ? scheduleTooltipHandlers(item, setTooltip) : {})}
+                                onClick={(e) => {
+                                  if (!showSlotPreview) return;
+                                  e.stopPropagation();
+                                  if (tooltipOnlyClick) {
+                                    setTooltip({ item, x: e.clientX, y: e.clientY });
+                                    return;
+                                  }
+                                  onItemClick(item);
+                                }}
+                              >
                                 <span className="truncate">{calendarStudentTitle(item.studentLabel, item.isOutsideGenerator)}</span>
                                 {clubMemberByStudentId?.[item.studentId] ? <FlightReviewClubBadge /> : null}
                               </p>
@@ -1832,6 +2166,24 @@ function DailyCalendarGrid({
                             </div>
                           );
                         })()}
+                        {showSlotPreview && !dragState && slotHover?.cellKey === col.key ? (() => {
+                          const top = calendarTopPx(parseScheduleTimeToMinutes(slotHover.startTime), rowHeight);
+                          const height = Math.max(rowHeight / 2, (slotPreviewDurationHours ?? 1) * rowHeight);
+                          const fitStatus = slotHover.fit?.status;
+                          return (
+                            <div
+                              key="slot-preview"
+                              className={`pointer-events-none absolute inset-x-1 z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] ${flexibleSlotPreviewClass(fitStatus)}`}
+                              style={{ top: `${top}px`, height: `${height - 4}px`, transition: "top 120ms linear, background-color 160ms ease" }}
+                            >
+                              <p className="truncate font-semibold">{slotHover.startTime}</p>
+                              <p className="truncate opacity-80">
+                                {(slotPreviewDurationHours ?? 1).toFixed(2).replace(/\.?0+$/, "")}h
+                                {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
+                              </p>
+                            </div>
+                          );
+                        })() : null}
                       </div>
                     </td>
                   );
@@ -1885,6 +2237,7 @@ function HorizontalTimelineBoard({
   hasPrevWeek,
   hasNextWeek,
   showDayInItems = false,
+  slotPreviewDurationHours = null,
 }: {
   rows: TimelineRow[];
   title: string;
@@ -1905,6 +2258,7 @@ function HorizontalTimelineBoard({
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   showDayInItems?: boolean;
+  slotPreviewDurationHours?: number | null;
 }) {
   const allItems = useMemo(() => rows.flatMap((row) => row.items), [rows]);
   const hours = useMemo(() => buildCalendarHours(allItems), [allItems]);
@@ -1915,6 +2269,8 @@ function HorizontalTimelineBoard({
   const laneHeight = useCalendarRowHeight(TIMELINE_LANE_HEIGHT, TIMELINE_DESKTOP_LANE_HEIGHT);
   const rowBoardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
+  const [slotHover, setSlotHover] = useState<{ rowKey: string; startTime: string } | null>(null);
+  const showSlotPreview = Boolean(slotPreviewDurationHours && slotPreviewDurationHours > 0);
 
   const layout = useMemo(
     () =>
@@ -1952,8 +2308,8 @@ function HorizontalTimelineBoard({
       const rect = board.getBoundingClientRect();
       if (clientX < rect.left || clientX > rect.right) return null;
       const minutesFromOrigin = ((clientX - rect.left) / Math.max(1, rect.width)) * totalMinutes;
-      const snapped = Math.round(minutesFromOrigin / 30) * 30;
-      const maxOffset = Math.max(0, totalMinutes - 30);
+      const snapped = Math.round(minutesFromOrigin / 15) * 15;
+      const maxOffset = Math.max(0, totalMinutes - 15);
       const startMinute = startHour * 60 + Math.min(Math.max(0, snapped), maxOffset);
       return {
         dayOfWeek: row.dayOfWeek,
@@ -2107,6 +2463,23 @@ function HorizontalTimelineBoard({
                     const target = resolveDropTarget(row, event.clientX);
                     if (target) onEmptySlotClick(target);
                   }}
+                  onMouseMove={(event) => {
+                    if (!showSlotPreview) {
+                      if (slotHover) setSlotHover(null);
+                      return;
+                    }
+                    const target = resolveDropTarget(row, event.clientX);
+                    if (!target) {
+                      if (slotHover?.rowKey === row.key) setSlotHover(null);
+                      return;
+                    }
+                    if (!slotHover || slotHover.rowKey !== row.key || slotHover.startTime !== target.startTime) {
+                      setSlotHover({ rowKey: row.key, startTime: target.startTime });
+                    }
+                  }}
+                  onMouseLeave={() => {
+                    if (slotHover?.rowKey === row.key) setSlotHover(null);
+                  }}
                 >
                   {nightStartHour < endHour && nightStartHour >= startHour ? (
                     <div
@@ -2158,6 +2531,26 @@ function HorizontalTimelineBoard({
                       </div>
                     );
                   })}
+                  {showSlotPreview && slotHover?.rowKey === row.key ? (() => {
+                    const startMinutes = parseScheduleTimeToMinutes(slotHover.startTime);
+                    const leftPercent = ((startMinutes - startHour * 60) / totalMinutes) * 100;
+                    const widthPercent = (((slotPreviewDurationHours ?? 1) * 60) / totalMinutes) * 100;
+                    return (
+                      <div
+                        key="slot-preview"
+                        className="pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-sky-400/70 bg-sky-500/15 px-1.5 py-1 text-[10px] text-sky-100/90"
+                        style={{
+                          left: `calc(${Math.max(0, leftPercent)}% + 2px)`,
+                          top: "4px",
+                          height: `${laneHeight - 8}px`,
+                          width: `max(44px, calc(${widthPercent}% - 4px))`,
+                        }}
+                      >
+                        <p className="truncate font-semibold">{slotHover.startTime}</p>
+                        <p className="truncate opacity-80">{(slotPreviewDurationHours ?? 1).toFixed(2).replace(/\.?0+$/, "")}h</p>
+                      </div>
+                    );
+                  })() : null}
                 </div>
               </div>
               )
@@ -2203,6 +2596,9 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
   const [invertedTimeline, setInvertedTimeline] = useState(false);
+  const [agendaBlockSize, setAgendaBlockSize] = useState<AgendaBlockSize>("off");
+  const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(false);
+  const [pendingFlexibleShifts, setPendingFlexibleShifts] = useState<FlexibleFitShift[]>([]);
   // Mobile: resumos recolhidos por padrão
   const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
   const [mobileInstructorSummaryOpen, setMobileInstructorSummaryOpen] = useState(false);
@@ -2827,6 +3223,22 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     [colorByAircraft, visibleAircraft],
   );
 
+  /** Só aviões reais (type=aviao) mantêm coluna vazia; ground/espera/visita só com eventos. */
+  const alwaysVisibleAircraftIdents = useMemo(() => {
+    const excluded = new Set<string>([
+      ...(scheduleRules.studentHiddenAircraftIdents ?? []).map((ident) => normalizeAircraftIdent(ident)),
+      ...(scheduleRules.studentWaitlistAircraftIdents ?? []).map((ident) => normalizeAircraftIdent(ident)),
+    ]);
+    const idents = new Set<string>();
+    for (const aircraft of activeAircrafts) {
+      if (aircraft.type !== "aviao") continue;
+      const ident = normalizeAircraftIdent(aircraft.registration);
+      if (!ident || excluded.has(ident)) continue;
+      idents.add(ident);
+    }
+    return idents;
+  }, [activeAircrafts, scheduleRules.studentHiddenAircraftIdents, scheduleRules.studentWaitlistAircraftIdents]);
+
   const borderByInstructor = useMemo(() => {
     const map = new Map<string, string>();
     instructorOptions.forEach((instructor, index) =>
@@ -3113,12 +3525,16 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   const calendarItems = useMemo<CalendarFlightItem[]>(
     () =>
       flights
-        .filter(
-          (row) =>
-            (!hideCancelledFlights || row.flightStatus !== "Cancelado") &&
-            visibleAircraft.includes(row.aircraftRegistration ?? "") &&
-            (row.instructorId ? visibleInstructors.includes(row.instructorId) : visibleInstructors.includes("__none__")),
-        )
+        .filter((row) => {
+          if (hideCancelledFlights && row.flightStatus === "Cancelado") return false;
+          const aircraftIdent = normalizeAircraftIdent(row.aircraftRegistration);
+          const aircraftVisible =
+            !aircraftIdent ||
+            visibleAircraft.some((registration) => normalizeAircraftIdent(registration) === aircraftIdent);
+          if (!aircraftVisible) return false;
+          if (row.instructorId) return visibleInstructors.includes(row.instructorId);
+          return visibleInstructors.includes("__none__");
+        })
         .map((row) => {
           const dayOfWeek = new Date(`${row.date}T12:00:00`).getDay();
           const startHour = parseStartHour(row.startTime);
@@ -3254,8 +3670,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     const rows: TimelineRow[] = [];
     for (const day of activeDays) {
       const dayItems = calendarItems.filter((item) => item.dayOfWeek === day);
-      if (dayItems.length === 0) continue;
       const dayLabel = `${DAY_LABEL[day]} ${formatShortDate(dayOfWeekToDate(baseWeekStart, day))}`;
+      const columnsForDay = scheduleGroupBy === "none" ? scheduleColumns.slice(0, 1) : scheduleColumns;
+      const visibleColumns = columnsForDay.filter((column) => {
+        if (scheduleColumnAlwaysVisible(column, alwaysVisibleAircraftIdents)) return true;
+        const rowItems = scheduleGroupBy === "none" ? dayItems : dayItems.filter((item) => scheduleColumnItemMatches(item, column));
+        return rowItems.length > 0;
+      });
+      if (visibleColumns.length === 0) continue;
       rows.push({
         key: `day-${day}`,
         label: dayLabel,
@@ -3263,10 +3685,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
         kind: "day",
         items: [],
       });
-      const columnsForDay = scheduleGroupBy === "none" ? scheduleColumns.slice(0, 1) : scheduleColumns;
-      for (const column of columnsForDay) {
+      for (const column of visibleColumns) {
         const rowItems = scheduleGroupBy === "none" ? dayItems : dayItems.filter((item) => scheduleColumnItemMatches(item, column));
-        if (rowItems.length === 0) continue;
         const hours = rowItems.reduce((sum, item) => sum + (item.flightHours ?? item.durationHours), 0);
         rows.push({
           key: `${day}-${column.key}`,
@@ -3283,7 +3703,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       }
     }
     return rows;
-  }, [invertedTimeline, agendaView, calendarItems, selectedDay, threeDayWindow, weekData, selectedWeekStart, scheduleColumns, scheduleGroupBy, projectionRows]);
+  }, [invertedTimeline, agendaView, alwaysVisibleAircraftIdents, calendarItems, selectedDay, threeDayWindow, weekData, selectedWeekStart, scheduleColumns, scheduleGroupBy, projectionRows]);
 
   const selectedSupplyForBackground = useMemo(() => {
     if (!weekData || visibleAircraft.length !== 1) return null;
@@ -3394,13 +3814,14 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     };
   }, [flights, selectedStudentId, studentLabelMap, weekData]);
 
-  function openCreateModal() {
+  function openCreateModal(options?: { preserveFlexibleShifts?: boolean }) {
     if (!weekData) return;
     const firstAircraft = aircraftOptions[0];
     if (!firstAircraft) {
       setError("Cadastre uma aeronave ativa para criar voos.");
       return;
     }
+    const flightHours = agendaBlockSize === "off" ? 1 : agendaBlockSize;
     setFormMode("create");
     setFormDraft({
       demandId: `manual-${crypto.randomUUID()}`,
@@ -3412,7 +3833,8 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       dateIso: weekDateFromStart(weekData.week.weekStart, selectedDay),
       startTime: minutesToScheduleHHMM((SLOT_HOURS[0] ?? 6) * 60),
       startHour: SLOT_HOURS[0] ?? 6,
-      durationHours: 1,
+      // Sem tamanho de bloco (ou com ele): base = tempo de voo + briefing/debriefing no SAGA.
+      durationHours: flightHoursToStoredDuration(flightHours, scheduleRules),
       // No modo SAGA o voo novo entra como "Planejado" (Previsto) por padrão.
       flightStatus: scheduleRules.sagaOnlySchedule ? "Previsto" : "Confirmado",
       isNight: false,
@@ -3420,6 +3842,96 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
+    if (!options?.preserveFlexibleShifts) setPendingFlexibleShifts([]);
+  }
+
+  const scheduleDayBounds = useMemo(() => {
+    const configuredStart = parseScheduleTimeToMinutes(scheduleRules.scheduleStartTime || "06:00");
+    const dayStartMinute = Number.isFinite(configuredStart) ? configuredStart : SCHEDULE_GRID_ORIGIN_MINUTE;
+    return { dayStartMinute, dayEndMinute: SCHEDULE_DAY_END_MINUTE };
+  }, [scheduleRules.scheduleStartTime]);
+
+  const resolveFlexibleFit = useCallback(
+    (
+      target: CalendarDropTarget,
+      durationHours: number,
+      options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
+    ): FlexibleFitResult | null => {
+      if (!flexibleAdjustEnabled || !weekData) return null;
+      const aircraftRegistration = target.targetAircraftRegistration?.trim();
+      const aircraftIdent = normalizeAircraftIdent(aircraftRegistration);
+      // Sem aeronave no alvo (agrupamento por instrutor/dia) não dá para empurrar com segurança.
+      if (!aircraftIdent) return null;
+
+      // Preferência: itens da própria célula da grade (o que o usuário vê).
+      // Fallback: calendarItems do mesmo dia + aeronave.
+      const sourceItems =
+        options?.cellItems ??
+        calendarItems.filter(
+          (item) =>
+            item.dayOfWeek === target.dayOfWeek &&
+            normalizeAircraftIdent(item.aircraftRegistration) === aircraftIdent,
+        );
+
+      const peers = calendarItemsToFlexiblePeers(
+        sourceItems.filter(
+          (item) => normalizeAircraftIdent(item.aircraftRegistration) === aircraftIdent,
+        ),
+        options?.excludeFlightId,
+      );
+
+      return computeFlexibleFit({
+        preferredStartMinute: parseScheduleTimeToMinutes(target.startTime),
+        durationMinutes: Math.round(durationHours * 60),
+        peers,
+        dayStartMinute: scheduleDayBounds.dayStartMinute,
+        dayEndMinute: scheduleDayBounds.dayEndMinute,
+        maxFlexMinutes: FLEXIBLE_ADJUST_MAX_MINUTES,
+        // SAGA trata fim==início como conflito ("Aeronave ocupada neste horário!").
+        abutGapMinutes: scheduleRules.sagaOnlySchedule ? 1 : 0,
+      });
+    },
+    [calendarItems, flexibleAdjustEnabled, scheduleDayBounds, scheduleRules.sagaOnlySchedule, weekData],
+  );
+
+  function applyEmptySlotTarget(target: CalendarDropTarget) {
+    if (!weekData || !canCreateFlight) return;
+    const flightHours = agendaBlockSize === "off" ? 1 : agendaBlockSize;
+    const durationHours = flightHoursToStoredDuration(flightHours, scheduleRules);
+    let shifts: FlexibleFitShift[] = [];
+    if (flexibleAdjustEnabled && agendaBlockSize !== "off" && target.targetAircraftRegistration) {
+      const fit = resolveFlexibleFit(target, durationHours);
+      if (fit && !fit.ok) {
+        showToast({ variant: "error", message: fit.reason || "Não foi possível encaixar neste horário." });
+        return;
+      }
+      if (fit?.ok) shifts = fit.shifts;
+    }
+    openCreateModal({ preserveFlexibleShifts: true });
+    setPendingFlexibleShifts(shifts);
+    setFormDraft((prev) => {
+      if (!prev) return prev;
+      const base = {
+        ...prev,
+        dayOfWeek: target.dayOfWeek,
+        dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
+        startHour: target.startHour,
+        startTime: target.startTime,
+        isNight: target.isNight,
+        aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
+        durationHours,
+      };
+      if (target.targetInstructorId !== undefined) {
+        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+        return {
+          ...base,
+          instructorId: target.targetInstructorId,
+          instructorLabel: instr?.label ?? null,
+          instructorAnac: instr?.anacCode ?? null,
+        };
+      }
+      return base;
+    });
   }
 
   async function openEditModal(row: ExistingScheduledFlight) {
@@ -3449,6 +3961,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       });
       setFormConflicts([]);
       setForceSaveWithConflict(false);
+      setPendingFlexibleShifts([]);
       return;
     }
     const full = await getSavedFlight(row.id);
@@ -3493,7 +4006,23 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
+    setPendingFlexibleShifts([]);
   }
+
+  const liveFlexibleFit = useMemo(() => {
+    if (!formDraft || formMode !== "create" || !flexibleAdjustEnabled || !weekData) return null;
+    return resolveFlexibleFit(
+      {
+        dayOfWeek: formDraft.dayOfWeek,
+        startHour: formDraft.startHour,
+        startTime: formDraft.startTime,
+        isNight: Boolean(formDraft.isNight),
+        targetAircraftRegistration: formDraft.aircraftRegistration,
+      },
+      formDraft.durationHours,
+      { excludeFlightId: formDraft.id },
+    );
+  }, [flexibleAdjustEnabled, formDraft, formMode, resolveFlexibleFit, weekData]);
 
   async function handleSaveForm() {
     if (!user || !weekData || !formDraft) return;
@@ -3506,6 +4035,39 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       setError("O fim do bloco SAGA deve ser depois do inicio.");
       return;
     }
+
+    const flexiblePlan =
+      formMode === "create" && flexibleAdjustEnabled
+        ? resolveFlexibleFit(
+            {
+              dayOfWeek: formDraft.dayOfWeek,
+              startHour: formDraft.startHour,
+              startTime: formDraft.startTime,
+              isNight: Boolean(formDraft.isNight),
+              targetAircraftRegistration: formDraft.aircraftRegistration,
+            },
+            formDraft.durationHours,
+            { excludeFlightId: formDraft.id },
+          )
+        : null;
+
+    if (flexiblePlan && !flexiblePlan.ok) {
+      setError(flexiblePlan.reason || "Não foi possível encaixar com ajuste flexível.");
+      setPendingFlexibleShifts([]);
+      return;
+    }
+
+    const flightsAfterFlexible = flexiblePlan?.ok
+      ? flights.map((row) => {
+          const shift = flexiblePlan.shifts.find((item) => item.id === row.id);
+          if (!shift) return row;
+          return {
+            ...row,
+            startTime: minutesToScheduleHHMM(shift.toStartMinute),
+          };
+        })
+      : flights;
+
     const conflicts = detectFlightConflicts({
       draft: {
         ...formDraft,
@@ -3513,21 +4075,129 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
         flightStatus: formDraft.flightStatus ?? "Confirmado",
       },
       supplies: weekData.supplies,
-      flights,
-      minGapMinutes,
+      flights: flightsAfterFlexible,
+      minGapMinutes: flexiblePlan?.ok ? 0 : minGapMinutes,
     });
-    if (conflicts.length > 0 && !forceSaveWithConflict) {
-      setFormConflicts(conflicts);
+    // Com ajuste flexível bem-sucedido, conflitos de overlap/min_gap na aeronave já foram resolvidos;
+    // ainda bloqueamos blocked/student/instructor/other.
+    const blockingConflicts = flexiblePlan?.ok
+      ? conflicts.filter((item) => item.type === "aircraft_blocked" || item.type === "other")
+      : conflicts;
+    if (blockingConflicts.length > 0 && !forceSaveWithConflict) {
+      setFormConflicts(blockingConflicts);
       return;
     }
 
     setFormSaving(true);
     try {
+      if (flexiblePlan?.ok && flexiblePlan.shifts.length > 0) {
+        for (const shift of flexiblePlan.shifts) {
+          const peer = flights.find((row) => row.id === shift.id);
+          if (!peer) continue;
+          const draftStartMinute = parseScheduleTimeToMinutes(formDraft.startTime);
+          const draftEndMinute = draftStartMinute + Math.round(formDraft.durationHours * 60);
+          const peerAircraft = peer.aircraftRegistration ?? formDraft.aircraftRegistration;
+          // Colado no fim do voo novo (ou em outro evento que termina nesse horário).
+          const touchesPreviousEnd =
+            shift.toStartMinute === draftEndMinute ||
+            flightsAfterFlexible.some(
+              (row) =>
+                row.id !== peer.id &&
+                normalizeAircraftIdent(row.aircraftRegistration) === normalizeAircraftIdent(peerAircraft) &&
+                row.date === peer.date &&
+                flightEndsAtMinute(row, shift.toStartMinute),
+            );
+          const sagaTimes = sagaBoundaryPayloadTimes(
+            shift.toStartMinute,
+            Math.round(peer.durationHours * 60),
+            scheduleRules.sagaOnlySchedule && touchesPreviousEnd,
+          );
+          const newStart = sagaTimes.startTime;
+          if (scheduleRules.sagaOnlySchedule || isSagaEventRowId(peer.id)) {
+            if (!peer.sagaScheduleId) continue;
+            const isSagaStudent = peer.studentId.startsWith(SAGA_STUDENT_ID_PREFIX);
+            await upsertSagaScheduleDirect({
+              scheduleId: peer.sagaScheduleId,
+              aircraftIdent: peerAircraft,
+              ...(isSagaStudent
+                ? {
+                    studentSagaId: peer.studentId.slice(SAGA_STUDENT_ID_PREFIX.length),
+                    studentName: peer.studentLabel || null,
+                  }
+                : { studentUserId: peer.studentId }),
+              instructorUserId: peer.instructorId,
+              date: peer.date,
+              startTime: newStart,
+              durationMinutes: sagaTimes.durationMinutes,
+              sagaStatus: flightStatusToSagaStatus(peer.flightStatus),
+              rawNotes: peer.notes ?? undefined,
+            });
+          } else {
+            const full = await getSavedFlight(peer.id);
+            if (!full.data) continue;
+            const decoded = decodeFlightRecord(full.data.csv_text).meta;
+            const draftFromPeer: FlightFormDraft = {
+              id: peer.id,
+              demandId: peer.demandId,
+              sourceFilename: peer.sourceFilename,
+              studentId: peer.studentId,
+              studentLabel: peer.studentLabel ?? peer.studentId,
+              instructorId: peer.instructorId,
+              instructorLabel: peer.instructorLabel,
+              instructorAnac: peer.instructorAnac,
+              aircraftRegistration: peer.aircraftRegistration ?? "",
+              dayOfWeek: new Date(`${peer.date}T12:00:00`).getDay(),
+              dateIso: peer.date,
+              startTime: newStart,
+              startHour: parseStartHour(newStart),
+              durationHours: peer.durationHours,
+              isNight: peer.isNight ?? false,
+              notes: peer.notes ?? "",
+            };
+            const instructor = peer.instructorId ? instructorById.get(peer.instructorId) : null;
+            const meta = decoded
+              ? {
+                  ...decoded,
+                  header: {
+                    ...decoded.header,
+                    startTime: newStart,
+                    departureTimeUtc: newStart,
+                    engineCutoffTimeUtc: minutesToScheduleHHMM(shift.toStartMinute + Math.round(peer.durationHours * 60)),
+                    date: peer.date,
+                    isNight: peer.isNight ?? false,
+                  },
+                }
+              : buildAutoMeta(draftFromPeer, weekData.week.weekStart, instructor);
+            await updateFlight(peer.id, {
+              actorUserId: user.id,
+              actorRole: user.role,
+              studentUserId: peer.studentId,
+              instructorUserId: peer.instructorId,
+              source_filename: peer.sourceFilename,
+              csv_text: encodeFlightRecord({ meta, telemetryCsv: "" }),
+              aircraft_ident: peer.aircraftRegistration,
+              duration_sec: Math.round(peer.durationHours * 3600),
+              flightStatus: peer.flightStatus ?? null,
+            });
+          }
+        }
+      }
+
       if (scheduleRules.sagaOnlySchedule) {
         // Modo saga-only: cria/edita/cancela o evento direto na agenda SAGA,
         // sem criar voo, notificação ou sincronização local.
         const flightDate = formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek);
         const durationMinutes = Math.round(formDraft.durationHours * 60);
+        const draftStartMinute = parseScheduleTimeToMinutes(formDraft.startTime);
+        const touchesPreviousEnd = flightsAfterFlexible.some(
+          (row) =>
+            normalizeAircraftIdent(row.aircraftRegistration) ===
+              normalizeAircraftIdent(formDraft.aircraftRegistration) &&
+            row.date === flightDate &&
+            (!formDraft.id || row.id !== formDraft.id) &&
+            flightEndsAtMinute(row, draftStartMinute),
+        );
+        const sagaTimes = sagaBoundaryPayloadTimes(draftStartMinute, durationMinutes, touchesPreviousEnd);
         const existingStatus = formDraft.id ? flights.find((row) => row.id === formDraft.id)?.flightStatus : undefined;
         if (formMode === "edit" && formDraft.flightStatus === "Cancelado" && existingStatus !== "Cancelado") {
           if (!formDraft.sagaScheduleId) throw new Error("Evento sem ID da agenda SAGA.");
@@ -3550,14 +4220,15 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
               : { studentUserId: formDraft.studentId }),
             instructorUserId: formDraft.instructorId,
             date: flightDate,
-            startTime: formDraft.startTime,
-            durationMinutes,
+            startTime: sagaTimes.startTime,
+            durationMinutes: sagaTimes.durationMinutes,
             sagaStatus: flightStatusToSagaStatus(formDraft.flightStatus),
             rawNotes: formDraft.notes,
           });
           showToast({ variant: "success", message: result.message });
         }
         setFormDraft(null);
+        setPendingFlexibleShifts([]);
         setFormConflicts([]);
         setForceSaveWithConflict(false);
         await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
@@ -3647,6 +4318,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
         showToast({ variant: "success", message: "Voo criado com sucesso." });
       }
       setFormDraft(null);
+      setPendingFlexibleShifts([]);
       setFormConflicts([]);
       setForceSaveWithConflict(false);
       await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
@@ -4198,6 +4870,43 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   <span className="text-[10px] font-medium text-amber-300">indisp.</span>
                 ) : null}
               </div>
+              {!readOnlyDisplay ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Tamanho do bloco</span>
+                <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                  {AGENDA_BLOCK_SIZE_OPTIONS.map((option, index) => (
+                    <button
+                      key={String(option.value)}
+                      type="button"
+                      onClick={() => setAgendaBlockSize(option.value)}
+                      className={`${index < AGENDA_BLOCK_SIZE_OPTIONS.length - 1 ? "border-r border-slate-700" : ""} px-3 py-2 text-xs transition-colors sm:py-1.5 ${
+                        agendaBlockSize === option.value ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              ) : null}
+              {!readOnlyDisplay ? (
+              <label
+                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs sm:py-1.5 ${
+                  flexibleAdjustEnabled
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                    : "border-slate-700 bg-slate-900/50 text-slate-300"
+                }`}
+                title={`Move vizinhos em até ±${FLEXIBLE_ADJUST_MAX_MINUTES} min para encaixar o bloco`}
+              >
+                <input
+                  type="checkbox"
+                  checked={flexibleAdjustEnabled}
+                  onChange={(event) => setFlexibleAdjustEnabled(event.target.checked)}
+                  className="h-4 w-4 accent-amber-500"
+                />
+                <span>Ajuste flexível</span>
+              </label>
+              ) : null}
               <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
                 <input
                   type="checkbox"
@@ -4227,6 +4936,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                 aircraftColumns={calendarAircraftColumns}
                 instructorColumns={calendarInstructorColumns}
                 nightStartHour={scheduleRules.nightFlightStartHour}
+                slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
                 getItemColor={resolveItemColor}
                 borderByInstructor={borderByInstructor}
                 clubMemberByStudentId={clubMemberByStudentId}
@@ -4242,27 +4952,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                 onNextWeek={() => { slideBoard("forward"); (agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1))(); }}
                 onItemClick={handleCalendarItemClick}
                 tooltipOnlyClick={readOnlyDisplay}
-                onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
-                  if (!canCreateFlight) return;
-                  openCreateModal();
-                  setFormDraft((prev) => {
-                    if (!prev) return prev;
-                    const base = {
-                      ...prev,
-                      dayOfWeek: target.dayOfWeek,
-                      dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
-                      startHour: target.startHour,
-                      startTime: target.startTime,
-                      isNight: target.isNight,
-                      aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
-                    };
-                    if (target.targetInstructorId !== undefined) {
-                      const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
-                      return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
-                    }
-                    return base;
-                  });
-                }}
+                onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
               />
             ) : agendaView !== "daily" ? (
               <CalendarGrid
@@ -4284,6 +4974,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                 clubMemberByStudentId={clubMemberByStudentId}
                 weekStart={weekData.week.weekStart}
                 nightStartHour={scheduleRules.nightFlightStartHour}
+                slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
+                alwaysVisibleAircraftIdents={alwaysVisibleAircraftIdents}
+                resolveFlexibleFit={
+                  !readOnlyDisplay && flexibleAdjustEnabled && agendaBlockSize !== "off"
+                    ? (target, durationHours, options) => resolveFlexibleFit(target, durationHours, options)
+                    : undefined
+                }
                 hasPrevWeek={agendaView === "three-day"
                   ? threeDayStartIndex > 0 || hasPreviousWeek
                   : hasPreviousWeek}
@@ -4332,27 +5029,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                     });
                   })();
                 }}
-                onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
-                  if (!canCreateFlight) return;
-                  openCreateModal();
-                  setFormDraft((prev) => {
-                    if (!prev) return prev;
-                    const base = {
-                      ...prev,
-                      dayOfWeek: target.dayOfWeek,
-                      dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
-                      startHour: target.startHour,
-                      startTime: target.startTime,
-                      isNight: target.isNight,
-                      aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
-                    };
-                    if (target.targetInstructorId !== undefined) {
-                      const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
-                      return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
-                    }
-                    return base;
-                  });
-                }}
+                onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
               />
             ) : (
               <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
@@ -4366,6 +5043,13 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   aircraftColumns={calendarAircraftColumns}
                   instructorColumns={calendarInstructorColumns}
                   nightStartHour={scheduleRules.nightFlightStartHour}
+                  slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
+                  alwaysVisibleAircraftIdents={alwaysVisibleAircraftIdents}
+                  resolveFlexibleFit={
+                    !readOnlyDisplay && flexibleAdjustEnabled && agendaBlockSize !== "off"
+                      ? (target, durationHours, options) => resolveFlexibleFit(target, durationHours, options)
+                      : undefined
+                  }
                   getItemColor={resolveItemColor}
                   colorByAircraft={colorByAircraft}
                   borderByInstructor={borderByInstructor}
@@ -4399,22 +5083,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                       });
                     })();
                   }}
-                  onEmptySlotClick={readOnlyDisplay ? undefined : (target) => {
-                    if (!canCreateFlight) return;
-                    openCreateModal();
-                    setFormDraft((prev) => {
-                      if (!prev) return prev;
-                      const base = { ...prev, dayOfWeek: target.dayOfWeek, dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek), startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
-                      if (target.targetInstructorId !== undefined) {
-                        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
-                        return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
-                      }
-                      if (target.targetAircraftRegistration) {
-                        return { ...base, aircraftRegistration: target.targetAircraftRegistration };
-                      }
-                      return base;
-                    });
-                  }}
+                  onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
                 />
               </section>
             )}
@@ -4660,7 +5329,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
               <p className="text-sm font-semibold text-slate-100">{formMode === "create" ? "Novo voo" : "Editar voo"}</p>
               <button
                 type="button"
-                onClick={() => setFormDraft(null)}
+                onClick={() => {
+                  setFormDraft(null);
+                  setPendingFlexibleShifts([]);
+                }}
                 className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
               >
                 Fechar
@@ -4851,29 +5523,62 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
                 />
               </label>
-              <label className="text-xs text-slate-400">
-                {scheduleRules.sagaOnlySchedule ? "Início do bloco SAGA" : "Hora"}
-                <input
-                  type="time"
-                  step={60}
-                  value={formDraft.startTime}
-                  onChange={(e) => {
-                    const nextTime = normalizeTimeInput(e.target.value);
-                    if (!nextTime) return;
-                    setFormDraft((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            startHour: parseStartHour(nextTime),
-                            startTime: nextTime,
-                            isNight: isNightStartTime(nextTime, scheduleRules),
-                          }
-                        : prev,
-                    );
-                  }}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                />
-              </label>
+              <div className="text-xs text-slate-400">
+                <label className="block">
+                  {scheduleRules.sagaOnlySchedule ? "Início do bloco SAGA" : "Hora"}
+                  <input
+                    type="time"
+                    step={60}
+                    value={formDraft.startTime}
+                    onChange={(e) => {
+                      const nextTime = normalizeTimeInput(e.target.value);
+                      if (!nextTime) return;
+                      setFormDraft((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              startHour: parseStartHour(nextTime),
+                              startTime: nextTime,
+                              isNight: isNightStartTime(nextTime, scheduleRules),
+                            }
+                          : prev,
+                      );
+                    }}
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+                {scheduleRules.sagaOnlySchedule ? (
+                  <div className="mt-1.5">
+                    <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Tempo de voo (h)
+                    </span>
+                    <div className="flex overflow-hidden rounded-lg border border-slate-700" role="group" aria-label="Tempo de voo">
+                      {MODAL_FLIGHT_HOURS_PRESETS.map((hours, index) => {
+                        const selected =
+                          Math.abs(
+                            sagaEffectiveFlightMinutes(Math.round(formDraft.durationHours * 60), scheduleRules) / 60 - hours,
+                          ) < 0.01;
+                        return (
+                          <button
+                            key={hours}
+                            type="button"
+                            onClick={() =>
+                              setFormDraft((prev) =>
+                                prev ? { ...prev, durationHours: flightHoursToStoredDuration(hours, scheduleRules) } : prev,
+                              )
+                            }
+                            className={`${index < MODAL_FLIGHT_HOURS_PRESETS.length - 1 ? "border-r border-slate-700" : ""} flex-1 px-2 py-1.5 text-xs font-semibold transition-colors ${
+                              selected ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
+                            }`}
+                          >
+                            {String(hours).replace(".", ",")}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               {scheduleRules.sagaOnlySchedule ? (
                 <label className="text-xs text-slate-400">
                   Final do bloco no SAGA
@@ -4908,6 +5613,63 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   />
                 </label>
               )}
+              {(formMode === "create" && flexibleAdjustEnabled) || (pendingFlexibleShifts.length > 0) ? (
+                <div className="md:col-span-2">
+                  {liveFlexibleFit && !liveFlexibleFit.ok ? (
+                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                      <p className="font-semibold">Não encaixa com ajuste flexível</p>
+                      <p className="mt-0.5 text-red-200/80">{liveFlexibleFit.reason}</p>
+                    </div>
+                  ) : (liveFlexibleFit?.ok && liveFlexibleFit.shifts.length > 0) || pendingFlexibleShifts.length > 0 ? (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-amber-100">Alterações colaterais (±{FLEXIBLE_ADJUST_MAX_MINUTES} min)</p>
+                        <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                          {(liveFlexibleFit?.ok ? liveFlexibleFit.shifts : pendingFlexibleShifts).length} evento
+                          {(liveFlexibleFit?.ok ? liveFlexibleFit.shifts : pendingFlexibleShifts).length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {(liveFlexibleFit?.ok ? liveFlexibleFit.shifts : pendingFlexibleShifts).map((shift) => {
+                          const delta = shift.toStartMinute - shift.fromStartMinute;
+                          return (
+                            <div
+                              key={shift.id}
+                              className="flex items-center gap-3 rounded-md border border-amber-500/20 bg-slate-950/40 px-2.5 py-2"
+                            >
+                              <div className="relative h-8 w-16 shrink-0 overflow-hidden rounded bg-slate-800">
+                                <div
+                                  className="absolute inset-y-1 w-5 rounded-sm bg-slate-500/70"
+                                  style={{ left: "4px" }}
+                                  title="Antes"
+                                />
+                                <div
+                                  className="absolute inset-y-1 w-5 rounded-sm bg-amber-400/90 shadow transition-all duration-300"
+                                  style={{ left: `${4 + Math.max(-6, Math.min(6, delta / 5))}px` }}
+                                  title="Depois"
+                                />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-slate-100">{shift.label}</p>
+                                <p className="font-mono text-[11px] text-amber-200/90">
+                                  {formatFlexibleShiftLabel(shift.fromStartMinute, shift.toStartMinute)}
+                                </p>
+                              </div>
+                              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${delta < 0 ? "bg-sky-500/20 text-sky-300" : "bg-violet-500/20 text-violet-300"}`}>
+                                {delta > 0 ? `+${delta}` : delta}′
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : liveFlexibleFit?.ok ? (
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                      Encaixa sem mover outros eventos.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <label className="text-xs text-slate-400 md:col-span-2">
                 Observações
                 <textarea
@@ -5001,7 +5763,10 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
             <div className="flex flex-shrink-0 flex-col justify-end gap-2 border-t border-slate-700 px-4 py-3 sm:flex-row sm:items-center">
               <button
                 type="button"
-                onClick={() => setFormDraft(null)}
+                onClick={() => {
+                  setFormDraft(null);
+                  setPendingFlexibleShifts([]);
+                }}
                 className="w-full rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 sm:w-auto"
               >
                 Cancelar
