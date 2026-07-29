@@ -500,6 +500,17 @@ const SAGA_BASE_URL = "https://epeac.saga.aero";
 const PLANE_IT_BASE_URL = "https://app.planeit.com.br";
 const PLANE_IT_SESSION_TTL_MS = 20 * 60 * 1000;
 let planeItSessionCache = null;
+const GOPRO_API_BASE_URL = "https://api.gopro.com";
+const GOPRO_PUBLIC_BASE_URL = "https://gopro.com/v";
+const GOPRO_LOGIN_URL = "https://gopro.com/login/api/login";
+const GOPRO_LOGIN_PUBLIC_KEY = [
+  "-----BEGIN PUBLIC KEY-----",
+  "MIGeMA0GCSqGSIb3DQEBAQUAA4GMADCBiAKBgEOtpzitZ8Yedx1C8lWu0BV9lOZh",
+  "j1ZmDQySIR3A7qi3iH3K1NAt8D34e8IxI6hii0FXNIh64JWZ3/E3yPpYziPphtDE",
+  "lRclRudndBfnx+Rf4GPQaJgrl8YgwhDP7Ck2klVdftymehZw8AHnwSdzQUIUVDZe",
+  "9TeXqn4yy2rABN9JAgMBAAE=",
+  "-----END PUBLIC KEY-----",
+].join("\n");
 const SAGA_AUTH_SESSION_KEY = "sagaAuthSession";
 
 function sagaHtmlSnippet(html, maxLength = 3000) {
@@ -1834,6 +1845,8 @@ const SAGA_IMPORT_PAUSED_STATE_KEY = "sagaImportPausedState";
 const SAGA_IMPORT_ALL_USERS_LAST_RUN_KEY = "sagaImportAllUsersLastRun";
 const SAGA_IMPORT_SYNC_HISTORY_KEY = "sagaImportSyncHistory";
 const PLANE_IT_CREDENTIALS_KEY = "planeItCredentials";
+const GOPRO_CREDENTIALS_KEY = "goproCredentials";
+const GOPRO_PUBLIC_LINKS_KEY = "goproPublicLinks";
 
 function defaultSagaImportMapping() {
   return {
@@ -2453,6 +2466,720 @@ async function fetchPlaneItAircraftTotals(input = {}) {
     };
   }
   return { totals, updatedAt: nowIso() };
+}
+
+function sanitizeGoproCredentials(input = {}, current = {}) {
+  const keepPassword = input.password === undefined || input.password === null || input.password === "";
+  const keepAccessToken = input.accessToken === undefined || input.accessToken === null || input.accessToken === "";
+  const rawAccessToken = keepAccessToken ? cleanString(current.accessToken) : cleanString(input.accessToken);
+  const accessTokenMatch = rawAccessToken.match(/(?:^|;\s*)gp_access_token=([^;\s]+)/i);
+  return {
+    email: cleanString(input.email ?? current.email).toLowerCase(),
+    password: keepPassword ? String(current.password || "") : String(input.password || ""),
+    accessToken: accessTokenMatch ? accessTokenMatch[1] : rawAccessToken,
+    updatedAt: input.updatedAt || current.updatedAt || null,
+    lastSyncAt: input.lastSyncAt || current.lastSyncAt || null,
+    lastError: cleanString(input.lastError ?? current.lastError),
+  };
+}
+
+function publicGoproSettings(settings = {}) {
+  return {
+    email: cleanString(settings.email),
+    passwordConfigured: Boolean(String(settings.password || "")),
+    accessTokenConfigured: Boolean(cleanString(settings.accessToken)),
+    updatedAt: settings.updatedAt || null,
+    lastSyncAt: settings.lastSyncAt || null,
+    lastError: cleanString(settings.lastError),
+  };
+}
+
+async function loadGoproCredentials() {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return sanitizeGoproCredentials();
+  const doc = await getSettingDoc(GOPRO_CREDENTIALS_KEY);
+  if (!doc) return sanitizeGoproCredentials();
+  return sanitizeGoproCredentials(parseJsonObject(doc.settings_json, {}));
+}
+
+async function saveGoproCredentials(input = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
+  }
+  const current = await loadGoproCredentials();
+  const settings = sanitizeGoproCredentials({ ...input, updatedAt: nowIso(), lastError: "" }, current);
+  if (!settings.email) {
+    throw Object.assign(new Error("Informe o login do admin na GoPro."), { status: 400 });
+  }
+  if (!settings.password && !settings.accessToken) {
+    throw Object.assign(new Error("Informe a senha da GoPro ou o gp_access_token da sessao web."), { status: 400 });
+  }
+  const data = { key: GOPRO_CREDENTIALS_KEY, settings_json: JSON.stringify(settings) };
+  const currentDoc = await getSettingDoc(GOPRO_CREDENTIALS_KEY);
+  const doc = currentDoc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, currentDoc.$id, data)
+    : await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  return publicGoproSettings({ ...settings, updatedAt: doc.$updatedAt || settings.updatedAt });
+}
+
+async function updateGoproCredentialsPatch(patch = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return null;
+  const current = await loadGoproCredentials();
+  const settings = sanitizeGoproCredentials({ ...current, ...patch }, current);
+  const data = { key: GOPRO_CREDENTIALS_KEY, settings_json: JSON.stringify(settings) };
+  const currentDoc = await getSettingDoc(GOPRO_CREDENTIALS_KEY);
+  if (currentDoc) await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, currentDoc.$id, data);
+  else await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  return publicGoproSettings(settings);
+}
+
+async function loadGoproPublicLinksCache() {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return {};
+  const doc = await getSettingDoc(GOPRO_PUBLIC_LINKS_KEY);
+  const parsed = doc ? parseJsonObject(doc.settings_json, {}) : {};
+  return parsed.links && typeof parsed.links === "object" ? parsed.links : {};
+}
+
+async function saveGoproPublicLinksCache(links = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) return;
+  const entries = Object.entries(links)
+    .filter(([mediaId, item]) => cleanString(mediaId) && item && typeof item === "object" && cleanString(item.url))
+    .slice(-800);
+  const next = Object.fromEntries(entries);
+  const data = { key: GOPRO_PUBLIC_LINKS_KEY, settings_json: JSON.stringify({ links: next, updatedAt: nowIso() }) };
+  const current = await getSettingDoc(GOPRO_PUBLIC_LINKS_KEY);
+  if (current) await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.$id, data);
+  else await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+}
+
+function encryptGoproPassword(password) {
+  return crypto.publicEncrypt(
+    {
+      key: GOPRO_LOGIN_PUBLIC_KEY,
+      padding: crypto.constants.RSA_PKCS1_PADDING,
+    },
+    Buffer.from(String(password || ""), "utf8"),
+  ).toString("base64");
+}
+
+function goproResponseSetCookies(headers) {
+  if (headers && typeof headers.getSetCookie === "function") {
+    const cookies = headers.getSetCookie();
+    if (Array.isArray(cookies) && cookies.length) return cookies;
+  }
+  const raw = headers && typeof headers.get === "function" ? headers.get("set-cookie") : "";
+  return raw ? [raw] : [];
+}
+
+function extractGoproAccessTokenFromLogin(responseHeaders, body = {}) {
+  const joined = goproResponseSetCookies(responseHeaders).join("\n");
+  const cookieMatch = joined.match(/(?:^|[\n,]\s*)gp_access_token=([^;\s,]+)/i);
+  const token = cookieMatch ? cookieMatch[1] : cleanString(body.gp_access_token || body.access_token);
+  return cleanString(token);
+}
+
+async function refreshGoproAccessToken(credentials = {}) {
+  const email = cleanString(credentials.email).toLowerCase();
+  const password = String(credentials.password || "");
+  if (!email || !password) {
+    throw Object.assign(new Error("Informe login e senha da GoPro para renovar a sessao automaticamente."), { status: 400 });
+  }
+
+  const response = await fetch(GOPRO_LOGIN_URL, {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "content-type": "application/json",
+      origin: "https://gopro.com",
+      referer: "https://gopro.com/login",
+      "user-agent": "Mozilla/5.0",
+    },
+    body: JSON.stringify({
+      email,
+      password: encryptGoproPassword(password),
+      redirectUri: "https://gopro.com/media-library/",
+    }),
+  });
+
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = {};
+  }
+
+  const loginErrorCode = cleanString(body?._errors?.[0]?.code || body?.errors?.[0]?.code || body?.code);
+  if (loginErrorCode === "4014") {
+    throw Object.assign(new Error("A conta GoPro exige codigo de 2FA; nao foi possivel renovar a sessao automaticamente."), { status: 401 });
+  }
+  if (response.status >= 400) {
+    const message =
+      cleanString(body?._errors?.[0]?.message || body?.errors?.[0]?.message || body?.message || body?.error) ||
+      `Falha no login da GoPro (${response.status}).`;
+    throw Object.assign(new Error(message), { status: response.status });
+  }
+
+  const accessToken = extractGoproAccessTokenFromLogin(response.headers, body);
+  if (!accessToken) {
+    throw Object.assign(new Error("Login GoPro concluido, mas o cookie gp_access_token nao foi retornado."), { status: 502 });
+  }
+  await updateGoproCredentialsPatch({ accessToken, updatedAt: nowIso(), lastError: "" }).catch(() => null);
+  return accessToken;
+}
+
+async function goproAccessToken(credentials) {
+  const accessToken = cleanString(credentials.accessToken);
+  if (accessToken) return accessToken;
+  return refreshGoproAccessToken(credentials);
+}
+
+async function goproApiFetch(path, accessToken, options = {}) {
+  const headers = {
+    accept: "application/vnd.gopro.jk.media+json; version=2.0.0",
+    "user-agent": "Mozilla/5.0",
+    ...(options.headers || {}),
+    cookie: `gp_access_token=${accessToken}`,
+  };
+  const response = await fetch(`${GOPRO_API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = {};
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw Object.assign(new Error("Sessao GoPro expirada ou recusada. Tentando renovar pelo login salvo."), { status: response.status });
+  }
+  if (response.status >= 400) {
+    const message = cleanString(body?.message || body?.error || body?.errors?.[0]?.message) || `Falha na API GoPro (${response.status}).`;
+    throw Object.assign(new Error(message), { status: response.status });
+  }
+  return body;
+}
+
+function goproPublicUrlFromToken(token) {
+  const cleanToken = cleanString(token);
+  return cleanToken ? `${GOPRO_PUBLIC_BASE_URL}/${encodeURIComponent(cleanToken)}` : "";
+}
+
+function goproCollectionUrl(collectionId) {
+  const cleanId = cleanString(collectionId);
+  return cleanId ? `${GOPRO_PUBLIC_BASE_URL}/${encodeURIComponent(cleanId)}` : "";
+}
+
+function isLikelyGoproMediumToken(value) {
+  const cleanValue = cleanString(value);
+  return cleanValue.split(".").length >= 3 && cleanValue.startsWith("eyJ");
+}
+
+function goproUrlLooksLikeCollection(url) {
+  const cleanUrl = cleanString(url);
+  if (!cleanUrl) return false;
+  const token = cleanString(cleanUrl.split("/").pop());
+  return Boolean(token) && !isLikelyGoproMediumToken(token);
+}
+
+function decodeGoproMediumToken(token) {
+  const cleanToken = cleanString(token);
+  if (!isLikelyGoproMediumToken(cleanToken)) return {};
+  try {
+    const payload = cleanToken.split(".")[1] || "";
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function normalizeGoproCollection(row = {}) {
+  const collectionId = cleanString(row.id);
+  const mediumToken = cleanString(row.medium_token || row.token);
+  const tokenPayload = decodeGoproMediumToken(mediumToken);
+  const mediaIds = [
+    cleanString(tokenPayload.medium_id),
+    ...(Array.isArray(row.media_ids) ? row.media_ids.map(cleanString) : []),
+    ...(Array.isArray(row.item_ids) ? row.item_ids.map(cleanString) : []),
+  ].filter(Boolean);
+  return {
+    id: collectionId,
+    title: cleanString(row.title),
+    mediumToken,
+    mediaIds: Array.from(new Set(mediaIds)),
+    mediaCount: Number(row.media_count) || 0,
+    createdAt: cleanString(row.created_at),
+    updatedAt: cleanString(row.updated_at),
+    url: goproCollectionUrl(collectionId),
+  };
+}
+
+function normalizeGoproMedia(row = {}, cache = {}, collectionMap = {}, linkedFlightMap = {}) {
+  const mediaId = cleanString(row.id);
+  const cached = mediaId ? cache[mediaId] : null;
+  const collection = mediaId ? collectionMap[mediaId] : null;
+  const token = cleanString(row.token || cached?.token);
+  const cachedUrl = goproUrlLooksLikeCollection(cached?.url) ? cleanString(cached.url) : "";
+  const url = collection?.url || cachedUrl;
+  const cameraModel = cleanString(row.camera_model || cached?.cameraModel);
+  const cameraIdentifier = cleanString(row.source_gumi || row.source_mgumi || cached?.cameraIdentifier);
+  return {
+    id: mediaId,
+    filename: cleanString(row.filename || row.content_title || mediaId),
+    title: cleanString(row.content_title || row.filename || mediaId),
+    type: cleanString(row.type || row.content_type),
+    capturedAt: cleanString(row.captured_at),
+    createdAt: cleanString(row.created_at),
+    updatedAt: cleanString(row.updated_at),
+    fileExtension: cleanString(row.file_extension),
+    fileSize: Number(row.file_size) || null,
+    durationSeconds: Number(row.source_duration) ? Number(row.source_duration) / 1000 : null,
+    width: Number(row.width) || null,
+    height: Number(row.height) || null,
+    cameraModel,
+    cameraName: cleanString(row.camera_name || cached?.cameraName || cameraModel),
+    cameraIdentifier,
+    thumbnailAvailable: row.thumbnail_available === true || cached?.thumbnailAvailable === true,
+    token,
+    collectionId: collection?.id || cleanString(cached?.collectionId),
+    linkedFlightIds: Array.from(linkedFlightMap[mediaId] || []),
+    onPublicProfile: row.on_public_profile === true,
+    publicUrl: url,
+    source: url ? (collection?.url ? "gopro" : "cached") : "missing",
+  };
+}
+
+function parseGoproVideoMetadata(value) {
+  if (!cleanString(value)) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed?.provider === "gopro" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function goproMediaMetadataPayload(media) {
+  return JSON.stringify({
+    provider: "gopro",
+    mediaId: cleanString(media.id),
+    mediaToken: cleanString(media.token),
+    publicUrl: cleanString(media.publicUrl),
+    collectionId: cleanString(media.collectionId || cleanString(media.publicUrl).split("/").pop()),
+    filename: cleanString(media.filename),
+    title: cleanString(media.title),
+    cameraModel: cleanString(media.cameraModel),
+    cameraName: cleanString(media.cameraName || media.cameraModel),
+    cameraIdentifier: cleanString(media.cameraIdentifier),
+    width: Number(media.width) || null,
+    height: Number(media.height) || null,
+    durationSeconds: Number(media.durationSeconds) || null,
+    savedAt: nowIso(),
+    points: [],
+  });
+}
+
+async function listLinkedGoproFlightIds() {
+  if (!FLIGHT_VIDEOS_COLLECTION_ID) return {};
+  const linked = {};
+  let offset = 0;
+  while (true) {
+    const page = await databases.listDocuments(DATABASE_ID, FLIGHT_VIDEOS_COLLECTION_ID, [
+      sdk.Query.equal("telemetry_source", ["gopro"]),
+      sdk.Query.limit(100),
+      sdk.Query.offset(offset),
+    ]);
+    for (const doc of page.documents || []) {
+      const key = cleanString(doc.video_key);
+      const keyMediaId = key.startsWith("gopro:") ? key.slice("gopro:".length) : "";
+      const metaMediaId = cleanString(parseGoproVideoMetadata(doc.telemetry_json).mediaId);
+      const mediaId = keyMediaId || metaMediaId;
+      const flightId = cleanString(doc.flight_id);
+      if (!mediaId || !flightId) continue;
+      if (!linked[mediaId]) linked[mediaId] = new Set();
+      linked[mediaId].add(flightId);
+    }
+    const count = (page.documents || []).length;
+    if (count < 100 || offset + count >= Number(page.total || 0)) break;
+    offset += count;
+  }
+  return linked;
+}
+
+function extractGoproShareResult(body = {}) {
+  const token = cleanString(
+    body.token ||
+    body.share_token ||
+    body.public_token ||
+    body.collection?.token ||
+    body.collection?.slug ||
+    body.data?.token ||
+    body.data?.share_token,
+  );
+  const url = cleanString(
+    body.url ||
+    body.share_url ||
+    body.public_url ||
+    body.collection?.url ||
+    body.data?.url ||
+    body.data?.share_url,
+  );
+  return {
+    token,
+    url: url || goproPublicUrlFromToken(token),
+  };
+}
+
+async function createGoproPublicLink(media, accessToken) {
+  const mediaId = cleanString(media.id);
+  if (!mediaId) throw Object.assign(new Error("Midia GoPro sem ID."), { status: 400 });
+  const configuredTemplate = cleanString(process.env.GOPRO_SHARE_ENDPOINT_TEMPLATE);
+  if (configuredTemplate) {
+    const [method, rawPath] = configuredTemplate.includes(" ") ? configuredTemplate.split(/\s+/, 2) : ["POST", configuredTemplate];
+    const body = await goproApiFetch(rawPath.replace(/\{id\}/g, encodeURIComponent(mediaId)), accessToken, {
+      method: method.toUpperCase(),
+      headers: {
+        accept: "application/vnd.gopro.jk.collections+json; version=2.0.0",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: cleanString(media.title || media.filename || "GoPro media"), media_ids: [mediaId] }),
+    });
+    const result = extractGoproShareResult(body);
+    if (result.url) return result;
+  }
+  const title = cleanString(media.title || media.filename || "GoPro media").slice(0, 50) || "GoPro media";
+  const collection = await goproApiFetch("/collections", accessToken, {
+    method: "POST",
+    headers: {
+      accept: "application/vnd.gopro.jk.collections+json; version=2.0.0",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ title, cloneable: false }),
+  });
+  const collectionId = cleanString(collection.id || collection.collection?.id || collection.data?.id);
+  if (!collectionId) throw Object.assign(new Error("A GoPro criou a colecao, mas nao retornou o ID do link."), { status: 502 });
+  const updated = await goproApiFetch(`/collections/${encodeURIComponent(collectionId)}`, accessToken, {
+    method: "PUT",
+    headers: {
+      accept: "application/vnd.gopro.jk.collections+json; version=2.0.0",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ media_ids: [mediaId] }),
+  });
+  return {
+    token: cleanString(updated.id || updated.token || collectionId),
+    url: `${GOPRO_PUBLIC_BASE_URL}/${encodeURIComponent(cleanString(updated.id || updated.token || collectionId))}`,
+  };
+}
+
+async function listGoproCollections(accessToken, input = {}) {
+  const perPage = Math.min(Math.max(Number(input.perPage) || 100, 1), 100);
+  const maxPages = Math.min(Math.max(Number(input.maxPages) || 50, 1), 200);
+  const collections = [];
+  let totalPages = 1;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const params = new URLSearchParams({
+      page: String(page),
+      per_page: String(perPage),
+    });
+    const body = await goproApiFetch(`/collections?${params.toString()}`, accessToken, {
+      headers: { accept: "application/vnd.gopro.jk.collections+json; version=2.0.0" },
+    });
+    const rows = Array.isArray(body?._embedded?.collections) ? body._embedded.collections : [];
+    const pages = body?._pages && typeof body._pages === "object" ? body._pages : {};
+    totalPages = Math.max(1, Number(pages.total_pages) || totalPages);
+    for (const row of rows) collections.push(normalizeGoproCollection(row));
+    if (page >= totalPages || rows.length === 0) break;
+  }
+  return collections;
+}
+
+async function listGoproPublicLinks(input = {}) {
+  const credentials = await loadGoproCredentials();
+  let accessToken = await goproAccessToken(credentials);
+  try {
+    return await listGoproPublicLinksWithToken(input, accessToken);
+  } catch (err) {
+    if (![401, 403].includes(Number(err?.status))) throw err;
+    accessToken = await refreshGoproAccessToken(credentials);
+    return listGoproPublicLinksWithToken(input, accessToken);
+  }
+}
+
+async function listGoproPublicLinksWithToken(input = {}, accessToken) {
+  const ensurePublic = input.ensurePublic === true;
+  const perPage = Math.min(Math.max(Number(input.perPage) || 30, 1), 100);
+  const maxPages = Math.min(Math.max(Number(input.maxPages) || 20, 1), 200);
+  const fields = [
+    "camera_model",
+    "camera_name",
+    "captured_at",
+    "captured_at_timezone",
+    "content_title",
+    "content_type",
+    "created_at",
+    "filename",
+    "file_extension",
+    "file_size",
+    "height",
+    "id",
+    "on_public_profile",
+    "source_duration",
+    "source_gumi",
+    "source_mgumi",
+    "thumbnail_available",
+    "token",
+    "type",
+    "updated_at",
+    "width",
+  ].join(",");
+  const types = [
+    "Burst",
+    "BurstVideo",
+    "Continuous",
+    "LoopedVideo",
+    "Photo",
+    "TimeLapse",
+    "TimeLapseVideo",
+    "Video",
+    "MultiClipEdit",
+    "Edit",
+  ].join(",");
+  const processingStates = "rendering,pretranscoding,transcoding,stabilizing,ready,failure";
+  const cache = await loadGoproPublicLinksCache();
+  const collections = await listGoproCollections(accessToken, {
+    perPage: 100,
+    maxPages,
+  }).catch(() => []);
+  const collectionMap = {};
+  for (const collection of collections) {
+    for (const mediaId of collection.mediaIds || []) {
+      if (!mediaId || collectionMap[mediaId]) continue;
+      collectionMap[mediaId] = collection;
+    }
+  }
+  const linkedFlightMap = await listLinkedGoproFlightIds().catch(() => ({}));
+  const media = [];
+  let totalItems = 0;
+  let totalPages = 1;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const params = new URLSearchParams({
+      processing_states: processingStates,
+      fields,
+      xcomposition: "export",
+      type: types,
+      page: String(page),
+      per_page: String(perPage),
+    });
+    const body = await goproApiFetch(`/media/search?${params.toString()}`, accessToken, {
+      headers: { accept: "application/vnd.gopro.jk.media.search+json; version=2.0.0" },
+    });
+    const rows = Array.isArray(body?._embedded?.media) ? body._embedded.media : [];
+    const pages = body?._pages && typeof body._pages === "object" ? body._pages : {};
+    totalItems = Number(pages.total_items) || totalItems || rows.length;
+    totalPages = Math.max(1, Number(pages.total_pages) || totalPages);
+    for (const row of rows) media.push(normalizeGoproMedia(row, cache, collectionMap, linkedFlightMap));
+    if (page >= totalPages || rows.length === 0) break;
+  }
+
+  const errors = [];
+  if (ensurePublic) {
+    for (const item of media) {
+      if (item.publicUrl) continue;
+      try {
+        const created = await createGoproPublicLink(item, accessToken);
+        item.publicUrl = created.url;
+        item.collectionId = created.token || item.collectionId;
+        item.onPublicProfile = true;
+        item.source = "created";
+      } catch (err) {
+        errors.push({ mediaId: item.id, filename: item.filename, message: cleanString(err?.message) || "Falha ao criar link." });
+      }
+    }
+  }
+
+  const nextCache = { ...cache };
+  for (const item of media) {
+    if (!item.id || !item.publicUrl) continue;
+    nextCache[item.id] = {
+      url: item.publicUrl,
+      token: item.token,
+      collectionId: item.collectionId || cleanString(item.publicUrl.split("/").pop()),
+      filename: item.filename,
+      cameraModel: item.cameraModel,
+      cameraName: item.cameraName,
+      cameraIdentifier: item.cameraIdentifier,
+      thumbnailAvailable: item.thumbnailAvailable,
+      updatedAt: nowIso(),
+    };
+  }
+  await saveGoproPublicLinksCache(nextCache).catch(() => null);
+  await updateGoproCredentialsPatch({ lastSyncAt: nowIso(), lastError: errors[0]?.message || "" }).catch(() => null);
+
+  return {
+    media,
+    links: media.filter((item) => item.publicUrl),
+    missing: media.filter((item) => !item.publicUrl),
+    errors,
+    totalItems,
+    totalPages,
+    updatedAt: nowIso(),
+  };
+}
+
+async function attachGoproMediaToFlight(actorUserId, input = {}) {
+  const flightId = cleanString(input.flightId);
+  const mediaIds = Array.from(new Set((Array.isArray(input.mediaIds) ? input.mediaIds : []).map(cleanString).filter(Boolean))).slice(0, 20);
+  if (!flightId) throw Object.assign(new Error("Informe o voo para vincular videos GoPro."), { status: 400 });
+  if (!mediaIds.length) throw Object.assign(new Error("Selecione ao menos um video GoPro."), { status: 400 });
+  if (!FLIGHT_VIDEOS_COLLECTION_ID) throw Object.assign(new Error("Colecao de videos nao configurada."), { status: 500 });
+  await requireVideoUploader(actorUserId, flightId);
+
+  const flightDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  const existingDocs = await databases.listDocuments(DATABASE_ID, FLIGHT_VIDEOS_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    sdk.Query.limit(100),
+  ]);
+  const existingByMediaId = new Set();
+  for (const doc of existingDocs.documents || []) {
+    const keyMediaId = cleanString(doc.video_key).startsWith("gopro:")
+      ? cleanString(doc.video_key).slice("gopro:".length)
+      : "";
+    const metaMediaId = cleanString(parseGoproVideoMetadata(doc.telemetry_json).mediaId);
+    if (keyMediaId) existingByMediaId.add(keyMediaId);
+    if (metaMediaId) existingByMediaId.add(metaMediaId);
+  }
+
+  const all = await listGoproPublicLinks({ ensurePublic: true, perPage: 100, maxPages: 200 });
+  const byId = new Map((all.media || []).map((item) => [cleanString(item.id), item]));
+  const created = [];
+  const skipped = [];
+  const missing = [];
+  for (const mediaId of mediaIds) {
+    if (existingByMediaId.has(mediaId)) {
+      skipped.push({ mediaId, reason: "already_linked" });
+      continue;
+    }
+    const media = byId.get(mediaId);
+    if (!media || !cleanString(media.publicUrl)) {
+      missing.push(mediaId);
+      continue;
+    }
+    const videoDoc = {
+      flight_id: flightId,
+      uploaded_by: actorUserId,
+      file_url: cleanString(media.publicUrl),
+      file_size: Number(media.fileSize) || null,
+      duration_sec: Number(media.durationSeconds) || null,
+      original_files_count: 1,
+      processing_status: "ready",
+      telemetry_present: false,
+      telemetry_source: "gopro",
+      telemetry_json: goproMediaMetadataPayload(media),
+      available_widgets: "[]",
+      apply_logo: false,
+      processing_stage: "done",
+      processing_percent: 100,
+      processing_error: "",
+      video_key: `gopro:${mediaId}`.slice(0, 255),
+      processing_updated_at: nowIso(),
+      created_at: nowIso(),
+    };
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      FLIGHT_VIDEOS_COLLECTION_ID,
+      sdk.ID.unique(),
+      videoDoc,
+      flightVideoPermissions(videoDoc, flightDoc),
+    );
+    created.push(toPublicVideo(doc));
+    existingByMediaId.add(mediaId);
+  }
+  return { ok: true, videos: created, skipped, missing };
+}
+
+function parseGoproM3u8Variants(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const variants = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || "";
+    if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
+    const next = cleanString(lines[index + 1]);
+    if (!next || next.startsWith("#")) continue;
+    const resolution = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+    const bandwidth = line.match(/BANDWIDTH=(\d+)/i);
+    variants.push({
+      uri: next,
+      width: resolution ? Number(resolution[1]) : 0,
+      height: resolution ? Number(resolution[2]) : 0,
+      bandwidth: bandwidth ? Number(bandwidth[1]) : 0,
+    });
+  }
+  return variants.sort((a, b) =>
+    (b.width * b.height - a.width * a.height) ||
+    (b.bandwidth - a.bandwidth)
+  );
+}
+
+async function resolveGoproVideoPlayback(input = {}) {
+  if (!CF_WORKER_URL || !WORKER_SECRET) {
+    throw Object.assign(new Error("Worker de video nao configurado para reproduzir GoPro."), { status: 500 });
+  }
+  const mediaToken = cleanString(input.mediaToken || input.token);
+  if (!mediaToken) throw Object.assign(new Error("Token da midia GoPro nao encontrado para reproduzir o video."), { status: 400 });
+
+  const playResponse = await fetch(`${GOPRO_API_BASE_URL}/playurl/${encodeURIComponent(mediaToken)}`, {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "user-agent": "Mozilla/5.0",
+      referer: cleanString(input.publicUrl) || "https://gopro.com/",
+    },
+  });
+  const playText = await playResponse.text();
+  let playBody = {};
+  try {
+    playBody = playText ? JSON.parse(playText) : {};
+  } catch {
+    playBody = {};
+  }
+  if (playResponse.status >= 400) {
+    throw Object.assign(new Error(cleanString(playBody.error || playBody.message) || `Falha ao resolver playurl GoPro (${playResponse.status}).`), { status: playResponse.status });
+  }
+  const masterUrl = cleanString(playBody.url).replace("https://api.gopro.com/", "https://gopro.com/");
+  if (!masterUrl || !masterUrl.includes("/master_playlist.m3u8")) {
+    throw Object.assign(new Error("A GoPro nao retornou o manifesto master_playlist.m3u8."), { status: 502 });
+  }
+
+  const masterResponse = await fetch(masterUrl, { headers: { "user-agent": "Mozilla/5.0" } });
+  const masterText = await masterResponse.text();
+  if (masterResponse.status >= 400) {
+    throw Object.assign(new Error(`Falha ao baixar manifesto GoPro (${masterResponse.status}).`), { status: masterResponse.status });
+  }
+  const variants = parseGoproM3u8Variants(masterText);
+  const selected = variants[0];
+  const target = masterUrl.replace("https://api.gopro.com/", "https://gopro.com/");
+  const prefixUrl = new URL("./", target).href;
+  const now = Math.floor(Date.now() / 1000);
+  const proxyToken = signWorkerToken({
+    action: "goproHls",
+    prefix: prefixUrl,
+    iat: now,
+    exp: now + 2 * 60 * 60,
+    nonce: crypto.randomUUID(),
+  });
+  const encodedTarget = base64UrlEncode(target);
+  return {
+    ok: true,
+    type: "hls",
+    url: `${CF_WORKER_URL.replace(/\/+$/, "")}/gopro-hls?token=${encodeURIComponent(proxyToken)}&u=${encodeURIComponent(encodedTarget)}`,
+    publicUrl: cleanString(input.publicUrl),
+    width: selected?.width || Number(playBody.width) || null,
+    height: selected?.height || Number(playBody.height) || null,
+    expiresAt: new Date((now + 2 * 60 * 60) * 1000).toISOString(),
+  };
 }
 
 async function requireSagaMappingActor(actorUserId) {
@@ -20755,6 +21482,40 @@ module.exports = async ({ req, res, log, error }) => {
         `[listSummaries] search="${String(payload.search || "")}" total=${page.total} pageUsers=${(page.users || []).length}`,
       );
       return jsonResponse(res, 200, page);
+    }
+
+    if (action === "goproGetSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await loadGoproCredentials();
+      return jsonResponse(res, 200, { settings: publicGoproSettings(settings) });
+    }
+
+    if (action === "goproSaveSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await saveGoproCredentials(payload.settings || payload);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "goproListPublicLinks") {
+      await requireAdmin(actorUserId);
+      const result = await listGoproPublicLinks(payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "goproListPublicLinksForFlight") {
+      await requireInstructorOrAdmin(actorUserId);
+      const result = await listGoproPublicLinks({ ...payload, ensurePublic: payload.ensurePublic !== false });
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "goproAttachMediaToFlight") {
+      const result = await attachGoproMediaToFlight(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "goproResolveVideoPlayback") {
+      const playback = await resolveGoproVideoPlayback(payload);
+      return jsonResponse(res, 200, { playback });
     }
 
     await requireAdmin(actorUserId);

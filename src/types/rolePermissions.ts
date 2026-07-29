@@ -53,6 +53,7 @@ export type AdminTabKey =
   | "settings.roles"
   | "settings.propostas"
   | "settings.wpp"
+  | "settings.gopro"
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
@@ -229,6 +230,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.roles": "Configurações › Roles",
   "settings.propostas": "Configurações › Propostas",
   "settings.wpp": "Configurações › WPP",
+  "settings.gopro": "Configurações › GoPro",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",

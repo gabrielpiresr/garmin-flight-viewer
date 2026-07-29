@@ -42,6 +42,7 @@ import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
 import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
 import { AdminImportTab } from "./AdminImportTab";
+import { GoproSettingsPanel } from "./GoproSettingsPanel";
 import { WppSettingsPanel } from "./WppSettingsPanel";
 
 const RolesSettingsTab = lazy(() =>
@@ -59,6 +60,7 @@ export type SettingsSubTab =
   | "roles"
   | "propostas"
   | "wpp"
+  | "gopro"
   | "importacoes";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
@@ -154,6 +156,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
+    id: "gopro" as SettingsSubTab,
+    label: "GoPro",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2H4zm1.5 2.5h9a1 1 0 011 1v5a1 1 0 01-1 1h-9a1 1 0 01-1-1v-5a1 1 0 011-1zM10 8a2 2 0 100 4 2 2 0 000-4z" />
+      </svg>
+    ),
+  },
+  {
     id: "importacoes" as SettingsSubTab,
     label: "Importações",
     icon: (
@@ -180,6 +191,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   roles:       "settings.roles",
   propostas:   "settings.propostas",
   wpp:         "settings.wpp",
+  gopro:       "settings.gopro",
   importacoes: "import",
 };
 
@@ -881,6 +893,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("wpp") ? (
         <div hidden={activeSubTab !== "wpp"}>
           <WppSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("gopro") ? (
+        <div hidden={activeSubTab !== "gopro"}>
+          <GoproSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("importacoes") ? (

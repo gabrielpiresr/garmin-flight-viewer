@@ -8,6 +8,7 @@
   type MouseEvent,
   type RefObject,
 } from "react";
+import Hls from "hls.js";
 import { ExportModal, type ExportProgress } from "./ExportModal";
 import { buildBlankOverlay, renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
 import { downloadVideoFile } from "../lib/videoDownload";
@@ -23,6 +24,15 @@ import {
   updateFlightVideoReady,
   type FlightVideo,
 } from "../lib/flightVideosDb";
+import {
+  attachGoproMediaToFlight,
+  isGoproFlightVideo,
+  listGoproPublicLinksForFlight,
+  parseGoproVideoMetadata,
+  resolveGoproMediaPlayback,
+  resolveGoproVideoPlayback,
+} from "../lib/goproDb";
+import type { GoproMediaLink } from "../types/gopro";
 import {
   hasStuckProcessingVideos,
   reconcileProcessingVideosFromR2,
@@ -145,9 +155,29 @@ const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 7.5, 10] as const;
 const PLAYBACK_REACT_SYNC_MS = 250;
 const DOUBLE_TAP_MS = 280;
 const SKIP_FORWARD_SEC = 10;
+const GOPRO_HIGH_QUALITY_MAX_HEIGHT = 2160;
+const GOPRO_FAST_PLAYBACK_MAX_HEIGHT = 1080;
+const GOPRO_PICKER_PREVIEW_MAX_HEIGHT = 720;
+type GoproPickerTab = "recommended" | "unlinked" | "all";
 
 function formatPlaybackRate(rate: number): string {
   return rate === 1 ? "1×" : `${rate}×`;
+}
+
+function isoDateOnly(value: string | null | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^\d{4}-\d{2}-\d{2}/);
+  if (match) return match[0];
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+}
+
+function dateInRange(date: string, from: string, to: string): boolean {
+  if (!date) return false;
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
 }
 
 function VideoSkipFlash({ flashKey }: { flashKey: number }) {
@@ -280,6 +310,12 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatDateOnly(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-");
+  if (!year || !month || !day) return isoDate;
+  return `${day}/${month}/${year}`;
+}
+
 function sortVideosByCreatedAtAsc<T extends { created_at: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => {
     const aMs = new Date(a.created_at).getTime();
@@ -403,6 +439,17 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
   const [helperStatus, setHelperStatus] = useState<HelperStatus>("checking");
   const [videos, setVideos] = useState<FlightVideo[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
+  const [goproPickerOpen, setGoproPickerOpen] = useState(false);
+  const [goproLoading, setGoproLoading] = useState(false);
+  const [goproAttaching, setGoproAttaching] = useState(false);
+  const [goproItems, setGoproItems] = useState<GoproMediaLink[]>([]);
+  const [goproSelectedIds, setGoproSelectedIds] = useState<string[]>([]);
+  const [goproError, setGoproError] = useState<string | null>(null);
+  const [flightContext, setFlightContext] = useState<{ flightDate: string; startTime: string; aircraftIdent: string }>({
+    flightDate: "",
+    startTime: "",
+    aircraftIdent: "",
+  });
 
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [processingJobId, setProcessingJobId] = useState<string | null>(null);
@@ -478,6 +525,78 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
     if (!publicMode) void checkHelper();
     void loadVideos();
   }, [checkHelper, loadVideos, publicMode]);
+
+  useEffect(() => {
+    if (!flightId || publicMode) {
+      setFlightContext({ flightDate: "", startTime: "", aircraftIdent: "" });
+      return;
+    }
+    let cancelled = false;
+    void getSavedFlight(flightId).then(({ data }) => {
+      if (cancelled) return;
+      setFlightContext({
+        flightDate: data?.flight_date || "",
+        startTime: data?.start_time || "",
+        aircraftIdent: data?.aircraft_ident || "",
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [flightId, publicMode]);
+
+  const linkedGoproMediaIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const video of videos) {
+      if (video.video_key.startsWith("gopro:")) ids.add(video.video_key.slice("gopro:".length));
+      try {
+        const parsed = JSON.parse(video.telemetry_json || "{}") as { provider?: string; mediaId?: string };
+        if (parsed.provider === "gopro" && parsed.mediaId) ids.add(parsed.mediaId);
+      } catch {
+        // Video legado sem metadados GoPro.
+      }
+    }
+    return ids;
+  }, [videos]);
+
+  const refreshGoproPickerItems = useCallback(async (resetSelection = false) => {
+    setGoproLoading(true);
+    setGoproError(null);
+    if (resetSelection) setGoproSelectedIds([]);
+    try {
+      const result = await listGoproPublicLinksForFlight();
+      const items = result.media.filter((item) =>
+        Boolean(item.publicUrl) &&
+        (item.type.toLowerCase().includes("video") || item.fileExtension.toLowerCase() === "mp4"),
+      );
+      setGoproItems(items);
+    } catch (error) {
+      setGoproError(error instanceof Error ? error.message : "Falha ao carregar videos GoPro.");
+    } finally {
+      setGoproLoading(false);
+    }
+  }, []);
+
+  const openGoproPicker = useCallback(async () => {
+    setGoproPickerOpen(true);
+    await refreshGoproPickerItems(true);
+  }, [refreshGoproPickerItems]);
+
+  const attachSelectedGopro = useCallback(async () => {
+    if (!flightId || goproSelectedIds.length === 0) return;
+    setGoproAttaching(true);
+    setGoproError(null);
+    try {
+      await attachGoproMediaToFlight(flightId, goproSelectedIds);
+      setGoproPickerOpen(false);
+      setGoproSelectedIds([]);
+      await loadVideos();
+    } catch (error) {
+      setGoproError(error instanceof Error ? error.message : "Falha ao vincular videos GoPro.");
+    } finally {
+      setGoproAttaching(false);
+    }
+  }, [flightId, goproSelectedIds, loadVideos]);
 
   // Enquanto houver vídeo em processing sem URL, reconsultar R2 periodicamente
   useEffect(() => {
@@ -1024,12 +1143,31 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
 
           {/* Botão selecionar arquivos */}
           {showPickButton && helperStatus === "online" && isVideoStorageConfigured() && (
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleOpenFilePicker}
+                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                <span>📂</span> Selecionar vídeos
+              </button>
+              <button
+                type="button"
+                onClick={() => void openGoproPicker()}
+                className="flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-200 hover:bg-cyan-500/15"
+              >
+                <span>🔗</span> Vincular GoPro
+              </button>
+            </div>
+          )}
+
+          {showPickButton && (helperStatus !== "online" || !isVideoStorageConfigured()) && (
             <button
               type="button"
-              onClick={handleOpenFilePicker}
-              className="mt-4 flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              onClick={() => void openGoproPicker()}
+              className="mt-4 flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-200 hover:bg-cyan-500/15"
             >
-              <span>📂</span> Selecionar vídeos
+              <span>🔗</span> Vincular GoPro
             </button>
           )}
 
@@ -1096,6 +1234,32 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
         </div>
       )}
 
+      {goproPickerOpen && (
+        <GoproVideoPickerModal
+          items={goproItems}
+          loading={goproLoading}
+          attaching={goproAttaching}
+          error={goproError}
+          selectedIds={goproSelectedIds}
+          linkedIds={linkedGoproMediaIds}
+          currentFlightId={flightId}
+          flightDate={flightContext.flightDate}
+          flightStartTime={flightContext.startTime}
+          aircraftIdent={flightContext.aircraftIdent}
+          onRefresh={() => void refreshGoproPickerItems(false)}
+          onToggle={(id) => {
+            setGoproSelectedIds((current) =>
+              current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+            );
+          }}
+          onClose={() => {
+            if (goproAttaching) return;
+            setGoproPickerOpen(false);
+          }}
+          onAttach={() => void attachSelectedGopro()}
+        />
+      )}
+
       {/* Lista de vídeos */}
       <div>
         <div className="mb-3 flex items-center justify-between">
@@ -1149,6 +1313,417 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
 }
 
 // --- Sub-componentes ---
+
+function GoproVideoPickerModal({
+  items,
+  loading,
+  attaching,
+  error,
+  selectedIds,
+  linkedIds,
+  currentFlightId,
+  flightDate,
+  flightStartTime,
+  aircraftIdent,
+  onRefresh,
+  onToggle,
+  onClose,
+  onAttach,
+}: {
+  items: GoproMediaLink[];
+  loading: boolean;
+  attaching: boolean;
+  error: string | null;
+  selectedIds: string[];
+  linkedIds: Set<string>;
+  currentFlightId: string | undefined;
+  flightDate: string;
+  flightStartTime: string;
+  aircraftIdent: string;
+  onRefresh: () => void;
+  onToggle: (id: string) => void;
+  onClose: () => void;
+  onAttach: () => void;
+}) {
+  const [tab, setTab] = useState<GoproPickerTab>("recommended");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [previewItem, setPreviewItem] = useState<GoproMediaLink | null>(null);
+  const flightDay = isoDateOnly(flightDate);
+  const tabItems = useMemo(() => {
+    if (tab === "recommended") {
+      if (!flightDay) return [];
+      return items.filter((item) => {
+        const date = isoDateOnly(item.capturedAt || item.createdAt);
+        return date === flightDay;
+      });
+    }
+    if (tab === "unlinked") return items.filter((item) => (item.linkedFlightIds || []).length === 0);
+    return items;
+  }, [flightDay, items, tab]);
+  const visibleItems = useMemo(() => {
+    return tabItems.filter((item) => {
+      if (!dateFrom && !dateTo) return true;
+      const date = isoDateOnly(item.capturedAt || item.createdAt);
+      return dateInRange(date, dateFrom, dateTo);
+    });
+  }, [dateFrom, dateTo, tabItems]);
+  const tabCounts = useMemo(() => {
+    const recommended = flightDay
+      ? items.filter((item) => isoDateOnly(item.capturedAt || item.createdAt) === flightDay).length
+      : 0;
+    return {
+      recommended,
+      unlinked: items.filter((item) => (item.linkedFlightIds || []).length === 0).length,
+      all: items.length,
+    };
+  }, [flightDay, items]);
+  const tabOptions: Array<{ id: GoproPickerTab; label: string; count: number }> = [
+    { id: "recommended", label: "Recomendados", count: tabCounts.recommended },
+    { id: "unlinked", label: "Não vinculados", count: tabCounts.unlinked },
+    { id: "all", label: "Todos", count: tabCounts.all },
+  ];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8">
+      <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-slate-100">Vincular vídeos GoPro</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              {flightDay ? `Voo em ${formatDateOnly(flightDay)}${flightStartTime ? ` · ${flightStartTime}` : ""}` : "Selecione vídeos públicos da biblioteca GoPro."}
+              {aircraftIdent ? ` · ${aircraftIdent}` : ""}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={onRefresh} disabled={loading || attaching} className="rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50">
+              Atualizar
+            </button>
+            <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200">
+              Fechar
+            </button>
+          </div>
+        </div>
+
+        <div className="border-b border-slate-800 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {tabOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setTab(option.id)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                  tab === option.id ? "bg-cyan-500/20 text-cyan-200" : "bg-slate-900 text-slate-400 hover:bg-slate-800"
+                }`}
+              >
+                {option.label} · {option.count}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              De
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(event) => setDateFrom(event.target.value)}
+                className="mt-1 block rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs font-normal text-slate-200 outline-none focus:border-cyan-500"
+              />
+            </label>
+            <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Até
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(event) => setDateTo(event.target.value)}
+                className="mt-1 block rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs font-normal text-slate-200 outline-none focus:border-cyan-500"
+              />
+            </label>
+            {(dateFrom || dateTo) && (
+              <button type="button" onClick={() => { setDateFrom(""); setDateTo(""); }} className="rounded-md px-2 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+                Limpar datas
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {previewItem && (
+            <GoproPickerPreview
+              key={previewItem.id}
+              item={previewItem}
+              onClose={() => setPreviewItem(null)}
+            />
+          )}
+
+          {error && (
+            <p className="mb-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-300">
+              {error}
+            </p>
+          )}
+
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <Skeleton key={index} className="h-24 rounded-lg" />
+              ))}
+            </div>
+          ) : visibleItems.length === 0 ? (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-8 text-center text-sm text-slate-500">
+              Nenhum vídeo GoPro encontrado neste filtro.
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {visibleItems.map((item) => {
+                const selected = selectedIds.includes(item.id);
+                const alreadyLinkedHere = linkedIds.has(item.id);
+                const linkedElsewhere = (item.linkedFlightIds || []).some((id) => id !== currentFlightId);
+                const capturedDate = item.capturedAt || item.createdAt;
+                const cameraLabel = item.cameraName || item.cameraModel || "GoPro";
+                return (
+                  <div
+                    key={item.id}
+                    className={`flex w-full items-stretch gap-3 rounded-lg border px-3 py-3 text-left transition ${
+                      selected
+                        ? "border-cyan-500/60 bg-cyan-500/10"
+                        : "border-slate-800 bg-slate-900/50 hover:border-slate-700"
+                    }`}
+                  >
+                    <div className="flex w-24 shrink-0 flex-col overflow-hidden rounded-md border border-slate-800 bg-slate-950">
+                      <div className="grid aspect-video place-items-center bg-slate-900 text-[10px] font-semibold uppercase text-slate-500">
+                        {item.thumbnailAvailable ? "Vídeo" : "GoPro"}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewItem(item)}
+                        className="border-t border-slate-800 py-1 text-center text-[11px] font-medium text-cyan-300 hover:bg-slate-800"
+                      >
+                        Prévia
+                      </button>
+                      {item.publicUrl ? (
+                        <a
+                          href={item.publicUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="border-t border-slate-800 py-1 text-center text-[11px] font-medium text-cyan-300 hover:bg-slate-800"
+                        >
+                          Abrir
+                        </a>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onToggle(item.id)}
+                      disabled={alreadyLinkedHere}
+                      className="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded border text-xs ${
+                          selected ? "border-cyan-400 bg-cyan-400 text-slate-950" : "border-slate-600 text-transparent"
+                        }`}>
+                          ✓
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-100">{item.title || item.filename || item.id}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            {capturedDate ? formatDate(capturedDate) : "Data indisponível"}
+                            {item.durationSeconds ? ` · ${formatDurationSec(item.durationSeconds)}` : ""}
+                            {item.width && item.height ? ` · ${item.width}×${item.height}` : ""}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        {item.fileSize ? formatBytes(item.fileSize) : "Tamanho indisponivel"}
+                        {cameraLabel ? ` · ${cameraLabel}` : ""}
+                        {item.cameraIdentifier ? ` · ${item.cameraIdentifier.slice(0, 8)}` : ""}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {alreadyLinkedHere ? (
+                          <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-300">Neste voo</span>
+                        ) : null}
+                        {linkedElsewhere ? (
+                          <span className="rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Já usado</span>
+                        ) : null}
+                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase text-cyan-300">GoPro</span>
+                      </div>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-slate-800 px-5 py-4">
+          <p className="text-xs text-slate-500">
+            {selectedIds.length} selecionado{selectedIds.length === 1 ? "" : "s"}
+          </p>
+          <div className="flex gap-3">
+            <button type="button" onClick={onClose} disabled={attaching} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50">
+              Cancelar
+            </button>
+            <button type="button" onClick={onAttach} disabled={attaching || selectedIds.length === 0} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50">
+              {attaching ? "Vinculando..." : "Vincular selecionados"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoproPickerPreview({ item, onClose }: { item: GoproMediaLink; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const [playbackUrl, setPlaybackUrl] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const title = item.title || item.filename || item.id;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlaybackUrl("");
+    setError(null);
+    setLoading(true);
+    void resolveGoproMediaPlayback(item)
+      .then((playback) => {
+        if (!cancelled) setPlaybackUrl(playback.url);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Falha ao carregar previa GoPro.");
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !playbackUrl) return;
+
+    let seekedForPreview = false;
+    const jumpToPreviewPoint = () => {
+      if (seekedForPreview) return;
+      seekedForPreview = true;
+      const duration = Number.isFinite(el.duration) ? el.duration : 0;
+      const target = duration > 20 ? Math.min(12, duration * 0.12) : Math.min(4, Math.max(0, duration - 1));
+      if (target > 0) {
+        try {
+          el.currentTime = target;
+        } catch {
+          // Alguns manifests HLS nao permitem seek antes do primeiro segmento carregar.
+        }
+      }
+    };
+    const markReady = () => {
+      setLoading(false);
+      void el.play().catch(() => undefined);
+    };
+    const markError = () => {
+      setError("Nao foi possivel reproduzir a previa deste video.");
+      setLoading(false);
+    };
+
+    el.addEventListener("loadedmetadata", jumpToPreviewPoint);
+    el.addEventListener("canplay", markReady);
+    el.addEventListener("error", markError);
+
+    if (el.canPlayType("application/vnd.apple.mpegurl")) {
+      if (el.src !== playbackUrl) el.src = playbackUrl;
+    } else if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        capLevelToPlayerSize: false,
+        startLevel: -1,
+        maxBufferLength: 8,
+        maxMaxBufferLength: 15,
+        backBufferLength: 5,
+        fragLoadingMaxRetry: 3,
+        manifestLoadingMaxRetry: 2,
+        levelLoadingMaxRetry: 2,
+      });
+      hlsRef.current = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
+          if (!level.height || level.height > GOPRO_PICKER_PREVIEW_MAX_HEIGHT) return bestIndex;
+          if (bestIndex < 0) return index;
+          return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
+        }, -1);
+        hls.autoLevelCapping = cappedLevel >= 0 ? cappedLevel : -1;
+        hls.currentLevel = -1;
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad(el.currentTime);
+          return;
+        }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+          return;
+        }
+        markError();
+      });
+      hls.attachMedia(el);
+      hls.loadSource(playbackUrl);
+    } else {
+      setError("Este navegador nao suporta previa HLS da GoPro.");
+      setLoading(false);
+    }
+
+    return () => {
+      el.removeEventListener("loadedmetadata", jumpToPreviewPoint);
+      el.removeEventListener("canplay", markReady);
+      el.removeEventListener("error", markError);
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      el.removeAttribute("src");
+      el.load();
+    };
+  }, [playbackUrl]);
+
+  return (
+    <div className="mb-4 rounded-lg border border-cyan-500/30 bg-slate-900/80 p-3">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-slate-100">Prévia: {title}</p>
+          <p className="text-xs text-slate-500">
+            {item.capturedAt ? formatDate(item.capturedAt) : "Data indisponível"}
+            {item.durationSeconds ? ` · ${formatDurationSec(item.durationSeconds)}` : ""}
+            {item.cameraName || item.cameraModel ? ` · ${item.cameraName || item.cameraModel}` : ""}
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+          Fechar prévia
+        </button>
+      </div>
+      <div className="relative overflow-hidden rounded-md border border-slate-800 bg-black">
+        <video
+          ref={videoRef}
+          className="aspect-video w-full bg-black object-contain"
+          muted
+          controls
+          playsInline
+          preload="metadata"
+        />
+        {loading && (
+          <div className="absolute inset-0 grid place-items-center bg-black/55 text-xs text-slate-300">
+            Carregando prévia...
+          </div>
+        )}
+      </div>
+      {error && (
+        <p className="mt-2 rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function HelperStatusBadge({ status, onRetry }: { status: HelperStatus; onRetry: () => void }) {
   const isProduction = window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
@@ -1683,6 +2258,8 @@ function TelemetryVideoPlayer({
   const [skipFlashKey, setSkipFlashKey] = useState(0);
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoLoadedOnce, setVideoLoadedOnce] = useState(false);
+  const [playbackUrl, setPlaybackUrl] = useState(video.file_url);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -1720,8 +2297,14 @@ function TelemetryVideoPlayer({
   const stageClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const verticalTapRef = useRef(0);
   const stageClickAtRef = useRef(0);
+  const hlsRef = useRef<Hls | null>(null);
   const onEndedRef = useRef(onEnded);
   onEndedRef.current = onEnded;
+  const isGoproVideo = isGoproFlightVideo(video);
+  const goproMetadata = useMemo(() => parseGoproVideoMetadata(video.telemetry_json), [video.telemetry_json]);
+  const goproPlaybackKey = isGoproVideo
+    ? `${video.id}|${video.file_url}|${goproMetadata?.mediaToken || ""}|${goproMetadata?.publicUrl || ""}`
+    : "";
 
   const verticalSpeedFpm = useMemo(
     () => verticalSpeedFpmAtTime(points, currentTimeSec),
@@ -1815,7 +2398,124 @@ function TelemetryVideoPlayer({
   useEffect(() => {
     setVideoLoading(true);
     setVideoLoadedOnce(false);
-  }, [video.id, video.file_url, orientation]);
+  }, [video.id, playbackUrl, orientation]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlaybackError(null);
+    if (!isGoproVideo) {
+      setPlaybackUrl(video.file_url);
+      return;
+    }
+    setPlaybackUrl((current) => current || "");
+    setVideoLoading(true);
+    void resolveGoproVideoPlayback(video)
+      .then((playback) => {
+        if (!cancelled) {
+          setPlaybackUrl((current) => (current === playback.url ? current : playback.url));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setPlaybackError(error instanceof Error ? error.message : "Falha ao carregar video GoPro.");
+          setVideoLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGoproVideo, goproPlaybackKey, video.file_url]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !playbackUrl || !isGoproVideo) return;
+    if (el.canPlayType("application/vnd.apple.mpegurl")) {
+      if (el.src !== playbackUrl) el.src = playbackUrl;
+      return;
+    }
+    if (!Hls.isSupported()) {
+      setPlaybackError("Este navegador nao suporta HLS para videos GoPro.");
+      setVideoLoading(false);
+      return;
+    }
+    const hls = new Hls({
+      enableWorker: true,
+      capLevelToPlayerSize: false,
+      startLevel: -1,
+      maxBufferLength: 20,
+      maxMaxBufferLength: 60,
+      backBufferLength: 30,
+      fragLoadingMaxRetry: 6,
+      manifestLoadingMaxRetry: 4,
+      levelLoadingMaxRetry: 4,
+    });
+    hlsRef.current = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      const maxHeight = playbackRate > 1.25 ? GOPRO_FAST_PLAYBACK_MAX_HEIGHT : GOPRO_HIGH_QUALITY_MAX_HEIGHT;
+      const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
+        if (!level.height || level.height > maxHeight) return bestIndex;
+        if (bestIndex < 0) return index;
+        return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
+      }, -1);
+      if (cappedLevel >= 0) hls.autoLevelCapping = cappedLevel;
+      hls.currentLevel = -1;
+      el.playbackRate = playbackRate;
+      setPlaybackError(null);
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) {
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad(el.currentTime);
+          return;
+        }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+          return;
+        }
+        setPlaybackError("Falha ao reproduzir video GoPro.");
+        setVideoLoading(false);
+      }
+    });
+    hls.attachMedia(el);
+    hls.loadSource(playbackUrl);
+    return () => {
+      if (hlsRef.current === hls) hlsRef.current = null;
+      hls.destroy();
+    };
+  }, [isGoproVideo, playbackUrl]);
+
+  useEffect(() => {
+    if (!isGoproVideo) return;
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      const el = videoRef.current;
+      if (!el) return;
+      if (hlsRef.current) hlsRef.current.startLoad(el.currentTime);
+      if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        setVideoLoading(false);
+        setVideoLoadedOnce(true);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleVisibility);
+    };
+  }, [isGoproVideo]);
+
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls || !isGoproVideo || hls.levels.length === 0) return;
+    const maxHeight = playbackRate > 1.25 ? GOPRO_FAST_PLAYBACK_MAX_HEIGHT : GOPRO_HIGH_QUALITY_MAX_HEIGHT;
+    const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
+      if (!level.height || level.height > maxHeight) return bestIndex;
+      if (bestIndex < 0) return index;
+      return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
+    }, -1);
+    hls.autoLevelCapping = cappedLevel >= 0 ? cappedLevel : -1;
+    hls.currentLevel = -1;
+  }, [isGoproVideo, playbackRate]);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -1850,7 +2550,7 @@ function TelemetryVideoPlayer({
       el.removeEventListener("playing", markReady);
       el.removeEventListener("error", onError);
     };
-  }, [video.id, video.file_url, orientation, videoLoadedOnce]);
+  }, [video.id, playbackUrl, orientation, videoLoadedOnce]);
 
   // The 16:9 and 9:16 previews mount different <video> elements. Rebind listeners
   // when orientation changes so widgets and the trim playhead keep following playback.
@@ -2295,7 +2995,7 @@ function TelemetryVideoPlayer({
               >
                 <video
                   ref={videoRef}
-                  src={video.file_url}
+                  src={isGoproVideo && Hls.isSupported() ? undefined : playbackUrl}
                   preload="auto"
                   playsInline
                   autoPlay={autoPlay}
@@ -2367,7 +3067,7 @@ function TelemetryVideoPlayer({
               >
                 <video
                   ref={videoRef}
-                  src={video.file_url}
+                  src={isGoproVideo && Hls.isSupported() ? undefined : playbackUrl}
                   preload="auto"
                   playsInline
                   autoPlay={autoPlay}
@@ -2423,6 +3123,12 @@ function TelemetryVideoPlayer({
           </div>
         )}
       </div>
+
+      {playbackError && (
+        <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">
+          {playbackError}
+        </p>
+      )}
 
       {hasTelemetry && (
         <div className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/35 p-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2494,7 +3200,7 @@ function TelemetryVideoPlayer({
       </div>
 
       {/* Botão de download — sempre visível (baixa o arquivo completo), inclusive no link público */}
-      {(publicMode || !SHOW_VIDEO_EDIT_TOOLS) && video.file_url && (
+      {(publicMode || !SHOW_VIDEO_EDIT_TOOLS) && video.file_url && !isGoproVideo && (
         <button
           type="button"
           onClick={() => void downloadVideoFile(video.file_url!)}
@@ -2502,6 +3208,17 @@ function TelemetryVideoPlayer({
         >
           ↓ Baixar
         </button>
+      )}
+
+      {isGoproVideo && video.file_url && !publicMode && user?.role !== "aluno" && (
+        <a
+          href={video.file_url}
+          target="_blank"
+          rel="noreferrer"
+          className="self-start rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-700"
+        >
+          Abrir na GoPro
+        </a>
       )}
 
       {/* Seleção de trecho + orientação */}
@@ -2776,6 +3493,8 @@ function VideoCard({
   const isReady = video.processing_status === "ready";
   const isFailed = video.processing_status === "failed";
   const isPending = !isReady && !isFailed;
+  const goproMetadata = parseGoproVideoMetadata(video.telemetry_json);
+  const goproCameraLabel = goproMetadata?.cameraName || goproMetadata?.cameraModel || "";
 
   return (
     <li className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3">
@@ -2804,6 +3523,7 @@ function VideoCard({
               {video.original_files_count != null && video.original_files_count > 1 && (
                 <span> · {video.original_files_count} arquivos</span>
               )}
+              {goproCameraLabel && <span> · {goproCameraLabel}</span>}
               <span> · {formatDate(video.created_at)}</span>
             </p>
           </div>

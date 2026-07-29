@@ -18,6 +18,7 @@ test("guest can access required public flows in strict mode", () => {
   for (const action of [
     "getPublicFlightReviewShare",
     "getPublicProposal",
+    "goproResolveVideoPlayback",
     "createPublicLiabilityWaiverContract",
     "impersonateStudent",
   ]) {

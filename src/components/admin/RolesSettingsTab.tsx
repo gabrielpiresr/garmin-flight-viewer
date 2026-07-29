@@ -123,6 +123,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "settings.indique-ganhe", label: "Indique e ganhe" },
       { key: "settings.roles", label: "Roles" },
       { key: "settings.propostas", label: "Propostas" },
+      { key: "settings.gopro", label: "GoPro" },
     ],
   },
 ];
