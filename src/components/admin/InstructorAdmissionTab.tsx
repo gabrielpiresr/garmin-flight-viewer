@@ -14,14 +14,22 @@ import {
   syncActiveInstructorsToAdmission,
   updateInstructorAdmissionCandidate,
 } from "../../lib/instructorAdmissionDb";
+import { downloadCsv } from "../../lib/csvExport";
 import { loadInstructorHoursMap, type InstructorHoursMap } from "../../lib/instructorAdmissionMetrics";
+import { formatAvailabilitySummary, isAvailabilityValue } from "../../lib/availabilityPresets";
+import { computeInstructorAdmissionScore } from "../../lib/instructorAdmissionScore";
 import {
   type InstructorAdmissionCandidate,
+  type InstructorAdmissionFieldValue,
+  type InstructorAdmissionFileValue,
   type InstructorAdmissionForm,
   type InstructorAdmissionFormInput,
+  type InstructorAdmissionFormField,
   type InstructorAdmissionStage,
   type InstructorAdmissionStageInput,
 } from "../../types/instructorAdmission";
+import { candidateDisplayName } from "../../types/instructorAdmission";
+import { formatHoursLabel } from "../../lib/instructorAdmissionMetrics";
 import { useToast } from "../ui/ToastProvider";
 import { Skeleton } from "../ui/Skeleton";
 import { CandidateDetailDrawer } from "./instructorAdmission/CandidateDetailDrawer";
@@ -31,6 +39,126 @@ import { RegistrationLinkModal } from "./instructorAdmission/RegistrationLinkMod
 import { StageEditorModal } from "./instructorAdmission/StageEditorModal";
 
 type LoadPhase = "stages" | "candidates" | "metrics" | "ready";
+
+const INSTRUCTOR_SOURCE_LABELS: Record<string, string> = {
+  manual: "Manual",
+  form: "Formulário",
+  instructor: "Instrutor ativo",
+};
+
+function exportDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
+}
+
+function exportDateTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function isFileValue(value: InstructorAdmissionFieldValue): value is InstructorAdmissionFileValue {
+  return Boolean(value && typeof value === "object" && "fileName" in value);
+}
+
+function spreadsheetText(value: string | null | undefined): string {
+  return value ? `\t${value}` : "";
+}
+
+function formatInstructorResponseValue(
+  value: InstructorAdmissionFieldValue | undefined,
+  field?: InstructorAdmissionFormField,
+): string {
+  if (value == null || value === "") return "";
+  if (typeof value === "boolean") return value ? "Sim" : "Não";
+  if (typeof value === "number") return Number.isFinite(value) ? value.toLocaleString("pt-BR") : "";
+  if (Array.isArray(value)) return value.join(", ");
+  if (isAvailabilityValue(value)) return formatAvailabilitySummary(value);
+  if (isFileValue(value)) return value.fileName;
+  if (typeof value === "string") {
+    if (field?.type === "date") return exportDate(value);
+    if (field?.type === "phone" || field?.systemProperty === "phone" || field?.systemProperty === "cpf" || field?.systemProperty === "anacCode") {
+      return spreadsheetText(value);
+    }
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+function exportInstructorCandidatesCsv(
+  rows: InstructorAdmissionCandidate[],
+  stages: InstructorAdmissionStage[],
+  form: InstructorAdmissionForm | null,
+  hoursMap: InstructorHoursMap,
+): void {
+  const stageById = new Map(stages.map((stage) => [stage.id, stage.name]));
+  const stageOrderById = new Map(stages.map((stage, index) => [stage.id, index]));
+  const orderedRows = rows.slice().sort((a, b) => {
+    const stageOrder = (stageOrderById.get(a.stageId) ?? 9999) - (stageOrderById.get(b.stageId) ?? 9999);
+    if (stageOrder !== 0) return stageOrder;
+    return candidateDisplayName(a).localeCompare(candidateDisplayName(b), "pt-BR", { numeric: true });
+  });
+  const formFields = (form?.fields || []).slice().sort((a, b) => a.order - b.order);
+  const responseHeaders = formFields.map((field) => `Resposta: ${field.label}${field.type === "hidden" ? " (oculto)" : ""}`);
+  const header = [
+    "Nome de exibição",
+    "Nome completo",
+    "Nickname",
+    "E-mail",
+    "Telefone",
+    "Etapa",
+    "Origem",
+    "Fonte / campanha",
+    "Score",
+    "Horas totais",
+    "Horas no mês",
+    "Usuário vinculado",
+    "Formulário preenchido em",
+    "Entrada na etapa",
+    "Criado em",
+    "Atualizado em",
+    "Observações",
+    ...responseHeaders,
+  ];
+
+  const body = orderedRows.map((candidate) => {
+    const hours = candidate.userId ? hoursMap[candidate.userId] : undefined;
+    const score = form?.scoreRules?.length
+      ? computeInstructorAdmissionScore(candidate.responses, form.scoreRules, form.fields).total
+      : "";
+    return [
+      candidateDisplayName(candidate),
+      candidate.name,
+      candidate.nickname ?? "",
+      candidate.email,
+      spreadsheetText(candidate.phone),
+      stageById.get(candidate.stageId) ?? "",
+      INSTRUCTOR_SOURCE_LABELS[candidate.source] ?? candidate.source,
+      candidate.referralSource ?? "",
+      score,
+      hours ? formatHoursLabel(hours.totalHours) : "",
+      hours ? formatHoursLabel(hours.monthHours) : "",
+      candidate.userId ? "Sim" : "Não",
+      exportDateTime(candidate.formFilledAt),
+      exportDateTime(candidate.statusEnteredAt),
+      exportDateTime(candidate.createdAt),
+      exportDateTime(candidate.updatedAt),
+      candidate.notes ?? "",
+      ...formFields.map((field) => formatInstructorResponseValue(candidate.responses[field.id], field)),
+    ];
+  });
+
+  downloadCsv([header, ...body], `instrutores-${new Date().toISOString().slice(0, 10)}.csv`);
+}
 
 function QuickAddModal({
   stageName,
@@ -263,6 +391,15 @@ export function InstructorAdmissionTab() {
     showToast({ variant: "success", message: "Link do formulário copiado." });
   }
 
+  function handleExportCandidates() {
+    if (filteredCandidates.length === 0) {
+      showToast({ variant: "warning", message: "Nenhum instrutor para exportar com os filtros atuais." });
+      return;
+    }
+    exportInstructorCandidatesCsv(filteredCandidates, stages, form, hoursMap);
+    showToast({ variant: "success", message: `${filteredCandidates.length} instrutor(es) exportado(s).` });
+  }
+
   const nextStageOrder = stages.length ? Math.max(...stages.map((s) => s.order)) + 10 : 10;
   const quickAddStage = stages.find((s) => s.id === quickAddStageId);
   const showStageSkeleton = loadPhase === "stages";
@@ -295,6 +432,17 @@ export function InstructorAdmissionTab() {
             className="rounded-lg border border-sky-700/50 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-300 hover:bg-sky-950/50"
           >
             Editar formulário
+          </button>
+          <button
+            type="button"
+            onClick={handleExportCandidates}
+            disabled={filteredCandidates.length === 0 || candidatesLoading}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path fillRule="evenodd" d="M4.5 3A1.5 1.5 0 003 4.5v11A1.5 1.5 0 004.5 17h11a1.5 1.5 0 001.5-1.5v-11A1.5 1.5 0 0015.5 3h-11zM5 5h3v3H5V5zm5 0h5v3h-5V5zM5 10h3v5H5v-5zm5 0h5v5h-5v-5z" clipRule="evenodd" />
+            </svg>
+            Exportar
           </button>
           <button
             type="button"

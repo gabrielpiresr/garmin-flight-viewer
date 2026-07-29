@@ -24,6 +24,7 @@ import { CrmFupsView } from "./crm/CrmFupsView";
 import { CrmListView } from "./crm/CrmListView";
 import { CrmSortControl } from "./crm/CrmSortControl";
 import { collectOpenFupTasks, countOpenFupTasks } from "../../lib/crmFupTasks";
+import { downloadCsv } from "../../lib/csvExport";
 import {
   applyLeadStatusMove,
   buildFollowupsForStatus,
@@ -61,6 +62,8 @@ import {
   CRM_STATUS_COLUMN_BG,
   CRM_STATUS_LABELS,
   CRM_STATUS_PILL,
+  CRM_AVAILABLE_PERIOD_OPTIONS,
+  CRM_START_DATE_OPTIONS,
   AVAILABLE_DAY_LABELS,
 } from "../../types/crm";
 import type { CrmAutomationSettings, CrmLead, CrmLeadFilters, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
@@ -2615,6 +2618,129 @@ function uniqueCustomVariables(templates: ContractTemplate[]): CustomVariable[] 
   return Array.from(map.values());
 }
 
+function exportDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
+}
+
+function exportDateTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function yesNo(value: boolean | null | undefined): string {
+  if (value == null) return "";
+  return value ? "Sim" : "Não";
+}
+
+function spreadsheetText(value: string | null | undefined): string {
+  return value ? `\t${value}` : "";
+}
+
+function crmStartDateLabel(value: string | null | undefined): string {
+  if (!value) return "";
+  return CRM_START_DATE_OPTIONS.find((option) => option.value === value)?.label ?? value;
+}
+
+function crmAvailablePeriodLabel(value: AvailablePeriod | null | undefined): string {
+  if (!value) return "";
+  return CRM_AVAILABLE_PERIOD_OPTIONS.find((option) => option.value === value)?.label ?? value;
+}
+
+function crmAvailableDaysLabel(days: AvailableDay[] | null | undefined): string {
+  return days?.length ? days.map((day) => AVAILABLE_DAY_LABELS[day]).join(", ") : "";
+}
+
+function exportCrmLeadsCsv(
+  rows: CrmLead[],
+  statusSettings: CrmStatusSetting[],
+  scoreRules: CrmAutomationSettings["scoreRules"],
+): void {
+  const header = [
+    "Nome",
+    "E-mail",
+    "Telefone",
+    "Status",
+    "Score",
+    "FUPs vencidos",
+    "FUPs pendentes",
+    "Status expirado",
+    "Curso desejado",
+    "Horas desejadas",
+    "Horas por semana",
+    "Início desejado",
+    "Dias disponíveis",
+    "Período disponível",
+    "Peso (kg)",
+    "Altura (cm)",
+    "Banca teórica PPL",
+    "Status dos estudos teóricos",
+    "Escola de transferência",
+    "Código ANAC",
+    "CPF",
+    "Data de nascimento",
+    "Conta criada",
+    "Pagamento presencial",
+    "Proposta aceita",
+    "Motivo de perda",
+    "Complemento do motivo de perda",
+    "Entrada no funil",
+    "Entrada no status",
+    "Qualificação preenchida em",
+    "Criado em",
+    "Atualizado em",
+    "Observações",
+  ];
+
+  const body = rows.map((lead) => [
+    lead.name,
+    lead.email,
+    spreadsheetText(lead.phone),
+    CRM_STATUS_LABELS[lead.crmStatus],
+    computeLeadScore(lead, scoreRules).total,
+    countOverdueFollowups(lead.followups),
+    countPendingFollowups(lead.followups),
+    yesNo(isLeadStatusExpired(lead, statusSettings)),
+    lead.desiredCourse ?? "",
+    lead.desiredHours ?? "",
+    lead.weeklyHours ?? "",
+    crmStartDateLabel(lead.startDate),
+    crmAvailableDaysLabel(lead.availableDays),
+    crmAvailablePeriodLabel(lead.availablePeriod),
+    lead.weightKg ?? "",
+    lead.heightCm ?? "",
+    yesNo(lead.theoreticalExamDone),
+    lead.theoreticalStudyStatus ?? "",
+    lead.transferSchool ?? "",
+    spreadsheetText(lead.anacCode),
+    spreadsheetText(lead.cpf),
+    exportDate(lead.birthDate),
+    yesNo(Boolean(lead.userId)),
+    yesNo(lead.payInPerson),
+    lead.acceptedProposalId ? "Sim" : "Não",
+    lead.lossReason ?? "",
+    lead.lossReasonNotes ?? "",
+    exportDateTime(lead.funnelEnteredAt),
+    exportDateTime(lead.statusEnteredAt),
+    exportDateTime(lead.qualFilledAt),
+    exportDateTime(lead.createdAt),
+    exportDateTime(lead.updatedAt),
+    lead.notes ?? "",
+  ]);
+
+  downloadCsv([header, ...body], `leads-crm-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
 export function CrmTab() {
   const { user } = useAuth();
   const [leads, setLeads] = useState<CrmLead[]>([]);
@@ -3097,6 +3223,15 @@ export function CrmTab() {
     setLeads((ls) => ls.map((l) => l.id === leadId ? { ...l, qualToken: token } : l));
   }
 
+  function handleExportLeads() {
+    if (sortedFilteredLeads.length === 0) {
+      showToast("Nenhum lead para exportar com os filtros atuais.", "warning");
+      return;
+    }
+    exportCrmLeadsCsv(sortedFilteredLeads, statusSettings, automationSettings.scoreRules);
+    showToast(`${sortedFilteredLeads.length} lead(s) exportado(s).`);
+  }
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -3184,6 +3319,18 @@ export function CrmTab() {
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}>
                 <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.389zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
               </svg>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportLeads}
+              disabled={sortedFilteredLeads.length === 0}
+              title="Exportar planilha"
+              className="flex items-center gap-1 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition disabled:opacity-50"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path fillRule="evenodd" d="M4.5 3A1.5 1.5 0 003 4.5v11A1.5 1.5 0 004.5 17h11a1.5 1.5 0 001.5-1.5v-11A1.5 1.5 0 0015.5 3h-11zM5 5h3v3H5V5zm5 0h5v3h-5V5zM5 10h3v5H5v-5zm5 0h5v5h-5v-5z" clipRule="evenodd" />
+              </svg>
+              <span className="hidden sm:inline">Exportar</span>
             </button>
             <button
               type="button"
