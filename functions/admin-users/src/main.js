@@ -2468,17 +2468,28 @@ async function fetchPlaneItAircraftTotals(input = {}) {
   return { totals, updatedAt: nowIso() };
 }
 
-function sanitizeGoproCredentials(input = {}, current = {}) {
+function sanitizeGoproCredentials(input = {}, current = {}, options = {}) {
+  const nextEmail = cleanString(input.email ?? current.email).toLowerCase();
   const keepPassword = input.password === undefined || input.password === null || input.password === "";
+  const nextPassword = keepPassword ? String(current.password || "") : String(input.password || "");
   const keepAccessToken = input.accessToken === undefined || input.accessToken === null || input.accessToken === "";
-  const rawAccessToken = keepAccessToken ? cleanString(current.accessToken) : cleanString(input.accessToken);
+  const hasCurrentCredentials = current.email !== undefined || current.password !== undefined || current.accessToken !== undefined;
+  const emailChanged = hasCurrentCredentials && input.email !== undefined && nextEmail !== cleanString(current.email).toLowerCase();
+  const passwordChanged = hasCurrentCredentials && !keepPassword && nextPassword !== String(current.password || "");
+  const passwordSubmittedForRefresh = options.clearAccessTokenOnPasswordSubmit === true && !keepPassword;
+  const authChanged = emailChanged || passwordChanged || passwordSubmittedForRefresh;
+  const rawAccessToken = keepAccessToken && authChanged
+    ? ""
+    : keepAccessToken
+      ? cleanString(current.accessToken)
+      : cleanString(input.accessToken);
   const accessTokenMatch = rawAccessToken.match(/(?:^|;\s*)gp_access_token=([^;\s]+)/i);
   return {
-    email: cleanString(input.email ?? current.email).toLowerCase(),
-    password: keepPassword ? String(current.password || "") : String(input.password || ""),
+    email: nextEmail,
+    password: nextPassword,
     accessToken: accessTokenMatch ? accessTokenMatch[1] : rawAccessToken,
     updatedAt: input.updatedAt || current.updatedAt || null,
-    lastSyncAt: input.lastSyncAt || current.lastSyncAt || null,
+    lastSyncAt: authChanged ? null : input.lastSyncAt || current.lastSyncAt || null,
     lastError: cleanString(input.lastError ?? current.lastError),
   };
 }
@@ -2506,7 +2517,11 @@ async function saveGoproCredentials(input = {}) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
   }
   const current = await loadGoproCredentials();
-  const settings = sanitizeGoproCredentials({ ...input, updatedAt: nowIso(), lastError: "" }, current);
+  const settings = sanitizeGoproCredentials(
+    { ...input, updatedAt: nowIso(), lastError: "" },
+    current,
+    { clearAccessTokenOnPasswordSubmit: true },
+  );
   if (!settings.email) {
     throw Object.assign(new Error("Informe o login do admin na GoPro."), { status: 400 });
   }
