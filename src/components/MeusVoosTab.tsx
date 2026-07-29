@@ -60,7 +60,7 @@ import {
   type FlightEvaluation,
   type FlightEvaluationRules,
 } from "../types/flightEvaluation";
-import { CancellationModal, FlightDetailModal } from "./StudentScheduleTab";
+import { CancellationModal, FlightDetailModal, canStudentRescheduleFlight } from "./StudentScheduleTab";
 import { FlightsAgendaBoard } from "./FlightsAgendaBoard";
 import { FlightDetailView, type FlightDetailSubTab } from "./FlightDetailView";
 import {
@@ -2119,7 +2119,7 @@ export function MeusVoosTab() {
           onClose={() => setSagaDetailFlight(null)}
           onCancel={() => setSagaCancelFlight(sagaDetailFlight)}
           editConfig={
-            scheduleRules && scheduleRules.mode === "booking" && sagaDetailFlight.canCancel
+            scheduleRules && scheduleRules.mode === "booking" && canStudentRescheduleFlight(sagaDetailFlight, scheduleRules)
               ? {
                   aircrafts: sagaAircrafts,
                   rules: scheduleRules,
