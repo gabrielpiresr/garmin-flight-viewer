@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { FlightReviewTab } from "../components/FlightReviewTab";
+import { FlightShareStickersPanel } from "../components/FlightShareStickersPanel";
 import { FlightSummaryPanel } from "../components/JourneyFlightReviewPage";
 import { PhotosTab } from "../components/PhotosTab";
 import { TelemetriaTab } from "../components/TelemetriaTab";
@@ -14,8 +15,9 @@ import {
   type PublicFlightReviewShare,
 } from "../lib/publicFlightReviewShare";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
+import { buildFlightShareDataFromFlight, type FlightShareData } from "../lib/flightShareStickers";
 
-type PublicTab = "resumo" | "telemetria" | "flight-review" | "videos" | "fotos";
+type PublicTab = "resumo" | "telemetria" | "flight-review" | "videos" | "fotos" | "figurinhas";
 
 type PublicTabItem = { id: PublicTab; label: string; icon: ReactNode };
 
@@ -66,9 +68,19 @@ const PUBLIC_TABS: PublicTabItem[] = [
       </svg>
     ),
   },
+  {
+    id: "figurinhas",
+    label: "Figurinhas",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M6.25 2.5A2.75 2.75 0 003.5 5.25v9.5a2.75 2.75 0 002.75 2.75h7.5a2.75 2.75 0 002.75-2.75v-9.5a2.75 2.75 0 00-2.75-2.75h-7.5zm0 1.5h7.5c.69 0 1.25.56 1.25 1.25v9.5c0 .69-.56 1.25-1.25 1.25h-7.5C5.56 16 5 15.44 5 14.75v-9.5C5 4.56 5.56 4 6.25 4z" />
+        <path d="M7.25 6.25h5.5v1.5h-5.5v-1.5zm0 3h5.5v1.5h-5.5v-1.5zm0 3h3.5v1.5h-3.5v-1.5z" />
+      </svg>
+    ),
+  },
 ];
 
-const PUBLIC_VISIBLE_TABS: PublicTabItem[] = ["resumo", "fotos", "telemetria", "flight-review"]
+const PUBLIC_VISIBLE_TABS: PublicTabItem[] = ["resumo", "fotos", "figurinhas", "telemetria", "flight-review"]
   .map((id) => PUBLIC_TABS.find((tab) => tab.id === id))
   .filter((tab): tab is PublicTabItem => Boolean(tab));
 
@@ -116,6 +128,9 @@ export function PublicFlightReviewPage() {
   const [parsedTelemetry, setParsedTelemetry] = useState<ParseResult | null>(null);
   const [telemetryReady, setTelemetryReady] = useState(false);
   const [telemetryParsing, setTelemetryParsing] = useState(false);
+  const [stickerShareData, setStickerShareData] = useState<FlightShareData | null>(null);
+  const [stickersLoading, setStickersLoading] = useState(false);
+  const [stickersError, setStickersError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,6 +204,35 @@ export function PublicFlightReviewPage() {
       window.clearTimeout(timeoutId);
     };
   }, [share, telemetryParsing, telemetryReady]);
+
+  const stickersTabVisited = visitedTabs.has("figurinhas") || activeTab === "figurinhas";
+
+  useEffect(() => {
+    if (!share) {
+      setStickerShareData(null);
+      setStickersError(null);
+      setStickersLoading(false);
+      return;
+    }
+    if (!stickersTabVisited || stickerShareData) return;
+    let cancelled = false;
+    setStickerShareData(null);
+    setStickersError(null);
+    setStickersLoading(true);
+    void buildFlightShareDataFromFlight(share.flight, share.brandSettings)
+      .then((data) => {
+        if (!cancelled) setStickerShareData(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setStickersError((err as Error).message || "Nao foi possivel preparar as figurinhas.");
+      })
+      .finally(() => {
+        if (!cancelled) setStickersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [share, stickerShareData, stickersTabVisited]);
 
   if (loadingIntro) return <LoadingState />;
 
@@ -346,6 +390,20 @@ export function PublicFlightReviewPage() {
               <PhotosTab flightId={share.flight.id} publicMode publicPhotos={share.photos ?? []} />
             ) : (
               <TabLoadingState label="Carregando fotos..." />
+            )}
+          </section>
+        ) : null}
+
+        {visitedTabs.has("figurinhas") || activeTab === "figurinhas" ? (
+          <section hidden={activeTab !== "figurinhas"}>
+            {share ? (
+              <FlightShareStickersPanel
+                shareData={stickerShareData}
+                loading={stickersLoading || (!stickerShareData && !stickersError)}
+                error={stickersError}
+              />
+            ) : (
+              <TabLoadingState label="Carregando figurinhas..." />
             )}
           </section>
         ) : null}

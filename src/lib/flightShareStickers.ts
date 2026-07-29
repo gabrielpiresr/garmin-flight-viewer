@@ -1,6 +1,6 @@
 import { buildFlightDisplayInfo, type FlightDisplayInfo } from "./flightDisplay";
 import { decodeFlightRecord, type FlightRecordMeta } from "./flightRecordCodec";
-import { getSavedFlight } from "./flightsDb";
+import { getSavedFlight, type SavedFlightFull } from "./flightsDb";
 import {
   chartDurationSec,
   formatAltFt,
@@ -319,6 +319,11 @@ function normalizeBrand(settings: EmailBrandSettings, logoDataUrl: string | null
   };
 }
 
+async function brandFromSettings(settings: EmailBrandSettings | null | undefined): Promise<FlightShareBrand> {
+  if (!settings) return DEFAULT_BRAND;
+  return normalizeBrand(settings, settings.logoDataUrl ?? await urlToDataUrl(settings.logoUrl));
+}
+
 function cacheBrandSettings(settings: EmailBrandSettings) {
   try {
     window.localStorage.setItem(BRAND_CACHE_KEY, JSON.stringify(settings));
@@ -394,6 +399,42 @@ export async function loadFlightShareData(flightId: string): Promise<FlightShare
   return {
     flightId,
     sourceFileName: flight.data.source_filename,
+    meta: decoded.meta,
+    displayInfo,
+    parsed,
+    points,
+    chartData,
+    hasChartTime: parsed?.hasChartTime ?? false,
+    chartTimeBaseMs: parsed?.chartTimeBaseMs ?? null,
+    summary,
+    durationDisplay: durationSec !== null ? formatDuration(durationSec) : displayInfo.totalFlight || "-",
+    brand,
+    routeMap,
+  };
+}
+
+export async function buildFlightShareDataFromFlight(
+  flight: SavedFlightFull,
+  brandSettings?: EmailBrandSettings | null,
+): Promise<FlightShareData> {
+  const brand = await brandFromSettings(brandSettings);
+  const decoded = decodeFlightRecord(flight.csv_text);
+  const telemetryCsv = decoded.meta ? decoded.telemetryCsv : flight.csv_text;
+  const parsed = telemetryCsv.trim() ? parseGarminCsv(telemetryCsv) : null;
+  const points = parsed?.points ?? [];
+  const chartData = parsed?.chartData ?? [];
+  const summary = summarizeFlight(points);
+  const displayInfo = buildFlightDisplayInfo(flight, flight.csv_text);
+  const routeMap = await buildRouteMap(points);
+  const durationSec =
+    chartDurationSec(chartData, parsed?.hasChartTime ?? false) ??
+    summary.durationSec ??
+    flight.duration_sec ??
+    (displayInfo.totalFlightMinutes > 0 ? displayInfo.totalFlightMinutes * 60 : null);
+
+  return {
+    flightId: flight.id,
+    sourceFileName: flight.source_filename,
     meta: decoded.meta,
     displayInfo,
     parsed,

@@ -14902,6 +14902,105 @@ async function createFlightPublicShare(actorUserId, payload = {}) {
   return { publicUrl, token };
 }
 
+async function notifyStudentFlightReviewReady(actorUserId, payload = {}) {
+  await requireInstructorOrAdmin(actorUserId);
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const flightId = cleanString(payload.flightId);
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  await authorizeFlightShare(actorUserId, flight);
+
+  const studentUserId = cleanString(flight.student_user_id || flight.user_id);
+  if (!studentUserId) throw Object.assign(new Error("Aluno nao vinculado a este voo."), { status: 422 });
+
+  const [studentProfile, studentUser, emailLoaded, brandLoaded, wppLoaded, share] = await Promise.all([
+    getProfileByUserId(studentUserId).catch(() => null),
+    users.get({ userId: studentUserId }).catch(() => null),
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+    loadWppSettings().catch(() => null),
+    createFlightPublicShare(actorUserId, payload),
+  ]);
+
+  const email = cleanString(studentUser?.email || studentProfile?.email).toLowerCase();
+  const phone = normalizeWppRecipientPhone(studentProfile?.phone);
+  if (!email && !phone) throw Object.assign(new Error("Aluno sem e-mail ou telefone cadastrado."), { status: 422 });
+
+  const studentName =
+    cleanString(studentProfile?.nickname) ||
+    cleanString(studentProfile?.full_name) ||
+    cleanString(studentUser?.name) ||
+    "aluno";
+  const aircraft = cleanString(flight.aircraft_ident) || "Aeronave não informada";
+  const missionName = cleanString(flight.name || flight.source_filename) || "Flight Review";
+
+  const emailResult = email ? await sendEmailToUser(emailLoaded.settings, brandLoaded.publicSettings, { email, name: studentName }, {
+    eventType: "flight.review_ready",
+    eyebrow: "Informações do voo prontas",
+    title: "Seu voo já está pronto para acessar",
+    intro: `Olá${studentName ? `, ${studentName}` : ""}.`,
+    body: "As informações do seu voo já estão disponíveis. Você pode acessar a telemetria, o Flight Review, as fotos e as figurinhas do voo pelo link público abaixo.",
+    details: [
+      ["Voo", missionName],
+      ["Aeronave", aircraft],
+    ],
+    ctaLabel: "Acessar voo",
+    url: share.publicUrl,
+  }) : { status: "skipped", reason: "Aluno sem e-mail cadastrado." };
+
+  const wppConfig = sanitizeWppFlightReviewReadyTemplate(wppLoaded?.settings?.flightReviewReadyTemplate);
+  let wppResult = { status: "skipped", reason: "Template WPP desativado.", providerMessageId: null };
+  if (wppConfig.enabled) {
+    if (!phone) {
+      wppResult = { status: "skipped", reason: "Aluno sem telefone cadastrado.", providerMessageId: null };
+    } else {
+      try {
+        const messageId = await sendWppTemplateMessage({
+          to: phone,
+          templateName: wppConfig.templateName,
+          language: wppConfig.language,
+          headerParameters: [],
+          bodyParameters: [share.token],
+        });
+        wppResult = { status: "sent", reason: null, providerMessageId: messageId };
+      } catch (error) {
+        wppResult = {
+          status: "failed",
+          reason: cleanString(error?.message) || "Falha ao enviar WhatsApp.",
+          providerMessageId: null,
+        };
+      }
+    }
+  }
+
+  return {
+    email,
+    phone,
+    publicUrl: share.publicUrl,
+    token: share.token,
+    status: emailResult?.status === "sent" || wppResult.status === "sent" ? "sent" : "skipped",
+    reason: emailResult?.reason || wppResult.reason || null,
+    providerMessageId: emailResult?.providerMessageId || wppResult.providerMessageId || null,
+    channels: {
+      email: {
+        address: email || null,
+        status: emailResult?.status === "sent" ? "sent" : "skipped",
+        reason: emailResult?.reason || null,
+        providerMessageId: emailResult?.providerMessageId || null,
+      },
+      wpp: {
+        phone: phone || null,
+        templateName: wppConfig.templateName,
+        language: wppConfig.language,
+        status: wppResult.status,
+        reason: wppResult.reason || null,
+        providerMessageId: wppResult.providerMessageId || null,
+      },
+    },
+  };
+}
+
 async function findPublicShareFlight(token, select = null) {
   const hash = sha256Hex(token);
   const queries = [
@@ -15781,12 +15880,37 @@ function defaultWppSettings() {
     phoneNumberId: "",
     graphApiVersion: "v23.0",
     apiKey: "",
+    flightReviewReadyTemplate: {
+      enabled: true,
+      templateName: "avisodevoo",
+      language: "pt_BR",
+    },
     businessName: null,
     verifiedName: null,
     displayPhoneNumber: null,
     connectionStatus: "not_tested",
     lastTestAt: null,
     lastError: null,
+  };
+}
+
+function defaultWppFlightReviewReadyTemplate() {
+  return {
+    enabled: true,
+    templateName: "avisodevoo",
+    language: "pt_BR",
+  };
+}
+
+function sanitizeWppFlightReviewReadyTemplate(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaults = defaultWppFlightReviewReadyTemplate();
+  const templateName = cleanString(raw.templateName || raw.name).toLowerCase();
+  const language = cleanString(raw.language) || defaults.language;
+  return {
+    enabled: raw.enabled === undefined ? defaults.enabled : raw.enabled !== false,
+    templateName: /^[a-z0-9_]+$/.test(templateName) ? templateName : defaults.templateName,
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : defaults.language,
   };
 }
 
@@ -15802,6 +15926,7 @@ function publicWppSettings(settings, updatedAt) {
     phoneNumberId: cleanString(safe.phoneNumberId),
     graphApiVersion: normalizeWppApiVersion(safe.graphApiVersion),
     apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
+    flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(safe.flightReviewReadyTemplate),
     businessName: cleanString(safe.businessName) || null,
     verifiedName: cleanString(safe.verifiedName) || null,
     displayPhoneNumber: cleanString(safe.displayPhoneNumber) || null,
@@ -15815,7 +15940,14 @@ function publicWppSettings(settings, updatedAt) {
 async function loadWppSettings() {
   const doc = await getSettingDoc(WPP_SETTINGS_KEY);
   const settings = doc ? parseJsonObject(doc.settings_json, defaultWppSettings()) : defaultWppSettings();
-  return { settings: { ...defaultWppSettings(), ...settings }, doc };
+  return {
+    settings: {
+      ...defaultWppSettings(),
+      ...settings,
+      flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(settings.flightReviewReadyTemplate),
+    },
+    doc,
+  };
 }
 
 async function persistWppSettings(settings, currentDoc = null) {
@@ -15838,12 +15970,27 @@ async function saveWppSettings(input) {
     phoneNumberId: cleanString(raw.phoneNumberId).slice(0, 128),
     graphApiVersion: normalizeWppApiVersion(raw.graphApiVersion),
     apiKey: cleanString(raw.apiKey) || cleanString(current.apiKey),
+    flightReviewReadyTemplate: raw.flightReviewReadyTemplate
+      ? sanitizeWppFlightReviewReadyTemplate(raw.flightReviewReadyTemplate)
+      : sanitizeWppFlightReviewReadyTemplate(current.flightReviewReadyTemplate),
     connectionStatus: "not_tested",
     lastError: null,
   };
   if (!next.wabaId || !next.phoneNumberId || !next.apiKey) {
     throw Object.assign(new Error("Informe WABA ID, Phone Number ID e token de acesso."), { status: 400 });
   }
+  const saved = await persistWppSettings(next, doc);
+  return publicWppSettings(next, saved.$updatedAt || nowIso());
+}
+
+async function saveWppNotificationTemplates(input) {
+  const { settings: current, doc } = await loadWppSettings();
+  const next = {
+    ...current,
+    flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(
+      input?.flightReviewReadyTemplate || input,
+    ),
+  };
   const saved = await persistWppSettings(next, doc);
   return publicWppSettings(next, saved.$updatedAt || nowIso());
 }
@@ -16002,9 +16149,17 @@ async function deleteWppTemplate(name) {
   return wppGraphRequest(settings, `${settings.wabaId}/message_templates?name=${encodeURIComponent(cleanName)}`, { method: "DELETE" });
 }
 
-async function sendWppTemplateTest(input) {
+function normalizeWppRecipientPhone(value) {
+  const digits = cleanString(value).replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55")) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+async function sendWppTemplateMessage(input) {
   const { settings } = await loadWppSettings();
-  const to = cleanString(input?.to).replace(/\D/g, "");
+  const to = normalizeWppRecipientPhone(input?.to);
   const name = cleanString(input?.templateName);
   const language = cleanString(input?.language) || "pt_BR";
   if (!name || to.length < 10) throw Object.assign(new Error("Informe o template e um telefone válido com DDI."), { status: 400 });
@@ -16020,6 +16175,10 @@ async function sendWppTemplateTest(input) {
     body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template", template },
   });
   return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+async function sendWppTemplateTest(input) {
+  return sendWppTemplateMessage(input);
 }
 
 async function loadEmailSettings() {
@@ -21269,6 +21428,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { share });
     }
 
+    if (action === "notifyStudentFlightReviewReady") {
+      const notification = await notifyStudentFlightReviewReady(actorUserId, payload);
+      return jsonResponse(res, 200, { notification });
+    }
+
     if (action === "sagaLookupFlight") {
       await requireInstructorOrAdmin(actorUserId);
       const result = await sagaLookupFlight(payload);
@@ -21793,6 +21957,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "saveWppSettings") {
       await requireAdmin(actorUserId);
       const settings = await saveWppSettings(payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "saveWppNotificationTemplates") {
+      await requireAdmin(actorUserId);
+      const settings = await saveWppNotificationTemplates(payload.settings || payload);
       return jsonResponse(res, 200, { settings });
     }
 

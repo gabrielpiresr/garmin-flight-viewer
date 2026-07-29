@@ -2,6 +2,7 @@ import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 import type {
   WppConnectionInput,
   WppConnectionSettings,
+  WppFlightReviewReadyTemplateSettings,
   WppTemplate,
   WppTemplateInput,
   WppTestTemplateInput,
@@ -52,6 +53,18 @@ export async function saveWppSettings(
 ): Promise<WppConnectionSettings> {
   const response = await execute({
     action: "saveWppSettings",
+    settings: input,
+  });
+  if (!response.settings)
+    throw new Error("Configuração do WhatsApp não retornada.");
+  return response.settings;
+}
+
+export async function saveWppNotificationTemplates(
+  input: { flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings },
+): Promise<WppConnectionSettings> {
+  const response = await execute({
+    action: "saveWppNotificationTemplates",
     settings: input,
   });
   if (!response.settings)

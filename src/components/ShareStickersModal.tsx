@@ -57,6 +57,10 @@ type Props = {
   onReset?: () => void;
 };
 
+type WorkspaceProps = Omit<Props, "title" | "subtitle" | "ariaLabel" | "onClose"> & {
+  onClose?: () => void;
+};
+
 type BusyAction = "share" | "download" | "copy" | null;
 type StickerMode = "ready" | "custom";
 
@@ -174,12 +178,16 @@ function StickerPreview({
   );
 }
 
-function ActionButton({
-  children,
+function PreviewActionButton({
+  label,
+  busyLabel,
+  icon,
   disabled,
   onClick,
 }: {
-  children: ReactNode;
+  label: string;
+  busyLabel?: string;
+  icon: ReactNode;
   disabled?: boolean;
   onClick: () => void;
 }) {
@@ -188,9 +196,11 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex min-w-[92px] flex-1 flex-col items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/80 px-3 py-3 text-xs font-medium text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[112px] sm:flex-none"
+      title={busyLabel || label}
+      aria-label={busyLabel || label}
+      className="grid h-11 w-11 place-items-center rounded-full border border-slate-700 bg-slate-950/85 text-slate-100 shadow-lg shadow-black/25 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
     >
-      {children}
+      {icon}
     </button>
   );
 }
@@ -262,10 +272,7 @@ function CustomControl({ control }: { control: ShareStickerControl }) {
   return <ToggleOption checked={control.checked} label={control.label} onChange={control.onChange} />;
 }
 
-export function ShareStickersModal({
-  title,
-  subtitle,
-  ariaLabel,
+export function ShareStickersWorkspace({
   shareText,
   loading,
   error,
@@ -278,7 +285,7 @@ export function ShareStickersModal({
   onCustomShowBackgroundChange,
   onClose,
   onReset,
-}: Props) {
+}: WorkspaceProps) {
   const { showToast } = useToast();
   const [activeIndex, setActiveIndex] = useState(0);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
@@ -292,7 +299,7 @@ export function ShareStickersModal({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onClose?.();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -366,37 +373,18 @@ export function ShareStickersModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[2000] flex items-stretch justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label={ariaLabel}>
-      <div className="flex h-full w-full max-w-5xl flex-col overflow-hidden bg-slate-950 shadow-2xl shadow-black sm:h-[min(880px,calc(100vh-2rem))] sm:rounded-3xl sm:border sm:border-slate-800">
-        <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-full p-2 text-slate-300 transition hover:bg-slate-800 hover:text-white"
-              aria-label="Fechar"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path d="M5.28 4.22a.75.75 0 00-1.06 1.06L8.94 10l-4.72 4.72a.75.75 0 101.06 1.06L10 11.06l4.72 4.72a.75.75 0 101.06-1.06L11.06 10l4.72-4.72a.75.75 0 00-1.06-1.06L10 8.94 5.28 4.22z" />
-              </svg>
-            </button>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-slate-100">{title}</p>
-              <p className="truncate text-xs text-slate-500">{subtitle}</p>
-            </div>
-          </div>
-          <InstagramIcon className="h-6 w-6 text-pink-300" />
-        </div>
-
+    <>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           {loading && !error ? (
             <TelemetryProcessingProgress className="min-h-[520px]" />
           ) : error ? (
             <div className="mx-auto flex min-h-[520px] max-w-md flex-col items-center justify-center gap-3 text-center">
               <p className="rounded-2xl border border-red-500/30 bg-red-950/30 px-4 py-3 text-sm text-red-100">{error}</p>
-              <button type="button" onClick={onClose} className="rounded-xl border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800">
-                Voltar
-              </button>
+              {onClose ? (
+                <button type="button" onClick={onClose} className="rounded-xl border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800">
+                  Voltar
+                </button>
+              ) : null}
             </div>
           ) : activeSticker ? (
             <div className="grid min-h-full gap-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
@@ -419,8 +407,28 @@ export function ShareStickersModal({
                     ))}
                   </div>
                 ) : null}
-                <div className="rounded-full border border-sky-400/20 bg-sky-500/10 px-3 py-1.5 text-center text-[11px] font-semibold text-sky-100 lg:hidden">
-                  Role para baixo para ver opções, download e compartilhamento
+                <div className="flex items-center justify-center gap-3 rounded-full border border-slate-700/80 bg-slate-900/80 px-3 py-2 shadow-xl shadow-black/20">
+                  <PreviewActionButton
+                    label="Baixar PNG"
+                    busyLabel={busyAction === "download" ? "Baixando..." : undefined}
+                    disabled={!activeSticker || busyAction !== null}
+                    onClick={() => void handleDownload()}
+                    icon={<DownloadIcon className="h-5 w-5" />}
+                  />
+                  <PreviewActionButton
+                    label="Copiar imagem"
+                    busyLabel={busyAction === "copy" ? "Copiando..." : undefined}
+                    disabled={!activeSticker || busyAction !== null || !supportsCopy}
+                    onClick={() => void handleCopy()}
+                    icon={<CopyIcon className="h-5 w-5" />}
+                  />
+                  <PreviewActionButton
+                    label="Compartilhar"
+                    busyLabel={busyAction === "share" ? "Abrindo..." : undefined}
+                    disabled={!activeSticker || busyAction !== null}
+                    onClick={() => void handleShare()}
+                    icon={<ShareIcon className="h-5 w-5" />}
+                  />
                 </div>
               </div>
 
@@ -493,35 +501,39 @@ export function ShareStickersModal({
           ) : null}
         </div>
 
-        <div className="border-t border-slate-800 bg-slate-900/90 px-4 py-4">
-          <p className="mb-3 text-sm font-semibold text-slate-100">Compartilhar com</p>
-          <div className="flex gap-3 overflow-x-auto pb-1">
-            <ActionButton disabled={!activeSticker || busyAction !== null} onClick={() => void handleShare()}>
-              <span className="grid h-12 w-12 place-items-center rounded-full bg-gradient-to-br from-fuchsia-500 via-pink-500 to-orange-400 text-white">
-                <InstagramIcon />
-              </span>
-              {busyAction === "share" ? "Abrindo..." : "Stories"}
-            </ActionButton>
-            <ActionButton disabled={!activeSticker || busyAction !== null} onClick={() => void handleShare()}>
-              <span className="grid h-12 w-12 place-items-center rounded-full bg-slate-800 text-slate-100">
-                <ShareIcon />
-              </span>
-              Compartilhar
-            </ActionButton>
-            <ActionButton disabled={!activeSticker || busyAction !== null} onClick={() => void handleDownload()}>
-              <span className="grid h-12 w-12 place-items-center rounded-full bg-slate-800 text-slate-100">
-                <DownloadIcon />
-              </span>
-              {busyAction === "download" ? "Baixando..." : "Download"}
-            </ActionButton>
-            <ActionButton disabled={!activeSticker || busyAction !== null || !supportsCopy} onClick={() => void handleCopy()}>
-              <span className="grid h-12 w-12 place-items-center rounded-full bg-slate-800 text-slate-100">
-                <CopyIcon />
-              </span>
-              Copiar
-            </ActionButton>
+    </>
+  );
+}
+
+export function ShareStickersModal({
+  title,
+  subtitle,
+  ariaLabel,
+  ...workspaceProps
+}: Props) {
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-stretch justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label={ariaLabel}>
+      <div className="flex h-full w-full max-w-5xl flex-col overflow-hidden bg-slate-950 shadow-2xl shadow-black sm:h-[min(880px,calc(100vh-2rem))] sm:rounded-3xl sm:border sm:border-slate-800">
+        <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={workspaceProps.onClose}
+              className="rounded-full p-2 text-slate-300 transition hover:bg-slate-800 hover:text-white"
+              aria-label="Fechar"
+            >
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M5.28 4.22a.75.75 0 00-1.06 1.06L8.94 10l-4.72 4.72a.75.75 0 101.06 1.06L10 11.06l4.72 4.72a.75.75 0 101.06-1.06L11.06 10l4.72-4.72a.75.75 0 00-1.06-1.06L10 8.94 5.28 4.22z" />
+              </svg>
+            </button>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-100">{title}</p>
+              <p className="truncate text-xs text-slate-500">{subtitle}</p>
+            </div>
           </div>
+          <InstagramIcon className="h-6 w-6 text-pink-300" />
         </div>
+        <ShareStickersWorkspace {...workspaceProps} />
       </div>
     </div>
   );

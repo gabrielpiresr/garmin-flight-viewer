@@ -3,6 +3,7 @@ export type WppConnectionSettings = {
   phoneNumberId: string;
   graphApiVersion: string;
   apiKeyConfigured: boolean;
+  flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
   businessName: string | null;
   verifiedName: string | null;
   displayPhoneNumber: string | null;
@@ -12,11 +13,18 @@ export type WppConnectionSettings = {
   updatedAt: string | null;
 };
 
+export type WppFlightReviewReadyTemplateSettings = {
+  enabled: boolean;
+  templateName: string;
+  language: string;
+};
+
 export type WppConnectionInput = {
   wabaId: string;
   phoneNumberId: string;
   graphApiVersion: string;
   apiKey: string;
+  flightReviewReadyTemplate?: WppFlightReviewReadyTemplateSettings;
 };
 
 export type WppTemplateCategory = "MARKETING" | "UTILITY" | "AUTHENTICATION";

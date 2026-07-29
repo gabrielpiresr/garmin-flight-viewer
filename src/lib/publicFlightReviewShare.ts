@@ -27,9 +27,35 @@ export type PublicFlightReviewIntro = {
   brandSettings: EmailBrandSettings | null;
 };
 
+export type FlightReviewReadyNotification = {
+  email: string | null;
+  phone?: string | null;
+  publicUrl: string;
+  token?: string;
+  status: "sent" | "skipped";
+  reason?: string;
+  channels?: {
+    email?: {
+      address: string | null;
+      status: "sent" | "skipped";
+      reason?: string | null;
+      providerMessageId?: string | null;
+    };
+    wpp?: {
+      phone: string | null;
+      templateName: string;
+      language: string;
+      status: "sent" | "skipped" | "failed";
+      reason?: string | null;
+      providerMessageId?: string | null;
+    };
+  };
+};
+
 type FunctionResponse = {
   share?: PublicFlightReviewShare & { publicUrl?: string; token?: string };
   intro?: PublicFlightReviewIntro;
+  notification?: FlightReviewReadyNotification;
   message?: string;
 };
 
@@ -60,6 +86,15 @@ export async function createFlightPublicShare(flightId: string): Promise<string>
   const publicUrl = response.share?.publicUrl;
   if (!publicUrl) throw new Error(response.message || "Link público não retornado.");
   return publicUrl;
+}
+
+export async function notifyStudentFlightReviewReady(flightId: string): Promise<FlightReviewReadyNotification> {
+  const origin = window.location.origin;
+  const response = await executeShareAction({ action: "notifyStudentFlightReviewReady", flightId, origin });
+  if (!response.notification?.publicUrl) {
+    throw new Error(response.message || "Notificacao nao retornada.");
+  }
+  return response.notification;
 }
 
 export async function getPublicFlightReviewShare(token: string): Promise<PublicFlightReviewShare> {
