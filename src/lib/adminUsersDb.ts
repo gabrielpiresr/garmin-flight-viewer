@@ -51,6 +51,7 @@ type AdminUsersResponse = {
   nextStatus?: string;
   executionId?: string;
   saga?: EnrollmentSagaResult;
+  access?: EnrollmentAccessResult;
   creditSaga?: CreditSagaResult;
   data?: SagaAnacPerson;
   ok?: boolean;
@@ -61,6 +62,14 @@ export type EnrollmentSagaResult = {
   skipped?: boolean;
   sagaUserId?: string;
   message?: string;
+};
+
+export type EnrollmentAccessResult = {
+  ok?: boolean;
+  already?: boolean;
+  reason?: string;
+  message?: string;
+  updates?: Record<string, unknown>;
 };
 
 export type CreditSagaResult = {
@@ -114,12 +123,47 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function isExecutionNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  const type = String((error as { type?: string }).type || "").toLowerCase();
+  const code = Number((error as { code?: number }).code || 0);
+  return (
+    code === 404 ||
+    type === "execution_not_found" ||
+    message.includes("execution with the requested id could not be found") ||
+    message.includes("execution_not_found") ||
+    message.includes("requested id could not be found")
+  );
+}
+
+async function getAdminUsersExecutionWithRetry(executionId: string, attempts = 8) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await functions!.getExecution({
+        functionId: ADMIN_USERS_FUNCTION_ID!,
+        executionId,
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isExecutionNotFoundError(error) || attempt >= attempts - 1) throw error;
+      await sleep(400 + attempt * 400);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Execução não encontrada.");
+}
+
 async function executeAdminUsers(payload: Record<string, unknown>): Promise<AdminUsersResponse> {
   if (!functions || !ADMIN_USERS_FUNCTION_ID) {
     throw new Error("Função de usuários não configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
   }
 
-  const execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
+  const execution = await functions.createExecution({
+    functionId: ADMIN_USERS_FUNCTION_ID,
+    body: JSON.stringify(payload),
+    async: false,
+  });
   const response = parseResponse(execution.responseBody);
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
     throw new Error(response.message || "Falha ao executar função de usuários.");
@@ -129,23 +173,37 @@ async function executeAdminUsers(payload: Record<string, unknown>): Promise<Admi
 
 async function executeAdminUsersAsync(payload: Record<string, unknown>, timeoutMs = 120000): Promise<AdminUsersResponse> {
   if (!functions || !ADMIN_USERS_FUNCTION_ID) {
-    throw new Error("FunÃ§Ã£o de usuÃ¡rios nÃ£o configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
+    throw new Error("Função de usuários não configurada. Defina VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID.");
   }
 
-  const created = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), true);
+  const created = await functions.createExecution({
+    functionId: ADMIN_USERS_FUNCTION_ID,
+    body: JSON.stringify(payload),
+    async: true,
+  });
+  const executionId = String(created.$id || "").trim();
+  if (!executionId) {
+    throw new Error("A execução da function admin-users não retornou um ID válido.");
+  }
+
   const startedAt = Date.now();
-  let execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
+  let execution = await getAdminUsersExecutionWithRetry(executionId);
   while (execution.status === "processing" || execution.status === "waiting") {
     if (Date.now() - startedAt > timeoutMs) {
       throw new Error("A execucao ainda esta em andamento no Appwrite. Aguarde um pouco e confira novamente.");
     }
     await sleep(2000);
-    execution = await functions.getExecution(ADMIN_USERS_FUNCTION_ID, created.$id);
+    execution = await getAdminUsersExecutionWithRetry(executionId);
   }
 
   const response = parseResponse(execution.responseBody);
   if (execution.status === "failed" || execution.responseStatusCode >= 400) {
-    throw new Error(response.message || "Falha ao executar funcao de usuarios.");
+    throw new Error(
+      response.message ||
+        (execution.responseStatusCode === 422
+          ? "Pendências na matrícula (perfil, documentos ou ANAC). Abra o detalhe do lead e confira."
+          : "Falha ao executar funcao de usuarios."),
+    );
   }
   return response;
 }
@@ -183,7 +241,12 @@ export async function runEnrollmentAutomation(input: {
   createInSaga?: boolean;
   ignoreSagaDuplicates?: boolean;
   useStudentEmail?: boolean;
-}): Promise<{ createdContracts: number; nextStatus: string; saga?: EnrollmentSagaResult }> {
+}): Promise<{
+  createdContracts: number;
+  nextStatus: string;
+  saga?: EnrollmentSagaResult;
+  access?: EnrollmentAccessResult;
+}> {
   const response = await executeAdminUsersAsync({
     action: "runEnrollmentAutomation",
     leadId: input.leadId,
@@ -198,6 +261,7 @@ export async function runEnrollmentAutomation(input: {
     createdContracts: response.createdContracts ?? 0,
     nextStatus: response.nextStatus ?? "aguardando_assinatura_pagamento",
     saga: response.saga,
+    access: response.access,
   };
 }
 

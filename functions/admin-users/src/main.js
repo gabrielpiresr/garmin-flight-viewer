@@ -2468,17 +2468,28 @@ async function fetchPlaneItAircraftTotals(input = {}) {
   return { totals, updatedAt: nowIso() };
 }
 
-function sanitizeGoproCredentials(input = {}, current = {}) {
+function sanitizeGoproCredentials(input = {}, current = {}, options = {}) {
+  const nextEmail = cleanString(input.email ?? current.email).toLowerCase();
   const keepPassword = input.password === undefined || input.password === null || input.password === "";
+  const nextPassword = keepPassword ? String(current.password || "") : String(input.password || "");
   const keepAccessToken = input.accessToken === undefined || input.accessToken === null || input.accessToken === "";
-  const rawAccessToken = keepAccessToken ? cleanString(current.accessToken) : cleanString(input.accessToken);
+  const hasCurrentCredentials = current.email !== undefined || current.password !== undefined || current.accessToken !== undefined;
+  const emailChanged = hasCurrentCredentials && input.email !== undefined && nextEmail !== cleanString(current.email).toLowerCase();
+  const passwordChanged = hasCurrentCredentials && !keepPassword && nextPassword !== String(current.password || "");
+  const passwordSubmittedForRefresh = options.clearAccessTokenOnPasswordSubmit === true && !keepPassword;
+  const authChanged = emailChanged || passwordChanged || passwordSubmittedForRefresh;
+  const rawAccessToken = keepAccessToken && authChanged
+    ? ""
+    : keepAccessToken
+      ? cleanString(current.accessToken)
+      : cleanString(input.accessToken);
   const accessTokenMatch = rawAccessToken.match(/(?:^|;\s*)gp_access_token=([^;\s]+)/i);
   return {
-    email: cleanString(input.email ?? current.email).toLowerCase(),
-    password: keepPassword ? String(current.password || "") : String(input.password || ""),
+    email: nextEmail,
+    password: nextPassword,
     accessToken: accessTokenMatch ? accessTokenMatch[1] : rawAccessToken,
     updatedAt: input.updatedAt || current.updatedAt || null,
-    lastSyncAt: input.lastSyncAt || current.lastSyncAt || null,
+    lastSyncAt: authChanged ? null : input.lastSyncAt || current.lastSyncAt || null,
     lastError: cleanString(input.lastError ?? current.lastError),
   };
 }
@@ -2506,7 +2517,11 @@ async function saveGoproCredentials(input = {}) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
   }
   const current = await loadGoproCredentials();
-  const settings = sanitizeGoproCredentials({ ...input, updatedAt: nowIso(), lastError: "" }, current);
+  const settings = sanitizeGoproCredentials(
+    { ...input, updatedAt: nowIso(), lastError: "" },
+    current,
+    { clearAccessTokenOnPasswordSubmit: true },
+  );
   if (!settings.email) {
     throw Object.assign(new Error("Informe o login do admin na GoPro."), { status: 400 });
   }
@@ -3809,21 +3824,35 @@ function sagaTestEmailAlias(email) {
   return `gabrielpirexs+${localPart || "saga"}@gmail.com`;
 }
 
-async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias = false, createOnly = false } = {}) {
+async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias = false, createOnly = false, forceUserId = "" } = {}) {
   const sagaId = cleanString(sagaUser.id);
-  const email = useEmailAlias ? sagaTestEmailAlias(sagaUser.email) : cleanString(sagaUser.email).toLowerCase();
+  const realEmail = cleanString(sagaUser.email).toLowerCase();
+  const useAliasForAuth = testMode && useEmailAlias === true;
+  const email = useAliasForAuth ? sagaTestEmailAlias(realEmail) : realEmail;
   if (!sagaId || !sagaEmailLooksValid(email)) {
     return { skipped: true, reason: "missing_email_or_id", userId: null };
   }
 
   const cpfPassword = cleanString(sagaUser.cpf).replace(/\D/g, "");
   const shouldUseCpfPassword = cpfPassword.length === 11;
-  const deterministicId = sagaDocId(testMode ? "saga_test" : useEmailAlias ? "saga_alias" : "saga", sagaId);
+  const deterministicId = sagaDocId(testMode ? "saga_test" : "saga", sagaId);
   let authUser = null;
-  try {
-    authUser = await users.get({ userId: deterministicId });
-  } catch {
+  const forcedUserId = cleanString(forceUserId);
+  if (forcedUserId) {
+    authUser = await users.get({ userId: forcedUserId }).catch(() => null);
+  }
+  if (!authUser && !useAliasForAuth && realEmail && realEmail !== email) {
+    authUser = await findAuthUserByEmail(realEmail);
+  }
+  if (!authUser && !useAliasForAuth) {
     authUser = await findAuthUserByEmail(email);
+  }
+  if (!authUser) {
+    try {
+      authUser = await users.get({ userId: deterministicId });
+    } catch {
+      authUser = await findAuthUserByEmail(email);
+    }
   }
 
   let created = false;
@@ -7195,7 +7224,12 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
       ? await fetchSagaUserDetail(importCookieJar, sagaUser.id, { apiV2Token }).catch(() => null)
       : null;
     const sagaUserWithDetail = detail ? { ...sagaUser, detail } : sagaUser;
-    const result = await importSagaUser(sagaUserWithDetail, role, { testMode, useEmailAlias, createOnly: immutableSync });
+    const result = await importSagaUser(sagaUserWithDetail, role, {
+      testMode,
+      useEmailAlias,
+      createOnly: immutableSync,
+      forceUserId: testMode ? "" : alreadyKnownUserId,
+    });
     if (result.userId && cleanString(sagaUser.codigoAnac)) usersByCanac.set(cleanString(sagaUser.codigoAnac), result.userId);
     if (result.userId && cleanString(sagaUser.id)) usersBySagaId.set(cleanString(sagaUser.id), result.userId);
     if (result.userId) {
@@ -9587,6 +9621,19 @@ async function persistSagaUserIdOnProfile(recipientUserId, sagaUserId) {
   }
 }
 
+/** Após matrícula: aluno deve ficar habilitado (is_active) e com acesso liberado (approval_status). */
+async function approveStudentAccessForEnrollment(recipientUserId) {
+  if (!recipientUserId) return { ok: false, reason: "missing_user" };
+  const profileDoc = await getProfileByUserId(recipientUserId);
+  if (!profileDoc?.$id) return { ok: false, reason: "missing_profile" };
+  const updates = {};
+  if (profileDoc.is_active === false) updates.is_active = true;
+  if (cleanString(profileDoc.approval_status) !== "approved") updates.approval_status = "approved";
+  if (Object.keys(updates).length === 0) return { ok: true, already: true };
+  await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileDoc.$id, updates);
+  return { ok: true, updates };
+}
+
 async function findSagaUserIdByAnac(cookieJar, anacCode) {
   const anacDigits = sagaOnlyDigits(anacCode);
   if (!anacDigits) return null;
@@ -9968,7 +10015,9 @@ async function sendContractNotificationEmail(contract, recipient) {
       intro: `Olá${recipient.name ? `, ${recipient.name}` : ""}.`,
       body: `O documento "${contract.template_name || "Contrato"}" está disponível na plataforma para assinatura.`,
       ctaLabel: "Abrir plataforma",
-      url: brand.appUrl || APP_URL,
+      // Empty URL lets resolveActionUrl pick brand.appUrl (preferred) then APP_URL.
+      // Avoid baking a stale APP_URL absolute host into the CTA when brand is configured.
+      url: "",
     });
     if (result?.status !== "skipped") {
       await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contract.$id, {
@@ -10095,10 +10144,20 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
     });
   }
 
+  let access = null;
+  if (recipientUserId) {
+    try {
+      access = await approveStudentAccessForEnrollment(recipientUserId);
+    } catch (err) {
+      access = { ok: false, message: String(err?.message || err) };
+    }
+  }
+
   return {
     createdContracts: created.length,
     nextStatus: "aguardando_assinatura_pagamento",
     saga: sagaResult,
+    access,
   };
 }
 
@@ -14858,6 +14917,105 @@ async function createFlightPublicShare(actorUserId, payload = {}) {
   return { publicUrl, token };
 }
 
+async function notifyStudentFlightReviewReady(actorUserId, payload = {}) {
+  await requireInstructorOrAdmin(actorUserId);
+  if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
+  const flightId = cleanString(payload.flightId);
+  if (!flightId) throw Object.assign(new Error("Voo nao informado."), { status: 400 });
+
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId);
+  await authorizeFlightShare(actorUserId, flight);
+
+  const studentUserId = cleanString(flight.student_user_id || flight.user_id);
+  if (!studentUserId) throw Object.assign(new Error("Aluno nao vinculado a este voo."), { status: 422 });
+
+  const [studentProfile, studentUser, emailLoaded, brandLoaded, wppLoaded, share] = await Promise.all([
+    getProfileByUserId(studentUserId).catch(() => null),
+    users.get({ userId: studentUserId }).catch(() => null),
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+    loadWppSettings().catch(() => null),
+    createFlightPublicShare(actorUserId, payload),
+  ]);
+
+  const email = cleanString(studentUser?.email || studentProfile?.email).toLowerCase();
+  const phone = normalizeWppRecipientPhone(studentProfile?.phone);
+  if (!email && !phone) throw Object.assign(new Error("Aluno sem e-mail ou telefone cadastrado."), { status: 422 });
+
+  const studentName =
+    cleanString(studentProfile?.nickname) ||
+    cleanString(studentProfile?.full_name) ||
+    cleanString(studentUser?.name) ||
+    "aluno";
+  const aircraft = cleanString(flight.aircraft_ident) || "Aeronave não informada";
+  const missionName = cleanString(flight.name || flight.source_filename) || "Flight Review";
+
+  const emailResult = email ? await sendEmailToUser(emailLoaded.settings, brandLoaded.publicSettings, { email, name: studentName }, {
+    eventType: "flight.review_ready",
+    eyebrow: "Informações do voo prontas",
+    title: "Seu voo já está pronto para acessar",
+    intro: `Olá${studentName ? `, ${studentName}` : ""}.`,
+    body: "As informações do seu voo já estão disponíveis. Você pode acessar a telemetria, o Flight Review, as fotos e as figurinhas do voo pelo link público abaixo.",
+    details: [
+      ["Voo", missionName],
+      ["Aeronave", aircraft],
+    ],
+    ctaLabel: "Acessar voo",
+    url: share.publicUrl,
+  }) : { status: "skipped", reason: "Aluno sem e-mail cadastrado." };
+
+  const wppConfig = sanitizeWppFlightReviewReadyTemplate(wppLoaded?.settings?.flightReviewReadyTemplate);
+  let wppResult = { status: "skipped", reason: "Template WPP desativado.", providerMessageId: null };
+  if (wppConfig.enabled) {
+    if (!phone) {
+      wppResult = { status: "skipped", reason: "Aluno sem telefone cadastrado.", providerMessageId: null };
+    } else {
+      try {
+        const messageId = await sendWppTemplateMessage({
+          to: phone,
+          templateName: wppConfig.templateName,
+          language: wppConfig.language,
+          headerParameters: [],
+          bodyParameters: [share.token],
+        });
+        wppResult = { status: "sent", reason: null, providerMessageId: messageId };
+      } catch (error) {
+        wppResult = {
+          status: "failed",
+          reason: cleanString(error?.message) || "Falha ao enviar WhatsApp.",
+          providerMessageId: null,
+        };
+      }
+    }
+  }
+
+  return {
+    email,
+    phone,
+    publicUrl: share.publicUrl,
+    token: share.token,
+    status: emailResult?.status === "sent" || wppResult.status === "sent" ? "sent" : "skipped",
+    reason: emailResult?.reason || wppResult.reason || null,
+    providerMessageId: emailResult?.providerMessageId || wppResult.providerMessageId || null,
+    channels: {
+      email: {
+        address: email || null,
+        status: emailResult?.status === "sent" ? "sent" : "skipped",
+        reason: emailResult?.reason || null,
+        providerMessageId: emailResult?.providerMessageId || null,
+      },
+      wpp: {
+        phone: phone || null,
+        templateName: wppConfig.templateName,
+        language: wppConfig.language,
+        status: wppResult.status,
+        reason: wppResult.reason || null,
+        providerMessageId: wppResult.providerMessageId || null,
+      },
+    },
+  };
+}
+
 async function findPublicShareFlight(token, select = null) {
   const hash = sha256Hex(token);
   const queries = [
@@ -15131,13 +15289,56 @@ function normalizeAbsoluteUrl(value) {
   }
 }
 
+function isTransientAppHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host.endsWith(".vercel.app");
+}
+
+function pickEmailAppBase(brand) {
+  const brandBase = normalizeAbsoluteUrl(brand?.appUrl);
+  const appBase = normalizeAbsoluteUrl(APP_URL);
+  const brandTransient = (() => {
+    try { return Boolean(brandBase) && isTransientAppHost(new URL(brandBase).hostname); }
+    catch { return true; }
+  })();
+  const appTransient = (() => {
+    try { return Boolean(appBase) && isTransientAppHost(new URL(appBase).hostname); }
+    catch { return true; }
+  })();
+  // Prefer a stable production host over leftover Vercel preview / localhost values.
+  if (brandBase && !brandTransient) return brandBase;
+  if (appBase && !appTransient) return appBase;
+  return brandBase || appBase;
+}
+
 function resolveActionUrl(value, brand) {
   const raw = cleanString(value);
-  const base = normalizeAbsoluteUrl(brand?.appUrl) || normalizeAbsoluteUrl(APP_URL);
+  const brandBase = normalizeAbsoluteUrl(brand?.appUrl);
+  const appBase = normalizeAbsoluteUrl(APP_URL);
+  const base = pickEmailAppBase(brand);
   if (/^https?:\/\//i.test(raw)) {
     try {
       const parsed = new URL(raw);
-      if ((parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && base) {
+      let shouldRewrite = false;
+      if (base) {
+        const baseHost = new URL(base).hostname;
+        if (parsed.hostname !== baseHost) {
+          if (isTransientAppHost(parsed.hostname)) {
+            // Prefer configured platform URL over localhost / old Vercel preview hosts.
+            shouldRewrite = true;
+          } else if (brandBase && appBase) {
+            // If caller passed the function APP_URL but brand has the real domain, rewrite.
+            try {
+              shouldRewrite = parsed.origin === new URL(appBase).origin
+                && new URL(brandBase).origin !== parsed.origin
+                && !isTransientAppHost(new URL(brandBase).hostname);
+            } catch {
+              shouldRewrite = false;
+            }
+          }
+        }
+      }
+      if (shouldRewrite) {
         return new URL(`${parsed.pathname}${parsed.search}${parsed.hash}`, `${base}/`).toString();
       }
     } catch {
@@ -15694,12 +15895,37 @@ function defaultWppSettings() {
     phoneNumberId: "",
     graphApiVersion: "v23.0",
     apiKey: "",
+    flightReviewReadyTemplate: {
+      enabled: true,
+      templateName: "avisodevoo",
+      language: "pt_BR",
+    },
     businessName: null,
     verifiedName: null,
     displayPhoneNumber: null,
     connectionStatus: "not_tested",
     lastTestAt: null,
     lastError: null,
+  };
+}
+
+function defaultWppFlightReviewReadyTemplate() {
+  return {
+    enabled: true,
+    templateName: "avisodevoo",
+    language: "pt_BR",
+  };
+}
+
+function sanitizeWppFlightReviewReadyTemplate(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaults = defaultWppFlightReviewReadyTemplate();
+  const templateName = cleanString(raw.templateName || raw.name).toLowerCase();
+  const language = cleanString(raw.language) || defaults.language;
+  return {
+    enabled: raw.enabled === undefined ? defaults.enabled : raw.enabled !== false,
+    templateName: /^[a-z0-9_]+$/.test(templateName) ? templateName : defaults.templateName,
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : defaults.language,
   };
 }
 
@@ -15715,6 +15941,7 @@ function publicWppSettings(settings, updatedAt) {
     phoneNumberId: cleanString(safe.phoneNumberId),
     graphApiVersion: normalizeWppApiVersion(safe.graphApiVersion),
     apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
+    flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(safe.flightReviewReadyTemplate),
     businessName: cleanString(safe.businessName) || null,
     verifiedName: cleanString(safe.verifiedName) || null,
     displayPhoneNumber: cleanString(safe.displayPhoneNumber) || null,
@@ -15728,7 +15955,14 @@ function publicWppSettings(settings, updatedAt) {
 async function loadWppSettings() {
   const doc = await getSettingDoc(WPP_SETTINGS_KEY);
   const settings = doc ? parseJsonObject(doc.settings_json, defaultWppSettings()) : defaultWppSettings();
-  return { settings: { ...defaultWppSettings(), ...settings }, doc };
+  return {
+    settings: {
+      ...defaultWppSettings(),
+      ...settings,
+      flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(settings.flightReviewReadyTemplate),
+    },
+    doc,
+  };
 }
 
 async function persistWppSettings(settings, currentDoc = null) {
@@ -15751,12 +15985,27 @@ async function saveWppSettings(input) {
     phoneNumberId: cleanString(raw.phoneNumberId).slice(0, 128),
     graphApiVersion: normalizeWppApiVersion(raw.graphApiVersion),
     apiKey: cleanString(raw.apiKey) || cleanString(current.apiKey),
+    flightReviewReadyTemplate: raw.flightReviewReadyTemplate
+      ? sanitizeWppFlightReviewReadyTemplate(raw.flightReviewReadyTemplate)
+      : sanitizeWppFlightReviewReadyTemplate(current.flightReviewReadyTemplate),
     connectionStatus: "not_tested",
     lastError: null,
   };
   if (!next.wabaId || !next.phoneNumberId || !next.apiKey) {
     throw Object.assign(new Error("Informe WABA ID, Phone Number ID e token de acesso."), { status: 400 });
   }
+  const saved = await persistWppSettings(next, doc);
+  return publicWppSettings(next, saved.$updatedAt || nowIso());
+}
+
+async function saveWppNotificationTemplates(input) {
+  const { settings: current, doc } = await loadWppSettings();
+  const next = {
+    ...current,
+    flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(
+      input?.flightReviewReadyTemplate || input,
+    ),
+  };
   const saved = await persistWppSettings(next, doc);
   return publicWppSettings(next, saved.$updatedAt || nowIso());
 }
@@ -15915,9 +16164,17 @@ async function deleteWppTemplate(name) {
   return wppGraphRequest(settings, `${settings.wabaId}/message_templates?name=${encodeURIComponent(cleanName)}`, { method: "DELETE" });
 }
 
-async function sendWppTemplateTest(input) {
+function normalizeWppRecipientPhone(value) {
+  const digits = cleanString(value).replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55")) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+async function sendWppTemplateMessage(input) {
   const { settings } = await loadWppSettings();
-  const to = cleanString(input?.to).replace(/\D/g, "");
+  const to = normalizeWppRecipientPhone(input?.to);
   const name = cleanString(input?.templateName);
   const language = cleanString(input?.language) || "pt_BR";
   if (!name || to.length < 10) throw Object.assign(new Error("Informe o template e um telefone válido com DDI."), { status: 400 });
@@ -15933,6 +16190,10 @@ async function sendWppTemplateTest(input) {
     body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template", template },
   });
   return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+async function sendWppTemplateTest(input) {
+  return sendWppTemplateMessage(input);
 }
 
 async function loadEmailSettings() {
@@ -21182,6 +21443,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { share });
     }
 
+    if (action === "notifyStudentFlightReviewReady") {
+      const notification = await notifyStudentFlightReviewReady(actorUserId, payload);
+      return jsonResponse(res, 200, { notification });
+    }
+
     if (action === "sagaLookupFlight") {
       await requireInstructorOrAdmin(actorUserId);
       const result = await sagaLookupFlight(payload);
@@ -21706,6 +21972,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "saveWppSettings") {
       await requireAdmin(actorUserId);
       const settings = await saveWppSettings(payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "saveWppNotificationTemplates") {
+      await requireAdmin(actorUserId);
+      const settings = await saveWppNotificationTemplates(payload.settings || payload);
       return jsonResponse(res, 200, { settings });
     }
 

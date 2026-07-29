@@ -1,6 +1,8 @@
 /** Gallery / upload preview helpers — keep grid cells off full-resolution originals. */
 
 export const GALLERY_THUMB_MAX_EDGE = 480;
+/** Large preview for lightbox (same layout size as full image, sharper than grid thumb). */
+export const LIGHTBOX_PREVIEW_MAX_EDGE = 1680;
 export const UPLOAD_PREVIEW_MAX_EDGE = 320;
 
 const previewUrlCache = new Map<string, string>();
@@ -147,6 +149,47 @@ export async function getDownscaledPreviewUrl(
   })();
 
   previewInflight.set(src, task);
+  return task;
+}
+
+const lightboxPreviewUrlCache = new Map<string, string>();
+const lightboxPreviewInflight = new Map<string, Promise<string>>();
+
+function lightboxPreviewCacheKey(src: string, maxEdge: number, quality: number): string {
+  return `${src}::${maxEdge}::${quality}`;
+}
+
+/**
+ * Higher-quality downscaled preview for the photo lightbox (larger max edge + JPEG quality).
+ */
+export async function getLightboxPreviewUrl(
+  src: string,
+  maxEdge: number = LIGHTBOX_PREVIEW_MAX_EDGE,
+  quality = 0.84,
+): Promise<string> {
+  const key = lightboxPreviewCacheKey(src, maxEdge, quality);
+  const cached = lightboxPreviewUrlCache.get(key);
+  if (cached) return cached;
+
+  const existing = lightboxPreviewInflight.get(key);
+  if (existing) return existing;
+
+  const task = (async () => {
+    await acquireDecodeSlot();
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const previewUrl = await createLocalPreviewUrl(blob, maxEdge, quality);
+      lightboxPreviewUrlCache.set(key, previewUrl);
+      return previewUrl;
+    } finally {
+      releaseDecodeSlot();
+      lightboxPreviewInflight.delete(key);
+    }
+  })();
+
+  lightboxPreviewInflight.set(key, task);
   return task;
 }
 

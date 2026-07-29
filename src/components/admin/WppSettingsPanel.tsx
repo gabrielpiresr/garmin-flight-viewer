@@ -5,6 +5,7 @@ import {
   getWppSettings,
   listWppTemplates,
   saveWppSettings,
+  saveWppNotificationTemplates,
   sendWppTemplateTest,
   testWppConnection,
   updateWppTemplate,
@@ -12,6 +13,7 @@ import {
 import type {
   WppConnectionInput,
   WppConnectionSettings,
+  WppFlightReviewReadyTemplateSettings,
   WppTemplate,
   WppTemplateCategory,
   WppTemplateInput,
@@ -28,6 +30,12 @@ const EMPTY_CONNECTION: WppConnectionInput = {
   phoneNumberId: "",
   graphApiVersion: "v23.0",
   apiKey: "",
+};
+
+const DEFAULT_FLIGHT_REVIEW_TEMPLATE: WppFlightReviewReadyTemplateSettings = {
+  enabled: true,
+  templateName: "avisodevoo",
+  language: "pt_BR",
 };
 
 const EMPTY_TEMPLATE: WppTemplateInput = {
@@ -209,10 +217,12 @@ export function WppSettingsPanel() {
   const { showToast } = useToast();
   const [settings, setSettings] = useState<WppConnectionSettings | null>(null);
   const [form, setForm] = useState<WppConnectionInput>(EMPTY_CONNECTION);
+  const [flightReviewTemplate, setFlightReviewTemplate] = useState<WppFlightReviewReadyTemplateSettings>(DEFAULT_FLIGHT_REVIEW_TEMPLATE);
   const [templates, setTemplates] = useState<WppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingTemplates, setSavingTemplates] = useState(false);
   const [testing, setTesting] = useState(false);
   const [search, setSearch] = useState("");
   const [editorTemplate, setEditorTemplate] = useState<WppTemplate | "new" | null>(null);
@@ -232,6 +242,7 @@ export function WppSettingsPanel() {
     try {
       const next = await getWppSettings();
       setSettings(next); setForm(connectionForm(next));
+      setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
       if (next.apiKeyConfigured && next.wabaId) await loadTemplates();
     } catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar integração." }); }
     finally { setLoading(false); }
@@ -245,7 +256,7 @@ export function WppSettingsPanel() {
     }
     setSaving(true);
     try {
-      await saveWppSettings(form);
+      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate });
       const tested = await testWppConnection();
       setSettings(tested); setForm(connectionForm(tested));
       showToast({ variant: "success", message: "Conta do WhatsApp conectada com sucesso." });
@@ -259,6 +270,30 @@ export function WppSettingsPanel() {
     try { const next = await testWppConnection(); setSettings(next); showToast({ variant: "success", message: "Conexão funcionando normalmente." }); }
     catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha no teste de conexão." }); }
     finally { setTesting(false); }
+  }
+
+  async function saveNotificationTemplates() {
+    if (!flightReviewTemplate.templateName.trim()) {
+      showToast({ variant: "warning", message: "Informe o template do aviso de voo." });
+      return;
+    }
+    setSavingTemplates(true);
+    try {
+      const next = await saveWppNotificationTemplates({
+        flightReviewReadyTemplate: {
+          ...flightReviewTemplate,
+          templateName: flightReviewTemplate.templateName.trim().toLowerCase(),
+          language: flightReviewTemplate.language.trim() || "pt_BR",
+        },
+      });
+      setSettings(next);
+      setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
+      showToast({ variant: "success", message: "Templates de notificação salvos." });
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
+    } finally {
+      setSavingTemplates(false);
+    }
   }
 
   async function removeTemplate() {
@@ -293,6 +328,32 @@ export function WppSettingsPanel() {
         {settings?.lastError ? <div className="mx-5 mb-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-xs text-red-300 sm:mx-6">{settings.lastError}</div> : null}
         {connected ? <div className="mx-5 mb-4 grid gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4 text-xs sm:mx-6 sm:grid-cols-3"><div><span className="block text-slate-600">Conta</span><strong className="mt-1 block text-slate-300">{settings.businessName || "Conta Meta"}</strong></div><div><span className="block text-slate-600">Número verificado</span><strong className="mt-1 block text-slate-300">{settings.displayPhoneNumber || settings.verifiedName || "Conectado"}</strong></div><div><span className="block text-slate-600">Último teste</span><strong className="mt-1 block text-slate-300">{settings.lastTestAt ? new Date(settings.lastTestAt).toLocaleString("pt-BR") : "Agora"}</strong></div></div> : null}
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-800 px-5 py-4 sm:px-6"><button type="button" onClick={() => void testConnection()} disabled={testing || !settings?.apiKeyConfigured} className={secondaryButton}>{testing ? "Testando..." : "Testar conexão"}</button><button type="button" onClick={() => void connect()} disabled={saving} className={primaryButton}>{saving ? "Conectando..." : connected ? "Salvar e reconectar" : "Conectar conta"}</button></div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">
+        <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <h2 className="font-semibold text-slate-100">Automações de templates</h2>
+            <p className="mt-1 text-sm text-slate-500">Linkagem usada pelos disparos automáticos e manuais da plataforma.</p>
+          </div>
+          <button type="button" onClick={() => void saveNotificationTemplates()} disabled={savingTemplates} className={primaryButton}>{savingTemplates ? "Salvando..." : "Salvar templates"}</button>
+        </div>
+        <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end sm:p-6">
+          <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+            <input type="checkbox" checked={flightReviewTemplate.enabled} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+            Enviar WhatsApp no botão Notificar aluno
+          </label>
+          <label className="text-xs font-medium text-slate-400">Aviso de voo pronto
+            <input value={flightReviewTemplate.templateName} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="avisodevoo" className={inputClass} />
+          </label>
+          <label className="text-xs font-medium text-slate-400">Idioma
+            <input value={flightReviewTemplate.language} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+          </label>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+            <strong className="block text-slate-300">{"{{1}}"}</strong>
+            ID do link público
+          </div>
+        </div>
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">

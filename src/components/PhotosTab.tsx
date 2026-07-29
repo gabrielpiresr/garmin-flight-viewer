@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type TouchEvent } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "../contexts/AuthContext";
 import {
   deleteFlightPhoto,
@@ -10,10 +11,25 @@ import {
   createLocalPreviewUrl,
   deriveThumbUrl,
   getDownscaledPreviewUrl,
+  getLightboxPreviewUrl,
   probeImageUrl,
   UPLOAD_PREVIEW_MAX_EDGE,
 } from "../lib/photoThumbnails";
 import { Skeleton } from "./ui/Skeleton";
+
+const LIGHTBOX_SWIPE_THRESHOLD_PX = 56;
+const LIGHTBOX_HISTORY_STATE_KEY = "flightPhotoLightbox";
+
+/** Per-photo sharp preview URLs for instant lightbox swaps. */
+const lightboxPreviewByPhotoId = new Map<string, string>();
+
+function preloadImageUrl(url: string | undefined | null): void {
+  const src = String(url || "").trim();
+  if (!src || typeof Image === "undefined") return;
+  const img = new Image();
+  img.decoding = "async";
+  img.src = src;
+}
 
 type UploadItemStatus = "queued" | "uploading" | "done" | "error";
 
@@ -98,6 +114,39 @@ export function PhotosTab({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const uploadItemsRef = useRef<UploadItem[]>([]);
+  const lightboxHistoryPushedRef = useRef(false);
+  const lightboxWasOpenRef = useRef(false);
+
+  const closePhotoLightbox = useCallback(() => {
+    if (lightboxHistoryPushedRef.current) {
+      lightboxHistoryPushedRef.current = false;
+      window.history.back();
+      return;
+    }
+    setActivePhotoId(null);
+  }, []);
+
+  useEffect(() => {
+    const isOpen = Boolean(activePhotoId);
+    if (isOpen && !lightboxWasOpenRef.current) {
+      window.history.pushState({ [LIGHTBOX_HISTORY_STATE_KEY]: "1" }, "");
+      lightboxHistoryPushedRef.current = true;
+    }
+    if (!isOpen) {
+      lightboxHistoryPushedRef.current = false;
+    }
+    lightboxWasOpenRef.current = isOpen;
+  }, [activePhotoId]);
+
+  useEffect(() => {
+    if (!activePhotoId) return;
+    const onPopState = () => {
+      lightboxHistoryPushedRef.current = false;
+      setActivePhotoId(null);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [activePhotoId]);
 
   const loadPhotos = useCallback(async () => {
     setError(null);
@@ -137,6 +186,15 @@ export function PhotosTab({
     [activePhotoId, photos],
   );
   const activePhoto = activeIndex >= 0 ? photos[activeIndex] : null;
+  const lightboxNeighbors = useMemo(() => {
+    if (!activePhoto || photos.length < 2 || activeIndex < 0) return [];
+    const prev = photos[(activeIndex - 1 + photos.length) % photos.length];
+    const next = photos[(activeIndex + 1) % photos.length];
+    const unique = new Map<string, FlightPhoto>();
+    if (prev && prev.id !== activePhoto.id) unique.set(prev.id, prev);
+    if (next && next.id !== activePhoto.id) unique.set(next.id, next);
+    return [...unique.values()];
+  }, [activeIndex, activePhoto, photos]);
 
   function addFiles(fileList: FileList | File[]) {
     const nextFiles = Array.from(fileList).filter(isImageFile);
@@ -476,7 +534,8 @@ export function PhotosTab({
           photo={activePhoto}
           count={photos.length}
           index={activeIndex}
-          onClose={() => setActivePhotoId(null)}
+          neighborPhotos={lightboxNeighbors}
+          onClose={closePhotoLightbox}
           onPrev={() => setActivePhotoId(photos[(activeIndex - 1 + photos.length) % photos.length]?.id ?? null)}
           onNext={() => setActivePhotoId(photos[(activeIndex + 1) % photos.length]?.id ?? null)}
           onDownload={() => void downloadPhoto(activePhoto)}
@@ -619,6 +678,7 @@ function PhotoLightbox({
   photo,
   count,
   index,
+  neighborPhotos = [],
   onClose,
   onPrev,
   onNext,
@@ -627,21 +687,147 @@ function PhotoLightbox({
   photo: FlightPhoto;
   count: number;
   index: number;
+  neighborPhotos?: FlightPhoto[];
   onClose: () => void;
   onPrev: () => void;
   onNext: () => void;
   onDownload: () => void;
 }) {
   const hasMany = count > 1;
+  const thumbSrc = (photo.thumb_url || deriveThumbUrl(photo.file_url, photo.r2_key) || "").trim();
+  const fullSrc = (photo.file_url || "").trim();
+  const decodeSrc = (photo.download_url || photo.file_url || "").trim();
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 text-slate-100" role="dialog" aria-modal="true">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-        <div className="min-w-0">
+  const initialPreview =
+    lightboxPreviewByPhotoId.get(photo.id) || (thumbSrc && thumbSrc !== fullSrc ? thumbSrc : "");
+
+  const [previewSrc, setPreviewSrc] = useState(initialPreview);
+  const [previewVisible, setPreviewVisible] = useState(Boolean(initialPreview));
+  const [fullLoaded, setFullLoaded] = useState(false);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const cached = lightboxPreviewByPhotoId.get(photo.id);
+    const instant = cached || (thumbSrc && thumbSrc !== fullSrc ? thumbSrc : "");
+    setPreviewSrc(instant);
+    setPreviewVisible(Boolean(instant));
+    setFullLoaded(false);
+
+    let cancelled = false;
+    const sourceForPreview = decodeSrc || fullSrc;
+    if (!sourceForPreview) return undefined;
+
+    void (async () => {
+      try {
+        const sharpPreview = await getLightboxPreviewUrl(sourceForPreview);
+        if (cancelled) return;
+        lightboxPreviewByPhotoId.set(photo.id, sharpPreview);
+        setPreviewSrc(sharpPreview);
+        setPreviewVisible(true);
+      } catch {
+        if (cancelled) return;
+        if (thumbSrc) {
+          setPreviewSrc(thumbSrc);
+          setPreviewVisible(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [photo.id, thumbSrc, fullSrc, decodeSrc]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (!hasMany) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        onPrev();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        onNext();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [hasMany, onClose, onNext, onPrev]);
+
+  useEffect(() => {
+    for (const neighbor of neighborPhotos) {
+      const neighborDecode = neighbor.download_url || neighbor.file_url;
+      if (!neighborDecode) continue;
+      void getLightboxPreviewUrl(neighborDecode)
+        .then((url) => {
+          lightboxPreviewByPhotoId.set(neighbor.id, url);
+          preloadImageUrl(url);
+        })
+        .catch(() => {
+          preloadImageUrl(neighbor.thumb_url || deriveThumbUrl(neighbor.file_url, neighbor.r2_key));
+        });
+      preloadImageUrl(neighbor.file_url);
+    }
+  }, [neighborPhotos]);
+
+  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
+    if (!hasMany) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    if (!hasMany || !touchStartRef.current) return;
+    const touch = event.changedTouches[0];
+    if (!touch) {
+      touchStartRef.current = null;
+      return;
+    }
+    const deltaX = touch.clientX - touchStartRef.current.x;
+    const deltaY = touch.clientY - touchStartRef.current.y;
+    touchStartRef.current = null;
+    if (Math.abs(deltaX) < LIGHTBOX_SWIPE_THRESHOLD_PX) return;
+    if (Math.abs(deltaX) < Math.abs(deltaY)) return;
+    if (deltaX < 0) onNext();
+    else onPrev();
+  }
+
+  const showSpinner = !previewVisible && !fullLoaded;
+
+  const imageFrameClass =
+    "max-h-full max-w-full rounded-lg object-contain [transform:translateZ(0)]";
+
+  const overlay = (
+    <div
+      className="fixed inset-0 z-[100] flex flex-col bg-slate-950 text-slate-100"
+      style={{
+        paddingTop: "env(safe-area-inset-top)",
+        paddingLeft: "env(safe-area-inset-left)",
+        paddingRight: "env(safe-area-inset-right)",
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Visualização de foto"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 sm:py-3">
+        <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold">{photo.file_name}</p>
           <p className="text-xs text-slate-500">{index + 1} de {count}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden shrink-0 items-center gap-2 sm:flex">
           <button
             type="button"
             onClick={onDownload}
@@ -660,13 +846,17 @@ function PhotoLightbox({
         </div>
       </div>
 
-      <div className="relative flex min-h-0 flex-1 items-center justify-center p-3">
+      <div
+        className="relative flex min-h-0 flex-1 touch-pan-y items-center justify-center p-3 pb-2 sm:pb-3"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      >
         {hasMany ? (
           <>
             <button
               type="button"
               onClick={onPrev}
-              className="absolute left-3 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-950/80 text-xl text-slate-200 hover:bg-slate-800"
+              className="absolute left-2 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-950/80 text-xl text-slate-200 hover:bg-slate-800 sm:left-3"
               aria-label="Foto anterior"
             >
               ‹
@@ -674,15 +864,74 @@ function PhotoLightbox({
             <button
               type="button"
               onClick={onNext}
-              className="absolute right-3 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-950/80 text-xl text-slate-200 hover:bg-slate-800"
+              className="absolute right-2 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-950/80 text-xl text-slate-200 hover:bg-slate-800 sm:right-3"
               aria-label="Próxima foto"
             >
               ›
             </button>
           </>
         ) : null}
-        <img src={photo.file_url} alt={photo.file_name} className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" />
+
+        <div className="relative flex h-full w-full items-center justify-center">
+          {showSpinner ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="size-10 animate-pulse rounded-full border-2 border-slate-600 border-t-sky-400" aria-hidden="true" />
+            </div>
+          ) : null}
+
+          {previewVisible && previewSrc ? (
+            <img
+              key={`preview-${photo.id}`}
+              src={previewSrc}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              className={`absolute ${imageFrameClass}`}
+              decoding="async"
+              onLoad={() => setPreviewVisible(true)}
+              onError={() => setPreviewVisible(false)}
+            />
+          ) : null}
+
+          <img
+            key={`full-${photo.id}`}
+            src={fullSrc}
+            alt={photo.file_name}
+            draggable={false}
+            className={`relative ${imageFrameClass} ${fullLoaded ? "opacity-100" : "opacity-0"}`}
+            decoding="async"
+            fetchPriority="high"
+            onLoad={() => setFullLoaded(true)}
+            onError={() => setFullLoaded(true)}
+          />
+        </div>
+
+        {hasMany ? (
+          <p className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1 text-[11px] font-semibold text-slate-300 sm:bottom-4 sm:hidden">
+            Deslize para trocar
+          </p>
+        ) : null}
+      </div>
+
+      <div className="flex shrink-0 gap-2 border-t border-slate-800 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
+        <button
+          type="button"
+          onClick={onDownload}
+          className="min-h-12 flex-1 rounded-xl border border-sky-500/40 bg-sky-500/15 px-4 py-3 text-base font-semibold text-sky-100 active:bg-sky-500/25"
+        >
+          Baixar
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="min-h-12 flex-1 rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-base font-semibold text-slate-200 active:bg-slate-800"
+        >
+          Fechar
+        </button>
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.body);
 }

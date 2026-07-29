@@ -7,7 +7,7 @@ import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
-import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
+import { createFlightPublicShare, notifyStudentFlightReviewReady } from "../lib/publicFlightReviewShare";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightAuditLogPanel } from "./admin/FlightAuditLogPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
@@ -125,6 +125,8 @@ export function FlightDetailView({
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [publicShareBusy, setPublicShareBusy] = useState(false);
   const [publicShareStatus, setPublicShareStatus] = useState<string | null>(null);
+  const [studentNotifyBusy, setStudentNotifyBusy] = useState(false);
+  const [studentNotifyStatus, setStudentNotifyStatus] = useState<string | null>(null);
   const [studentUserId, setStudentUserId] = useState<string | null>(null);
 
   // Instructor signature state
@@ -141,6 +143,7 @@ export function FlightDetailView({
   const canSeeAuditLog = Boolean(flightId && user?.role === "admin");
   const canShareFlight = Boolean(flightId && (isClubMember || isTrial || allowPublicLink));
   const canCreatePublicLink = canShareFlight;
+  const canNotifyStudent = canCreatePublicLink && isInstructorUser;
 
   useEffect(() => {
     if (!flightId || !canSeeStudentContext) {
@@ -236,6 +239,34 @@ export function FlightDetailView({
     }
   }
 
+  async function handleNotifyStudentFlightReviewReady() {
+    if (!flightId) return;
+    setStudentNotifyBusy(true);
+    setStudentNotifyStatus(null);
+    try {
+      const notification = await notifyStudentFlightReviewReady(flightId);
+      const emailStatus = notification.channels?.email;
+      const wppStatus = notification.channels?.wpp;
+      const parts = [
+        emailStatus?.status === "sent"
+          ? `E-mail enviado para ${emailStatus.address}.`
+          : emailStatus?.reason
+            ? `E-mail: ${emailStatus.reason}`
+            : null,
+        wppStatus?.status === "sent"
+          ? `WhatsApp enviado para ${wppStatus.phone}.`
+          : wppStatus?.reason
+            ? `WhatsApp: ${wppStatus.reason}`
+            : null,
+      ].filter(Boolean);
+      setStudentNotifyStatus(parts.length ? parts.join(" ") : "Notificação processada.");
+    } catch (err) {
+      setStudentNotifyStatus((err as Error).message || "Nao foi possivel notificar o aluno.");
+    } finally {
+      setStudentNotifyBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-[calc(100vh-8.5rem)] min-w-0 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -280,7 +311,21 @@ export function FlightDetailView({
               </svg>
               {publicShareBusy ? "Gerando..." : "Link público"}
             </button>
+            {canNotifyStudent ? (
+              <button
+                type="button"
+                onClick={() => void handleNotifyStudentFlightReviewReady()}
+                disabled={studentNotifyBusy}
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-100 transition hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-wait disabled:opacity-60"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M2.5 5.75A2.75 2.75 0 015.25 3h9.5a2.75 2.75 0 012.75 2.75v8.5A2.75 2.75 0 0114.75 17h-9.5a2.75 2.75 0 01-2.75-2.75v-8.5zm2.75-1.25c-.69 0-1.25.56-1.25 1.25v.38l6 3.6 6-3.6v-.38c0-.69-.56-1.25-1.25-1.25h-9.5zM16 7.87l-5.61 3.37a.75.75 0 01-.78 0L4 7.87v6.38c0 .69.56 1.25 1.25 1.25h9.5c.69 0 1.25-.56 1.25-1.25V7.87z" />
+                </svg>
+                {studentNotifyBusy ? "Enviando..." : "Notificar aluno"}
+              </button>
+            ) : null}
             {publicShareStatus ? <span className="text-xs text-slate-400">{publicShareStatus}</span> : null}
+            {studentNotifyStatus ? <span className="text-xs text-slate-400">{studentNotifyStatus}</span> : null}
           </>
         )}
       </div>

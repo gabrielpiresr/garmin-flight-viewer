@@ -8,6 +8,7 @@
   type MouseEvent,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import Hls from "hls.js";
 import { ExportModal, type ExportProgress } from "./ExportModal";
 import { buildBlankOverlay, renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
@@ -340,12 +341,129 @@ function isVideoUploadFile(name: string): boolean {
   return /\.(mp4|mov|avi|mkv|mts|m2ts|webm)$/i.test(name);
 }
 
+function isStudentVideoViewer(
+  user: { role?: string } | null | undefined,
+  publicMode: boolean,
+): boolean {
+  if (publicMode) return true;
+  return user?.role !== "instrutor" && user?.role !== "admin";
+}
+
+/** Technical GoPro errors (e.g. missing media token) — staff only. */
+function isGoproPlaybackErrorHiddenFromStudent(message: string): boolean {
+  return message.toLowerCase().includes("token da midia gopro");
+}
+
+function resolvePlaybackErrorForViewer(
+  message: string | null,
+  user: { role?: string } | null | undefined,
+  publicMode: boolean,
+): string | null {
+  if (!message) return null;
+  if (isStudentVideoViewer(user, publicMode) && isGoproPlaybackErrorHiddenFromStudent(message)) {
+    return null;
+  }
+  return message;
+}
+
 function isMobileOrTabletDevice(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
   const uaData = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
   if (uaData.userAgentData?.mobile) return true;
   return /Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle/i.test(ua);
+}
+
+/** iPhone / iPad (incl. iPadOS desktop UA) — element Fullscreen API is unreliable. */
+function isAppleTouchDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  if (/iPad|iPhone|iPod/i.test(ua)) return true;
+  return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+}
+
+type FullscreenCapableElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  webkitRequestFullScreen?: () => Promise<void> | void;
+};
+
+type FullscreenCapableDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+  webkitCancelFullScreen?: () => Promise<void> | void;
+};
+
+type WebkitFullscreenVideo = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+  webkitDisplayingFullscreen?: boolean;
+  webkitSupportsFullscreen?: boolean;
+};
+
+function getNativeFullscreenElement(): Element | null {
+  const doc = document as FullscreenCapableDocument;
+  return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+async function requestNativeFullscreen(el: HTMLElement): Promise<boolean> {
+  const node = el as FullscreenCapableElement;
+  const request =
+    node.requestFullscreen?.bind(node) ||
+    node.webkitRequestFullscreen?.bind(node) ||
+    node.webkitRequestFullScreen?.bind(node);
+  if (!request) return false;
+  try {
+    await Promise.resolve(request());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function exitNativeFullscreen(): Promise<void> {
+  const doc = document as FullscreenCapableDocument;
+  const exit =
+    document.exitFullscreen?.bind(document) ||
+    doc.webkitExitFullscreen?.bind(document) ||
+    doc.webkitCancelFullScreen?.bind(document);
+  if (!exit) return;
+  try {
+    await Promise.resolve(exit());
+  } catch {
+    /* ignore */
+  }
+}
+
+/** True OS-level fullscreen on iPhone/iPad (only available on <video>). */
+function requestVideoOsFullscreen(video: HTMLVideoElement | null): boolean {
+  if (!video) return false;
+  const node = video as WebkitFullscreenVideo;
+  if (typeof node.webkitEnterFullscreen !== "function") return false;
+  if (node.webkitSupportsFullscreen === false) return false;
+  try {
+    node.webkitEnterFullscreen();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function exitVideoOsFullscreen(video: HTMLVideoElement | null): boolean {
+  if (!video) return false;
+  const node = video as WebkitFullscreenVideo;
+  if (!node.webkitDisplayingFullscreen) return false;
+  if (typeof node.webkitExitFullscreen !== "function") return false;
+  try {
+    node.webkitExitFullscreen();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isVideoOsFullscreen(video: HTMLVideoElement | null): boolean {
+  if (!video) return false;
+  return Boolean((video as WebkitFullscreenVideo).webkitDisplayingFullscreen);
 }
 
 function parseVersionParts(value: string): number[] {
@@ -2240,6 +2358,7 @@ function TelemetryVideoPlayer({
   autoPlay?: boolean;
 }) {
   const { user } = useAuth();
+  const isStudentViewer = isStudentVideoViewer(user, publicMode);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoStageParentRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -2271,6 +2390,9 @@ function TelemetryVideoPlayer({
   const [orientation, setOrientation] = useState<"horizontal" | "vertical">("horizontal");
   const [videoRotationDeg, setVideoRotationDeg] = useState(0);
   const [verticalCropPct, setVerticalCropPct] = useState(50);
+  const [cssFullscreen, setCssFullscreen] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [viewportBox, setViewportBox] = useState({ top: 0, left: 0, width: 0, height: 0 });
   const videoStageFit: VideoStageFit = orientation === "vertical" ? "cover" : "contain";
   const videoStageSize = useVideoStageSize(
     videoStageParentRef,
@@ -2417,14 +2539,15 @@ function TelemetryVideoPlayer({
       })
       .catch((error) => {
         if (!cancelled) {
-          setPlaybackError(error instanceof Error ? error.message : "Falha ao carregar video GoPro.");
+          const message = error instanceof Error ? error.message : "Falha ao carregar video GoPro.";
+          setPlaybackError(resolvePlaybackErrorForViewer(message, user, publicMode));
           setVideoLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [isGoproVideo, goproPlaybackKey, video.file_url]);
+  }, [isGoproVideo, goproPlaybackKey, video.file_url, user, publicMode]);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -2729,7 +2852,11 @@ function TelemetryVideoPlayer({
   }, [drawCharts, redrawRouteMap]);
 
   const hasTelemetry = video.telemetry_present && points.length > 1 && available.length > 0;
-  const isStudent = user?.role !== "instrutor" && user?.role !== "admin";
+  const isStudent = isStudentViewer;
+  const visiblePlaybackError = useMemo(
+    () => resolvePlaybackErrorForViewer(playbackError, user, publicMode),
+    [playbackError, user, publicMode],
+  );
   const isMobileOrTablet = useMemo(() => isMobileOrTabletDevice(), []);
 
   const checkDownloadHelper = useCallback(async () => {
@@ -2829,17 +2956,151 @@ function TelemetryVideoPlayer({
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current;
+    const videoEl = videoRef.current;
     if (!el) return;
-    try {
-      if (document.fullscreenElement === el) {
-        await document.exitFullscreen();
-      } else {
-        await el.requestFullscreen();
-      }
-    } catch (err) {
-      console.warn("Tela cheia indisponível:", err);
+
+    // Exit CSS fallback first.
+    if (cssFullscreen) {
+      setCssFullscreen(false);
+      return;
     }
-  }, []);
+
+    // Exit iOS video OS fullscreen.
+    if (isVideoOsFullscreen(videoEl)) {
+      exitVideoOsFullscreen(videoEl);
+      setNativeFullscreen(false);
+      return;
+    }
+
+    if (getNativeFullscreenElement() === el) {
+      await exitNativeFullscreen();
+      setNativeFullscreen(false);
+      return;
+    }
+
+    // iPhone/iPad: only <video>.webkitEnterFullscreen reaches true device fullscreen.
+    if (isAppleTouchDevice()) {
+      if (requestVideoOsFullscreen(videoEl)) {
+        setNativeFullscreen(true);
+        setCssFullscreen(false);
+        return;
+      }
+      // Fallback: CSS overlay portaled to body (fills Safari viewport).
+      setNativeFullscreen(false);
+      setCssFullscreen(true);
+      return;
+    }
+
+    const enteredNative = await requestNativeFullscreen(el);
+    if (enteredNative) {
+      setNativeFullscreen(true);
+      setCssFullscreen(false);
+      return;
+    }
+
+    setNativeFullscreen(false);
+    setCssFullscreen(true);
+  }, [cssFullscreen]);
+
+  const isFullscreen = cssFullscreen || nativeFullscreen;
+
+  useEffect(() => {
+    const syncNative = () => {
+      const containerActive = getNativeFullscreenElement() === containerRef.current;
+      const videoActive = isVideoOsFullscreen(videoRef.current);
+      setNativeFullscreen(containerActive || videoActive);
+      if (containerActive || videoActive) setCssFullscreen(false);
+      if (!containerActive && !videoActive && !cssFullscreen) {
+        setNativeFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", syncNative);
+    document.addEventListener("webkitfullscreenchange", syncNative as EventListener);
+
+    const bindVideo = () => {
+      const videoEl = videoRef.current;
+      if (!videoEl) return () => undefined;
+      videoEl.addEventListener("webkitbeginfullscreen", syncNative);
+      videoEl.addEventListener("webkitendfullscreen", syncNative);
+      return () => {
+        videoEl.removeEventListener("webkitbeginfullscreen", syncNative);
+        videoEl.removeEventListener("webkitendfullscreen", syncNative);
+      };
+    };
+    const unbindVideo = bindVideo();
+
+    return () => {
+      document.removeEventListener("fullscreenchange", syncNative);
+      document.removeEventListener("webkitfullscreenchange", syncNative as EventListener);
+      unbindVideo();
+    };
+  }, [video.id, orientation, cssFullscreen]);
+
+  useEffect(() => {
+    if (!cssFullscreen) return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const previous = {
+      htmlOverflow: html.style.overflow,
+      bodyOverflow: body.style.overflow,
+      bodyPosition: body.style.position,
+      bodyTop: body.style.top,
+      bodyWidth: body.style.width,
+      bodyHeight: body.style.height,
+      scrollY: window.scrollY,
+    };
+
+    // Lock page scroll so iOS Safari cannot rubber-band behind the player.
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    body.style.position = "fixed";
+    body.style.top = `-${previous.scrollY}px`;
+    body.style.width = "100%";
+    body.style.height = "100%";
+
+    const syncViewportBox = () => {
+      const vv = window.visualViewport;
+      if (vv) {
+        setViewportBox({
+          top: vv.offsetTop,
+          left: vv.offsetLeft,
+          width: vv.width,
+          height: vv.height,
+        });
+        return;
+      }
+      setViewportBox({
+        top: 0,
+        left: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+    syncViewportBox();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCssFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", syncViewportBox);
+    window.visualViewport?.addEventListener("resize", syncViewportBox);
+    window.visualViewport?.addEventListener("scroll", syncViewportBox);
+
+    return () => {
+      html.style.overflow = previous.htmlOverflow;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.position = previous.bodyPosition;
+      body.style.top = previous.bodyTop;
+      body.style.width = previous.bodyWidth;
+      body.style.height = previous.bodyHeight;
+      window.scrollTo(0, previous.scrollY);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", syncViewportBox);
+      window.visualViewport?.removeEventListener("resize", syncViewportBox);
+      window.visualViewport?.removeEventListener("scroll", syncViewportBox);
+    };
+  }, [cssFullscreen]);
 
   function toggleWidget(widget: VideoTelemetryWidget) {
     setEnabledWidgets((current) =>
@@ -2968,23 +3229,51 @@ function TelemetryVideoPlayer({
     }
   }
 
-  return (
-    <div className="space-y-2">
+  const playerShell = (
       <div
         ref={containerRef}
-        className="relative aspect-video w-full rounded-lg border border-slate-800 bg-black flex items-center justify-center overflow-hidden"
+        className={
+          cssFullscreen
+            ? "flex items-center justify-center overflow-hidden rounded-none border-0 bg-black"
+            : "relative aspect-video w-full rounded-lg border border-slate-800 bg-black flex items-center justify-center overflow-hidden"
+        }
+        style={
+          cssFullscreen
+            ? {
+                position: "fixed",
+                top: viewportBox.height ? viewportBox.top : 0,
+                left: viewportBox.width ? viewportBox.left : 0,
+                width: viewportBox.width || "100vw",
+                height: viewportBox.height || "100dvh",
+                zIndex: 9999,
+                padding: 0,
+              }
+            : undefined
+        }
       >
         <button
           type="button"
           onClick={() => void toggleFullscreen()}
-          title="Tela cheia"
-          className="absolute right-2 top-2 z-30 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white/90 hover:bg-black/75"
+          title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+          aria-label={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+          className="absolute z-30 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white/90 hover:bg-black/75"
+          style={
+            cssFullscreen
+              ? {
+                  top: "max(0.5rem, env(safe-area-inset-top))",
+                  right: "max(0.5rem, env(safe-area-inset-right))",
+                }
+              : { top: "0.5rem", right: "0.5rem" }
+          }
         >
-          ⛶
+          {isFullscreen ? "✕" : "⛶"}
         </button>
         {orientation === "vertical" ? (
-          <div className="flex h-full aspect-[9/16] flex-col overflow-hidden select-none">
-            <div
+          <div
+            className={`flex h-full flex-col overflow-hidden select-none ${
+              cssFullscreen ? "w-full" : "aspect-[9/16]"
+            }`}
+          >            <div
               ref={videoStageParentRef}
               className="relative min-h-0 flex-1 overflow-hidden bg-black"
             >
@@ -3123,6 +3412,22 @@ function TelemetryVideoPlayer({
           </div>
         )}
       </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      {cssFullscreen ? (
+        <div className="aspect-video w-full rounded-lg border border-slate-800 bg-black" aria-hidden="true" />
+      ) : null}
+      {cssFullscreen && typeof document !== "undefined"
+        ? createPortal(playerShell, document.body)
+        : playerShell}
+
+      {visiblePlaybackError && (
+        <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">
+          {visiblePlaybackError}
+        </p>
+      )}
 
       {playbackError && (
         <p className="rounded-md border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-xs text-red-300">

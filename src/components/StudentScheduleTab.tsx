@@ -172,6 +172,14 @@ function resolveDefaultBookingDate(minBookingLeadDays: number): string {
 
 // ─── Regras de slot compartilhadas (modal de solicitação E modal de alteração) ──
 
+export function canStudentRescheduleFlight(flight: PublicScheduleFlight, rules: FlightScheduleRules): boolean {
+  if (!flight.canCancel || flight.status === "Cancelado") return false;
+  const leadDays = Math.max(0, Math.ceil(rules.minBookingLeadDays));
+  if (leadDays <= 0) return true;
+  const lockedThroughDate = addDays(toLocalIso(new Date()), leadDays);
+  return flight.flightDate > lockedThroughDate;
+}
+
 type OccupiedInterval = { start: number; end: number };
 
 /** Slots de acionamento: diurnos a cada slot até o noturno; noturno tem UM horário (o início). */
@@ -1742,9 +1750,12 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
   // Cards arrastáveis: somente os voos do próprio aluno, ativos e canceláveis.
   const canDragItem = useCallback(
-    (item: CalendarFlightItem) =>
-      Boolean(item.isOwn) && !item.isBlocked && item.flightStatus !== "Cancelado",
-    [],
+    (item: CalendarFlightItem) => {
+      if (!item.isOwn || item.isBlocked || item.flightStatus === "Cancelado") return false;
+      const flight = flights.find((row) => row.id === item.id);
+      return Boolean(flight && canStudentRescheduleFlight(flight, rules));
+    },
+    [flights, rules],
   );
 
   // Item 8: arrastar um voo próprio propõe a alteração — confirmada em modal antes de enviar.
@@ -1752,7 +1763,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   function handleItemDrop(item: CalendarFlightItem, target: CalendarDropTarget) {
     if (!canDragItem(item)) return;
     const flight = flights.find((f) => f.id === item.id);
-    if (!flight || !flight.canCancel) return;
+    if (!flight || !canStudentRescheduleFlight(flight, rules)) return;
     const newDate = addDays(weekStart, target.dayOfWeek === 0 ? 6 : target.dayOfWeek - 1);
     // O card é posicionado pela apresentação; o acionamento fica um buffer depois.
     const newStart = addMinutes(target.startTime, rules.bufferBeforeMinutes);
@@ -2048,7 +2059,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
           onClose={() => setDetailFlight(null)}
           onCancel={() => setCancelFlight(detailFlight)}
           onEdit={
-            mode === "booking" && rules.sagaOnlySchedule && detailFlight.canCancel
+            mode === "booking" && rules.sagaOnlySchedule && canStudentRescheduleFlight(detailFlight, rules)
               ? () => openBookingForEdit(detailFlight)
               : undefined
           }

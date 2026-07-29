@@ -884,7 +884,7 @@ export function AdminImportTab() {
   const [savingMapping, setSavingMapping] = useState(false);
   const [importing, setImporting] = useState<"test" | "selection" | "full" | null>(null);
   const [selectedSagaUserIds, setSelectedSagaUserIds] = useState<string[]>([]);
-  const [useEmailAlias, setUseEmailAlias] = useState(true);
+  const [useEmailAlias, setUseEmailAlias] = useState(false);
   const [catalogs, setCatalogs] = useState<SagaImportCatalogs>(EMPTY_CATALOGS);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [importProgress, setImportProgress] = useState<SagaImportProgress | null>(null);

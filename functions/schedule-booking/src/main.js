@@ -408,6 +408,16 @@ function validateBookingLeadDates(date, presentationMs, rules) {
 // os eventos são lidos/criados/removidos diretamente na agenda do SAGA via a
 // function admin-users. As regras de agendamento continuam validadas aqui.
 
+function validateStudentRescheduleLeadWindow(currentFlightDate, rules) {
+  const leadDays = integer(rules.minBookingLeadDays, 0);
+  if (leadDays <= 0) return;
+  const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const lockedThroughDate = addDays(today, leadDays);
+  if (currentFlightDate <= lockedThroughDate) {
+    fail(`Este voo está dentro da antecedência mínima de ${leadDays} dia(s) e não pode mais ser alterado pelo aluno.`);
+  }
+}
+
 async function execAdminUsers(payload) {
   if (!ADMIN_USERS_FUNCTION_ID) fail("Função administrativa não configurada para o modo SAGA.", 500);
   const execution = await functions.createExecution(ADMIN_USERS_FUNCTION_ID, JSON.stringify(payload), false);
@@ -1983,6 +1993,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   }
 
   // Validações do novo horário — mesmas regras do agendamento
+  if (actorRole === "aluno") {
+    validateStudentRescheduleLeadWindow(currentTimes.flightDate, rules);
+  }
   const date = clean(payload.flightDate);
   const registration = clean(payload.aircraftIdent).toUpperCase();
   const durationMinutes = integer(payload.durationMinutes, 0, 1, 24 * 60);
