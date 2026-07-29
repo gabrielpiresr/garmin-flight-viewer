@@ -146,6 +146,7 @@ type ColumnDef = {
   label: string;
   category: ColumnCategory;
   compact?: boolean;
+  wrap?: boolean;
   groupOnly?: boolean;
   detailOnly?: boolean;
   groupKey?: FlightReportGroupKey;
@@ -153,6 +154,23 @@ type ColumnDef = {
   format: (row: ReportRow) => string;
   sortValue?: (row: ReportRow) => string | number | null;
 };
+
+function columnHeaderClass(column: ColumnDef): string {
+  const base = "border-b border-slate-800 px-2 py-2 font-semibold uppercase tracking-wider text-slate-500";
+  if (column.compact) return `${base} w-px whitespace-nowrap`;
+  if (column.wrap) return `${base} min-w-48 max-w-xs whitespace-normal normal-case tracking-normal`;
+  return `${base} min-w-28`;
+}
+
+function columnCellClass(column: ColumnDef, variant: "body" | "summary"): string {
+  const base =
+    variant === "body"
+      ? "border-b border-slate-800/60 px-2 py-2 text-slate-300"
+      : "border-t border-slate-700 px-2 py-2";
+  if (column.compact) return `${base} whitespace-nowrap tabular-nums`;
+  if (column.wrap) return `${base} max-w-xs align-top whitespace-normal break-words leading-snug`;
+  return `${base} max-w-56 truncate`;
+}
 
 type LimitSeverity = "normal" | "attention" | "danger";
 
@@ -548,6 +566,7 @@ const COLUMNS: ColumnDef[] = [
     label: "Comentário avaliação",
     category: "evaluation",
     detailOnly: true,
+    wrap: true,
     format: (row) => (isGroupedRow(row) ? "" : row.evalComment || ""),
   },
 ];
@@ -2006,7 +2025,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
             <thead className="sticky top-0 z-10 bg-slate-900">
               <tr>
                 {visibleColumns.map((column) => (
-                  <th key={column.key} className={`border-b border-slate-800 px-2 py-2 font-semibold uppercase tracking-wider text-slate-500 ${column.compact ? "w-px whitespace-nowrap" : "min-w-28"}`}>
+                  <th key={column.key} className={columnHeaderClass(column)}>
                     <button type="button" disabled={!column.sortable} onClick={() => handleSort(column)} className={`flex w-full items-center gap-1 text-left ${column.sortable ? "hover:text-slate-200" : ""}`}>
                       <span>{column.label}</span>
                       {sortColumn?.key === column.key ? <span className="text-emerald-300">{sortDirection === "asc" ? "↑" : "↓"}</span> : column.sortable ? <span className="text-slate-700">↕</span> : null}
@@ -2038,7 +2057,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
                         const severity = severityForColumn(row, column.key);
                         const severityHint = severityHintForColumn(row, column.key);
                         return (
-                          <td key={column.key} className={`border-b border-slate-800/60 px-2 py-2 text-slate-300 ${column.compact ? "whitespace-nowrap tabular-nums" : "max-w-56 truncate"}`}>
+                          <td key={column.key} className={columnCellClass(column, "body")}>
                             {severity ? (
                               <span title={severityHint} className={`rounded px-1.5 py-0.5 font-semibold ${severityClass(severity)}`}>{column.format(row)}</span>
                             ) : column.key === "status" && !isGroupedRow(row) ? (
@@ -2074,7 +2093,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
                   {summaryRow ? (
                     <tr className="bg-slate-800/60 font-semibold text-slate-100">
                       {visibleColumns.map((column) => (
-                        <td key={column.key} className={`border-t border-slate-700 px-2 py-2 ${column.compact ? "whitespace-nowrap tabular-nums" : "max-w-56 truncate"}`}>
+                        <td key={column.key} className={columnCellClass(column, "summary")}>
                           {summaryRow[column.key] ?? ""}
                         </td>
                       ))}
