@@ -856,7 +856,10 @@ export async function approveStudentAccess(userId: string): Promise<{ error: Err
     ]);
     const doc = res.documents[0] as (ProfileDoc & { $id: string }) | undefined;
     if (!doc) return { error: new Error("Perfil não encontrado.") };
-    await databases.updateDocument(DB_ID, PROFILES_COL_ID, doc.$id, { approval_status: "approved" });
+    await databases.updateDocument(DB_ID, PROFILES_COL_ID, doc.$id, {
+      approval_status: "approved",
+      is_active: true,
+    });
     return { error: null };
   } catch (e) {
     return { error: e as Error };

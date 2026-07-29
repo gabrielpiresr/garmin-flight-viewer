@@ -3044,10 +3044,12 @@ export function CrmTab() {
       let message = `Matrícula automatizada. ${result.createdContracts} contrato(s) gerado(s).`;
       if (result.saga?.ok && !result.saga.skipped) message += " Aluno criado no SAGA.";
       else if (result.saga?.ok && result.saga.skipped) message += " Aluno já vinculado no SAGA.";
-      if (lead.userId) {
+      if (result.access?.ok) {
+        message += " Acesso liberado e habilitado.";
+      } else if (lead.userId) {
         const { error: accessErr } = await approveStudentAccess(lead.userId);
-        if (!accessErr) message += " Acesso liberado.";
-        else message += ` (Acesso: ${accessErr.message})`;
+        if (!accessErr) message += " Acesso liberado e habilitado.";
+        else message += ` (Acesso: ${accessErr.message || result.access?.message || "falhou"})`;
       }
       showToast(message);
       if (result.saga && !result.saga.ok) {

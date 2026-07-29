@@ -3809,21 +3809,35 @@ function sagaTestEmailAlias(email) {
   return `gabrielpirexs+${localPart || "saga"}@gmail.com`;
 }
 
-async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias = false, createOnly = false } = {}) {
+async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias = false, createOnly = false, forceUserId = "" } = {}) {
   const sagaId = cleanString(sagaUser.id);
-  const email = useEmailAlias ? sagaTestEmailAlias(sagaUser.email) : cleanString(sagaUser.email).toLowerCase();
+  const realEmail = cleanString(sagaUser.email).toLowerCase();
+  const useAliasForAuth = testMode && useEmailAlias === true;
+  const email = useAliasForAuth ? sagaTestEmailAlias(realEmail) : realEmail;
   if (!sagaId || !sagaEmailLooksValid(email)) {
     return { skipped: true, reason: "missing_email_or_id", userId: null };
   }
 
   const cpfPassword = cleanString(sagaUser.cpf).replace(/\D/g, "");
   const shouldUseCpfPassword = cpfPassword.length === 11;
-  const deterministicId = sagaDocId(testMode ? "saga_test" : useEmailAlias ? "saga_alias" : "saga", sagaId);
+  const deterministicId = sagaDocId(testMode ? "saga_test" : "saga", sagaId);
   let authUser = null;
-  try {
-    authUser = await users.get({ userId: deterministicId });
-  } catch {
+  const forcedUserId = cleanString(forceUserId);
+  if (forcedUserId) {
+    authUser = await users.get({ userId: forcedUserId }).catch(() => null);
+  }
+  if (!authUser && !useAliasForAuth && realEmail && realEmail !== email) {
+    authUser = await findAuthUserByEmail(realEmail);
+  }
+  if (!authUser && !useAliasForAuth) {
     authUser = await findAuthUserByEmail(email);
+  }
+  if (!authUser) {
+    try {
+      authUser = await users.get({ userId: deterministicId });
+    } catch {
+      authUser = await findAuthUserByEmail(email);
+    }
   }
 
   let created = false;
@@ -7195,7 +7209,12 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
       ? await fetchSagaUserDetail(importCookieJar, sagaUser.id, { apiV2Token }).catch(() => null)
       : null;
     const sagaUserWithDetail = detail ? { ...sagaUser, detail } : sagaUser;
-    const result = await importSagaUser(sagaUserWithDetail, role, { testMode, useEmailAlias, createOnly: immutableSync });
+    const result = await importSagaUser(sagaUserWithDetail, role, {
+      testMode,
+      useEmailAlias,
+      createOnly: immutableSync,
+      forceUserId: testMode ? "" : alreadyKnownUserId,
+    });
     if (result.userId && cleanString(sagaUser.codigoAnac)) usersByCanac.set(cleanString(sagaUser.codigoAnac), result.userId);
     if (result.userId && cleanString(sagaUser.id)) usersBySagaId.set(cleanString(sagaUser.id), result.userId);
     if (result.userId) {
@@ -9587,6 +9606,19 @@ async function persistSagaUserIdOnProfile(recipientUserId, sagaUserId) {
   }
 }
 
+/** Após matrícula: aluno deve ficar habilitado (is_active) e com acesso liberado (approval_status). */
+async function approveStudentAccessForEnrollment(recipientUserId) {
+  if (!recipientUserId) return { ok: false, reason: "missing_user" };
+  const profileDoc = await getProfileByUserId(recipientUserId);
+  if (!profileDoc?.$id) return { ok: false, reason: "missing_profile" };
+  const updates = {};
+  if (profileDoc.is_active === false) updates.is_active = true;
+  if (cleanString(profileDoc.approval_status) !== "approved") updates.approval_status = "approved";
+  if (Object.keys(updates).length === 0) return { ok: true, already: true };
+  await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileDoc.$id, updates);
+  return { ok: true, updates };
+}
+
 async function findSagaUserIdByAnac(cookieJar, anacCode) {
   const anacDigits = sagaOnlyDigits(anacCode);
   if (!anacDigits) return null;
@@ -9968,7 +10000,9 @@ async function sendContractNotificationEmail(contract, recipient) {
       intro: `Olá${recipient.name ? `, ${recipient.name}` : ""}.`,
       body: `O documento "${contract.template_name || "Contrato"}" está disponível na plataforma para assinatura.`,
       ctaLabel: "Abrir plataforma",
-      url: brand.appUrl || APP_URL,
+      // Empty URL lets resolveActionUrl pick brand.appUrl (preferred) then APP_URL.
+      // Avoid baking a stale APP_URL absolute host into the CTA when brand is configured.
+      url: "",
     });
     if (result?.status !== "skipped") {
       await databases.updateDocument(DATABASE_ID, CONTRACTS_COLLECTION_ID, contract.$id, {
@@ -10095,10 +10129,20 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
     });
   }
 
+  let access = null;
+  if (recipientUserId) {
+    try {
+      access = await approveStudentAccessForEnrollment(recipientUserId);
+    } catch (err) {
+      access = { ok: false, message: String(err?.message || err) };
+    }
+  }
+
   return {
     createdContracts: created.length,
     nextStatus: "aguardando_assinatura_pagamento",
     saga: sagaResult,
+    access,
   };
 }
 
@@ -15131,13 +15175,56 @@ function normalizeAbsoluteUrl(value) {
   }
 }
 
+function isTransientAppHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host.endsWith(".vercel.app");
+}
+
+function pickEmailAppBase(brand) {
+  const brandBase = normalizeAbsoluteUrl(brand?.appUrl);
+  const appBase = normalizeAbsoluteUrl(APP_URL);
+  const brandTransient = (() => {
+    try { return Boolean(brandBase) && isTransientAppHost(new URL(brandBase).hostname); }
+    catch { return true; }
+  })();
+  const appTransient = (() => {
+    try { return Boolean(appBase) && isTransientAppHost(new URL(appBase).hostname); }
+    catch { return true; }
+  })();
+  // Prefer a stable production host over leftover Vercel preview / localhost values.
+  if (brandBase && !brandTransient) return brandBase;
+  if (appBase && !appTransient) return appBase;
+  return brandBase || appBase;
+}
+
 function resolveActionUrl(value, brand) {
   const raw = cleanString(value);
-  const base = normalizeAbsoluteUrl(brand?.appUrl) || normalizeAbsoluteUrl(APP_URL);
+  const brandBase = normalizeAbsoluteUrl(brand?.appUrl);
+  const appBase = normalizeAbsoluteUrl(APP_URL);
+  const base = pickEmailAppBase(brand);
   if (/^https?:\/\//i.test(raw)) {
     try {
       const parsed = new URL(raw);
-      if ((parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && base) {
+      let shouldRewrite = false;
+      if (base) {
+        const baseHost = new URL(base).hostname;
+        if (parsed.hostname !== baseHost) {
+          if (isTransientAppHost(parsed.hostname)) {
+            // Prefer configured platform URL over localhost / old Vercel preview hosts.
+            shouldRewrite = true;
+          } else if (brandBase && appBase) {
+            // If caller passed the function APP_URL but brand has the real domain, rewrite.
+            try {
+              shouldRewrite = parsed.origin === new URL(appBase).origin
+                && new URL(brandBase).origin !== parsed.origin
+                && !isTransientAppHost(new URL(brandBase).hostname);
+            } catch {
+              shouldRewrite = false;
+            }
+          }
+        }
+      }
+      if (shouldRewrite) {
         return new URL(`${parsed.pathname}${parsed.search}${parsed.hash}`, `${base}/`).toString();
       }
     } catch {
