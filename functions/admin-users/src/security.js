@@ -12,6 +12,7 @@ const PUBLIC_GUEST_ACTIONS = new Set([
   "getReferralWelcome",
   "getReferAndEarnPublic",
   "getSchoolRules",
+  "goproResolveVideoPlayback",
   "impersonateStudent",
   "lookupSagaAnacPerson",
 ]);

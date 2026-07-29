@@ -7,7 +7,8 @@
 const BASE_CORS = {
   "Access-Control-Allow-Origin": "https://localhost.invalid",
   "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-upload-id, x-upload-key, x-part-number, x-token",
+  "Access-Control-Allow-Headers": "Content-Type, Range, x-upload-id, x-upload-key, x-part-number, x-token",
+  "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
 };
 
 function corsHeaders(request, env) {
@@ -64,6 +65,10 @@ function base64UrlDecode(value) {
   const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+}
+
+function base64UrlDecodeText(value) {
+  return new TextDecoder().decode(base64UrlDecode(value));
 }
 
 async function hmacHex(secret, data) {
@@ -148,9 +153,94 @@ export default {
       return handleDownload(request, env, url);
     }
 
+    if (url.pathname === "/gopro-hls" && request.method === "GET") {
+      return handleGoproHls(request, env, url);
+    }
+
     return new Response("Not found", { status: 404, headers: corsHeaders(request, env) });
   },
 };
+
+function goproProxyUrl(request, targetUrl, token) {
+  const url = new URL(request.url);
+  url.pathname = "/gopro-hls";
+  url.search = "";
+  url.searchParams.set("token", token);
+  url.searchParams.set("u", btoa(targetUrl).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_"));
+  return url.href;
+}
+
+function isM3u8Response(targetUrl, contentType) {
+  return String(targetUrl || "").includes(".m3u8") || String(contentType || "").includes("mpegurl");
+}
+
+function rewriteM3u8(text, request, targetUrl, token) {
+  const absolutize = (value) => new URL(value, targetUrl).href.replace("https://api.gopro.com/", "https://gopro.com/");
+  const proxify = (value) => goproProxyUrl(request, absolutize(value), token);
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith("#")) {
+        return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${proxify(uri)}"`);
+      }
+      return proxify(trimmed);
+    })
+    .join("\n");
+}
+
+async function handleGoproHls(request, env, url) {
+  const token = String(url.searchParams.get("token") || "");
+  const payload = await verifyToken(env, token, { action: "goproHls" });
+  if (!payload?.prefix) return err(request, env, "Unauthorized", 401);
+
+  let targetUrl;
+  try {
+    targetUrl = base64UrlDecodeText(url.searchParams.get("u") || "");
+  } catch {
+    return err(request, env, "URL invalida", 400);
+  }
+  if (!targetUrl.startsWith(String(payload.prefix))) {
+    return err(request, env, "URL fora do escopo autorizado", 403);
+  }
+  const target = new URL(targetUrl);
+  if (target.protocol !== "https:" || target.hostname !== "gopro.com" || !target.pathname.startsWith("/stream/playurl/")) {
+    return err(request, env, "Destino GoPro invalido", 400);
+  }
+
+  const upstream = await fetch(target.href, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      ...(request.headers.get("Range") ? { Range: request.headers.get("Range") } : {}),
+    },
+  });
+  const headers = {
+    ...corsHeaders(request, env),
+    "Cache-Control": "private, max-age=120",
+  };
+  const contentType = upstream.headers.get("Content-Type") || "";
+
+  if (isM3u8Response(target.href, contentType)) {
+    const text = await upstream.text();
+    return new Response(rewriteM3u8(text, request, target.href, token), {
+      status: upstream.status,
+      headers: {
+        ...headers,
+        "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+      },
+    });
+  }
+
+  for (const key of ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]) {
+    const value = upstream.headers.get(key);
+    if (value) headers[key] = value;
+  }
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers,
+  });
+}
 
 async function handleInitiate(request, env) {
   const body = await request.json().catch(() => null);

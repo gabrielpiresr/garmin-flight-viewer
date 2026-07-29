@@ -61,6 +61,7 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-settings-roles", kind: "page", label: "Configurações · Roles", group: "Configurações", path: "/admin/configuracoes/roles", requiredTab: "settings.roles", keywords: ["perfis de acesso", "permissao", "cargo"] },
   { id: "page-settings-propostas", kind: "page", label: "Configurações · Propostas", group: "Configurações", path: "/admin/configuracoes/propostas", requiredTab: "settings.propostas", keywords: ["proposta", "orcamento"] },
   { id: "page-settings-wpp", kind: "page", label: "Configurações · WPP", group: "Configurações", path: "/admin/configuracoes/wpp", requiredTab: "settings.wpp", keywords: ["whatsapp", "zap", "mensagens"] },
+  { id: "page-settings-gopro", kind: "page", label: "Configurações · GoPro", group: "Configurações", path: "/admin/configuracoes/gopro", requiredTab: "settings.gopro", keywords: ["gopro", "go pro", "media library", "videos", "links publicos", "share"] },
   { id: "page-settings-importacoes", kind: "page", label: "Configurações · Importações", group: "Configurações", path: "/admin/configuracoes/importacoes", requiredTab: "import", keywords: ["importar", "csv", "saga", "migracao"] },
 ];
 
@@ -121,6 +122,7 @@ const ACTION_ENTRIES: AdminSearchEntry[] = [
   { id: "action-send-notice", kind: "action", label: "Enviar aviso", group: "Ações", path: "/admin/disparos/avisos", requiredTab: "disparos.avisos", keywords: ["novo aviso", "publicar comunicado", "avisar alunos", "mural"] },
   { id: "action-create-campaign", kind: "action", label: "Criar campanha de email", group: "Ações", path: "/admin/disparos/email-mkt", requiredTab: "disparos.email-mkt", keywords: ["nova campanha", "enviar email em massa", "email marketing"] },
   { id: "action-config-whatsapp", kind: "action", label: "Configurar WhatsApp", group: "Ações", path: "/admin/configuracoes/wpp", requiredTab: "settings.wpp", keywords: ["conectar whatsapp", "mensagens automaticas", "zap"] },
+  { id: "action-config-gopro", kind: "action", label: "Configurar GoPro", group: "Ações", path: "/admin/configuracoes/gopro", requiredTab: "settings.gopro", keywords: ["gopro", "links publicos", "media library", "share", "videos"] },
   { id: "action-test-email", kind: "action", label: "Configurar e-mails da plataforma", group: "Ações", path: "/admin/configuracoes/email", requiredTab: "settings.email", scrollTo: "Configuração de email", keywords: ["email de teste", "template de email", "notificacoes por email", "remetente"] },
   { id: "action-google-calendar", kind: "action", label: "Conectar Google Calendar", group: "Ações", path: "/admin/configuracoes/email", requiredTab: "settings.email", scrollTo: "Google Calendar", keywords: ["google calendar", "agenda google", "convite de voo", "google agenda"] },
   // Permissões / sistema

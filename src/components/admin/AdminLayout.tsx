@@ -555,6 +555,7 @@ const SETTINGS_ROUTES = [
   { id: "roles", path: "/admin/configuracoes/roles" },
   { id: "propostas", path: "/admin/configuracoes/propostas" },
   { id: "wpp", path: "/admin/configuracoes/wpp" },
+  { id: "gopro", path: "/admin/configuracoes/gopro" },
   { id: "importacoes", path: "/admin/configuracoes/importacoes", aliases: ["/admin/import"] },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
@@ -596,6 +597,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   roles: "Roles",
   propostas: "Propostas",
   wpp: "WPP",
+  gopro: "GoPro",
   importacoes: "Importações",
 };
 

@@ -26,7 +26,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "instructor-admission",
   "flight-review",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
-  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp",
+  "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp", "settings.gopro",
   "atualizacoes", "atualizacoes.agendamentos",
 ];
 

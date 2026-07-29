@@ -102,6 +102,7 @@
     "@tiptap/starter-kit": "^3.23.2",
     "@xyflow/react": "^12.8.5",
     "appwrite": "^25.0.0",
+    "hls.js": "^1.6.16",
     "leaflet": "^1.9.4",
     "papaparse": "^5.5.2",
     "qrcode": "^1.5.4",
