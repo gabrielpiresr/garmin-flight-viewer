@@ -480,6 +480,28 @@ function formatLocalDateISO(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+/** Segunda-feira da semana (ISO local) que contém `date`. */
+function mondayWeekStartIso(date = new Date()): string {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return formatLocalDateISO(d);
+}
+
+/** Duração em minutos entre data/hora de início e fim (pode atravessar dias). */
+function blockSpanDurationMinutes(
+  startDate: string,
+  startTime: string,
+  endDate: string,
+  endTime: string,
+): number {
+  const start = new Date(`${startDate}T${startTime.slice(0, 5)}:00`);
+  const end = new Date(`${endDate}T${endTime.slice(0, 5)}:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  return Math.round((end.getTime() - start.getTime()) / 60_000);
+}
+
 function weekDateFromStart(weekStart: string, dayOfWeek: number): string {
   const base = new Date(`${weekStart}T12:00:00`);
   const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -552,6 +574,43 @@ function snapCalendarPointerToStartMinute(
   const snapped = Math.round(minutesFromOrigin / 15) * 15;
   const maxOffset = Math.max(0, (endHour - CALENDAR_START_HOUR) * 60 - 15);
   return CALENDAR_START_HOUR * 60 + Math.min(snapped, maxOffset);
+}
+
+/** Intervalo [start,end) a partir da âncora do clique e do ponteiro atual (mín. 15 min). */
+function createDragRangeFromPointer(
+  originMinute: number,
+  pointerMinute: number,
+  dayEndMinute?: number,
+): {
+  startMinute: number;
+  endMinute: number;
+} {
+  const durationMinutes = Math.max(15, Math.abs(pointerMinute - originMinute));
+  let startMinute = pointerMinute >= originMinute ? originMinute : originMinute - durationMinutes;
+  let endMinute = startMinute + durationMinutes;
+  const minMinute = CALENDAR_START_HOUR * 60;
+  if (startMinute < minMinute) {
+    startMinute = minMinute;
+    endMinute = startMinute + durationMinutes;
+  }
+  if (dayEndMinute != null && endMinute > dayEndMinute) {
+    endMinute = dayEndMinute;
+    startMinute = Math.max(minMinute, endMinute - durationMinutes);
+  }
+  if (endMinute - startMinute < 15) {
+    endMinute = Math.min(dayEndMinute ?? endMinute + 15, startMinute + 15);
+  }
+  return { startMinute, endMinute };
+}
+
+function formatPreviewDurationHours(durationHours: number): string {
+  return durationHours.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/** Rótulo de preview: horas de voo (bloco − briefing/debriefing), nunca negativo. */
+function formatPreviewFlightHoursLabel(blockHours: number, bufferHours: number): string {
+  const flightHours = Math.max(0, blockHours - Math.max(0, bufferHours));
+  return `${formatPreviewDurationHours(flightHours)}h`;
 }
 
 function useCalendarRowHeight(mobileHeight: number, desktopHeight: number): number {
@@ -709,6 +768,8 @@ export type CalendarDropTarget = {
   isNight: boolean;
   targetInstructorId?: string | null;
   targetAircraftRegistration?: string;
+  /** Arrasto de criação: duração total do bloco (h). Se omitido, o parent usa o tamanho do bloco / 1h. */
+  durationHours?: number;
 };
 
 function eventStyleClasses(color: string, unassigned: boolean, draggable: boolean): string {
@@ -828,7 +889,7 @@ function ScheduleItemTooltipCard({ state }: { state: ScheduleTooltipState }) {
   const top = typeof window === "undefined" ? state.y + 14 : Math.min(state.y + 14, window.innerHeight - 220);
   return (
     <div
-      className="pointer-events-none fixed z-[80] w-72 rounded-lg border border-slate-500/55 bg-slate-950/70 p-3 text-left text-xs text-slate-200 shadow-2xl shadow-slate-950/70 ring-1 ring-white/10 backdrop-blur-xl"
+      className="pointer-events-none fixed z-40 w-72 rounded-lg border border-slate-500/55 bg-slate-950/70 p-3 text-left text-xs text-slate-200 shadow-2xl shadow-slate-950/70 ring-1 ring-white/10 backdrop-blur-xl"
       style={{ left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px` }}
     >
       <div className="mb-2 flex items-start justify-between gap-2">
@@ -938,6 +999,7 @@ export function CalendarGrid({
   onNextWeek,
   hasPrevWeek,
   hasNextWeek,
+  onGoToToday,
   privacyMode = false,
   showGeneratorLegend = true,
   getItemColor,
@@ -949,6 +1011,7 @@ export function CalendarGrid({
   slotPreviewDurationHours = null,
   alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
   resolveFlexibleFit,
+  previewBufferHours = 0,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -975,6 +1038,8 @@ export function CalendarGrid({
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
+  /** Volta a agenda para a data de hoje. */
+  onGoToToday?: () => void;
   privacyMode?: boolean;
   showGeneratorLegend?: boolean;
   showTotals?: boolean;
@@ -998,6 +1063,8 @@ export function CalendarGrid({
     durationHours: number,
     options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
   ) => FlexibleFitResult | null;
+  /** Briefing+debriefing (h) a subtrair no rótulo do preview — exibe horas de voo. */
+  previewBufferHours?: number;
 }) {
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
@@ -1166,8 +1233,22 @@ export function CalendarGrid({
     startX: number;
     startY: number;
     hasMoved: boolean;
+    fit: FlexibleFitResult | null;
+  } | null>(null);
+  const [createDrag, setCreateDrag] = useState<{
+    cellKey: string;
+    dayOfWeek: number;
+    column: ScheduleColumn;
+    originMinute: number;
+    startMinute: number;
+    endMinute: number;
+    startX: number;
+    startY: number;
+    hasMoved: boolean;
+    fit: FlexibleFitResult | null;
   } | null>(null);
   const dragEndedRef = useRef(false);
+  const createDragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
   const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
   const [slotHover, setSlotHover] = useState<{
@@ -1179,12 +1260,19 @@ export function CalendarGrid({
   const draggable = Boolean(onItemDrop);
   const dragThresholdPx = 5;
   const showSlotPreview = Boolean(slotPreviewDurationHours && slotPreviewDurationHours > 0);
+  /** Com ajuste flexível, eventos continuam arrastáveis mesmo no modo preview de bloco. */
+  const slotPreviewPassThrough = showSlotPreview && !resolveFlexibleFit;
   const flexibleShiftStarts = useMemo(() => {
     const map = new Map<string, number>();
-    if (!slotHover?.fit?.ok) return map;
-    for (const shift of slotHover.fit.shifts) map.set(shift.id, shift.toStartMinute);
+    const fit =
+      (createDrag?.hasMoved ? createDrag.fit : null) ??
+      (dragState?.hasMoved ? dragState.fit : null) ??
+      slotHover?.fit ??
+      null;
+    if (!fit?.ok) return map;
+    for (const shift of fit.shifts) map.set(shift.id, shift.toStartMinute);
     return map;
-  }, [slotHover]);
+  }, [createDrag, dragState, slotHover]);
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -1208,6 +1296,16 @@ export function CalendarGrid({
     [calendarEndHour, gridColumns, nightStartHour, rowHeight],
   );
 
+  const resolveMinuteInCell = useCallback(
+    (cellKey: string, clientY: number): number | null => {
+      const board = cellBoardRefs.current.get(cellKey);
+      if (!board) return null;
+      const r = board.getBoundingClientRect();
+      return snapCalendarPointerToStartMinute(clientY, r.top, rowHeight, calendarEndHour);
+    },
+    [calendarEndHour, rowHeight],
+  );
+
   useEffect(() => {
     if (!dragState) return;
     function onMove(e: PointerEvent) {
@@ -1215,7 +1313,14 @@ export function CalendarGrid({
         if (!p) return p;
         const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
         const t = moved ? resolveDropTarget(e.clientX, e.clientY) : null;
-        return { ...p, hasMoved: moved, preview: t ?? p.preview };
+        const preview = t ?? p.preview;
+        const fit =
+          moved && resolveFlexibleFit
+            ? resolveFlexibleFit(preview, p.item.durationHours, { excludeFlightId: p.item.id })
+            : moved
+              ? null
+              : p.fit;
+        return { ...p, hasMoved: moved, preview, fit };
       });
     }
     function onUp(e: PointerEvent) {
@@ -1225,6 +1330,7 @@ export function CalendarGrid({
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
         } else if (p) {
           pointerClickHandledRef.current = true;
+          setTooltip(null);
           onItemClick(p.item);
         }
         return null;
@@ -1236,7 +1342,60 @@ export function CalendarGrid({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
+  }, [dragState, onItemClick, onItemDrop, resolveDropTarget, resolveFlexibleFit]);
+
+  useEffect(() => {
+    if (!createDrag) return;
+    function onMove(e: PointerEvent) {
+      setCreateDrag((p) => {
+        if (!p) return p;
+        const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
+        const pointerMinute = resolveMinuteInCell(p.cellKey, e.clientY) ?? p.originMinute;
+        const { startMinute, endMinute } = createDragRangeFromPointer(
+          p.originMinute,
+          pointerMinute,
+          calendarEndHour * 60,
+        );
+        const target: CalendarDropTarget = {
+          dayOfWeek: p.dayOfWeek,
+          startHour: startMinute / 60,
+          startTime: minutesToScheduleHHMM(startMinute),
+          isNight: startMinute >= nightStartHour * 60,
+          ...scheduleColumnTarget(p.column),
+        };
+        const durationHours = (endMinute - startMinute) / 60;
+        const cellItems = byCell.get(p.cellKey) ?? [];
+        const fit =
+          moved && resolveFlexibleFit
+            ? resolveFlexibleFit(target, durationHours, { cellItems })
+            : moved
+              ? null
+              : p.fit;
+        return { ...p, hasMoved: moved, startMinute, endMinute, fit };
+      });
+    }
+    function onUp() {
+      setCreateDrag((p) => {
+        if (!p || !onEmptySlotClick) return null;
+        createDragEndedRef.current = true;
+        onEmptySlotClick({
+          dayOfWeek: p.dayOfWeek,
+          startHour: p.startMinute / 60,
+          startTime: minutesToScheduleHHMM(p.startMinute),
+          isNight: p.startMinute >= nightStartHour * 60,
+          ...scheduleColumnTarget(p.column),
+          ...(p.hasMoved ? { durationHours: (p.endMinute - p.startMinute) / 60 } : {}),
+        });
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [byCell, calendarEndHour, createDrag, nightStartHour, onEmptySlotClick, resolveFlexibleFit, resolveMinuteInCell]);
 
   return (
     <section className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4">
@@ -1250,31 +1409,47 @@ export function CalendarGrid({
             instructorColumns={instructorCols}
           />
         </div>
-        {(onPrevWeek || onNextWeek) && (
+        {(onPrevWeek || onNextWeek || onGoToToday) && (
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onPrevWeek}
-              disabled={!hasPrevWeek}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-              title="Semana anterior"
-            >
-              ‹
-            </button>
-            <button
-              type="button"
-              onClick={onNextWeek}
-              disabled={!hasNextWeek}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-              title="Próxima semana"
-            >
-              ›
-            </button>
+            {onGoToToday ? (
+              <button
+                type="button"
+                onClick={onGoToToday}
+                className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+                title="Ir para hoje"
+              >
+                Hoje
+              </button>
+            ) : null}
+            {onPrevWeek || onNextWeek ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onPrevWeek}
+                  disabled={!hasPrevWeek}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Semana anterior"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  onClick={onNextWeek}
+                  disabled={!hasNextWeek}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Próxima semana"
+                >
+                  ›
+                </button>
+              </>
+            ) : null}
           </div>
         )}
       </div>
       {draggable ? (
-        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
+        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar, ou clique e arraste no vazio para criar. Ao soltar, confirme no modal.</p>
+      ) : onEmptySlotClick ? (
+        <p className="mb-2 text-[11px] text-slate-600">Clique e arraste no vazio para criar um voo com a duração do arrasto.</p>
       ) : null}
       {showGeneratorLegend ? (
         <p className="mb-2 text-[11px] text-slate-600">
@@ -1366,22 +1541,51 @@ export function CalendarGrid({
                       if (node) cellBoardRefs.current.set(cellKey, node);
                       else cellBoardRefs.current.delete(cellKey);
                     }}
-                    className={`relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md ${cellPast ? "cursor-default" : ""}`}
+                    className={`relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md ${cellPast ? "cursor-default" : onEmptySlotClick ? "cursor-crosshair" : ""}`}
                     style={{ height: `${boardHeight}px` }}
+                    onPointerDown={(e) => {
+                      if (cellPast || !onEmptySlotClick || e.pointerType !== "mouse" || dragState) return;
+                      if ((e.target as HTMLElement).closest("[data-schedule-event]")) return;
+                      e.preventDefault();
+                      const originMinute = resolveMinuteInCell(cellKey, e.clientY);
+                      if (originMinute == null) return;
+                      createDragEndedRef.current = false;
+                      setTooltip(null);
+                      setSlotHover(null);
+                      setCreateDrag({
+                        cellKey,
+                        dayOfWeek: day,
+                        column,
+                        originMinute,
+                        startMinute: originMinute,
+                        endMinute: originMinute + 15,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        hasMoved: false,
+                        fit: null,
+                      });
+                    }}
                     onClick={(e) => {
-                      // Dia passado (escala do aluno): não abre modal de agendamento.
-                      if (cellPast || !onEmptySlotClick || dragState) return;
+                      if (createDragEndedRef.current) {
+                        createDragEndedRef.current = false;
+                        return;
+                      }
+                      // Dia passado / toque no celular: abre modal sem arrasto de criação.
+                      if (cellPast || !onEmptySlotClick || dragState || createDrag) return;
+                      if ((e.target as HTMLElement).closest("[data-schedule-event]")) return;
                       const target = resolveDropTarget(e.clientX, e.clientY);
                       if (target) onEmptySlotClick(target);
                     }}
                     onMouseMove={(e) => {
-                      if (cellPast || !showSlotPreview || dragState) {
+                      if (cellPast || !showSlotPreview || dragState || createDrag) {
                         if (slotHover) setSlotHover(null);
                         return;
                       }
-                      // Em modo preview o Y do mouse manda — mesmo sobre o corpo dos cards.
-                      // Só o título do evento captura o mouse para o popup de detalhes.
-                      if ((e.target as HTMLElement).closest("[data-schedule-event-title]")) {
+                      if (
+                        (e.target as HTMLElement).closest(
+                          slotPreviewPassThrough ? "[data-schedule-event-title]" : "[data-schedule-event]",
+                        )
+                      ) {
                         if (slotHover) setSlotHover(null);
                         return;
                       }
@@ -1483,28 +1687,31 @@ export function CalendarGrid({
                       return (
                         <div
                           key={item.id}
+                          data-schedule-event
                           role="button"
                           tabIndex={0}
-                          {...(showSlotPreview ? {} : scheduleTooltipHandlers(item, setTooltip))}
+                          {...(slotPreviewPassThrough ? {} : scheduleTooltipHandlers(item, setTooltip))}
                           onPointerDown={(e) => {
                             // Arrastar para alterar é exclusivo do desktop (mouse);
                             // no celular o toque apenas abre os detalhes via clique.
-                            if (!itemDraggable || e.pointerType !== "mouse" || showSlotPreview) return;
+                            if (!itemDraggable || e.pointerType !== "mouse" || slotPreviewPassThrough) return;
                             e.preventDefault();
                             e.stopPropagation();
                             dragEndedRef.current = false;
                             pointerClickHandledRef.current = false;
+                            setCreateDrag(null);
+                            setTooltip(null);
                             const target = resolveDropTarget(e.clientX, e.clientY) ?? {
                               dayOfWeek: item.dayOfWeek,
                               startHour: item.startHour,
                               startTime: item.startTime,
                               isNight: Boolean(item.isNight),
                             };
-                            setDragState({ item, preview: target, startX: e.clientX, startY: e.clientY, hasMoved: false });
+                            setDragState({ item, preview: target, startX: e.clientX, startY: e.clientY, hasMoved: false, fit: null });
                           }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (showSlotPreview) return;
+                            if (slotPreviewPassThrough) return;
                             if (dragEndedRef.current) {
                               dragEndedRef.current = false;
                               e.preventDefault();
@@ -1519,28 +1726,30 @@ export function CalendarGrid({
                               setTooltip({ item, x: e.clientX, y: e.clientY });
                               return;
                             }
+                            setTooltip(null);
                             onItemClick(item);
                           }}
-                          className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable && !showSlotPreview)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${showSlotPreview ? "pointer-events-none" : ""}`}
+                          className={`absolute ${eventStyleClasses(color, !privacyMode && calendarItemUnassigned(item), itemDraggable && !slotPreviewPassThrough)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${slotPreviewPassThrough ? "pointer-events-none" : ""}`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
                             left: `calc(${leftPercent}% + 4px)`,
                             width: `calc(${widthPercent}% - 8px)`,
-                            transition: showSlotPreview ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
+                            transition: showSlotPreview || createDrag?.hasMoved || dragState?.hasMoved ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
                           }}
                         >
                           <p
                             data-schedule-event-title
-                            className={`flex min-w-0 items-center gap-1 font-semibold text-white ${showSlotPreview ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
-                            {...(showSlotPreview ? scheduleTooltipHandlers(item, setTooltip) : {})}
+                            className={`flex min-w-0 items-center gap-1 font-semibold text-white ${slotPreviewPassThrough ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
+                            {...(slotPreviewPassThrough ? scheduleTooltipHandlers(item, setTooltip) : {})}
                             onClick={(e) => {
-                              if (!showSlotPreview) return;
+                              if (!slotPreviewPassThrough) return;
                               e.stopPropagation();
                               if (tooltipOnlyClick) {
                                 setTooltip({ item, x: e.clientX, y: e.clientY });
                                 return;
                               }
+                              setTooltip(null);
                               onItemClick(item);
                             }}
                           >
@@ -1573,11 +1782,13 @@ export function CalendarGrid({
                       const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
                       const widthPercent = 100 / Math.max(1, entry.columnCount);
                       const leftPercent = entry.columnIndex * widthPercent;
-                      const color = calendarItemColor(item, colorByAircraft);
+                      const fitStatus = dragState.fit?.status;
                       return (
                         <div
                           key="preview"
-                          className={`pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1.5 py-1 text-[10px] text-white shadow-lg ring-2 ring-violet-400/50 ${color}`}
+                          className={`pointer-events-none absolute z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] shadow-lg ${
+                            resolveFlexibleFit ? flexibleSlotPreviewClass(fitStatus) : "border-white/70 bg-white/10 text-white ring-2 ring-violet-400/50"
+                          }`}
                           style={{
                             top: `${top}px`,
                             height: `${height - 4}px`,
@@ -1586,11 +1797,32 @@ export function CalendarGrid({
                           }}
                         >
                           <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
-                          <p className="truncate opacity-80">Solte para confirmar</p>
+                          <p className="truncate opacity-80">
+                            {fitStatus === "adjust" ? "Ajusta vizinhos" : fitStatus === "blocked" ? "Sem encaixe" : "Solte para confirmar"}
+                          </p>
                         </div>
                       );
                     })() : null}
-                    {showSlotPreview && !dragState && slotHover?.cellKey === cellKey ? (() => {
+                    {createDrag?.hasMoved && createDrag.cellKey === cellKey ? (() => {
+                      const top = calendarTopPx(createDrag.startMinute, rowHeight);
+                      const durationHours = (createDrag.endMinute - createDrag.startMinute) / 60;
+                      const height = Math.max(rowHeight / 2, durationHours * rowHeight);
+                      const fitStatus = createDrag.fit?.status;
+                      return (
+                        <div
+                          key="create-preview"
+                          className={`pointer-events-none absolute inset-x-1 z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] ${flexibleSlotPreviewClass(fitStatus)}`}
+                          style={{ top: `${top}px`, height: `${height - 4}px` }}
+                        >
+                          <p className="truncate font-semibold">{minutesToScheduleHHMM(createDrag.startMinute)}–{minutesToScheduleHHMM(createDrag.endMinute)}</p>
+                          <p className="truncate opacity-80">
+                            {formatPreviewFlightHoursLabel(durationHours, previewBufferHours)}
+                            {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
+                          </p>
+                        </div>
+                      );
+                    })() : null}
+                    {showSlotPreview && !dragState && !createDrag && slotHover?.cellKey === cellKey ? (() => {
                       const top = calendarTopPx(parseScheduleTimeToMinutes(slotHover.startTime), rowHeight);
                       const height = Math.max(rowHeight / 2, (slotPreviewDurationHours ?? 1) * rowHeight);
                       const fitStatus = slotHover.fit?.status;
@@ -1602,7 +1834,7 @@ export function CalendarGrid({
                         >
                           <p className="truncate font-semibold">{slotHover.startTime}</p>
                           <p className="truncate opacity-80">
-                            {(slotPreviewDurationHours ?? 1).toFixed(2).replace(/\.?0+$/, "")}h
+                            {formatPreviewFlightHoursLabel(slotPreviewDurationHours ?? 1, previewBufferHours)}
                             {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
                           </p>
                         </div>
@@ -1652,6 +1884,7 @@ function DailyCalendarGrid({
   onNextWeek,
   hasPrevWeek,
   hasNextWeek,
+  onGoToToday,
   backgroundSupply,
   clubMemberByStudentId,
   getItemColor,
@@ -1660,6 +1893,7 @@ function DailyCalendarGrid({
   slotPreviewDurationHours = null,
   alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
   resolveFlexibleFit,
+  previewBufferHours = 0,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
@@ -1682,6 +1916,7 @@ function DailyCalendarGrid({
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
+  onGoToToday?: () => void;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   clubMemberByStudentId?: Record<string, boolean>;
   projectionRows?: AircraftProjectionRow[];
@@ -1693,6 +1928,7 @@ function DailyCalendarGrid({
     durationHours: number,
     options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
   ) => FlexibleFitResult | null;
+  previewBufferHours?: number;
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
   const isMobile = useIsMobileViewport();
@@ -1782,8 +2018,22 @@ function DailyCalendarGrid({
     startX: number;
     startY: number;
     hasMoved: boolean;
+    fit: FlexibleFitResult | null;
+  } | null>(null);
+  const [createDrag, setCreateDrag] = useState<{
+    cellKey: string;
+    dayOfWeek: number;
+    column: ScheduleColumn;
+    originMinute: number;
+    startMinute: number;
+    endMinute: number;
+    startX: number;
+    startY: number;
+    hasMoved: boolean;
+    fit: FlexibleFitResult | null;
   } | null>(null);
   const dragEndedRef = useRef(false);
+  const createDragEndedRef = useRef(false);
   const pointerClickHandledRef = useRef(false);
   const [tooltip, setTooltip] = useState<ScheduleTooltipState>(null);
   const [slotHover, setSlotHover] = useState<{
@@ -1794,12 +2044,18 @@ function DailyCalendarGrid({
   } | null>(null);
   const dragThresholdPx = 5;
   const showSlotPreview = Boolean(slotPreviewDurationHours && slotPreviewDurationHours > 0);
+  const slotPreviewPassThrough = showSlotPreview && !resolveFlexibleFit;
   const flexibleShiftStarts = useMemo(() => {
     const map = new Map<string, number>();
-    if (!slotHover?.fit?.ok) return map;
-    for (const shift of slotHover.fit.shifts) map.set(shift.id, shift.toStartMinute);
+    const fit =
+      (createDrag?.hasMoved ? createDrag.fit : null) ??
+      (dragState?.hasMoved ? dragState.fit : null) ??
+      slotHover?.fit ??
+      null;
+    if (!fit?.ok) return map;
+    for (const shift of fit.shifts) map.set(shift.id, shift.toStartMinute);
     return map;
-  }, [slotHover]);
+  }, [createDrag, dragState, slotHover]);
 
   const resolveDropTarget = useCallback(
     (clientX: number, clientY: number): CalendarDropTarget | null => {
@@ -1822,6 +2078,16 @@ function DailyCalendarGrid({
     [calendarEndHour, columns, nightStartHour, rowHeight, selectedDay],
   );
 
+  const resolveMinuteInCell = useCallback(
+    (cellKey: string, clientY: number): number | null => {
+      const board = boardRefs.current.get(cellKey);
+      if (!board) return null;
+      const r = board.getBoundingClientRect();
+      return snapCalendarPointerToStartMinute(clientY, r.top, rowHeight, calendarEndHour);
+    },
+    [calendarEndHour, rowHeight],
+  );
+
   useEffect(() => {
     if (!dragState) return;
     function onMove(e: PointerEvent) {
@@ -1829,7 +2095,14 @@ function DailyCalendarGrid({
         if (!p) return p;
         const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
         const t = moved ? resolveDropTarget(e.clientX, e.clientY) : null;
-        return { ...p, hasMoved: moved, preview: t ?? p.preview };
+        const preview = t ?? p.preview;
+        const fit =
+          moved && resolveFlexibleFit
+            ? resolveFlexibleFit(preview, p.item.durationHours, { excludeFlightId: p.item.id })
+            : moved
+              ? null
+              : p.fit;
+        return { ...p, hasMoved: moved, preview, fit };
       });
     }
     function onUp(e: PointerEvent) {
@@ -1839,6 +2112,7 @@ function DailyCalendarGrid({
           onItemDrop(p.item, resolveDropTarget(e.clientX, e.clientY) ?? p.preview);
         } else if (p) {
           pointerClickHandledRef.current = true;
+          setTooltip(null);
           onItemClick(p.item);
         }
         return null;
@@ -1850,7 +2124,60 @@ function DailyCalendarGrid({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragState, onItemClick, onItemDrop, resolveDropTarget]);
+  }, [dragState, onItemClick, onItemDrop, resolveDropTarget, resolveFlexibleFit]);
+
+  useEffect(() => {
+    if (!createDrag) return;
+    function onMove(e: PointerEvent) {
+      setCreateDrag((p) => {
+        if (!p) return p;
+        const moved = p.hasMoved || Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= dragThresholdPx;
+        const pointerMinute = resolveMinuteInCell(p.cellKey, e.clientY) ?? p.originMinute;
+        const { startMinute, endMinute } = createDragRangeFromPointer(
+          p.originMinute,
+          pointerMinute,
+          calendarEndHour * 60,
+        );
+        const target: CalendarDropTarget = {
+          dayOfWeek: p.dayOfWeek,
+          startHour: startMinute / 60,
+          startTime: minutesToScheduleHHMM(startMinute),
+          isNight: startMinute >= nightStartHour * 60,
+          ...scheduleColumnTarget(p.column),
+        };
+        const durationHours = (endMinute - startMinute) / 60;
+        const col = columns.find((c) => c.key === p.cellKey);
+        const fit =
+          moved && resolveFlexibleFit
+            ? resolveFlexibleFit(target, durationHours, { cellItems: col?.items })
+            : moved
+              ? null
+              : p.fit;
+        return { ...p, hasMoved: moved, startMinute, endMinute, fit };
+      });
+    }
+    function onUp() {
+      setCreateDrag((p) => {
+        if (!p || !onEmptySlotClick) return null;
+        createDragEndedRef.current = true;
+        onEmptySlotClick({
+          dayOfWeek: p.dayOfWeek,
+          startHour: p.startMinute / 60,
+          startTime: minutesToScheduleHHMM(p.startMinute),
+          isNight: p.startMinute >= nightStartHour * 60,
+          ...scheduleColumnTarget(p.column),
+          ...(p.hasMoved ? { durationHours: (p.endMinute - p.startMinute) / 60 } : {}),
+        });
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [calendarEndHour, columns, createDrag, nightStartHour, onEmptySlotClick, resolveFlexibleFit, resolveMinuteInCell]);
 
   function handlePrevDay() {
     if (hasPrevWeek && onPrevWeek) onPrevWeek();
@@ -1867,6 +2194,16 @@ function DailyCalendarGrid({
     <>
       {/* Day selector */}
       <div className="mb-3 flex items-center gap-1">
+        {onGoToToday ? (
+          <button
+            type="button"
+            onClick={onGoToToday}
+            className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+            title="Ir para hoje"
+          >
+            Hoje
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={handlePrevDay}
@@ -1912,7 +2249,9 @@ function DailyCalendarGrid({
       </div>
 
       {draggable ? (
-        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar. Ao soltar, confirme no modal.</p>
+        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar, ou clique e arraste no vazio para criar. Ao soltar, confirme no modal.</p>
+      ) : onEmptySlotClick ? (
+        <p className="mb-2 text-[11px] text-slate-600">Clique e arraste no vazio para criar um voo com a duração do arrasto.</p>
       ) : null}
       <div className="mb-2">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda diária</p>
@@ -1976,19 +2315,50 @@ function DailyCalendarGrid({
                     <td key={col.key} className="align-top p-0">
                       <div
                         ref={(node) => { if (node) boardRefs.current.set(col.key, node); else boardRefs.current.delete(col.key); }}
-                        className="relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md"
+                        className={`relative overflow-hidden rounded border border-slate-700/60 bg-slate-950/40 sm:rounded-md ${onEmptySlotClick ? "cursor-crosshair" : ""}`}
                         style={{ height: `${boardHeight}px` }}
+                        onPointerDown={(e) => {
+                          if (!onEmptySlotClick || e.pointerType !== "mouse" || dragState) return;
+                          if ((e.target as HTMLElement).closest("[data-schedule-event]")) return;
+                          e.preventDefault();
+                          const originMinute = resolveMinuteInCell(col.key, e.clientY);
+                          if (originMinute == null) return;
+                          createDragEndedRef.current = false;
+                          setTooltip(null);
+                          setSlotHover(null);
+                          setCreateDrag({
+                            cellKey: col.key,
+                            dayOfWeek: selectedDay,
+                            column: col.column,
+                            originMinute,
+                            startMinute: originMinute,
+                            endMinute: originMinute + 15,
+                            startX: e.clientX,
+                            startY: e.clientY,
+                            hasMoved: false,
+                            fit: null,
+                          });
+                        }}
                         onClick={(e) => {
-                          if (!onEmptySlotClick || dragState) return;
+                          if (createDragEndedRef.current) {
+                            createDragEndedRef.current = false;
+                            return;
+                          }
+                          if (!onEmptySlotClick || dragState || createDrag) return;
+                          if ((e.target as HTMLElement).closest("[data-schedule-event]")) return;
                           const t = resolveDropTarget(e.clientX, e.clientY);
                           if (t) onEmptySlotClick(t);
                         }}
                         onMouseMove={(e) => {
-                          if (!showSlotPreview || dragState) {
+                          if (!showSlotPreview || dragState || createDrag) {
                             if (slotHover) setSlotHover(null);
                             return;
                           }
-                          if ((e.target as HTMLElement).closest("[data-schedule-event-title]")) {
+                          if (
+                            (e.target as HTMLElement).closest(
+                              slotPreviewPassThrough ? "[data-schedule-event-title]" : "[data-schedule-event]",
+                            )
+                          ) {
                             if (slotHover) setSlotHover(null);
                             return;
                           }
@@ -2074,56 +2444,61 @@ function DailyCalendarGrid({
                           return (
                             <div
                               key={item.id}
+                              data-schedule-event
                               role="button"
                               tabIndex={0}
-                              {...(showSlotPreview ? {} : scheduleTooltipHandlers(item, setTooltip))}
+                              {...(slotPreviewPassThrough ? {} : scheduleTooltipHandlers(item, setTooltip))}
                               onPointerDown={(e) => {
                                 // Arrastar para alterar é exclusivo do desktop (mouse);
                                 // no celular o toque apenas abre os detalhes via clique.
-                                if (!draggable || e.pointerType !== "mouse" || showSlotPreview) return;
+                                if (!draggable || e.pointerType !== "mouse" || slotPreviewPassThrough) return;
                                 e.preventDefault();
                                 e.stopPropagation();
                                 dragEndedRef.current = false;
                                 pointerClickHandledRef.current = false;
+                                setCreateDrag(null);
+                                setTooltip(null);
                                 const t = resolveDropTarget(e.clientX, e.clientY) ?? {
                                   dayOfWeek: selectedDay,
                                   startHour: item.startHour,
                                   startTime: item.startTime,
                                   isNight: Boolean(item.isNight),
                                 };
-                                setDragState({ item, preview: t, startX: e.clientX, startY: e.clientY, hasMoved: false });
+                                setDragState({ item, preview: t, startX: e.clientX, startY: e.clientY, hasMoved: false, fit: null });
                               }}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (showSlotPreview) return;
+                                if (slotPreviewPassThrough) return;
                                 if (dragEndedRef.current) { dragEndedRef.current = false; e.preventDefault(); return; }
                                 if (pointerClickHandledRef.current) { pointerClickHandledRef.current = false; e.preventDefault(); return; }
                                 if (tooltipOnlyClick) {
                                   setTooltip({ item, x: e.clientX, y: e.clientY });
                                   return;
                                 }
+                                setTooltip(null);
                                 onItemClick(item);
                               }}
-                              className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable && !showSlotPreview)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${showSlotPreview ? "pointer-events-none" : ""}`}
+                              className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), draggable && !slotPreviewPassThrough)} ${isFlexShifted ? "z-10 ring-2 ring-amber-300/70" : ""} ${slotPreviewPassThrough ? "pointer-events-none" : ""}`}
                               style={{
                                 top: `${top}px`,
                                 height: `${height - 4}px`,
                                 left: `calc(${leftPercent}% + 4px)`,
                                 width: `calc(${widthPercent}% - 8px)`,
-                                transition: showSlotPreview ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
+                                transition: showSlotPreview || createDrag?.hasMoved || dragState?.hasMoved ? "top 220ms ease-out, height 220ms ease-out, box-shadow 180ms ease-out" : undefined,
                               }}
                             >
                               <p
                                 data-schedule-event-title
-                                className={`flex min-w-0 items-center gap-1 font-semibold text-white ${showSlotPreview ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
-                                {...(showSlotPreview ? scheduleTooltipHandlers(item, setTooltip) : {})}
+                                className={`flex min-w-0 items-center gap-1 font-semibold text-white ${slotPreviewPassThrough ? "pointer-events-auto relative z-40 cursor-help rounded-sm hover:bg-white/10" : ""}`}
+                                {...(slotPreviewPassThrough ? scheduleTooltipHandlers(item, setTooltip) : {})}
                                 onClick={(e) => {
-                                  if (!showSlotPreview) return;
+                                  if (!slotPreviewPassThrough) return;
                                   e.stopPropagation();
                                   if (tooltipOnlyClick) {
                                     setTooltip({ item, x: e.clientX, y: e.clientY });
                                     return;
                                   }
+                                  setTooltip(null);
                                   onItemClick(item);
                                 }}
                               >
@@ -2141,7 +2516,6 @@ function DailyCalendarGrid({
                           const entry = entries.find((e) => e.item.id === item.id) ?? { item, columnIndex: 0, columnCount: 1 };
                           const top = calendarTopPx(parseScheduleTimeToMinutes(dragState.preview.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, item.durationHours * rowHeight);
-                          const color = calendarItemColor(item, colorByAircraft);
                           const widthPercent = 100 / Math.max(1, entry.columnCount);
                           const leftPercent = entry.columnIndex * widthPercent;
                           const previewItem = {
@@ -2150,10 +2524,13 @@ function DailyCalendarGrid({
                             instructorId: dragState.preview.targetInstructorId !== undefined ? dragState.preview.targetInstructorId : item.instructorId,
                           };
                           if (!scheduleColumnItemMatches(previewItem, col.column)) return null;
+                          const fitStatus = dragState.fit?.status;
                           return (
                             <div
                               key="preview"
-                              className={`pointer-events-none absolute overflow-hidden rounded border-2 border-dashed border-white/70 bg-white/10 px-1.5 py-1 text-[10px] text-white shadow-lg ring-2 ring-violet-400/50 ${color}`}
+                              className={`pointer-events-none absolute z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] shadow-lg ${
+                                resolveFlexibleFit ? flexibleSlotPreviewClass(fitStatus) : "border-white/70 bg-white/10 text-white ring-2 ring-violet-400/50"
+                              }`}
                               style={{
                                 top: `${top}px`,
                                 height: `${height - 4}px`,
@@ -2162,11 +2539,32 @@ function DailyCalendarGrid({
                               }}
                             >
                               <p className="truncate font-semibold">{shortName(item.studentLabel, item.studentLabel)}</p>
-                              <p className="truncate opacity-80">Solte para confirmar</p>
+                              <p className="truncate opacity-80">
+                                {fitStatus === "adjust" ? "Ajusta vizinhos" : fitStatus === "blocked" ? "Sem encaixe" : "Solte para confirmar"}
+                              </p>
                             </div>
                           );
                         })()}
-                        {showSlotPreview && !dragState && slotHover?.cellKey === col.key ? (() => {
+                        {createDrag?.hasMoved && createDrag.cellKey === col.key ? (() => {
+                          const top = calendarTopPx(createDrag.startMinute, rowHeight);
+                          const durationHours = (createDrag.endMinute - createDrag.startMinute) / 60;
+                          const height = Math.max(rowHeight / 2, durationHours * rowHeight);
+                          const fitStatus = createDrag.fit?.status;
+                          return (
+                            <div
+                              key="create-preview"
+                              className={`pointer-events-none absolute inset-x-1 z-30 overflow-hidden rounded border-2 border-dashed px-1.5 py-1 text-[10px] ${flexibleSlotPreviewClass(fitStatus)}`}
+                              style={{ top: `${top}px`, height: `${height - 4}px` }}
+                            >
+                              <p className="truncate font-semibold">{minutesToScheduleHHMM(createDrag.startMinute)}–{minutesToScheduleHHMM(createDrag.endMinute)}</p>
+                              <p className="truncate opacity-80">
+                                {formatPreviewFlightHoursLabel(durationHours, previewBufferHours)}
+                                {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
+                              </p>
+                            </div>
+                          );
+                        })() : null}
+                        {showSlotPreview && !dragState && !createDrag && slotHover?.cellKey === col.key ? (() => {
                           const top = calendarTopPx(parseScheduleTimeToMinutes(slotHover.startTime), rowHeight);
                           const height = Math.max(rowHeight / 2, (slotPreviewDurationHours ?? 1) * rowHeight);
                           const fitStatus = slotHover.fit?.status;
@@ -2178,7 +2576,7 @@ function DailyCalendarGrid({
                             >
                               <p className="truncate font-semibold">{slotHover.startTime}</p>
                               <p className="truncate opacity-80">
-                                {(slotPreviewDurationHours ?? 1).toFixed(2).replace(/\.?0+$/, "")}h
+                                {formatPreviewFlightHoursLabel(slotPreviewDurationHours ?? 1, previewBufferHours)}
                                 {fitStatus === "adjust" ? " · ajusta vizinhos" : fitStatus === "blocked" ? " · sem encaixe" : ""}
                               </p>
                             </div>
@@ -2236,6 +2634,7 @@ function HorizontalTimelineBoard({
   onNextWeek,
   hasPrevWeek,
   hasNextWeek,
+  onGoToToday,
   showDayInItems = false,
   slotPreviewDurationHours = null,
 }: {
@@ -2257,6 +2656,7 @@ function HorizontalTimelineBoard({
   onNextWeek?: () => void;
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
+  onGoToToday?: () => void;
   showDayInItems?: boolean;
   slotPreviewDurationHours?: number | null;
 }) {
@@ -2344,31 +2744,55 @@ function HorizontalTimelineBoard({
             instructorColumns={instructorColumns}
           />
         </div>
-        {!daySelector && (onPrevWeek || onNextWeek) ? (
+        {!daySelector && (onPrevWeek || onNextWeek || onGoToToday) ? (
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onPrevWeek}
-              disabled={!hasPrevWeek}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-              title="Semana anterior"
-            >
-              ‹
-            </button>
-            <button
-              type="button"
-              onClick={onNextWeek}
-              disabled={!hasNextWeek}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-              title="Próxima semana"
-            >
-              ›
-            </button>
+            {onGoToToday ? (
+              <button
+                type="button"
+                onClick={onGoToToday}
+                className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+                title="Ir para hoje"
+              >
+                Hoje
+              </button>
+            ) : null}
+            {onPrevWeek || onNextWeek ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onPrevWeek}
+                  disabled={!hasPrevWeek}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Semana anterior"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  onClick={onNextWeek}
+                  disabled={!hasNextWeek}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Próxima semana"
+                >
+                  ›
+                </button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
       {daySelector ? (
         <div className="mb-3 flex items-center gap-1">
+          {onGoToToday ? (
+            <button
+              type="button"
+              onClick={onGoToToday}
+              className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+              title="Ir para hoje"
+            >
+              Hoje
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={handlePrevDay}
@@ -2511,6 +2935,7 @@ function HorizontalTimelineBoard({
                             setTooltip({ item, x: e.clientX, y: e.clientY });
                             return;
                           }
+                          setTooltip(null);
                           onItemClick(item);
                         }}
                         className={`absolute ${eventStyleClasses(color, calendarItemUnassigned(item), false)}`}
@@ -2597,7 +3022,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
   const [invertedTimeline, setInvertedTimeline] = useState(false);
   const [agendaBlockSize, setAgendaBlockSize] = useState<AgendaBlockSize>("off");
-  const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(false);
+  const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(true);
   const [pendingFlexibleShifts, setPendingFlexibleShifts] = useState<FlexibleFitShift[]>([]);
   // Mobile: resumos recolhidos por padrão
   const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
@@ -2613,6 +3038,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   const [blockDraft, setBlockDraft] = useState<{
     aircraftRegistration: string;
     date: string;
+    endDate: string;
     startTime: string;
     endTime: string;
     notes: string;
@@ -2990,6 +3416,18 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       goToWeekOffset(1);
     }
   }, [goToWeekOffset, hasNextWeek, threeDayStartIndex]);
+
+  const goToToday = useCallback(() => {
+    const now = new Date();
+    const weekStart = mondayWeekStartIso(now);
+    const todayDow = now.getDay();
+    setAgendaView("daily");
+    setSelectedDay(todayDow);
+    if (weekStart === selectedWeekStart) return;
+    const option = weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+    setSelectedWeekStart(weekStart);
+    void loadWeekRef.current(weekStart, option, { showSkeleton: false });
+  }, [selectedWeekStart]);
 
   useEffect(() => {
     if (!actorUserId) {
@@ -3897,9 +4335,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   function applyEmptySlotTarget(target: CalendarDropTarget) {
     if (!weekData || !canCreateFlight) return;
     const flightHours = agendaBlockSize === "off" ? 1 : agendaBlockSize;
-    const durationHours = flightHoursToStoredDuration(flightHours, scheduleRules);
+    const durationHours =
+      target.durationHours != null && target.durationHours > 0
+        ? target.durationHours
+        : flightHoursToStoredDuration(flightHours, scheduleRules);
     let shifts: FlexibleFitShift[] = [];
-    if (flexibleAdjustEnabled && agendaBlockSize !== "off" && target.targetAircraftRegistration) {
+    if (flexibleAdjustEnabled && target.targetAircraftRegistration) {
       const fit = resolveFlexibleFit(target, durationHours);
       if (fit && !fit.ok) {
         showToast({ variant: "error", message: fit.reason || "Não foi possível encaixar neste horário." });
@@ -3934,7 +4375,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     });
   }
 
-  async function openEditModal(row: ExistingScheduledFlight) {
+  async function openEditModal(row: ExistingScheduledFlight, options?: { preserveFlexibleShifts?: boolean }) {
     if (!canEditFlight) return;
     if (isSagaEventRowId(row.id)) {
       // Evento da agenda SAGA: não há documento local para carregar.
@@ -3961,7 +4402,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       });
       setFormConflicts([]);
       setForceSaveWithConflict(false);
-      setPendingFlexibleShifts([]);
+      if (!options?.preserveFlexibleShifts) setPendingFlexibleShifts([]);
       return;
     }
     const full = await getSavedFlight(row.id);
@@ -4006,11 +4447,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     });
     setFormConflicts([]);
     setForceSaveWithConflict(false);
-    setPendingFlexibleShifts([]);
+    if (!options?.preserveFlexibleShifts) setPendingFlexibleShifts([]);
   }
 
   const liveFlexibleFit = useMemo(() => {
-    if (!formDraft || formMode !== "create" || !flexibleAdjustEnabled || !weekData) return null;
+    if (!formDraft || !flexibleAdjustEnabled || !weekData) return null;
     return resolveFlexibleFit(
       {
         dayOfWeek: formDraft.dayOfWeek,
@@ -4022,7 +4463,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       formDraft.durationHours,
       { excludeFlightId: formDraft.id },
     );
-  }, [flexibleAdjustEnabled, formDraft, formMode, resolveFlexibleFit, weekData]);
+  }, [flexibleAdjustEnabled, formDraft, resolveFlexibleFit, weekData]);
 
   async function handleSaveForm() {
     if (!user || !weekData || !formDraft) return;
@@ -4037,7 +4478,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     }
 
     const flexiblePlan =
-      formMode === "create" && flexibleAdjustEnabled
+      flexibleAdjustEnabled
         ? resolveFlexibleFit(
             {
               dayOfWeek: formDraft.dayOfWeek,
@@ -4336,9 +4777,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
       setError("Cadastre uma aeronave ativa para bloquear a agenda.");
       return;
     }
+    const date = weekDateFromStart(weekData.week.weekStart, selectedDay);
     setBlockDraft({
       aircraftRegistration: firstAircraft.registration,
-      date: weekDateFromStart(weekData.week.weekStart, selectedDay),
+      date,
+      endDate: date,
       startTime: "08:00",
       endTime: "12:00",
       notes: "",
@@ -4348,18 +4791,32 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   async function handleSaveBlock() {
     if (!blockDraft) return;
     setError(null);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(blockDraft.date)) {
-      setError("Informe a data do bloqueio.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(blockDraft.date) || !/^\d{4}-\d{2}-\d{2}$/.test(blockDraft.endDate)) {
+      setError("Informe as datas de início e fim do bloqueio.");
       return;
     }
-    const startMin = parseScheduleTimeToMinutes(blockDraft.startTime);
-    const endMin = parseScheduleTimeToMinutes(blockDraft.endTime);
-    if (!blockDraft.startTime || !blockDraft.endTime || endMin <= startMin) {
-      setError("O fim do bloqueio deve ser depois do início.");
+    if (blockDraft.endDate < blockDraft.date) {
+      setError("A data de fim deve ser igual ou posterior à data de início.");
+      return;
+    }
+    if (!blockDraft.startTime || !blockDraft.endTime) {
+      setError("Informe horário de início e fim do bloqueio.");
+      return;
+    }
+    const durationMinutes = blockSpanDurationMinutes(
+      blockDraft.date,
+      blockDraft.startTime,
+      blockDraft.endDate,
+      blockDraft.endTime,
+    );
+    if (durationMinutes < 15) {
+      setError("O fim do bloqueio deve ser pelo menos 15 minutos depois do início.");
       return;
     }
     setBlockSaving(true);
     try {
+      // Um único evento SAGA com duração multi-dia. Segmentar por dia falha no SAGA
+      // ("aluno já tem voo") porque o usuário de bloqueio é o mesmo em todos os segmentos.
       const result = await upsertSagaScheduleDirect({
         aircraftIdent: blockDraft.aircraftRegistration,
         studentSagaId: SAGA_BLOCK_USER_ID,
@@ -4368,11 +4825,17 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
         instructorName: SAGA_BLOCK_USER_NAME,
         date: blockDraft.date,
         startTime: blockDraft.startTime,
-        durationMinutes: endMin - startMin,
+        durationMinutes,
         sagaStatus: "CONFIRMED",
         rawNotes: ["Bloqueio de agenda via plataforma", blockDraft.notes.trim()].filter(Boolean).join(" | ").slice(0, 255),
       });
-      showToast({ variant: "success", message: result.message });
+      const multiDay = blockDraft.endDate !== blockDraft.date;
+      showToast({
+        variant: "success",
+        message: multiDay
+          ? `Bloqueio criado (${blockDraft.date} ${blockDraft.startTime} → ${blockDraft.endDate} ${blockDraft.endTime}).`
+          : result.message,
+      });
       setBlockDraft(null);
       if (weekData) await loadWeek(weekData.week.weekStart, undefined, { showSkeleton: false, force: true });
     } catch (e) {
@@ -4386,6 +4849,44 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
     if (readOnlyDisplay || !canEditFlight) return;
     const selected = flights.find((row) => row.id === item.id);
     if (selected) void openEditModal(selected);
+  }
+
+  async function handleCalendarItemDrop(item: CalendarFlightItem, target: CalendarDropTarget) {
+    const selected = flights.find((row) => row.id === item.id);
+    if (!selected || !weekData) return;
+    let shifts: FlexibleFitShift[] = [];
+    if (flexibleAdjustEnabled && target.targetAircraftRegistration) {
+      const fit = resolveFlexibleFit(target, selected.durationHours, { excludeFlightId: item.id });
+      if (fit && !fit.ok) {
+        showToast({ variant: "error", message: fit.reason || "Não foi possível encaixar neste horário." });
+        return;
+      }
+      if (fit?.ok) shifts = fit.shifts;
+    }
+    await openEditModal(selected, { preserveFlexibleShifts: true });
+    setPendingFlexibleShifts(shifts);
+    setFormDraft((prev) => {
+      if (!prev) return prev;
+      const base = {
+        ...prev,
+        dayOfWeek: target.dayOfWeek,
+        dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
+        startHour: target.startHour,
+        startTime: target.startTime,
+        isNight: target.isNight,
+        aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
+      };
+      if (target.targetInstructorId !== undefined) {
+        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
+        return {
+          ...base,
+          instructorId: target.targetInstructorId,
+          instructorLabel: instr?.label ?? null,
+          instructorAnac: instr?.anacCode ?? null,
+        };
+      }
+      return base;
+    });
   }
 
   async function handleDeleteFlight(row: ExistingScheduledFlight) {
@@ -4950,6 +5451,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                 hasNextWeek={agendaView === "three-day" ? threeDayStartIndex + 3 < DAY_ORDER.length || hasNextWeek : hasNextWeek}
                 onPrevWeek={() => { slideBoard("back"); (agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1))(); }}
                 onNextWeek={() => { slideBoard("forward"); (agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1))(); }}
+                onGoToToday={goToToday}
                 onItemClick={handleCalendarItemClick}
                 tooltipOnlyClick={readOnlyDisplay}
                 onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
@@ -4975,9 +5477,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                 weekStart={weekData.week.weekStart}
                 nightStartHour={scheduleRules.nightFlightStartHour}
                 slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
+                previewBufferHours={
+                  !readOnlyDisplay && scheduleRules.sagaOnlySchedule ? scheduleBuffersHours(scheduleRules) : 0
+                }
                 alwaysVisibleAircraftIdents={alwaysVisibleAircraftIdents}
                 resolveFlexibleFit={
-                  !readOnlyDisplay && flexibleAdjustEnabled && agendaBlockSize !== "off"
+                  !readOnlyDisplay && flexibleAdjustEnabled
                     ? (target, durationHours, options) => resolveFlexibleFit(target, durationHours, options)
                     : undefined
                 }
@@ -5003,31 +5508,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   }
                   goToWeekOffset(1);
                 }}
+                onGoToToday={goToToday}
                 onItemClick={handleCalendarItemClick}
                 tooltipOnlyClick={readOnlyDisplay}
                 onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {
-                  const selected = flights.find((row) => row.id === item.id);
-                  if (!selected) return;
-                  void (async () => {
-                    await openEditModal(selected);
-                    setFormDraft((prev) => {
-                      if (!prev) return prev;
-                      const base = {
-                        ...prev,
-                        dayOfWeek: target.dayOfWeek,
-                        dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek),
-                        startHour: target.startHour,
-                        startTime: target.startTime,
-                        isNight: target.isNight,
-                        aircraftRegistration: target.targetAircraftRegistration ?? prev.aircraftRegistration,
-                      };
-                      if (target.targetInstructorId !== undefined) {
-                        const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
-                        return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
-                      }
-                      return base;
-                    });
-                  })();
+                  void handleCalendarItemDrop(item, target);
                 }}
                 onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
               />
@@ -5044,9 +5529,12 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   instructorColumns={calendarInstructorColumns}
                   nightStartHour={scheduleRules.nightFlightStartHour}
                   slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
+                  previewBufferHours={
+                    !readOnlyDisplay && scheduleRules.sagaOnlySchedule ? scheduleBuffersHours(scheduleRules) : 0
+                  }
                   alwaysVisibleAircraftIdents={alwaysVisibleAircraftIdents}
                   resolveFlexibleFit={
-                    !readOnlyDisplay && flexibleAdjustEnabled && agendaBlockSize !== "off"
+                    !readOnlyDisplay && flexibleAdjustEnabled
                       ? (target, durationHours, options) => resolveFlexibleFit(target, durationHours, options)
                       : undefined
                   }
@@ -5062,26 +5550,11 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   onSelectDay={setSelectedDay}
                   onPrevWeek={() => { slideBoard("back"); goToWeekOffset(-1); }}
                   onNextWeek={() => { slideBoard("forward"); goToWeekOffset(1); }}
+                  onGoToToday={goToToday}
                   onItemClick={handleCalendarItemClick}
                   tooltipOnlyClick={readOnlyDisplay}
                   onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {
-                    const selected = flights.find((row) => row.id === item.id);
-                    if (!selected) return;
-                    void (async () => {
-                      await openEditModal(selected);
-                      setFormDraft((prev) => {
-                        if (!prev) return prev;
-                        const base = { ...prev, dayOfWeek: target.dayOfWeek, dateIso: weekDateFromStart(weekData.week.weekStart, target.dayOfWeek), startHour: target.startHour, startTime: target.startTime, isNight: target.isNight };
-                        if (target.targetInstructorId !== undefined) {
-                          const instr = weekData.instructors.find((i) => i.userId === target.targetInstructorId) ?? null;
-                          return { ...base, instructorId: target.targetInstructorId, instructorLabel: instr?.label ?? null, instructorAnac: instr?.anacCode ?? null };
-                        }
-                        if (target.targetAircraftRegistration) {
-                          return { ...base, aircraftRegistration: target.targetAircraftRegistration };
-                        }
-                        return base;
-                      });
-                    })();
+                    void handleCalendarItemDrop(item, target);
                   }}
                   onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
                 />
@@ -5613,7 +6086,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   />
                 </label>
               )}
-              {(formMode === "create" && flexibleAdjustEnabled) || (pendingFlexibleShifts.length > 0) ? (
+              {flexibleAdjustEnabled || pendingFlexibleShifts.length > 0 ? (
                 <div className="md:col-span-2">
                   {liveFlexibleFit && !liveFlexibleFit.ok ? (
                     <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
@@ -5819,6 +6292,7 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
             <div className="space-y-3 overflow-y-auto p-4">
               <p className="text-xs text-slate-500">
                 Cria um evento na agenda SAGA com o usuário de bloqueio, impedindo novos agendamentos no período.
+                Pode começar em um dia e terminar em outro.
               </p>
               <label className="block text-xs text-slate-400">
                 Aeronave
@@ -5834,15 +6308,37 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   ))}
                 </select>
               </label>
-              <label className="block text-xs text-slate-400">
-                Data
-                <input
-                  type="date"
-                  value={blockDraft.date}
-                  onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
-                />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-xs text-slate-400">
+                  Início (data)
+                  <input
+                    type="date"
+                    value={blockDraft.date}
+                    onChange={(e) =>
+                      setBlockDraft((prev) => {
+                        if (!prev) return prev;
+                        const date = e.target.value;
+                        return {
+                          ...prev,
+                          date,
+                          endDate: prev.endDate < date ? date : prev.endDate,
+                        };
+                      })
+                    }
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Fim (data)
+                  <input
+                    type="date"
+                    value={blockDraft.endDate}
+                    min={blockDraft.date}
+                    onChange={(e) => setBlockDraft((prev) => (prev ? { ...prev, endDate: e.target.value } : prev))}
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-xs text-slate-400">
                   Hora de início
@@ -5863,6 +6359,22 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
                   />
                 </label>
               </div>
+              {blockDraft.endDate !== blockDraft.date ? (
+                <p className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90">
+                  Bloqueio multi-dia: {blockDraft.date} {blockDraft.startTime} → {blockDraft.endDate} {blockDraft.endTime}
+                  {(() => {
+                    const mins = blockSpanDurationMinutes(
+                      blockDraft.date,
+                      blockDraft.startTime,
+                      blockDraft.endDate,
+                      blockDraft.endTime,
+                    );
+                    if (mins < 15) return null;
+                    const hours = mins / 60;
+                    return ` · ${hours.toFixed(2).replace(/\.?0+$/, "")}h`;
+                  })()}
+                </p>
+              ) : null}
               <label className="block text-xs text-slate-400">
                 Observação
                 <textarea
