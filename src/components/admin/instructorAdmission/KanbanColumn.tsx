@@ -11,12 +11,21 @@ import {
   computeInstructorAdmissionScore,
   instructorAdmissionScoreColor,
 } from "../../../lib/instructorAdmissionScore";
+import type { InstructorCardFieldKey } from "../../../lib/instructorAdmissionCardFields";
+
+function formatCardDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
+}
 
 export function CandidateCard({
   candidate,
   form,
   hoursMap,
   hoursLoading,
+  visibleFields,
   onDragStart,
   onClick,
   onEdit,
@@ -27,6 +36,7 @@ export function CandidateCard({
   form?: InstructorAdmissionForm | null;
   hoursMap?: InstructorHoursMap;
   hoursLoading?: boolean;
+  visibleFields: Set<InstructorCardFieldKey>;
   onDragStart: (candidate: InstructorAdmissionCandidate) => void;
   onClick: (candidate: InstructorAdmissionCandidate) => void;
   onEdit: (candidate: InstructorAdmissionCandidate) => void;
@@ -40,6 +50,10 @@ export function CandidateCard({
     form?.scoreRules?.length
       ? computeInstructorAdmissionScore(candidate.responses, form.scoreRules, form.fields).total
       : null;
+  const showFullName =
+    visibleFields.has("fullName") &&
+    Boolean(candidate.nickname) &&
+    candidate.name !== candidate.nickname;
 
   return (
     <div
@@ -67,47 +81,68 @@ export function CandidateCard({
           onClick={() => onClick(candidate)}
         >
           <p className="text-sm text-slate-100 leading-snug truncate">{candidateDisplayName(candidate)}</p>
-          {candidate.nickname && candidate.name !== candidate.nickname && (
+          {showFullName && (
             <p className="mt-0.5 text-[10px] text-slate-600 truncate">{candidate.name}</p>
           )}
-          {candidate.email && (
+          {visibleFields.has("email") && candidate.email && (
             <p className="mt-0.5 text-xs text-slate-500 truncate">{candidate.email}</p>
           )}
-          {candidate.phone && (
+          {visibleFields.has("phone") && candidate.phone && (
             <p className="mt-0.5 text-xs text-slate-500 truncate">{candidate.phone}</p>
           )}
-          {candidate.userId && hoursLoading && !hours && (
+          {visibleFields.has("hours") && candidate.userId && hoursLoading && !hours && (
             <p className="mt-1 text-xs text-slate-600 animate-pulse">Carregando horas...</p>
           )}
-          {hours && (
+          {visibleFields.has("hours") && hours && (
             <p className="mt-1 text-xs text-sky-400/90">
               {formatHoursLabel(hours.totalHours)} total · {formatHoursLabel(hours.monthHours)} no mês
             </p>
           )}
+          {visibleFields.has("formFilledAt") && candidate.formFilledAt && (
+            <p className="mt-1 text-[10px] text-slate-600">
+              Form. {formatCardDate(candidate.formFilledAt)}
+            </p>
+          )}
+          {visibleFields.has("statusEnteredAt") && candidate.statusEnteredAt && (
+            <p className="mt-0.5 text-[10px] text-slate-600">
+              Etapa desde {formatCardDate(candidate.statusEnteredAt)}
+            </p>
+          )}
           <div className="mt-1.5 flex flex-wrap gap-1">
-            {score != null && (
+            {visibleFields.has("score") && score != null && (
               <span
                 className={`rounded px-1.5 py-0.5 text-[10px] font-semibold bg-slate-800 ${instructorAdmissionScoreColor(score)}`}
               >
                 Score {score}
               </span>
             )}
-            {candidate.referralSource && (
+            {visibleFields.has("referralSource") && candidate.referralSource && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-violet-900/40 text-violet-300 truncate max-w-[140px]">
                 {candidate.referralSource}
               </span>
             )}
-            {candidate.source === "form" && (
+            {visibleFields.has("linkedAccount") && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                  candidate.userId
+                    ? "bg-emerald-900/40 text-emerald-300"
+                    : "bg-slate-800 text-slate-500"
+                }`}
+              >
+                {candidate.userId ? "Conta vinculada" : "Sem conta"}
+              </span>
+            )}
+            {visibleFields.has("sourceBadge") && candidate.source === "form" && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-emerald-900/50 text-emerald-400">
                 Via formulário
               </span>
             )}
-            {candidate.source === "instructor" && (
+            {visibleFields.has("sourceBadge") && candidate.source === "instructor" && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-sky-900/50 text-sky-300">
                 Instrutor ativo
               </span>
             )}
-            {candidate.source === "manual" && (
+            {visibleFields.has("sourceBadge") && candidate.source === "manual" && (
               <span className="rounded px-1.5 py-0.5 text-[10px] bg-slate-800 text-slate-400">
                 Manual
               </span>
@@ -163,6 +198,7 @@ export function KanbanColumn({
   hoursMap,
   hoursLoading,
   candidatesLoading,
+  visibleFields,
   onDrop,
   onDragStart,
   onClick,
@@ -178,6 +214,7 @@ export function KanbanColumn({
   hoursMap?: InstructorHoursMap;
   hoursLoading?: boolean;
   candidatesLoading?: boolean;
+  visibleFields: Set<InstructorCardFieldKey>;
   onDrop: (stageId: string) => void;
   onDragStart: (candidate: InstructorAdmissionCandidate) => void;
   onClick: (candidate: InstructorAdmissionCandidate) => void;
@@ -256,6 +293,7 @@ export function KanbanColumn({
               form={form}
               hoursMap={hoursMap}
               hoursLoading={hoursLoading}
+              visibleFields={visibleFields}
               onDragStart={onDragStart}
               onClick={onClick}
               onEdit={onEdit}

@@ -21,6 +21,7 @@ test("guest can access required public flows in strict mode", () => {
     "goproResolveVideoPlayback",
     "createPublicLiabilityWaiverContract",
     "impersonateStudent",
+    "notifyCrmLeadEvent",
   ]) {
     const decision = authorizeGuestAction({
       action,

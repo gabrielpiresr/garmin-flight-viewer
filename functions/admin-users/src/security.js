@@ -15,6 +15,8 @@ const PUBLIC_GUEST_ACTIONS = new Set([
   "goproResolveVideoPlayback",
   "impersonateStudent",
   "lookupSagaAnacPerson",
+  // Public CRM qualification form (/qualificacao) notifies admins after submit.
+  "notifyCrmLeadEvent",
 ]);
 
 // Kept intentionally outside the first hardening pass to preserve current operations.

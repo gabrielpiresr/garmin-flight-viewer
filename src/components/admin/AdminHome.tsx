@@ -6,7 +6,7 @@ import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
 import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import { useAuth } from "../../contexts/AuthContext";
-import type { AdminDashboardAircraftUtilization, AdminDashboardData } from "../../types/adminDashboard";
+import type { AdminDashboardData } from "../../types/adminDashboard";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
@@ -47,7 +47,7 @@ type AircraftHomeCard = {
   projectionDays: ProjectionDay[];
 };
 
-type InstructorMonthSummary = {
+type MonthBreakdownRow = {
   key: string;
   label: string;
   flights: number;
@@ -59,10 +59,15 @@ type AdminHomeState = {
   aircraftCards: AircraftHomeCard[];
 };
 
+type AdminHomeMonthSummary = {
+  aircraft: MonthBreakdownRow[];
+  instructors: MonthBreakdownRow[];
+};
+
 type AdminHomeCacheEntry = {
   at: number;
   primary: AdminHomeState;
-  instructorSummary: InstructorMonthSummary[] | null;
+  monthSummary: AdminHomeMonthSummary | null;
 };
 
 type PlaneItTotalsState = {
@@ -371,8 +376,8 @@ async function listAllMonthReports(fromDate: string, toDate: string): Promise<Ad
   return rows;
 }
 
-function buildInstructorSummary(rows: AdminFlightReportRow[], nicknameByUserId: ReadonlyMap<string, string>): InstructorMonthSummary[] {
-  const map = new Map<string, InstructorMonthSummary>();
+function buildInstructorSummary(rows: AdminFlightReportRow[], nicknameByUserId: ReadonlyMap<string, string>): MonthBreakdownRow[] {
+  const map = new Map<string, MonthBreakdownRow>();
   for (const row of rows.filter((item) => item.status === "Realizado")) {
     const key = row.instructorUserId || row.instructorName || "sem-instrutor";
     const current = map.get(key) ?? {
@@ -386,14 +391,34 @@ function buildInstructorSummary(rows: AdminFlightReportRow[], nicknameByUserId: 
     map.set(key, current);
   }
   return Array.from(map.values())
-    .map((row) => ({ ...row, hours: Number(row.hours.toFixed(1)) }))
     .sort((a, b) => b.hours - a.hours || b.flights - a.flights || a.label.localeCompare(b.label));
 }
 
-function aircraftSummaryRows(rows: AdminDashboardAircraftUtilization[]): AdminDashboardAircraftUtilization[] {
-  return rows
-    .filter((row) => row.executedFlights > 0 || row.executedHours > 0)
-    .sort((a, b) => b.executedHours - a.executedHours || b.executedFlights - a.executedFlights || a.aircraftIdent.localeCompare(b.aircraftIdent));
+function buildAircraftSummary(rows: AdminFlightReportRow[]): MonthBreakdownRow[] {
+  const map = new Map<string, MonthBreakdownRow>();
+  for (const row of rows.filter((item) => item.status === "Realizado")) {
+    const ident = (row.aircraftIdent || "").trim();
+    const key = row.aircraftId || ident || "sem-aviao";
+    const label = [ident || "Sem avião", row.aircraftNickname].filter(Boolean).join(" · ");
+    const current = map.get(key) ?? {
+      key,
+      label,
+      flights: 0,
+      hours: 0,
+    };
+    current.flights += 1;
+    current.hours += row.hours || 0;
+    map.set(key, current);
+  }
+  return Array.from(map.values())
+    .sort((a, b) => b.hours - a.hours || b.flights - a.flights || a.label.localeCompare(b.label));
+}
+
+function buildMonthSummary(rows: AdminFlightReportRow[]): AdminHomeMonthSummary {
+  return {
+    aircraft: buildAircraftSummary(rows),
+    instructors: buildInstructorSummary(rows, new Map<string, string>()),
+  };
 }
 
 export function AdminHome(_props: Props) {
@@ -401,31 +426,31 @@ export function AdminHome(_props: Props) {
   const monthPeriod = useMemo(() => currentMonthPeriod(), []);
   const scheduleEnd = useMemo(() => addDaysIso(monthPeriod.toDate, 179), [monthPeriod.toDate]);
   const [data, setData] = useState<AdminHomeState | null>(null);
-  const [instructorSummary, setInstructorSummary] = useState<InstructorMonthSummary[]>([]);
-  const [instructorLoading, setInstructorLoading] = useState(false);
+  const [monthSummary, setMonthSummary] = useState<AdminHomeMonthSummary>({ aircraft: [], instructors: [] });
+  const [monthSummaryLoading, setMonthSummaryLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadInstructorSummary = useCallback(async (cacheKey: string, force = false) => {
+  const loadMonthSummary = useCallback(async (cacheKey: string, force = false) => {
     const cached = adminHomeCache.get(cacheKey);
-    if (!force && cached?.instructorSummary && Date.now() - cached.at < ADMIN_HOME_CACHE_TTL_MS) {
-      setInstructorSummary(cached.instructorSummary);
+    if (!force && cached?.monthSummary && Date.now() - cached.at < ADMIN_HOME_CACHE_TTL_MS) {
+      setMonthSummary(cached.monthSummary);
       return;
     }
 
-    setInstructorLoading(true);
+    setMonthSummaryLoading(true);
     try {
       const reportRows = await listAllMonthReports(monthPeriod.fromDate, monthPeriod.toDate);
-      const summary = buildInstructorSummary(reportRows, new Map<string, string>());
-      setInstructorSummary(summary);
+      const summary = buildMonthSummary(reportRows);
+      setMonthSummary(summary);
       const current = adminHomeCache.get(cacheKey);
       if (current) {
-        adminHomeCache.set(cacheKey, { ...current, instructorSummary: summary });
+        adminHomeCache.set(cacheKey, { ...current, monthSummary: summary });
       }
     } catch {
-      setInstructorSummary([]);
+      setMonthSummary({ aircraft: [], instructors: [] });
     } finally {
-      setInstructorLoading(false);
+      setMonthSummaryLoading(false);
     }
   }, [monthPeriod.fromDate, monthPeriod.toDate]);
 
@@ -435,15 +460,15 @@ export function AdminHome(_props: Props) {
     const cached = adminHomeCache.get(cacheKey);
     if (!force && cached && Date.now() - cached.at < ADMIN_HOME_CACHE_TTL_MS) {
       setData(cached.primary);
-      setInstructorSummary(cached.instructorSummary ?? []);
+      setMonthSummary(cached.monthSummary ?? { aircraft: [], instructors: [] });
       setLoading(false);
       setError(null);
-      if (!cached.instructorSummary) void loadInstructorSummary(cacheKey);
+      if (!cached.monthSummary) void loadMonthSummary(cacheKey);
       return;
     }
 
     setLoading(true);
-    setInstructorSummary([]);
+    setMonthSummary({ aircraft: [], instructors: [] });
     setError(null);
     try {
       // Uma única carga de frota+manutenção (aeronaves, OS, itens de programa por modelo,
@@ -500,14 +525,14 @@ export function AdminHome(_props: Props) {
         aircraftCards,
       };
       setData(primary);
-      adminHomeCache.set(cacheKey, { at: Date.now(), primary, instructorSummary: null });
-      void loadInstructorSummary(cacheKey, force);
+      adminHomeCache.set(cacheKey, { at: Date.now(), primary, monthSummary: null });
+      void loadMonthSummary(cacheKey, force);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Falha ao carregar a Home admin.");
     } finally {
       setLoading(false);
     }
-  }, [loadInstructorSummary, monthPeriod, scheduleEnd, user?.schoolId]);
+  }, [loadMonthSummary, monthPeriod, scheduleEnd, user?.schoolId]);
 
   useEffect(() => {
     void load();
@@ -543,9 +568,9 @@ export function AdminHome(_props: Props) {
         <>
           <AircraftCards cards={data.aircraftCards} />
           <MonthSummary
-            aircraftRows={aircraftSummaryRows(data.dashboard.aircraftUtilization)}
-            instructorRows={instructorSummary}
-            instructorLoading={instructorLoading}
+            aircraftRows={monthSummary.aircraft}
+            instructorRows={monthSummary.instructors}
+            loading={monthSummaryLoading}
           />
         </>
       ) : null}
@@ -694,34 +719,30 @@ function AircraftCard({
 function MonthSummary({
   aircraftRows,
   instructorRows,
-  instructorLoading,
+  loading,
 }: {
-  aircraftRows: AdminDashboardAircraftUtilization[];
-  instructorRows: InstructorMonthSummary[];
-  instructorLoading: boolean;
+  aircraftRows: MonthBreakdownRow[];
+  instructorRows: MonthBreakdownRow[];
+  loading: boolean;
 }) {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="mb-4">
         <h3 className="text-base font-semibold text-slate-100">Resumo do mês</h3>
-        <p className="mt-1 text-sm text-slate-500">Quantidade de voos e horas executadas.</p>
+        <p className="mt-1 text-sm text-slate-500">Voos realizados e horas — mesma base para avião e instrutor.</p>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <SummaryTable
           title="Por avião"
           emptyText="Nenhum voo realizado por avião neste mês."
-          rows={aircraftRows.map((row) => ({
-            key: row.aircraftId || row.aircraftIdent,
-            label: [row.aircraftIdent || "Sem avião", row.aircraftNickname].filter(Boolean).join(" · "),
-            flights: row.executedFlights,
-            hours: row.executedHours,
-          }))}
+          rows={aircraftRows}
+          loading={loading}
         />
         <SummaryTable
           title="Por instrutor"
           emptyText="Nenhum voo realizado por instrutor neste mês."
           rows={instructorRows}
-          loading={instructorLoading}
+          loading={loading}
         />
       </div>
     </section>

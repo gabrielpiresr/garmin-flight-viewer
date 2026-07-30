@@ -356,7 +356,7 @@ export function QualificacaoPage() {
     setErrors([]);
     setSaving(true);
 
-    const { error } = await upsertLeadByEmail({
+    const { data: savedLead, error } = await upsertLeadByEmail({
       name: form.name.trim(),
       email: form.email.trim().toLowerCase(),
       phone: form.phone.trim(),
@@ -395,7 +395,7 @@ export function QualificacaoPage() {
         });
       }
       void notifyCrmLeadEvent("crm.lead_qualified", {
-        leadId: "",
+        leadId: savedLead?.id || "",
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
         course: form.desiredCourse || null,

@@ -19,6 +19,26 @@ import { loadInstructorHoursMap, type InstructorHoursMap } from "../../lib/instr
 import { formatAvailabilitySummary, isAvailabilityValue } from "../../lib/availabilityPresets";
 import { computeInstructorAdmissionScore } from "../../lib/instructorAdmissionScore";
 import {
+  INSTRUCTOR_CARD_FIELD_DEFS,
+  instructorCardFieldsStorageKey,
+  loadInstructorCardFields,
+  saveInstructorCardFields,
+  type InstructorCardFieldKey,
+} from "../../lib/instructorAdmissionCardFields";
+import {
+  collectInstructorReferralSources,
+  EMPTY_INSTRUCTOR_ADMISSION_FILTERS,
+  filterInstructorAdmissionCandidates,
+  type InstructorAdmissionFilters,
+} from "../../lib/instructorAdmissionFilters";
+import {
+  defaultInstructorSortAscForKey,
+  loadInstructorAdmissionSort,
+  saveInstructorAdmissionSort,
+  sortInstructorAdmissionCandidates,
+  type InstructorAdmissionSortKey,
+} from "../../lib/instructorAdmissionSort";
+import {
   type InstructorAdmissionCandidate,
   type InstructorAdmissionFieldValue,
   type InstructorAdmissionFileValue,
@@ -34,6 +54,8 @@ import { useToast } from "../ui/ToastProvider";
 import { Skeleton } from "../ui/Skeleton";
 import { CandidateDetailDrawer } from "./instructorAdmission/CandidateDetailDrawer";
 import { FormBuilderPanel } from "./instructorAdmission/FormBuilderPanel";
+import { InstructorAdmissionFiltersPanel } from "./instructorAdmission/InstructorAdmissionFiltersPanel";
+import { InstructorAdmissionSortControl } from "./instructorAdmission/InstructorAdmissionSortControl";
 import { KanbanColumn } from "./instructorAdmission/KanbanColumn";
 import { RegistrationLinkModal } from "./instructorAdmission/RegistrationLinkModal";
 import { StageEditorModal } from "./instructorAdmission/StageEditorModal";
@@ -160,6 +182,53 @@ function exportInstructorCandidatesCsv(
   downloadCsv([header, ...body], `instrutores-${new Date().toISOString().slice(0, 10)}.csv`);
 }
 
+function CardSettingsModal({
+  visibleFields,
+  onToggle,
+  onClose,
+}: {
+  visibleFields: Set<InstructorCardFieldKey>;
+  onToggle: (key: InstructorCardFieldKey) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-xs rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <h2 className="text-sm font-semibold text-slate-100">Campos do card</h2>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+        <div className="space-y-1 p-4">
+          {INSTRUCTOR_CARD_FIELD_DEFS.map(({ key, label }) => (
+            <label key={key} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition hover:bg-slate-800/60">
+              <input
+                type="checkbox"
+                checked={visibleFields.has(key)}
+                onChange={() => onToggle(key)}
+                className="h-4 w-4 rounded accent-sky-500"
+              />
+              <span className="text-sm text-slate-200">{label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex justify-end border-t border-slate-800 px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-slate-800"
+          >
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuickAddModal({
   stageName,
   onClose,
@@ -244,12 +313,24 @@ export function InstructorAdmissionTab() {
   const [hoursMap, setHoursMap] = useState<InstructorHoursMap>({});
   const [backgroundSyncing, setBackgroundSyncing] = useState(false);
   const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<InstructorAdmissionFilters>(EMPTY_INSTRUCTOR_ADMISSION_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [sortState, setSortState] = useState(() => loadInstructorAdmissionSort());
+  const cardFieldsKey = instructorCardFieldsStorageKey(user?.id);
+  const [visibleFields, setVisibleFields] = useState<Set<InstructorCardFieldKey>>(() =>
+    loadInstructorCardFields(cardFieldsKey),
+  );
+  const [cardSettingsOpen, setCardSettingsOpen] = useState(false);
   const [dragging, setDragging] = useState<InstructorAdmissionCandidate | null>(null);
   const [selected, setSelected] = useState<InstructorAdmissionCandidate | null>(null);
   const [editingStage, setEditingStage] = useState<InstructorAdmissionStage | "new" | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
   const [quickAddStageId, setQuickAddStageId] = useState<string | null>(null);
   const [registrationModal, setRegistrationModal] = useState<InstructorAdmissionCandidate | null>(null);
+
+  useEffect(() => {
+    setVisibleFields(loadInstructorCardFields(cardFieldsKey));
+  }, [cardFieldsKey]);
 
   const load = useCallback(async () => {
     setLoadPhase("stages");
@@ -305,28 +386,69 @@ export function InstructorAdmissionTab() {
     void load();
   }, [load]);
 
-  const filteredCandidates = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return candidates;
-    return candidates.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        (c.nickname || "").toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        (c.phone || "").toLowerCase().includes(q) ||
-        (c.notes || "").toLowerCase().includes(q),
-    );
-  }, [candidates, search]);
+  const filteredCandidates = useMemo(
+    () => filterInstructorAdmissionCandidates(candidates, filters, search, form, hoursMap),
+    [candidates, filters, search, form, hoursMap],
+  );
+
+  const sortedFilteredCandidates = useMemo(
+    () =>
+      sortInstructorAdmissionCandidates(
+        filteredCandidates,
+        sortState.key,
+        sortState.asc,
+        form,
+        hoursMap,
+      ),
+    [filteredCandidates, sortState.key, sortState.asc, form, hoursMap],
+  );
 
   const candidatesByStage = useMemo(() => {
     const map = new Map<string, InstructorAdmissionCandidate[]>();
     for (const stage of stages) map.set(stage.id, []);
-    for (const candidate of filteredCandidates) {
+    for (const candidate of sortedFilteredCandidates) {
       const list = map.get(candidate.stageId);
       if (list) list.push(candidate);
     }
     return map;
-  }, [filteredCandidates, stages]);
+  }, [sortedFilteredCandidates, stages]);
+
+  const referralOptions = useMemo(() => collectInstructorReferralSources(candidates), [candidates]);
+
+  const scoreUpper = useMemo(() => {
+    if (!form?.scoreRules?.length) return 100;
+    return Math.max(
+      100,
+      ...candidates.map((c) =>
+        computeInstructorAdmissionScore(c.responses, form.scoreRules, form.fields).total,
+      ),
+      ...form.scoreRules.map((rule) => Math.max(0, rule.points)),
+    );
+  }, [candidates, form]);
+
+  const hoursUpper = useMemo(() => {
+    let max = 0;
+    for (const hours of Object.values(hoursMap)) {
+      if (hours.totalHours > max) max = hours.totalHours;
+    }
+    return max || 100;
+  }, [hoursMap]);
+
+  function toggleCardField(key: InstructorCardFieldKey) {
+    setVisibleFields((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveInstructorCardFields(cardFieldsKey, next);
+      return next;
+    });
+  }
+
+  function handleSortChange(key: InstructorAdmissionSortKey, asc?: boolean) {
+    const nextAsc = asc ?? defaultInstructorSortAscForKey(key);
+    setSortState({ key, asc: nextAsc });
+    saveInstructorAdmissionSort(key, nextAsc);
+  }
 
   const publicFormUrl = `${window.location.origin}/admissao-instrutor`;
 
@@ -435,6 +557,16 @@ export function InstructorAdmissionTab() {
           </button>
           <button
             type="button"
+            onClick={() => setCardSettingsOpen(true)}
+            title="Campos do card"
+            className="rounded-lg border border-slate-700 p-1.5 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+            </svg>
+          </button>
+          <button
+            type="button"
             onClick={handleExportCandidates}
             disabled={filteredCandidates.length === 0 || candidatesLoading}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
@@ -455,15 +587,34 @@ export function InstructorAdmissionTab() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por nickname, nome, e-mail ou telefone..."
-          className="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-600"
-          disabled={loadPhase === "stages"}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nickname, nome, e-mail ou telefone..."
+            className="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-600"
+            disabled={loadPhase === "stages"}
+          />
+          <InstructorAdmissionFiltersPanel
+            filters={filters}
+            onChange={setFilters}
+            open={filtersOpen}
+            onToggle={() => setFiltersOpen((v) => !v)}
+            referralOptions={referralOptions}
+            scoreUpper={scoreUpper}
+            hoursUpper={hoursUpper}
+          />
+          <InstructorAdmissionSortControl
+            sortKey={sortState.key}
+            sortAsc={sortState.asc}
+            onSortChange={handleSortChange}
+          />
+        </div>
         <div className="flex items-center gap-3 text-xs text-slate-500">
-          <span>{filteredCandidates.length} registro(s)</span>
+          <span>
+            {filteredCandidates.length}
+            <span className="text-slate-600">/{candidates.length}</span> registro(s)
+          </span>
           <span>{stages.length} etapa(s)</span>
           {form?.published ? (
             <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-400">Formulário publicado</span>
@@ -487,6 +638,7 @@ export function InstructorAdmissionTab() {
                 hoursMap={hoursMap}
                 hoursLoading={hoursLoading}
                 candidatesLoading={candidatesLoading}
+                visibleFields={visibleFields}
                 onDrop={handleDrop}
                 onDragStart={setDragging}
                 onClick={setSelected}
@@ -498,6 +650,14 @@ export function InstructorAdmissionTab() {
               />
             ))}
       </div>
+
+      {cardSettingsOpen && (
+        <CardSettingsModal
+          visibleFields={visibleFields}
+          onToggle={toggleCardField}
+          onClose={() => setCardSettingsOpen(false)}
+        />
+      )}
 
       {editingStage && (
         <StageEditorModal

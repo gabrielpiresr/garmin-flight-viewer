@@ -11448,6 +11448,8 @@ function buildAircraftDashboard({ aircrafts, modelsById, forecastRows, periodRow
       bucket.futureFlights += 1;
       continue;
     }
+    // Só voos Realizados entram como executados (Cancelado e outros não contam horas/voos).
+    if (row.status !== "Realizado") continue;
     bucket.executedFlights += 1;
     bucket.executedHours += row.hours || 0;
     bucket.landings += row.landings || 0;
@@ -17168,19 +17170,33 @@ async function notifyCrmLeadEventToAdmins(eventType, leadData) {
     loadEmailBrandSettings(),
   ]);
   const adminIds = await listAdminUserIds();
-  if (adminIds.length === 0) return;
+  if (adminIds.length === 0) {
+    return { ok: true, delivered: 0, skipped: 0, failed: 0, reason: "Nenhum admin encontrado." };
+  }
   const message = buildNotificationMessage({ eventType, data: safeData }, null);
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
   for (const adminId of adminIds) {
     try {
       const user = await users.get({ userId: adminId });
       if (settings.enabled && user?.email) {
-        await sendEmailToUser(settings, brand, user, message);
+        const emailResult = await sendEmailToUser(settings, brand, user, message);
+        if (emailResult?.status === "sent") delivered += 1;
+        else skipped += 1;
+      } else {
+        skipped += 1;
       }
-      await sendPushToUser(adminId, message);
+      try {
+        await sendPushToUser(adminId, message);
+      } catch {
+        // Push is best-effort; email is the primary CRM signal.
+      }
     } catch {
-      // skip user on failure
+      failed += 1;
     }
   }
+  return { ok: true, delivered, skipped, failed, adminCount: adminIds.length, emailEnabled: Boolean(settings.enabled) };
 }
 
 async function loadCaktoWebhookToken() {
@@ -21337,8 +21353,11 @@ module.exports = async ({ req, res, log, error }) => {
       const validTypes = new Set(["crm.lead_qualified", "crm.lead_registered"]);
       const evtType = cleanString(payload.eventType);
       if (!validTypes.has(evtType)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
-      await notifyCrmLeadEventToAdmins(evtType, payload.leadData);
-      return jsonResponse(res, 200, { ok: true });
+      const result = await notifyCrmLeadEventToAdmins(evtType, payload.leadData);
+      log(
+        `[notifyCrmLeadEvent] type=${evtType} delivered=${result.delivered ?? 0} skipped=${result.skipped ?? 0} failed=${result.failed ?? 0} emailEnabled=${result.emailEnabled} reason=${result.reason || ""}`,
+      );
+      return jsonResponse(res, 200, { ok: true, ...result });
     }
 
     if (action === "notifyStudentScheduleEvent") {

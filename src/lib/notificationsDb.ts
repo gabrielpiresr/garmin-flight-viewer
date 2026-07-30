@@ -227,7 +227,13 @@ export async function notifyCrmLeadEvent(
   leadData: { leadId: string; name: string; email: string; course?: string | null; transferSchool?: string | null },
 ): Promise<void> {
   try {
-    await executeNotifications({ action: "notifyCrmLeadEvent", eventType, leadData });
+    const response = await executeNotifications({ action: "notifyCrmLeadEvent", eventType, leadData });
+    const delivered = Number((response as { delivered?: number }).delivered ?? 0);
+    const failed = Number((response as { failed?: number }).failed ?? 0);
+    const reason = String((response as { reason?: string }).reason || "");
+    if (delivered === 0) {
+      console.warn("[crm] Notificação CRM sem entrega de e-mail:", eventType, { delivered, failed, reason, response });
+    }
   } catch (error) {
     console.warn("[crm] Falha ao notificar admins:", eventType, error);
   }

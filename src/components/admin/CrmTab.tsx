@@ -22,6 +22,7 @@ import { CrmAutomationSettingsModal } from "./crm/CrmAutomationSettingsModal";
 import { CrmFiltersPanel } from "./crm/CrmFiltersPanel";
 import { CrmFupsView } from "./crm/CrmFupsView";
 import { CrmListView } from "./crm/CrmListView";
+import { CrmReportView } from "./crm/CrmReportView";
 import { CrmSortControl } from "./crm/CrmSortControl";
 import { collectOpenFupTasks, countOpenFupTasks } from "../../lib/crmFupTasks";
 import { downloadCsv } from "../../lib/csvExport";
@@ -108,7 +109,7 @@ const VIEW_MODE_LS_KEY = "crm_view_mode";
 const SORT_KEY_LS_KEY = "crm_lead_sort_key";
 const SORT_ASC_LS_KEY = "crm_lead_sort_asc";
 
-type CrmViewMode = "kanban" | "list" | "fups";
+type CrmViewMode = "kanban" | "list" | "fups" | "report";
 
 function cardFieldsStorageKey(userId: string | undefined): string {
   return userId ? `crm_card_visible_fields_${userId}` : "crm_card_visible_fields_guest";
@@ -2781,7 +2782,7 @@ export function CrmTab() {
   const [viewMode, setViewMode] = useState<CrmViewMode>(() => {
     try {
       const stored = localStorage.getItem(VIEW_MODE_LS_KEY);
-      if (stored === "list" || stored === "fups") return stored;
+      if (stored === "list" || stored === "fups" || stored === "report") return stored;
       return "kanban";
     } catch {
       return "kanban";
@@ -3375,6 +3376,13 @@ export function CrmTab() {
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => setViewModeAndPersist("report")}
+              className={`rounded-md px-2.5 py-1 text-xs transition ${viewMode === "report" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              Report
+            </button>
           </div>
 
           <div className="h-4 w-px bg-slate-800" />
@@ -3386,7 +3394,9 @@ export function CrmTab() {
             onToggle={() => setFiltersOpen((v) => !v)}
             scoreRules={automationSettings.scoreRules}
           />
-          <CrmSortControl sortKey={sortKey} sortAsc={sortAsc} onSortChange={handleSortChange} />
+          {viewMode !== "report" && (
+            <CrmSortControl sortKey={sortKey} sortAsc={sortAsc} onSortChange={handleSortChange} />
+          )}
 
           <span className="ml-auto text-[11px] tabular-nums text-slate-500">
             {filteredLeads.length}<span className="text-slate-600">/{leads.length}</span>
@@ -3394,8 +3404,14 @@ export function CrmTab() {
         </div>
       </div>
 
-      {/* Kanban / Lista */}
-      {viewMode === "fups" ? (
+      {/* Kanban / Lista / Report */}
+      {viewMode === "report" ? (
+        <CrmReportView
+          leads={leads}
+          baseLeads={filteredLeads}
+          scoreRules={automationSettings.scoreRules}
+        />
+      ) : viewMode === "fups" ? (
         <CrmFupsView
           tasks={fupTasks}
           sortKey={sortKey}
