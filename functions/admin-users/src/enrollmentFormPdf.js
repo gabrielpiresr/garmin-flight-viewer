@@ -44,6 +44,20 @@ function display(value) {
   return text || "";
 }
 
+function formatHashForPdf(hash) {
+  const clean = display(hash).replace(/\s+/g, "");
+  if (!clean) return "";
+  return clean.match(/.{1,16}/g)?.join(" ") || clean;
+}
+
+function signatureText(prefix, signedAt, hash) {
+  if (!signedAt && !hash) return "";
+  const lines = [signedAt ? `${prefix} em ${signedAt}` : prefix];
+  const formattedHash = formatHashForPdf(hash);
+  if (formattedHash) lines.push(`Hash SHA-256: ${formattedHash}`);
+  return lines.join("\n");
+}
+
 function wrapText(text, font, size, maxWidth) {
   const words = String(text || "").trim().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
@@ -256,7 +270,7 @@ class EnrollmentPdfLayout {
       const w = cell.width;
       this.drawRect(x, y, w, rowHeight);
       if (cell.centerTitle) {
-        const title = String(cell.centerTitle);
+        const title = String(cell.centerTitleOverride || cell.centerTitle);
         const tw = this.fontBold.widthOfTextAtSize(title, SECTION_SIZE);
         this.page.drawText(title, {
           x: x + (w - tw) / 2,
@@ -406,6 +420,7 @@ async function renderEnrollmentLayout(pdf, fonts, images, data, signatures, bran
   const layout = new EnrollmentPdfLayout(pdf, fonts);
   const photoColW = 168;
   const mainW = CONTENT_W - photoColW;
+  const title = data.enrollmentNumber ? `FICHA DE MATR\u00cdCULA / ${data.enrollmentNumber}` : "FICHA DE MATR\u00cdCULA";
 
   // Cabeçalho: logo + título
   layout.drawRow(
@@ -417,6 +432,7 @@ async function renderEnrollmentLayout(pdf, fonts, images, data, signatures, bran
       },
       {
         width: mainW * 0.64 + photoColW,
+        centerTitleOverride: title,
         centerTitle: "FICHA DE MATRÍCULA",
       },
     ],
@@ -617,30 +633,31 @@ async function renderEnrollmentLayout(pdf, fonts, images, data, signatures, bran
   );
 
   const adminSignText = signatures.admin
-    ? `Assinado digitalmente pela escola em ${signatures.adminAt}`
+    ? signatureText("Assinado digitalmente pela escola", signatures.adminAt, signatures.adminHash)
     : "";
   const half = CONTENT_W / 2;
-  layout.ensureSpace(56);
-  const signRowY = layout.y - 56;
-  layout.drawRect(MARGIN_X, signRowY, half - 2, 56);
-  layout.drawRect(MARGIN_X + half + 2, signRowY, half - 2, 56);
+  const signRowH = 72;
+  layout.ensureSpace(signRowH);
+  const signRowY = layout.y - signRowH;
+  layout.drawRect(MARGIN_X, signRowY, half - 2, signRowH);
+  layout.drawRect(MARGIN_X + half + 2, signRowY, half - 2, signRowH);
   layout.page.drawText("DIRETOR OU PRESIDENTE", {
     x: MARGIN_X + 4,
-    y: signRowY + 44,
+    y: signRowY + signRowH - 12,
     size: 8,
     font: layout.fontBold,
     color: INK,
   });
   layout.page.drawText("TESTEMUNHA", {
     x: MARGIN_X + half + 6,
-    y: signRowY + 44,
+    y: signRowY + signRowH - 12,
     size: 8,
     font: layout.fontBold,
     color: INK,
   });
   if (adminSignText) {
     const lines = wrapText(adminSignText, layout.font, 7, half - 10);
-    let ly = signRowY + 30;
+    let ly = signRowY + signRowH - 26;
     for (const line of lines) {
       layout.page.drawText(line, { x: MARGIN_X + 4, y: ly, size: 7, font: layout.font, color: INK });
       ly -= 9;
@@ -666,18 +683,18 @@ async function renderEnrollmentLayout(pdf, fonts, images, data, signatures, bran
         width: halfW,
         label: "CANDIDATO",
         value: signatures.recipient
-          ? `Assinado digitalmente por ${data.fullName} em ${signatures.recipientAt}`
+          ? signatureText(`Assinado digitalmente por ${data.fullName}`, signatures.recipientAt, signatures.recipientHash)
           : "",
       },
     ],
-    { minHeight: 58, gap: halfGap, maxValueLines: 4 },
+    { minHeight: 72, gap: halfGap, maxValueLines: 6 },
   );
   layout.drawSignatureCells(
     [
       { width: halfW, label: "ASSINATURA DO RESPONSÁVEL (MENOR DE IDADE)", value: "" },
       { width: halfW, label: "ASSINATURA DO DIRETOR OU PRESIDENTE", value: adminSignText },
     ],
-    { minHeight: 72, gap: halfGap, maxValueLines: 4 },
+    { minHeight: 76, gap: halfGap, maxValueLines: 6 },
   );
 }
 

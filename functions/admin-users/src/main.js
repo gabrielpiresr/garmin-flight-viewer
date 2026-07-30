@@ -11,6 +11,8 @@ const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove
 const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 
+let sharpModule = undefined;
+
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
   .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID || "")
@@ -1847,6 +1849,7 @@ const SAGA_IMPORT_SYNC_HISTORY_KEY = "sagaImportSyncHistory";
 const PLANE_IT_CREDENTIALS_KEY = "planeItCredentials";
 const GOPRO_CREDENTIALS_KEY = "goproCredentials";
 const GOPRO_PUBLIC_LINKS_KEY = "goproPublicLinks";
+const ENROLLMENT_SCHOOL_LEGAL_NAME = "EPEAC - Escola Pratica Ead Aviacao Civil LTDA";
 
 function defaultSagaImportMapping() {
   return {
@@ -10071,6 +10074,16 @@ async function getTrainingTrackName(trackId) {
   }
 }
 
+function getSharpModule() {
+  if (sharpModule !== undefined) return sharpModule;
+  try {
+    sharpModule = require("sharp");
+  } catch {
+    sharpModule = null;
+  }
+  return sharpModule;
+}
+
 async function runEnrollmentAutomation(actorUserId, payload = {}) {
   await requireAdmin(actorUserId);
   if (!CONTRACTS_COLLECTION_ID) throw Object.assign(new Error("Coleção de contratos não configurada."), { status: 500 });
@@ -10192,12 +10205,30 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
   };
 }
 
+async function normalizeEnrollmentPhotoBytesForPdf(bytes) {
+  if (!bytes || !bytes.length) return null;
+  const buffer = Buffer.from(bytes);
+  const sharp = getSharpModule();
+  if (!sharp) return buffer;
+  try {
+    return await sharp(buffer, { failOn: "none" })
+      .rotate()
+      .toColorspace("srgb")
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+  } catch (err) {
+    console.warn("Enrollment photo normalization skipped:", err?.message || err);
+    return buffer;
+  }
+}
+
 async function loadEnrollmentPhotoBytes(profile) {
   const fileId = cleanString(profile?.anac_photo_file_id);
   if (!fileId || !FLIGHTS_CSV_BUCKET_ID) return null;
   try {
     const buffer = await storage.getFileDownload(FLIGHTS_CSV_BUCKET_ID, fileId);
-    return Buffer.from(buffer);
+    return normalizeEnrollmentPhotoBytesForPdf(Buffer.from(buffer));
   } catch (err) {
     console.warn("Enrollment photo load skipped:", err?.message || err);
     return null;
@@ -10213,6 +10244,27 @@ function parseJsonArray(value) {
   } catch {
     return [];
   }
+}
+
+function enrollmentCourseCode(courseName, trainingTrackId) {
+  const source = normalizeSearch(`${trainingTrackId || ""} ${courseName || ""}`);
+  if (/\binv\b|instrutor|inva/.test(source)) return "INV";
+  if (/\bpc\b|piloto comercial|comercial/.test(source)) return "PC";
+  if (/\bpp\b|piloto privado|privado/.test(source)) return "PP";
+  const words = source
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && !["curso", "pratico", "pratica", "teorico", "teorica", "de", "do", "da"].includes(word));
+  const initials = words.map((word) => word[0]).join("").toUpperCase().slice(0, 4);
+  return initials || "MAT";
+}
+
+function buildEnrollmentNumber({ courseName, trainingTrackId, sagaUserId, fallbackId }) {
+  const courseCode = enrollmentCourseCode(courseName, trainingTrackId);
+  const sagaDigits = cleanString(sagaUserId).match(/\d+/g)?.join("") || "";
+  if (sagaDigits) return `${courseCode}${sagaDigits}`;
+  const fallback = cleanString(fallbackId).replace(/[^A-Za-z0-9]/g, "").slice(-6).toUpperCase();
+  return fallback ? `${courseCode}${fallback}` : courseCode;
 }
 
 async function buildEnrollmentPdfExtras(contract, profile, documents) {
@@ -10258,8 +10310,47 @@ async function buildEnrollmentPdfExtras(contract, profile, documents) {
     anacLicenses: parseJsonArray(profile?.anac_licenses_json),
     anacRatings: parseJsonArray(profile?.anac_ratings_json),
     enrollmentStartDate: formatDateBr(contract.created_at),
-    enrollmentNumber: cleanString(contract.$id).slice(-6).toUpperCase(),
+    enrollmentNumber: buildEnrollmentNumber({
+      courseName,
+      trainingTrackId: trackMeta.trainingTrackId,
+      sagaUserId: profile?.saga_user_id,
+      fallbackId: contract.$id,
+    }),
   };
+}
+
+function contractSignatureHash(signature) {
+  const explicit = cleanString(signature?.content_hash);
+  if (explicit) return explicit;
+  const snapshot = stableStringify({
+    contractId: cleanString(signature?.contract_id),
+    signerUserId: cleanString(signature?.signer_user_id),
+    signerRole: cleanString(signature?.signer_role),
+    signedAt: cleanString(signature?.signed_at),
+    schoolId: cleanString(signature?.school_id || SCHOOL_ID),
+  });
+  return sha256(snapshot);
+}
+
+async function loadContractSignatureSummary(contract) {
+  if (!CONTRACT_SIGNATURES_COLLECTION_ID || !contract?.$id) return {};
+  const docs = await listAllDocuments(CONTRACT_SIGNATURES_COLLECTION_ID, [
+    sdk.Query.equal("contract_id", [contract.$id]),
+  ]).catch(() => []);
+  const summary = {};
+  for (const signature of docs || []) {
+    const role = cleanString(signature.signer_role);
+    if (!role) continue;
+    const key = role === "admin" ? "admin" : "recipient";
+    const signedAt = cleanString(signature.signed_at);
+    const current = summary[key];
+    if (current?.signedAt && signedAt && current.signedAt > signedAt) continue;
+    summary[key] = {
+      signedAt,
+      hash: contractSignatureHash(signature),
+    };
+  }
+  return summary;
 }
 
 async function renderEnrollmentPdf(contract) {
@@ -10273,11 +10364,17 @@ async function renderEnrollmentPdf(contract) {
     email: profile?.email,
     phone: profile?.phone,
   });
-  const brand = brandResult.publicSettings || defaultEmailBrandSettings();
+  const brand = {
+    ...(brandResult.publicSettings || defaultEmailBrandSettings()),
+    schoolName: ENROLLMENT_SCHOOL_LEGAL_NAME,
+  };
   const logoDataUrl = await logoUrlToDataUrl(brand.logoUrl);
   const photoBytes = await loadEnrollmentPhotoBytes(profile);
   const issuedAt = contract.created_at ? new Date(contract.created_at) : new Date();
-  const extras = await buildEnrollmentPdfExtras(contract, profile, documents);
+  const [extras, signatureSummary] = await Promise.all([
+    buildEnrollmentPdfExtras(contract, profile, documents),
+    loadContractSignatureSummary(contract),
+  ]);
 
   return buildEnrollmentFormPdf({
     profileData: {
@@ -10292,8 +10389,10 @@ async function renderEnrollmentPdf(contract) {
     signatures: {
       recipient: Boolean(contract.signed_by_recipient_at),
       admin: Boolean(contract.signed_by_admin_at),
-      recipientAt: formatDateBr(contract.signed_by_recipient_at),
-      adminAt: formatDateBr(contract.signed_by_admin_at),
+      recipientAt: formatDateBr(signatureSummary.recipient?.signedAt || contract.signed_by_recipient_at),
+      adminAt: formatDateBr(signatureSummary.admin?.signedAt || contract.signed_by_admin_at),
+      recipientHash: signatureSummary.recipient?.hash || "",
+      adminHash: signatureSummary.admin?.hash || "",
     },
   });
 }

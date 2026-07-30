@@ -177,6 +177,10 @@ async function setupContractSignatures() {
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "signed_at", true), "signed_at");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "school_id", 36, false), "school_id");
   await attr(() => db.createDatetimeAttribute(DATABASE_ID, id, "created_at", false), "created_at");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "content_hash", 64, false), "content_hash");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "payload_version", 32, false), "payload_version");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "payload_hash_alg", 32, false), "payload_hash_alg");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "payload_snapshot_json", 65535, false), "payload_snapshot_json");
   await sleep(3000);
   await idx(id, "csig_contract_idx", ["contract_id"], ["ASC"]);
   return id;
