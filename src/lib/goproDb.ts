@@ -155,7 +155,7 @@ export async function resolveGoproMediaPlayback(media: Pick<GoproMediaLink, "tok
   const mediaToken = media.token;
   const publicUrl = media.publicUrl;
   if (!mediaToken) throw new Error("Token da midia GoPro nao encontrado neste video.");
-  const cacheKey = `${mediaToken}|${publicUrl}`;
+  const cacheKey = `hls-v2|${mediaToken}|${publicUrl}`;
   const cached = goproPlaybackCache.get(cacheKey);
   const cachedExpiresAt = cached?.expiresAt ? Date.parse(cached.expiresAt) : 0;
   if (cached?.url && cachedExpiresAt - GOPRO_PLAYBACK_CACHE_MARGIN_MS > Date.now()) {

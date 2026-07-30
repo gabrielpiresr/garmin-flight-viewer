@@ -229,22 +229,30 @@ export async function listFlightVideoFlags(flightIds: string[]): Promise<Record<
   try {
     const db = databases;
     const chunkSize = 25;
+    const pageLimit = 100;
     const chunks: string[][] = [];
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       chunks.push(uniqueIds.slice(i, i + chunkSize));
     }
-    const pages = await Promise.all(chunks.map((chunk) =>
-      db.listDocuments(DB_ID, VIDEOS_COL_ID, [
-        Query.equal("flight_id", chunk),
-        Query.limit(100),
-      ]),
-    ));
-    for (const res of pages) {
-      for (const doc of res.documents) {
-        const flightId = (doc.flight_id as string | undefined) ?? "";
-        if (flightId) flags[flightId] = true;
+    await Promise.all(chunks.map(async (chunk) => {
+      let cursor: string | undefined;
+      for (;;) {
+        const queries = [
+          Query.equal("flight_id", chunk),
+          Query.limit(pageLimit),
+          Query.select(["flight_id"]),
+        ];
+        if (cursor) queries.push(Query.cursorAfter(cursor));
+        const res = await db.listDocuments(DB_ID, VIDEOS_COL_ID, queries);
+        for (const doc of res.documents) {
+          const flightId = (doc.flight_id as string | undefined) ?? "";
+          if (flightId) flags[flightId] = true;
+        }
+        if (res.documents.length < pageLimit) break;
+        cursor = res.documents[res.documents.length - 1]?.$id;
+        if (!cursor) break;
       }
-    }
+    }));
     return flags;
   } catch {
     return flags;

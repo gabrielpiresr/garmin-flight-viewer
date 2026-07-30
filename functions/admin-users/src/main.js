@@ -3139,6 +3139,27 @@ function parseGoproM3u8Variants(text) {
   );
 }
 
+const GOPRO_PLAYBACK_MAX_HEIGHT = 1080;
+
+function pickGoproPlaybackVariant(variants = []) {
+  const list = Array.isArray(variants) ? variants : [];
+  // Prefer highest quality at or below 1080p so ABR does not pull 4K through the proxy.
+  const withinCap = list.filter((item) => Number(item?.height) > 0 && Number(item.height) <= GOPRO_PLAYBACK_MAX_HEIGHT);
+  if (withinCap.length) {
+    return withinCap.sort((a, b) =>
+      (Number(b.height) - Number(a.height)) || (Number(b.bandwidth) - Number(a.bandwidth)),
+    )[0];
+  }
+  // If every variant is above the cap, fall back to the lowest available stream.
+  const withHeight = list.filter((item) => Number(item?.height) > 0);
+  if (withHeight.length) {
+    return withHeight.sort((a, b) =>
+      (Number(a.height) - Number(b.height)) || (Number(a.bandwidth) - Number(b.bandwidth)),
+    )[0];
+  }
+  return list[0] || null;
+}
+
 async function resolveGoproVideoPlayback(input = {}) {
   if (!CF_WORKER_URL || !WORKER_SECRET) {
     throw Object.assign(new Error("Worker de video nao configurado para reproduzir GoPro."), { status: 500 });
@@ -3174,9 +3195,19 @@ async function resolveGoproVideoPlayback(input = {}) {
     throw Object.assign(new Error(`Falha ao baixar manifesto GoPro (${masterResponse.status}).`), { status: masterResponse.status });
   }
   const variants = parseGoproM3u8Variants(masterText);
-  const selected = variants[0];
-  const target = masterUrl.replace("https://api.gopro.com/", "https://gopro.com/");
-  const prefixUrl = new URL("./", target).href;
+  const selected = pickGoproPlaybackVariant(variants);
+  // Pin a single media playlist (not the master) to avoid ABR thrashing through the worker hop.
+  const mediaPlaylistUrl = selected?.uri
+    ? new URL(selected.uri, masterUrl).href.replace("https://api.gopro.com/", "https://gopro.com/")
+    : "";
+  const target = (mediaPlaylistUrl || masterUrl).replace("https://api.gopro.com/", "https://gopro.com/");
+  // Authorize the whole playurl token tree so media playlists/segments in subfolders validate.
+  const normalizedMaster = masterUrl.replace("https://api.gopro.com/", "https://gopro.com/");
+  const masterParts = new URL(normalizedMaster).pathname.split("/").filter(Boolean);
+  const prefixUrl =
+    masterParts[0] === "stream" && masterParts[1] === "playurl" && masterParts[2]
+      ? `https://gopro.com/stream/playurl/${masterParts[2]}/`
+      : new URL("./", normalizedMaster).href;
   const now = Math.floor(Date.now() / 1000);
   const proxyToken = signWorkerToken({
     action: "goproHls",

@@ -156,10 +156,54 @@ const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 7.5, 10] as const;
 const PLAYBACK_REACT_SYNC_MS = 250;
 const DOUBLE_TAP_MS = 280;
 const SKIP_FORWARD_SEC = 10;
-const GOPRO_HIGH_QUALITY_MAX_HEIGHT = 2160;
-const GOPRO_FAST_PLAYBACK_MAX_HEIGHT = 1080;
+const GOPRO_HIGH_QUALITY_MAX_HEIGHT = 1080;
+const GOPRO_FAST_PLAYBACK_MAX_HEIGHT = 720;
 const GOPRO_PICKER_PREVIEW_MAX_HEIGHT = 720;
 type GoproPickerTab = "recommended" | "unlinked" | "all";
+
+function pickGoproHlsLevel(levels: Array<{ height?: number }>, maxHeight: number): number {
+  return levels.reduce((bestIndex, level, index) => {
+    if (!level.height || level.height > maxHeight) return bestIndex;
+    if (bestIndex < 0) return index;
+    return level.height > (levels[bestIndex]?.height || 0) ? index : bestIndex;
+  }, -1);
+}
+
+function pinGoproHlsLevel(hls: Hls, maxHeight: number) {
+  const cappedLevel = pickGoproHlsLevel(hls.levels, maxHeight);
+  if (cappedLevel < 0) {
+    hls.autoLevelCapping = -1;
+    return -1;
+  }
+  // Pin a single rendition — ABR switches through the worker proxy cause periodic stalls.
+  hls.autoLevelCapping = cappedLevel;
+  hls.currentLevel = cappedLevel;
+  hls.loadLevel = cappedLevel;
+  hls.nextLevel = cappedLevel;
+  return cappedLevel;
+}
+
+function createGoproHlsPlayer(options?: { preview?: boolean }): Hls {
+  const preview = Boolean(options?.preview);
+  return new Hls({
+    enableWorker: true,
+    lowLatencyMode: false,
+    capLevelToPlayerSize: true,
+    startLevel: -1,
+    // Prefetch a deeper buffer so proxied ~6–10s GoPro segments do not underrun.
+    maxBufferLength: preview ? 20 : 60,
+    maxMaxBufferLength: preview ? 40 : 120,
+    maxBufferSize: preview ? 20 * 1000 * 1000 : 80 * 1000 * 1000,
+    backBufferLength: preview ? 10 : 30,
+    abrEwmaDefaultEstimate: 1_500_000,
+    fragLoadingTimeOut: 20_000,
+    manifestLoadingTimeOut: 15_000,
+    levelLoadingTimeOut: 15_000,
+    fragLoadingMaxRetry: preview ? 4 : 8,
+    manifestLoadingMaxRetry: preview ? 3 : 5,
+    levelLoadingMaxRetry: preview ? 3 : 5,
+  });
+}
 
 function formatPlaybackRate(rate: number): string {
   return rate === 1 ? "1×" : `${rate}×`;
@@ -1751,26 +1795,10 @@ function GoproPickerPreview({ item, onClose }: { item: GoproMediaLink; onClose: 
     if (el.canPlayType("application/vnd.apple.mpegurl")) {
       if (el.src !== playbackUrl) el.src = playbackUrl;
     } else if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        capLevelToPlayerSize: false,
-        startLevel: -1,
-        maxBufferLength: 8,
-        maxMaxBufferLength: 15,
-        backBufferLength: 5,
-        fragLoadingMaxRetry: 3,
-        manifestLoadingMaxRetry: 2,
-        levelLoadingMaxRetry: 2,
-      });
+      const hls = createGoproHlsPlayer({ preview: true });
       hlsRef.current = hls;
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
-          if (!level.height || level.height > GOPRO_PICKER_PREVIEW_MAX_HEIGHT) return bestIndex;
-          if (bestIndex < 0) return index;
-          return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
-        }, -1);
-        hls.autoLevelCapping = cappedLevel >= 0 ? cappedLevel : -1;
-        hls.currentLevel = -1;
+        pinGoproHlsLevel(hls, GOPRO_PICKER_PREVIEW_MAX_HEIGHT);
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return;
@@ -2377,7 +2405,7 @@ function TelemetryVideoPlayer({
   const [skipFlashKey, setSkipFlashKey] = useState(0);
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoLoadedOnce, setVideoLoadedOnce] = useState(false);
-  const [playbackUrl, setPlaybackUrl] = useState(video.file_url);
+  const [playbackUrl, setPlaybackUrl] = useState(() => (isGoproFlightVideo(video) ? "" : video.file_url));
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -2529,12 +2557,12 @@ function TelemetryVideoPlayer({
       setPlaybackUrl(video.file_url);
       return;
     }
-    setPlaybackUrl((current) => current || "");
+    setPlaybackUrl("");
     setVideoLoading(true);
     void resolveGoproVideoPlayback(video)
       .then((playback) => {
         if (!cancelled) {
-          setPlaybackUrl((current) => (current === playback.url ? current : playback.url));
+          setPlaybackUrl(playback.url);
         }
       })
       .catch((error) => {
@@ -2552,6 +2580,8 @@ function TelemetryVideoPlayer({
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !playbackUrl || !isGoproVideo) return;
+    // Wait for the proxied HLS URL — never attach the GoPro share page as a media source.
+    if (!playbackUrl.includes("gopro-hls") && !playbackUrl.includes(".m3u8")) return;
     if (el.canPlayType("application/vnd.apple.mpegurl")) {
       if (el.src !== playbackUrl) el.src = playbackUrl;
       return;
@@ -2561,27 +2591,11 @@ function TelemetryVideoPlayer({
       setVideoLoading(false);
       return;
     }
-    const hls = new Hls({
-      enableWorker: true,
-      capLevelToPlayerSize: false,
-      startLevel: -1,
-      maxBufferLength: 20,
-      maxMaxBufferLength: 60,
-      backBufferLength: 30,
-      fragLoadingMaxRetry: 6,
-      manifestLoadingMaxRetry: 4,
-      levelLoadingMaxRetry: 4,
-    });
+    const hls = createGoproHlsPlayer();
     hlsRef.current = hls;
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       const maxHeight = playbackRate > 1.25 ? GOPRO_FAST_PLAYBACK_MAX_HEIGHT : GOPRO_HIGH_QUALITY_MAX_HEIGHT;
-      const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
-        if (!level.height || level.height > maxHeight) return bestIndex;
-        if (bestIndex < 0) return index;
-        return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
-      }, -1);
-      if (cappedLevel >= 0) hls.autoLevelCapping = cappedLevel;
-      hls.currentLevel = -1;
+      pinGoproHlsLevel(hls, maxHeight);
       el.playbackRate = playbackRate;
       setPlaybackError(null);
     });
@@ -2631,13 +2645,7 @@ function TelemetryVideoPlayer({
     const hls = hlsRef.current;
     if (!hls || !isGoproVideo || hls.levels.length === 0) return;
     const maxHeight = playbackRate > 1.25 ? GOPRO_FAST_PLAYBACK_MAX_HEIGHT : GOPRO_HIGH_QUALITY_MAX_HEIGHT;
-    const cappedLevel = hls.levels.reduce((bestIndex, level, index) => {
-      if (!level.height || level.height > maxHeight) return bestIndex;
-      if (bestIndex < 0) return index;
-      return level.height > (hls.levels[bestIndex]?.height || 0) ? index : bestIndex;
-    }, -1);
-    hls.autoLevelCapping = cappedLevel >= 0 ? cappedLevel : -1;
-    hls.currentLevel = -1;
+    pinGoproHlsLevel(hls, maxHeight);
   }, [isGoproVideo, playbackRate]);
 
   useEffect(() => {

@@ -114,7 +114,7 @@ async function verifyToken(env, token, expected) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders(request, env) });
     }
@@ -154,7 +154,7 @@ export default {
     }
 
     if (url.pathname === "/gopro-hls" && request.method === "GET") {
-      return handleGoproHls(request, env, url);
+      return handleGoproHls(request, env, ctx, url);
     }
 
     return new Response("Not found", { status: 404, headers: corsHeaders(request, env) });
@@ -190,7 +190,14 @@ function rewriteM3u8(text, request, targetUrl, token) {
     .join("\n");
 }
 
-async function handleGoproHls(request, env, url) {
+function withCorsHeaders(request, env, baseHeaders = {}) {
+  return {
+    ...baseHeaders,
+    ...corsHeaders(request, env),
+  };
+}
+
+async function handleGoproHls(request, env, ctx, url) {
   const token = String(url.searchParams.get("token") || "");
   const payload = await verifyToken(env, token, { action: "goproHls" });
   if (!payload?.prefix) return err(request, env, "Unauthorized", 401);
@@ -209,37 +216,71 @@ async function handleGoproHls(request, env, url) {
     return err(request, env, "Destino GoPro invalido", 400);
   }
 
+  const rangeHeader = request.headers.get("Range");
+  const looksLikePlaylist = String(target.pathname).includes(".m3u8");
+  // Cache media segments by upstream URL so repeated fragment fetches skip the GoPro hop.
+  // Playlists stay uncached because we rewrite URIs with the caller's token.
+  const cache = caches.default;
+  const cacheKey = new Request(target.href, { method: "GET" });
+  if (!looksLikePlaylist && !rangeHeader) {
+    const cached = await cache.match(cacheKey);
+    if (cached) {
+      const headers = withCorsHeaders(request, env, Object.fromEntries(cached.headers.entries()));
+      headers["Cache-Control"] = "public, max-age=3600";
+      headers["X-Gopro-Cache"] = "HIT";
+      return new Response(cached.body, { status: cached.status, headers });
+    }
+  }
+
   const upstream = await fetch(target.href, {
     headers: {
       "User-Agent": "Mozilla/5.0",
-      ...(request.headers.get("Range") ? { Range: request.headers.get("Range") } : {}),
+      ...(rangeHeader ? { Range: rangeHeader } : {}),
     },
+    cf: looksLikePlaylist
+      ? { cacheTtl: 0, cacheEverything: false }
+      : { cacheTtl: 3600, cacheEverything: true },
   });
-  const headers = {
-    ...corsHeaders(request, env),
-    "Cache-Control": "private, max-age=120",
-  };
   const contentType = upstream.headers.get("Content-Type") || "";
 
   if (isM3u8Response(target.href, contentType)) {
     const text = await upstream.text();
     return new Response(rewriteM3u8(text, request, target.href, token), {
       status: upstream.status,
-      headers: {
-        ...headers,
+      headers: withCorsHeaders(request, env, {
+        "Cache-Control": "private, max-age=15",
         "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
-      },
+      }),
     });
   }
 
+  const headers = withCorsHeaders(request, env, {
+    "Cache-Control": "public, max-age=3600",
+    "X-Gopro-Cache": "MISS",
+  });
   for (const key of ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]) {
     const value = upstream.headers.get(key);
     if (value) headers[key] = value;
   }
-  return new Response(upstream.body, {
+  const response = new Response(upstream.body, {
     status: upstream.status,
     headers,
   });
+
+  if (!rangeHeader && upstream.ok && ctx?.waitUntil) {
+    const cacheHeaders = new Headers();
+    for (const key of ["Content-Type", "Content-Length", "Accept-Ranges"]) {
+      const value = upstream.headers.get(key);
+      if (value) cacheHeaders.set(key, value);
+    }
+    cacheHeaders.set("Cache-Control", "public, max-age=3600");
+    ctx.waitUntil(cache.put(cacheKey, new Response(response.clone().body, {
+      status: response.status,
+      headers: cacheHeaders,
+    })));
+  }
+
+  return response;
 }
 
 async function handleInitiate(request, env) {

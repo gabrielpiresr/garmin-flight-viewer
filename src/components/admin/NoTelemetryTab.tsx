@@ -106,6 +106,12 @@ function hasTelemetry(row: AdminFlightReportRow): boolean {
   return summaryPresent || docPresent;
 }
 
+function hasVideo(row: AdminFlightReportRow, videoFlags: Record<string, boolean>): boolean {
+  // videoPresent covers ready GoPro links from the server; videoFlags also counts
+  // in-progress uploads created client-side before processing finishes.
+  return Boolean(row.videoPresent) || Boolean(videoFlags[row.id]);
+}
+
 function needsFlightReviewAttention(row: AdminFlightReportRow, videoOk: boolean): boolean {
   return !hasTelemetry(row) || !videoOk;
 }
@@ -715,7 +721,14 @@ export function NoTelemetryTab() {
       const flights = Array.from(byId.values());
       setRows(flights);
       const flags = await listFlightVideoFlags(flights.map((row) => row.id));
+      for (const row of flights) {
+        if (row.videoPresent) flags[row.id] = true;
+      }
       setVideoFlags(flags);
+      setSelectedRow((current) => {
+        if (!current) return current;
+        return flights.find((row) => row.id === current.id) ?? current;
+      });
     } catch (err) {
       showToast({
         variant: "error",
@@ -737,7 +750,7 @@ export function NoTelemetryTab() {
         if (ghostMode === "exclude" && row.isGhostFlight) return false;
         if (ghostMode === "only" && !row.isGhostFlight) return false;
         if (row.isGhostFlight) return true;
-        const videoOk = Boolean(videoFlags[row.id]);
+        const videoOk = hasVideo(row, videoFlags);
         const complete = hasTelemetry(row) && videoOk;
         if (completionMode === "include-complete") return true;
         if (completionMode === "only-complete") return complete;
@@ -813,7 +826,7 @@ export function NoTelemetryTab() {
   };
 
   const selectedTelemetryOk = selectedRow ? hasTelemetry(selectedRow) : false;
-  const selectedVideoOk = selectedRow ? Boolean(videoFlags[selectedRow.id]) : false;
+  const selectedVideoOk = selectedRow ? hasVideo(selectedRow, videoFlags) : false;
   const isAdmin = user?.role === "admin";
 
   const handleDeleteGhost = async (row: AdminFlightReportRow) => {
@@ -958,7 +971,7 @@ export function NoTelemetryTab() {
             <tbody className="divide-y divide-slate-800/80">
               {filtered.map((row) => {
                 const telemetryOk = hasTelemetry(row);
-                const videoOk = videoFlags[row.id] ?? false;
+                const videoOk = hasVideo(row, videoFlags);
                 return (
                   <tr key={row.id} className="text-slate-200 hover:bg-slate-800/30">
                     <td className="whitespace-nowrap px-3 py-2.5">{fmtDate(row.flightDate)}</td>
@@ -1064,7 +1077,10 @@ export function NoTelemetryTab() {
           row={selectedRow}
           telemetryOk={selectedTelemetryOk}
           videoOk={selectedVideoOk}
-          onClose={() => setSelectedRow(null)}
+          onClose={() => {
+            setSelectedRow(null);
+            void load();
+          }}
           onSaved={() => void load()}
         />
       ) : null}
