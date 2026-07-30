@@ -136,9 +136,10 @@ export function parseGoproVideoMetadata(value: string | null | undefined): Gopro
 }
 
 export function isGoproFlightVideo(video: Pick<FlightVideo, "file_url" | "telemetry_source" | "telemetry_json" | "video_key">): boolean {
+  const metadata = parseGoproVideoMetadata(video.telemetry_json);
   return (
-    video.telemetry_source === "gopro" ||
     video.video_key.startsWith("gopro:") ||
+    Boolean(metadata?.mediaToken) ||
     /^https:\/\/gopro\.com\/v\/[0-9a-f-]{36}$/i.test(video.file_url)
   );
 }
