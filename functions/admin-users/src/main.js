@@ -23489,6 +23489,56 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { playback });
     }
 
+    if (action === "getAiswebSettings") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const settings = await aiswebService.loadSettings({ getSettingDoc });
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "saveAiswebSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await aiswebService.saveSettings(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        payload.settings || payload,
+      );
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "getAiswebDashboard") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const dashboard = await aiswebService.buildDashboard(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        actorUserId,
+      );
+      return jsonResponse(res, 200, { dashboard });
+    }
+
+    if (action === "lookupAiswebIcao") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);
+      if (!icaoCode || icaoCode.length !== 4) {
+        throw Object.assign(new Error("Informe um código ICAO válido (4 caracteres)."), { status: 400 });
+      }
+      const airport = await aiswebService.fetchAirportBundle(icaoCode);
+      return jsonResponse(res, 200, { airport });
+    }
+
+    if (action === "saveAiswebWatchlist") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const watchlist = await aiswebService.saveWatchlist(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        actorUserId,
+        payload.icaoCodes || payload.watchlist?.icaoCodes || [],
+      );
+      return jsonResponse(res, 200, { watchlist });
+    }
+
+    if (action === "previewAiswebChart") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const chart = await aiswebService.fetchChartPreview(payload.link || payload.url);
+      return jsonResponse(res, 200, { chart });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "createUser") {
@@ -24065,56 +24115,6 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "ensureDefaultStudentTrack") {
       const result = await ensureDefaultStudentTrainingTrack(actorUserId, payload.userId);
       return jsonResponse(res, 200, result);
-    }
-
-    if (action === "getAiswebSettings") {
-      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
-      const settings = await aiswebService.loadSettings({ getSettingDoc });
-      return jsonResponse(res, 200, { settings });
-    }
-
-    if (action === "saveAiswebSettings") {
-      await requireAdmin(actorUserId);
-      const settings = await aiswebService.saveSettings(
-        { getSettingDoc, upsertPlatformSettingDoc },
-        payload.settings || payload,
-      );
-      return jsonResponse(res, 200, { settings });
-    }
-
-    if (action === "getAiswebDashboard") {
-      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
-      const dashboard = await aiswebService.buildDashboard(
-        { getSettingDoc, upsertPlatformSettingDoc },
-        actorUserId,
-      );
-      return jsonResponse(res, 200, { dashboard });
-    }
-
-    if (action === "lookupAiswebIcao") {
-      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
-      const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);
-      if (!icaoCode || icaoCode.length !== 4) {
-        throw Object.assign(new Error("Informe um código ICAO válido (4 caracteres)."), { status: 400 });
-      }
-      const airport = await aiswebService.fetchAirportBundle(icaoCode);
-      return jsonResponse(res, 200, { airport });
-    }
-
-    if (action === "saveAiswebWatchlist") {
-      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
-      const watchlist = await aiswebService.saveWatchlist(
-        { getSettingDoc, upsertPlatformSettingDoc },
-        actorUserId,
-        payload.icaoCodes || payload.watchlist?.icaoCodes || [],
-      );
-      return jsonResponse(res, 200, { watchlist });
-    }
-
-    if (action === "previewAiswebChart") {
-      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
-      const chart = await aiswebService.fetchChartPreview(payload.link || payload.url);
-      return jsonResponse(res, 200, { chart });
     }
 
     return jsonResponse(res, 400, { message: "Acao invalida." });
