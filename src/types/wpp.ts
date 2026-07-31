@@ -4,6 +4,8 @@ export type WppConnectionSettings = {
   graphApiVersion: string;
   apiKeyConfigured: boolean;
   flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
+  tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+  incomingAutoReply: WppIncomingAutoReplySettings;
   businessName: string | null;
   verifiedName: string | null;
   displayPhoneNumber: string | null;
@@ -19,12 +21,62 @@ export type WppFlightReviewReadyTemplateSettings = {
   language: string;
 };
 
+export type WppTomorrowFlightReminderTemplateSettings = {
+  enabled: boolean;
+  templateName: string;
+  language: string;
+  sendHour: number;
+  bodyParameters: string[];
+};
+
+export type WppIncomingAutoReplySettings = {
+  enabled: boolean;
+  matchingMode: WppIncomingMatchMode;
+  message: string;
+  buttons: WppIncomingReplyButton[];
+  actions: WppIncomingActionType[];
+  rules: WppIncomingAutoReplyRule[];
+  verifyToken: string;
+  webhookUrl: string;
+};
+
+export type WppIncomingMatchMode = "id" | "content";
+
+export type WppIncomingRuleOperator = "equals" | "contains" | "starts_with";
+
+export type WppIncomingReplyButton = {
+  id: string;
+  title: string;
+};
+
+export type WppIncomingActionType =
+  | "send_last_flight_stickers"
+  | "send_next_mission_details"
+  | "send_student_credit_balance"
+  | "send_next_scheduled_flights"
+  | "send_flight_credit_purchase_options"
+  | "send_flight_credit_custom_purchase_link"
+  | "create_flight_credit_checkout";
+
+export type WppIncomingAutoReplyRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  operator: WppIncomingRuleOperator;
+  matchValue: string;
+  message: string;
+  buttons: WppIncomingReplyButton[];
+  actions: WppIncomingActionType[];
+};
+
 export type WppConnectionInput = {
   wabaId: string;
   phoneNumberId: string;
   graphApiVersion: string;
   apiKey: string;
   flightReviewReadyTemplate?: WppFlightReviewReadyTemplateSettings;
+  tomorrowFlightReminderTemplate?: WppTomorrowFlightReminderTemplateSettings;
+  incomingAutoReply?: WppIncomingAutoReplySettings;
 };
 
 export type WppTemplateCategory = "MARKETING" | "UTILITY" | "AUTHENTICATION";

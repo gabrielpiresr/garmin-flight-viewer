@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { account, ID, isAppwriteConfigured, DEFAULT_SCHOOL_ID } from "../lib/appwrite";
 import { executeAnacSync } from "../lib/anacSync";
 import { switchActiveRole as requestSwitchActiveRole } from "../lib/adminUsersDb";
@@ -91,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppwriteUser | null>(null);
   const [isRoot, setIsRoot] = useState(false);
   const [loading, setLoading] = useState(isAppwriteConfigured);
+  const signInInFlight = useRef(false);
 
   useEffect(() => {
     if (!isAppwriteConfigured || !account) {
@@ -109,6 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (!account) return { error: new Error("Appwrite não configurado") };
+    if (signInInFlight.current) return { error: new Error("Login ja em andamento. Aguarde alguns segundos.") };
+    signInInFlight.current = true;
     try {
       const rootAccess = parseRootAccessLogin(email);
       if (rootAccess) {
@@ -126,6 +129,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { error: null };
     } catch (e) {
       return { error: e as Error };
+    } finally {
+      signInInFlight.current = false;
     }
   }, []);
 

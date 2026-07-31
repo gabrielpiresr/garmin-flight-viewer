@@ -9,7 +9,9 @@ const pdfParse = require("pdf-parse");
 const { createStudentAutomationService } = require("./studentAutomations");
 const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
 const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
+const aiswebService = require("./aisweb");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
+const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
 
 let sharpModule = undefined;
 
@@ -476,6 +478,12 @@ function jsonResponse(res, status, payload) {
   return res.json(payload, status);
 }
 
+function textResponse(res, status, text) {
+  if (typeof res.text === "function") return res.text(String(text || ""), status);
+  if (typeof res.send === "function") return res.send(String(text || ""), status);
+  return res.json(String(text || ""), status);
+}
+
 function parseFunctionPayload(req) {
   try {
     if (req?.bodyJson && typeof req.bodyJson === "object") return req.bodyJson;
@@ -496,6 +504,18 @@ function parseFunctionPayload(req) {
     }
   }
   return {};
+}
+
+function reqQueryValue(req, key) {
+  const query = req?.query && typeof req.query === "object" ? req.query : {};
+  const value = query[key] ?? query[key.replace(/\./g, "_")];
+  if (value !== undefined && value !== null) return cleanString(Array.isArray(value) ? value[0] : value);
+  try {
+    const url = new URL(req?.url || "/", "https://function.local");
+    return cleanString(url.searchParams.get(key));
+  } catch {
+    return "";
+  }
 }
 
 const SAGA_BASE_URL = "https://epeac.saga.aero";
@@ -10610,14 +10630,50 @@ async function signContract(actorUserId, payload = {}) {
   ]);
   const now = new Date().toISOString();
   if (!already.documents?.[0]) {
-    await databases.createDocument(DATABASE_ID, CONTRACT_SIGNATURES_COLLECTION_ID, sdk.ID.unique(), {
+    const payloadSnapshotJson = stableStringify({
+      contractId,
+      signerUserId: actorUserId,
+      signerRole,
+      signedAt: now,
+      schoolId: contract.school_id || SCHOOL_ID,
+    });
+    const signaturePayload = {
       contract_id: contractId,
       signer_user_id: actorUserId,
       signer_role: signerRole,
       signed_at: now,
       school_id: contract.school_id || SCHOOL_ID,
       created_at: now,
-    }, signaturePermissions());
+      content_hash: sha256(payloadSnapshotJson),
+      payload_version: "contract-signature-v1",
+      payload_hash_alg: "SHA-256",
+      payload_snapshot_json: payloadSnapshotJson,
+    };
+    try {
+      await databases.createDocument(
+        DATABASE_ID,
+        CONTRACT_SIGNATURES_COLLECTION_ID,
+        sdk.ID.unique(),
+        signaturePayload,
+        signaturePermissions(),
+      );
+    } catch (err) {
+      if (!/attribute|unknown|invalid document structure/i.test(String(err?.message || ""))) throw err;
+      const {
+        content_hash: _contentHash,
+        payload_version: _payloadVersion,
+        payload_hash_alg: _payloadHashAlg,
+        payload_snapshot_json: _payloadSnapshotJson,
+        ...compatPayload
+      } = signaturePayload;
+      await databases.createDocument(
+        DATABASE_ID,
+        CONTRACT_SIGNATURES_COLLECTION_ID,
+        sdk.ID.unique(),
+        compatPayload,
+        signaturePermissions(),
+      );
+    }
   }
 
   const recipientSigned = signerRole === "admin" ? Boolean(contract.signed_by_recipient_at) : true;
@@ -14558,6 +14614,27 @@ const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const CAKTO_SETTINGS_KEY = "cakto";
 const WPP_SETTINGS_KEY = "wpp";
+const DEFAULT_WPP_INCOMING_AUTO_REPLY_MESSAGE =
+  "Este bot apenas envia mensagens automaticas e nao recebe mensagens por este canal.";
+const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
+  "student_name",
+  "flight_date",
+  "start_time",
+  "aircraft",
+  "mission",
+  "instructor",
+];
+const WPP_INCOMING_MATCH_MODES = new Set(["id", "content"]);
+const WPP_INCOMING_RULE_OPERATORS = new Set(["equals", "contains", "starts_with"]);
+const WPP_INCOMING_ACTIONS = new Set([
+  "send_last_flight_stickers",
+  "send_next_mission_details",
+  "send_student_credit_balance",
+  "send_next_scheduled_flights",
+  "send_flight_credit_purchase_options",
+  "send_flight_credit_custom_purchase_link",
+  "create_flight_credit_checkout",
+]);
 const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
 const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
@@ -16032,6 +16109,8 @@ function defaultWppSettings() {
       templateName: "avisodevoo",
       language: "pt_BR",
     },
+    tomorrowFlightReminderTemplate: defaultWppTomorrowFlightReminderTemplate(),
+    incomingAutoReply: defaultWppIncomingAutoReplySettings(),
     businessName: null,
     verifiedName: null,
     displayPhoneNumber: null,
@@ -16041,11 +16120,82 @@ function defaultWppSettings() {
   };
 }
 
+function defaultWppIncomingAutoReplySettings() {
+  return {
+    enabled: true,
+    matchingMode: "content",
+    message: DEFAULT_WPP_INCOMING_AUTO_REPLY_MESSAGE,
+    buttons: [],
+    actions: [],
+    rules: [],
+    verifyToken: cleanString(process.env.WPP_WEBHOOK_VERIFY_TOKEN),
+    webhookUrl: cleanString(process.env.WPP_WEBHOOK_URL),
+  };
+}
+
 function defaultWppFlightReviewReadyTemplate() {
   return {
     enabled: true,
     templateName: "avisodevoo",
     language: "pt_BR",
+  };
+}
+
+function defaultWppTomorrowFlightReminderTemplate() {
+  return {
+    enabled: false,
+    templateName: "lembrete_voo_amanha",
+    language: "pt_BR",
+    sendHour: 19,
+    bodyParameters: DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS,
+  };
+}
+
+function sanitizeWppIncomingButtons(value) {
+  return (Array.isArray(value) ? value : [])
+    .slice(0, 3)
+    .map((button) => ({
+      id: cleanString(button?.id).slice(0, 128),
+      title: cleanString(button?.title).slice(0, 20),
+    }))
+    .filter((button) => button.id && button.title);
+}
+
+function sanitizeWppIncomingActions(value) {
+  return Array.from(new Set((Array.isArray(value) ? value : []).map(cleanString).filter((action) => WPP_INCOMING_ACTIONS.has(action)))).slice(0, 5);
+}
+
+function sanitizeWppIncomingRules(value) {
+  return (Array.isArray(value) ? value : [])
+    .slice(0, 30)
+    .map((rule) => ({
+      id: cleanString(rule?.id) || crypto.randomUUID(),
+      name: cleanString(rule?.name).slice(0, 120) || "Regra",
+      enabled: rule?.enabled !== false,
+      operator: WPP_INCOMING_RULE_OPERATORS.has(rule?.operator) ? rule.operator : "equals",
+      matchValue: cleanString(rule?.matchValue).slice(0, 512),
+      message: cleanString(rule?.message).slice(0, 1024),
+      buttons: sanitizeWppIncomingButtons(rule?.buttons),
+      actions: sanitizeWppIncomingActions(rule?.actions),
+    }))
+    .filter((rule) => rule.matchValue && (rule.message || rule.buttons.length || rule.actions.length));
+}
+
+function sanitizeWppIncomingAutoReply(input, options = {}) {
+  const defaults = defaultWppIncomingAutoReplySettings();
+  const current = options.current && typeof options.current === "object" ? options.current : {};
+  const raw = input && typeof input === "object" ? input : {};
+  let verifyToken = cleanString(raw.verifyToken || current.verifyToken || defaults.verifyToken).slice(0, 256);
+  if (!verifyToken && options.generateToken) verifyToken = crypto.randomBytes(24).toString("hex");
+  return {
+    enabled: raw.enabled === undefined ? current.enabled !== false : raw.enabled !== false,
+    matchingMode: WPP_INCOMING_MATCH_MODES.has(raw.matchingMode) ? raw.matchingMode : WPP_INCOMING_MATCH_MODES.has(current.matchingMode) ? current.matchingMode : defaults.matchingMode,
+    message: cleanString(raw.message || current.message || defaults.message).slice(0, 1024) || defaults.message,
+    buttons: sanitizeWppIncomingButtons(raw.buttons || current.buttons || defaults.buttons),
+    actions: sanitizeWppIncomingActions(raw.actions || current.actions || defaults.actions),
+    rules: sanitizeWppIncomingRules(raw.rules || current.rules || defaults.rules),
+    verifyToken,
+    webhookUrl: cleanString(raw.webhookUrl || current.webhookUrl || defaults.webhookUrl).slice(0, 2048),
   };
 }
 
@@ -16074,6 +16224,13 @@ function publicWppSettings(settings, updatedAt) {
     graphApiVersion: normalizeWppApiVersion(safe.graphApiVersion),
     apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
     flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(safe.flightReviewReadyTemplate),
+    tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(safe.tomorrowFlightReminderTemplate),
+    incomingAutoReply: sanitizeWppIncomingAutoReply(safe.incomingAutoReply || {
+      enabled: safe.incomingAutoReplyEnabled,
+      message: safe.incomingAutoReplyMessage,
+      verifyToken: safe.webhookVerifyToken,
+      webhookUrl: safe.webhookUrl,
+    }),
     businessName: cleanString(safe.businessName) || null,
     verifiedName: cleanString(safe.verifiedName) || null,
     displayPhoneNumber: cleanString(safe.displayPhoneNumber) || null,
@@ -16092,6 +16249,13 @@ async function loadWppSettings() {
       ...defaultWppSettings(),
       ...settings,
       flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(settings.flightReviewReadyTemplate),
+      tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(settings.tomorrowFlightReminderTemplate),
+      incomingAutoReply: sanitizeWppIncomingAutoReply(settings.incomingAutoReply || {
+        enabled: settings.incomingAutoReplyEnabled,
+        message: settings.incomingAutoReplyMessage,
+        verifyToken: settings.webhookVerifyToken,
+        webhookUrl: settings.webhookUrl,
+      }),
     },
     doc,
   };
@@ -16120,6 +16284,13 @@ async function saveWppSettings(input) {
     flightReviewReadyTemplate: raw.flightReviewReadyTemplate
       ? sanitizeWppFlightReviewReadyTemplate(raw.flightReviewReadyTemplate)
       : sanitizeWppFlightReviewReadyTemplate(current.flightReviewReadyTemplate),
+    tomorrowFlightReminderTemplate: raw.tomorrowFlightReminderTemplate
+      ? sanitizeWppTomorrowFlightReminderTemplate(raw.tomorrowFlightReminderTemplate)
+      : sanitizeWppTomorrowFlightReminderTemplate(current.tomorrowFlightReminderTemplate),
+    incomingAutoReply: sanitizeWppIncomingAutoReply(raw.incomingAutoReply, {
+      current: current.incomingAutoReply,
+      generateToken: true,
+    }),
     connectionStatus: "not_tested",
     lastError: null,
   };
@@ -16137,6 +16308,23 @@ async function saveWppNotificationTemplates(input) {
     flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(
       input?.flightReviewReadyTemplate || input,
     ),
+    tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(
+      input?.tomorrowFlightReminderTemplate || current.tomorrowFlightReminderTemplate,
+    ),
+  };
+  const saved = await persistWppSettings(next, doc);
+  return publicWppSettings(next, saved.$updatedAt || nowIso());
+}
+
+async function saveWppBotSettings(input) {
+  const { settings: current, doc } = await loadWppSettings();
+  const raw = input?.incomingAutoReply || input;
+  const next = {
+    ...current,
+    incomingAutoReply: sanitizeWppIncomingAutoReply(raw, {
+      current: current.incomingAutoReply,
+      generateToken: true,
+    }),
   };
   const saved = await persistWppSettings(next, doc);
   return publicWppSettings(next, saved.$updatedAt || nowIso());
@@ -16304,6 +16492,69 @@ function normalizeWppRecipientPhone(value) {
   return digits;
 }
 
+function wppPhoneMatchKeys(value) {
+  const rawDigits = cleanString(value).replace(/\D/g, "").replace(/^0+/, "");
+  const normalized = normalizeWppRecipientPhone(rawDigits);
+  const keys = new Map();
+  const add = (key, score) => {
+    const clean = cleanString(key).replace(/\D/g, "");
+    if (!clean) return;
+    keys.set(clean, Math.max(keys.get(clean) || 0, score));
+  };
+
+  add(normalized, 100);
+  add(rawDigits, 90);
+
+  const local = normalized.startsWith("55") ? normalized.slice(2) : rawDigits;
+  add(local, 80);
+
+  if (normalized.startsWith("55") && local.length === 11 && local[2] === "9") {
+    const withoutNinth = `${local.slice(0, 2)}${local.slice(3)}`;
+    add(`55${withoutNinth}`, 75);
+    add(withoutNinth, 70);
+  }
+  if (normalized.startsWith("55") && local.length === 10) {
+    const withNinth = `${local.slice(0, 2)}9${local.slice(2)}`;
+    add(`55${withNinth}`, 75);
+    add(withNinth, 70);
+  }
+
+  if (normalized.length >= 11) add(normalized.slice(-11), 55);
+  if (normalized.length >= 10) add(normalized.slice(-10), 50);
+  if (normalized.length >= 9) add(normalized.slice(-9), 30);
+
+  return keys;
+}
+
+function wppPhoneMatchScore(left, right) {
+  const leftKeys = wppPhoneMatchKeys(left);
+  const rightKeys = wppPhoneMatchKeys(right);
+  let best = 0;
+  for (const [key, leftScore] of leftKeys.entries()) {
+    const rightScore = rightKeys.get(key);
+    if (rightScore) best = Math.max(best, leftScore + rightScore);
+  }
+  return best;
+}
+
+function appwritePublicStorageFileViewUrl(bucketId, fileId) {
+  const endpoint = cleanString(process.env.APPWRITE_FUNCTION_API_ENDPOINT || process.env.APPWRITE_ENDPOINT).replace(/\/+$/, "");
+  const projectId = cleanString(process.env.APPWRITE_FUNCTION_PROJECT_ID || process.env.APPWRITE_PROJECT_ID);
+  if (endpoint && projectId) {
+    return `${endpoint}/storage/buckets/${encodeURIComponent(bucketId)}/files/${encodeURIComponent(fileId)}/view?project=${encodeURIComponent(projectId)}`;
+  }
+  const url = storage.getFileView(bucketId, fileId).toString();
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete("mode");
+    parsed.searchParams.delete("impersonateUserId");
+    parsed.searchParams.delete("impersonateuserid");
+    return parsed.toString();
+  } catch {
+    return url.replace(/([?&])(mode|impersonateUserId|impersonateuserid)=[^&]*/gi, "$1").replace(/[?&]$/, "");
+  }
+}
+
 async function sendWppTemplateMessage(input) {
   const { settings } = await loadWppSettings();
   const to = normalizeWppRecipientPhone(input?.to);
@@ -16324,8 +16575,1301 @@ async function sendWppTemplateMessage(input) {
   return cleanString(response?.messages?.[0]?.id) || null;
 }
 
+function saoPauloDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== "literal") acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    hour: Number(parts.hour),
+  };
+}
+
+function addIsoDateDays(isoDate, days) {
+  const [year, month, day] = cleanString(isoDate).split("-").map(Number);
+  if (!year || !month || !day) return "";
+  const next = new Date(Date.UTC(year, month - 1, day + Number(days || 0)));
+  return next.toISOString().slice(0, 10);
+}
+
+async function acquireWppTomorrowReminderRunLock(targetDate) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return true;
+  const safeDate = cleanString(targetDate);
+  if (!safeDate) return false;
+  const docId = `wpp_tomorrow_reminder_${sha256(safeDate).slice(0, 24)}`;
+  const snapshot = snapshotJson({ targetDate: safeDate, createdAt: nowIso() });
+  try {
+    await databases.createDocument(
+      DATABASE_ID,
+      AUDIT_EVENTS_COLLECTION_ID,
+      docId,
+      {
+        event_type: "wpp_tomorrow_flight_reminder_lock",
+        entity_type: "wpp_tomorrow_flight_reminder",
+        entity_id: safeDate,
+        actor_user_id: "",
+        actor_role: "system",
+        school_id: SCHOOL_ID,
+        occurred_at: nowIso(),
+        ip: null,
+        user_agent: null,
+        reason: null,
+        before_snapshot_json: "null",
+        after_snapshot_json: snapshot,
+        before_hash: sha256("null"),
+        after_hash: sha256(snapshot),
+        event_hash: sha256(snapshot),
+      },
+      AUDIT_DOC_PERMS,
+    );
+    return true;
+  } catch (err) {
+    const code = Number(err?.code || err?.status || 0);
+    if (code === 409 || /already exists|document.*exists|duplicate/i.test(cleanString(err?.message))) return false;
+    console.warn(`[wppTomorrowReminder] lock unavailable: ${cleanString(err?.message).slice(0, 240)}`);
+    return true;
+  }
+}
+
+async function listConfirmedFlightsForDate(targetDate) {
+  if (!FLIGHTS_COLLECTION_ID || !targetDate) return [];
+  const docs = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("flight_date", [targetDate]),
+    sdk.Query.equal("flight_status", ["Confirmado"]),
+    sdk.Query.orderAsc("start_time"),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ]).catch(() => []);
+  return docs.map(toFlight).filter((flight) => cleanString(flight.studentUserId));
+}
+
+async function getProfilesByUserIds(userIds) {
+  const ids = Array.from(new Set((userIds || []).map(cleanString).filter(Boolean)));
+  if (!ids.length || !PROFILES_COLLECTION_ID) return new Map();
+  const profiles = await listDocumentsByFieldIn(
+    PROFILES_COLLECTION_ID,
+    "user_id",
+    ids,
+    [...selectQuery(PROFILE_SELECT)],
+  ).catch(() => []);
+  const map = new Map();
+  for (const profile of profiles) {
+    const userId = cleanString(profile.user_id);
+    if (userId && !map.has(userId)) map.set(userId, profile);
+  }
+  return map;
+}
+
+function wppReminderProfileName(profile, fallback = "") {
+  return cleanString(profile?.nickname) || cleanString(profile?.full_name) || cleanString(fallback) || "aluno";
+}
+
+function buildWppTomorrowReminderContext(flight, studentProfile, instructorProfile) {
+  const mission = cleanString(flight.trainingSnapshot?.missionName || flight.trainingSnapshot?.name || flight.trainingMissionId || flight.sourceFilename);
+  return {
+    student_name: wppReminderProfileName(studentProfile, flight.studentName),
+    flight_date: formatDateBr(flight.flightDate || ""),
+    start_time: cleanString(flight.startTime) || "hor\u00e1rio a confirmar",
+    aircraft: cleanString(flight.aircraftIdent) || "aeronave a definir",
+    mission: mission || "miss\u00e3o a confirmar",
+    instructor: wppReminderProfileName(instructorProfile, flight.instructorName || "instrutor a definir"),
+    route: cleanString(flight.route) || "rota a confirmar",
+    flight_id: cleanString(flight.id),
+  };
+}
+
+function resolveWppTemplateParameters(keys, context) {
+  return sanitizeWppTemplateParameterKeys(keys).map((key) => cleanString(context[key]) || "-");
+}
+
+async function runWppTomorrowFlightReminderScan(options = {}) {
+  const { settings } = await loadWppSettings();
+  const config = sanitizeWppTomorrowFlightReminderTemplate(settings.tomorrowFlightReminderTemplate);
+  if (!config.enabled) return { ok: true, skipped: true, reason: "disabled" };
+
+  const localNow = saoPauloDateParts();
+  const sendHour = Number.isFinite(Number(options.sendHour)) ? Number(options.sendHour) : config.sendHour;
+  if (options.force !== true && localNow.hour !== sendHour) {
+    return { ok: true, skipped: true, reason: "outside_send_hour", hour: localNow.hour, sendHour };
+  }
+
+  const targetDate = cleanString(options.targetDate) || addIsoDateDays(localNow.date, 1);
+  const acquired = options.force === true ? true : await acquireWppTomorrowReminderRunLock(targetDate);
+  if (!acquired) return { ok: true, skipped: true, reason: "already_ran", targetDate };
+
+  const flights = await listConfirmedFlightsForDate(targetDate);
+  const userIds = flights.flatMap((flight) => [flight.studentUserId, flight.instructorUserId]).filter(Boolean);
+  const profilesByUserId = await getProfilesByUserIds(userIds);
+  const deliveries = [];
+  for (const flight of flights) {
+    const studentProfile = profilesByUserId.get(cleanString(flight.studentUserId));
+    const phone = normalizeWppRecipientPhone(studentProfile?.phone);
+    const dedupeKey = `wpp.tomorrow_flight.${targetDate}.${flight.id}.${flight.studentUserId}`;
+    if (!phone) {
+      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "skipped", reason: "missing_phone" });
+      continue;
+    }
+    if (await alreadyDelivered(dedupeKey, "wpp", flight.studentUserId)) {
+      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "skipped", reason: "already_delivered" });
+      continue;
+    }
+    try {
+      const context = buildWppTomorrowReminderContext(flight, studentProfile, profilesByUserId.get(cleanString(flight.instructorUserId)));
+      const messageId = await sendWppTemplateMessage({
+        to: phone,
+        templateName: config.templateName,
+        language: config.language,
+        headerParameters: [],
+        bodyParameters: resolveWppTemplateParameters(config.bodyParameters, context),
+      });
+      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", flight.studentUserId, "sent", messageId, null);
+      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "sent", providerMessageId: messageId });
+    } catch (err) {
+      const message = cleanString(err?.message).slice(0, 512) || "Falha ao enviar template.";
+      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", flight.studentUserId, "failed", null, message);
+      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "failed", reason: message });
+    }
+  }
+  return {
+    ok: true,
+    targetDate,
+    totalFlights: flights.length,
+    sent: deliveries.filter((item) => item.status === "sent").length,
+    failed: deliveries.filter((item) => item.status === "failed").length,
+    skipped: deliveries.filter((item) => item.status === "skipped").length,
+    deliveries,
+  };
+}
+
+async function sendWppTextMessage(settings, input) {
+  const to = normalizeWppRecipientPhone(input?.to);
+  const body = cleanString(input?.body).slice(0, 4096);
+  if (!to || !body) throw Object.assign(new Error("Informe telefone e mensagem para enviar WhatsApp."), { status: 400 });
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "text",
+      text: { preview_url: false, body },
+    },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+async function sendWppImageMessage(settings, input) {
+  const to = normalizeWppRecipientPhone(input?.to);
+  const link = cleanString(input?.link).slice(0, 2048);
+  const caption = cleanString(input?.caption).slice(0, 1024);
+  if (!to || !link) throw Object.assign(new Error("Informe telefone e URL da imagem para enviar WhatsApp."), { status: 400 });
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "image",
+      image: {
+        link,
+        ...(caption ? { caption } : {}),
+      },
+    },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+async function sendWppUrlButtonMessage(settings, input) {
+  const to = normalizeWppRecipientPhone(input?.to);
+  const body = cleanString(input?.body).slice(0, 1024);
+  const url = cleanString(input?.url).slice(0, 2048);
+  const displayText = cleanString(input?.displayText || "Ver detalhes").slice(0, 20);
+  if (!to || !body || !url || !displayText) throw Object.assign(new Error("Informe telefone, mensagem e URL para enviar botao WhatsApp."), { status: 400 });
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: { text: body },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: displayText,
+            url,
+          },
+        },
+      },
+    },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+async function sendWppBotReply(settings, input) {
+  const to = normalizeWppRecipientPhone(input?.to);
+  const body = cleanString(input?.body).slice(0, 1024);
+  const buttons = sanitizeWppIncomingButtons(input?.buttons);
+  if (!buttons.length) return sendWppTextMessage(settings, { to, body });
+  if (!to || !body) throw Object.assign(new Error("Informe telefone e mensagem para enviar WhatsApp."), { status: 400 });
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: body },
+        action: {
+          buttons: buttons.map((button) => ({
+            type: "reply",
+            reply: { id: button.id, title: button.title },
+          })),
+        },
+      },
+    },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
+}
+
+function sanitizeWppTemplateParameterKeys(value, defaults = DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS) {
+  const allowed = new Set([
+    "student_name",
+    "flight_date",
+    "start_time",
+    "aircraft",
+    "mission",
+    "instructor",
+    "route",
+    "flight_id",
+  ]);
+  const raw = Array.isArray(value) ? value : defaults;
+  const next = raw.map(cleanString).filter((item) => allowed.has(item)).slice(0, 12);
+  return next.length ? next : defaults;
+}
+
+function sanitizeWppTomorrowFlightReminderTemplate(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaults = defaultWppTomorrowFlightReminderTemplate();
+  const templateName = cleanString(raw.templateName || raw.name || defaults.templateName).toLowerCase();
+  const language = cleanString(raw.language) || defaults.language;
+  const sendHour = Math.max(0, Math.min(23, Math.round(Number(raw.sendHour ?? defaults.sendHour))));
+  return {
+    enabled: raw.enabled === undefined ? defaults.enabled : raw.enabled !== false,
+    templateName: /^[a-z0-9_]+$/.test(templateName) ? templateName : defaults.templateName,
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : defaults.language,
+    sendHour: Number.isFinite(sendHour) ? sendHour : defaults.sendHour,
+    bodyParameters: sanitizeWppTemplateParameterKeys(raw.bodyParameters, defaults.bodyParameters),
+  };
+}
+
+async function sendWppListMessage(settings, input) {
+  const to = normalizeWppRecipientPhone(input?.to);
+  const body = cleanString(input?.body).slice(0, 1024);
+  const buttonText = cleanString(input?.buttonText || "Escolher").slice(0, 20);
+  const sectionTitle = cleanString(input?.sectionTitle || "Op\u00e7\u00f5es").slice(0, 24);
+  const rows = (Array.isArray(input?.rows) ? input.rows : [])
+    .map((row) => ({
+      id: cleanString(row?.id).slice(0, 200),
+      title: cleanString(row?.title).slice(0, 24),
+      description: cleanString(row?.description).slice(0, 72),
+    }))
+    .filter((row) => row.id && row.title)
+    .slice(0, 10);
+  if (!to || !body || !buttonText || !rows.length) {
+    throw Object.assign(new Error("Informe telefone, mensagem e op\u00e7\u00f5es para enviar lista WhatsApp."), { status: 400 });
+  }
+  const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        body: { text: body },
+        action: {
+          button: buttonText,
+          sections: [{ title: sectionTitle, rows }],
+        },
+      },
+    },
+  });
+  return cleanString(response?.messages?.[0]?.id) || null;
+}
+
 async function sendWppTemplateTest(input) {
   return sendWppTemplateMessage(input);
+}
+
+function isWppWebhookVerification(req) {
+  return Boolean(reqQueryValue(req, "hub.mode") || reqQueryValue(req, "hub.challenge") || reqQueryValue(req, "hub.verify_token"));
+}
+
+function isWppWebhookPayload(payload) {
+  return payload && typeof payload === "object" && payload.object === "whatsapp_business_account";
+}
+
+function extractWppIncomingMessages(payload) {
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  const messages = [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const value = change?.value && typeof change.value === "object" ? change.value : {};
+      const phoneNumberId = cleanString(value?.metadata?.phone_number_id);
+      const incoming = Array.isArray(value.messages) ? value.messages : [];
+      for (const message of incoming) {
+        const from = normalizeWppRecipientPhone(message?.from);
+        const messageId = cleanString(message?.id);
+        const interactive = message?.interactive && typeof message.interactive === "object" ? message.interactive : {};
+        const buttonReply = interactive.button_reply && typeof interactive.button_reply === "object" ? interactive.button_reply : {};
+        const listReply = interactive.list_reply && typeof interactive.list_reply === "object" ? interactive.list_reply : {};
+        const button = message?.button && typeof message.button === "object" ? message.button : {};
+        const text = cleanString(
+          message?.text?.body ||
+          buttonReply.title ||
+          listReply.title ||
+          button.text ||
+          message?.type,
+        );
+        const responseId = cleanString(
+          buttonReply.id ||
+          listReply.id ||
+          button.payload ||
+          button.text ||
+          messageId,
+        );
+        if (from) messages.push(applyWppIncomingTestOverride({ from, messageId, responseId, text, phoneNumberId }));
+      }
+    }
+  }
+  return messages;
+}
+
+function applyWppIncomingTestOverride(message) {
+  const text = cleanString(message?.text);
+  const match = text.match(/^\/\/\s*(\+?[\d\s().-]{10,24})\s+([\s\S]+)$/);
+  if (!match) return message;
+  const lookupFrom = normalizeWppRecipientPhone(match[1]);
+  const commandText = cleanString(match[2]);
+  if (!lookupFrom || !commandText) return message;
+  return {
+    ...message,
+    lookupFrom,
+    text: commandText,
+    responseId: message.responseId === text || message.responseId === message.messageId ? commandText : message.responseId,
+    testMode: true,
+  };
+}
+
+function wppIncomingLockId(message) {
+  const source = cleanString(message?.messageId) || stableStringify({
+    from: normalizeWppRecipientPhone(message?.from),
+    text: cleanString(message?.text),
+    responseId: cleanString(message?.responseId),
+  });
+  return `wpp_${sha256(source).slice(0, 32)}`;
+}
+
+async function acquireWppIncomingMessageLock(message) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return true;
+  const messageId = cleanString(message?.messageId);
+  if (!messageId) return true;
+  const docId = wppIncomingLockId(message);
+  const snapshot = snapshotJson({
+    messageId,
+    from: normalizeWppRecipientPhone(message.from),
+    lookupFrom: normalizeWppRecipientPhone(message.lookupFrom || message.from),
+    text: cleanString(message.text).slice(0, 512),
+    responseId: cleanString(message.responseId).slice(0, 256),
+    testMode: Boolean(message.testMode),
+  });
+  try {
+    await databases.createDocument(
+      DATABASE_ID,
+      AUDIT_EVENTS_COLLECTION_ID,
+      docId,
+      {
+        event_type: "wpp_incoming_lock",
+        entity_type: "wpp_message",
+        entity_id: messageId.slice(0, 128),
+        actor_user_id: "",
+        actor_role: "system",
+        school_id: SCHOOL_ID,
+        occurred_at: nowIso(),
+        ip: null,
+        user_agent: null,
+        reason: message.testMode ? "test_override" : null,
+        before_snapshot_json: "null",
+        after_snapshot_json: snapshot,
+        before_hash: sha256("null"),
+        after_hash: sha256(snapshot),
+        event_hash: sha256(snapshot),
+      },
+      AUDIT_DOC_PERMS,
+    );
+    return true;
+  } catch (err) {
+    const code = Number(err?.code || err?.status || 0);
+    if (code === 409 || /already exists|document.*exists|duplicate/i.test(cleanString(err?.message))) return false;
+    console.warn(`[wppWebhook] message lock unavailable: ${cleanString(err?.message).slice(0, 240)}`);
+    return true;
+  }
+}
+
+async function handleWppWebhookVerification(req, res, log) {
+  const mode = reqQueryValue(req, "hub.mode");
+  const challenge = reqQueryValue(req, "hub.challenge");
+  const receivedToken = reqQueryValue(req, "hub.verify_token");
+  const { settings } = await loadWppSettings();
+  const expectedToken = cleanString(settings.incomingAutoReply?.verifyToken) || cleanString(process.env.WPP_WEBHOOK_VERIFY_TOKEN);
+  if (mode === "subscribe" && challenge && expectedToken && timingSafeEqualString(receivedToken, expectedToken)) {
+    log("[wppWebhook] verification ok");
+    return textResponse(res, 200, challenge);
+  }
+  log("[wppWebhook] verification failed");
+  return textResponse(res, 403, "Forbidden");
+}
+
+function normalizeWppComparable(value) {
+  return cleanString(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function wppRuleMatches(rule, message, matchingMode) {
+  const target = normalizeWppComparable(matchingMode === "id" ? message.responseId : message.text);
+  const expected = normalizeWppComparable(rule.matchValue);
+  if (!target || !expected) return false;
+  if (rule.operator === "contains") return target.includes(expected);
+  if (rule.operator === "starts_with") return target.startsWith(expected);
+  return target === expected;
+}
+
+function resolveWppIncomingReply(autoReply, message) {
+  const matchingMode = WPP_INCOMING_MATCH_MODES.has(autoReply.matchingMode) ? autoReply.matchingMode : "content";
+  const rule = (autoReply.rules || []).find((item) => item.enabled !== false && wppRuleMatches(item, message, matchingMode));
+  if (rule) {
+    return {
+      name: rule.name || rule.id,
+      message: rule.message || autoReply.message,
+      buttons: rule.buttons || [],
+      actions: rule.actions || [],
+      matchedRuleId: rule.id,
+    };
+  }
+  return {
+    name: "default",
+    message: autoReply.message,
+    buttons: autoReply.buttons || [],
+    actions: autoReply.actions || [],
+    matchedRuleId: null,
+  };
+}
+
+function renderWppBotText(template, context = {}) {
+  return cleanString(template).replace(/\{\{\s*([a-z0-9_.]+)\s*\}\}/gi, (_match, key) => {
+    const value = key.split(".").reduce((current, part) => current && typeof current === "object" ? current[part] : undefined, context);
+    return value === null || value === undefined ? "" : String(value);
+  });
+}
+
+async function findWppStudentByPhone(phone) {
+  const normalized = normalizeWppRecipientPhone(phone);
+  if (!normalized || !PROFILES_COLLECTION_ID) return null;
+  const profiles = await listAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery(["$id", "user_id", "full_name", "nickname", "phone", "role", "roles", "active_role", "assigned_role_slugs", "active_role_slug", "role_custom_slugs_json"]),
+  ]).catch(() => []);
+
+  const profileMatches = profiles
+    .map((profile) => ({ profile, score: wppPhoneMatchScore(profile.phone, normalized) }))
+    .filter((match) => match.score > 0 && cleanString(match.profile.user_id))
+    .sort((a, b) => b.score - a.score);
+  if (profileMatches[0]) return profileMatches[0].profile;
+
+  if (!CRM_LEADS_COLLECTION_ID) return null;
+  const leads = await listAllDocuments(CRM_LEADS_COLLECTION_ID, [
+    ...selectQuery(["$id", "user_id", "name", "email", "phone"]),
+  ]).catch(() => []);
+  const leadMatches = leads
+    .map((lead) => ({ lead, score: wppPhoneMatchScore(lead.phone, normalized) }))
+    .filter((match) => match.score > 0 && cleanString(match.lead.user_id))
+    .sort((a, b) => b.score - a.score);
+  const leadUserId = cleanString(leadMatches[0]?.lead?.user_id);
+  if (!leadUserId) return null;
+  return profiles.find((profile) => cleanString(profile.user_id) === leadUserId) || {
+    $id: leadMatches[0].lead.$id,
+    user_id: leadUserId,
+    full_name: cleanString(leadMatches[0].lead.name),
+    nickname: "",
+    phone: cleanString(leadMatches[0].lead.phone),
+  };
+}
+
+async function createFlightPublicShareForWpp(flightId) {
+  const flight = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, selectQuery(["$id", "public_share_created_at"]));
+  const token = randomShareToken();
+  const now = nowIso();
+  await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, {
+    public_share_token_hash: sha256Hex(token),
+    public_share_enabled: true,
+    public_share_created_at: flight.public_share_created_at || now,
+    public_share_last_generated_at: now,
+  });
+  const origin = "https://app.epeac.com.br";
+  return origin ? `${origin.replace(/\/+$/, "")}/share/flight-review/${token}` : `/share/flight-review/${token}`;
+}
+
+async function sendWppFlightDetailsCta(settings, to, publicUrl) {
+  try {
+    await sendWppUrlButtonMessage(settings, {
+      to,
+      body: "Figurinhas do seu ultimo voo. Veja tambem os detalhes:",
+      displayText: "Ver detalhes",
+      url: publicUrl,
+    });
+    return "button";
+  } catch (err) {
+    console.warn(`[wppWebhook] flight details button fallback error=${cleanString(err?.message).slice(0, 240)}`);
+    await sendWppTextMessage(settings, {
+      to,
+      body: `Figurinhas do seu ultimo voo. Veja tambem os detalhes:\n${publicUrl}`,
+    });
+    return `text_fallback:${cleanString(err?.message).slice(0, 120)}`;
+  }
+}
+
+async function latestStudentCompletedFlight(studentUserId) {
+  if (!FLIGHTS_COLLECTION_ID || !studentUserId) return null;
+  const queries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("flight_status", ["Realizado"]),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.orderDesc("start_time"),
+    sdk.Query.limit(5),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ];
+  const [studentFlights, legacyFlights] = await Promise.all([
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("student_user_id", [studentUserId]), ...queries]).then((r) => r.documents).catch(() => []),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("user_id", [studentUserId]), ...queries]).then((r) => r.documents).catch(() => []),
+  ]);
+  return [...studentFlights, ...legacyFlights]
+    .sort((a, b) => `${cleanString(b.flight_date)} ${cleanString(b.start_time)}`.localeCompare(`${cleanString(a.flight_date)} ${cleanString(a.start_time)}`))[0] || null;
+}
+
+function wppProfileHasRole(profile, role) {
+  const safeRole = normalizeRole(role);
+  if (normalizeRole(profile?.role) === safeRole || normalizeRole(profile?.active_role) === safeRole) return true;
+  if (Array.isArray(profile?.roles) && profile.roles.map(normalizeRole).includes(safeRole)) return true;
+  if (Array.isArray(profile?.assigned_role_slugs) && profile.assigned_role_slugs.map(cleanString).includes(safeRole)) return true;
+  return false;
+}
+
+async function latestWppRelatedCompletedFlight(profile) {
+  const userId = cleanString(profile?.user_id);
+  if (!FLIGHTS_COLLECTION_ID || !userId) return null;
+  const queries = [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("flight_status", ["Realizado"]),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.orderDesc("start_time"),
+    sdk.Query.limit(5),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ];
+  const lookups = [
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("student_user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("instructor_user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
+  ];
+  if (wppProfileHasRole(profile, "admin")) {
+    lookups.push(databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, queries).then((r) => r.documents).catch(() => []));
+  }
+  const docs = (await Promise.all(lookups)).flat();
+  const unique = Array.from(new Map(docs.map((doc) => [doc.$id, doc])).values());
+  return unique
+    .sort((a, b) => `${cleanString(b.flight_date)} ${cleanString(b.start_time)}`.localeCompare(`${cleanString(a.flight_date)} ${cleanString(a.start_time)}`))[0] || null;
+}
+
+function ensureNodeFileReaderForStickers() {
+  if (typeof FileReader !== "undefined") return;
+  global.FileReader = class NodeFileReader {
+    constructor() {
+      this.result = null;
+      this.error = null;
+      this.onload = null;
+      this.onerror = null;
+    }
+
+    readAsDataURL(blob) {
+      Promise.resolve()
+        .then(() => blob.arrayBuffer())
+        .then((arrayBuffer) => {
+          const contentType = blob.type || "application/octet-stream";
+          this.result = `data:${contentType};base64,${Buffer.from(arrayBuffer).toString("base64")}`;
+          if (typeof this.onload === "function") this.onload();
+        })
+        .catch((err) => {
+          this.error = err;
+          if (typeof this.onerror === "function") this.onerror(err);
+        });
+    }
+  };
+}
+
+async function wppFlightShareBrand() {
+  const { settings, doc } = await loadEmailBrandSettings();
+  const brand = publicEmailBrandSettings(settings, doc?.$updatedAt || null);
+  return {
+    schoolName: cleanString(brand.schoolName),
+    logoUrl: cleanString(brand.logoUrl),
+    logoDataUrl: await logoUrlToDataUrl(brand.logoUrl),
+    primaryColor: cleanString(brand.primaryColor) || "#38bdf8",
+    accentColor: cleanString(brand.accentColor) || "#a78bfa",
+  };
+}
+
+async function buildWppFlightShareData(flightDoc) {
+  ensureNodeFileReaderForStickers();
+  const csvText = await loadFlightCsvText(flightDoc);
+  const savedFlight = publicFlightFields(flightDoc, csvText, { includeSensitive: true });
+  const decoded = typeof flightShareStickerTools.decodeFlightRecord === "function"
+    ? flightShareStickerTools.decodeFlightRecord(csvText)
+    : decodeFlightRecordCsv(csvText);
+  const telemetryCsv = cleanString(decoded.telemetryCsv);
+  let parsed = null;
+  if (telemetryCsv) {
+    parsed = flightShareStickerTools.parseGarminCsv(telemetryCsv);
+  }
+  const points = parsed?.points || [];
+  const chartData = parsed?.chartData || [];
+  const summary = flightShareStickerTools.summarizeFlight(points);
+  const displayInfo = flightShareStickerTools.buildFlightDisplayInfo(savedFlight, csvText);
+  const routeMap = await flightShareStickerTools.buildRouteMap(points).catch(() => null);
+  const durationSec =
+    flightShareStickerTools.chartDurationSec(chartData, parsed?.hasChartTime ?? false) ??
+    summary.durationSec ??
+    savedFlight.duration_sec ??
+    (displayInfo.totalFlightMinutes > 0 ? displayInfo.totalFlightMinutes * 60 : null);
+
+  return {
+    flightId: savedFlight.id,
+    sourceFileName: savedFlight.source_filename,
+    meta: decoded.meta,
+    displayInfo,
+    parsed,
+    points,
+    chartData,
+    hasChartTime: parsed?.hasChartTime ?? false,
+    chartTimeBaseMs: parsed?.chartTimeBaseMs ?? null,
+    summary,
+    durationDisplay: durationSec !== null ? flightShareStickerTools.formatDuration(durationSec) : displayInfo.totalFlight || "-",
+    brand: await wppFlightShareBrand(),
+    routeMap,
+  };
+}
+
+async function renderWppStickerPng(sticker) {
+  const sharp = getSharpModule();
+  if (!sharp) throw Object.assign(new Error("Renderizacao de imagem nao disponivel neste runtime."), { status: 500 });
+  return sharp(Buffer.from(sticker.svg, "utf8"), { failOn: "none" })
+    .png()
+    .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 })
+    .flatten({ background: "#020617" })
+    .png()
+    .toBuffer();
+}
+
+async function uploadWppStickerPng(sticker) {
+  if (!FLIGHTS_CSV_BUCKET_ID) throw Object.assign(new Error("Storage nao configurado."), { status: 500 });
+  const png = await renderWppStickerPng(sticker);
+  const fileName = `wpp-${sticker.fileName || `${sticker.id}.png`}`;
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([png], fileName, { type: "image/png" })
+      : sdk.InputFile?.fromBuffer
+        ? sdk.InputFile.fromBuffer(png, fileName)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de imagem nao suportado neste runtime."), { status: 500 });
+  const uploaded = await storage.createFile(
+    FLIGHTS_CSV_BUCKET_ID,
+    sdk.ID.unique(),
+    inputFile,
+    [sdk.Permission.read(sdk.Role.any())],
+  );
+  return {
+    id: sticker.id,
+    title: sticker.title,
+    description: sticker.description,
+    url: appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, uploaded.$id),
+  };
+}
+
+async function uploadWppFlightShareStickerImages(flightDoc) {
+  const shareData = await buildWppFlightShareData(flightDoc);
+  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true }).slice(0, 5);
+  const uploaded = [];
+  for (const sticker of stickers) {
+    uploaded.push(await uploadWppStickerPng(sticker));
+  }
+  return uploaded;
+}
+
+async function sendWppLastFlightStickersAction(settings, incoming) {
+  const lookupPhone = incoming.lookupFrom || incoming.from;
+  const profile = await findWppStudentByPhone(lookupPhone);
+  const studentUserId = cleanString(profile?.user_id);
+  if (!studentUserId) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Nao encontrei seu cadastro pelo telefone deste WhatsApp." });
+    return "student_not_found";
+  }
+  const flight = await latestWppRelatedCompletedFlight(profile);
+  if (!flight) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Ainda nao encontrei um voo realizado no seu historico." });
+    return "flight_not_found";
+  }
+  const publicUrl = await createFlightPublicShareForWpp(flight.$id);
+  try {
+    const images = await uploadWppFlightShareStickerImages(flight);
+    for (const image of images) {
+      await sendWppImageMessage(settings, {
+        to: incoming.from,
+        link: image.url,
+      });
+    }
+    const ctaStatus = await sendWppFlightDetailsCta(settings, incoming.from, publicUrl);
+    return ctaStatus === "button" ? "sent" : `sent:${ctaStatus}`;
+  } catch (err) {
+    console.warn(`[wppWebhook] send_last_flight_stickers fallback flight=${flight.$id} error=${cleanString(err?.message).slice(0, 240)}`);
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Nao consegui gerar as imagens agora, mas aqui estao os detalhes do seu ultimo voo:",
+    });
+    await sendWppFlightDetailsCta(settings, incoming.from, publicUrl);
+    return `sent_link_fallback:${cleanString(err?.message).slice(0, 120)}`;
+  }
+}
+
+function formatWppFlightLine(flight) {
+  const date = formatDateBr(flight.flightDate || "");
+  const time = cleanString(flight.startTime);
+  const aircraft = cleanString(flight.aircraftIdent) || "aeronave a confirmar";
+  const route = cleanString(flight.route);
+  const mission = cleanString(flight.trainingSnapshot?.missionName || flight.trainingSnapshot?.name || flight.sourceFilename);
+  return [
+    mission ? `Missao: ${mission}` : null,
+    date ? `Data: ${date}${time ? ` as ${time}` : ""}` : null,
+    `Aeronave: ${aircraft}`,
+    route ? `Rota: ${route}` : null,
+    flight.instructorName ? `Instrutor: ${flight.instructorName}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function resolveWppFlightOutcome(risk) {
+  const explicit = cleanString(risk?.instructorOutcome);
+  if (explicit === "approved" || explicit === "failed") return explicit;
+  const opinion = cleanString(risk?.instructorOpinionMd || risk?.riskMd || risk?.commentsMd);
+  if (!opinion) return "";
+  const normalized = opinion.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/\b(aprovado|aprovada|satisfatorio|apto|apta)\b/.test(normalized)) return "approved";
+  if (/\b(reprovado|reprovada|insatisfatorio|inapto|nao aprovado|nao aprovada)\b/.test(normalized)) return "failed";
+  return "";
+}
+
+async function listWppStudentJourneyFlightDocs(studentUserId) {
+  const queriesBase = [
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.limit(100),
+  ];
+  const batches = await Promise.all([
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("student_user_id", [studentUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("user_id", [studentUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+  ]);
+  const byId = new Map();
+  for (const batch of batches) {
+    for (const doc of batch.documents || []) byId.set(doc.$id, doc);
+  }
+  return Array.from(byId.values());
+}
+
+async function loadWppNextJourneyMission(studentUserId) {
+  const assignmentsByUser = await getTrainingAssignmentsByUserIds([studentUserId]);
+  const activeAssignments = (assignmentsByUser.get(studentUserId) || [])
+    .filter((assignment) => assignment.status === "active" && assignment.track)
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || String(a.assignedAt || "").localeCompare(String(b.assignedAt || "")));
+  if (!activeAssignments.length) return { status: "track_not_found", mission: null };
+
+  const activeTrackIds = new Set(activeAssignments.map((assignment) => cleanString(assignment.trackId)).filter(Boolean));
+  const flightDocs = await listWppStudentJourneyFlightDocs(studentUserId);
+  const completedMissionIds = new Set();
+  for (const doc of flightDocs) {
+    const flight = toFlight(doc);
+    if (!isCompletedFlight(flight)) continue;
+    if (flight.trainingTrackId && activeTrackIds.size && !activeTrackIds.has(cleanString(flight.trainingTrackId))) continue;
+    const meta = decodeFlightMeta(doc.csv_text);
+    if (resolveWppFlightOutcome(meta?.risk) === "failed") continue;
+    for (const missionId of flight.trainingMissionIds || []) {
+      if (missionId) completedMissionIds.add(cleanString(missionId));
+    }
+  }
+
+  for (const assignment of activeAssignments) {
+    const track = assignment.track;
+    const rows = [];
+    for (const stage of track.stages || []) {
+      for (const mission of Array.isArray(stage?.missions) ? stage.missions : []) {
+        rows.push({ stage, mission });
+      }
+    }
+    rows.sort((a, b) =>
+      (Number(a.stage?.order) || 0) - (Number(b.stage?.order) || 0)
+      || (Number(a.mission?.order) || 0) - (Number(b.mission?.order) || 0),
+    );
+    if (!rows.length) continue;
+    const lastCompletedIndex = rows.reduce(
+      (lastIndex, row, index) => completedMissionIds.has(cleanString(row.mission?.id)) ? index : lastIndex,
+      -1,
+    );
+    const nextIndex = lastCompletedIndex >= 0
+      ? rows.findIndex((row, index) => index > lastCompletedIndex && !completedMissionIds.has(cleanString(row.mission?.id)))
+      : rows.findIndex((row) => !completedMissionIds.has(cleanString(row.mission?.id)));
+    if (nextIndex < 0) continue;
+    const next = rows[nextIndex];
+    return {
+      status: "found",
+      mission: {
+        trackId: cleanString(track.id),
+        stageId: cleanString(next.stage?.id),
+        missionId: cleanString(next.mission?.id),
+        trackName: cleanString(track.name),
+        stageName: cleanString(next.stage?.name),
+        missionName: cleanString(next.mission?.name || next.mission?.title || next.mission?.id),
+        missionType: cleanString(next.mission?.type),
+        durationMinutes: Number(next.mission?.durationMinutes) || null,
+        maneuvers: Array.isArray(next.mission?.maneuvers) ? next.mission.maneuvers.map(cleanString).filter(Boolean) : [],
+      },
+    };
+  }
+
+  return { status: "track_completed", mission: null };
+}
+
+function formatWppJourneyMissionLine(nextMission) {
+  const maneuvers = (nextMission.maneuvers || []).slice(0, 8);
+  return [
+    `- Miss\u00e3o: ${nextMission.missionName || "a confirmar"}`,
+    nextMission.stageName ? `- Etapa: ${nextMission.stageName}` : null,
+    nextMission.missionType ? `- Tipo: ${nextMission.missionType}` : null,
+    maneuvers.length ? `- Manobras: ${maneuvers.join(", ")}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function publicAppUrl(pathname = "/") {
+  const origin = "https://app.epeac.com.br";
+  const path = cleanString(pathname).startsWith("/") ? cleanString(pathname) : `/${cleanString(pathname)}`;
+  return `${origin}${path}`;
+}
+
+function buildWppMissionDetailUrl(nextMission) {
+  const params = new URLSearchParams();
+  if (nextMission.trackId) params.set("trackId", nextMission.trackId);
+  if (nextMission.stageId) params.set("stageId", nextMission.stageId);
+  if (nextMission.missionId) params.set("missionId", nextMission.missionId);
+  params.set("view", "study");
+  return publicAppUrl(`/aluno/jornada?${params.toString()}`);
+}
+
+function formatWppHours(value) {
+  const hours = Number(value) || 0;
+  return `${hours.toLocaleString("pt-BR", {
+    minimumFractionDigits: hours % 1 ? 1 : 0,
+    maximumFractionDigits: 1,
+  })}h`;
+}
+
+function parseWppRequestedCreditHours(incoming) {
+  const raw = `${cleanString(incoming?.text)} ${cleanString(incoming?.responseId)}`;
+  const match = raw.match(/(\d{1,3}(?:[,.]\d{1,2})?)\s*h(?:oras?)?/i);
+  if (!match) return null;
+  const hours = Number(String(match[1]).replace(",", "."));
+  return Number.isFinite(hours) && hours > 0 ? Math.round(hours * 100) / 100 : null;
+}
+
+function wppStudentPortalUrl(pathname) {
+  return publicAppUrl(pathname);
+}
+
+async function getWppStudentProfileForIncoming(settings, incoming) {
+  const lookupPhone = incoming.lookupFrom || incoming.from;
+  const profile = await findWppStudentByPhone(lookupPhone);
+  const studentUserId = cleanString(profile?.user_id);
+  if (!studentUserId) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Não encontrei seu cadastro pelo telefone deste WhatsApp." });
+    return null;
+  }
+  return { profile, studentUserId };
+}
+
+async function sendWppNextMissionAction(settings, incoming) {
+  const lookup = await getWppStudentProfileForIncoming(settings, incoming);
+  if (!lookup) {
+    return "student_not_found";
+  }
+  const nextJourney = await loadWppNextJourneyMission(lookup.studentUserId);
+  if (nextJourney.status === "track_not_found") {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Não encontrei uma jornada ativa para você." });
+    return "training_track_not_found";
+  }
+  if (!nextJourney.mission) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Sua jornada ativa parece estar completa. Não encontrei uma próxima missão aberta." });
+    return "next_journey_mission_not_found";
+  }
+  await sendWppTextMessage(settings, {
+    to: incoming.from,
+    body: `Detalhes da sua próxima missão:\n${formatWppJourneyMissionLine(nextJourney.mission)}`,
+  });
+  const detailUrl = buildWppMissionDetailUrl(nextJourney.mission);
+  try {
+    await sendWppUrlButtonMessage(settings, {
+      to: incoming.from,
+      body: "Abra a página da missão para estudar os detalhes antes do voo.",
+      displayText: "Abrir missão",
+      url: detailUrl,
+    });
+  } catch {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: `Abra a página da missão para estudar os detalhes antes do voo:\n${detailUrl}`,
+    });
+  }
+  return "sent";
+}
+
+async function listWppStudentCreditDocs(studentUserId) {
+  if (!STUDENT_CREDITS_COLLECTION_ID) return [];
+  return listAllDocuments(STUDENT_CREDITS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [studentUserId]),
+    ...selectQuery(CREDIT_SELECT),
+  ]).catch(() => []);
+}
+
+async function sendWppStudentCreditBalanceAction(settings, incoming) {
+  const lookup = await getWppStudentProfileForIncoming(settings, incoming);
+  if (!lookup) return "student_not_found";
+  const [creditDocs, flightDocs] = await Promise.all([
+    listWppStudentCreditDocs(lookup.studentUserId),
+    listWppStudentJourneyFlightDocs(lookup.studentUserId),
+  ]);
+  const purchasedHours = creditDocs.reduce((acc, doc) => acc + (Number(doc.hours) || 0), 0);
+  const completedFlights = flightDocs.map(toFlight).filter(isCompletedFlight);
+  const flownHours = completedFlights.reduce((acc, flight) => acc + ((Number(flight.durationSec) || 0) / 3600), 0);
+  const balance = purchasedHours - flownHours;
+  const byModel = Array.from(creditDocs.reduce((map, doc) => {
+    const name = cleanString(doc.aircraft_model_name) || "Modelo não identificado";
+    map.set(name, (map.get(name) || 0) + (Number(doc.hours) || 0));
+    return map;
+  }, new Map()).entries()).sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+  const modelLines = byModel.slice(0, 5).map(([name, hours]) => `- ${name}: ${formatWppHours(hours)} compradas`);
+  await sendWppTextMessage(settings, {
+    to: incoming.from,
+    body: [
+      "Seu saldo de créditos:",
+      `Compradas: ${formatWppHours(purchasedHours)}`,
+      `Consumidas em voos realizados: ${formatWppHours(flownHours)}`,
+      `Saldo atual: ${formatWppHours(balance)}`,
+      modelLines.length ? "\nPor modelo:\n" + modelLines.join("\n") : null,
+      balance <= 0 ? "\nSeu saldo está baixo. Recomendo comprar mais horas antes de solicitar novos voos." : null,
+    ].filter(Boolean).join("\n"),
+  });
+  return "sent";
+}
+
+async function listWppStudentScheduledFlights(studentUserId) {
+  if (!FLIGHTS_COLLECTION_ID || !studentUserId) return [];
+  const today = nowIso().slice(0, 10);
+  const queriesBase = [
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+    sdk.Query.greaterThanEqual("flight_date", today),
+    sdk.Query.orderAsc("flight_date"),
+    sdk.Query.limit(20),
+  ];
+  const batches = await Promise.all([
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("student_user_id", [studentUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("user_id", [studentUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+  ]);
+  return Array.from(new Map(batches.flatMap((batch) => batch.documents || []).map((doc) => [doc.$id, doc])).values())
+    .map(toFlight)
+    .filter((flight) => isFutureFlight(flight) && isScheduledFlightStatusValue(flight.flightStatus))
+    .sort((a, b) => flightDateTimeKey(a).localeCompare(flightDateTimeKey(b)))
+    .slice(0, 3);
+}
+
+function formatWppScheduledFlightLine(flight, index) {
+  const date = formatDateBr(flight.flightDate || "");
+  const time = cleanString(flight.startTime);
+  const mission = cleanString(flight.trainingSnapshot?.missionName || flight.trainingSnapshot?.name || flight.trainingMissionId);
+  return [
+    `${index + 1}. ${date || "Data a confirmar"}${time ? ` às ${time}` : ""}`,
+    mission ? `Missão: ${mission}` : null,
+    flight.aircraftIdent ? `Aeronave: ${flight.aircraftIdent}` : null,
+    flight.route ? `Rota: ${flight.route}` : null,
+    flight.instructorName ? `Instrutor: ${flight.instructorName}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+async function sendWppNextScheduledFlightsAction(settings, incoming) {
+  const lookup = await getWppStudentProfileForIncoming(settings, incoming);
+  if (!lookup) return "student_not_found";
+  const flights = await listWppStudentScheduledFlights(lookup.studentUserId);
+  if (!flights.length) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Não encontrei voos futuros agendados para você.",
+    });
+    return "scheduled_flights_not_found";
+  }
+  await sendWppTextMessage(settings, {
+    to: incoming.from,
+    body: `Seus próximos voos agendados:\n\n${flights.map(formatWppScheduledFlightLine).join("\n\n")}`,
+  });
+  return "sent";
+}
+
+const WPP_FLIGHT_CREDIT_QUICK_HOURS = [1, 10, 20, 40];
+
+function selectWppCreditPackageForHours(packages, hours) {
+  const sorted = (Array.isArray(packages) ? packages : []).slice().sort((a, b) => a.hours - b.hours);
+  if (!sorted.length) return null;
+  const requestedHours = Number(hours);
+  if (!Number.isFinite(requestedHours) || requestedHours <= 0) return sorted[0];
+  const exact = sorted.find((pkg) => Math.abs((Number(pkg.hours) || 0) - requestedHours) < 0.01);
+  return exact || [...sorted].reverse().find((pkg) => Number(pkg.hours) <= requestedHours) || sorted[0];
+}
+
+function buildWppCreditPackageOption(packages, hours) {
+  const requestedHours = Number(hours);
+  const selected = selectWppCreditPackageForHours(packages, requestedHours);
+  if (!selected) return null;
+  const hourPrice = Number(selected.hourPrice) || 0;
+  const totalValue = Math.round(requestedHours * hourPrice * 100) / 100;
+  const exact = Math.abs((Number(selected.hours) || 0) - requestedHours) < 0.01;
+  return {
+    hours: requestedHours,
+    selected,
+    exact,
+    id: `comprar_${String(requestedHours).replace(".", "_")}h`,
+    title: `Comprar ${formatWppHours(requestedHours)}`,
+    totalLabel: formatMoneyLabel(totalValue, "BRL"),
+    hourPriceLabel: formatMoneyLabel(hourPrice, "BRL"),
+    modelName: cleanString(selected.aircraftModelName),
+    validityDays: Number(selected.validityDays) || 0,
+  };
+}
+
+function formatWppCreditPackageDetail(option) {
+  const parts = [
+    `${formatWppHours(option.hours)}: ${option.totalLabel}`,
+    option.hourPriceLabel ? `${option.hourPriceLabel}/h` : null,
+    option.modelName || null,
+    option.validityDays ? `${option.validityDays} dias` : null,
+    option.exact ? null : `base: pacote ${formatWppHours(option.selected.hours)}`,
+  ].filter(Boolean);
+  return `- ${parts.join(" | ")}`;
+}
+
+function formatWppCreditPackageRowDescription(option) {
+  return [
+    option.totalLabel || null,
+    option.modelName || null,
+    option.validityDays ? `${option.validityDays} dias` : null,
+  ].filter(Boolean).join(" | ");
+}
+
+async function resolveWppCreditPackageForHours(studentUserId, hours) {
+  const config = await getFlightCreditPackagesForStudentUserId(studentUserId);
+  const packages = (config.packages || []).slice().sort((a, b) => a.hours - b.hours);
+  return { config, selected: selectWppCreditPackageForHours(packages, hours) };
+}
+
+async function sendWppFlightCreditPurchaseOptionsAction(settings, incoming) {
+  const lookup = await getWppStudentProfileForIncoming(settings, incoming);
+  if (!lookup) return "student_not_found";
+  const config = await getFlightCreditPackagesForStudentUserId(lookup.studentUserId);
+  const packages = (config.packages || []).slice().sort((a, b) => a.hours - b.hours);
+  const purchaseUrl = wppStudentPortalUrl("/aluno/creditos/comprar");
+  if (!packages.length) {
+    await sendWppUrlButtonMessage(settings, {
+      to: incoming.from,
+      body: "Não encontrei pacotes de horas disponíveis agora. Abra a página de créditos para verificar as opções.",
+      displayText: "Ver créditos",
+      url: purchaseUrl,
+    });
+    return "packages_not_found";
+  }
+  const options = WPP_FLIGHT_CREDIT_QUICK_HOURS
+    .map((hours) => buildWppCreditPackageOption(packages, hours))
+    .filter(Boolean);
+  const packageDetails = options.map(formatWppCreditPackageDetail).join("\n\n");
+  await sendWppListMessage(settings, {
+    to: incoming.from,
+    body: [
+      "Escolha um pacote de horas para gerar o checkout seguro:",
+      "",
+      packageDetails,
+    ].join("\n"),
+    buttonText: "Ver pacotes",
+    sectionTitle: "Pacotes de voo",
+    rows: options.map((option) => ({
+      id: option.id,
+      title: option.title,
+      description: formatWppCreditPackageRowDescription(option),
+    })),
+  });
+  await sendWppUrlButtonMessage(settings, {
+    to: incoming.from,
+    body: "Para escolher uma quantidade personalizada, abra a página de compra.",
+    displayText: "Personalizada",
+    url: purchaseUrl,
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body: `Comprar horas:\n${purchaseUrl}` }));
+  return "sent";
+}
+
+async function sendWppFlightCreditCustomPurchaseLinkAction(settings, incoming) {
+  const purchaseUrl = wppStudentPortalUrl("/aluno/creditos/comprar");
+  await sendWppUrlButtonMessage(settings, {
+    to: incoming.from,
+    body: "Abra a plataforma para escolher uma quantidade personalizada de horas de voo.",
+    displayText: "Personalizada",
+    url: purchaseUrl,
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body: `Compra personalizada:\n${purchaseUrl}` }));
+  return "sent";
+}
+
+async function createWppFlightCreditCheckoutAction(settings, incoming) {
+  const lookup = await getWppStudentProfileForIncoming(settings, incoming);
+  if (!lookup) return "student_not_found";
+  const requestedHours = parseWppRequestedCreditHours(incoming);
+  if (!requestedHours) {
+    await sendWppFlightCreditPurchaseOptionsAction(settings, incoming);
+    return "purchase_options_sent";
+  }
+  const { selected } = await resolveWppCreditPackageForHours(lookup.studentUserId, requestedHours);
+  if (!selected) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Não encontrei pacote de referência disponível para gerar o checkout agora.",
+    });
+    return "package_not_found";
+  }
+  const checkout = await createFlightCreditCheckoutForUser(
+    lookup.studentUserId,
+    selected.id,
+    requestedHours,
+    false,
+    { requireStudentPurchasesEnabled: true },
+  );
+  await sendWppUrlButtonMessage(settings, {
+    to: incoming.from,
+    body: `Checkout gerado para ${formatWppHours(requestedHours)} de voo. Conclua o pagamento pelo link seguro.`,
+    displayText: "Pagar agora",
+    url: checkout.paymentUrl,
+  }).catch(() => sendWppTextMessage(settings, {
+    to: incoming.from,
+    body: `Checkout gerado para ${formatWppHours(requestedHours)} de voo:\n${checkout.paymentUrl}`,
+  }));
+  return "sent";
+}
+
+async function runWppIncomingActions(settings, incoming, actions) {
+  const results = [];
+  for (const action of sanitizeWppIncomingActions(actions)) {
+    if (action === "send_last_flight_stickers") {
+      results.push({ action, status: await sendWppLastFlightStickersAction(settings, incoming) });
+    } else if (action === "send_next_mission_details") {
+      results.push({ action, status: await sendWppNextMissionAction(settings, incoming) });
+    } else if (action === "send_student_credit_balance") {
+      results.push({ action, status: await sendWppStudentCreditBalanceAction(settings, incoming) });
+    } else if (action === "send_next_scheduled_flights") {
+      results.push({ action, status: await sendWppNextScheduledFlightsAction(settings, incoming) });
+    } else if (action === "send_flight_credit_purchase_options") {
+      results.push({ action, status: await sendWppFlightCreditPurchaseOptionsAction(settings, incoming) });
+    } else if (action === "send_flight_credit_custom_purchase_link") {
+      results.push({ action, status: await sendWppFlightCreditCustomPurchaseLinkAction(settings, incoming) });
+    } else if (action === "create_flight_credit_checkout") {
+      results.push({ action, status: await createWppFlightCreditCheckoutAction(settings, incoming) });
+    }
+  }
+  return results;
+}
+
+async function handleWppIncomingWebhook(payload, log) {
+  const { settings } = await loadWppSettings();
+  const incomingAutoReply = sanitizeWppIncomingAutoReply(settings.incomingAutoReply);
+  const messages = extractWppIncomingMessages(payload)
+    .filter((message) => !message.phoneNumberId || message.phoneNumberId === cleanString(settings.phoneNumberId));
+  if (!incomingAutoReply.enabled || !messages.length) {
+    return { ok: true, received: messages.length, replied: 0, skipped: messages.length };
+  }
+
+  let replied = 0;
+  let duplicates = 0;
+  const failures = [];
+  const actionResults = [];
+  for (const incoming of messages) {
+    try {
+      const acquired = await acquireWppIncomingMessageLock(incoming);
+      if (!acquired) {
+        duplicates += 1;
+        log(`[wppWebhook] duplicate skipped messageId=${incoming.messageId}`);
+        continue;
+      }
+      const reply = resolveWppIncomingReply(incomingAutoReply, incoming);
+      const body = renderWppBotText(reply.message, {
+        message: {
+          id: incoming.messageId,
+          response_id: incoming.responseId,
+          content: incoming.text,
+          from: incoming.from,
+          lookup_from: incoming.lookupFrom || incoming.from,
+          test_mode: incoming.testMode ? "true" : "",
+        },
+      });
+      if (body || reply.buttons.length) {
+        await sendWppBotReply(settings, { to: incoming.from, body: body || incomingAutoReply.message, buttons: reply.buttons });
+        replied += 1;
+      }
+      const actions = await runWppIncomingActions(settings, incoming, reply.actions);
+      actionResults.push(...actions.map((action) => ({ ...action, matchedRuleId: reply.matchedRuleId })));
+    } catch (err) {
+      failures.push({ to: incoming.from, messageId: incoming.messageId, message: cleanString(err?.message).slice(0, 512) });
+    }
+  }
+  if (failures.length) log(`[wppWebhook] reply failures=${JSON.stringify(failures)}`);
+  return { ok: true, received: messages.length, replied, duplicates, failed: failures.length, actions: actionResults };
 }
 
 async function loadEmailSettings() {
@@ -21299,6 +22843,15 @@ module.exports = async ({ req, res, log, error }) => {
     const appwriteTrigger = cleanString(req?.headers?.["x-appwrite-trigger"]);
     log(`[action=${action}] userId=${actorUserId || "(none)"}`);
 
+    if (isWppWebhookVerification(req)) {
+      return handleWppWebhookVerification(req, res, log);
+    }
+
+    if (action === "wppWebhook" || isWppWebhookPayload(payload)) {
+      const result = await handleWppIncomingWebhook(payload, log);
+      return jsonResponse(res, 200, result);
+    }
+
     if (appwriteEvent && appwriteTrigger === "event") {
       const result = await studentAutomationService().processEvent(appwriteEvent, payload);
       return jsonResponse(res, 200, { ok: true, automationEvent: appwriteEvent, ...result });
@@ -21319,6 +22872,8 @@ module.exports = async ({ req, res, log, error }) => {
         syncSagaScheduleFromImportSettings("system").catch((err) => ({ ok: false, message: String(err?.message || err) })),
         studentAutomationService().periodicScan().catch((err) => ({ ok: false, message: String(err?.message || err) })),
       ]);
+      const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
+        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
         await recordSagaAllUsersSyncFailure(cronSyncInput, err);
@@ -21330,6 +22885,7 @@ module.exports = async ({ req, res, log, error }) => {
         sagaScheduleSync: scheduleResult,
         sagaAllUsersSync: allUsersSyncResult,
         automationScan,
+        wppTomorrowFlightReminder,
       });
     }
 
@@ -22130,6 +23686,21 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { settings });
     }
 
+    if (action === "saveWppBotSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await saveWppBotSettings(payload.settings || payload);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "runWppTomorrowFlightReminder") {
+      await requireAdmin(actorUserId);
+      const result = await runWppTomorrowFlightReminderScan({
+        force: payload.force === true,
+        targetDate: cleanString(payload.targetDate),
+      });
+      return jsonResponse(res, 200, { result });
+    }
+
     if (action === "testWppConnection") {
       await requireAdmin(actorUserId);
       const settings = await testWppConnection();
@@ -22494,6 +24065,56 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "ensureDefaultStudentTrack") {
       const result = await ensureDefaultStudentTrainingTrack(actorUserId, payload.userId);
       return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getAiswebSettings") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const settings = await aiswebService.loadSettings({ getSettingDoc });
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "saveAiswebSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await aiswebService.saveSettings(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        payload.settings || payload,
+      );
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "getAiswebDashboard") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const dashboard = await aiswebService.buildDashboard(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        actorUserId,
+      );
+      return jsonResponse(res, 200, { dashboard });
+    }
+
+    if (action === "lookupAiswebIcao") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);
+      if (!icaoCode || icaoCode.length !== 4) {
+        throw Object.assign(new Error("Informe um código ICAO válido (4 caracteres)."), { status: 400 });
+      }
+      const airport = await aiswebService.fetchAirportBundle(icaoCode);
+      return jsonResponse(res, 200, { airport });
+    }
+
+    if (action === "saveAiswebWatchlist") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const watchlist = await aiswebService.saveWatchlist(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        actorUserId,
+        payload.icaoCodes || payload.watchlist?.icaoCodes || [],
+      );
+      return jsonResponse(res, 200, { watchlist });
+    }
+
+    if (action === "previewAiswebChart") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const chart = await aiswebService.fetchChartPreview(payload.link || payload.url);
+      return jsonResponse(res, 200, { chart });
     }
 
     return jsonResponse(res, 400, { message: "Acao invalida." });

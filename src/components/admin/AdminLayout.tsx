@@ -81,6 +81,7 @@ const CaktoReceiptsTab = lazy(() =>
 const AtualizacoesAdminTab = lazy(() =>
   import("./AtualizacoesAdminTab").then((module) => ({ default: module.AtualizacoesAdminTab })),
 );
+const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
 
 type AdminSection =
   | "home"
@@ -99,7 +100,8 @@ type AdminSection =
   | "instructor-admission"
   | "disparos"
   | "receipts"
-  | "atualizacoes";
+  | "atualizacoes"
+  | "aisweb";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -143,6 +145,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm4.28 10.28a.75.75 0 000-1.06l-3-3a.75.75 0 10-1.06 1.06l1.72 1.72H8.25a.75.75 0 000 1.5h5.69l-1.72 1.72a.75.75 0 101.06 1.06l3-3z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "aisweb",
+    label: "AISWEB",
+    sublabel: "METAR, TAF e NOTAMs",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.5 9.75a6 6 0 0111.673-2.072 3.75 3.75 0 013.543 4.312 4.5 4.5 0 01-1.341 8.76H6.75a4.5 4.5 0 01-2.25-8.4v-.6z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -302,7 +314,7 @@ const NAV_ITEMS: NavItem[] = [
 const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "students", "users", "atualizacoes", "reports", "contents"],
+    ids: ["home", "schedule", "students", "users", "atualizacoes", "aisweb", "reports", "contents"],
   },
   {
     title: "Frota",
@@ -556,6 +568,7 @@ const SETTINGS_ROUTES = [
   { id: "propostas", path: "/admin/configuracoes/propostas" },
   { id: "wpp", path: "/admin/configuracoes/wpp" },
   { id: "gopro", path: "/admin/configuracoes/gopro" },
+  { id: "aisweb", path: "/admin/configuracoes/aisweb" },
   { id: "importacoes", path: "/admin/configuracoes/importacoes", aliases: ["/admin/import"] },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
@@ -577,6 +590,7 @@ const ADMIN_ROUTES = [
   { id: "contracts", path: "/admin/contratos" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "aisweb", path: "/admin/aisweb" },
 ] satisfies readonly TabRoute<AdminSection>[];
 
 const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
@@ -598,6 +612,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   propostas: "Propostas",
   wpp: "WPP",
   gopro: "GoPro",
+  aisweb: "AISWEB",
   importacoes: "Importações",
 };
 
@@ -1075,6 +1090,13 @@ export function AdminLayout() {
             <div hidden={section !== "atualizacoes"}>
               <LazyTab>
                 <AtualizacoesAdminTab subTab={atualizacoesTab} onSubTabChange={changeAtualizacoesTab} />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("aisweb") && (
+            <div hidden={section !== "aisweb"}>
+              <LazyTab>
+                <AiswebTab />
               </LazyTab>
             </div>
           )}

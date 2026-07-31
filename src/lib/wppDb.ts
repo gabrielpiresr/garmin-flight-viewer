@@ -3,6 +3,8 @@ import type {
   WppConnectionInput,
   WppConnectionSettings,
   WppFlightReviewReadyTemplateSettings,
+  WppIncomingAutoReplySettings,
+  WppTomorrowFlightReminderTemplateSettings,
   WppTemplate,
   WppTemplateInput,
   WppTestTemplateInput,
@@ -61,7 +63,10 @@ export async function saveWppSettings(
 }
 
 export async function saveWppNotificationTemplates(
-  input: { flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings },
+  input: {
+    flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
+    tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+  },
 ): Promise<WppConnectionSettings> {
   const response = await execute({
     action: "saveWppNotificationTemplates",
@@ -69,6 +74,18 @@ export async function saveWppNotificationTemplates(
   });
   if (!response.settings)
     throw new Error("Configuração do WhatsApp não retornada.");
+  return response.settings;
+}
+
+export async function saveWppBotSettings(
+  input: { incomingAutoReply: WppIncomingAutoReplySettings },
+): Promise<WppConnectionSettings> {
+  const response = await execute({
+    action: "saveWppBotSettings",
+    settings: input,
+  });
+  if (!response.settings)
+    throw new Error("ConfiguraÃ§Ã£o do WhatsApp nÃ£o retornada.");
   return response.settings;
 }
 

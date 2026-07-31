@@ -54,12 +54,14 @@ export type AdminTabKey =
   | "settings.propostas"
   | "settings.wpp"
   | "settings.gopro"
+  | "settings.aisweb"
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
   | "contracts.emitidos"
   | "atualizacoes"
-  | "atualizacoes.agendamentos";
+  | "atualizacoes.agendamentos"
+  | "aisweb";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -83,7 +85,8 @@ export type InstructorTabKey =
   | "schedule.gerador"
   | "contratos"
   | "reports"
-  | "indique-ganhe";
+  | "indique-ganhe"
+  | "aisweb";
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -101,7 +104,8 @@ export type StudentTabKey =
   | "dre"
   | "fuelings"
   | "contratos"
-  | "indique-ganhe";
+  | "indique-ganhe"
+  | "aisweb";
 
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
@@ -231,12 +235,14 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.propostas": "Configurações › Propostas",
   "settings.wpp": "Configurações › WPP",
   "settings.gopro": "Configurações › GoPro",
+  "settings.aisweb": "Configurações › AISWEB",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",
   "contracts.emitidos": "Contratos › Emitidos",
   "atualizacoes": "Atualizações",
   "atualizacoes.agendamentos": "Atualizações › Agendamentos",
+  "aisweb": "AISWEB",
 };
 
 /** Labels descritivos para abas do portal instrutor */
@@ -262,6 +268,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "contratos": "Contratos",
   "reports": "Relatórios",
   "indique-ganhe": "Indique e ganhe",
+  "aisweb": "AISWEB",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -281,4 +288,5 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "fuelings": "Abastecimentos",
   "contratos": "Contratos",
   "indique-ganhe": "Indique e ganhe",
+  "aisweb": "AISWEB",
 };

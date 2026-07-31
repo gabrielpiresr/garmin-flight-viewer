@@ -1,9 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "./ui/ToastProvider";
 
 function onlyDigits(value: string): string {
   return value.replace(/\D/g, "");
+}
+
+function authErrorMessage(error: Error): string {
+  const maybeCode = (error as Error & { code?: unknown; status?: unknown }).code ?? (error as Error & { status?: unknown }).status;
+  const code = Number(maybeCode);
+  if (code === 429) return "Muitas tentativas de login em pouco tempo. Aguarde alguns minutos e tente novamente.";
+  if (/failed to fetch|network|cors/i.test(error.message)) {
+    return "Nao consegui conectar ao Appwrite agora. Recarregue a pagina e tente novamente em alguns segundos.";
+  }
+  return error.message;
 }
 
 export function AuthPanel() {
@@ -20,6 +30,7 @@ export function AuthPanel() {
   const [anacCode, setAnacCode] = useState("");
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
   if (!configured) {
     return (
@@ -55,12 +66,14 @@ export function AuthPanel() {
   }
 
   const submit = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       if (mode === "signin") {
         const { error } = await signIn(email.trim(), password);
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
       } else {
@@ -93,7 +106,7 @@ export function AuthPanel() {
 
         const { error, anacSyncPending } = await signUp(email.trim(), password, payload);
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
         if (anacSyncPending) {
@@ -104,6 +117,7 @@ export function AuthPanel() {
       }
       setPassword("");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

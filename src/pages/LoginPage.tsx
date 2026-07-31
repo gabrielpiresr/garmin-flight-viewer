@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "../components/ui/ToastProvider";
 import { getCachedBrandSettings } from "../lib/notificationsDb";
@@ -20,6 +20,16 @@ function formatPhone(value: string): string {
   if (digits.length <= 2) return digits;
   if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function authErrorMessage(error: Error): string {
+  const maybeCode = (error as Error & { code?: unknown; status?: unknown }).code ?? (error as Error & { status?: unknown }).status;
+  const code = Number(maybeCode);
+  if (code === 429) return "Muitas tentativas de login em pouco tempo. Aguarde alguns minutos e tente novamente.";
+  if (/failed to fetch|network|cors/i.test(error.message)) {
+    return "Nao consegui conectar ao Appwrite agora. Recarregue a pagina e tente novamente em alguns segundos.";
+  }
+  return error.message;
 }
 
 type SignupForm = {
@@ -67,6 +77,7 @@ export function LoginPage() {
   const [mode, setMode] = useState<"signin" | "signup" | "forgot" | "reset">("signin");
   const [signupStep, setSignupStep] = useState<1 | 2>(1);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const recoveryParams = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     return {
@@ -87,13 +98,15 @@ export function LoginPage() {
   };
 
   const submit = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       const trimmedEmail = email.trim();
       if (mode === "signin") {
         const { error } = await signIn(trimmedEmail, password);
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
       } else if (mode === "forgot") {
@@ -104,7 +117,7 @@ export function LoginPage() {
         const resetUrl = `${window.location.origin}${window.location.pathname}`;
         const { error } = await requestPasswordReset(trimmedEmail, resetUrl);
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
         showToast({ variant: "success", message: "Enviamos um link de redefinicao para o seu e-mail." });
@@ -124,7 +137,7 @@ export function LoginPage() {
         }
         const { error } = await completePasswordReset(recoveryParams.userId, recoveryParams.secret, newPassword);
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
         setNewPassword("");
@@ -174,7 +187,7 @@ export function LoginPage() {
           estadoCivil: signup.estadoCivil,
         });
         if (error) {
-          showToast({ variant: "error", message: error.message });
+          showToast({ variant: "error", message: authErrorMessage(error) });
           return;
         }
         setSignup(EMPTY_SIGNUP_FORM);
@@ -190,6 +203,7 @@ export function LoginPage() {
       }
       setPassword("");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

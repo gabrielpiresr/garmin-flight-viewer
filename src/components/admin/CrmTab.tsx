@@ -39,7 +39,7 @@ import {
   isLeadStatusExpired,
 } from "../../lib/crmStatusMove";
 import { notifyCrmLeadEvent } from "../../lib/notificationsDb";
-import { hasStudentScheduledFlights, hasStudentRealizedFlights } from "../../lib/flightsDb";
+import { hasStudentRealizedFlights } from "../../lib/flightsDb";
 import { getProposalsByLead } from "../../lib/crmProposalsDb";
 import { exportProposalPdf } from "../../lib/proposalPdf";
 import { getProposalConfig } from "../../lib/proposalSettingsDb";
@@ -2952,15 +2952,6 @@ export function CrmTab() {
       return null;
     }
     if (targetStatus === "ground_agendado") {
-      if (!lead.userId) {
-        showToast("Este lead nao tem conta vinculada. Nao e possivel verificar a escala.", "error");
-        return null;
-      }
-      const hasFlights = await hasStudentScheduledFlights(lead.userId);
-      if (!hasFlights) {
-        showToast("Nao e possivel mover para Ground Agendado: o aluno nao possui nenhum voo agendado na escala.", "error");
-        return null;
-      }
       if (!lead.payInPerson && !(await hasPaymentSignal(lead))) {
         showToast("Nao ha credito inserido para aquele aluno.", "error");
         setGroundPaymentModal({ lead });
@@ -2995,15 +2986,6 @@ export function CrmTab() {
     }
 
     if (targetStatus === "ground_agendado") {
-      if (!lead.userId) {
-        showToast("Este lead não tem conta vinculada. Não é possível verificar a escala.", "error");
-        return;
-      }
-      const hasFlights = await hasStudentScheduledFlights(lead.userId);
-      if (!hasFlights) {
-        showToast("Não é possível mover para Ground Agendado: o aluno não possui nenhum voo agendado na escala.", "error");
-        return;
-      }
       if (!lead.payInPerson) {
         const hasPayment = await hasPaymentSignal(lead);
         if (!hasPayment) {

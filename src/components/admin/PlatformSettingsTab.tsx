@@ -42,6 +42,7 @@ import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
 import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
 import { AdminImportTab } from "./AdminImportTab";
+import { AiswebSettingsPanel } from "./AiswebSettingsPanel";
 import { GoproSettingsPanel } from "./GoproSettingsPanel";
 import { WppSettingsPanel } from "./WppSettingsPanel";
 
@@ -61,6 +62,7 @@ export type SettingsSubTab =
   | "propostas"
   | "wpp"
   | "gopro"
+  | "aisweb"
   | "importacoes";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
@@ -165,6 +167,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
+    id: "aisweb" as SettingsSubTab,
+    label: "AISWEB",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10.5 3.5a.75.75 0 00-1.5 0v.88L3.22 8.16a.75.75 0 00.78 1.28l5-3.05V14.5H7.25a.75.75 0 000 1.5h5.5a.75.75 0 000-1.5H11.5V6.39l5 3.05a.75.75 0 00.78-1.28L10.5 4.38V3.5z" />
+      </svg>
+    ),
+  },
+  {
     id: "importacoes" as SettingsSubTab,
     label: "Importações",
     icon: (
@@ -192,6 +203,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   propostas:   "settings.propostas",
   wpp:         "settings.wpp",
   gopro:       "settings.gopro",
+  aisweb:      "settings.aisweb",
   importacoes: "import",
 };
 
@@ -898,6 +910,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("gopro") ? (
         <div hidden={activeSubTab !== "gopro"}>
           <GoproSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("aisweb") ? (
+        <div hidden={activeSubTab !== "aisweb"}>
+          <AiswebSettingsPanel />
         </div>
       ) : null}
       {openedSubTabs.has("importacoes") ? (

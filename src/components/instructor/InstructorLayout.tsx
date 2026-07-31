@@ -37,6 +37,7 @@ const NoticeFeed = lazy(() => import("../NoticeFeed").then((module) => ({ defaul
 const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ default: module.FuelingsTab })));
 const ContractsUserTab = lazy(() => import("../ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("../ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
+const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
 
 type InstructorSection =
   | "home"
@@ -56,7 +57,8 @@ type InstructorSection =
   | "schedule"
   | "contratos"
   | "indique-ganhe"
-  | "reports";
+  | "reports"
+  | "aisweb";
 
 type NavItem = {
   id: InstructorSection;
@@ -245,12 +247,23 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "aisweb",
+    label: "AISWEB",
+    sublabel: "METAR, TAF e NOTAMs",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.5 9.75a6 6 0 0111.673-2.072 3.75 3.75 0 013.543 4.312 4.5 4.5 0 01-1.341 8.76H6.75a4.5 4.5 0 01-2.25-8.4v-.6z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "home",
   "flights",
   "schedule",
+  "aisweb",
   "students",
   "users",
   "maneuvers",
@@ -285,6 +298,7 @@ const SECTION_ROUTES = [
   { id: "contratos", path: "/instrutor/contratos" },
   { id: "reports", path: "/instrutor/relatorios" },
   { id: "indique-ganhe", path: "/instrutor/indique-ganhe" },
+  { id: "aisweb", path: "/instrutor/aisweb" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
 function TabLoading() {
@@ -678,6 +692,13 @@ export function InstructorLayout() {
             <div hidden={section !== "indique-ganhe"}>
               <LazyTab>
                 <ReferAndEarnTab portalRole="instrutor" />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("aisweb") && (
+            <div hidden={section !== "aisweb"}>
+              <LazyTab>
+                <AiswebTab />
               </LazyTab>
             </div>
           )}

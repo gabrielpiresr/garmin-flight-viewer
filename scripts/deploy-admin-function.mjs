@@ -15,6 +15,7 @@ import { join, relative, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { Readable, Writable } from "node:stream";
+import { spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -113,6 +114,15 @@ async function gzip(buf) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 console.log("📦  Building archive …");
+const stickersBuild = spawnSync(process.execPath, ["scripts/build-admin-wpp-stickers.mjs"], {
+  cwd: ROOT,
+  stdio: "inherit",
+  env: process.env,
+});
+if (stickersBuild.status !== 0) {
+  console.error("❌  Failed to build WPP sticker bundle.");
+  process.exit(stickersBuild.status || 1);
+}
 const files = collectFiles(FUNCTION_DIR);
 console.log(`    ${files.length} files:`, files.map(f => f.relPath).join(", "));
 const tarBuf = buildTarBuffer(files);

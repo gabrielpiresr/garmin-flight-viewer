@@ -580,9 +580,20 @@ function chooseOsmZoom(points: Array<{ lat: number; lon: number }>, targetWidth:
 
 async function imageUrlToDataUrl(url: string): Promise<string | null> {
   try {
-    const response = await fetch(url, { mode: "cors" });
+    const headers =
+      typeof window === "undefined"
+        ? {
+          "accept": "image/avif,image/webp,image/png,image/*;q=0.8",
+          "referer": "https://app.epeac.com.br/",
+          "user-agent": "EPEAC Flight Review Bot/1.0 (https://app.epeac.com.br)",
+        }
+        : undefined;
+    const response = await fetch(url, { mode: "cors", headers });
     if (!response.ok) return null;
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().startsWith("image/")) return null;
     const blob = await response.blob();
+    if (blob.size < 200 || blob.size > 750_000) return null;
     return await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);

@@ -451,6 +451,7 @@ function FormationJourney({
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
   const visibleTimelineScrollerRef = useRef<HTMLDivElement | null>(null);
+  const deepLinkedMissionRef = useRef("");
   const activeTracks = useMemo(
     () => state.tracks.filter((row) => row.status === "active" && row.track).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
     [state.tracks],
@@ -505,6 +506,39 @@ function FormationJourney({
     map.forEach((articles) => articles.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, "pt-BR")));
     return map;
   }, [maneuverCatalog.articles]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !track || missionRows.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const targetTrackId = params.get("trackId") || "";
+    const targetStageId = params.get("stageId") || "";
+    const targetMissionId = params.get("missionId") || "";
+    const targetView = params.get("view") || "";
+    if (!targetMissionId) return;
+    const deepLinkKey = `${targetTrackId}:${targetStageId}:${targetMissionId}:${targetView}:${maneuverCatalog.articles.length}`;
+    if (deepLinkedMissionRef.current === deepLinkKey) return;
+    if (targetTrackId && targetTrackId !== selectedTrackId && activeTracks.some((row) => row.trackId === targetTrackId)) {
+      setSelectedTrackId(targetTrackId);
+      return;
+    }
+    const found = missionRows.find((row) =>
+      row.mission.id === targetMissionId && (!targetStageId || row.stage.id === targetStageId),
+    );
+    if (!found) return;
+    deepLinkedMissionRef.current = deepLinkKey;
+    setAutoSelectedStageKey(currentStageSelectionKey);
+    setSelectedStageId(found.stage.id);
+    if (targetView === "study") {
+      const articleIds = Array.from(
+        new Set((found.mission.maneuverSectionIds ?? []).flatMap((sectionId) =>
+          (maneuverArticlesBySection.get(sectionId) ?? []).map((article) => article.id),
+        )),
+      );
+      if (articleIds.length > 0) {
+        setDrillView({ kind: "maneuver-study", mission: found.mission, articleIds });
+      }
+    }
+  }, [activeTracks, currentStageSelectionKey, maneuverArticlesBySection, maneuverCatalog.articles.length, missionRows, selectedTrackId, track]);
   const completedStageIds = useMemo(() => completedStagesForTrack(track, approvedMissionIds), [approvedMissionIds, track]);
   const evaluatedAchievements = useMemo(
     () =>

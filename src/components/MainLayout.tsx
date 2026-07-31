@@ -44,6 +44,7 @@ const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ defau
 const StudentScheduleTab = lazy(() => import("./StudentScheduleTab").then((module) => ({ default: module.StudentScheduleTab })));
 const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
+const AiswebTab = lazy(() => import("./AiswebTab").then((module) => ({ default: module.AiswebTab })));
 
 type Section = StudentTabKey;
 
@@ -214,6 +215,16 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "aisweb",
+    label: "AISWEB",
+    sublabel: "METAR, TAF e NOTAMs",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.5 9.75a6 6 0 0111.673-2.072 3.75 3.75 0 013.543 4.312 4.5 4.5 0 01-1.341 8.76H6.75a4.5 4.5 0 01-2.25-8.4v-.6z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ];
 
 const SECTION_ROUTES = [
@@ -232,10 +243,11 @@ const SECTION_ROUTES = [
   { id: "fuelings", path: "/aluno/abastecimentos" },
   { id: "contratos", path: "/aluno/contratos" },
   { id: "indique-ganhe", path: "/aluno/indique-ganhe" },
+  { id: "aisweb", path: "/aluno/aisweb" },
 ] satisfies readonly TabRoute<Section>[];
 
 const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
-  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento"] },
+  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb"] },
   { label: "Evoluir", ids: ["jornada", "manobras", "manuais", "avisos"] },
   { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "indique-ganhe"] },
   { label: "Suporte", ids: ["ajuda"] },
@@ -873,6 +885,13 @@ export function MainLayout() {
             <div hidden={section !== "indique-ganhe"}>
               <LazyTab section="indique-ganhe">
                 <ReferAndEarnTab portalRole="aluno" />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("aisweb") && (
+            <div hidden={section !== "aisweb"}>
+              <LazyTab section="aisweb">
+                <AiswebTab />
               </LazyTab>
             </div>
           )}

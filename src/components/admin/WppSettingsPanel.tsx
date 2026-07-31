@@ -4,6 +4,7 @@ import {
   deleteWppTemplate,
   getWppSettings,
   listWppTemplates,
+  saveWppBotSettings,
   saveWppSettings,
   saveWppNotificationTemplates,
   sendWppTemplateTest,
@@ -14,9 +15,14 @@ import type {
   WppConnectionInput,
   WppConnectionSettings,
   WppFlightReviewReadyTemplateSettings,
+  WppIncomingActionType,
+  WppIncomingAutoReplyRule,
+  WppIncomingAutoReplySettings,
+  WppIncomingReplyButton,
   WppTemplate,
   WppTemplateCategory,
   WppTemplateInput,
+  WppTomorrowFlightReminderTemplateSettings,
 } from "../../types/wpp";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -38,6 +44,164 @@ const DEFAULT_FLIGHT_REVIEW_TEMPLATE: WppFlightReviewReadyTemplateSettings = {
   language: "pt_BR",
 };
 
+const DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE: WppTomorrowFlightReminderTemplateSettings = {
+  enabled: false,
+  templateName: "lembrete_voo_amanha",
+  language: "pt_BR",
+  sendHour: 19,
+  bodyParameters: ["student_name", "flight_date", "start_time", "aircraft", "mission", "instructor"],
+};
+
+const DEFAULT_INCOMING_AUTO_REPLY_MESSAGE =
+  "Este bot apenas envia mensagens automaticas e nao recebe mensagens por este canal.";
+
+const DEFAULT_INCOMING_AUTO_REPLY: WppIncomingAutoReplySettings = {
+  enabled: true,
+  matchingMode: "content",
+  message: DEFAULT_INCOMING_AUTO_REPLY_MESSAGE,
+  buttons: [],
+  actions: [],
+  rules: [],
+  verifyToken: "",
+  webhookUrl: "",
+};
+
+const WPP_BOT_ACTION_LABEL: Record<WppIncomingActionType, string> = {
+  send_last_flight_stickers: "Enviar figurinhas do \u00faltimo voo",
+  send_next_mission_details: "Enviar detalhes da pr\u00f3xima miss\u00e3o",
+  send_student_credit_balance: "Enviar saldo de cr\u00e9ditos",
+  send_next_scheduled_flights: "Enviar pr\u00f3ximos voos agendados",
+  send_flight_credit_purchase_options: "Enviar op\u00e7\u00f5es de compra de horas",
+  send_flight_credit_custom_purchase_link: "Enviar link de compra personalizada",
+  create_flight_credit_checkout: "Gerar checkout Cakto de horas",
+};
+
+type WppSettingsSection = "bot" | "connection" | "notifications" | "templates";
+
+const WPP_SETTING_SECTIONS: Array<{
+  id: WppSettingsSection;
+  title: string;
+  description: string;
+}> = [
+  { id: "bot", title: "Bot de entrada", description: "Gatilhos e respostas" },
+  { id: "connection", title: "Conex\u00e3o Meta", description: "Conta e token" },
+  { id: "notifications", title: "Automa\u00e7\u00f5es", description: "Templates usados" },
+  { id: "templates", title: "Templates", description: "Biblioteca Meta" },
+];
+
+const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
+  {
+    id: "ver_figurinhas",
+    name: "Ver figurinhas",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Ver figurinhas",
+    message: "Claro. Vou buscar as figurinhas do seu \u00faltimo voo.",
+    buttons: [],
+    actions: ["send_last_flight_stickers"],
+  },
+  {
+    id: "proxima_missao",
+    name: "Próxima missão",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Pr\u00f3xima miss\u00e3o",
+    message: "Claro. Vou buscar os detalhes da sua próxima missão.",
+    buttons: [],
+    actions: ["send_next_mission_details"],
+  },
+  {
+    id: "ver_proxima_missao",
+    name: "Ver pr\u00f3xima miss\u00e3o",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Ver pr\u00f3xima miss\u00e3o",
+    message: "Claro. Vou buscar os detalhes da sua pr\u00f3xima miss\u00e3o.",
+    buttons: [],
+    actions: ["send_next_mission_details"],
+  },
+  {
+    id: "saldo_creditos",
+    name: "Saldo de créditos",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Saldo de créditos",
+    message: "Claro. Vou consultar seu saldo de créditos.",
+    buttons: [],
+    actions: ["send_student_credit_balance"],
+  },
+  {
+    id: "proximos_voos",
+    name: "Próximos voos",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Próximos voos",
+    message: "Claro. Vou buscar seus próximos voos agendados.",
+    buttons: [],
+    actions: ["send_next_scheduled_flights"],
+  },
+  {
+    id: "comprar_horas",
+    name: "Comprar horas",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Comprar horas",
+    message: "Claro. Vou te mostrar as opções para comprar mais horas de voo.",
+    buttons: [],
+    actions: ["send_flight_credit_purchase_options"],
+  },
+  {
+    id: "comprar_1h",
+    name: "Comprar 1h",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Comprar 1h",
+    message: "Claro. Vou gerar o checkout seguro para 1h de voo.",
+    buttons: [],
+    actions: ["create_flight_credit_checkout"],
+  },
+  {
+    id: "comprar_10h",
+    name: "Comprar 10h",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Comprar 10h",
+    message: "Claro. Vou gerar o checkout seguro para 10h de voo.",
+    buttons: [],
+    actions: ["create_flight_credit_checkout"],
+  },
+  {
+    id: "comprar_20h",
+    name: "Comprar 20h",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Comprar 20h",
+    message: "Claro. Vou gerar o checkout seguro para 20h de voo.",
+    buttons: [],
+    actions: ["create_flight_credit_checkout"],
+  },
+  {
+    id: "comprar_40h",
+    name: "Comprar 40h",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Comprar 40h",
+    message: "Claro. Vou gerar o checkout seguro para 40h de voo.",
+    buttons: [],
+    actions: ["create_flight_credit_checkout"],
+  },
+  {
+    id: "comprar_personalizada",
+    name: "Personalizada",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Personalizada",
+    message: "Claro. Vou abrir a compra personalizada na plataforma.",
+    buttons: [],
+    actions: ["send_flight_credit_custom_purchase_link"],
+  },
+];
+
 const EMPTY_TEMPLATE: WppTemplateInput = {
   name: "",
   category: "UTILITY",
@@ -54,6 +218,57 @@ function connectionForm(settings: WppConnectionSettings): WppConnectionInput {
     graphApiVersion: settings.graphApiVersion || "v23.0",
     apiKey: "",
   };
+}
+
+function makeWppVerifyToken(): string {
+  const random =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID().replace(/-/g, "")
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return `wpp_${random}`;
+}
+
+function incomingAutoReplyForm(settings: WppConnectionSettings): WppIncomingAutoReplySettings {
+  const saved = settings.incomingAutoReply ?? DEFAULT_INCOMING_AUTO_REPLY;
+  return {
+    enabled: saved.enabled !== false,
+    matchingMode: saved.matchingMode === "id" ? "id" : "content",
+    message: saved.message || DEFAULT_INCOMING_AUTO_REPLY_MESSAGE,
+    buttons: Array.isArray(saved.buttons) ? saved.buttons : [],
+    actions: Array.isArray(saved.actions) ? saved.actions : [],
+    rules: Array.isArray(saved.rules) ? saved.rules : [],
+    verifyToken: saved.verifyToken || makeWppVerifyToken(),
+    webhookUrl: saved.webhookUrl || "",
+  };
+}
+
+function makeWppBotRule() {
+  const id = makeWppVerifyToken().replace(/^wpp_/, "rule_");
+  return {
+    id,
+    name: "Nova regra",
+    enabled: true,
+    operator: "equals" as const,
+    matchValue: "",
+    message: "",
+    buttons: [] as WppIncomingReplyButton[],
+    actions: [] as WppIncomingActionType[],
+  };
+}
+
+function makeWppBotButton(): WppIncomingReplyButton {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return { id: `btn_${suffix}`, title: "Opcao" };
+}
+
+function normalizeRuleKey(value: string): string {
+  return value.trim().toLocaleLowerCase("pt-BR");
+}
+
+function upsertWppQuickRule(rules: WppIncomingAutoReplyRule[], quickRule: WppIncomingAutoReplyRule): WppIncomingAutoReplyRule[] {
+  const matchKey = normalizeRuleKey(quickRule.matchValue);
+  const nextRules = rules.filter((rule) => rule.id !== quickRule.id && normalizeRuleKey(rule.matchValue) !== matchKey);
+  return [...nextRules, { ...quickRule, buttons: [...quickRule.buttons], actions: [...quickRule.actions] }];
 }
 
 function componentText(template: WppTemplate, type: string): string {
@@ -213,17 +428,108 @@ function TestTemplateModal({ template, onClose }: { template: WppTemplate; onClo
   );
 }
 
+function WppButtonsEditor({
+  buttons,
+  onChange,
+}: {
+  buttons: WppIncomingReplyButton[];
+  onChange: (buttons: WppIncomingReplyButton[]) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium text-slate-400">Botoes de resposta</p>
+        <button
+          type="button"
+          onClick={() => onChange([...buttons, makeWppBotButton()].slice(0, 3))}
+          disabled={buttons.length >= 3}
+          className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-40"
+        >
+          + Botao
+        </button>
+      </div>
+      {buttons.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-slate-800 px-3 py-2 text-xs text-slate-600">Sem botoes.</p>
+      ) : (
+        <div className="grid gap-2">
+          {buttons.map((button, index) => (
+            <div key={`${button.id}-${index}`} className="grid gap-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+              <label className="text-[11px] font-medium text-slate-500">
+                ID
+                <input
+                  value={button.id}
+                  maxLength={128}
+                  onChange={(event) => onChange(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, id: event.target.value } : item))}
+                  className={`${inputClass} py-2 font-mono`}
+                />
+              </label>
+              <label className="text-[11px] font-medium text-slate-500">
+                Texto
+                <input
+                  value={button.title}
+                  maxLength={20}
+                  onChange={(event) => onChange(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item))}
+                  className={`${inputClass} py-2`}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => onChange(buttons.filter((_, itemIndex) => itemIndex !== index))}
+                className="self-end rounded-lg border border-red-900/50 px-2.5 py-2 text-xs font-semibold text-red-400 transition hover:bg-red-500/10"
+              >
+                Remover
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WppActionsPicker({
+  actions,
+  onChange,
+}: {
+  actions: WppIncomingActionType[];
+  onChange: (actions: WppIncomingActionType[]) => void;
+}) {
+  function toggle(action: WppIncomingActionType) {
+    onChange(actions.includes(action) ? actions.filter((item) => item !== action) : [...actions, action]);
+  }
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {(Object.keys(WPP_BOT_ACTION_LABEL) as WppIncomingActionType[]).map((action) => (
+        <label key={action} className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-semibold text-slate-300">
+          <input
+            type="checkbox"
+            checked={actions.includes(action)}
+            onChange={() => toggle(action)}
+            className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500"
+          />
+          {WPP_BOT_ACTION_LABEL[action]}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export function WppSettingsPanel() {
   const { showToast } = useToast();
   const [settings, setSettings] = useState<WppConnectionSettings | null>(null);
   const [form, setForm] = useState<WppConnectionInput>(EMPTY_CONNECTION);
   const [flightReviewTemplate, setFlightReviewTemplate] = useState<WppFlightReviewReadyTemplateSettings>(DEFAULT_FLIGHT_REVIEW_TEMPLATE);
+  const [tomorrowFlightReminderTemplate, setTomorrowFlightReminderTemplate] = useState<WppTomorrowFlightReminderTemplateSettings>(DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+  const [incomingAutoReply, setIncomingAutoReply] = useState<WppIncomingAutoReplySettings>(DEFAULT_INCOMING_AUTO_REPLY);
   const [templates, setTemplates] = useState<WppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingTemplates, setSavingTemplates] = useState(false);
+  const [savingBot, setSavingBot] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [activeSection, setActiveSection] = useState<WppSettingsSection>("bot");
   const [search, setSearch] = useState("");
   const [editorTemplate, setEditorTemplate] = useState<WppTemplate | "new" | null>(null);
   const [testTemplate, setTestTemplate] = useState<WppTemplate | null>(null);
@@ -243,6 +549,8 @@ export function WppSettingsPanel() {
       const next = await getWppSettings();
       setSettings(next); setForm(connectionForm(next));
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
+      setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+      setIncomingAutoReply(incomingAutoReplyForm(next));
       if (next.apiKeyConfigured && next.wabaId) await loadTemplates();
     } catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar integração." }); }
     finally { setLoading(false); }
@@ -256,9 +564,10 @@ export function WppSettingsPanel() {
     }
     setSaving(true);
     try {
-      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate });
+      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate, tomorrowFlightReminderTemplate, incomingAutoReply });
       const tested = await testWppConnection();
       setSettings(tested); setForm(connectionForm(tested));
+      setIncomingAutoReply(incomingAutoReplyForm(tested));
       showToast({ variant: "success", message: "Conta do WhatsApp conectada com sucesso." });
       await loadTemplates();
     } catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Não foi possível conectar a conta." }); }
@@ -267,9 +576,67 @@ export function WppSettingsPanel() {
 
   async function testConnection() {
     setTesting(true);
-    try { const next = await testWppConnection(); setSettings(next); showToast({ variant: "success", message: "Conexão funcionando normalmente." }); }
+    try { const next = await testWppConnection(); setSettings(next); setIncomingAutoReply(incomingAutoReplyForm(next)); showToast({ variant: "success", message: "Conexão funcionando normalmente." }); }
     catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha no teste de conexão." }); }
     finally { setTesting(false); }
+  }
+
+  async function saveBotSettings() {
+    const message = incomingAutoReply.message.trim();
+    const verifyToken = incomingAutoReply.verifyToken.trim() || makeWppVerifyToken();
+    if (!message) {
+      showToast({ variant: "warning", message: "Informe a resposta padrão do bot." });
+      return;
+    }
+    const invalidButton = [
+      ...incomingAutoReply.buttons,
+      ...incomingAutoReply.rules.flatMap((rule) => rule.buttons),
+    ].some((button) => !button.id.trim() || !button.title.trim());
+    if (invalidButton) {
+      showToast({ variant: "warning", message: "Preencha ID e texto de todos os botoes." });
+      return;
+    }
+    setSavingBot(true);
+    try {
+      const next = await saveWppBotSettings({
+        incomingAutoReply: {
+          ...incomingAutoReply,
+          message,
+          verifyToken,
+          webhookUrl: incomingAutoReply.webhookUrl.trim(),
+        },
+      });
+      setSettings(next);
+      setIncomingAutoReply(incomingAutoReplyForm(next));
+      showToast({ variant: "success", message: "Bot de entrada salvo." });
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar o bot." });
+    } finally {
+      setSavingBot(false);
+    }
+  }
+
+  async function copyText(value: string, message: string) {
+    if (!value) return;
+    await navigator.clipboard?.writeText(value);
+    showToast({ variant: "success", message });
+  }
+
+  function updateBotRule(ruleId: string, patch: Partial<WppIncomingAutoReplySettings["rules"][number]>) {
+    setIncomingAutoReply((current) => ({
+      ...current,
+      rules: current.rules.map((rule) => rule.id === ruleId ? { ...rule, ...patch } : rule),
+    }));
+  }
+
+  function applyQuickRule(quickRule: WppIncomingAutoReplyRule) {
+    setIncomingAutoReply((current) => ({
+      ...current,
+      enabled: true,
+      matchingMode: "content",
+      rules: upsertWppQuickRule(current.rules, quickRule),
+    }));
+    showToast({ variant: "success", message: `Gatilho "${quickRule.matchValue}" pronto para salvar.` });
   }
 
   async function saveNotificationTemplates() {
@@ -285,9 +652,17 @@ export function WppSettingsPanel() {
           templateName: flightReviewTemplate.templateName.trim().toLowerCase(),
           language: flightReviewTemplate.language.trim() || "pt_BR",
         },
+        tomorrowFlightReminderTemplate: {
+          ...tomorrowFlightReminderTemplate,
+          templateName: tomorrowFlightReminderTemplate.templateName.trim().toLowerCase(),
+          language: tomorrowFlightReminderTemplate.language.trim() || "pt_BR",
+          sendHour: Number(tomorrowFlightReminderTemplate.sendHour) || 19,
+          bodyParameters: tomorrowFlightReminderTemplate.bodyParameters,
+        },
       });
       setSettings(next);
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
+      setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
       showToast({ variant: "success", message: "Templates de notificação salvos." });
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
@@ -314,7 +689,21 @@ export function WppSettingsPanel() {
 
   return (
     <div className="space-y-5">
-      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">
+      <div className="grid gap-2 rounded-2xl border border-slate-800 bg-slate-900/70 p-2 md:grid-cols-4">
+        {WPP_SETTING_SECTIONS.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            onClick={() => setActiveSection(section.id)}
+            className={`rounded-xl border px-4 py-3 text-left transition ${activeSection === section.id ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-transparent text-slate-400 hover:border-slate-800 hover:bg-slate-950/40 hover:text-slate-200"}`}
+          >
+            <span className="block text-sm font-semibold">{section.title}</span>
+            <span className="mt-1 block text-xs text-slate-500">{section.description}</span>
+          </button>
+        ))}
+      </div>
+
+      <section className={`${activeSection === "connection" ? "" : "hidden"} overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70`}>
         <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-emerald-500/10 text-emerald-400"><svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M12.04 2a9.84 9.84 0 00-8.46 14.86L2 22l5.28-1.55A9.98 9.98 0 1012.04 2zm5.77 13.78c-.25.7-1.46 1.34-2.02 1.42-.52.08-1.18.11-1.9-.12-.44-.14-1-.33-1.73-.64-3.04-1.31-5.02-4.37-5.17-4.57-.14-.2-1.23-1.64-1.23-3.12 0-1.49.77-2.22 1.05-2.52.27-.3.6-.37.8-.37h.57c.18 0 .43-.07.67.51.25.6.84 2.05.91 2.2.08.15.13.33.03.53-.1.2-.15.33-.3.51-.15.17-.32.38-.45.51-.15.15-.3.31-.13.61.18.3.78 1.28 1.67 2.07 1.15 1.02 2.11 1.33 2.41 1.48.3.15.48.13.65-.07.18-.2.75-.87.95-1.17.2-.3.4-.25.68-.15.27.1 1.75.83 2.05.98.3.15.5.22.57.35.08.12.08.72-.17 1.42z" /></svg></span><div><h2 className="font-semibold text-slate-100">WhatsApp Business API</h2><p className="mt-1 text-sm text-slate-500">Conecte sua conta Meta para gerenciar e testar templates.</p></div></div>
           <span className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${connected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : settings?.connectionStatus === "error" ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-slate-700 bg-slate-800 text-slate-400"}`}><span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : settings?.connectionStatus === "error" ? "bg-red-400" : "bg-slate-500"}`} />{connected ? "Conectado" : settings?.connectionStatus === "error" ? "Conexão com erro" : "Não testado"}</span>
@@ -330,7 +719,152 @@ export function WppSettingsPanel() {
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-800 px-5 py-4 sm:px-6"><button type="button" onClick={() => void testConnection()} disabled={testing || !settings?.apiKeyConfigured} className={secondaryButton}>{testing ? "Testando..." : "Testar conexão"}</button><button type="button" onClick={() => void connect()} disabled={saving} className={primaryButton}>{saving ? "Conectando..." : connected ? "Salvar e reconectar" : "Conectar conta"}</button></div>
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">
+      <section className={`${activeSection === "bot" ? "" : "hidden"} overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70`}>
+        <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <h2 className="font-semibold text-slate-100">Bot de entrada</h2>
+            <p className="mt-1 text-sm text-slate-500">Roteie respostas por ID de botao/resposta ou pelo conteudo enviado pelo cliente.</p>
+          </div>
+          <button type="button" onClick={() => void saveBotSettings()} disabled={savingBot} className={primaryButton}>{savingBot ? "Salvando..." : "Salvar bot"}</button>
+        </div>
+        <div className="grid gap-4 p-5 sm:p-6">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-slate-200">Recebimento</h3>
+              <p className="mt-1 text-xs text-slate-600">Escolha se o bot observa o ID do botao clicado ou o texto enviado pelo cliente.</p>
+            </div>
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200">
+              <input type="checkbox" checked={incomingAutoReply.enabled} onChange={(e) => setIncomingAutoReply((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Responder automaticamente mensagens recebidas
+            </label>
+            <div className="mt-3 grid gap-3 rounded-xl border border-slate-800 bg-slate-950/35 p-3 sm:grid-cols-2">
+              <button type="button" onClick={() => setIncomingAutoReply((current) => ({ ...current, matchingMode: "id" }))} className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${incomingAutoReply.matchingMode === "id" ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-slate-800 text-slate-400 hover:bg-slate-900"}`}>
+                Observar pelo ID
+              </button>
+              <button type="button" onClick={() => setIncomingAutoReply((current) => ({ ...current, matchingMode: "content" }))} className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${incomingAutoReply.matchingMode === "content" ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-slate-800 text-slate-400 hover:bg-slate-900"}`}>
+                Observar pelo conteudo
+              </button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+            <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">Gatilhos prontos</h3>
+                <p className="mt-1 text-xs text-slate-600">Ative fluxos comuns sem montar a regra manualmente.</p>
+              </div>
+              <span className="text-xs font-medium text-slate-500">Modo recomendado: conteudo</span>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {WPP_QUICK_RULES.map((quickRule) => {
+                const configured = incomingAutoReply.rules.some((rule) => rule.enabled && normalizeRuleKey(rule.matchValue) === normalizeRuleKey(quickRule.matchValue) && quickRule.actions.every((action) => rule.actions.includes(action)));
+                return (
+                  <article key={quickRule.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-semibold text-slate-200">{quickRule.matchValue}</h4>
+                        <p className="mt-1 text-xs leading-5 text-slate-500">{WPP_BOT_ACTION_LABEL[quickRule.actions[0]]}</p>
+                      </div>
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${configured ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-slate-700 bg-slate-950 text-slate-500"}`}>{configured ? "Ativo" : "Opcional"}</span>
+                    </div>
+                    <button type="button" onClick={() => applyQuickRule(quickRule)} className="mt-4 w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-slate-800">
+                      {configured ? "Atualizar gatilho" : "Configurar gatilho"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-slate-200">Resposta padrao</h3>
+              <p className="mt-1 text-xs text-slate-600">Usada quando nenhuma regra especifica bater.</p>
+            </div>
+            <label className="text-xs font-medium text-slate-400">Mensagem
+              <textarea value={incomingAutoReply.message} rows={3} maxLength={1024} onChange={(e) => setIncomingAutoReply((current) => ({ ...current, message: e.target.value }))} className={`${inputClass} resize-y leading-6`} />
+              <span className="mt-1 block font-normal text-slate-600">{incomingAutoReply.message.length}/1024</span>
+            </label>
+            <div className="mt-4">
+              <WppButtonsEditor buttons={incomingAutoReply.buttons} onChange={(buttons) => setIncomingAutoReply((current) => ({ ...current, buttons }))} />
+            </div>
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-medium text-slate-400">Acoes da resposta padrao</p>
+              <WppActionsPicker actions={incomingAutoReply.actions} onChange={(actions) => setIncomingAutoReply((current) => ({ ...current, actions }))} />
+            </div>
+          </div>
+          <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">Regras de resposta</h3>
+                <p className="mt-1 text-xs text-slate-600">A primeira regra ativa que bater substitui a resposta padrao.</p>
+              </div>
+              <button type="button" onClick={() => setIncomingAutoReply((current) => ({ ...current, rules: [...current.rules, makeWppBotRule()] }))} className={secondaryButton}>
+                + Nova regra
+              </button>
+            </div>
+            {incomingAutoReply.rules.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-800 px-3 py-3 text-sm text-slate-600">Nenhuma regra configurada. O bot usa a resposta padrao.</p>
+            ) : (
+              <div className="space-y-3">
+                {incomingAutoReply.rules.map((rule, index) => (
+                  <article key={rule.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <label className="flex items-center gap-3 text-sm font-semibold text-slate-200">
+                        <input type="checkbox" checked={rule.enabled} onChange={(e) => updateBotRule(rule.id, { enabled: e.target.checked })} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+                        Regra {index + 1}
+                      </label>
+                      <button type="button" onClick={() => setIncomingAutoReply((current) => ({ ...current, rules: current.rules.filter((item) => item.id !== rule.id) }))} className="w-fit rounded-lg border border-red-900/50 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/10">
+                        Remover regra
+                      </button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)]">
+                      <label className="text-xs font-medium text-slate-400">Nome
+                        <input value={rule.name} onChange={(e) => updateBotRule(rule.id, { name: e.target.value })} className={inputClass} />
+                      </label>
+                      <label className="text-xs font-medium text-slate-400">Operador
+                        <select value={rule.operator} onChange={(e) => updateBotRule(rule.id, { operator: e.target.value as typeof rule.operator })} className={inputClass}>
+                          <option value="equals">Igual</option>
+                          <option value="contains">Contem</option>
+                          <option value="starts_with">Comeca com</option>
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-400">Valor observado
+                        <input value={rule.matchValue} onChange={(e) => updateBotRule(rule.id, { matchValue: e.target.value })} placeholder={incomingAutoReply.matchingMode === "id" ? "ex: ver_figurinhas" : "ex: figurinhas"} className={inputClass} />
+                      </label>
+                    </div>
+                    <label className="mt-3 block text-xs font-medium text-slate-400">Mensagem enviada
+                      <textarea value={rule.message} rows={3} maxLength={1024} onChange={(e) => updateBotRule(rule.id, { message: e.target.value })} className={`${inputClass} resize-y leading-6`} />
+                    </label>
+                    <div className="mt-4 grid gap-4">
+                      <WppButtonsEditor buttons={rule.buttons} onChange={(buttons) => updateBotRule(rule.id, { buttons })} />
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-slate-400">Acoes desta regra</p>
+                        <WppActionsPicker actions={rule.actions} onChange={(actions) => updateBotRule(rule.id, { actions })} />
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <label className="text-xs font-medium text-slate-400">Token de verificação da Meta
+              <input value={incomingAutoReply.verifyToken} onChange={(e) => setIncomingAutoReply((current) => ({ ...current, verifyToken: e.target.value.trim() }))} className={`${inputClass} font-mono`} />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setIncomingAutoReply((current) => ({ ...current, verifyToken: makeWppVerifyToken() }))} className={secondaryButton}>Gerar</button>
+              <button type="button" onClick={() => void copyText(incomingAutoReply.verifyToken, "Token copiado.")} disabled={!incomingAutoReply.verifyToken} className={secondaryButton}>Copiar</button>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <label className="text-xs font-medium text-slate-400">URL pública do webhook <span className="font-normal text-slate-600">(opcional)</span>
+              <input value={incomingAutoReply.webhookUrl} onChange={(e) => setIncomingAutoReply((current) => ({ ...current, webhookUrl: e.target.value }))} placeholder="https://.../wpp-webhook" className={`${inputClass} font-mono`} />
+            </label>
+            <button type="button" onClick={() => void copyText(incomingAutoReply.webhookUrl, "URL do webhook copiada.")} disabled={!incomingAutoReply.webhookUrl} className={secondaryButton}>Copiar URL</button>
+          </div>
+        </div>
+      </section>
+
+      <section className={`${activeSection === "notifications" ? "" : "hidden"} overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70`}>
         <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div>
             <h2 className="font-semibold text-slate-100">Automações de templates</h2>
@@ -354,9 +888,33 @@ export function WppSettingsPanel() {
             ID do link público
           </div>
         </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+              <input type="checkbox" checked={tomorrowFlightReminderTemplate.enabled} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar lembrete automático às 19h para alunos com voo confirmado no dia seguinte
+            </label>
+            <label className="text-xs font-medium text-slate-400">Lembrete de voo amanhã
+              <input value={tomorrowFlightReminderTemplate.templateName} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="lembrete_voo_amanha" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={tomorrowFlightReminderTemplate.language} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Hora
+              <input type="number" min={0} max={23} value={tomorrowFlightReminderTemplate.sendHour} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, sendHour: Number(e.target.value) }))} className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros do corpo
+              <input value={tomorrowFlightReminderTemplate.bodyParameters.join(", ")} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, start_time, aircraft, mission, instructor" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">Variáveis</strong>
+              student_name, flight_date, start_time, aircraft, mission, instructor, route, flight_id
+            </div>
+          </div>
+        </div>
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">
+      <section className={`${activeSection === "templates" ? "" : "hidden"} overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70`}>
         <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><h2 className="font-semibold text-slate-100">Templates da conta</h2><p className="mt-1 text-sm text-slate-500">{templates.length} {templates.length === 1 ? "template sincronizado" : "templates sincronizados"} com a Meta.</p></div><div className="flex gap-2"><button type="button" onClick={() => void loadTemplates()} disabled={loadingTemplates || !settings?.apiKeyConfigured} className={secondaryButton}>{loadingTemplates ? "Atualizando..." : "Atualizar"}</button><button type="button" onClick={() => setEditorTemplate("new")} disabled={!connected} className={primaryButton}>+ Novo template</button></div></div>
         <div className="p-5 sm:p-6"><div className="relative mb-5"><svg viewBox="0 0 20 20" fill="currentColor" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"><path fillRule="evenodd" d="M9 3a6 6 0 104.472 10.002l3.763 3.763a.75.75 0 101.06-1.06l-3.763-3.763A6 6 0 009 3zM4.5 9a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0z" clipRule="evenodd" /></svg><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, categoria ou status..." className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 pl-10 pr-4 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500" /></div>
           {!connected ? <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-slate-700 bg-slate-950/30 p-8 text-center"><div><span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-slate-800 text-slate-500"><svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M8 4a4 4 0 117.446 2.032l2.261 2.26a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-.707.293H7v-2H5v-2H3.5a1 1 0 01-.707-1.707l5.175-5.175A4 4 0 018 4zm4-1.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" clipRule="evenodd" /></svg></span><p className="mt-4 text-sm font-medium text-slate-300">Conecte sua conta para carregar os templates</p><p className="mt-1 text-xs text-slate-600">Suas credenciais ficam protegidas na função administrativa do Appwrite.</p></div></div> : loadingTemplates ? <div className="space-y-3"><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /></div> : filtered.length === 0 ? <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><p className="text-sm font-medium text-slate-400">{search ? "Nenhum template encontrado" : "Nenhum template nesta conta"}</p><p className="mt-1 text-xs text-slate-600">{search ? "Tente buscar por outro termo." : "Crie o primeiro template para começar."}</p></div></div> : <div className="space-y-3">{filtered.map((template) => <article key={`${template.id}-${template.language}`} className="group rounded-xl border border-slate-800 bg-slate-950/40 p-4 transition hover:border-slate-700"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-mono text-sm font-semibold text-slate-200">{template.name}</h3><span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusStyle(template.status)}`}>{statusLabel(template.status)}</span></div><p className="mt-2 line-clamp-2 whitespace-pre-wrap text-sm leading-6 text-slate-500">{componentText(template, "BODY") || "Template sem corpo de mensagem"}</p><div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] uppercase tracking-wide text-slate-600"><span>{template.category}</span><span>{template.language}</span>{template.qualityScore ? <span>Qualidade: {template.qualityScore}</span> : null}</div></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => setTestTemplate(template)} disabled={template.status !== "APPROVED"} title={template.status !== "APPROVED" ? "Apenas templates aprovados podem ser enviados" : "Enviar teste"} className="rounded-lg border border-emerald-700/40 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-35">Testar</button><button type="button" onClick={() => setEditorTemplate(template)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800">Editar</button><button type="button" onClick={() => setDeleteTemplate(template)} className="rounded-lg border border-red-900/50 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/10">Excluir</button></div></div></article>)}</div>}
