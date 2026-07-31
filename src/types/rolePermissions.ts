@@ -61,7 +61,8 @@ export type AdminTabKey =
   | "contracts.emitidos"
   | "atualizacoes"
   | "atualizacoes.agendamentos"
-  | "aisweb";
+  | "aisweb"
+  | "album";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -86,7 +87,8 @@ export type InstructorTabKey =
   | "contratos"
   | "reports"
   | "indique-ganhe"
-  | "aisweb";
+  | "aisweb"
+  | "album";
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -105,8 +107,8 @@ export type StudentTabKey =
   | "fuelings"
   | "contratos"
   | "indique-ganhe"
-  | "aisweb";
-
+  | "aisweb"
+  | "album";
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
 
@@ -243,6 +245,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "atualizacoes": "Atualizações",
   "atualizacoes.agendamentos": "Atualizações › Agendamentos",
   "aisweb": "AISWEB",
+  "album": "Álbum",
 };
 
 /** Labels descritivos para abas do portal instrutor */
@@ -269,6 +272,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "reports": "Relatórios",
   "indique-ganhe": "Indique e ganhe",
   "aisweb": "AISWEB",
+  "album": "Álbum",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -289,4 +293,5 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "contratos": "Contratos",
   "indique-ganhe": "Indique e ganhe",
   "aisweb": "AISWEB",
+  "album": "Álbum",
 };

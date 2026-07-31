@@ -29,6 +29,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp", "settings.gopro", "settings.aisweb",
   "atualizacoes", "atualizacoes.agendamentos",
+  "album",
 ];
 
 const ALL_ACTIONS: ActionKey[] = [
@@ -52,12 +53,12 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
   "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "users", "fuelings", "profile", "help", "manual-instrutor",
-  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe", "aisweb",
+  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe", "aisweb", "album",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
-  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "manual-instrutor", "reports", "aisweb",
+  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "manual-instrutor", "reports", "aisweb", "album",
 ]);
 
 /** Ações habilitadas por padrão para o instrutor */
@@ -84,14 +85,13 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
   "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
-  "dre", "fuelings", "contratos", "indique-ganhe", "aisweb",
+  "dre", "fuelings", "contratos", "indique-ganhe", "aisweb", "album",
 ];
 
 /** Abas ativadas por padrão para o aluno */
 const STUDENT_DEFAULT_ON_TABS: Set<StudentTabKey> = new Set([
-  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda", "aisweb",
+  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda", "aisweb", "album",
 ]);
-
 export const DEFAULT_ALUNO_PERMISSIONS: RolePermissions = {
   // Todas as abas declaradas explicitamente
   tabs: Object.fromEntries(

@@ -25,6 +25,7 @@ import {
   updateStudentFlightSuggestion,
   type SavedFlightListItem,
 } from "../lib/flightsDb";
+import { consumePendingFlightOpen } from "../lib/pendingFlightOpen";
 import {
   listSignaturesForFlight,
   signFlight,
@@ -1066,6 +1067,12 @@ export function MeusVoosTab() {
     setDetailOpenOptions(options);
     setView("detail");
   };
+
+  useEffect(() => {
+    const pending = consumePendingFlightOpen();
+    if (!pending?.flightId) return;
+    openFlight(pending.flightId, { initialSubTab: pending.initialSubTab });
+  }, []);
 
   const openFutureWeightBalance = (id: string) => {
     openFlight(id, { initialStepId: "peso-balanceamento", hideStepMenu: true });

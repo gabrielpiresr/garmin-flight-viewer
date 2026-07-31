@@ -33,6 +33,7 @@ import {
   loadLightFlightListDisplayInfos,
 } from "../../lib/flightListDisplayCache";
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
+import { consumePendingFlightOpen } from "../../lib/pendingFlightOpen";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import { ADMIN_USERS_FUNCTION_ID } from "../../lib/appwrite";
 import {
@@ -45,7 +46,7 @@ import {
   type SagaImportPendingMission,
 } from "../../lib/sagaImportDb";
 import { allMissionOptions, missionOptionsForTrack } from "../../lib/sagaMissionMappingUi";
-import { FlightDetailView } from "../FlightDetailView";
+import { FlightDetailView, type FlightDetailSubTab } from "../FlightDetailView";
 import { FlightShareStickersModal } from "../FlightShareStickersModal";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { FlightsAgendaBoard } from "../FlightsAgendaBoard";
@@ -591,6 +592,7 @@ export function InstructorFlightsTab() {
   const { showToast } = useToast();
   const [view, setView] = useState<View>("list");
   const [selectedFlightId, setSelectedFlightId] = useState<string | undefined>();
+  const [detailInitialSubTab, setDetailInitialSubTab] = useState<FlightDetailSubTab | undefined>();
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [infoById, setInfoById] = useState<Record<string, FlightDisplayInfo>>({});
   const [videoFlagsById, setVideoFlagsById] = useState<Record<string, boolean>>({});
@@ -844,10 +846,17 @@ export function InstructorFlightsTab() {
   const pastGroups = useMemo(() => groupFlights(pastItems, infoById, "desc"), [pastItems, infoById]);
   const dataLoading = loading && items.length === 0;
 
-  const openFlight = (id: string) => {
+  const openFlight = (id: string, options: { initialSubTab?: FlightDetailSubTab } = {}) => {
     setSelectedFlightId(id);
+    setDetailInitialSubTab(options.initialSubTab);
     setView("detail");
   };
+
+  useEffect(() => {
+    const pending = consumePendingFlightOpen();
+    if (!pending?.flightId) return;
+    openFlight(pending.flightId, { initialSubTab: pending.initialSubTab });
+  }, []);
 
   const generatePublicLink = async (id: string) => {
     setPublicLinkFlightId(id);
@@ -1223,7 +1232,17 @@ export function InstructorFlightsTab() {
   }
 
   if (view === "detail") {
-    return <FlightDetailView flightId={selectedFlightId} onBack={() => setView("list")} allowPublicLink />;
+    return (
+      <FlightDetailView
+        flightId={selectedFlightId}
+        onBack={() => {
+          setView("list");
+          setDetailInitialSubTab(undefined);
+        }}
+        initialSubTab={detailInitialSubTab}
+        allowPublicLink
+      />
+    );
   }
 
   const suggestionFlight = suggestionFlightId ? items.find((item) => item.id === suggestionFlightId) : null;

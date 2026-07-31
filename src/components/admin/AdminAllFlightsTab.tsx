@@ -22,7 +22,8 @@ import {
   loadFullFlightListDisplayInfos,
   loadLightFlightListDisplayInfos,
 } from "../../lib/flightListDisplayCache";
-import { FlightDetailView } from "../FlightDetailView";
+import { FlightDetailView, type FlightDetailSubTab } from "../FlightDetailView";
+import { consumePendingFlightOpen } from "../../lib/pendingFlightOpen";
 import { Skeleton } from "../ui/Skeleton";
 
 type View = "list" | "detail";
@@ -93,6 +94,7 @@ export function AdminAllFlightsTab() {
   const { user, configured } = useAuth();
   const [view, setView] = useState<View>("list");
   const [selectedFlightId, setSelectedFlightId] = useState<string | undefined>();
+  const [detailInitialSubTab, setDetailInitialSubTab] = useState<FlightDetailSubTab | undefined>();
   const [items, setItems] = useState<SavedFlightListItem[]>([]);
   const [infoById, setInfoById] = useState<Record<string, FlightDisplayInfo>>({});
   const [signaturesByFlightId, setSignaturesByFlightId] = useState<Record<string, FlightSignaturesForFlight>>({});
@@ -150,6 +152,14 @@ export function AdminAllFlightsTab() {
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
+
+  useEffect(() => {
+    const pending = consumePendingFlightOpen();
+    if (!pending?.flightId) return;
+    setSelectedFlightId(pending.flightId);
+    setDetailInitialSubTab(pending.initialSubTab);
+    setView("detail");
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,9 +262,11 @@ export function AdminAllFlightsTab() {
         onBack={() => {
           setView("list");
           setSelectedFlightId(undefined);
+          setDetailInitialSubTab(undefined);
           setRefreshKey((key) => key + 1);
         }}
         backLabel="Todos os voos"
+        initialSubTab={detailInitialSubTab}
         allowPublicLink
       />
     );
