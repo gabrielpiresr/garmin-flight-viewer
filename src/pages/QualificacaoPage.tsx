@@ -398,8 +398,28 @@ export function QualificacaoPage() {
         leadId: savedLead?.id || "",
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
+        phone: form.phone.trim() || null,
         course: form.desiredCourse || null,
+        desiredCourse: form.desiredCourse || null,
         transferSchool: !form.noAnac && form.isTransfer ? form.transferSchool.trim() || null : null,
+        anacCode: form.noAnac ? "" : form.anacCode.trim() || null,
+        birthDate: form.birthDate || null,
+        cpf: form.noAnac ? null : onlyDigits(form.cpf) || null,
+        desiredHours: form.desiredHours ? Number(form.desiredHours) : null,
+        weeklyHours: form.weeklyHours ? Number(form.weeklyHours) : null,
+        startDate: form.startPeriod || null,
+        weightKg: form.weightKg ? Number(form.weightKg) : null,
+        heightCm: form.heightCm ? Number(form.heightCm) : null,
+        availableDays: form.availableDays,
+        availablePeriod: (form.availablePeriod as AvailablePeriod) || null,
+        theoreticalExamDone:
+          form.desiredCourse === "Piloto Privado" ? form.theoreticalExamDone : null,
+        theoreticalStudyStatus:
+          form.desiredCourse === "Piloto Privado" && form.theoreticalExamDone === false
+            ? form.theoreticalStudyStatus || null
+            : null,
+        notes: form.notes.trim() || null,
+        referralSource,
       });
       setSaved(true);
     }

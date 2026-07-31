@@ -18492,19 +18492,60 @@ function buildNotificationMessage(event, flight) {
   if (type === "crm.lead_qualified") {
     const name = cleanString(data.name) || "Novo lead";
     const email = cleanString(data.email) || "";
-    const course = cleanString(data.course);
+    const phone = cleanString(data.phone);
+    const course = cleanString(data.course || data.desiredCourse);
     const transferSchool = cleanString(data.transferSchool);
+    const anacCode = data.anacCode === "" ? "Não possui" : cleanString(data.anacCode);
+    const birthDate = cleanString(data.birthDate);
+    const cpf = cleanString(data.cpf);
+    const desiredHours = data.desiredHours != null && data.desiredHours !== "" ? String(data.desiredHours) : "";
+    const weeklyHours = data.weeklyHours != null && data.weeklyHours !== "" ? String(data.weeklyHours) : "";
+    const startDate = cleanString(data.startDate || data.startPeriod);
+    const weightKg = data.weightKg != null && data.weightKg !== "" ? `${data.weightKg} kg` : "";
+    const heightCm = data.heightCm != null && data.heightCm !== "" ? `${data.heightCm} cm` : "";
+    const notes = cleanString(data.notes);
+    const referralSource = cleanString(data.referralSource);
+    const dayLabels = { seg: "Seg", ter: "Ter", qua: "Qua", qui: "Qui", sex: "Sex", sab: "Sáb", dom: "Dom" };
+    const periodLabels = { manha: "Manhã", tarde: "Tarde", ambos: "Manhã e tarde" };
+    const days = Array.isArray(data.availableDays)
+      ? data.availableDays.map((d) => dayLabels[cleanString(d)] || cleanString(d)).filter(Boolean).join(", ")
+      : "";
+    const period = periodLabels[cleanString(data.availablePeriod)] || cleanString(data.availablePeriod);
+    let theoretical = "";
+    if (data.theoreticalExamDone === true) theoretical = "Já fez a banca teórica";
+    else if (data.theoreticalExamDone === false) {
+      theoretical = cleanString(data.theoreticalStudyStatus)
+        ? `Ainda não fez — ${cleanString(data.theoreticalStudyStatus)}`
+        : "Ainda não fez a banca teórica";
+    }
+
+    const details = [
+      ["Nome", name],
+      ...(email ? [["E-mail", email]] : []),
+      ...(phone ? [["Telefone", phone]] : []),
+      ...(cpf ? [["CPF", cpf]] : []),
+      ...(birthDate ? [["Nascimento", birthDate]] : []),
+      ...(anacCode ? [["ANAC", anacCode]] : []),
+      ...(course ? [["Curso desejado", course]] : []),
+      ...(theoretical ? [["Teórica PPL", theoretical]] : []),
+      ...(desiredHours ? [["Horas desejadas", desiredHours]] : []),
+      ...(weeklyHours ? [["Horas/semana", weeklyHours]] : []),
+      ...(startDate ? [["Início pretendido", startDate]] : []),
+      ...(days ? [["Dias disponíveis", days]] : []),
+      ...(period ? [["Período", period]] : []),
+      ...(weightKg ? [["Peso", weightKg]] : []),
+      ...(heightCm ? [["Altura", heightCm]] : []),
+      ...(transferSchool ? [["Transferência de", transferSchool]] : []),
+      ...(referralSource ? [["Origem", referralSource]] : []),
+      ...(notes ? [["Observações", notes]] : []),
+    ];
+
     return {
       eyebrow: "CRM — Novo lead",
       title: "Qualificação recebida",
-      intro: `Um novo lead preencheu o formulário de qualificação.`,
+      intro: "Um novo lead preencheu o formulário de qualificação.",
       body: `${name}${email ? ` (${email})` : ""} preencheu o formulário de qualificação${course ? ` para o curso de ${course}` : ""}${transferSchool ? ` — vindo de transferência de ${transferSchool}` : ""}.`,
-      details: [
-        ["Nome", name],
-        ...(email ? [["E-mail", email]] : []),
-        ...(course ? [["Curso desejado", course]] : []),
-        ...(transferSchool ? [["Transferência de", transferSchool]] : []),
-      ],
+      details,
       ctaLabel: "Abrir CRM",
       url,
     };
@@ -22236,6 +22277,30 @@ function sampleEventForTemplate(templateType) {
         orderId: "ORD-12345",
       },
     },
+    "crm.lead_qualified": {
+      eventType: "crm.lead_qualified",
+      data: {
+        name: "Ana Souza",
+        email: "ana@example.com",
+        phone: "(11) 98888-7777",
+        cpf: "123.456.789-00",
+        birthDate: "1998-05-12",
+        anacCode: "123456",
+        course: "Piloto Privado",
+        theoreticalExamDone: false,
+        theoreticalStudyStatus: "Estudando para a banca",
+        desiredHours: 40,
+        weeklyHours: 6,
+        startDate: "Próximos 30 dias",
+        availableDays: ["seg", "qua", "sab"],
+        availablePeriod: "manha",
+        weightKg: 65,
+        heightCm: 168,
+        transferSchool: "",
+        referralSource: "Indicação",
+        notes: "Prefere voar pela manhã e quer iniciar o quanto antes.",
+      },
+    },
   };
   return samples[eventType] || {
     eventType: "test",
@@ -23743,6 +23808,52 @@ module.exports = async ({ req, res, log, error }) => {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const chart = await aiswebService.fetchChartPreview(payload.link || payload.url);
       return jsonResponse(res, 200, { chart });
+    }
+
+    if (action === "sendAiswebNotamAlertTest") {
+      await requireAdmin(actorUserId);
+      const to = cleanString(payload.to);
+      if (!to || !to.includes("@")) {
+        throw Object.assign(new Error("Informe um e-mail válido."), { status: 400 });
+      }
+      const [{ settings }, { publicSettings: brand }] = await Promise.all([
+        loadEmailSettings(),
+        loadEmailBrandSettings(),
+      ]);
+      const sampleNotam = {
+        id: "SAMPLE-NOTAM-TEST",
+        number: "A1234/26",
+        icao: "SBSP",
+        status: "ACTIVE",
+        type: "NOTAMN",
+        issuedAt: nowIso(),
+        validFrom: nowIso(),
+        validTo: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        schedule: "HJ",
+        text:
+          "RWY 17L/35R CLSD DUE TO WORK IN PROGRESS.\n" +
+          "TWY A BTN A1 AND A3 AVBL WITH CAUTION.\n" +
+          "Este é um e-mail de exemplo do aviso de NOTAM AISWEB.",
+        lowerLimit: "SFC",
+        upperLimit: "UNL",
+        category: "Aerodrome",
+        qCode: "QMRXX",
+        airportName: "Congonhas",
+        city: "São Paulo",
+        uf: "SP",
+      };
+      const result = await sendAiswebNotamAlertEmail(
+        actorUserId || "",
+        to,
+        cleanString(payload.name) || "Gabriel",
+        sampleNotam,
+        brand,
+        settings,
+      );
+      if (result?.status !== "sent") {
+        throw Object.assign(new Error(result?.reason || "E-mail de exemplo não enviado."), { status: 400 });
+      }
+      return jsonResponse(res, 200, { ok: true, result });
     }
 
     await requireAdmin(actorUserId);

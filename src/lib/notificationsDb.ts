@@ -224,7 +224,29 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
 
 export async function notifyCrmLeadEvent(
   eventType: "crm.lead_qualified" | "crm.lead_registered",
-  leadData: { leadId: string; name: string; email: string; course?: string | null; transferSchool?: string | null },
+  leadData: {
+    leadId: string;
+    name: string;
+    email: string;
+    phone?: string | null;
+    course?: string | null;
+    desiredCourse?: string | null;
+    transferSchool?: string | null;
+    anacCode?: string | null;
+    birthDate?: string | null;
+    cpf?: string | null;
+    desiredHours?: number | null;
+    weeklyHours?: number | null;
+    startDate?: string | null;
+    weightKg?: number | null;
+    heightCm?: number | null;
+    availableDays?: string[] | null;
+    availablePeriod?: string | null;
+    theoreticalExamDone?: boolean | null;
+    theoreticalStudyStatus?: string | null;
+    notes?: string | null;
+    referralSource?: string | null;
+  },
 ): Promise<void> {
   try {
     const response = await executeNotifications({ action: "notifyCrmLeadEvent", eventType, leadData });
