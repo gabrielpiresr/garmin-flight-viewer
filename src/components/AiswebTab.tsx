@@ -9,7 +9,7 @@ import {
   type SetStateAction,
 } from "react";
 import {
-  getAiswebDashboard,
+  getAiswebBootstrap,
   lookupAiswebIcao,
   saveAiswebWatchlist,
 } from "../lib/aiswebDb";
@@ -41,7 +41,62 @@ import type {
 /** Prefer client parse so Obs/variação work even if the function payload is older. */
 function resolvedParsed(airport: AiswebAirportBundle | null | undefined): AiswebParsedMetar | null {
   if (!airport) return null;
+  if (!airport.met?.metar && !airport.met?.parsed) return null;
   return parseMetar(airport.met.metar) || airport.met.parsed;
+}
+
+function placeholderAirport(icao: string): AiswebAirportBundle {
+  return {
+    icao,
+    met: { icao, metar: "", taf: "", parsed: null },
+    rotaer: null,
+    notams: [],
+    sun: null,
+    charts: [],
+  };
+}
+
+function sortNotamsClient(items: AiswebNotam[]): AiswebNotam[] {
+  return [...items].sort((a, b) => {
+    const ta = Date.parse(a.issuedAt || a.validFrom || "") || 0;
+    const tb = Date.parse(b.issuedAt || b.validFrom || "") || 0;
+    return tb - ta;
+  });
+}
+
+const BOOTSTRAP_CACHE_KEY = "aisweb-bootstrap-v1";
+
+function readBootstrapCache(): {
+  settings: AiswebDashboard["settings"];
+  watchlist: AiswebDashboard["watchlist"];
+} | null {
+  try {
+    const raw = sessionStorage.getItem(BOOTSTRAP_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      settings?: AiswebDashboard["settings"];
+      watchlist?: AiswebDashboard["watchlist"];
+    };
+    if (!parsed?.settings || !parsed?.watchlist) return null;
+    return {
+      settings: parsed.settings,
+      watchlist: {
+        icaoCodes: parsed.watchlist.icaoCodes || [],
+        notamAlerts: parsed.watchlist.notamAlerts || {},
+        updatedAt: parsed.watchlist.updatedAt || null,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeBootstrapCache(settings: AiswebDashboard["settings"], watchlist: AiswebDashboard["watchlist"]) {
+  try {
+    sessionStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify({ settings, watchlist }));
+  } catch {
+    // ignore quota / private mode
+  }
 }
 import { AiswebConditionVisuals } from "./AiswebMetVisuals";
 import { AiswebAirportDetailTabs } from "./AiswebAirportDetails";
@@ -349,6 +404,7 @@ function ConditionsBoard({
   notamAlerts,
   onToggleNotamAlert,
   togglingNotamIcao,
+  loadingIcaos,
 }: {
   airports: AiswebAirportBundle[];
   minimums: AiswebOperationalMinimum[];
@@ -362,6 +418,7 @@ function ConditionsBoard({
   notamAlerts: Record<string, boolean>;
   onToggleNotamAlert: (icao: string, enabled: boolean) => void;
   togglingNotamIcao: string | null;
+  loadingIcaos: Set<string>;
 }) {
   const selected = airports.find((a) => a.icao === selectedIcao) ?? airports[0] ?? null;
   const selectedParsed = resolvedParsed(selected);
@@ -406,7 +463,8 @@ function ConditionsBoard({
           </thead>
           <tbody>
             {airports.map((airport) => {
-              const parsed = resolvedParsed(airport);
+              const isLoadingMet = loadingIcaos.has(airport.icao);
+              const parsed = isLoadingMet ? null : resolvedParsed(airport);
               const checks = evaluateMinimums(parsed, minimums, { rotaer: airport.rotaer });
               const active = selected?.icao === airport.icao;
               const isTemporary = temporaryIcao === airport.icao;
@@ -438,21 +496,35 @@ function ConditionsBoard({
                       </span>
                     ) : null}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-2.5 text-slate-400">
-                    {formatMetarTime(parsed?.observedAt)}
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-2.5">{formatWind(parsed)}</td>
-                  <td className="whitespace-nowrap px-2 py-2.5">{formatVisibility(parsed)}</td>
-                  <td className="whitespace-nowrap px-2 py-2.5">{formatCeiling(parsed)}</td>
-                  <td className="max-w-[8rem] truncate px-2 py-2.5 font-mono text-[11px] text-slate-400">
-                    {parsed?.cloudsText || "—"}
-                  </td>
-                  <td className="max-w-[9rem] truncate px-2 py-2.5 text-[11px] text-slate-400">
-                    {formatObs(parsed)}
-                  </td>
-                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
-                    <StatusCluster checks={checks} setTooltip={setTooltip} />
-                  </td>
+                  {isLoadingMet ? (
+                    <>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-12" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-16" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-10" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-12" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-20" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-3.5 w-16" /></td>
+                      <td className="px-2 py-2.5"><Skeleton className="h-4 w-16" /></td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="whitespace-nowrap px-2 py-2.5 text-slate-400">
+                        {formatMetarTime(parsed?.observedAt)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2.5">{formatWind(parsed)}</td>
+                      <td className="whitespace-nowrap px-2 py-2.5">{formatVisibility(parsed)}</td>
+                      <td className="whitespace-nowrap px-2 py-2.5">{formatCeiling(parsed)}</td>
+                      <td className="max-w-[8rem] truncate px-2 py-2.5 font-mono text-[11px] text-slate-400">
+                        {parsed?.cloudsText || "—"}
+                      </td>
+                      <td className="max-w-[9rem] truncate px-2 py-2.5 text-[11px] text-slate-400">
+                        {formatObs(parsed)}
+                      </td>
+                      <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <StatusCluster checks={checks} setTooltip={setTooltip} />
+                      </td>
+                    </>
+                  )}
                   <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
                     {isTemporary ? (
                       <span className="text-[10px] text-slate-600">—</span>
@@ -493,6 +565,17 @@ function ConditionsBoard({
 
       {selected ? (
         <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-3.5">
+          {loadingIcaos.has(selected.icao) ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold tracking-widest text-cyan-300">{selected.icao}</h3>
+                <span className="text-[11px] text-slate-500">Carregando METAR…</span>
+              </div>
+              <Skeleton className="h-24 w-full rounded-lg" />
+              <Skeleton className="h-40 w-full rounded-lg" />
+            </div>
+          ) : (
+            <>
           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
             <div>
               <div className="flex flex-wrap items-center gap-2">
@@ -575,6 +658,8 @@ function ConditionsBoard({
               </div>
             }
           />
+            </>
+          )}
         </div>
       ) : null}
     </div>
@@ -611,9 +696,22 @@ function NotamCard({ notam }: { notam: AiswebNotam }) {
 
 export function AiswebTab() {
   const { showToast } = useToast();
-  const [dashboard, setDashboard] = useState<AiswebDashboard | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [dashboard, setDashboard] = useState<AiswebDashboard | null>(() => {
+    const cached = readBootstrapCache();
+    if (!cached) return null;
+    return {
+      settings: cached.settings,
+      watchlist: cached.watchlist,
+      airports: cached.watchlist.icaoCodes.map(placeholderAirport),
+      notams: [],
+    };
+  });
+  const [loading, setLoading] = useState(() => !readBootstrapCache());
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingIcaos, setLoadingIcaos] = useState<Set<string>>(() => {
+    const cached = readBootstrapCache();
+    return new Set(cached?.watchlist.icaoCodes || []);
+  });
   const [savingWatchlist, setSavingWatchlist] = useState(false);
   const [togglingNotamIcao, setTogglingNotamIcao] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -628,29 +726,120 @@ export function AiswebTab() {
   const [selectedIcao, setSelectedIcao] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<StatusTooltipState>(null);
 
+  const mergeAirport = useCallback((airport: AiswebAirportBundle) => {
+    setDashboard((prev) => {
+      if (!prev) return prev;
+      const exists = prev.airports.some((item) => item.icao === airport.icao);
+      const airports = exists
+        ? prev.airports.map((item) => (item.icao === airport.icao ? airport : item))
+        : [...prev.airports, airport];
+      const ordered = prev.watchlist.icaoCodes
+        .map((icao) => airports.find((item) => item.icao === icao))
+        .filter((item): item is AiswebAirportBundle => Boolean(item));
+      const extras = airports.filter((item) => !prev.watchlist.icaoCodes.includes(item.icao));
+      const nextAirports = [...ordered, ...extras];
+      const notams = sortNotamsClient(nextAirports.flatMap((item) => item.notams || []));
+      return { ...prev, airports: nextAirports, notams };
+    });
+    setLoadingIcaos((prev) => {
+      if (!prev.has(airport.icao)) return prev;
+      const next = new Set(prev);
+      next.delete(airport.icao);
+      return next;
+    });
+  }, []);
+
+  const loadAirportsProgressive = useCallback(
+    async (icaoCodes: string[], opts?: { replacePlaceholders?: boolean }) => {
+      const unique = [...new Set(icaoCodes.map(normalizeIcao).filter((c) => c.length === 4))];
+      if (!unique.length) {
+        setLoadingIcaos(new Set());
+        return;
+      }
+      if (opts?.replacePlaceholders) {
+        setDashboard((prev) =>
+          prev
+            ? {
+                ...prev,
+                airports: unique.map(
+                  (icao) => prev.airports.find((a) => a.icao === icao && a.met.metar) || placeholderAirport(icao),
+                ),
+                notams: prev.notams.filter((n) => unique.includes(n.icao)),
+              }
+            : prev,
+        );
+      }
+      setLoadingIcaos(new Set(unique));
+      await Promise.all(
+        unique.map(async (icao) => {
+          try {
+            const airport = await lookupAiswebIcao(icao);
+            mergeAirport(airport);
+          } catch (error) {
+            mergeAirport({
+              ...placeholderAirport(icao),
+              error: error instanceof Error ? error.message : "Falha ao carregar.",
+              met: {
+                icao,
+                metar: "",
+                taf: "",
+                parsed: null,
+                error: error instanceof Error ? error.message : "Falha ao carregar.",
+              },
+            });
+          }
+        }),
+      );
+    },
+    [mergeAirport],
+  );
+
   const loadDashboard = useCallback(
     async (opts?: { soft?: boolean }) => {
       if (opts?.soft) setRefreshing(true);
-      else setLoading(true);
       setLoadError(null);
       try {
-        const next = await getAiswebDashboard();
-        setDashboard(next);
-        setLastFetchedAt(new Date().toISOString());
-        setSelectedIcao((prev) => {
-          if (prev && next.airports.some((a) => a.icao === prev)) return prev;
-          return next.airports[0]?.icao ?? prev;
+        const bootstrap = await getAiswebBootstrap();
+        writeBootstrapCache(bootstrap.settings, bootstrap.watchlist);
+        setDashboard((prev) => {
+          const keepLoaded =
+            opts?.soft
+              ? new Map<string, AiswebAirportBundle>()
+              : new Map(
+                  (prev?.airports || [])
+                    .filter((a) => a.met.metar || a.met.parsed)
+                    .map((a) => [a.icao, a] as const),
+                );
+          const airports = bootstrap.watchlist.icaoCodes.map(
+            (icao) => keepLoaded.get(icao) || placeholderAirport(icao),
+          );
+          return {
+            settings: bootstrap.settings,
+            watchlist: bootstrap.watchlist,
+            airports,
+            notams: sortNotamsClient(airports.flatMap((a) => a.notams || [])),
+          };
         });
+        setSelectedIcao((prev) => {
+          if (prev && bootstrap.watchlist.icaoCodes.includes(prev)) return prev;
+          return bootstrap.watchlist.icaoCodes[0] ?? prev;
+        });
+        setLoading(false);
+        await loadAirportsProgressive(bootstrap.watchlist.icaoCodes);
+        setLastFetchedAt(new Date().toISOString());
       } catch (error) {
         const message = error instanceof Error ? error.message : "Falha ao carregar AISWEB.";
         setLoadError(message);
-        showToast({ variant: "error", message });
+        setDashboard((prev) => {
+          if (!prev) showToast({ variant: "error", message });
+          return prev;
+        });
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [showToast],
+    [loadAirportsProgressive, showToast],
   );
 
   useEffect(() => {
@@ -705,18 +894,41 @@ export function AiswebTab() {
     setSavingWatchlist(true);
     try {
       const saved = await saveAiswebWatchlist(unique, alerts);
-      setDashboard((prev) =>
-        prev
-          ? {
-              ...prev,
-              watchlist: saved,
-              airports: prev.airports.filter((a) => saved.icaoCodes.includes(a.icao)),
-              notams: prev.notams.filter((n) => saved.icaoCodes.includes(n.icao)),
-            }
-          : prev,
-      );
+      if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
+      const previousCodes = dashboard?.watchlist.icaoCodes || [];
+      const added = unique.filter((icao) => !previousCodes.includes(icao));
+      setDashboard((prev) => {
+        if (!prev) {
+          return {
+            settings: { defaultIcao: "SBGR", minimums: [], updatedAt: null },
+            watchlist: saved,
+            airports: unique.map(placeholderAirport),
+            notams: [],
+          };
+        }
+        const byIcao = new Map(prev.airports.map((a) => [a.icao, a] as const));
+        const airports = unique.map((icao) => byIcao.get(icao) || placeholderAirport(icao));
+        return {
+          ...prev,
+          watchlist: saved,
+          airports,
+          notams: sortNotamsClient(airports.flatMap((a) => a.notams || [])),
+        };
+      });
+      if (added.length) {
+        setLoadingIcaos((prev) => {
+          const next = new Set(prev);
+          for (const icao of added) next.add(icao);
+          return next;
+        });
+        void loadAirportsProgressive(added);
+      } else {
+        setLoadingIcaos((prev) => {
+          const next = new Set([...prev].filter((icao) => unique.includes(icao)));
+          return next;
+        });
+      }
       showToast({ variant: "success", message: successMessage });
-      await loadDashboard({ soft: true });
     } catch (error) {
       showToast({
         variant: "error",
@@ -930,7 +1142,7 @@ export function AiswebTab() {
         accent="cyan"
       />
 
-      {loading ? (
+      {loading && !dashboard ? (
         <div className="space-y-3">
           <Skeleton className="h-40 w-full rounded-xl" />
           <Skeleton className="h-28 w-full rounded-xl" />
@@ -946,7 +1158,7 @@ export function AiswebTab() {
         </div>
       ) : null}
 
-      {!loading && dashboard && subTab === "condicoes" ? (
+      {dashboard && subTab === "condicoes" ? (
         <ConditionsBoard
           airports={conditionAirports}
           minimums={minimums}
@@ -960,11 +1172,17 @@ export function AiswebTab() {
           notamAlerts={notamAlerts}
           onToggleNotamAlert={(icao, enabled) => void handleToggleNotamAlert(icao, enabled)}
           togglingNotamIcao={togglingNotamIcao}
+          loadingIcaos={loadingIcaos}
         />
       ) : null}
 
-      {!loading && dashboard && subTab === "notams" ? (
+      {dashboard && subTab === "notams" ? (
         <section className="space-y-3">
+          {loadingIcaos.size > 0 ? (
+            <p className="text-[11px] text-slate-500">
+              Carregando NOTAMs… ({watchlist.length - loadingIcaos.size}/{watchlist.length})
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-slate-500">
               {filteredNotams.length} NOTAM{filteredNotams.length === 1 ? "" : "s"}

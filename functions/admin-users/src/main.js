@@ -23781,6 +23781,15 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { dashboard });
     }
 
+    if (action === "getAiswebBootstrap") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const bootstrap = await aiswebService.buildBootstrap(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        actorUserId,
+      );
+      return jsonResponse(res, 200, { bootstrap });
+    }
+
     if (action === "lookupAiswebIcao") {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);

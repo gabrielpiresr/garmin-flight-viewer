@@ -12,6 +12,10 @@ type AiswebResponse = {
   settings?: AiswebPlatformSettings;
   watchlist?: AiswebWatchlist;
   dashboard?: AiswebDashboard;
+  bootstrap?: {
+    settings: AiswebPlatformSettings;
+    watchlist: AiswebWatchlist;
+  };
   airport?: AiswebAirportBundle;
   chart?: {
     contentType: string;
@@ -44,17 +48,34 @@ async function execute(payload: Record<string, unknown>): Promise<AiswebResponse
   return response;
 }
 
+function normalizeWatchlist(watchlist?: AiswebWatchlist | null): AiswebWatchlist {
+  return {
+    icaoCodes: watchlist?.icaoCodes || [],
+    notamAlerts: watchlist?.notamAlerts || {},
+    updatedAt: watchlist?.updatedAt || null,
+  };
+}
+
+export async function getAiswebBootstrap(): Promise<{
+  settings: AiswebPlatformSettings;
+  watchlist: AiswebWatchlist;
+}> {
+  const response = await execute({ action: "getAiswebBootstrap" });
+  if (!response.bootstrap?.settings || !response.bootstrap?.watchlist) {
+    throw new Error("Bootstrap AISWEB não retornado.");
+  }
+  return {
+    settings: response.bootstrap.settings,
+    watchlist: normalizeWatchlist(response.bootstrap.watchlist),
+  };
+}
+
 export async function getAiswebDashboard(): Promise<AiswebDashboard> {
   const response = await execute({ action: "getAiswebDashboard" });
   if (!response.dashboard) throw new Error("Dashboard AISWEB não retornado.");
-  const watchlist = response.dashboard.watchlist || { icaoCodes: [], notamAlerts: {}, updatedAt: null };
   return {
     ...response.dashboard,
-    watchlist: {
-      icaoCodes: watchlist.icaoCodes || [],
-      notamAlerts: watchlist.notamAlerts || {},
-      updatedAt: watchlist.updatedAt || null,
-    },
+    watchlist: normalizeWatchlist(response.dashboard.watchlist),
   };
 }
 

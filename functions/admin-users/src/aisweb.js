@@ -834,14 +834,16 @@ function mergeSeenNotamIds(previousIds, currentIds) {
   return out;
 }
 
-async function buildDashboard(deps, userId) {
+async function buildBootstrap(deps, userId) {
   const settings = await loadSettings(deps);
   const watchlistFull = await loadWatchlist(deps, userId, settings.defaultIcao);
   const watchlist = publicWatchlist(watchlistFull, watchlistFull.updatedAt);
-  const airports = [];
-  for (const icao of watchlist.icaoCodes) {
-    airports.push(await fetchAirportBundle(icao));
-  }
+  return { settings, watchlist };
+}
+
+async function buildDashboard(deps, userId) {
+  const { settings, watchlist } = await buildBootstrap(deps, userId);
+  const airports = await Promise.all(watchlist.icaoCodes.map((icao) => fetchAirportBundle(icao)));
   const notams = sortNotams(airports.flatMap((item) => item.notams || []));
   return { settings, watchlist, airports, notams };
 }
@@ -860,6 +862,7 @@ module.exports = {
   mergeSeenNotamIds,
   fetchNotams,
   fetchAirportBundle,
+  buildBootstrap,
   buildDashboard,
   publicSettings,
   fetchChartPreview,
