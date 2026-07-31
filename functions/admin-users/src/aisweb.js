@@ -291,11 +291,14 @@ async function fetchMet(icaoCode) {
   }
 }
 
-async function fetchNotams(icaoCode) {
+async function fetchNotams(icaoCode, options = {}) {
   const icao = normalizeIcao(icaoCode);
   if (!icao || icao.length !== 4) return [];
-  const cached = cacheGet(notamCache, icao);
-  if (cached) return cached;
+  const bypassCache = options?.bypassCache === true;
+  if (!bypassCache) {
+    const cached = cacheGet(notamCache, icao);
+    if (cached) return cached;
+  }
   try {
     const xml = await aiswebFetch("notam", icao);
     const items = parseNotamItems(xml, icao);
@@ -698,11 +701,56 @@ async function saveSettings(deps, input) {
   return next;
 }
 
+function sanitizeNotamAlerts(rawAlerts, icaoCodes) {
+  const out = {};
+  const allowed = new Set(icaoCodes);
+  const source =
+    rawAlerts && typeof rawAlerts === "object" && !Array.isArray(rawAlerts) ? rawAlerts : {};
+  for (const icao of allowed) {
+    out[icao] = source[icao] === true;
+  }
+  return out;
+}
+
+function sanitizeSeenNotamIds(rawSeen, icaoCodes, notamAlerts) {
+  const out = {};
+  const allowed = new Set(icaoCodes.filter((icao) => notamAlerts[icao] === true));
+  const source = rawSeen && typeof rawSeen === "object" && !Array.isArray(rawSeen) ? rawSeen : {};
+  for (const icao of allowed) {
+    const list = Array.isArray(source[icao]) ? source[icao] : null;
+    if (!list) continue;
+    const ids = [];
+    const seen = new Set();
+    for (const value of list) {
+      const id = cleanString(value);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+      if (ids.length >= 200) break;
+    }
+    out[icao] = ids;
+  }
+  return out;
+}
+
+function publicWatchlist(raw, updatedAt) {
+  const icaoCodes = sanitizeIcaoList(raw?.icaoCodes, { allowEmpty: true });
+  const notamAlerts = sanitizeNotamAlerts(raw?.notamAlerts, icaoCodes);
+  return {
+    icaoCodes,
+    notamAlerts,
+    updatedAt: updatedAt || raw?.updatedAt || null,
+  };
+}
+
 async function loadWatchlist(deps, userId, defaultIcao) {
   const doc = await deps.getSettingDoc(watchlistKey(userId));
   if (!doc) {
+    const icaoCodes = sanitizeIcaoList([], { fallbackDefault: defaultIcao });
     return {
-      icaoCodes: sanitizeIcaoList([], { fallbackDefault: defaultIcao }),
+      icaoCodes,
+      notamAlerts: sanitizeNotamAlerts({}, icaoCodes),
+      seenNotamIds: {},
       updatedAt: null,
     };
   }
@@ -713,30 +761,83 @@ async function loadWatchlist(deps, userId, defaultIcao) {
     raw = {};
   }
   const savedCodes = sanitizeIcaoList(raw.icaoCodes, { allowEmpty: true });
+  const icaoCodes = savedCodes.length
+    ? savedCodes
+    : sanitizeIcaoList([], { fallbackDefault: defaultIcao });
+  const notamAlerts = sanitizeNotamAlerts(raw.notamAlerts, icaoCodes);
   return {
-    // Lista vazia (ou primeira visita) usa o aeródromo padrão da escola.
-    icaoCodes: savedCodes.length
-      ? savedCodes
-      : sanitizeIcaoList([], { fallbackDefault: defaultIcao }),
+    icaoCodes,
+    notamAlerts,
+    seenNotamIds: sanitizeSeenNotamIds(raw.seenNotamIds, icaoCodes, notamAlerts),
     updatedAt: doc.$updatedAt || raw.updatedAt || null,
   };
 }
 
-async function saveWatchlist(deps, userId, icaoCodes) {
+async function saveWatchlist(deps, userId, input = {}) {
+  const previous = await loadWatchlist(deps, userId, "");
+  const icaoCodes = sanitizeIcaoList(
+    Array.isArray(input) ? input : input?.icaoCodes,
+    { allowEmpty: true },
+  );
+  const notamAlerts = sanitizeNotamAlerts(
+    Array.isArray(input)
+      ? previous.notamAlerts
+      : input?.notamAlerts != null
+        ? input.notamAlerts
+        : previous.notamAlerts,
+    icaoCodes,
+  );
+
+  // Ao ligar avisos, grava baseline atual (sem e-mail). Ao desligar, limpa o histórico.
+  const nextSeen = { ...(previous.seenNotamIds || {}) };
+  for (const icao of Object.keys(nextSeen)) {
+    if (!icaoCodes.includes(icao) || !notamAlerts[icao]) delete nextSeen[icao];
+  }
+  for (const icao of icaoCodes) {
+    const wasOn = previous.notamAlerts?.[icao] === true;
+    const isOn = notamAlerts[icao] === true;
+    if (isOn && !wasOn) {
+      const items = await fetchNotams(icao, { bypassCache: true }).catch(() => []);
+      nextSeen[icao] = items.map((item) => cleanString(item.id)).filter(Boolean).slice(0, 200);
+    }
+  }
+
   const next = {
-    icaoCodes: sanitizeIcaoList(icaoCodes, { allowEmpty: true }),
+    icaoCodes,
+    notamAlerts,
+    seenNotamIds: sanitizeSeenNotamIds(nextSeen, icaoCodes, notamAlerts),
     updatedAt: nowIso(),
   };
   const saved = await deps.upsertPlatformSettingDoc(watchlistKey(userId), next);
   if (!saved) {
     throw Object.assign(new Error("Não foi possível salvar a watchlist AISWEB."), { status: 500 });
   }
-  return next;
+  return publicWatchlist(next, next.updatedAt);
+}
+
+function userIdFromWatchlistKey(key) {
+  const raw = cleanString(key);
+  if (!raw.startsWith(AISWEB_WATCHLIST_PREFIX)) return "";
+  return cleanString(raw.slice(AISWEB_WATCHLIST_PREFIX.length));
+}
+
+function mergeSeenNotamIds(previousIds, currentIds) {
+  const out = [];
+  const seen = new Set();
+  for (const id of [...currentIds, ...(previousIds || [])]) {
+    const value = cleanString(id);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+    if (out.length >= 200) break;
+  }
+  return out;
 }
 
 async function buildDashboard(deps, userId) {
   const settings = await loadSettings(deps);
-  const watchlist = await loadWatchlist(deps, userId, settings.defaultIcao);
+  const watchlistFull = await loadWatchlist(deps, userId, settings.defaultIcao);
+  const watchlist = publicWatchlist(watchlistFull, watchlistFull.updatedAt);
   const airports = [];
   for (const icao of watchlist.icaoCodes) {
     airports.push(await fetchAirportBundle(icao));
@@ -747,12 +848,17 @@ async function buildDashboard(deps, userId) {
 
 module.exports = {
   AISWEB_SETTINGS_KEY,
+  AISWEB_WATCHLIST_PREFIX,
   DEFAULT_MINIMUMS,
   normalizeIcao,
   loadSettings,
   saveSettings,
   loadWatchlist,
   saveWatchlist,
+  publicWatchlist,
+  userIdFromWatchlistKey,
+  mergeSeenNotamIds,
+  fetchNotams,
   fetchAirportBundle,
   buildDashboard,
   publicSettings,

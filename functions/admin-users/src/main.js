@@ -21649,6 +21649,206 @@ async function runFlightReminderScan(actorUserId) {
   return { processed };
 }
 
+function formatAiswebNotamDate(value) {
+  const raw = cleanString(value);
+  if (!raw) return "—";
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) return raw;
+  return dt.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }) + " UTC";
+}
+
+async function resolveAiswebPortalPath(userId) {
+  const profile = await getProfileByUserId(userId).catch(() => null);
+  const portal = await resolveProfilePortal(profile).catch(() => "aluno");
+  if (portal === "admin") return "/admin/aisweb";
+  if (portal === "instrutor") return "/instrutor/aisweb";
+  return "/aluno/aisweb";
+}
+
+async function sendAiswebNotamAlertEmail(userId, userEmail, userName, notam, brand, emailSettings) {
+  const path = await resolveAiswebPortalPath(userId);
+  const details = [
+    ["Aeródromo", cleanString(notam.icao) || "—"],
+    ["Número", cleanString(notam.number || notam.id) || "—"],
+    ["Status", cleanString(notam.status) || "—"],
+    ["Tipo", cleanString(notam.type) || "—"],
+    ["Categoria", cleanString(notam.category) || "—"],
+    ["Q-code", cleanString(notam.qCode) || "—"],
+    ["Emitido", formatAiswebNotamDate(notam.issuedAt)],
+    ["Válido de", formatAiswebNotamDate(notam.validFrom)],
+    ["Válido até", formatAiswebNotamDate(notam.validTo)],
+    ["Horário", cleanString(notam.schedule) || "—"],
+    ["Limite inferior", cleanString(notam.lowerLimit) || "—"],
+    ["Limite superior", cleanString(notam.upperLimit) || "—"],
+  ];
+  if (notam.airportName || notam.city || notam.uf) {
+    details.push([
+      "Local",
+      [notam.airportName, notam.city, notam.uf].map(cleanString).filter(Boolean).join(" · ") || "—",
+    ]);
+  }
+  const textBody = cleanString(notam.text) || "Sem texto.";
+  const message = {
+    eyebrow: "AISWEB · NOTAM",
+    title: `Novo NOTAM · ${cleanString(notam.icao) || "AD"}`,
+    intro: `Foi publicado um novo NOTAM para ${cleanString(notam.icao) || "o aeródromo"}.`,
+    body: textBody,
+    details,
+    ctaLabel: "Consultar no AISWEB",
+    url: path,
+  };
+  return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
+}
+
+async function runAiswebNotamAlertScan(log = () => {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, emailsSent: 0 };
+  }
+  const docs = await listAllDocuments(PLATFORM_SETTINGS_COLLECTION_ID, [
+    sdk.Query.startsWith("key", aiswebService.AISWEB_WATCHLIST_PREFIX),
+  ]).catch(() => []);
+  if (!docs.length) {
+    return { ok: true, scannedUsers: 0, emailsSent: 0, seeded: 0, errors: 0 };
+  }
+
+  const [{ settings: emailSettings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+
+  let scannedUsers = 0;
+  let emailsSent = 0;
+  let seeded = 0;
+  let errors = 0;
+  const notamByIcao = new Map();
+
+  async function notamsFor(icao) {
+    if (notamByIcao.has(icao)) return notamByIcao.get(icao);
+    const items = await aiswebService.fetchNotams(icao, { bypassCache: true });
+    notamByIcao.set(icao, items);
+    return items;
+  }
+
+  for (const doc of docs) {
+    const userId = aiswebService.userIdFromWatchlistKey(doc.key);
+    if (!userId) continue;
+
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const watchlist = aiswebService.publicWatchlist(raw, doc.$updatedAt || null);
+    const alertIcaos = watchlist.icaoCodes.filter((icao) => watchlist.notamAlerts?.[icao] === true);
+    if (!alertIcaos.length) continue;
+    scannedUsers += 1;
+
+    const previousSeen =
+      raw.seenNotamIds && typeof raw.seenNotamIds === "object" && !Array.isArray(raw.seenNotamIds)
+        ? raw.seenNotamIds
+        : {};
+    const nextSeen = { ...previousSeen };
+    let changed = false;
+    const newNotams = [];
+
+    for (const icao of alertIcaos) {
+      let items = [];
+      try {
+        items = await notamsFor(icao);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-notam] fetch failed ${icao}: ${err?.message || err}`);
+        continue;
+      }
+      const currentIds = items.map((item) => cleanString(item.id)).filter(Boolean);
+      const baseline = Array.isArray(previousSeen[icao]) ? previousSeen[icao] : null;
+      if (baseline == null) {
+        nextSeen[icao] = currentIds.slice(0, 200);
+        changed = true;
+        seeded += 1;
+        continue;
+      }
+      const known = new Set(baseline.map(cleanString).filter(Boolean));
+      for (const item of items) {
+        const id = cleanString(item.id);
+        if (!id || known.has(id)) continue;
+        newNotams.push(item);
+      }
+      const merged = aiswebService.mergeSeenNotamIds(baseline, currentIds);
+      if (JSON.stringify(merged) !== JSON.stringify(baseline)) {
+        nextSeen[icao] = merged;
+        changed = true;
+      }
+    }
+
+    // Remove seen entries for ICAOs no longer alerting
+    for (const icao of Object.keys(nextSeen)) {
+      if (!alertIcaos.includes(icao)) {
+        delete nextSeen[icao];
+        changed = true;
+      }
+    }
+
+    if (newNotams.length) {
+      let email = "";
+      let name = "";
+      try {
+        const [actor, profile] = await Promise.all([
+          users.get({ userId }).catch(() => null),
+          getProfileByUserId(userId).catch(() => null),
+        ]);
+        email = cleanString(actor?.email || profile?.email);
+        name = cleanString(profile?.full_name || actor?.name || email);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-notam] user lookup failed ${userId}: ${err?.message || err}`);
+      }
+
+      if (email) {
+        for (const notam of newNotams) {
+          try {
+            const result = await sendAiswebNotamAlertEmail(
+              userId,
+              email,
+              name,
+              notam,
+              brand,
+              emailSettings,
+            );
+            if (result?.status === "sent") emailsSent += 1;
+          } catch (err) {
+            errors += 1;
+            log(`[aisweb-notam] email failed ${userId}/${notam.id}: ${err?.message || err}`);
+          }
+        }
+      }
+    }
+
+    if (changed || newNotams.length) {
+      const payload = {
+        icaoCodes: watchlist.icaoCodes,
+        notamAlerts: watchlist.notamAlerts,
+        seenNotamIds: nextSeen,
+        updatedAt: nowIso(),
+      };
+      await upsertPlatformSettingDoc(doc.key, payload).catch((err) => {
+        errors += 1;
+        log(`[aisweb-notam] save seen failed ${userId}: ${err?.message || err}`);
+      });
+    }
+  }
+
+  return { ok: true, scannedUsers, emailsSent, seeded, errors };
+}
+
 async function registerPushSubscription(actorUserId, subscription) {
   if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
   if (!PUSH_SUBSCRIPTIONS_COLLECTION_ID) throw Object.assign(new Error("Colecao de push nao configurada."), { status: 500 });
@@ -22874,6 +23074,8 @@ module.exports = async ({ req, res, log, error }) => {
       ]);
       const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
+      const aiswebNotamAlerts = await runAiswebNotamAlertScan(log)
+        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
         await recordSagaAllUsersSyncFailure(cronSyncInput, err);
@@ -22886,6 +23088,7 @@ module.exports = async ({ req, res, log, error }) => {
         sagaAllUsersSync: allUsersSyncResult,
         automationScan,
         wppTomorrowFlightReminder,
+        aiswebNotamAlerts,
       });
     }
 
@@ -23528,7 +23731,10 @@ module.exports = async ({ req, res, log, error }) => {
       const watchlist = await aiswebService.saveWatchlist(
         { getSettingDoc, upsertPlatformSettingDoc },
         actorUserId,
-        payload.icaoCodes || payload.watchlist?.icaoCodes || [],
+        {
+          icaoCodes: payload.icaoCodes || payload.watchlist?.icaoCodes || [],
+          notamAlerts: payload.notamAlerts || payload.watchlist?.notamAlerts,
+        },
       );
       return jsonResponse(res, 200, { watchlist });
     }

@@ -346,6 +346,9 @@ function ConditionsBoard({
   onDismissTemporary,
   onAddTemporary,
   addingTemporary,
+  notamAlerts,
+  onToggleNotamAlert,
+  togglingNotamIcao,
 }: {
   airports: AiswebAirportBundle[];
   minimums: AiswebOperationalMinimum[];
@@ -356,6 +359,9 @@ function ConditionsBoard({
   onDismissTemporary: () => void;
   onAddTemporary: () => void;
   addingTemporary: boolean;
+  notamAlerts: Record<string, boolean>;
+  onToggleNotamAlert: (icao: string, enabled: boolean) => void;
+  togglingNotamIcao: string | null;
 }) {
   const selected = airports.find((a) => a.icao === selectedIcao) ?? airports[0] ?? null;
   const selectedParsed = resolvedParsed(selected);
@@ -393,6 +399,9 @@ function ConditionsBoard({
               <th className="px-2 py-2 font-semibold">Nuvens</th>
               <th className="px-2 py-2 font-semibold">Obs</th>
               <th className="px-2 py-2 font-semibold">Status</th>
+              <th className="px-2 py-2 font-semibold" title="Avisos de NOTAM por e-mail">
+                NOTAM
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -443,6 +452,37 @@ function ConditionsBoard({
                   </td>
                   <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
                     <StatusCluster checks={checks} setTooltip={setTooltip} />
+                  </td>
+                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    {isTemporary ? (
+                      <span className="text-[10px] text-slate-600">—</span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={notamAlerts[airport.icao] === true}
+                        aria-label={
+                          notamAlerts[airport.icao]
+                            ? `Desligar avisos de NOTAM para ${airport.icao}`
+                            : `Ligar avisos de NOTAM para ${airport.icao}`
+                        }
+                        disabled={togglingNotamIcao === airport.icao}
+                        onClick={() =>
+                          onToggleNotamAlert(airport.icao, !(notamAlerts[airport.icao] === true))
+                        }
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition ${
+                          notamAlerts[airport.icao]
+                            ? "border-cyan-400/60 bg-cyan-500/80"
+                            : "border-slate-600 bg-slate-800"
+                        } ${togglingNotamIcao === airport.icao ? "opacity-60" : "hover:brightness-110"}`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition ${
+                            notamAlerts[airport.icao] ? "translate-x-4" : "translate-x-0.5"
+                          }`}
+                        />
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -575,6 +615,7 @@ export function AiswebTab() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [savingWatchlist, setSavingWatchlist] = useState(false);
+  const [togglingNotamIcao, setTogglingNotamIcao] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
   const [addInput, setAddInput] = useState("");
   const [lookupInput, setLookupInput] = useState("");
@@ -617,6 +658,7 @@ export function AiswebTab() {
   }, [loadDashboard]);
 
   const watchlist = dashboard?.watchlist.icaoCodes ?? [];
+  const notamAlerts = dashboard?.watchlist.notamAlerts ?? {};
   const minimums = dashboard?.settings.minimums ?? [];
 
   const conditionAirports = useMemo(() => {
@@ -651,11 +693,18 @@ export function AiswebTab() {
     [dashboard],
   );
 
-  async function persistWatchlist(nextCodes: string[], successMessage: string) {
+  async function persistWatchlist(
+    nextCodes: string[],
+    successMessage: string,
+    nextAlerts?: Record<string, boolean>,
+  ) {
     const unique = [...new Set(nextCodes.map(normalizeIcao).filter((c) => c.length === 4))];
+    const alerts =
+      nextAlerts ??
+      Object.fromEntries(unique.map((icao) => [icao, dashboard?.watchlist.notamAlerts?.[icao] === true]));
     setSavingWatchlist(true);
     try {
-      const saved = await saveAiswebWatchlist(unique);
+      const saved = await saveAiswebWatchlist(unique, alerts);
       setDashboard((prev) =>
         prev
           ? {
@@ -675,6 +724,30 @@ export function AiswebTab() {
       });
     } finally {
       setSavingWatchlist(false);
+    }
+  }
+
+  async function handleToggleNotamAlert(icao: string, enabled: boolean) {
+    const code = normalizeIcao(icao);
+    if (!code || !watchlist.includes(code)) return;
+    const nextAlerts = { ...notamAlerts, [code]: enabled };
+    setTogglingNotamIcao(code);
+    try {
+      const saved = await saveAiswebWatchlist(watchlist, nextAlerts);
+      setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
+      showToast({
+        variant: "success",
+        message: enabled
+          ? `Avisos de NOTAM ligados para ${code}.`
+          : `Avisos de NOTAM desligados para ${code}.`,
+      });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha ao atualizar avisos.",
+      });
+    } finally {
+      setTogglingNotamIcao(null);
     }
   }
 
@@ -884,6 +957,9 @@ export function AiswebTab() {
           onDismissTemporary={handleDismissTemporary}
           onAddTemporary={() => void handleAddLookupToWatchlist()}
           addingTemporary={addingLookup || savingWatchlist}
+          notamAlerts={notamAlerts}
+          onToggleNotamAlert={(icao, enabled) => void handleToggleNotamAlert(icao, enabled)}
+          togglingNotamIcao={togglingNotamIcao}
         />
       ) : null}
 

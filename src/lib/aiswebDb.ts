@@ -47,7 +47,15 @@ async function execute(payload: Record<string, unknown>): Promise<AiswebResponse
 export async function getAiswebDashboard(): Promise<AiswebDashboard> {
   const response = await execute({ action: "getAiswebDashboard" });
   if (!response.dashboard) throw new Error("Dashboard AISWEB não retornado.");
-  return response.dashboard;
+  const watchlist = response.dashboard.watchlist || { icaoCodes: [], notamAlerts: {}, updatedAt: null };
+  return {
+    ...response.dashboard,
+    watchlist: {
+      icaoCodes: watchlist.icaoCodes || [],
+      notamAlerts: watchlist.notamAlerts || {},
+      updatedAt: watchlist.updatedAt || null,
+    },
+  };
 }
 
 export async function lookupAiswebIcao(icaoCode: string): Promise<AiswebAirportBundle> {
@@ -59,13 +67,21 @@ export async function lookupAiswebIcao(icaoCode: string): Promise<AiswebAirportB
   return response.airport;
 }
 
-export async function saveAiswebWatchlist(icaoCodes: string[]): Promise<AiswebWatchlist> {
+export async function saveAiswebWatchlist(
+  icaoCodes: string[],
+  notamAlerts?: Record<string, boolean>,
+): Promise<AiswebWatchlist> {
   const response = await execute({
     action: "saveAiswebWatchlist",
     icaoCodes,
+    ...(notamAlerts ? { notamAlerts } : {}),
   });
   if (!response.watchlist) throw new Error("Watchlist AISWEB não retornada.");
-  return response.watchlist;
+  return {
+    icaoCodes: response.watchlist.icaoCodes || [],
+    notamAlerts: response.watchlist.notamAlerts || {},
+    updatedAt: response.watchlist.updatedAt || null,
+  };
 }
 
 export async function getAiswebSettings(): Promise<AiswebPlatformSettings> {

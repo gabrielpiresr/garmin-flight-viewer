@@ -21,6 +21,8 @@ export type AiswebPlatformSettingsInput = {
 
 export type AiswebWatchlist = {
   icaoCodes: string[];
+  /** Por ICAO: se true, envia e-mail quando sair NOTAM novo. */
+  notamAlerts: Record<string, boolean>;
   updatedAt: string | null;
 };
 
