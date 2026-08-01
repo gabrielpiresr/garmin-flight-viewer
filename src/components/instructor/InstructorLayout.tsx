@@ -39,6 +39,7 @@ const ContractsUserTab = lazy(() => import("../ContractsUserTab").then((module) 
 const ReferAndEarnTab = lazy(() => import("../ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
 const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
+const PanelTab = lazy(() => import("../PanelTab").then((module) => ({ default: module.PanelTab })));
 
 type InstructorSection =
   | "home"
@@ -60,7 +61,8 @@ type InstructorSection =
   | "indique-ganhe"
   | "reports"
   | "aisweb"
-  | "album";
+  | "album"
+  | "painel";
 
 type NavItem = {
   id: InstructorSection;
@@ -141,6 +143,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm0 8.625a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25zM15.375 12a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0zM7.5 10.875a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "painel",
+    label: "Painel",
+    sublabel: "Instrumentos interativos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M2.25 6A2.25 2.25 0 014.5 3.75h15A2.25 2.25 0 0121.75 6v12A2.25 2.25 0 0119.5 20.25h-15A2.25 2.25 0 012.25 18V6zm4.5 3a.75.75 0 000 1.5h3.75a.75.75 0 000-1.5H6.75zm0 3.75a.75.75 0 000 1.5h7.5a.75.75 0 000-1.5h-7.5zm0 3.75a.75.75 0 000 1.5H12a.75.75 0 000-1.5H6.75zM15.75 9a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H16.5a.75.75 0 01-.75-.75V9zm.75 3.75a.75.75 0 00-.75.75v.008c0 .414.336.75.75.75h.008a.75.75 0 00.75-.75V13.5a.75.75 0 00-.75-.75H16.5z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -280,6 +292,7 @@ const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "students",
   "users",
   "maneuvers",
+  "painel",
   "manuals",
   "manuais-internos",
   "reports",
@@ -301,6 +314,7 @@ const SECTION_ROUTES = [
   { id: "manuals", path: "/instrutor/manuais" },
   { id: "manuais-internos", path: "/instrutor/manuais-internos" },
   { id: "maneuvers", path: "/instrutor/manobras" },
+  { id: "painel", path: "/instrutor/painel" },
   { id: "students", path: "/instrutor/alunos" },
   { id: "users", path: "/instrutor/usuarios" },
   { id: "profile", path: "/instrutor/perfil" },
@@ -632,6 +646,13 @@ export function InstructorLayout() {
             <div hidden={section !== "maneuvers"}>
               <LazyTab>
                 <ManobrasTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("painel") && (
+            <div hidden={section !== "painel"}>
+              <LazyTab>
+                <PanelTab />
               </LazyTab>
             </div>
           )}

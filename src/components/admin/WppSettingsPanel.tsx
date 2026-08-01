@@ -22,6 +22,7 @@ import type {
   WppTemplate,
   WppTemplateCategory,
   WppTemplateInput,
+  WppTransactionalTemplateSettings,
   WppTomorrowFlightReminderTemplateSettings,
 } from "../../types/wpp";
 import { Skeleton } from "../ui/Skeleton";
@@ -52,8 +53,22 @@ const DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE: WppTomorrowFlightReminderTempla
   bodyParameters: ["student_name", "flight_date", "start_time", "aircraft", "mission", "instructor"],
 };
 
+const DEFAULT_PAYMENT_RECEIVED_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "pagamento_recebido_cakto",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "product", "amount", "payment_method", "booking_url"],
+};
+
+const DEFAULT_BOOKING_REQUESTED_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "solicitacao_agendamento_voo",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "flight_date", "start_time", "aircraft", "duration", "status"],
+};
+
 const DEFAULT_INCOMING_AUTO_REPLY_MESSAGE =
-  "Este bot apenas envia mensagens automaticas e nao recebe mensagens por este canal.";
+  "Oi{{nickname_suffix}}! Este bot envia mensagens automaticas e tambem responde alguns pedidos por este canal.";
 
 const DEFAULT_INCOMING_AUTO_REPLY: WppIncomingAutoReplySettings = {
   enabled: true,
@@ -74,6 +89,7 @@ const WPP_BOT_ACTION_LABEL: Record<WppIncomingActionType, string> = {
   send_flight_credit_purchase_options: "Enviar op\u00e7\u00f5es de compra de horas",
   send_flight_credit_custom_purchase_link: "Enviar link de compra personalizada",
   create_flight_credit_checkout: "Gerar checkout Cakto de horas",
+  start_flight_booking: "Iniciar agendamento de voo",
 };
 
 type WppSettingsSection = "bot" | "connection" | "notifications" | "templates";
@@ -89,6 +105,8 @@ const WPP_SETTING_SECTIONS: Array<{
   { id: "templates", title: "Templates", description: "Biblioteca Meta" },
 ];
 
+const WPP_MAX_REPLY_BUTTONS = 10;
+
 const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
   {
     id: "ver_figurinhas",
@@ -96,7 +114,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Ver figurinhas",
-    message: "Claro. Vou buscar as figurinhas do seu \u00faltimo voo.",
+    message: "Claro{{nickname_suffix}}! Vou buscar as figurinhas do seu \u00faltimo voo.",
     buttons: [],
     actions: ["send_last_flight_stickers"],
   },
@@ -106,7 +124,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Pr\u00f3xima miss\u00e3o",
-    message: "Claro. Vou buscar os detalhes da sua próxima missão.",
+    message: "Claro{{nickname_suffix}}. Vou buscar os detalhes da sua próxima missão.",
     buttons: [],
     actions: ["send_next_mission_details"],
   },
@@ -116,7 +134,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Ver pr\u00f3xima miss\u00e3o",
-    message: "Claro. Vou buscar os detalhes da sua pr\u00f3xima miss\u00e3o.",
+    message: "Claro{{nickname_suffix}}. Vou buscar os detalhes da sua pr\u00f3xima miss\u00e3o.",
     buttons: [],
     actions: ["send_next_mission_details"],
   },
@@ -126,7 +144,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Saldo de créditos",
-    message: "Claro. Vou consultar seu saldo de créditos.",
+    message: "Claro{{nickname_suffix}}. Vou consultar seu saldo de créditos.",
     buttons: [],
     actions: ["send_student_credit_balance"],
   },
@@ -136,9 +154,19 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Próximos voos",
-    message: "Claro. Vou buscar seus próximos voos agendados.",
+    message: "Claro{{nickname_suffix}}. Vou buscar seus próximos voos agendados.",
     buttons: [],
     actions: ["send_next_scheduled_flights"],
+  },
+  {
+    id: "agendar_voo",
+    name: "Agendar voo",
+    enabled: true,
+    operator: "equals",
+    matchValue: "Agendar voo",
+    message: "",
+    buttons: [],
+    actions: ["start_flight_booking"],
   },
   {
     id: "comprar_horas",
@@ -146,7 +174,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Comprar horas",
-    message: "Claro. Vou te mostrar as opções para comprar mais horas de voo.",
+    message: "Claro{{nickname_suffix}}. Vou te mostrar as opções para comprar mais horas de voo.",
     buttons: [],
     actions: ["send_flight_credit_purchase_options"],
   },
@@ -156,7 +184,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Comprar 1h",
-    message: "Claro. Vou gerar o checkout seguro para 1h de voo.",
+    message: "Claro{{nickname_suffix}}. Vou gerar o checkout seguro para 1h de voo.",
     buttons: [],
     actions: ["create_flight_credit_checkout"],
   },
@@ -166,7 +194,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Comprar 10h",
-    message: "Claro. Vou gerar o checkout seguro para 10h de voo.",
+    message: "Claro{{nickname_suffix}}. Vou gerar o checkout seguro para 10h de voo.",
     buttons: [],
     actions: ["create_flight_credit_checkout"],
   },
@@ -176,7 +204,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Comprar 20h",
-    message: "Claro. Vou gerar o checkout seguro para 20h de voo.",
+    message: "Claro{{nickname_suffix}}. Vou gerar o checkout seguro para 20h de voo.",
     buttons: [],
     actions: ["create_flight_credit_checkout"],
   },
@@ -186,7 +214,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Comprar 40h",
-    message: "Claro. Vou gerar o checkout seguro para 40h de voo.",
+    message: "Claro{{nickname_suffix}}. Vou gerar o checkout seguro para 40h de voo.",
     buttons: [],
     actions: ["create_flight_credit_checkout"],
   },
@@ -196,7 +224,7 @@ const WPP_QUICK_RULES: WppIncomingAutoReplyRule[] = [
     enabled: true,
     operator: "equals",
     matchValue: "Personalizada",
-    message: "Claro. Vou abrir a compra personalizada na plataforma.",
+    message: "Claro{{nickname_suffix}}. Vou abrir a compra personalizada na plataforma.",
     buttons: [],
     actions: ["send_flight_credit_custom_purchase_link"],
   },
@@ -438,14 +466,19 @@ function WppButtonsEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-medium text-slate-400">Botoes de resposta</p>
+        <div>
+          <p className="text-xs font-medium text-slate-400">Botoes de resposta</p>
+          <p className="mt-0.5 text-[11px] text-slate-600">
+            Ate 3 viram botoes; de 4 a {WPP_MAX_REPLY_BUTTONS} sao enviados como lista no WhatsApp.
+          </p>
+        </div>
         <button
           type="button"
-          onClick={() => onChange([...buttons, makeWppBotButton()].slice(0, 3))}
-          disabled={buttons.length >= 3}
+          onClick={() => onChange([...buttons, makeWppBotButton()].slice(0, WPP_MAX_REPLY_BUTTONS))}
+          disabled={buttons.length >= WPP_MAX_REPLY_BUTTONS}
           className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-40"
         >
-          + Botao
+          + Botao ({buttons.length}/{WPP_MAX_REPLY_BUTTONS})
         </button>
       </div>
       {buttons.length === 0 ? (
@@ -467,7 +500,7 @@ function WppButtonsEditor({
                 Texto
                 <input
                   value={button.title}
-                  maxLength={20}
+                  maxLength={24}
                   onChange={(event) => onChange(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item))}
                   className={`${inputClass} py-2`}
                 />
@@ -521,6 +554,8 @@ export function WppSettingsPanel() {
   const [form, setForm] = useState<WppConnectionInput>(EMPTY_CONNECTION);
   const [flightReviewTemplate, setFlightReviewTemplate] = useState<WppFlightReviewReadyTemplateSettings>(DEFAULT_FLIGHT_REVIEW_TEMPLATE);
   const [tomorrowFlightReminderTemplate, setTomorrowFlightReminderTemplate] = useState<WppTomorrowFlightReminderTemplateSettings>(DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+  const [paymentReceivedTemplate, setPaymentReceivedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
+  const [bookingRequestedTemplate, setBookingRequestedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_BOOKING_REQUESTED_TEMPLATE);
   const [incomingAutoReply, setIncomingAutoReply] = useState<WppIncomingAutoReplySettings>(DEFAULT_INCOMING_AUTO_REPLY);
   const [templates, setTemplates] = useState<WppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -550,6 +585,8 @@ export function WppSettingsPanel() {
       setSettings(next); setForm(connectionForm(next));
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+      setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
+      setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setIncomingAutoReply(incomingAutoReplyForm(next));
       if (next.apiKeyConfigured && next.wabaId) await loadTemplates();
     } catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar integração." }); }
@@ -564,7 +601,7 @@ export function WppSettingsPanel() {
     }
     setSaving(true);
     try {
-      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate, tomorrowFlightReminderTemplate, incomingAutoReply });
+      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate, tomorrowFlightReminderTemplate, paymentReceivedTemplate, bookingRequestedTemplate, incomingAutoReply });
       const tested = await testWppConnection();
       setSettings(tested); setForm(connectionForm(tested));
       setIncomingAutoReply(incomingAutoReplyForm(tested));
@@ -644,6 +681,14 @@ export function WppSettingsPanel() {
       showToast({ variant: "warning", message: "Informe o template do aviso de voo." });
       return;
     }
+    if (paymentReceivedTemplate.enabled && !paymentReceivedTemplate.templateName.trim()) {
+      showToast({ variant: "warning", message: "Informe o template de pagamento recebido." });
+      return;
+    }
+    if (bookingRequestedTemplate.enabled && !bookingRequestedTemplate.templateName.trim()) {
+      showToast({ variant: "warning", message: "Informe o template de solicitaÃ§Ã£o de agendamento." });
+      return;
+    }
     setSavingTemplates(true);
     try {
       const next = await saveWppNotificationTemplates({
@@ -659,10 +704,24 @@ export function WppSettingsPanel() {
           sendHour: Number(tomorrowFlightReminderTemplate.sendHour) || 19,
           bodyParameters: tomorrowFlightReminderTemplate.bodyParameters,
         },
+        paymentReceivedTemplate: {
+          ...paymentReceivedTemplate,
+          templateName: paymentReceivedTemplate.templateName.trim().toLowerCase(),
+          language: paymentReceivedTemplate.language.trim() || "pt_BR",
+          bodyParameters: paymentReceivedTemplate.bodyParameters,
+        },
+        bookingRequestedTemplate: {
+          ...bookingRequestedTemplate,
+          templateName: bookingRequestedTemplate.templateName.trim().toLowerCase(),
+          language: bookingRequestedTemplate.language.trim() || "pt_BR",
+          bodyParameters: bookingRequestedTemplate.bodyParameters,
+        },
       });
       setSettings(next);
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+      setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
+      setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       showToast({ variant: "success", message: "Templates de notificação salvos." });
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
@@ -777,7 +836,9 @@ export function WppSettingsPanel() {
           <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-4">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-200">Resposta padrao</h3>
-              <p className="mt-1 text-xs text-slate-600">Usada quando nenhuma regra especifica bater.</p>
+              <p className="mt-1 text-xs text-slate-600">
+                Usada quando nenhuma regra especifica bater. Use {"{{nickname}}"} ou {"{{nickname_suffix}}"} para personalizar com o apelido do aluno.
+              </p>
             </div>
             <label className="text-xs font-medium text-slate-400">Mensagem
               <textarea value={incomingAutoReply.message} rows={3} maxLength={1024} onChange={(e) => setIncomingAutoReply((current) => ({ ...current, message: e.target.value }))} className={`${inputClass} resize-y leading-6`} />
@@ -790,6 +851,25 @@ export function WppSettingsPanel() {
               <p className="text-xs font-medium text-slate-400">Acoes da resposta padrao</p>
               <WppActionsPicker actions={incomingAutoReply.actions} onChange={(actions) => setIncomingAutoReply((current) => ({ ...current, actions }))} />
             </div>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+            <h3 className="text-sm font-semibold text-cyan-200">Comandos embutidos: AISWEB</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              O aluno pode enviar:
+            </p>
+            <ul className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
+              <li><span className="font-mono text-cyan-300">Metar</span> ou <span className="font-mono text-cyan-300">Outro Metar</span> — instruções de uso</li>
+              <li><span className="font-mono text-cyan-300">Metar SBSP</span> — METAR, TAF, limites, vento, nuvens e sol</li>
+              <li><span className="font-mono text-cyan-300">Notam SBSP</span> — últimos NOTAMs ativos</li>
+              <li><span className="font-mono text-cyan-300">Detalhes SBSP</span> — operação, frequências, pistas e mapa</li>
+            </ul>
+          </div>
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+            <h3 className="text-sm font-semibold text-emerald-200">Comando embutido: Agendar voo</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              O aluno envia <span className="font-mono text-emerald-300">Agendar</span> ou <span className="font-mono text-emerald-300">Agendar voo</span> (ou o atalho rápido abaixo) e segue: horas → crédito → semana → dia → avião → horário → confirmação.
+              Em qualquer etapa, <span className="font-mono text-emerald-300">Cancelar</span> ou <span className="font-mono text-emerald-300">Sair</span> encerra a sessão.
+            </p>
           </div>
           <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -833,6 +913,7 @@ export function WppSettingsPanel() {
                     </div>
                     <label className="mt-3 block text-xs font-medium text-slate-400">Mensagem enviada
                       <textarea value={rule.message} rows={3} maxLength={1024} onChange={(e) => updateBotRule(rule.id, { message: e.target.value })} className={`${inputClass} resize-y leading-6`} />
+                      <span className="mt-1 block font-normal text-slate-600">Variáveis: {"{{nickname}}"}, {"{{nickname_suffix}}"}</span>
                     </label>
                     <div className="mt-4 grid gap-4">
                       <WppButtonsEditor buttons={rule.buttons} onChange={(buttons) => updateBotRule(rule.id, { buttons })} />
@@ -909,6 +990,56 @@ export function WppSettingsPanel() {
             <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
               <strong className="block text-slate-300">Variáveis</strong>
               student_name, flight_date, start_time, aircraft, mission, instructor, route, flight_id
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+              <input type="checkbox" checked={paymentReceivedTemplate.enabled} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar confirmaÃ§Ã£o ao aluno quando o pagamento Cakto for aprovado
+            </label>
+            <label className="text-xs font-medium text-slate-400">Pagamento recebido
+              <input value={paymentReceivedTemplate.templateName} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="pagamento_recebido_cakto" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={paymentReceivedTemplate.language} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">CTA</strong>
+              Use um botao de URL no template apontando para o agendamento.
+            </div>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">ParÃ¢metros do corpo
+              <input value={paymentReceivedTemplate.bodyParameters.join(", ")} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, product, amount, payment_method, booking_url" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">VariÃ¡veis</strong>
+              student_name, product, amount, payment_method, installments, order_id, paid_at, booking_url
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+              <input type="checkbox" checked={bookingRequestedTemplate.enabled} onChange={(e) => setBookingRequestedTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar confirmaÃ§Ã£o quando o aluno solicitar agendamento pela plataforma
+            </label>
+            <label className="text-xs font-medium text-slate-400">SolicitaÃ§Ã£o de agendamento
+              <input value={bookingRequestedTemplate.templateName} onChange={(e) => setBookingRequestedTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="solicitacao_agendamento_voo" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={bookingRequestedTemplate.language} onChange={(e) => setBookingRequestedTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">ExceÃ§Ã£o</strong>
+              SolicitaÃ§Ãµes feitas pelo bot do WhatsApp nÃ£o recebem este disparo.
+            </div>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">ParÃ¢metros do corpo
+              <input value={bookingRequestedTemplate.bodyParameters.join(", ")} onChange={(e) => setBookingRequestedTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, start_time, aircraft, duration, status" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">VariÃ¡veis</strong>
+              student_name, flight_date, presentation_time, start_time, aircraft, duration, status, booking_url
             </div>
           </div>
         </div>

@@ -68,6 +68,7 @@ const AdminDreTab = lazy(() => import("./AdminDreTab").then((module) => ({ defau
 const FlightReviewAdminTab = lazy(() =>
   import("./FlightReviewAdminTab").then((module) => ({ default: module.FlightReviewAdminTab })),
 );
+const PanelAdminTab = lazy(() => import("./PanelAdminTab").then((module) => ({ default: module.PanelAdminTab })));
 const ContractsAdminTab = lazy(() =>
   import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
 );
@@ -107,7 +108,7 @@ type AdminSection =
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review" | "painel";
 type DisparosSubTab = "email-mkt" | "notices";
 
 type NavItem = {
@@ -502,6 +503,15 @@ const CONTENTS_TABS = [
       </svg>
     ),
   },
+  {
+    id: "painel",
+    label: "Painel",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M2.25 6A2.25 2.25 0 014.5 3.75h15A2.25 2.25 0 0121.75 6v12A2.25 2.25 0 0119.5 20.25h-15A2.25 2.25 0 012.25 18V6zm4.5 3a.75.75 0 000 1.5h3.75a.75.75 0 000-1.5H6.75zm0 3.75a.75.75 0 000 1.5h7.5a.75.75 0 000-1.5h-7.5zm0 3.75a.75.75 0 000 1.5H12a.75.75 0 000-1.5H6.75z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ] satisfies Array<{ id: ContentsSubTab; label: string; icon: ReactNode }>;
 
 const DISPAROS_TABS = [
@@ -557,6 +567,7 @@ const CONTENTS_ROUTES = [
   { id: "student-manual", path: "/admin/conteudos/manual-aluno", aliases: ["/admin/configuracoes/onboarding"] },
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
   { id: "flight-review", path: "/admin/conteudos/flight-review", aliases: ["/admin/flight-review"] },
+  { id: "painel", path: "/admin/conteudos/painel" },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
 
 const DISPAROS_ROUTES = [
@@ -652,6 +663,7 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   "student-manual": "settings.onboarding",
   exercises: "contents.exercicios",
   "flight-review": "flight-review",
+  painel: "contents.painel",
 };
 const DISPAROS_TAB_KEYS: Record<string, AdminTabKey> = {
   "email-mkt": "disparos.email-mkt",
@@ -1051,6 +1063,9 @@ export function AdminLayout() {
               ) : null}
               {openedContentsTabs.has("flight-review") ? (
                 <div hidden={contentsTab !== "flight-review"}><LazyTab><FlightReviewAdminTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("painel") ? (
+                <div hidden={contentsTab !== "painel"}><LazyTab><PanelAdminTab /></LazyTab></div>
               ) : null}
             </div>
           )}

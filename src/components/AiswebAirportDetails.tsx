@@ -1,18 +1,24 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CircleMarker, MapContainer, TileLayer, useMap } from "react-leaflet";
+import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, WMSTileLayer, useMap } from "react-leaflet";
+import L from "leaflet";
 import { prefetchAiswebChartBlobs, previewAiswebChartBlob } from "../lib/aiswebDb";
 import type {
   AiswebAirportBundle,
+  AiswebAirspace,
   AiswebChart,
   AiswebComplement,
+  AiswebDeclaredDistance,
   AiswebFrequency,
+  AiswebNavaid,
   AiswebRemark,
   AiswebRotaer,
   AiswebSunTimes,
+  AiswebSupplement,
 } from "../types/aisweb";
 import { Tabs } from "./ui/Tabs";
 
 type AirportMapStyle = "satellite" | "roads" | "terrain";
+type AirspaceLayerId = "tma" | "ctr" | "atz" | "fir";
 
 const AIRPORT_MAP_TILES: Record<
   AirportMapStyle,
@@ -36,6 +42,13 @@ const AIRPORT_MAP_TILES: Record<
   },
 };
 
+const NAV_ICON = L.divIcon({
+  className: "",
+  html: `<span style="display:block;width:10px;height:10px;border-radius:2px;background:#fbbf24;border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.35)"></span>`,
+  iconSize: [10, 10],
+  iconAnchor: [5, 5],
+});
+
 function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   const map = useMap();
   useEffect(() => {
@@ -46,7 +59,7 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-type DetailSubTab = "meteorologia" | "detalhes" | "cartas";
+type DetailSubTab = "meteorologia" | "detalhes" | "cartas" | "suplementos";
 
 function formatNotamDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -59,6 +72,36 @@ function formatNotamDate(iso: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatUtcOffset(hours: number | null | undefined): string {
+  if (hours == null || !Number.isFinite(hours)) return "—";
+  const sign = hours >= 0 ? "+" : "−";
+  const abs = Math.abs(hours);
+  const h = Math.floor(abs);
+  const m = Math.round((abs - h) * 60);
+  return m ? `UTC${sign}${h}:${String(m).padStart(2, "0")}` : `UTC${sign}${h}`;
+}
+
+function formatWorkingSchedule(rotaer: AiswebRotaer | null): string {
+  const schedules = rotaer?.workingHours?.schedules || [];
+  if (schedules.length) {
+    return schedules
+      .map((s) => {
+        const days = s.days.join("/") || "—";
+        const hours = s.begin && s.end ? `${s.begin}–${s.end}` : "—";
+        return `${days} ${hours} UTC${s.holidays ? " (feriados)" : ""}`;
+      })
+      .join(" · ");
+  }
+  return rotaer?.workingHours?.text || "—";
+}
+
+function formatFuel(rotaer: AiswebRotaer | null): string {
+  const fuel = rotaer?.fuel;
+  if (!fuel) return "—";
+  const types = fuel.types?.length ? fuel.types.join(" · ") : fuel.text || "—";
+  return fuel.hours ? `${types} · ${fuel.hours}` : types;
 }
 
 function utcHmToMinutes(hm: string | null | undefined): number | null {
@@ -100,11 +143,20 @@ function IconMap() {
 
 export function OperationCard({
   rotaer,
+  airspace,
   lastNotamAt,
 }: {
   rotaer: AiswebRotaer | null;
+  airspace?: AiswebAirspace | null;
   lastNotamAt: string | null;
 }) {
+  const firLabel = airspace?.fir?.name
+    ? `${airspace.fir.code || rotaer?.fir || "—"} · ${airspace.fir.name}`
+    : rotaer?.fir || "—";
+  const tmaLabel = airspace?.tma
+    ? [airspace.tma.code, airspace.tma.name].filter(Boolean).join(" · ")
+    : "—";
+
   return (
     <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 px-3 py-2">
       <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Operação</p>
@@ -119,13 +171,29 @@ export function OperationCard({
         </div>
         <div>
           <dt className="text-slate-500">FIR</dt>
-          <dd className="font-medium text-slate-200">{rotaer?.fir || "—"}</dd>
+          <dd className="font-medium text-slate-200">{firLabel}</dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">TMA</dt>
+          <dd className="font-medium text-slate-200">{tmaLabel}</dd>
         </div>
         <div>
           <dt className="text-slate-500">Elevação</dt>
           <dd className="font-medium text-slate-200">
             {rotaer?.altFt != null ? `${rotaer.altFt.toLocaleString("pt-BR")} ft` : "—"}
           </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Fuso</dt>
+          <dd className="font-medium text-slate-200">{formatUtcOffset(rotaer?.utcOffsetHours)}</dd>
+        </div>
+        <div className="col-span-2">
+          <dt className="text-slate-500">Horário AD</dt>
+          <dd className="font-medium text-slate-200">{formatWorkingSchedule(rotaer)}</dd>
+        </div>
+        <div className="col-span-2">
+          <dt className="text-slate-500">Combustível</dt>
+          <dd className="font-medium text-slate-200">{formatFuel(rotaer)}</dd>
         </div>
         <div className="col-span-2">
           <dt className="text-slate-500">Último NOTAM</dt>
@@ -230,51 +298,125 @@ function FrequencyList({ frequencies }: { frequencies: AiswebFrequency[] }) {
 
 function RunwayDetails({ rotaer }: { rotaer: AiswebRotaer | null }) {
   const runways = rotaer?.runways || [];
-  if (!runways.length) {
+  const declared = rotaer?.declaredDistances || [];
+  if (!runways.length && !declared.length) {
     return <p className="text-xs text-slate-500">Sem dados de pista no ROTAER.</p>;
   }
+  const declaredByRwy = new Map(declared.map((d) => [d.rwy.toUpperCase(), d]));
+
   return (
     <div className="space-y-2">
-      {runways.map((rwy) => (
-        <div key={rwy.ident} className="rounded-lg border border-slate-700/60 bg-slate-950/50 px-3 py-2.5">
-          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-            <p className="text-sm font-bold tracking-wide text-slate-100">{rwy.ident}</p>
-            <p className="font-mono text-[11px] text-slate-400">
-              {rwy.lengthM != null ? `${rwy.lengthM.toLocaleString("pt-BR")} × ` : ""}
-              {rwy.widthM != null ? `${rwy.widthM} m` : ""}
+      {runways.map((rwy) => {
+        const thrDeclared = (rwy.thresholds || [])
+          .map((t) => declaredByRwy.get(t.ident.toUpperCase()))
+          .filter(Boolean) as AiswebDeclaredDistance[];
+        return (
+          <div key={rwy.ident} className="rounded-lg border border-slate-700/60 bg-slate-950/50 px-3 py-2.5">
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <p className="text-sm font-bold tracking-wide text-slate-100">{rwy.ident}</p>
+              <p className="font-mono text-[11px] text-slate-400">
+                {rwy.lengthM != null ? `${rwy.lengthM.toLocaleString("pt-BR")} × ` : ""}
+                {rwy.widthM != null ? `${rwy.widthM} m` : ""}
+              </p>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {[rwy.surfaceLabel || rwy.surface, rwy.pcn ? `PCN ${rwy.pcn}` : null].filter(Boolean).join(" · ") || "—"}
+            </p>
+            {thrDeclared.length ? (
+              <div className="mt-2 overflow-x-auto">
+                <table className="min-w-full text-left text-[10px] text-slate-400">
+                  <thead>
+                    <tr className="text-slate-500">
+                      <th className="pr-2 font-semibold">THR</th>
+                      <th className="pr-2 font-semibold">TORA</th>
+                      <th className="pr-2 font-semibold">TODA</th>
+                      <th className="pr-2 font-semibold">ASDA</th>
+                      <th className="font-semibold">LDA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {thrDeclared.map((d) => (
+                      <tr key={d.rwy} className="font-mono text-slate-300">
+                        <td className="pr-2 py-0.5 font-sans font-semibold text-cyan-300/90">{d.rwy}</td>
+                        <td className="pr-2 py-0.5">{d.toraM ?? "—"}</td>
+                        <td className="pr-2 py-0.5">{d.todaM ?? "—"}</td>
+                        <td className="pr-2 py-0.5">{d.asdaM ?? "—"}</td>
+                        <td className="py-0.5">{d.ldaM ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {rwy.thresholds?.length ? (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Cabeceiras:{" "}
+                {rwy.thresholds
+                  .map((t) => {
+                    const lights = (t.lights || [])
+                      .map((l) => l.description || l.code)
+                      .filter(Boolean)
+                      .slice(0, 3)
+                      .join(", ");
+                    return lights ? `${t.ident} (${lights})` : t.ident;
+                  })
+                  .join(" · ")}
+              </p>
+            ) : null}
+            {(rwy.lights || []).length ? (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Pista: {(rwy.lights || []).map((l) => l.description || l.code).join(" · ")}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function NavaidsPanel({ navaids }: { navaids: AiswebNavaid[] }) {
+  if (!navaids.length) {
+    return <p className="text-xs text-slate-500">Sem auxílios NAV no ROTAER.</p>;
+  }
+  return (
+    <div className="grid gap-1.5 sm:grid-cols-2">
+      {navaids.map((nav, i) => (
+        <div
+          key={`${nav.type}-${nav.ident || i}`}
+          className="rounded-lg border border-amber-500/20 bg-slate-950/50 px-2.5 py-2"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-amber-300">{nav.type}</p>
+              <p className="truncate text-[11px] text-slate-400">
+                {[nav.ident, nav.threshold ? `THR ${nav.threshold}` : null].filter(Boolean).join(" · ") || "—"}
+              </p>
+            </div>
+            <p className="shrink-0 font-mono text-xs font-semibold text-slate-100">
+              {nav.frequencyMhz ? `${nav.frequencyMhz}` : "—"}
             </p>
           </div>
-          <p className="text-[11px] text-slate-400">
-            {[rwy.surfaceLabel || rwy.surface, rwy.pcn ? `PCN ${rwy.pcn}` : null].filter(Boolean).join(" · ") || "—"}
-          </p>
-          {rwy.thresholds?.length ? (
-            <p className="mt-1 text-[11px] text-slate-500">
-              Cabeceiras:{" "}
-              {rwy.thresholds
-                .map((t) => {
-                  const lights = (t.lights || [])
-                    .map((l) => l.description || l.code)
-                    .filter(Boolean)
-                    .slice(0, 3)
-                    .join(", ");
-                  return lights ? `${t.ident} (${lights})` : t.ident;
-                })
-                .join(" · ")}
-            </p>
-          ) : null}
-          {(rwy.lights || []).length ? (
-            <p className="mt-1 text-[11px] text-slate-500">
-              Pista: {(rwy.lights || []).map((l) => l.description || l.code).join(" · ")}
-            </p>
-          ) : null}
         </div>
       ))}
     </div>
   );
 }
 
-function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
+function AirportMap({
+  rotaer,
+  airspace,
+}: {
+  rotaer: AiswebRotaer | null;
+  airspace?: AiswebAirspace | null;
+}) {
   const [mapStyle, setMapStyle] = useState<AirportMapStyle>("satellite");
+  const [layersOn, setLayersOn] = useState<Record<AirspaceLayerId, boolean>>({
+    tma: true,
+    ctr: true,
+    atz: false,
+    fir: false,
+  });
   const lat = rotaer?.lat;
   const lng = rotaer?.lng;
   if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -286,6 +428,16 @@ function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
   }
   const center: [number, number] = [lat, lng];
   const tiles = AIRPORT_MAP_TILES[mapStyle];
+  const wmsBase = airspace?.wms?.baseUrl || "https://geoaisweb.decea.mil.br/geoserver/ows";
+  const wmsLayers = airspace?.wms?.layers || [
+    { id: "tma", label: "TMA", layer: "ICA:TMA" },
+    { id: "ctr", label: "CTR", layer: "ICA:CTR" },
+    { id: "atz", label: "ATZ", layer: "ICA:ATZ" },
+    { id: "fir", label: "FIR", layer: "ICA:SETOR_FIR" },
+  ];
+  const navaids = (rotaer?.navaids || []).filter(
+    (n) => n.lat != null && n.lng != null && Number.isFinite(n.lat) && Number.isFinite(n.lng),
+  );
 
   const mapOptions = [
     {
@@ -319,7 +471,7 @@ function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-700/70">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/60 px-2.5 py-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/60 px-2.5 py-1.5">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Mapa</p>
         <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
           {mapOptions.map((opt) => (
@@ -339,10 +491,33 @@ function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
           ))}
         </div>
       </div>
+      <div className="flex flex-wrap gap-1.5 border-b border-slate-800 bg-slate-950/40 px-2.5 py-1.5">
+        <span className="mr-1 self-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          Espaço aéreo
+        </span>
+        {wmsLayers.map((layer) => {
+          const id = layer.id as AirspaceLayerId;
+          const on = layersOn[id] === true;
+          return (
+            <button
+              key={layer.id}
+              type="button"
+              onClick={() => setLayersOn((prev) => ({ ...prev, [id]: !prev[id] }))}
+              className={`rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${
+                on
+                  ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/40"
+                  : "bg-slate-900 text-slate-500 ring-1 ring-slate-700 hover:text-slate-300"
+              }`}
+            >
+              {layer.label}
+            </button>
+          );
+        })}
+      </div>
       <div className="h-96 w-full bg-slate-950 [&_.leaflet-control-attribution]:text-[9px]">
         <MapContainer
           center={center}
-          zoom={14}
+          zoom={11}
           className="h-full w-full"
           scrollWheelZoom
           zoomControl
@@ -355,6 +530,22 @@ function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
             maxZoom={tiles.maxZoom}
             {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
           />
+          {wmsLayers.map((layer) => {
+            const id = layer.id as AirspaceLayerId;
+            if (!layersOn[id]) return null;
+            return (
+              <WMSTileLayer
+                key={`${layer.layer}-${mapStyle}`}
+                url={wmsBase}
+                layers={layer.layer}
+                format="image/png"
+                transparent
+                version="1.1.1"
+                opacity={id === "fir" ? 0.35 : 0.55}
+                attribution="DECEA GeoAISWEB"
+              />
+            );
+          })}
           <CircleMarker
             center={center}
             radius={8}
@@ -365,6 +556,21 @@ function AirportMap({ rotaer }: { rotaer: AiswebRotaer | null }) {
               weight: 2,
             }}
           />
+          {navaids.map((nav, i) => (
+            <Marker
+              key={`nav-${nav.ident || i}`}
+              position={[nav.lat as number, nav.lng as number]}
+              icon={NAV_ICON}
+            >
+              <Tooltip direction="top" offset={[0, -6]}>
+                <span className="text-[11px]">
+                  {nav.type}
+                  {nav.ident ? ` ${nav.ident}` : ""}
+                  {nav.frequencyMhz ? ` · ${nav.frequencyMhz}` : ""}
+                </span>
+              </Tooltip>
+            </Marker>
+          ))}
         </MapContainer>
       </div>
     </div>
@@ -622,8 +828,45 @@ export function AiswebAirportTopCards({ airport }: { airport: AiswebAirportBundl
 
   return (
     <div className="grid gap-2 md:grid-cols-2">
-      <OperationCard rotaer={airport.rotaer} lastNotamAt={lastNotamAt} />
+      <OperationCard rotaer={airport.rotaer} airspace={airport.airspace} lastNotamAt={lastNotamAt} />
       <SunCard sun={airport.sun || null} />
+    </div>
+  );
+}
+
+function SupplementsPanel({ supplements }: { supplements: AiswebSupplement[] }) {
+  if (!supplements.length) {
+    return <p className="text-xs text-slate-500">Nenhum suplemento AIP em vigor para este aeródromo.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {supplements.map((item) => (
+        <article
+          key={item.id}
+          className="rounded-xl border border-violet-500/20 bg-slate-950/50 px-3 py-2.5"
+        >
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-xs font-bold tracking-wide text-violet-200">
+              SUP {item.number}
+              {item.tipo ? ` · ${item.tipo}` : ""}
+            </p>
+            <p className="text-[10px] text-slate-500">{item.status || "em vigor"}</p>
+          </div>
+          {item.title ? <p className="mb-1 text-[12px] font-semibold text-slate-100">{item.title}</p> : null}
+          {item.text ? (
+            <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{item.text}</p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+            {item.duration ? <span>{item.duration}</span> : null}
+            {item.ref ? <span>Ref: {item.ref}</span> : null}
+            {item.validFrom || item.validTo ? (
+              <span>
+                {formatNotamDate(item.validFrom)} → {formatNotamDate(item.validTo)}
+              </span>
+            ) : null}
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
@@ -638,9 +881,11 @@ export function AiswebAirportDetailTabs({
   const [subTab, setSubTab] = useState<DetailSubTab>("meteorologia");
   const rotaer = airport.rotaer;
   const frequencies = rotaer?.frequencies || [];
+  const navaids = rotaer?.navaids || [];
   const remarks = rotaer?.remarks || [];
   const complements = rotaer?.complements || [];
   const charts = airport.charts || [];
+  const supplements = airport.supplements || [];
 
   useEffect(() => {
     setSubTab("meteorologia");
@@ -649,6 +894,11 @@ export function AiswebAirportDetailTabs({
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
+    {
+      id: "suplementos" as const,
+      label: `Suplementos (${supplements.length})`,
+      icon: <IconInfo />,
+    },
     { id: "cartas" as const, label: `Cartas (${charts.length})`, icon: <IconMap /> },
   ];
 
@@ -665,11 +915,17 @@ export function AiswebAirportDetailTabs({
               <FrequencyList frequencies={frequencies} />
             </div>
             <div className="min-w-0 rounded-xl border border-slate-700/70 bg-slate-950/40 p-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Pistas</p>
-              <RunwayDetails rotaer={rotaer} />
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Auxílios NAV</p>
+              <NavaidsPanel navaids={navaids} />
             </div>
           </div>
-          <AirportMap rotaer={rotaer} />
+          <div className="min-w-0 rounded-xl border border-slate-700/70 bg-slate-950/40 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Pistas · distâncias declaradas
+            </p>
+            <RunwayDetails rotaer={rotaer} />
+          </div>
+          <AirportMap rotaer={rotaer} airspace={airport.airspace} />
           <ExpandableRemarks
             title="RMKs"
             remarks={remarks}
@@ -678,6 +934,7 @@ export function AiswebAirportDetailTabs({
           <ExpandableComplements complements={complements} />
         </div>
       ) : null}
+      {subTab === "suplementos" ? <SupplementsPanel supplements={supplements} /> : null}
       {subTab === "cartas" ? <ChartsPanel charts={charts} /> : null}
     </div>
   );

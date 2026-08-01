@@ -23,6 +23,8 @@ export type AiswebWatchlist = {
   icaoCodes: string[];
   /** Por ICAO: se true, envia e-mail quando sair NOTAM novo. */
   notamAlerts: Record<string, boolean>;
+  /** Por ICAO: se true, envia e-mail quando sair suplemento AIP novo. */
+  supplementAlerts: Record<string, boolean>;
   updatedAt: string | null;
 };
 
@@ -79,6 +81,24 @@ export type AiswebNotam = {
   uf: string | null;
 };
 
+export type AiswebSupplement = {
+  id: string;
+  number: string;
+  serie: string | null;
+  n: string | null;
+  icao: string;
+  status: string | null;
+  tipo: string | null;
+  title: string | null;
+  text: string;
+  duration: string | null;
+  validFrom: string | null;
+  validTo: string | null;
+  publishedAt: string | null;
+  ref: string | null;
+  anexo: string | null;
+};
+
 export type AiswebRunwayLight = {
   code: string;
   description: string | null;
@@ -105,6 +125,45 @@ export type AiswebFrequency = {
   service: string;
   callsign: string | null;
   frequenciesMhz: string[];
+};
+
+export type AiswebFuel = {
+  text: string | null;
+  hours: string | null;
+  types: string[];
+  category: string | null;
+};
+
+export type AiswebWorkingSchedule = {
+  days: string[];
+  begin: string | null;
+  end: string | null;
+  holidays: boolean;
+};
+
+export type AiswebWorkingHours = {
+  text: string | null;
+  schedules: AiswebWorkingSchedule[];
+};
+
+export type AiswebNavaid = {
+  type: string;
+  ident: string | null;
+  frequencyMhz: string | null;
+  threshold: string | null;
+  lat: number | null;
+  lng: number | null;
+  category: string | null;
+};
+
+export type AiswebDeclaredDistance = {
+  rwy: string;
+  toraM: number | null;
+  todaM: number | null;
+  asdaM: number | null;
+  ldaM: number | null;
+  latText: string | null;
+  lngText: string | null;
 };
 
 export type AiswebRemark = {
@@ -134,6 +193,20 @@ export type AiswebChart = {
   link: string;
 };
 
+export type AiswebAirspaceRef = {
+  code: string | null;
+  name: string | null;
+};
+
+export type AiswebAirspace = {
+  fir: AiswebAirspaceRef | null;
+  tma: AiswebAirspaceRef | null;
+  wms: {
+    baseUrl: string;
+    layers: Array<{ id: string; label: string; layer: string }>;
+  };
+};
+
 export type AiswebRotaer = {
   icao: string;
   name: string | null;
@@ -145,6 +218,12 @@ export type AiswebRotaer = {
   fir: string | null;
   lat: number | null;
   lng: number | null;
+  utcOffsetHours?: number | null;
+  cityDistance?: string | null;
+  fuel?: AiswebFuel | null;
+  workingHours?: AiswebWorkingHours | null;
+  navaids?: AiswebNavaid[];
+  declaredDistances?: AiswebDeclaredDistance[];
   runways: AiswebRunway[];
   frequencies: AiswebFrequency[];
   remarks: AiswebRemark[];
@@ -157,8 +236,10 @@ export type AiswebAirportBundle = {
   met: AiswebMetarTaf;
   rotaer: AiswebRotaer | null;
   notams: AiswebNotam[];
+  supplements?: AiswebSupplement[];
   sun: AiswebSunTimes | null;
   charts: AiswebChart[];
+  airspace?: AiswebAirspace | null;
   error?: string | null;
 };
 

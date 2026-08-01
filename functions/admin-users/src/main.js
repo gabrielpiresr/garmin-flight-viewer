@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const sdk = require("node-appwrite");
+const { InputFile: AppwriteInputFile } = require("node-appwrite/file");
 const { buildEnrollmentFormPdf } = require("./enrollmentFormPdf");
 const { Resend } = require("resend");
 const webpush = require("web-push");
@@ -10,6 +11,8 @@ const { createStudentAutomationService } = require("./studentAutomations");
 const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
 const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
 const aiswebService = require("./aisweb");
+const wppMetar = require("./wppMetar");
+const wppBooking = require("./wppBooking");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
 
@@ -145,6 +148,8 @@ const STUDENT_CRM_STATUSES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_STAT
 const STUDENT_CRM_PROFILES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || "student_crm_profiles";
 const INSTRUCTOR_STUDENTS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
 const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users";
+const SCHEDULE_BOOKING_FUNCTION_ID =
+  process.env.APPWRITE_SCHEDULE_BOOKING_FUNCTION_ID || "schedule-booking";
 const ADMIN_USERS_SECURITY_MODE = getSecurityMode(process.env);
 const WEB_PUSH_PUBLIC_KEY = process.env.WEB_PUSH_PUBLIC_KEY || "";
 const WEB_PUSH_PRIVATE_KEY = process.env.WEB_PUSH_PRIVATE_KEY || "";
@@ -3219,13 +3224,12 @@ async function resolveGoproVideoPlayback(input = {}) {
   }
   const variants = parseGoproM3u8Variants(masterText);
   const selected = pickGoproPlaybackVariant(variants);
-  // Pin a single media playlist (not the master) to avoid ABR thrashing through the worker hop.
-  const mediaPlaylistUrl = selected?.uri
-    ? new URL(selected.uri, masterUrl).href.replace("https://api.gopro.com/", "https://gopro.com/")
-    : "";
-  const target = (mediaPlaylistUrl || masterUrl).replace("https://api.gopro.com/", "https://gopro.com/");
-  // Authorize the whole playurl token tree so media playlists/segments in subfolders validate.
+  // Always proxy the master playlist. GoPro demuxes AAC into #EXT-X-MEDIA audio groups;
+  // pinning a single video media playlist drops that audio and plays silent video.
+  // The worker filters variants above 1080p, and the client also pins the HLS level.
   const normalizedMaster = masterUrl.replace("https://api.gopro.com/", "https://gopro.com/");
+  const target = normalizedMaster;
+  // Authorize the whole playurl token tree so media playlists/segments in subfolders validate.
   const masterParts = new URL(normalizedMaster).pathname.split("/").filter(Boolean);
   const prefixUrl =
     masterParts[0] === "stream" && masterParts[1] === "playurl" && masterParts[2]
@@ -8527,122 +8531,12 @@ async function reassignFlightChildren(collectionId, fromFlightId, toFlightId, pa
   return docs.length;
 }
 
-function workerDownloadUrl(workerUrl, key) {
-  return `${cleanString(workerUrl).replace(/\/+$/, "")}/download?key=${encodeURIComponent(key)}`;
-}
-
-function remapPhotoR2Key(r2Key, fromFlightId, toFlightId) {
-  const rawKey = cleanString(r2Key).replace(/^flights\//, "");
-  const expectedPrefix = `flight-${fromFlightId}-photo-`;
-  if (!rawKey.startsWith(expectedPrefix) || !PHOTO_KEY_RE.test(rawKey)) return "";
-  return `flights/flight-${toFlightId}-photo-${rawKey.slice(expectedPrefix.length)}`;
-}
-
-function signWorkerStorageToken(action, key) {
-  const now = Math.floor(Date.now() / 1000);
-  return signWorkerToken({
-    sub: "admin-users",
-    mode: "photoMerge",
-    action,
-    key,
-    iat: now,
-    exp: now + 48 * 60 * 60,
-    nonce: crypto.randomUUID(),
-  });
-}
-
-async function moveFlightPhotoObject(photo, fromFlightId, toFlightId) {
-  if (!CF_WORKER_URL || !WORKER_SECRET) return null;
-  const oldKey = cleanString(photo.r2_key);
-  const newKey = remapPhotoR2Key(oldKey, fromFlightId, toFlightId);
-  if (!oldKey || !newKey || oldKey === newKey) return null;
-
-  const workerUrl = CF_WORKER_URL.replace(/\/+$/, "");
-  const sourceUrl = cleanString(photo.file_url) || workerDownloadUrl(workerUrl, oldKey);
-  const downloadResponse = await fetch(sourceUrl);
-  if (!downloadResponse.ok) {
-    throw new Error(`Falha ao baixar foto ${photo.$id} para mover no R2 (${downloadResponse.status}).`);
-  }
-
-  const uploadResponse = await fetch(`${workerUrl}/upload/file`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": cleanString(photo.mime_type) || downloadResponse.headers.get("content-type") || "image/jpeg",
-      "x-upload-key": newKey,
-      "x-token": signWorkerStorageToken("upload", newKey),
-    },
-    body: Buffer.from(await downloadResponse.arrayBuffer()),
-  });
-  const uploadBody = await uploadResponse.json().catch(() => ({}));
-  if (!uploadResponse.ok || !uploadBody.fileUrl) {
-    throw new Error(uploadBody.error || `Falha ao reenviar foto ${photo.$id} para o voo real.`);
-  }
-
-  await fetch(`${workerUrl}/storage/object`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: oldKey, token: signWorkerStorageToken("delete", oldKey) }),
-  }).catch(() => undefined);
-
-  const oldThumbKey = oldKey.replace(/(\.[^.]+)$/i, "-thumb.jpg");
-  const newThumbKey = newKey.replace(/(\.[^.]+)$/i, "-thumb.jpg");
-  let thumbUrl = "";
-  if (oldThumbKey !== oldKey && newThumbKey !== newKey) {
-    try {
-      const thumbSource =
-        cleanString(photo.thumb_url) ||
-        (cleanString(photo.file_url).includes(oldKey)
-          ? cleanString(photo.file_url).replace(oldKey, oldThumbKey)
-          : "");
-      if (thumbSource) {
-        const thumbResponse = await fetch(thumbSource);
-        if (thumbResponse.ok) {
-          const thumbUpload = await fetch(`${workerUrl}/upload/file`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "image/jpeg",
-              "x-upload-key": newThumbKey,
-              "x-token": signWorkerStorageToken("upload", newThumbKey),
-            },
-            body: Buffer.from(await thumbResponse.arrayBuffer()),
-          });
-          const thumbBody = await thumbUpload.json().catch(() => ({}));
-          if (thumbUpload.ok && thumbBody.fileUrl) {
-            thumbUrl = thumbBody.fileUrl;
-            await fetch(`${workerUrl}/storage/object`, {
-              method: "DELETE",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key: oldThumbKey, token: signWorkerStorageToken("delete", oldThumbKey) }),
-            }).catch(() => undefined);
-          }
-        }
-      }
-    } catch {
-      // Thumb move is best-effort; gallery can regenerate client-side.
-    }
-  }
-
-  return {
-    r2_key: newKey,
-    file_url: uploadBody.fileUrl,
-    download_url: workerDownloadUrl(workerUrl, newKey),
-    ...(thumbUrl ? { thumb_url: thumbUrl } : {}),
-  };
-}
-
 async function reassignFlightPhotos(fromFlightId, toFlightId) {
   if (!FLIGHT_PHOTOS_COLLECTION_ID) return 0;
   const docs = await listAllDocuments(FLIGHT_PHOTOS_COLLECTION_ID, [sdk.Query.equal("flight_id", [fromFlightId])]);
   for (const doc of docs) {
-    let objectPatch = null;
-    try {
-      objectPatch = await moveFlightPhotoObject(doc, fromFlightId, toFlightId);
-    } catch (err) {
-      console.warn(`[ghost-merge] foto ${doc.$id}: ${err?.message || err}`);
-    }
     await updateDocumentCompat(FLIGHT_PHOTOS_COLLECTION_ID, doc.$id, {
       flight_id: toFlightId,
-      ...(objectPatch || {}),
     });
   }
   return docs.length;
@@ -10025,8 +9919,8 @@ async function uploadEnrollmentPdfFile(contract, pdfBytes, suffix) {
   const inputFile =
     typeof File !== "undefined"
       ? new File([pdfBytes], fileName, { type: "application/pdf" })
-      : sdk.InputFile?.fromBuffer
-        ? sdk.InputFile.fromBuffer(pdfBytes, fileName)
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(pdfBytes, fileName)
         : null;
   if (!inputFile) throw Object.assign(new Error("Upload de PDF nao suportado neste runtime."), { status: 500 });
   return storage.createFile(
@@ -10469,8 +10363,8 @@ async function attachEnrollmentFormToProfile(contract) {
   const inputFile =
     typeof File !== "undefined"
       ? new File([pdfBytes], fileName, { type: "application/pdf" })
-      : sdk.InputFile?.fromBuffer
-        ? sdk.InputFile.fromBuffer(pdfBytes, fileName)
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(pdfBytes, fileName)
         : null;
   if (!inputFile) throw Object.assign(new Error("Upload de PDF não suportado neste runtime."), { status: 500 });
   const uploaded = await storage.createFile(
@@ -14615,7 +14509,7 @@ const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const CAKTO_SETTINGS_KEY = "cakto";
 const WPP_SETTINGS_KEY = "wpp";
 const DEFAULT_WPP_INCOMING_AUTO_REPLY_MESSAGE =
-  "Este bot apenas envia mensagens automaticas e nao recebe mensagens por este canal.";
+  "Oi{{nickname_suffix}}! Este bot envia mensagens automaticas e tambem responde alguns pedidos por este canal.";
 const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
   "student_name",
   "flight_date",
@@ -14623,6 +14517,21 @@ const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
   "aircraft",
   "mission",
   "instructor",
+];
+const DEFAULT_WPP_PAYMENT_RECEIVED_PARAMETERS = [
+  "student_name",
+  "product",
+  "amount",
+  "payment_method",
+  "booking_url",
+];
+const DEFAULT_WPP_BOOKING_REQUESTED_PARAMETERS = [
+  "student_name",
+  "flight_date",
+  "start_time",
+  "aircraft",
+  "duration",
+  "status",
 ];
 const WPP_INCOMING_MATCH_MODES = new Set(["id", "content"]);
 const WPP_INCOMING_RULE_OPERATORS = new Set(["equals", "contains", "starts_with"]);
@@ -14634,6 +14543,7 @@ const WPP_INCOMING_ACTIONS = new Set([
   "send_flight_credit_purchase_options",
   "send_flight_credit_custom_purchase_link",
   "create_flight_credit_checkout",
+  "start_flight_booking",
 ]);
 const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
@@ -15387,6 +15297,17 @@ async function requireVideoUploader(actorUserId, flightId, { studentExport = fal
 
 const PHOTO_KEY_RE = /^flight-[A-Za-z0-9_-]+-photo-[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp|gif|heic|heif)$/i;
 
+async function flightPhotoKeyBelongsToFlight(flightId, rawKey) {
+  if (!FLIGHT_PHOTOS_COLLECTION_ID || !flightId || !rawKey) return false;
+  const docs = await listAllDocuments(FLIGHT_PHOTOS_COLLECTION_ID, [sdk.Query.equal("flight_id", [flightId])]);
+  return docs.some((doc) => {
+    const storedRawKey = cleanString(doc.r2_key).replace(/^flights\//, "");
+    if (!storedRawKey) return false;
+    const storedThumbKey = storedRawKey.replace(/(\.[^.]+)$/i, "-thumb.jpg");
+    return rawKey === storedRawKey || rawKey === storedThumbKey;
+  });
+}
+
 async function getVideoWorkerConfig(actorUserId, payload) {
   if (!CF_WORKER_URL || !WORKER_SECRET) {
     throw Object.assign(new Error("Worker de video nao configurado."), { status: 500 });
@@ -15426,10 +15347,11 @@ async function getVideoWorkerConfig(actorUserId, payload) {
       throw Object.assign(new Error("Chave de foto invalida."), { status: 400 });
     }
     const expectedPrefix = `flight-${flightId}-photo-`;
-    if (!rawKey.startsWith(expectedPrefix)) {
+    const keyInFlightScope = rawKey.startsWith(expectedPrefix);
+    await requireVideoUploader(actorUserId, flightId);
+    if (!keyInFlightScope && (mode !== "photoDelete" || !(await flightPhotoKeyBelongsToFlight(flightId, rawKey)))) {
       throw Object.assign(new Error("Chave de foto fora do escopo do voo."), { status: 400 });
     }
-    await requireVideoUploader(actorUserId, flightId);
     return {
       workerUrl: CF_WORKER_URL,
       uploadToken: signWorkerToken({
@@ -16110,6 +16032,8 @@ function defaultWppSettings() {
       language: "pt_BR",
     },
     tomorrowFlightReminderTemplate: defaultWppTomorrowFlightReminderTemplate(),
+    paymentReceivedTemplate: defaultWppPaymentReceivedTemplate(),
+    bookingRequestedTemplate: defaultWppBookingRequestedTemplate(),
     incomingAutoReply: defaultWppIncomingAutoReplySettings(),
     businessName: null,
     verifiedName: null,
@@ -16151,12 +16075,31 @@ function defaultWppTomorrowFlightReminderTemplate() {
   };
 }
 
+function defaultWppPaymentReceivedTemplate() {
+  return {
+    enabled: true,
+    templateName: "pagamento_recebido_cakto",
+    language: "pt_BR",
+    bodyParameters: DEFAULT_WPP_PAYMENT_RECEIVED_PARAMETERS,
+  };
+}
+
+function defaultWppBookingRequestedTemplate() {
+  return {
+    enabled: true,
+    templateName: "solicitacao_agendamento_voo",
+    language: "pt_BR",
+    bodyParameters: DEFAULT_WPP_BOOKING_REQUESTED_PARAMETERS,
+  };
+}
+
 function sanitizeWppIncomingButtons(value) {
   return (Array.isArray(value) ? value : [])
-    .slice(0, 3)
+    .slice(0, 10)
     .map((button) => ({
       id: cleanString(button?.id).slice(0, 128),
-      title: cleanString(button?.title).slice(0, 20),
+      // Reply buttons: 20 chars; list rows: 24 — keep 24 and truncate per send path.
+      title: cleanString(button?.title).slice(0, 24),
     }))
     .filter((button) => button.id && button.title);
 }
@@ -16211,6 +16154,24 @@ function sanitizeWppFlightReviewReadyTemplate(input) {
   };
 }
 
+function sanitizeWppTransactionalTemplate(input, defaults) {
+  const raw = input && typeof input === "object" ? input : {};
+  const fallback = defaults && typeof defaults === "object" ? defaults : {
+    enabled: false,
+    templateName: "",
+    language: "pt_BR",
+    bodyParameters: [],
+  };
+  const templateName = cleanString(raw.templateName || raw.name).toLowerCase();
+  const language = cleanString(raw.language) || fallback.language || "pt_BR";
+  return {
+    enabled: raw.enabled === undefined ? fallback.enabled !== false : raw.enabled !== false,
+    templateName: /^[a-z0-9_]+$/.test(templateName) ? templateName : fallback.templateName,
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : fallback.language || "pt_BR",
+    bodyParameters: sanitizeWppTemplateParameterKeys(raw.bodyParameters, fallback.bodyParameters || []),
+  };
+}
+
 function normalizeWppApiVersion(value) {
   const version = cleanString(value).toLowerCase();
   return /^v\d{1,2}\.\d{1,2}$/.test(version) ? version : "v23.0";
@@ -16225,6 +16186,8 @@ function publicWppSettings(settings, updatedAt) {
     apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
     flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(safe.flightReviewReadyTemplate),
     tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(safe.tomorrowFlightReminderTemplate),
+    paymentReceivedTemplate: sanitizeWppTransactionalTemplate(safe.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
+    bookingRequestedTemplate: sanitizeWppTransactionalTemplate(safe.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
     incomingAutoReply: sanitizeWppIncomingAutoReply(safe.incomingAutoReply || {
       enabled: safe.incomingAutoReplyEnabled,
       message: safe.incomingAutoReplyMessage,
@@ -16250,6 +16213,8 @@ async function loadWppSettings() {
       ...settings,
       flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(settings.flightReviewReadyTemplate),
       tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(settings.tomorrowFlightReminderTemplate),
+      paymentReceivedTemplate: sanitizeWppTransactionalTemplate(settings.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
+      bookingRequestedTemplate: sanitizeWppTransactionalTemplate(settings.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
       incomingAutoReply: sanitizeWppIncomingAutoReply(settings.incomingAutoReply || {
         enabled: settings.incomingAutoReplyEnabled,
         message: settings.incomingAutoReplyMessage,
@@ -16287,6 +16252,12 @@ async function saveWppSettings(input) {
     tomorrowFlightReminderTemplate: raw.tomorrowFlightReminderTemplate
       ? sanitizeWppTomorrowFlightReminderTemplate(raw.tomorrowFlightReminderTemplate)
       : sanitizeWppTomorrowFlightReminderTemplate(current.tomorrowFlightReminderTemplate),
+    paymentReceivedTemplate: raw.paymentReceivedTemplate
+      ? sanitizeWppTransactionalTemplate(raw.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate())
+      : sanitizeWppTransactionalTemplate(current.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
+    bookingRequestedTemplate: raw.bookingRequestedTemplate
+      ? sanitizeWppTransactionalTemplate(raw.bookingRequestedTemplate, defaultWppBookingRequestedTemplate())
+      : sanitizeWppTransactionalTemplate(current.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
     incomingAutoReply: sanitizeWppIncomingAutoReply(raw.incomingAutoReply, {
       current: current.incomingAutoReply,
       generateToken: true,
@@ -16310,6 +16281,14 @@ async function saveWppNotificationTemplates(input) {
     ),
     tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(
       input?.tomorrowFlightReminderTemplate || current.tomorrowFlightReminderTemplate,
+    ),
+    paymentReceivedTemplate: sanitizeWppTransactionalTemplate(
+      input?.paymentReceivedTemplate || current.paymentReceivedTemplate,
+      defaultWppPaymentReceivedTemplate(),
+    ),
+    bookingRequestedTemplate: sanitizeWppTransactionalTemplate(
+      input?.bookingRequestedTemplate || current.bookingRequestedTemplate,
+      defaultWppBookingRequestedTemplate(),
     ),
   };
   const saved = await persistWppSettings(next, doc);
@@ -16821,6 +16800,20 @@ async function sendWppBotReply(settings, input) {
   const buttons = sanitizeWppIncomingButtons(input?.buttons);
   if (!buttons.length) return sendWppTextMessage(settings, { to, body });
   if (!to || !body) throw Object.assign(new Error("Informe telefone e mensagem para enviar WhatsApp."), { status: 400 });
+  // WhatsApp permite no máximo 3 reply buttons; 4–10 vão como lista interativa.
+  if (buttons.length > 3) {
+    return sendWppListMessage(settings, {
+      to,
+      body,
+      buttonText: cleanString(input?.listButtonText || "Opções").slice(0, 20) || "Opções",
+      sectionTitle: cleanString(input?.listSectionTitle || "Menu").slice(0, 24) || "Menu",
+      rows: buttons.map((button) => ({
+        id: button.id,
+        title: button.title.slice(0, 24),
+        description: "",
+      })),
+    });
+  }
   const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
     method: "POST",
     body: {
@@ -16834,7 +16827,7 @@ async function sendWppBotReply(settings, input) {
         action: {
           buttons: buttons.map((button) => ({
             type: "reply",
-            reply: { id: button.id, title: button.title },
+            reply: { id: button.id, title: button.title.slice(0, 20) },
           })),
         },
       },
@@ -16853,6 +16846,16 @@ function sanitizeWppTemplateParameterKeys(value, defaults = DEFAULT_WPP_TOMORROW
     "instructor",
     "route",
     "flight_id",
+    "product",
+    "amount",
+    "payment_method",
+    "installments",
+    "order_id",
+    "paid_at",
+    "booking_url",
+    "presentation_time",
+    "duration",
+    "status",
   ]);
   const raw = Array.isArray(value) ? value : defaults;
   const next = raw.map(cleanString).filter((item) => allowed.has(item)).slice(0, 12);
@@ -17085,6 +17088,37 @@ function renderWppBotText(template, context = {}) {
   });
 }
 
+function wppProfileDisplayNickname(profile) {
+  const nickname = cleanString(profile?.nickname);
+  if (nickname) return nickname;
+  const fullName = cleanString(profile?.full_name || profile?.name);
+  if (!fullName) return "";
+  return fullName.split(/\s+/).filter(Boolean)[0] || "";
+}
+
+function wppBotMessageContext(profile, incoming = {}) {
+  const nickname = wppProfileDisplayNickname(profile);
+  const fullName = cleanString(profile?.full_name || profile?.name);
+  const firstName = fullName.split(/\s+/).filter(Boolean)[0] || "";
+  return {
+    nickname,
+    nickname_suffix: nickname ? `, ${nickname}` : "",
+    student: {
+      nickname,
+      name: fullName,
+      first_name: firstName || nickname,
+    },
+    message: {
+      id: incoming.messageId,
+      response_id: incoming.responseId,
+      content: incoming.text,
+      from: incoming.from,
+      lookup_from: incoming.lookupFrom || incoming.from,
+      test_mode: incoming.testMode ? "true" : "",
+    },
+  };
+}
+
 async function findWppStudentByPhone(phone) {
   const normalized = normalizeWppRecipientPhone(phone);
   if (!normalized || !PROFILES_COLLECTION_ID) return null;
@@ -17136,7 +17170,7 @@ async function sendWppFlightDetailsCta(settings, to, publicUrl) {
   try {
     await sendWppUrlButtonMessage(settings, {
       to,
-      body: "Figurinhas do seu ultimo voo. Veja tambem os detalhes:",
+      body: "Se quiser ver v\u00eddeos, fotos e detalhes da telemetria, acesse o link abaixo:",
       displayText: "Ver detalhes",
       url: publicUrl,
     });
@@ -17145,7 +17179,7 @@ async function sendWppFlightDetailsCta(settings, to, publicUrl) {
     console.warn(`[wppWebhook] flight details button fallback error=${cleanString(err?.message).slice(0, 240)}`);
     await sendWppTextMessage(settings, {
       to,
-      body: `Figurinhas do seu ultimo voo. Veja tambem os detalhes:\n${publicUrl}`,
+      body: `Se quiser ver v\u00eddeos, fotos e detalhes da telemetria, acesse o link abaixo:\n${publicUrl}`,
     });
     return `text_fallback:${cleanString(err?.message).slice(0, 120)}`;
   }
@@ -17188,18 +17222,25 @@ async function latestWppRelatedCompletedFlight(profile) {
     sdk.Query.limit(5),
     ...selectQuery(FLIGHT_DETAIL_SELECT),
   ];
-  const lookups = [
+  const directLookups = [
     databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("student_user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
     databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
     databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [sdk.Query.equal("instructor_user_id", [userId]), ...queries]).then((r) => r.documents).catch(() => []),
   ];
-  if (wppProfileHasRole(profile, "admin")) {
-    lookups.push(databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, queries).then((r) => r.documents).catch(() => []));
-  }
-  const docs = (await Promise.all(lookups)).flat();
-  const unique = Array.from(new Map(docs.map((doc) => [doc.$id, doc])).values());
-  return unique
+  const directDocs = (await Promise.all(directLookups)).flat();
+  const directUnique = Array.from(new Map(directDocs.map((doc) => [doc.$id, doc])).values());
+  const latestDirect = directUnique
     .sort((a, b) => `${cleanString(b.flight_date)} ${cleanString(b.start_time)}`.localeCompare(`${cleanString(a.flight_date)} ${cleanString(a.start_time)}`))[0] || null;
+  if (latestDirect) return latestDirect;
+
+  if (wppProfileHasRole(profile, "admin")) {
+    const docs = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, queries)
+      .then((r) => r.documents)
+      .catch(() => []);
+    return docs
+      .sort((a, b) => `${cleanString(b.flight_date)} ${cleanString(b.start_time)}`.localeCompare(`${cleanString(a.flight_date)} ${cleanString(a.start_time)}`))[0] || null;
+  }
+  return null;
 }
 
 function ensureNodeFileReaderForStickers() {
@@ -17291,23 +17332,68 @@ async function renderWppStickerPng(sticker) {
     .toBuffer();
 }
 
-async function uploadWppStickerPng(sticker) {
+function wppStickerCacheFileId(flightId, stickerId) {
+  const hash = sha256(`${cleanString(flightId)}:${cleanString(stickerId)}`).slice(0, 28);
+  return `wpp_${hash}`;
+}
+
+const WPP_FLIGHT_SHARE_STICKER_IDS = ["summary", "route", "legs", "altitude", "speed"];
+
+async function listCachedWppFlightShareStickerImages(flightDoc) {
+  const flightId = cleanString(flightDoc?.$id);
+  if (!flightId || !FLIGHTS_CSV_BUCKET_ID) return null;
+  const files = await Promise.all(
+    WPP_FLIGHT_SHARE_STICKER_IDS.map(async (stickerId) => {
+      const fileId = wppStickerCacheFileId(flightId, stickerId);
+      const file = await storage.getFile(FLIGHTS_CSV_BUCKET_ID, fileId).catch(() => null);
+      if (!file?.$id) return null;
+      return {
+        id: stickerId,
+        title: stickerId,
+        description: "",
+        url: appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, file.$id),
+      };
+    }),
+  );
+  return files.every(Boolean) ? files : null;
+}
+
+async function uploadWppStickerPng(sticker, options = {}) {
   if (!FLIGHTS_CSV_BUCKET_ID) throw Object.assign(new Error("Storage nao configurado."), { status: 500 });
+  const cachedFileId = cleanString(options.fileId);
+  if (cachedFileId) {
+    const existing = await storage.getFile(FLIGHTS_CSV_BUCKET_ID, cachedFileId).catch(() => null);
+    if (existing?.$id) {
+      return {
+        id: sticker.id,
+        title: sticker.title,
+        description: sticker.description,
+        url: appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, existing.$id),
+      };
+    }
+  }
   const png = await renderWppStickerPng(sticker);
   const fileName = `wpp-${sticker.fileName || `${sticker.id}.png`}`;
   const inputFile =
     typeof File !== "undefined"
       ? new File([png], fileName, { type: "image/png" })
-      : sdk.InputFile?.fromBuffer
-        ? sdk.InputFile.fromBuffer(png, fileName)
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(png, fileName)
         : null;
   if (!inputFile) throw Object.assign(new Error("Upload de imagem nao suportado neste runtime."), { status: 500 });
-  const uploaded = await storage.createFile(
-    FLIGHTS_CSV_BUCKET_ID,
-    sdk.ID.unique(),
-    inputFile,
-    [sdk.Permission.read(sdk.Role.any())],
-  );
+  let uploaded = null;
+  try {
+    uploaded = await storage.createFile(
+      FLIGHTS_CSV_BUCKET_ID,
+      cachedFileId || sdk.ID.unique(),
+      inputFile,
+      [sdk.Permission.read(sdk.Role.any())],
+    );
+  } catch (err) {
+    const code = Number(err?.code || err?.status || 0);
+    if (!cachedFileId || (code !== 409 && !/already exists|duplicate/i.test(cleanString(err?.message)))) throw err;
+    uploaded = await storage.getFile(FLIGHTS_CSV_BUCKET_ID, cachedFileId);
+  }
   return {
     id: sticker.id,
     title: sticker.title,
@@ -17316,14 +17402,306 @@ async function uploadWppStickerPng(sticker) {
   };
 }
 
+async function uploadWppPngBuffer(png, fileName) {
+  if (!FLIGHTS_CSV_BUCKET_ID) throw Object.assign(new Error("Storage nao configurado."), { status: 500 });
+  const safeName = cleanString(fileName).replace(/[^a-zA-Z0-9._-]/g, "_") || `wpp-${Date.now()}.png`;
+  const mime = /\.jpe?g$/i.test(safeName) ? "image/jpeg" : /\.webp$/i.test(safeName) ? "image/webp" : "image/png";
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([png], safeName, { type: mime })
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(png, safeName)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de imagem nao suportado neste runtime."), { status: 500 });
+  const uploaded = await storage.createFile(
+    FLIGHTS_CSV_BUCKET_ID,
+    sdk.ID.unique(),
+    inputFile,
+    [sdk.Permission.read(sdk.Role.any())],
+  );
+  return appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, uploaded.$id);
+}
+
+async function renderWppSvgToPng(svg, options = {}) {
+  const sharp = getSharpModule();
+  if (!sharp) throw Object.assign(new Error("Renderizacao de imagem nao disponivel neste runtime."), { status: 500 });
+  const scale = Math.max(1, Math.min(3, Number(options.scale) || 1));
+  return sharp(Buffer.from(svg, "utf8"), { failOn: "none", density: Math.round(96 * scale) })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+}
+
+async function sendWppMetarConditions(settings, incoming, icaoCode) {
+  const icao = aiswebService.normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Informe um ICAO válido. Ex.: Metar SBSP",
+    });
+    return "invalid_icao";
+  }
+
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+
+  const [airport, aiswebSettings] = await Promise.all([
+    aiswebService.fetchAirportBundle(icao),
+    aiswebService.loadSettings({ getSettingDoc }).catch(() => aiswebService.publicSettings(null, null)),
+  ]);
+
+  if (airport?.met?.error && !airport?.met?.metar) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: `Não consegui buscar o METAR de ${icao}. ${cleanString(airport.met.error).slice(0, 180)}`,
+    });
+    return "metar_unavailable";
+  }
+
+  const parsed = airport?.met?.parsed || null;
+  const analysis = wppMetar.analyzeWindVsRunways(parsed, airport?.rotaer?.runways);
+  const checks = wppMetar.evaluateMinimums(
+    parsed,
+    aiswebSettings?.minimums || aiswebService.DEFAULT_MINIMUMS,
+    { rotaer: airport?.rotaer },
+  );
+  const airportName = [airport?.rotaer?.name, airport?.rotaer?.city, airport?.rotaer?.uf]
+    .map(cleanString)
+    .filter(Boolean)
+    .join(" · ");
+
+  const body = wppMetar.formatWppMetarMessage({
+    icao,
+    airportName,
+    met: airport.met,
+    checks,
+    analysis,
+    nickname,
+  });
+  await sendWppTextMessage(settings, { to: incoming.from, body });
+
+  let imageStatus = "no_images";
+  try {
+    const windSvg = wppMetar.buildWindRoseSvg(parsed, airport?.rotaer, analysis);
+    const cloudSvg = wppMetar.buildCloudStackSvg(parsed, icao);
+    const sunSvg = wppMetar.buildSunCardSvg(airport?.sun || null, icao);
+    const [windPng, cloudPng, sunPng] = await Promise.all([
+      renderWppSvgToPng(windSvg),
+      renderWppSvgToPng(cloudSvg),
+      renderWppSvgToPng(sunSvg),
+    ]);
+    const [windUrl, cloudUrl, sunUrl] = await Promise.all([
+      uploadWppPngBuffer(windPng, `wpp-metar-wind-${icao}.png`),
+      uploadWppPngBuffer(cloudPng, `wpp-metar-clouds-${icao}.png`),
+      uploadWppPngBuffer(sunPng, `wpp-metar-sun-${icao}.png`),
+    ]);
+    await sendWppImageMessage(settings, {
+      to: incoming.from,
+      link: windUrl,
+      caption: `💨 Rosa dos ventos · ${icao}`,
+    });
+    await sendWppImageMessage(settings, {
+      to: incoming.from,
+      link: cloudUrl,
+      caption: `☁️ Nuvens / teto · ${icao}`,
+    });
+    await sendWppImageMessage(settings, {
+      to: incoming.from,
+      link: sunUrl,
+      caption: `☀️ Nascer e pôr do sol · ${icao}`,
+    });
+    imageStatus = "sent_with_images";
+  } catch (err) {
+    console.warn(`[wppWebhook] metar images fallback icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+    imageStatus = `sent_text_only:${cleanString(err?.message).slice(0, 120)}`;
+  }
+
+  await sleep(2000);
+  try {
+    await sendWppBotReply(settings, {
+      to: incoming.from,
+      body: `Posso te mandar mais detalhes de ${icao} se quiser, ou envie Metar {ICAO} para outro aeródromo. Ex.: Metar SBBH`,
+      buttons: [
+        { id: `notam_${icao}`, title: `NOTAMs ${icao}` },
+        { id: `detalhes_${icao}`, title: `Detalhes ${icao}` },
+        { id: "outro_metar", title: "Outro Metar" },
+      ],
+    });
+  } catch (err) {
+    console.warn(`[wppWebhook] metar follow-up buttons icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+  }
+
+  return imageStatus;
+}
+
+async function sendWppMetarHelpAction(settings, incoming) {
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const body = wppMetar.formatWppMetarHelpMessage(nickname);
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: [
+      { id: "metar_SBSP", title: "Metar SBSP" },
+      { id: "metar_SBBH", title: "Metar SBBH" },
+      { id: "metar_SBGR", title: "Metar SBGR" },
+    ],
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
+  return "sent";
+}
+
+async function sendWppNotamsAction(settings, incoming, icaoCode) {
+  const icao = aiswebService.normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Informe um ICAO válido. Ex.: Notam SBSP",
+    });
+    return "invalid_icao";
+  }
+
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const airport = await aiswebService.fetchAirportBundle(icao);
+  const airportName = [airport?.rotaer?.name, airport?.rotaer?.city, airport?.rotaer?.uf]
+    .map(cleanString)
+    .filter(Boolean)
+    .join(" · ");
+
+  const body = wppMetar.formatWppNotamsMessage({
+    icao,
+    airportName,
+    notams: airport?.notams || [],
+    nickname,
+  });
+  await sendWppTextMessage(settings, { to: incoming.from, body: body.slice(0, 4096) });
+
+  try {
+    await sendWppBotReply(settings, {
+      to: incoming.from,
+      body: `Posso te mandar mais detalhes de ${icao} se quiser, ou envie Metar {ICAO} para outro aeródromo. Ex.: Metar SBBH`,
+      buttons: [
+        { id: `metar_${icao}`, title: `Metar ${icao}` },
+        { id: `detalhes_${icao}`, title: `Detalhes ${icao}` },
+        { id: "outro_metar", title: "Outro Metar" },
+      ],
+    });
+  } catch (_) {
+    /* ignore */
+  }
+  return "sent";
+}
+
+async function sendWppAirportDetailsAction(settings, incoming, icaoCode) {
+  const icao = aiswebService.normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Informe um ICAO válido. Ex.: Detalhes SBSP",
+    });
+    return "invalid_icao";
+  }
+
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const airport = await aiswebService.fetchAirportBundle(icao);
+
+  if (airport?.rotaer?.error && !airport?.rotaer?.name && !(airport?.rotaer?.runways || []).length) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: `Não consegui buscar os detalhes de ${icao}. ${cleanString(airport.rotaer.error).slice(0, 180)}`,
+    });
+    return "details_unavailable";
+  }
+
+  const messages = wppMetar.formatWppAirportDetailsMessages({ icao, airport, nickname });
+  if (messages[0]) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: messages[0].slice(0, 4096) });
+  }
+
+  try {
+    const sharp = getSharpModule();
+    const mapJpeg = await wppMetar.buildAirportMapPng(
+      airport?.rotaer?.lat,
+      airport?.rotaer?.lng,
+      icao,
+      sharp,
+    );
+    if (mapJpeg) {
+      const mapUrl = await uploadWppPngBuffer(mapJpeg, `wpp-details-map-${icao}.jpg`);
+      await sendWppImageMessage(settings, {
+        to: incoming.from,
+        link: mapUrl,
+        caption: `🗺️ Mapa · ${icao}`,
+      });
+    }
+  } catch (err) {
+    console.warn(`[wppWebhook] details map image icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+  }
+
+  for (const message of messages.slice(1)) {
+    if (!message) continue;
+    await sendWppTextMessage(settings, { to: incoming.from, body: message.slice(0, 4096) });
+  }
+
+  try {
+    await sendWppBotReply(settings, {
+      to: incoming.from,
+      body: `Posso te mandar o METAR ou os NOTAMs de ${icao} se quiser, ou envie Metar {ICAO} para outro aeródromo. Ex.: Metar SBBH`,
+      buttons: [
+        { id: `metar_${icao}`, title: `Metar ${icao}` },
+        { id: `notam_${icao}`, title: `NOTAMs ${icao}` },
+        { id: "outro_metar", title: "Outro Metar" },
+      ],
+    });
+  } catch (_) {
+    /* ignore */
+  }
+  return "sent";
+}
+
 async function uploadWppFlightShareStickerImages(flightDoc) {
+  const cached = await listCachedWppFlightShareStickerImages(flightDoc);
+  if (cached) return cached;
   const shareData = await buildWppFlightShareData(flightDoc);
   const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true }).slice(0, 5);
   const uploaded = [];
   for (const sticker of stickers) {
-    uploaded.push(await uploadWppStickerPng(sticker));
+    uploaded.push(await uploadWppStickerPng(sticker, {
+      fileId: wppStickerCacheFileId(flightDoc?.$id || shareData.flightId, sticker.id),
+    }));
   }
   return uploaded;
+}
+
+async function sendWppFlightShareStickerImages(settings, to, flightDoc) {
+  const cached = await listCachedWppFlightShareStickerImages(flightDoc);
+  if (cached) {
+    let sent = 0;
+    for (const image of cached) {
+      await sendWppImageMessage(settings, {
+        to,
+        link: image.url,
+      });
+      sent += 1;
+      console.log(`[wppWebhook] sticker_sent_cached flight=${cleanString(flightDoc?.$id)} sent=${sent}/${cached.length}`);
+    }
+    return sent;
+  }
+  const shareData = await buildWppFlightShareData(flightDoc);
+  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true }).slice(0, 5);
+  let sent = 0;
+  for (const sticker of stickers) {
+    const image = await uploadWppStickerPng(sticker, {
+      fileId: wppStickerCacheFileId(flightDoc?.$id || shareData.flightId, sticker.id),
+    });
+    await sendWppImageMessage(settings, {
+      to,
+      link: image.url,
+    });
+    sent += 1;
+    console.log(`[wppWebhook] sticker_sent flight=${cleanString(flightDoc?.$id)} sent=${sent}/${stickers.length}`);
+  }
+  return sent;
 }
 
 async function sendWppLastFlightStickersAction(settings, incoming) {
@@ -17341,20 +17719,20 @@ async function sendWppLastFlightStickersAction(settings, incoming) {
   }
   const publicUrl = await createFlightPublicShareForWpp(flight.$id);
   try {
-    const images = await uploadWppFlightShareStickerImages(flight);
-    for (const image of images) {
-      await sendWppImageMessage(settings, {
-        to: incoming.from,
-        link: image.url,
-      });
-    }
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Estou montando as imagens do seu voo. J\u00e1 vou te enviando conforme ficarem prontas.",
+    });
+    console.log(`[wppWebhook] stickers_start flight=${flight.$id} to=${normalizeWppRecipientPhone(incoming.from)}`);
+    const sent = await sendWppFlightShareStickerImages(settings, incoming.from, flight);
+    await sleep(2000);
     const ctaStatus = await sendWppFlightDetailsCta(settings, incoming.from, publicUrl);
     return ctaStatus === "button" ? "sent" : `sent:${ctaStatus}`;
   } catch (err) {
     console.warn(`[wppWebhook] send_last_flight_stickers fallback flight=${flight.$id} error=${cleanString(err?.message).slice(0, 240)}`);
     await sendWppTextMessage(settings, {
       to: incoming.from,
-      body: "Nao consegui gerar as imagens agora, mas aqui estao os detalhes do seu ultimo voo:",
+      body: "N\u00e3o consegui gerar as imagens agora, mas aqui est\u00e3o os detalhes do seu \u00faltimo voo:",
     });
     await sendWppFlightDetailsCta(settings, incoming.from, publicUrl);
     return `sent_link_fallback:${cleanString(err?.message).slice(0, 120)}`;
@@ -17483,7 +17861,7 @@ function formatWppJourneyMissionLine(nextMission) {
 }
 
 function publicAppUrl(pathname = "/") {
-  const origin = "https://app.epeac.com.br";
+  const origin = cleanString(APP_URL).replace(/\/+$/, "") || "https://app.epeac.com.br";
   const path = cleanString(pathname).startsWith("/") ? cleanString(pathname) : `/${cleanString(pathname)}`;
   return `${origin}${path}`;
 }
@@ -17533,18 +17911,27 @@ async function sendWppNextMissionAction(settings, incoming) {
   if (!lookup) {
     return "student_not_found";
   }
+  const nick = wppProfileDisplayNickname(lookup.profile);
   const nextJourney = await loadWppNextJourneyMission(lookup.studentUserId);
   if (nextJourney.status === "track_not_found") {
-    await sendWppTextMessage(settings, { to: incoming.from, body: "Não encontrei uma jornada ativa para você." });
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: nick ? `${nick}, não encontrei uma jornada ativa para você.` : "Não encontrei uma jornada ativa para você.",
+    });
     return "training_track_not_found";
   }
   if (!nextJourney.mission) {
-    await sendWppTextMessage(settings, { to: incoming.from, body: "Sua jornada ativa parece estar completa. Não encontrei uma próxima missão aberta." });
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: nick
+        ? `${nick}, sua jornada ativa parece estar completa. Não encontrei uma próxima missão aberta.`
+        : "Sua jornada ativa parece estar completa. Não encontrei uma próxima missão aberta.",
+    });
     return "next_journey_mission_not_found";
   }
   await sendWppTextMessage(settings, {
     to: incoming.from,
-    body: `Detalhes da sua próxima missão:\n${formatWppJourneyMissionLine(nextJourney.mission)}`,
+    body: `${nick ? `${nick}, d` : "D"}etalhes da sua próxima missão:\n${formatWppJourneyMissionLine(nextJourney.mission)}`,
   });
   const detailUrl = buildWppMissionDetailUrl(nextJourney.mission);
   try {
@@ -17587,11 +17974,12 @@ async function sendWppStudentCreditBalanceAction(settings, incoming) {
     map.set(name, (map.get(name) || 0) + (Number(doc.hours) || 0));
     return map;
   }, new Map()).entries()).sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+  const nick = wppProfileDisplayNickname(lookup.profile);
   const modelLines = byModel.slice(0, 5).map(([name, hours]) => `- ${name}: ${formatWppHours(hours)} compradas`);
   await sendWppTextMessage(settings, {
     to: incoming.from,
     body: [
-      "Seu saldo de créditos:",
+      nick ? `${nick}, seu saldo de créditos:` : "Seu saldo de créditos:",
       `Compradas: ${formatWppHours(purchasedHours)}`,
       `Consumidas em voos realizados: ${formatWppHours(flownHours)}`,
       `Saldo atual: ${formatWppHours(balance)}`,
@@ -17644,17 +18032,18 @@ function formatWppScheduledFlightLine(flight, index) {
 async function sendWppNextScheduledFlightsAction(settings, incoming) {
   const lookup = await getWppStudentProfileForIncoming(settings, incoming);
   if (!lookup) return "student_not_found";
+  const nick = wppProfileDisplayNickname(lookup.profile);
   const flights = await listWppStudentScheduledFlights(lookup.studentUserId);
   if (!flights.length) {
     await sendWppTextMessage(settings, {
       to: incoming.from,
-      body: "Não encontrei voos futuros agendados para você.",
+      body: nick ? `${nick}, não encontrei voos futuros agendados para você.` : "Não encontrei voos futuros agendados para você.",
     });
     return "scheduled_flights_not_found";
   }
   await sendWppTextMessage(settings, {
     to: incoming.from,
-    body: `Seus próximos voos agendados:\n\n${flights.map(formatWppScheduledFlightLine).join("\n\n")}`,
+    body: `${nick ? `${nick}, s` : "S"}eus próximos voos agendados:\n\n${flights.map(formatWppScheduledFlightLine).join("\n\n")}`,
   });
   return "sent";
 }
@@ -17733,11 +18122,12 @@ async function sendWppFlightCreditPurchaseOptionsAction(settings, incoming) {
   const options = WPP_FLIGHT_CREDIT_QUICK_HOURS
     .map((hours) => buildWppCreditPackageOption(packages, hours))
     .filter(Boolean);
+  const nick = wppProfileDisplayNickname(lookup.profile);
   const packageDetails = options.map(formatWppCreditPackageDetail).join("\n\n");
   await sendWppListMessage(settings, {
     to: incoming.from,
     body: [
-      "Escolha um pacote de horas para gerar o checkout seguro:",
+      nick ? `${nick}, escolha um pacote de horas para gerar o checkout seguro:` : "Escolha um pacote de horas para gerar o checkout seguro:",
       "",
       packageDetails,
     ].join("\n"),
@@ -17804,6 +18194,101 @@ async function createWppFlightCreditCheckoutAction(settings, incoming) {
   return "sent";
 }
 
+async function callScheduleBookingAsStudent(studentUserId, payload = {}) {
+  const userId = cleanString(studentUserId);
+  if (!userId) throw Object.assign(new Error("Aluno nao informado para schedule-booking."), { status: 400 });
+  const execution = await functions.createExecution({
+    functionId: SCHEDULE_BOOKING_FUNCTION_ID,
+    body: JSON.stringify({ ...payload, asStudentUserId: userId }),
+    async: false,
+  });
+  const body = parseJsonObject(execution.responseBody, {});
+  const statusCode = Number(execution.responseStatusCode) || 0;
+  if (execution.status === "failed" || statusCode >= 400 || body.ok === false) {
+    throw Object.assign(new Error(cleanString(body.message) || `Falha no agendamento (${statusCode || execution.status}).`), {
+      status: statusCode >= 400 ? statusCode : 500,
+    });
+  }
+  return body;
+}
+
+async function loadWppBookingSession(userId) {
+  const key = wppBooking.sessionKey(userId);
+  const doc = await getSettingDoc(key);
+  if (!doc) return null;
+  const session = parseJsonObject(doc.settings_json, null);
+  if (!session || typeof session !== "object") return null;
+  const expiresAt = Date.parse(cleanString(session.expiresAt));
+  if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+    await clearWppBookingSession(userId).catch(() => null);
+    return null;
+  }
+  return session;
+}
+
+async function saveWppBookingSession(userId, session) {
+  const key = wppBooking.sessionKey(userId);
+  const payload = {
+    ...(session && typeof session === "object" ? session : {}),
+    expiresAt: cleanString(session?.expiresAt) || new Date(Date.now() + wppBooking.SESSION_TTL_MS).toISOString(),
+    savedAt: nowIso(),
+  };
+  await upsertPlatformSettingDoc(key, payload);
+  return payload;
+}
+
+async function clearWppBookingSession(userId) {
+  const key = wppBooking.sessionKey(userId);
+  const doc = await getSettingDoc(key);
+  if (!doc || !PLATFORM_SETTINGS_COLLECTION_ID) return;
+  await databases.deleteDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, doc.$id).catch(() => null);
+}
+
+function buildWppBookingDeps(settings, incoming, profile) {
+  const studentUserId = cleanString(profile?.user_id);
+  return {
+    settings,
+    incoming,
+    profile,
+    studentUserId,
+    nickname: wppProfileDisplayNickname(profile),
+    loadSession: loadWppBookingSession,
+    saveSession: saveWppBookingSession,
+    clearSession: clearWppBookingSession,
+    callScheduleBooking: callScheduleBookingAsStudent,
+    sendBotReply: sendWppBotReply,
+    sendText: sendWppTextMessage,
+    sendImage: sendWppImageMessage,
+    uploadPngBuffer: uploadWppPngBuffer,
+    renderSvgToPng: renderWppSvgToPng,
+    sendCreditPurchaseOptions: sendWppFlightCreditPurchaseOptionsAction,
+    sleep,
+  };
+}
+
+async function runWppFlightBookingTurn(settings, incoming, profile) {
+  const studentUserId = cleanString(profile?.user_id);
+  if (!studentUserId) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Nao encontrei seu cadastro pelo telefone deste WhatsApp.",
+    });
+    return { handled: true, status: "student_not_found" };
+  }
+  return wppBooking.handleTurn(buildWppBookingDeps(settings, incoming, profile));
+}
+
+async function startWppFlightBookingAction(settings, incoming) {
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const synthetic = {
+    ...incoming,
+    text: "Agendar voo",
+    responseId: "book_start",
+  };
+  const result = await runWppFlightBookingTurn(settings, synthetic, profile);
+  return result.status || "started";
+}
+
 async function runWppIncomingActions(settings, incoming, actions) {
   const results = [];
   for (const action of sanitizeWppIncomingActions(actions)) {
@@ -17821,6 +18306,8 @@ async function runWppIncomingActions(settings, incoming, actions) {
       results.push({ action, status: await sendWppFlightCreditCustomPurchaseLinkAction(settings, incoming) });
     } else if (action === "create_flight_credit_checkout") {
       results.push({ action, status: await createWppFlightCreditCheckoutAction(settings, incoming) });
+    } else if (action === "start_flight_booking") {
+      results.push({ action, status: await startWppFlightBookingAction(settings, incoming) });
     }
   }
   return results;
@@ -17847,17 +18334,51 @@ async function handleWppIncomingWebhook(payload, log) {
         log(`[wppWebhook] duplicate skipped messageId=${incoming.messageId}`);
         continue;
       }
+
+      const metarHelp = wppMetar.parseWppMetarHelpCommand(incoming.text, incoming.responseId);
+      if (metarHelp) {
+        const status = await sendWppMetarHelpAction(settings, incoming);
+        replied += 1;
+        actionResults.push({ action: "send_metar_help", status, matchedRuleId: null });
+        continue;
+      }
+
+      const aiswebCommand = wppMetar.parseWppAiswebCommand(incoming.text, incoming.responseId);
+      if (aiswebCommand) {
+        let status = "skipped";
+        let action = "send_aerodrome_metar";
+        if (aiswebCommand.kind === "metar") {
+          status = await sendWppMetarConditions(settings, incoming, aiswebCommand.icao);
+          action = "send_aerodrome_metar";
+        } else if (aiswebCommand.kind === "notam") {
+          status = await sendWppNotamsAction(settings, incoming, aiswebCommand.icao);
+          action = "send_aerodrome_notams";
+        } else if (aiswebCommand.kind === "details") {
+          status = await sendWppAirportDetailsAction(settings, incoming, aiswebCommand.icao);
+          action = "send_aerodrome_details";
+        }
+        replied += 1;
+        actionResults.push({ action, status, matchedRuleId: null, icao: aiswebCommand.icao });
+        continue;
+      }
+
+      const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+      const bookingStart = wppBooking.parseBookingStart(incoming.text, incoming.responseId);
+      const bookingSession = profile?.user_id ? await loadWppBookingSession(profile.user_id) : null;
+      // Durante o agendamento, respostas de compra de horas (ids comprar_*) seguem as regras/ações de crédito.
+      const creditPurchaseReply = /^comprar_/i.test(cleanString(incoming.responseId))
+        || /^comprar_/i.test(cleanString(incoming.text).replace(/\s+/g, "_"));
+      if ((bookingStart || bookingSession) && !(creditPurchaseReply && !bookingStart)) {
+        const result = await runWppFlightBookingTurn(settings, incoming, profile);
+        if (result.handled) {
+          replied += 1;
+          actionResults.push({ action: "start_flight_booking", status: result.status, matchedRuleId: null });
+          continue;
+        }
+      }
+
       const reply = resolveWppIncomingReply(incomingAutoReply, incoming);
-      const body = renderWppBotText(reply.message, {
-        message: {
-          id: incoming.messageId,
-          response_id: incoming.responseId,
-          content: incoming.text,
-          from: incoming.from,
-          lookup_from: incoming.lookupFrom || incoming.from,
-          test_mode: incoming.testMode ? "true" : "",
-        },
-      });
+      const body = renderWppBotText(reply.message, wppBotMessageContext(profile, incoming));
       if (body || reply.buttons.length) {
         await sendWppBotReply(settings, { to: incoming.from, body: body || incomingAutoReply.message, buttons: reply.buttons });
         replied += 1;
@@ -18917,6 +19438,129 @@ async function notifyCaktoSaleToAdmins(sale) {
   });
 }
 
+function formatWppDateTimeLabel(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return formatFlightDateLabel(raw);
+  const date = new Date(raw);
+  if (!Number.isNaN(date.getTime())) {
+    try {
+      return date.toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return raw;
+    }
+  }
+  return formatFlightDateLabel(raw) || raw;
+}
+
+function wppTransactionBookingUrl() {
+  return wppStudentPortalUrl("/aluno/agendamento");
+}
+
+function wppTemplateContextValue(context, key) {
+  const value = cleanString(context?.[key]);
+  return value || "-";
+}
+
+async function notifyCaktoSaleToStudent(sale) {
+  const safeSale = sale && typeof sale === "object" ? sale : {};
+  const studentUserId = cleanString(safeSale.studentUserId);
+  if (!studentUserId) return { status: "skipped", reason: "missing_student" };
+  const { settings } = await loadWppSettings();
+  const config = sanitizeWppTransactionalTemplate(settings.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate());
+  if (!config.enabled) return { status: "skipped", reason: "disabled" };
+  if (!cleanString(settings.apiKey) || !cleanString(settings.phoneNumberId) || !cleanString(settings.wabaId)) {
+    return { status: "skipped", reason: "not_connected", studentUserId };
+  }
+  const [profile, user] = await Promise.all([
+    getProfileByUserId(studentUserId).catch(() => null),
+    users.get({ userId: studentUserId }).catch(() => null),
+  ]);
+  const phone = normalizeWppRecipientPhone(profile?.phone);
+  if (!phone) return { status: "skipped", reason: "missing_phone", studentUserId };
+  const receiptId = cleanString(safeSale.receiptId);
+  const dedupeKey = `wpp.cakto.sale_approved:${receiptId || sha256Hex(JSON.stringify(safeSale))}:${studentUserId}`;
+  if (await alreadyDelivered(dedupeKey, "wpp", studentUserId)) {
+    return { status: "skipped", reason: "already_delivered", studentUserId };
+  }
+  const context = {
+    student_name: cleanString(profile?.full_name) || cleanString(user?.name) || cleanString(safeSale.customerName) || "Aluno",
+    product: cleanString(safeSale.productLabel) || "Compra de horas de voo",
+    amount: formatMoneyLabel(safeSale.amount, safeSale.currency),
+    payment_method: cleanString(safeSale.paymentMethod) || "Cakto",
+    installments: Number(safeSale.paymentInstallments) > 1 ? `${Number(safeSale.paymentInstallments)}x` : "a vista",
+    order_id: cleanString(safeSale.orderId) || receiptId,
+    paid_at: formatWppDateTimeLabel(safeSale.eventAt),
+    booking_url: wppTransactionBookingUrl(),
+  };
+  try {
+    const messageId = await sendWppTemplateMessage({
+      to: phone,
+      templateName: config.templateName,
+      language: config.language,
+      bodyParameters: config.bodyParameters.map((key) => wppTemplateContextValue(context, key)),
+    });
+    await logDelivery("cakto.sale_approved", dedupeKey, "wpp", studentUserId, "sent", messageId, null);
+    return { status: "sent", studentUserId, providerMessageId: messageId };
+  } catch (err) {
+    const message = cleanString(err?.message).slice(0, 512) || "Falha ao enviar template.";
+    await logDelivery("cakto.sale_approved", dedupeKey, "wpp", studentUserId, "failed", null, message);
+    return { status: "failed", studentUserId, reason: message };
+  }
+}
+
+async function notifyBookingRequestedToStudentWpp(data) {
+  const safe = data && typeof data === "object" ? data : {};
+  if (safe.notifyStudentWpp !== true) return { status: "skipped", reason: "not_requested" };
+  const studentUserId = cleanString(safe.studentUserId);
+  if (!studentUserId) return { status: "skipped", reason: "missing_student" };
+  const { settings } = await loadWppSettings();
+  const config = sanitizeWppTransactionalTemplate(settings.bookingRequestedTemplate, defaultWppBookingRequestedTemplate());
+  if (!config.enabled) return { status: "skipped", reason: "disabled", studentUserId };
+  if (!cleanString(settings.apiKey) || !cleanString(settings.phoneNumberId) || !cleanString(settings.wabaId)) {
+    return { status: "skipped", reason: "not_connected", studentUserId };
+  }
+  const profile = await getProfileByUserId(studentUserId).catch(() => null);
+  const phone = normalizeWppRecipientPhone(profile?.phone);
+  if (!phone) return { status: "skipped", reason: "missing_phone", studentUserId };
+  const eventId = cleanString(safe.flightId) || sha256Hex(JSON.stringify(safe));
+  const dedupeKey = `wpp.schedule.requested:${eventId}:${studentUserId}`;
+  if (await alreadyDelivered(dedupeKey, "wpp", studentUserId)) {
+    return { status: "skipped", reason: "already_delivered", studentUserId };
+  }
+  const context = {
+    student_name: cleanString(profile?.full_name) || cleanString(safe.studentName) || "Aluno",
+    flight_date: formatFlightDateLabel(cleanString(safe.flightDate)) || cleanString(safe.flightDate),
+    presentation_time: cleanString(safe.presentationTime),
+    start_time: cleanString(safe.startTime),
+    aircraft: cleanString(safe.aircraft) || "aeronave a definir",
+    duration: Number(safe.durationMinutes) > 0 ? formatDurationHours(Number(safe.durationMinutes) / 60) : "-",
+    status: cleanString(safe.status) || "Pendente",
+    booking_url: wppTransactionBookingUrl(),
+  };
+  try {
+    const messageId = await sendWppTemplateMessage({
+      to: phone,
+      templateName: config.templateName,
+      language: config.language,
+      bodyParameters: config.bodyParameters.map((key) => wppTemplateContextValue(context, key)),
+    });
+    await logDelivery("schedule.requested", dedupeKey, "wpp", studentUserId, "sent", messageId, null);
+    return { status: "sent", studentUserId, providerMessageId: messageId };
+  } catch (err) {
+    const message = cleanString(err?.message).slice(0, 512) || "Falha ao enviar template.";
+    await logDelivery("schedule.requested", dedupeKey, "wpp", studentUserId, "failed", null, message);
+    return { status: "failed", studentUserId, reason: message };
+  }
+}
+
 /** E-mail (e push) aos admins quando o ALUNO solicita/altera/cancela um voo pela plataforma. */
 async function notifyStudentScheduleEventToAdmins(kind, data) {
   const safe = data && typeof data === "object" ? data : {};
@@ -18957,14 +19601,34 @@ async function notifyStudentScheduleEventToAdmins(kind, data) {
   } else if (kind === "rescheduled") {
     const previousWhen = [toBr(safe.previousFlightDate), cleanString(safe.previousStartTime)].filter(Boolean).join(" às ");
     const previousAircraft = cleanString(safe.previousAircraft);
+    const previousDuration = toHHMM(safe.previousDurationMinutes);
+    const changed = [];
+    if (previousWhen && previousWhen !== when) {
+      changed.push(`data/horário: ${previousWhen} → ${when}`);
+    }
+    if (previousAircraft && previousAircraft !== aircraft) {
+      changed.push(`aeronave: ${previousAircraft} → ${aircraft}`);
+    }
+    if (previousDuration && duration && previousDuration !== duration) {
+      changed.push(`tempo de voo: ${previousDuration} → ${duration}`);
+    }
+    if (!changed.length) {
+      changed.push(`reagendado para ${when} em ${aircraft}`);
+    }
+    const changeSummary = changed.join("; ");
     message = {
       eyebrow: "Escala",
       title: "Voo alterado pelo aluno",
-      intro: "Um aluno alterou um voo agendado pela plataforma.",
-      body: `${student} alterou o voo em ${previousAircraft || aircraft} de ${previousWhen || "?"} para ${when} (${aircraft}).${safe.statusReverted ? " O voo voltou para Pendente e precisa ser reconfirmado." : ""}`,
+      intro: "Um aluno alterou um voo agendado pela plataforma. Confira o que mudou:",
+      body: `${student} alterou o voo — ${changeSummary}.${safe.statusReverted ? " O voo voltou para Pendente e precisa ser reconfirmado." : ""}${reason ? ` Motivo: ${reason}.` : ""}`,
       details: [
-        ...baseDetails,
-        previousWhen ? ["Horário anterior", `${previousWhen}${previousAircraft && previousAircraft !== aircraft ? ` (${previousAircraft})` : ""}`] : null,
+        ["Aluno", student],
+        previousWhen || previousAircraft || previousDuration
+          ? ["Antes", [previousWhen || null, previousAircraft || null, previousDuration ? `voo ${previousDuration}` : null].filter(Boolean).join(" · ")]
+          : null,
+        ["Depois", [when, aircraft, duration ? `voo ${duration}` : null].filter(Boolean).join(" · ")],
+        changed.length ? ["O que mudou", changeSummary] : null,
+        reason ? ["Motivo", reason] : null,
         safe.statusReverted ? ["Status", "Voltou para Pendente — reconfirmar"] : null,
       ].filter(Boolean),
       ctaLabel: "Abrir escala",
@@ -19002,6 +19666,16 @@ async function notifyStudentScheduleEventToAdmins(kind, data) {
       // skip user on failure
     }
   }
+}
+
+async function notifyStudentScheduleEvent(kind, data) {
+  await notifyStudentScheduleEventToAdmins(kind, data);
+  if (kind !== "requested") return { studentWpp: { status: "skipped", reason: "not_applicable" } };
+  const studentWpp = await notifyBookingRequestedToStudentWpp(data).catch((err) => ({
+    status: "failed",
+    reason: cleanString(err?.message).slice(0, 512) || "Falha ao enviar WhatsApp.",
+  }));
+  return { studentWpp };
 }
 
 const FLIGHT_NOTIFICATION_EVENTS = new Set(["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h"]);
@@ -20171,9 +20845,12 @@ async function createFlightCreditCheckoutForUser(
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
     .filter((pkg) => !weekdayOnly || pkg.weekdayDiscountEligible !== false)
     .sort((a, b) => a.hours - b.hours);
-  const referencePackage = hasCustomHours
-    ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
-    : normalized;
+  // Prefer the package the client already selected (WPP/UI). Re-picking by hours alone
+  // can switch aircraft/eligibility tiers and mismatch the price shown to the student.
+  const referencePackage = normalized
+    || (hasCustomHours
+      ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
+      : null);
   if (!referencePackage) throw Object.assign(new Error("Pacote de referencia indisponivel."), { status: 404 });
   const finalHours = hasCustomHours ? customHours : normalized.hours;
   if (!Number.isFinite(finalHours) || finalHours <= 0) {
@@ -20365,9 +21042,11 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
     .filter((pkg) => !weekdayOnly || pkg.weekdayDiscountEligible !== false)
     .sort((a, b) => a.hours - b.hours);
-  const referencePackage = hasCustomHours
-    ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
-    : normalized;
+  // Prefer the explicitly selected package so checkout matches the quoted price.
+  const referencePackage = normalized
+    || (hasCustomHours
+      ? [...sortedPackages].reverse().find((pkg) => pkg.hours <= customHours) || sortedPackages[0]
+      : null);
   if (!referencePackage) throw Object.assign(new Error("Pacote de referência indisponível."), { status: 404 });
   const finalHours = hasCustomHours ? customHours : normalized.hours;
   if (!Number.isFinite(finalHours) || finalHours <= 0) {
@@ -21748,6 +22427,32 @@ async function sendAiswebNotamAlertEmail(userId, userEmail, userName, notam, bra
   return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
 }
 
+async function sendAiswebSupplementAlertEmail(userId, userEmail, userName, supplement, brand, emailSettings) {
+  const path = await resolveAiswebPortalPath(userId);
+  const details = [
+    ["Aeródromo", cleanString(supplement.icao) || "—"],
+    ["Número", cleanString(supplement.number || supplement.id) || "—"],
+    ["Status", cleanString(supplement.status) || "—"],
+    ["Tipo", cleanString(supplement.tipo) || "—"],
+    ["Referência", cleanString(supplement.ref) || "—"],
+    ["Publicado", cleanString(supplement.publishedAt) || "—"],
+    ["Válido de", formatAiswebNotamDate(supplement.validFrom)],
+    ["Válido até", formatAiswebNotamDate(supplement.validTo)],
+    ["Duração", cleanString(supplement.duration) || "—"],
+  ];
+  const textBody = [cleanString(supplement.title), cleanString(supplement.text)].filter(Boolean).join("\n\n") || "Sem texto.";
+  const message = {
+    eyebrow: "AISWEB · SUPLEMENTO AIP",
+    title: `Novo suplemento · ${cleanString(supplement.icao) || "AD"}`,
+    intro: `Foi publicado um novo suplemento AIP para ${cleanString(supplement.icao) || "o aeródromo"}.`,
+    body: textBody,
+    details,
+    ctaLabel: "Consultar no AISWEB",
+    url: path,
+  };
+  return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
+}
+
 async function runAiswebNotamAlertScan(log = () => {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, emailsSent: 0 };
@@ -21877,12 +22582,161 @@ async function runAiswebNotamAlertScan(log = () => {}) {
       const payload = {
         icaoCodes: watchlist.icaoCodes,
         notamAlerts: watchlist.notamAlerts,
+        supplementAlerts: watchlist.supplementAlerts || raw.supplementAlerts || {},
         seenNotamIds: nextSeen,
+        seenSupplementIds:
+          raw.seenSupplementIds && typeof raw.seenSupplementIds === "object"
+            ? raw.seenSupplementIds
+            : {},
         updatedAt: nowIso(),
       };
       await upsertPlatformSettingDoc(doc.key, payload).catch((err) => {
         errors += 1;
         log(`[aisweb-notam] save seen failed ${userId}: ${err?.message || err}`);
+      });
+    }
+  }
+
+  return { ok: true, scannedUsers, emailsSent, seeded, errors };
+}
+
+async function runAiswebSupplementAlertScan(log = () => {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, emailsSent: 0 };
+  }
+  const docs = await listAllDocuments(PLATFORM_SETTINGS_COLLECTION_ID, [
+    sdk.Query.startsWith("key", aiswebService.AISWEB_WATCHLIST_PREFIX),
+  ]).catch(() => []);
+  if (!docs.length) {
+    return { ok: true, scannedUsers: 0, emailsSent: 0, seeded: 0, errors: 0 };
+  }
+
+  const [{ settings: emailSettings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+
+  let scannedUsers = 0;
+  let emailsSent = 0;
+  let seeded = 0;
+  let errors = 0;
+  const byIcao = new Map();
+
+  async function supplementsFor(icao) {
+    if (byIcao.has(icao)) return byIcao.get(icao);
+    const items = await aiswebService.fetchSupplements(icao, { bypassCache: true });
+    byIcao.set(icao, items);
+    return items;
+  }
+
+  for (const doc of docs) {
+    const userId = aiswebService.userIdFromWatchlistKey(doc.key);
+    if (!userId) continue;
+
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const watchlist = aiswebService.publicWatchlist(raw, doc.$updatedAt || null);
+    const alertIcaos = watchlist.icaoCodes.filter((icao) => watchlist.supplementAlerts?.[icao] === true);
+    if (!alertIcaos.length) continue;
+    scannedUsers += 1;
+
+    const previousSeen =
+      raw.seenSupplementIds && typeof raw.seenSupplementIds === "object" && !Array.isArray(raw.seenSupplementIds)
+        ? raw.seenSupplementIds
+        : {};
+    const nextSeen = { ...previousSeen };
+    let changed = false;
+    const newItems = [];
+
+    for (const icao of alertIcaos) {
+      let items = [];
+      try {
+        items = await supplementsFor(icao);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-sup] fetch failed ${icao}: ${err?.message || err}`);
+        continue;
+      }
+      const currentIds = items.map((item) => cleanString(item.id)).filter(Boolean);
+      const baseline = Array.isArray(previousSeen[icao]) ? previousSeen[icao] : null;
+      if (baseline == null) {
+        nextSeen[icao] = currentIds.slice(0, 200);
+        changed = true;
+        seeded += 1;
+        continue;
+      }
+      const known = new Set(baseline.map(cleanString).filter(Boolean));
+      for (const item of items) {
+        const id = cleanString(item.id);
+        if (!id || known.has(id)) continue;
+        newItems.push(item);
+      }
+      const merged = aiswebService.mergeSeenNotamIds(baseline, currentIds);
+      if (JSON.stringify(merged) !== JSON.stringify(baseline)) {
+        nextSeen[icao] = merged;
+        changed = true;
+      }
+    }
+
+    for (const icao of Object.keys(nextSeen)) {
+      if (!alertIcaos.includes(icao)) {
+        delete nextSeen[icao];
+        changed = true;
+      }
+    }
+
+    if (newItems.length) {
+      let email = "";
+      let name = "";
+      try {
+        const [actor, profile] = await Promise.all([
+          users.get({ userId }).catch(() => null),
+          getProfileByUserId(userId).catch(() => null),
+        ]);
+        email = cleanString(actor?.email || profile?.email);
+        name = cleanString(profile?.full_name || actor?.name || email);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-sup] user lookup failed ${userId}: ${err?.message || err}`);
+      }
+
+      if (email) {
+        for (const item of newItems) {
+          try {
+            const result = await sendAiswebSupplementAlertEmail(
+              userId,
+              email,
+              name,
+              item,
+              brand,
+              emailSettings,
+            );
+            if (result?.status === "sent") emailsSent += 1;
+          } catch (err) {
+            errors += 1;
+            log(`[aisweb-sup] email failed ${userId}/${item.id}: ${err?.message || err}`);
+          }
+        }
+      }
+    }
+
+    if (changed || newItems.length) {
+      const payload = {
+        icaoCodes: watchlist.icaoCodes,
+        notamAlerts: watchlist.notamAlerts || raw.notamAlerts || {},
+        supplementAlerts: watchlist.supplementAlerts,
+        seenNotamIds:
+          raw.seenNotamIds && typeof raw.seenNotamIds === "object" ? raw.seenNotamIds : {},
+        seenSupplementIds: nextSeen,
+        updatedAt: nowIso(),
+      };
+      await upsertPlatformSettingDoc(doc.key, payload).catch((err) => {
+        errors += 1;
+        log(`[aisweb-sup] save seen failed ${userId}: ${err?.message || err}`);
       });
     }
   }
@@ -23141,6 +23995,8 @@ module.exports = async ({ req, res, log, error }) => {
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       const aiswebNotamAlerts = await runAiswebNotamAlertScan(log)
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
+      const aiswebSupplementAlerts = await runAiswebSupplementAlertScan(log)
+        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
         await recordSagaAllUsersSyncFailure(cronSyncInput, err);
@@ -23154,6 +24010,7 @@ module.exports = async ({ req, res, log, error }) => {
         automationScan,
         wppTomorrowFlightReminder,
         aiswebNotamAlerts,
+        aiswebSupplementAlerts,
       });
     }
 
@@ -23290,8 +24147,8 @@ module.exports = async ({ req, res, log, error }) => {
       const validKinds = new Set(["requested", "rescheduled", "cancelled"]);
       const kind = cleanString(payload.kind);
       if (!validKinds.has(kind)) return jsonResponse(res, 400, { message: "Tipo de evento inválido." });
-      await notifyStudentScheduleEventToAdmins(kind, payload.data);
-      return jsonResponse(res, 200, { ok: true });
+      const result = await notifyStudentScheduleEvent(kind, payload.data);
+      return jsonResponse(res, 200, { ok: true, ...result });
     }
 
     if (action === "registerSagaCancellationPenalty") {
@@ -23316,9 +24173,15 @@ module.exports = async ({ req, res, log, error }) => {
       if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
         return jsonResponse(res, 401, { message: "Token inválido." });
       }
-      const deliveries = await notifyCaktoSaleToAdmins(payload.sale);
-      log(`[notifyCaktoSaleEvent] receipt=${cleanString(payload.sale?.receiptId)} deliveries=${JSON.stringify(deliveries)}`);
-      return jsonResponse(res, 200, { ok: true, deliveries });
+      const [deliveries, studentWpp] = await Promise.all([
+        notifyCaktoSaleToAdmins(payload.sale),
+        notifyCaktoSaleToStudent(payload.sale).catch((err) => ({
+          status: "failed",
+          reason: cleanString(err?.message).slice(0, 512) || "Falha ao enviar WhatsApp.",
+        })),
+      ]);
+      log(`[notifyCaktoSaleEvent] receipt=${cleanString(payload.sale?.receiptId)} deliveries=${JSON.stringify(deliveries)} studentWpp=${JSON.stringify(studentWpp)}`);
+      return jsonResponse(res, 200, { ok: true, deliveries, studentWpp });
     }
 
     if (action === "dispatchEvent") {
@@ -23808,6 +24671,7 @@ module.exports = async ({ req, res, log, error }) => {
         {
           icaoCodes: payload.icaoCodes || payload.watchlist?.icaoCodes || [],
           notamAlerts: payload.notamAlerts || payload.watchlist?.notamAlerts,
+          supplementAlerts: payload.supplementAlerts || payload.watchlist?.supplementAlerts,
         },
       );
       return jsonResponse(res, 200, { watchlist });

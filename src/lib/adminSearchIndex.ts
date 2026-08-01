@@ -29,6 +29,7 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-reports-no-telemetry", kind: "page", label: "Flight Review", group: "Relatórios", path: "/admin/sem-telemetria", requiredTab: "reports.sem-telemetria", keywords: ["sem dados", "voo manual", "telemetria", "video", "flight review"] },
   { id: "page-reports-alerts", kind: "page", label: "Alertas", group: "Relatórios", path: "/admin/alertas", requiredTab: "reports.alertas", keywords: ["excedencia", "alerta de telemetria"] },
   { id: "page-contents-maneuvers", kind: "page", label: "Manobras", group: "Conteúdos", path: "/admin/conteudos/manobras", requiredTab: "contents.manobras", keywords: ["manobra", "secoes", "artigos"] },
+  { id: "page-contents-painel", kind: "page", label: "Painel interativo", group: "Conteúdos", path: "/admin/conteudos/painel", requiredTab: "contents.painel", keywords: ["painel", "instrumento", "cockpit", "hotspot", "mockup"] },
   { id: "page-contents-manuals", kind: "page", label: "Manuais", group: "Conteúdos", path: "/admin/conteudos/manuais", requiredTab: "contents.manuais", keywords: ["apostila", "documento", "pdf"] },
   { id: "page-contents-manuais-internos", kind: "page", label: "Manuais internos", group: "Conteúdos", path: "/admin/conteudos/manuais-internos", requiredTab: "contents.manuais-internos", keywords: ["procedimentos", "interno"] },
   { id: "page-contents-help", kind: "page", label: "Central de Ajuda", group: "Conteúdos", path: "/admin/conteudos/central-ajuda", requiredTab: "contents.ajuda", keywords: ["faq", "suporte", "duvidas", "ajuda", "aluno"] },

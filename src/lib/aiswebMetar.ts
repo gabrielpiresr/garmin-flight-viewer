@@ -60,8 +60,11 @@ export function parseMetar(raw: string): AiswebParsedMetar | null {
       "",
     );
     const visMatch = afterWind.match(/^(?:(\d{4})|(\d{1,2})SM)\b/);
-    if (visMatch?.[1]) visibilityM = Number(visMatch[1]);
-    else if (visMatch?.[2]) visibilityM = Math.round(Number(visMatch[2]) * 1609.34);
+    if (visMatch?.[1]) {
+      visibilityM = Number(visMatch[1]);
+      // METAR 9999 = 10 km or more — normalize so 10 km minimums pass (>=).
+      if (visibilityM >= 9999) visibilityM = 10000;
+    } else if (visMatch?.[2]) visibilityM = Math.round(Number(visMatch[2]) * 1609.34);
   }
 
   let remarks: string | null = null;
@@ -225,8 +228,8 @@ export function evaluateMinimums(
     if (!parsed) {
       ceilingOk = null;
     } else if (parsed.ceilingFt == null) {
-      ceilingOk = null;
-      reasons.push("Teto N/D (sem BKN/OVC/VV no METAR)");
+      // Sem BKN/OVC/VV (ex.: só FEW/SCT) = teto ilimitado → dentro do mínimo.
+      ceilingOk = true;
     } else if (parsed.ceilingFt >= min.ceilingFt) {
       ceilingOk = true;
     } else {
@@ -258,16 +261,14 @@ export function evaluateMinimums(
     } else {
       const totalOk = windSpeed <= min.maxWindKt;
       if (!totalOk) {
-        reasons.push(`Vento ${windSpeed} kt > máximo ${min.maxWindKt} kt`);
+        reasons.push(`Vento ${windSpeed}kt > ${min.maxWindKt} kt`);
       }
 
       let crossOk: boolean | null = null;
       if (hasCrosswind) {
         crossOk = (analysis.crosswindKt as number) <= crosswindLimit;
         if (!crossOk) {
-          reasons.push(
-            `Través ${analysis.crosswindKt} kt em ${analysis.bestIdent} > metade do limite (${crosswindLimit} kt)`,
-          );
+          reasons.push(`Comp. de Través ${analysis.crosswindKt}kt > ${crosswindLimit} kt`);
         }
       }
 
@@ -294,12 +295,21 @@ export function evaluateMinimums(
 
 export function minimumCheckTooltip(check: AiswebMinimumCheck): string {
   if (check.overallOk === true) {
-    return `${check.label}: dentro dos mínimos`;
+    return check.label;
   }
   if (check.reasons.length) {
-    return `${check.label}: ${check.reasons.join(" · ")}`;
+    return `${check.label} — fora do min. — ${check.reasons.join(" · ")}`;
   }
-  return `${check.label}: dados insuficientes para avaliar`;
+  return `${check.label} — dados insuficientes`;
+}
+
+export function formatMinimumStatusLine(check: AiswebMinimumCheck): string {
+  if (check.overallOk === true) return `✅ ${check.label}`;
+  if (check.overallOk === false) {
+    const reason = check.reasons[0] ? ` — ${check.reasons[0]}` : "";
+    return `❌ ${check.label} — fora do min.${reason}`;
+  }
+  return `⚠️ ${check.label} — dados insuficientes`;
 }
 
 export function minimumCheckDetail(check: AiswebMinimumCheck): {
@@ -310,9 +320,9 @@ export function minimumCheckDetail(check: AiswebMinimumCheck): {
   const status = check.overallOk === true ? "ok" : check.overallOk === false ? "fail" : "unknown";
   const lines: string[] = [];
   if (check.overallOk === true) {
-    lines.push("Dentro dos mínimos operacionais.");
+    // Sem texto extra — o status OK já basta no título/badge.
   } else if (check.reasons.length) {
-    lines.push(...check.reasons);
+    lines.push(`fora do min. — ${check.reasons.join(" · ")}`);
   } else {
     lines.push("Dados insuficientes para avaliar.");
   }
@@ -692,7 +702,7 @@ export function formatVisibility(parsed: AiswebParsedMetar | null): string {
 export function formatCeiling(parsed: AiswebParsedMetar | null): string {
   if (!parsed) return "—";
   if (parsed.cavok) return "CAVOK";
-  if (parsed.ceilingFt == null) return "N/D";
+  if (parsed.ceilingFt == null) return "Ilimitado";
   return `${parsed.ceilingFt.toLocaleString("pt-BR")} ft`;
 }
 

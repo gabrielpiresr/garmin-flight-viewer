@@ -57,6 +57,7 @@
     "appwrite:fix-flight-student-perms": "node scripts/fix-flight-student-update-permissions.mjs",
     "appwrite:import-aerodromes": "node scripts/import-aerodromes.mjs",
     "appwrite:setup-manuals": "node scripts/setup-manuals.mjs",
+    "appwrite:setup-aircraft-panels": "node scripts/setup-aircraft-panels.mjs",
     "appwrite:setup-broadcast": "node scripts/setup-broadcast-collections.mjs",
     "appwrite:setup-maintenance": "node scripts/setup-maintenance-collections.mjs",
     "appwrite:setup-fuelings": "node scripts/setup-fuelings-collection.mjs",

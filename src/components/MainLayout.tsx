@@ -46,6 +46,7 @@ const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) =
 const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 const AiswebTab = lazy(() => import("./AiswebTab").then((module) => ({ default: module.AiswebTab })));
 const MediaAlbumTab = lazy(() => import("./MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
+const PanelTab = lazy(() => import("./PanelTab").then((module) => ({ default: module.PanelTab })));
 
 type Section = StudentTabKey;
 
@@ -153,6 +154,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "painel",
+    label: "Painel",
+    sublabel: "Instrumentos interativos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M2.25 6A2.25 2.25 0 014.5 3.75h15A2.25 2.25 0 0121.75 6v12A2.25 2.25 0 0119.5 20.25h-15A2.25 2.25 0 012.25 18V6zm4.5 3a.75.75 0 000 1.5h3.75a.75.75 0 000-1.5H6.75zm0 3.75a.75.75 0 000 1.5h7.5a.75.75 0 000-1.5h-7.5zm0 3.75a.75.75 0 000 1.5H12a.75.75 0 000-1.5H6.75zM15.75 9a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H16.5a.75.75 0 01-.75-.75V9zm.75 3.75a.75.75 0 00-.75.75v.008c0 .414.336.75.75.75h.008a.75.75 0 00.75-.75V13.5a.75.75 0 00-.75-.75H16.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "perfil",
     label: "Perfil",
     sublabel: "Dados cadastrais e ANAC",
@@ -248,6 +259,7 @@ const SECTION_ROUTES = [
   { id: "avisos", path: "/aluno/avisos" },
   { id: "manuais", path: "/aluno/manuais" },
   { id: "manobras", path: "/aluno/manobras" },
+  { id: "painel", path: "/aluno/painel" },
   { id: "perfil", path: "/aluno/perfil" },
   { id: "ajuda", path: "/aluno/ajuda" },
   { id: "dre", path: "/aluno/edb" },
@@ -260,7 +272,7 @@ const SECTION_ROUTES = [
 
 const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
   { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb"] },
-  { label: "Evoluir", ids: ["jornada", "manobras", "manuais", "avisos", "album"] },
+  { label: "Evoluir", ids: ["jornada", "manobras", "painel", "manuais", "avisos", "album"] },
   { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "indique-ganhe"] },
   { label: "Suporte", ids: ["ajuda"] },
 ];
@@ -851,6 +863,13 @@ export function MainLayout() {
             <div hidden={section !== "manobras"}>
               <LazyTab section="manobras">
                 <ManobrasTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("painel") && (
+            <div hidden={section !== "painel"}>
+              <LazyTab section="painel">
+                <PanelTab />
               </LazyTab>
             </div>
           )}

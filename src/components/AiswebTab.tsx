@@ -51,8 +51,10 @@ function placeholderAirport(icao: string): AiswebAirportBundle {
     met: { icao, metar: "", taf: "", parsed: null },
     rotaer: null,
     notams: [],
+    supplements: [],
     sun: null,
     charts: [],
+    airspace: null,
   };
 }
 
@@ -83,6 +85,7 @@ function readBootstrapCache(): {
       watchlist: {
         icaoCodes: parsed.watchlist.icaoCodes || [],
         notamAlerts: parsed.watchlist.notamAlerts || {},
+        supplementAlerts: parsed.watchlist.supplementAlerts || {},
         updatedAt: parsed.watchlist.updatedAt || null,
       },
     };
@@ -404,6 +407,9 @@ function ConditionsBoard({
   notamAlerts,
   onToggleNotamAlert,
   togglingNotamIcao,
+  supplementAlerts,
+  onToggleSupplementAlert,
+  togglingSupplementIcao,
   loadingIcaos,
 }: {
   airports: AiswebAirportBundle[];
@@ -418,6 +424,9 @@ function ConditionsBoard({
   notamAlerts: Record<string, boolean>;
   onToggleNotamAlert: (icao: string, enabled: boolean) => void;
   togglingNotamIcao: string | null;
+  supplementAlerts: Record<string, boolean>;
+  onToggleSupplementAlert: (icao: string, enabled: boolean) => void;
+  togglingSupplementIcao: string | null;
   loadingIcaos: Set<string>;
 }) {
   const selected = airports.find((a) => a.icao === selectedIcao) ?? airports[0] ?? null;
@@ -458,6 +467,9 @@ function ConditionsBoard({
               <th className="px-2 py-2 font-semibold">Status</th>
               <th className="px-2 py-2 font-semibold" title="Avisos de NOTAM por e-mail">
                 NOTAM
+              </th>
+              <th className="px-2 py-2 font-semibold" title="Avisos de suplemento AIP por e-mail">
+                SUP
               </th>
             </tr>
           </thead>
@@ -551,6 +563,40 @@ function ConditionsBoard({
                         <span
                           className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition ${
                             notamAlerts[airport.icao] ? "translate-x-4" : "translate-x-0.5"
+                          }`}
+                        />
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    {isTemporary ? (
+                      <span className="text-[10px] text-slate-600">—</span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={supplementAlerts[airport.icao] === true}
+                        aria-label={
+                          supplementAlerts[airport.icao]
+                            ? `Desligar avisos de suplemento para ${airport.icao}`
+                            : `Ligar avisos de suplemento para ${airport.icao}`
+                        }
+                        disabled={togglingSupplementIcao === airport.icao}
+                        onClick={() =>
+                          onToggleSupplementAlert(
+                            airport.icao,
+                            !(supplementAlerts[airport.icao] === true),
+                          )
+                        }
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition ${
+                          supplementAlerts[airport.icao]
+                            ? "border-violet-400/60 bg-violet-500/80"
+                            : "border-slate-600 bg-slate-800"
+                        } ${togglingSupplementIcao === airport.icao ? "opacity-60" : "hover:brightness-110"}`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition ${
+                            supplementAlerts[airport.icao] ? "translate-x-4" : "translate-x-0.5"
                           }`}
                         />
                       </button>
@@ -714,6 +760,7 @@ export function AiswebTab() {
   });
   const [savingWatchlist, setSavingWatchlist] = useState(false);
   const [togglingNotamIcao, setTogglingNotamIcao] = useState<string | null>(null);
+  const [togglingSupplementIcao, setTogglingSupplementIcao] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
   const [addInput, setAddInput] = useState("");
   const [lookupInput, setLookupInput] = useState("");
@@ -848,6 +895,7 @@ export function AiswebTab() {
 
   const watchlist = dashboard?.watchlist.icaoCodes ?? [];
   const notamAlerts = dashboard?.watchlist.notamAlerts ?? {};
+  const supplementAlerts = dashboard?.watchlist.supplementAlerts ?? {};
   const minimums = dashboard?.settings.minimums ?? [];
 
   const conditionAirports = useMemo(() => {
@@ -882,18 +930,20 @@ export function AiswebTab() {
     [dashboard],
   );
 
-  async function persistWatchlist(
-    nextCodes: string[],
-    successMessage: string,
-    nextAlerts?: Record<string, boolean>,
-  ) {
+  async function persistWatchlist(nextCodes: string[], successMessage: string) {
     const unique = [...new Set(nextCodes.map(normalizeIcao).filter((c) => c.length === 4))];
-    const alerts =
-      nextAlerts ??
-      Object.fromEntries(unique.map((icao) => [icao, dashboard?.watchlist.notamAlerts?.[icao] === true]));
+    const nextNotamAlerts = Object.fromEntries(
+      unique.map((icao) => [icao, dashboard?.watchlist.notamAlerts?.[icao] === true]),
+    );
+    const nextSupplementAlerts = Object.fromEntries(
+      unique.map((icao) => [icao, dashboard?.watchlist.supplementAlerts?.[icao] === true]),
+    );
     setSavingWatchlist(true);
     try {
-      const saved = await saveAiswebWatchlist(unique, alerts);
+      const saved = await saveAiswebWatchlist(unique, {
+        notamAlerts: nextNotamAlerts,
+        supplementAlerts: nextSupplementAlerts,
+      });
       if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
       const previousCodes = dashboard?.watchlist.icaoCodes || [];
       const added = unique.filter((icao) => !previousCodes.includes(icao));
@@ -945,7 +995,11 @@ export function AiswebTab() {
     const nextAlerts = { ...notamAlerts, [code]: enabled };
     setTogglingNotamIcao(code);
     try {
-      const saved = await saveAiswebWatchlist(watchlist, nextAlerts);
+      const saved = await saveAiswebWatchlist(watchlist, {
+        notamAlerts: nextAlerts,
+        supplementAlerts,
+      });
+      if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
       setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
       showToast({
         variant: "success",
@@ -960,6 +1014,34 @@ export function AiswebTab() {
       });
     } finally {
       setTogglingNotamIcao(null);
+    }
+  }
+
+  async function handleToggleSupplementAlert(icao: string, enabled: boolean) {
+    const code = normalizeIcao(icao);
+    if (!code || !watchlist.includes(code)) return;
+    const nextAlerts = { ...supplementAlerts, [code]: enabled };
+    setTogglingSupplementIcao(code);
+    try {
+      const saved = await saveAiswebWatchlist(watchlist, {
+        notamAlerts,
+        supplementAlerts: nextAlerts,
+      });
+      if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
+      setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
+      showToast({
+        variant: "success",
+        message: enabled
+          ? `Avisos de suplemento ligados para ${code}.`
+          : `Avisos de suplemento desligados para ${code}.`,
+      });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha ao atualizar avisos.",
+      });
+    } finally {
+      setTogglingSupplementIcao(null);
     }
   }
 
@@ -1172,6 +1254,9 @@ export function AiswebTab() {
           notamAlerts={notamAlerts}
           onToggleNotamAlert={(icao, enabled) => void handleToggleNotamAlert(icao, enabled)}
           togglingNotamIcao={togglingNotamIcao}
+          supplementAlerts={supplementAlerts}
+          onToggleSupplementAlert={(icao, enabled) => void handleToggleSupplementAlert(icao, enabled)}
+          togglingSupplementIcao={togglingSupplementIcao}
           loadingIcaos={loadingIcaos}
         />
       ) : null}

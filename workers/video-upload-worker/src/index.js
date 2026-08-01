@@ -174,20 +174,56 @@ function isM3u8Response(targetUrl, contentType) {
   return String(targetUrl || "").includes(".m3u8") || String(contentType || "").includes("mpegurl");
 }
 
+const GOPRO_PROXY_MAX_HEIGHT = 1080;
+
+function streamInfHeight(line) {
+  const resolution = String(line || "").match(/RESOLUTION=(\d+)x(\d+)/i);
+  return resolution ? Number(resolution[2]) : 0;
+}
+
 function rewriteM3u8(text, request, targetUrl, token) {
   const absolutize = (value) => new URL(value, targetUrl).href.replace("https://api.gopro.com/", "https://gopro.com/");
   const proxify = (value) => goproProxyUrl(request, absolutize(value), token);
-  return String(text || "")
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return line;
-      if (trimmed.startsWith("#")) {
-        return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${proxify(uri)}"`);
-      }
-      return proxify(trimmed);
-    })
-    .join("\n");
+  const proxifyLine = (line) => {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) return line;
+    if (trimmed.startsWith("#")) {
+      return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${proxify(uri)}"`);
+    }
+    return proxify(trimmed);
+  };
+
+  const lines = String(text || "").split(/\r?\n/);
+  const isMaster = lines.some((line) => line.trim().startsWith("#EXT-X-STREAM-INF"));
+  if (!isMaster) {
+    return lines.map(proxifyLine).join("\n");
+  }
+
+  // Drop video/iframe variants above 1080p to avoid ABR pulling 4K through the proxy,
+  // but keep #EXT-X-MEDIA audio groups so demuxed AAC still plays.
+  const kept = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || "";
+    const trimmed = line.trim();
+    const isStreamInf =
+      trimmed.startsWith("#EXT-X-STREAM-INF") || trimmed.startsWith("#EXT-X-I-FRAME-STREAM-INF");
+    if (!isStreamInf) {
+      kept.push(line);
+      continue;
+    }
+    const height = streamInfHeight(trimmed);
+    if (height > GOPRO_PROXY_MAX_HEIGHT) {
+      const next = lines[index + 1] || "";
+      if (next.trim() && !next.trim().startsWith("#")) index += 1;
+      continue;
+    }
+    kept.push(line);
+  }
+
+  const hasVariant = kept.some((line) => line.trim().startsWith("#EXT-X-STREAM-INF"));
+  // If every variant was above the cap, fall back to the original master (still proxied).
+  const source = hasVariant ? kept : lines;
+  return source.map(proxifyLine).join("\n");
 }
 
 function withCorsHeaders(request, env, baseHeaders = {}) {

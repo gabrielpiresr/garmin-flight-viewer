@@ -52,6 +52,7 @@ function normalizeWatchlist(watchlist?: AiswebWatchlist | null): AiswebWatchlist
   return {
     icaoCodes: watchlist?.icaoCodes || [],
     notamAlerts: watchlist?.notamAlerts || {},
+    supplementAlerts: watchlist?.supplementAlerts || {},
     updatedAt: watchlist?.updatedAt || null,
   };
 }
@@ -90,19 +91,28 @@ export async function lookupAiswebIcao(icaoCode: string): Promise<AiswebAirportB
 
 export async function saveAiswebWatchlist(
   icaoCodes: string[],
-  notamAlerts?: Record<string, boolean>,
+  alerts?: {
+    notamAlerts?: Record<string, boolean>;
+    supplementAlerts?: Record<string, boolean>;
+  } | Record<string, boolean>,
 ): Promise<AiswebWatchlist> {
+  // Compat: segundo arg antigo era só notamAlerts Record
+  const notamAlerts =
+    alerts && !("notamAlerts" in alerts) && !("supplementAlerts" in alerts)
+      ? (alerts as Record<string, boolean>)
+      : (alerts as { notamAlerts?: Record<string, boolean> } | undefined)?.notamAlerts;
+  const supplementAlerts =
+    alerts && ("supplementAlerts" in alerts || "notamAlerts" in alerts)
+      ? (alerts as { supplementAlerts?: Record<string, boolean> }).supplementAlerts
+      : undefined;
   const response = await execute({
     action: "saveAiswebWatchlist",
     icaoCodes,
     ...(notamAlerts ? { notamAlerts } : {}),
+    ...(supplementAlerts ? { supplementAlerts } : {}),
   });
   if (!response.watchlist) throw new Error("Watchlist AISWEB não retornada.");
-  return {
-    icaoCodes: response.watchlist.icaoCodes || [],
-    notamAlerts: response.watchlist.notamAlerts || {},
-    updatedAt: response.watchlist.updatedAt || null,
-  };
+  return normalizeWatchlist(response.watchlist);
 }
 
 export async function getAiswebSettings(): Promise<AiswebPlatformSettings> {

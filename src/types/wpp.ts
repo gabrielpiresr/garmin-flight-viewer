@@ -5,6 +5,8 @@ export type WppConnectionSettings = {
   apiKeyConfigured: boolean;
   flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
   tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+  paymentReceivedTemplate: WppTransactionalTemplateSettings;
+  bookingRequestedTemplate: WppTransactionalTemplateSettings;
   incomingAutoReply: WppIncomingAutoReplySettings;
   businessName: string | null;
   verifiedName: string | null;
@@ -26,6 +28,13 @@ export type WppTomorrowFlightReminderTemplateSettings = {
   templateName: string;
   language: string;
   sendHour: number;
+  bodyParameters: string[];
+};
+
+export type WppTransactionalTemplateSettings = {
+  enabled: boolean;
+  templateName: string;
+  language: string;
   bodyParameters: string[];
 };
 
@@ -56,7 +65,8 @@ export type WppIncomingActionType =
   | "send_next_scheduled_flights"
   | "send_flight_credit_purchase_options"
   | "send_flight_credit_custom_purchase_link"
-  | "create_flight_credit_checkout";
+  | "create_flight_credit_checkout"
+  | "start_flight_booking";
 
 export type WppIncomingAutoReplyRule = {
   id: string;
@@ -76,6 +86,8 @@ export type WppConnectionInput = {
   apiKey: string;
   flightReviewReadyTemplate?: WppFlightReviewReadyTemplateSettings;
   tomorrowFlightReminderTemplate?: WppTomorrowFlightReminderTemplateSettings;
+  paymentReceivedTemplate?: WppTransactionalTemplateSettings;
+  bookingRequestedTemplate?: WppTransactionalTemplateSettings;
   incomingAutoReply?: WppIncomingAutoReplySettings;
 };
 

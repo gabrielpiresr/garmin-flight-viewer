@@ -4,6 +4,7 @@ import type {
   WppConnectionSettings,
   WppFlightReviewReadyTemplateSettings,
   WppIncomingAutoReplySettings,
+  WppTransactionalTemplateSettings,
   WppTomorrowFlightReminderTemplateSettings,
   WppTemplate,
   WppTemplateInput,
@@ -66,6 +67,8 @@ export async function saveWppNotificationTemplates(
   input: {
     flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
     tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+    paymentReceivedTemplate: WppTransactionalTemplateSettings;
+    bookingRequestedTemplate: WppTransactionalTemplateSettings;
   },
 ): Promise<WppConnectionSettings> {
   const response = await execute({

@@ -28,6 +28,7 @@ export type AdminTabKey =
   | "contents.manuais-internos"
   | "contents.ajuda"
   | "contents.ajuda-instrutor"
+  | "contents.painel"
   | "contents.exercicios"
   | "users"
   | "import"
@@ -88,7 +89,8 @@ export type InstructorTabKey =
   | "reports"
   | "indique-ganhe"
   | "aisweb"
-  | "album";
+  | "album"
+  | "painel";
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -108,7 +110,8 @@ export type StudentTabKey =
   | "contratos"
   | "indique-ganhe"
   | "aisweb"
-  | "album";
+  | "album"
+  | "painel";
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
 
@@ -211,6 +214,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contents.manuais-internos": "Conteúdos › Manuais Internos",
   "contents.ajuda": "Conteúdos › Central de Ajuda",
   "contents.ajuda-instrutor": "Conteúdos › Manual do Instrutor",
+  "contents.painel": "Conteúdos › Painel",
   "contents.exercicios": "Conteúdos › Critérios",
   "users": "Usuários",
   "import": "Import",
@@ -273,6 +277,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "indique-ganhe": "Indique e ganhe",
   "aisweb": "AISWEB",
   "album": "Álbum",
+  "painel": "Painel",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -294,4 +299,5 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "indique-ganhe": "Indique e ganhe",
   "aisweb": "AISWEB",
   "album": "Álbum",
+  "painel": "Painel",
 };

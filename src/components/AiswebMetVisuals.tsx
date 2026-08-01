@@ -367,11 +367,12 @@ export function AiswebWindRose({
                 </g>
               ) : hasVar ? (
                 <g>
-                  {/* Outer tip swings between var limits; tip near center stays fixed. */}
+                  {/* METAR dddVddd is clockwise from→to. Animate via from+sweep so
+                      270→020 goes through north (270→380), not the long way down. */}
                   <animateTransform
                     attributeName="transform"
                     type="rotate"
-                    values={`${varFrom as number} ${cx} ${cy};${varTo as number} ${cx} ${cy};${varFrom as number} ${cx} ${cy}`}
+                    values={`${varFrom as number} ${cx} ${cy};${(varFrom as number) + varSweep} ${cx} ${cy};${varFrom as number} ${cx} ${cy}`}
                     keyTimes="0;0.5;1"
                     dur={varDur}
                     calcMode="spline"
@@ -951,7 +952,9 @@ export function AiswebCloudStack({ parsed }: { parsed: AiswebParsedMetar | null 
             ? "CAVOK"
             : parsed?.ceilingFt != null && parsed.ceilingFt < 10000
               ? `Ceiling ${parsed.ceilingFt.toLocaleString("pt-BR")} ft`
-              : parsed?.cloudsText || "—"}
+              : parsed
+                ? "Ilimitado"
+                : "—"}
         </p>
       </div>
 

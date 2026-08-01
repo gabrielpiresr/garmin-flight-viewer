@@ -619,6 +619,8 @@ async function notifyAdminsOfSale(receiptId, normalized, proposal) {
       token: WEBHOOK_TOKEN,
       sale: {
         receiptId,
+        proposalId: proposal?.$id || "",
+        studentUserId: clean(metadata?.studentUserId),
         customerName: normalized.customerName,
         customerEmail: normalized.customerEmail,
         amount: normalized.amount,

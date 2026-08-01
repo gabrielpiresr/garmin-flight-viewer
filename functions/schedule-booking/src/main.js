@@ -356,6 +356,11 @@ function bookingHistoryNotes({ waitlistBooking = false, actorRole = "", studentL
   ].filter(Boolean).join(" | ").slice(0, 255);
 }
 
+function isWppRequestOrigin(payload) {
+  const origin = clean(payload?.requestOrigin || payload?.origin || payload?.source).toLowerCase();
+  return origin === "wpp" || origin === "whatsapp" || origin === "whatsapp_bot";
+}
+
 /** Aviso aos admins quando o ALUNO solicita/altera/cancela um voo (fire-and-forget). */
 function notifyAdminsStudentAction(kind, data) {
   if (!ADMIN_USERS_FUNCTION_ID) return;
@@ -1559,6 +1564,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   }
   const flexibilityMinutes = integer(payload.flexibilityMinutes, 0, 0, 8 * 60);
   const observation = clean(payload.notes).slice(0, 180);
+  const requestedViaWpp = isWppRequestOrigin(payload);
   const bookingNotes = bookingHistoryNotes({
     waitlistBooking,
     actorRole,
@@ -1640,11 +1646,17 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     if (actorRole === "aluno") {
       notifyAdminsStudentAction("requested", {
         studentName: studentLabel,
+        studentUserId: studentId,
         aircraft: registration,
         flightDate: date,
+        presentationTime: times.presentationTime,
         startTime: times.startTime,
         durationMinutes,
+        status: sagaStatus === "PENDING" ? "Pendente" : "Previsto",
         notes: observation,
+        flightId: clean(result.scheduleId),
+        requestOrigin: requestedViaWpp ? "wpp" : "platform",
+        notifyStudentWpp: !requestedViaWpp,
       });
     }
     return {
@@ -1755,10 +1767,17 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     if (actorRole === "aluno") {
       notifyAdminsStudentAction("requested", {
         studentName: studentLabel,
+        studentUserId: studentId,
         aircraft: registration,
         flightDate: date,
+        presentationTime: times.presentationTime,
         startTime: times.startTime,
         durationMinutes,
+        status: "Pendente",
+        notes: observation,
+        flightId: id,
+        requestOrigin: requestedViaWpp ? "wpp" : "platform",
+        notifyStudentWpp: !requestedViaWpp,
       });
     }
     return { flight: publicFlight(doc, actorId, actorRole) };
@@ -2148,6 +2167,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
       previousAircraft: clean(event.aircraft).toUpperCase(),
       previousFlightDate: currentTimes.flightDate,
       previousStartTime: currentTimes.startTime,
+      previousDurationMinutes: currentTimes.durationMinutes || event.durationMinutes || null,
       statusReverted: nextStatus !== keepStatus,
       reason: rescheduleReason,
     });
@@ -2270,6 +2290,75 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
   return { flight: publicFlight(updated, actorId, actorRole), penaltyPct, penaltyHours: shouldDebit ? penaltyHours : 0 };
 }
 
+/**
+ * Preview de crédito para WPP/booking interno: máximo de horas livres entre modelos
+ * da frota (exclui lista de espera) na data de referência.
+ */
+async function handleCreditPreview(payload, actorId, actorRole, rules) {
+  const studentId = actorRole === "aluno" ? actorId : clean(payload.studentUserId || payload.asStudentUserId || actorId);
+  if (!studentId) fail("Aluno não informado.");
+  const durationMinutes = integer(payload.durationMinutes, 60, 1, 24 * 60);
+  const leadDays = Math.max(0, Math.ceil(number(rules.minBookingLeadDays, 0)));
+  const today = new Date().toISOString().slice(0, 10);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(clean(payload.flightDate))
+    ? clean(payload.flightDate)
+    : addDays(today, leadDays);
+  const isNight = false;
+  const aircrafts = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.limit(500),
+  ]);
+  const modelIds = Array.from(
+    new Set(
+      aircrafts.documents
+        .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, "aluno"))
+        .filter((doc) => !isWaitlistIdent(rules, doc.registration))
+        .map((doc) => clean(doc.model_id))
+        .filter(Boolean),
+    ),
+  );
+  const events = rules.sagaOnlySchedule ? await listSagaEvents() : [];
+  const studentProfile = rules.sagaOnlySchedule ? await getProfile(studentId) : null;
+  const studentSagaId = studentProfile ? sagaUserIdOf(studentProfile, studentId) : "";
+  const models = [];
+  for (const modelId of modelIds) {
+    const reserved = rules.sagaOnlySchedule
+      ? // eslint-disable-next-line no-await-in-loop
+        await sagaReservedHoursForModel(events, studentSagaId, modelId, rules)
+      : { weekdayHours: 0, weekendHours: 0 };
+    // eslint-disable-next-line no-await-in-loop
+    const credit = await creditAvailable(studentId, modelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
+    models.push({
+      modelId,
+      freeHours: credit.rawAvailableHours,
+      availableHours: credit.availableHours,
+      sufficient: credit.sufficient,
+      zeroCreditExceptionAvailable:
+        rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, credit.rawAvailableHours, durationMinutes, credit),
+      grossWeekdayPoolHours: credit.grossWeekdayPoolHours,
+      grossAnyDayPoolHours: credit.grossAnyDayPoolHours,
+    });
+  }
+  const freeHoursMax = models.reduce((max, row) => Math.max(max, Number(row.freeHours) || 0), Number.NEGATIVE_INFINITY);
+  const safeMax = Number.isFinite(freeHoursMax) ? freeHoursMax : 0;
+  const bestModel = models.reduce((best, row) => (!best || Number(row.freeHours) > Number(best.freeHours) ? row : best), null);
+  const zeroCreditExceptionAvailable = models.some((row) => row.zeroCreditExceptionAvailable);
+  const anySufficient = models.some((row) => row.sufficient) || zeroCreditExceptionAvailable;
+  return {
+    flightDate: date,
+    durationMinutes,
+    requireCreditsForBooking: rules.requireCreditsForBooking === true,
+    freeHoursMax: safeMax,
+    sufficient: !rules.requireCreditsForBooking || anySufficient,
+    zeroCreditExceptionAvailable,
+    bestModelId: bestModel?.modelId || null,
+    models,
+    mode: rules.mode,
+    rules,
+  };
+}
+
 module.exports = async ({ req, res, error }) => {
   try {
     if (!DATABASE_ID || !FLIGHTS_ID || !PROFILES_ID || !AIRCRAFTS_ID || !SETTINGS_ID) {
@@ -2279,9 +2368,12 @@ module.exports = async ({ req, res, error }) => {
     // SAGA) chega via header a cada request — não existe como variável de ambiente.
     const dynamicKey = clean(req.headers["x-appwrite-key"]);
     if (dynamicKey) client.setKey(dynamicKey);
-    const actorId = clean(req.headers["x-appwrite-user-id"]);
-    if (!actorId) return response(res, 401, { ok: false, message: "Não autenticado." });
     const payload = req.bodyJson || parseJson(req.body, {});
+    // Chamada autenticada do cliente (JWT) OU interna (admin-users via API key + asStudentUserId).
+    // Se houver header de usuário, ele manda — impede impersonação pelo body no client SDK.
+    const headerActorId = clean(req.headers["x-appwrite-user-id"]);
+    const actorId = headerActorId || clean(payload.asStudentUserId);
+    if (!actorId) return response(res, 401, { ok: false, message: "Não autenticado." });
     const profile = await getProfile(actorId);
     const actorRole = getEffectiveRole(profile);
     const rules = await getRules();
@@ -2292,6 +2384,7 @@ module.exports = async ({ req, res, error }) => {
     if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
     else if (payload.action === "checkAvailability") data = await handleAvailability(payload, actorId, actorRole, rules);
     else if (payload.action === "requestFlight") data = await handleRequest(payload, actorId, actorRole, profile, rules);
+    else if (payload.action === "creditPreview") data = await handleCreditPreview(payload, actorId, actorRole, rules);
     else if (payload.action === "confirmFlight") data = await handleConfirm(payload, actorId, actorRole, rules);
     else if (payload.action === "rescheduleFlight") {
       if (!rules.sagaOnlySchedule) fail("Alteração de voo disponível apenas no modo SAGA.");

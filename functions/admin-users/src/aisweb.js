@@ -17,6 +17,10 @@ const notamCache = new Map();
 const rotaerCache = new Map();
 const solCache = new Map();
 const cartasCache = new Map();
+const suplementosCache = new Map();
+const geilocCache = new Map();
+
+const GEOAISWEB_WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 
 function cleanString(value) {
   return String(value ?? "").trim();
@@ -119,8 +123,11 @@ function parseMetar(raw) {
   else {
     const afterWind = metar.replace(/^\S+\s+\S+\s+\S+\s+(?:VRB|\d{3})\d{2,3}(?:G\d{2,3})?KT(?:\s+\d{3}V\d{3})?\s+/i, "");
     const visMatch = afterWind.match(/^(?:(\d{4})|(\d{1,2})SM)\b/);
-    if (visMatch?.[1]) visibilityM = Number(visMatch[1]);
-    else if (visMatch?.[2]) visibilityM = Math.round(Number(visMatch[2]) * 1609.34);
+    if (visMatch?.[1]) {
+      visibilityM = Number(visMatch[1]);
+      // METAR 9999 = 10 km or more — normalize so 10 km minimums pass (>=).
+      if (visibilityM >= 9999) visibilityM = 10000;
+    } else if (visMatch?.[2]) visibilityM = Math.round(Number(visMatch[2]) * 1609.34);
   }
 
   const weather = [
@@ -238,13 +245,20 @@ function cacheSet(map, key, value) {
   return value;
 }
 
-async function aiswebFetch(area, icaoCode) {
+async function aiswebFetch(area, params = {}) {
   const { apiKey, apiPass } = aiswebCredentials();
   const url = new URL(AISWEB_API_BASE);
   url.searchParams.set("apiKey", apiKey);
   url.searchParams.set("apiPass", apiPass);
   url.searchParams.set("area", area);
-  url.searchParams.set("icaoCode", icaoCode);
+  const entries =
+    typeof params === "string"
+      ? [["icaoCode", params]]
+      : Object.entries(params || {});
+  for (const [key, value] of entries) {
+    if (value == null || value === "") continue;
+    url.searchParams.set(key, String(value));
+  }
   const response = await fetch(url.toString(), {
     method: "GET",
     headers: { Accept: "application/xml,text/xml,*/*" },
@@ -252,12 +266,60 @@ async function aiswebFetch(area, icaoCode) {
   const xml = await response.text();
   if (!xml || !xml.includes("<aisweb")) {
     const snippet = cleanString(xml).slice(0, 180);
-    throw Object.assign(new Error(snippet || `Falha AISWEB (${area}/${icaoCode}).`), { status: 502 });
+    throw Object.assign(new Error(snippet || `Falha AISWEB (${area}).`), { status: 502 });
   }
   if (/<service[^>]*total="error"/i.test(xml)) {
     throw Object.assign(new Error(xmlTag(xml, "msg") || `Erro AISWEB (${area}).`), { status: 502 });
   }
   return xml;
+}
+
+function parseAiswebTimestamp(value) {
+  const raw = cleanString(value);
+  if (!raw) return null;
+  const tsMatch = raw.match(/\{ts\s+'([^']+)'\}/i);
+  const candidate = tsMatch ? tsMatch[1] : raw;
+  const normalized = candidate.includes("T")
+    ? candidate
+    : candidate.replace(" ", "T") + (candidate.includes("Z") || /[+-]\d{2}:?\d{2}$/.test(candidate) ? "" : "Z");
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function parseAviationCoord(raw) {
+  const text = cleanString(raw).toUpperCase().replace(/\s+/g, "");
+  if (!text) return null;
+  // DDMM.mmH or DDDMM.mmH
+  const match = text.match(/^(\d{2,3})(\d{2}(?:\.\d+)?)([NSEW])$/);
+  if (!match) {
+    const asNumber = Number(text);
+    return Number.isFinite(asNumber) ? asNumber : null;
+  }
+  const degrees = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(degrees) || !Number.isFinite(minutes)) return null;
+  let value = degrees + minutes / 60;
+  const hemi = match[3];
+  if (hemi === "S" || hemi === "W") value = -value;
+  return value;
+}
+
+function stripHtml(value) {
+  return cleanString(decodeXmlEntities(value).replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " "))
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function normalizeSearchText(value) {
+  return cleanString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9/ ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchMet(icaoCode) {
@@ -268,7 +330,7 @@ async function fetchMet(icaoCode) {
   const cached = cacheGet(metCache, icao);
   if (cached) return cached;
   try {
-    const xml = await aiswebFetch("met", icao);
+    const xml = await aiswebFetch("met", { icaoCode: icao });
     const metar = xmlTag(xml, "metar");
     const taf = xmlTag(xml, "taf");
     const loc = normalizeIcao(xmlTag(xml, "loc")) || icao;
@@ -300,7 +362,7 @@ async function fetchNotams(icaoCode, options = {}) {
     if (cached) return cached;
   }
   try {
-    const xml = await aiswebFetch("notam", icao);
+    const xml = await aiswebFetch("notam", { icaoCode: icao });
     const items = parseNotamItems(xml, icao);
     return cacheSet(notamCache, icao, items);
   } catch {
@@ -338,6 +400,113 @@ function parseLights(xmlChunk) {
   return lights;
 }
 
+function parseFuel(xml) {
+  const fuelBlock = String(xml || "").match(/<fuel\b[^>]*>([\s\S]*?)<\/fuel>/i)?.[1] || "";
+  if (!fuelBlock.trim()) return null;
+  const spanMatch = fuelBlock.match(/<span\b([^>]*)>([\s\S]*?)<\/span>/i);
+  const hoursRaw = spanMatch ? xmlAttr(spanMatch[1], "title") : "";
+  const hours = cleanString(hoursRaw.replace(/^\(|\)$/g, "")) || null;
+  const text = cleanString(decodeXmlEntities(spanMatch ? spanMatch[2] : fuelBlock));
+  if (!text && !hours) return null;
+  const types = [...text.matchAll(/\b(PF|TF|AVGAS|JET[\s-]?A1?|JET)\b/gi)].map((m) =>
+    cleanString(m[1]).toUpperCase().replace(/\s+/g, ""),
+  );
+  const uniqueTypes = [...new Set(types)];
+  const categoryMatch = text.match(/\[(\d+)\]/);
+  return {
+    text: text || null,
+    hours,
+    types: uniqueTypes,
+    category: categoryMatch ? categoryMatch[1] : null,
+  };
+}
+
+function parseWorkingHours(xml) {
+  const schedules = [];
+  const sheetRe = /<timesheet\b([^>]*)>([\s\S]*?)<\/timesheet>/gi;
+  let match;
+  while ((match = sheetRe.exec(String(xml || ""))) !== null) {
+    const body = match[2] || "";
+    const days = [];
+    const dayRe = /<day\b[^>]*>([\s\S]*?)<\/day>/gi;
+    let dayMatch;
+    while ((dayMatch = dayRe.exec(body)) !== null) {
+      const day = cleanString(decodeXmlEntities(dayMatch[1]));
+      if (day) days.push(day);
+    }
+    const begin = xmlTag(body, "begin") || null;
+    const end = xmlTag(body, "end") || null;
+    const holidays = xmlTag(body, "hol") === "1";
+    if (!days.length && !begin && !end) continue;
+    schedules.push({
+      days,
+      begin,
+      end,
+      holidays,
+    });
+  }
+  const workinghourAttr = String(xml || "").match(/<workinghour\b([^>]*)\/?>/i);
+  const workinghourText = workinghourAttr ? xmlAttr(workinghourAttr[1], "compl") : "";
+  return {
+    text: cleanString(workinghourText) || null,
+    schedules,
+  };
+}
+
+function parseNavaids(xml) {
+  const navaids = [];
+  const svcRe = /<service\b([^>]*)>([\s\S]*?)<\/service>/gi;
+  let match;
+  while ((match = svcRe.exec(String(xml || ""))) !== null) {
+    const open = match[1] || "";
+    if (!/type\s*=\s*"NAV"/i.test(open)) continue;
+    const body = match[2] || "";
+    const type = xmlTag(body, "type") || "NAV";
+    const ident = xmlTag(body, "ident") || null;
+    const freq = xmlTag(body, "freq") || null;
+    const thr = xmlTag(body, "thr") || null;
+    const lat = parseAviationCoord(xmlTag(body, "lat"));
+    const lng = parseAviationCoord(xmlTag(body, "lng"));
+    if (!type && !ident && !freq) continue;
+    navaids.push({
+      type,
+      ident,
+      frequencyMhz: freq,
+      threshold: thr,
+      lat,
+      lng,
+      category: xmlTag(body, "cat") || null,
+    });
+  }
+  return navaids;
+}
+
+function parseDeclaredDistances(xml) {
+  const items = [];
+  const re = /<rmkDist\b[^>]*>([\s\S]*?)<\/rmkDist>/gi;
+  let match;
+  while ((match = re.exec(String(xml || ""))) !== null) {
+    const body = match[1] || "";
+    const rwy = cleanString(xmlTag(body, "rwy"));
+    if (!rwy) continue;
+    const toNumber = (tag) => {
+      const raw = cleanString(xmlTag(body, tag)).replace(",", ".");
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    items.push({
+      rwy,
+      toraM: toNumber("tora"),
+      todaM: toNumber("toda"),
+      asdaM: toNumber("asda"),
+      ldaM: toNumber("lda"),
+      latText: xmlTag(body, "lat") || null,
+      lngText: xmlTag(body, "lng") || null,
+    });
+  }
+  return items;
+}
+
 function parseRotaer(xml, fallbackIcao) {
   const icao = normalizeIcao(xmlTag(xml, "AeroCode")) || fallbackIcao;
   const runways = [];
@@ -367,7 +536,6 @@ function parseRotaer(xml, fallbackIcao) {
         thresholds.push({ ident: thrIdent, headingDeg: runwayHeadingFromIdent(thrIdent), lights: [] });
       }
     }
-    // Runway-level lights: collect light tags that are not inside <thr>
     const bodyWithoutThr = body.replace(/<thr\b[\s\S]*?<\/thr>/gi, "");
     runways.push({
       ident: ident || "RWY",
@@ -430,6 +598,9 @@ function parseRotaer(xml, fallbackIcao) {
   }
   complements.sort((a, b) => (a.index || 0) - (b.index || 0));
 
+  const utcRaw = cleanString(xmlTag(xml, "utc"));
+  const utcOffsetHours = utcRaw ? Number(utcRaw) : null;
+
   return {
     icao,
     name: xmlTag(xml, "name") || null,
@@ -441,6 +612,12 @@ function parseRotaer(xml, fallbackIcao) {
     fir: xmlTag(xml, "fir") || null,
     lat: Number(xmlTag(xml, "lat")) || null,
     lng: Number(xmlTag(xml, "lng")) || null,
+    utcOffsetHours: Number.isFinite(utcOffsetHours) ? utcOffsetHours : null,
+    cityDistance: xmlTag(xml, "distance") || null,
+    fuel: parseFuel(xml),
+    workingHours: parseWorkingHours(xml),
+    navaids: parseNavaids(xml),
+    declaredDistances: parseDeclaredDistances(xml),
     runways,
     frequencies,
     remarks,
@@ -461,6 +638,12 @@ function emptyRotaer(icao, error) {
     fir: null,
     lat: null,
     lng: null,
+    utcOffsetHours: null,
+    cityDistance: null,
+    fuel: null,
+    workingHours: { text: null, schedules: [] },
+    navaids: [],
+    declaredDistances: [],
     runways: [],
     frequencies: [],
     remarks: [],
@@ -477,7 +660,7 @@ async function fetchRotaer(icaoCode) {
   const cached = cacheGet(rotaerCache, icao);
   if (cached) return cached;
   try {
-    const xml = await aiswebFetch("rotaer", icao);
+    const xml = await aiswebFetch("rotaer", { icaoCode: icao });
     const value = parseRotaer(xml, icao);
     return cacheSet(rotaerCache, icao, value);
   } catch (err) {
@@ -491,7 +674,7 @@ async function fetchSun(icaoCode) {
   const cached = cacheGet(solCache, icao);
   if (cached) return cached;
   try {
-    const xml = await aiswebFetch("sol", icao);
+    const xml = await aiswebFetch("sol", { icaoCode: icao });
     const value = {
       date: xmlTag(xml, "date") || null,
       sunriseUtc: xmlTag(xml, "sunrise") || null,
@@ -510,7 +693,7 @@ async function fetchCartas(icaoCode) {
   const cached = cacheGet(cartasCache, icao);
   if (cached) return cached;
   try {
-    const xml = await aiswebFetch("cartas", icao);
+    const xml = await aiswebFetch("cartas", { icaoCode: icao });
     const items = [];
     const itemRe = /<item\b([^>]*)>([\s\S]*?)<\/item>/gi;
     let match;
@@ -545,22 +728,158 @@ async function fetchCartas(icaoCode) {
   }
 }
 
+function parseSuplementos(xml, fallbackIcao) {
+  const items = [];
+  const itemRe = /<item\b([^>]*)>([\s\S]*?)<\/item>/gi;
+  let match;
+  while ((match = itemRe.exec(String(xml || ""))) !== null) {
+    const body = match[2] || "";
+    const id = xmlTag(body, "id") || xmlAttr(match[1], "id");
+    if (!id) continue;
+    const status = cleanString(xmlTag(body, "status")).toLowerCase();
+    if (status && !status.includes("vigor") && status !== "active") continue;
+    const n = xmlTag(body, "n");
+    const serie = xmlTag(body, "serie");
+    const number = [serie, n].filter(Boolean).join("") || n || id;
+    items.push({
+      id,
+      number,
+      serie: serie || null,
+      n: n || null,
+      icao: normalizeIcao(xmlTag(body, "local") || fallbackIcao),
+      status: xmlTag(body, "status") || null,
+      tipo: xmlTag(body, "tipo") || null,
+      title: stripHtml(xmlTag(body, "titulo")) || null,
+      text: stripHtml(xmlTag(body, "texto")) || "",
+      duration: stripHtml(xmlTag(body, "duracao")) || null,
+      validFrom: parseAiswebTimestamp(xmlTag(body, "data_inicio")),
+      validTo: parseAiswebTimestamp(xmlTag(body, "data_fim")),
+      publishedAt: xmlTag(body, "dt") || null,
+      ref: xmlTag(body, "ref") || null,
+      anexo: xmlTag(body, "anexo") || null,
+    });
+  }
+  items.sort((a, b) => {
+    const ta = Date.parse(a.validFrom || a.publishedAt || "") || 0;
+    const tb = Date.parse(b.validFrom || b.publishedAt || "") || 0;
+    return tb - ta;
+  });
+  return items;
+}
+
+async function fetchSupplements(icaoCode, options = {}) {
+  const icao = normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) return [];
+  const bypassCache = options?.bypassCache === true;
+  if (!bypassCache) {
+    const cached = cacheGet(suplementosCache, icao);
+    if (cached) return cached;
+  }
+  try {
+    const xml = await aiswebFetch("suplementos", { icaoCode: icao });
+    const items = parseSuplementos(xml, icao);
+    return cacheSet(suplementosCache, icao, items);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchGeilocByType(type) {
+  const key = cleanString(type).toUpperCase() || "ALL";
+  const cached = cacheGet(geilocCache, key);
+  if (cached) return cached;
+  try {
+    const xml = await aiswebFetch("geiloc", type ? { type } : {});
+    const items = [];
+    const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
+    let match;
+    while ((match = itemRe.exec(String(xml || ""))) !== null) {
+      const body = match[1] || "";
+      const code = normalizeIcao(xmlTag(body, "IcaoCode"));
+      const name = xmlTag(body, "name") || null;
+      if (!code && !name) continue;
+      items.push({
+        id: xmlTag(body, "id") || null,
+        type: xmlTag(body, "type") || type || null,
+        icao: code || null,
+        name,
+        status: xmlTag(body, "status") || null,
+        city: xmlTag(body, "city") || null,
+        uf: xmlTag(body, "uf") || null,
+      });
+    }
+    return cacheSet(geilocCache, key, items);
+  } catch {
+    return cacheSet(geilocCache, key, []);
+  }
+}
+
+function matchTmaForAirport(tmas, rotaer) {
+  const city = normalizeSearchText(rotaer?.city);
+  const name = normalizeSearchText(rotaer?.name);
+  const uf = normalizeSearchText(rotaer?.uf);
+  if (!city && !name) return null;
+  const scored = [];
+  for (const tma of tmas) {
+    const tmaName = normalizeSearchText(String(tma.name || "").replace(/\/TMA$/i, ""));
+    if (!tmaName) continue;
+    let score = 0;
+    if (city && (tmaName === city || tmaName.includes(city) || city.includes(tmaName))) score += 10;
+    if (name) {
+      const nameToken = name.split(" ")[0];
+      if (nameToken && tmaName.includes(nameToken)) score += 3;
+    }
+    if (uf && normalizeSearchText(tma.uf) === uf) score += 1;
+    if (score > 0) scored.push({ tma, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.tma || null;
+}
+
+async function resolveAirspace(rotaer) {
+  const firCode = normalizeIcao(rotaer?.fir);
+  const [firs, tmas] = await Promise.all([fetchGeilocByType("FIR"), fetchGeilocByType("TMA")]);
+  const fir = firCode ? firs.find((item) => item.icao === firCode) || null : null;
+  const tma = matchTmaForAirport(tmas, rotaer);
+  return {
+    fir: fir
+      ? { code: fir.icao, name: fir.name }
+      : firCode
+        ? { code: firCode, name: null }
+        : null,
+    tma: tma ? { code: tma.icao, name: tma.name } : null,
+    wms: {
+      baseUrl: GEOAISWEB_WMS_BASE,
+      layers: [
+        { id: "tma", label: "TMA", layer: "ICA:TMA" },
+        { id: "ctr", label: "CTR", layer: "ICA:CTR" },
+        { id: "atz", label: "ATZ", layer: "ICA:ATZ" },
+        { id: "fir", label: "FIR", layer: "ICA:SETOR_FIR" },
+      ],
+    },
+  };
+}
+
 async function fetchAirportBundle(icaoCode) {
   const icao = normalizeIcao(icaoCode);
-  const [met, notams, rotaer, sun, charts] = await Promise.all([
+  const [met, notams, rotaer, sun, charts, supplements] = await Promise.all([
     fetchMet(icao),
     fetchNotams(icao),
     fetchRotaer(icao),
     fetchSun(icao),
     fetchCartas(icao),
+    fetchSupplements(icao),
   ]);
+  const airspace = rotaer && !rotaer.error ? await resolveAirspace(rotaer) : null;
   return {
     icao,
     met,
     rotaer,
     notams,
+    supplements,
     sun,
     charts,
+    airspace,
     error: met.error || rotaer.error || null,
   };
 }
@@ -712,6 +1031,10 @@ function sanitizeNotamAlerts(rawAlerts, icaoCodes) {
   return out;
 }
 
+function sanitizeSupplementAlerts(rawAlerts, icaoCodes) {
+  return sanitizeNotamAlerts(rawAlerts, icaoCodes);
+}
+
 function sanitizeSeenNotamIds(rawSeen, icaoCodes, notamAlerts) {
   const out = {};
   const allowed = new Set(icaoCodes.filter((icao) => notamAlerts[icao] === true));
@@ -733,12 +1056,18 @@ function sanitizeSeenNotamIds(rawSeen, icaoCodes, notamAlerts) {
   return out;
 }
 
+function sanitizeSeenSupplementIds(rawSeen, icaoCodes, supplementAlerts) {
+  return sanitizeSeenNotamIds(rawSeen, icaoCodes, supplementAlerts);
+}
+
 function publicWatchlist(raw, updatedAt) {
   const icaoCodes = sanitizeIcaoList(raw?.icaoCodes, { allowEmpty: true });
   const notamAlerts = sanitizeNotamAlerts(raw?.notamAlerts, icaoCodes);
+  const supplementAlerts = sanitizeSupplementAlerts(raw?.supplementAlerts, icaoCodes);
   return {
     icaoCodes,
     notamAlerts,
+    supplementAlerts,
     updatedAt: updatedAt || raw?.updatedAt || null,
   };
 }
@@ -750,7 +1079,9 @@ async function loadWatchlist(deps, userId, defaultIcao) {
     return {
       icaoCodes,
       notamAlerts: sanitizeNotamAlerts({}, icaoCodes),
+      supplementAlerts: sanitizeSupplementAlerts({}, icaoCodes),
       seenNotamIds: {},
+      seenSupplementIds: {},
       updatedAt: null,
     };
   }
@@ -765,10 +1096,13 @@ async function loadWatchlist(deps, userId, defaultIcao) {
     ? savedCodes
     : sanitizeIcaoList([], { fallbackDefault: defaultIcao });
   const notamAlerts = sanitizeNotamAlerts(raw.notamAlerts, icaoCodes);
+  const supplementAlerts = sanitizeSupplementAlerts(raw.supplementAlerts, icaoCodes);
   return {
     icaoCodes,
     notamAlerts,
+    supplementAlerts,
     seenNotamIds: sanitizeSeenNotamIds(raw.seenNotamIds, icaoCodes, notamAlerts),
+    seenSupplementIds: sanitizeSeenSupplementIds(raw.seenSupplementIds, icaoCodes, supplementAlerts),
     updatedAt: doc.$updatedAt || raw.updatedAt || null,
   };
 }
@@ -787,8 +1121,15 @@ async function saveWatchlist(deps, userId, input = {}) {
         : previous.notamAlerts,
     icaoCodes,
   );
+  const supplementAlerts = sanitizeSupplementAlerts(
+    Array.isArray(input)
+      ? previous.supplementAlerts
+      : input?.supplementAlerts != null
+        ? input.supplementAlerts
+        : previous.supplementAlerts,
+    icaoCodes,
+  );
 
-  // Ao ligar avisos, grava baseline atual (sem e-mail). Ao desligar, limpa o histórico.
   const nextSeen = { ...(previous.seenNotamIds || {}) };
   for (const icao of Object.keys(nextSeen)) {
     if (!icaoCodes.includes(icao) || !notamAlerts[icao]) delete nextSeen[icao];
@@ -802,10 +1143,25 @@ async function saveWatchlist(deps, userId, input = {}) {
     }
   }
 
+  const nextSeenSup = { ...(previous.seenSupplementIds || {}) };
+  for (const icao of Object.keys(nextSeenSup)) {
+    if (!icaoCodes.includes(icao) || !supplementAlerts[icao]) delete nextSeenSup[icao];
+  }
+  for (const icao of icaoCodes) {
+    const wasOn = previous.supplementAlerts?.[icao] === true;
+    const isOn = supplementAlerts[icao] === true;
+    if (isOn && !wasOn) {
+      const items = await fetchSupplements(icao, { bypassCache: true }).catch(() => []);
+      nextSeenSup[icao] = items.map((item) => cleanString(item.id)).filter(Boolean).slice(0, 200);
+    }
+  }
+
   const next = {
     icaoCodes,
     notamAlerts,
+    supplementAlerts,
     seenNotamIds: sanitizeSeenNotamIds(nextSeen, icaoCodes, notamAlerts),
+    seenSupplementIds: sanitizeSeenSupplementIds(nextSeenSup, icaoCodes, supplementAlerts),
     updatedAt: nowIso(),
   };
   const saved = await deps.upsertPlatformSettingDoc(watchlistKey(userId), next);
@@ -861,6 +1217,7 @@ module.exports = {
   userIdFromWatchlistKey,
   mergeSeenNotamIds,
   fetchNotams,
+  fetchSupplements,
   fetchAirportBundle,
   buildBootstrap,
   buildDashboard,
