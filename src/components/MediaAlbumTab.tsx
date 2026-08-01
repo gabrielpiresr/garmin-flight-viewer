@@ -28,6 +28,11 @@ import {
 } from "../lib/photoThumbnails";
 import type { UserRole } from "../lib/rbac";
 import { downloadVideoFile } from "../lib/videoDownload";
+import {
+  buildStoreZip,
+  triggerBlobDownload,
+  uniqueZipNames,
+} from "../lib/zipDownload";
 import { Skeleton } from "./ui/Skeleton";
 
 type MediaFilter = "all" | "photo" | "video";
@@ -124,22 +129,28 @@ function itemCanDownload(item: AlbumMediaItem): boolean {
   return Boolean(item.fileUrl) && !itemIsGopro(item);
 }
 
+function albumItemDownloadUrl(item: AlbumMediaItem): string | null {
+  if (item.kind === "photo") {
+    return item.photo?.download_url || item.downloadUrl || item.fileUrl || null;
+  }
+  return item.fileUrl || null;
+}
+
+async function fetchAlbumItemBlob(item: AlbumMediaItem): Promise<Blob | null> {
+  const url = albumItemDownloadUrl(item);
+  if (!url) return null;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Falha ao baixar.");
+  return response.blob();
+}
+
 async function downloadPhoto(item: AlbumMediaItem): Promise<void> {
-  const photo = item.photo;
-  const url = photo?.download_url || item.downloadUrl || item.fileUrl;
+  const url = albumItemDownloadUrl(item);
   if (!url) return;
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error("Falha ao baixar.");
-    const blob = await response.blob();
-    const href = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = item.fileName || "foto-do-voo.jpg";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(href);
+    const blob = await fetchAlbumItemBlob(item);
+    if (!blob) return;
+    triggerBlobDownload(blob, item.fileName || "foto-do-voo.jpg");
   } catch {
     window.open(url, "_blank", "noopener,noreferrer");
   }
@@ -368,16 +379,60 @@ export function MediaAlbumTab() {
     }
     setDownloading(true);
     setDownloadNotice(null);
-    for (const item of downloadable) {
-      await downloadAlbumItem(item);
-      await new Promise((resolve) => setTimeout(resolve, 180));
+    try {
+      // Browsers (esp. mobile) only allow one programmatic download per tap.
+      // Package multiple files into a single ZIP so everything arrives.
+      if (downloadable.length === 1) {
+        await downloadAlbumItem(downloadable[0]!);
+      } else {
+        const names = uniqueZipNames(
+          downloadable.map((item) => item.fileName || (item.kind === "photo" ? "foto.jpg" : "video.mp4")),
+        );
+        const entries: { name: string; data: Uint8Array }[] = [];
+        let failed = 0;
+        for (let i = 0; i < downloadable.length; i += 1) {
+          const item = downloadable[i]!;
+          try {
+            const blob = await fetchAlbumItemBlob(item);
+            if (!blob) {
+              failed += 1;
+              continue;
+            }
+            entries.push({
+              name: names[i]!,
+              data: new Uint8Array(await blob.arrayBuffer()),
+            });
+          } catch {
+            failed += 1;
+          }
+        }
+        if (entries.length === 0) {
+          setDownloadNotice("Não foi possível baixar os arquivos selecionados.");
+          return;
+        }
+        const stamp = new Date().toISOString().slice(0, 10);
+        triggerBlobDownload(buildStoreZip(entries), `album-${stamp}.zip`);
+        if (failed > 0) {
+          setDownloadNotice(
+            `${entries.length} arquivo(s) no ZIP. ${failed} falhou(aram).${
+              skipped > 0 ? ` ${skipped} GoPro ignorado(s).` : ""
+            }`,
+          );
+          return;
+        }
+      }
+      setDownloadNotice(
+        skipped > 0
+          ? `${downloadable.length} arquivo(s) baixado(s). ${skipped} GoPro ignorado(s).`
+          : downloadable.length === 1
+            ? "1 arquivo baixado."
+            : `${downloadable.length} arquivos baixados em um ZIP.`,
+      );
+    } catch {
+      setDownloadNotice("Falha ao baixar a seleção.");
+    } finally {
+      setDownloading(false);
     }
-    setDownloading(false);
-    setDownloadNotice(
-      skipped > 0
-        ? `${downloadable.length} arquivo(s) baixado(s). ${skipped} GoPro ignorado(s).`
-        : `${downloadable.length} arquivo(s) baixado(s).`,
-    );
   }, [selectedItems]);
 
   const goToFlight = useCallback(
