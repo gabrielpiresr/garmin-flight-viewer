@@ -401,7 +401,13 @@ export function MediaAlbumTab() {
   const videoCount = items.filter((i) => i.kind === "video").length;
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-5 px-1 pb-24 sm:px-0">
+    <div
+      className={`mx-auto w-full max-w-6xl space-y-5 px-1 sm:px-0 ${
+        selectMode
+          ? "pb-[calc(11.5rem+env(safe-area-inset-bottom))] lg:pb-28"
+          : "pb-24 lg:pb-6"
+      }`}
+    >
       <header className="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-gradient-to-br from-slate-900 via-slate-950 to-sky-950/40 px-5 py-6 sm:px-7 sm:py-7">
         <div
           className="pointer-events-none absolute -right-16 -top-20 size-56 rounded-full bg-sky-500/10 blur-3xl"
@@ -528,7 +534,7 @@ export function MediaAlbumTab() {
       )}
 
       {selectMode ? (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-700/80 bg-slate-950/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-md">
+        <div className="fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-700/80 bg-slate-950/95 px-4 py-3 backdrop-blur-md lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-slate-300">
               <span className="font-semibold text-slate-100">{selectedIds.size}</span> selecionado
