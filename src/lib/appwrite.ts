@@ -25,7 +25,7 @@ export const ADMIN_USER_ID = import.meta.env.VITE_ADMIN_USER_ID as string | unde
 export const AIRCRAFT_MODELS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFT_MODELS_COL_ID as string | undefined;
 export const AIRCRAFTS_COL_ID = import.meta.env.VITE_APPWRITE_AIRCRAFTS_COL_ID as string | undefined;
 export const AIRCRAFT_PANELS_COL_ID =
-  (import.meta.env.VITE_APPWRITE_AIRCRAFT_PANELS_COL_ID as string | undefined) ?? "aircraft_panels";
+  (import.meta.env.VITE_APPWRITE_AIRCRAFT_PANELS_COL_ID as string | undefined) ?? "6a6e0665000f10e0f361";
 export const AERODROMES_COL_ID =
   (import.meta.env.VITE_APPWRITE_AERODROMES_COL_ID as string | undefined) ?? "aerodromes";
 export const RUNWAYS_COL_ID =
