@@ -16,6 +16,10 @@ import {
   type AlbumMediaItem,
 } from "../lib/mediaAlbumDb";
 import {
+  loadAlbumFavorites,
+  saveAlbumFavorites,
+} from "../lib/mediaAlbumFavorites";
+import {
   isGoproFlightVideo,
   resolveGoproVideoPlayback,
 } from "../lib/goproDb";
@@ -35,7 +39,7 @@ import {
 } from "../lib/zipDownload";
 import { Skeleton } from "./ui/Skeleton";
 
-type MediaFilter = "all" | "photo" | "video";
+type MediaFilter = "all" | "photo" | "video" | "favorites";
 
 const LIGHTBOX_SWIPE_THRESHOLD_PX = 56;
 const MEDIA_VIEWER_HISTORY_KEY = "mediaAlbumViewer";
@@ -205,6 +209,29 @@ function createGoproHlsPlayer(): Hls {
   });
 }
 
+function FavoriteStarIcon({ filled, className = "h-4 w-4" }: { filled: boolean; className?: string }) {
+  if (filled) {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
+        <path
+          fillRule="evenodd"
+          d="M10.868 2.884c-.321-.772-1.415-.772-1.736 0l-1.83 4.401-4.753.381c-.836.067-1.171 1.107-.536 1.651l3.62 3.102-1.106 4.637c-.194.813.691 1.456 1.405 1.02L10 15.591l4.069 2.485c.713.436 1.598-.207 1.404-1.02l-1.106-4.637 3.62-3.102c.635-.544.3-1.584-.536-1.65l-4.752-.382-1.831-4.401z"
+          clipRule="evenodd"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className={className}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"
+      />
+    </svg>
+  );
+}
+
 type DayGroup = {
   key: string;
   heading: string;
@@ -218,6 +245,7 @@ export function MediaAlbumTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<MediaFilter>("all");
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(BATCH_SIZE);
   const [selectMode, setSelectMode] = useState(false);
@@ -227,6 +255,10 @@ export function MediaAlbumTab() {
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const historyPushedRef = useRef(false);
   const viewerWasOpenRef = useRef(false);
+
+  useEffect(() => {
+    setFavoriteIds(loadAlbumFavorites(user?.id));
+  }, [user?.id]);
 
   const load = useCallback(async () => {
     if (!user?.id || !user.role) return;
@@ -245,14 +277,31 @@ export function MediaAlbumTab() {
     void load();
   }, [load]);
 
+  const toggleFavorite = useCallback(
+    (id: string) => {
+      if (!user?.id) return;
+      setFavoriteIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        saveAlbumFavorites(user.id, next);
+        return next;
+      });
+    },
+    [user?.id],
+  );
+
   const filtered = useMemo(() => {
+    if (filter === "favorites") {
+      return items.filter((item) => favoriteIds.has(item.id));
+    }
     if (filter === "all") return items;
     return items.filter((item) => item.kind === filter);
-  }, [filter, items]);
+  }, [favoriteIds, filter, items]);
 
   useEffect(() => {
     setVisibleCount(BATCH_SIZE);
-  }, [filter, items.length]);
+  }, [filter, items.length, favoriteIds.size]);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -301,8 +350,8 @@ export function MediaAlbumTab() {
   }, [filtered.length, hasMore, visibleCount]);
 
   const activeItem = useMemo(
-    () => filtered.find((item) => item.id === activeId) ?? null,
-    [activeId, filtered],
+    () => items.find((item) => item.id === activeId) ?? null,
+    [activeId, items],
   );
 
   const photoItems = useMemo(
@@ -454,6 +503,7 @@ export function MediaAlbumTab() {
 
   const photoCount = items.filter((i) => i.kind === "photo").length;
   const videoCount = items.filter((i) => i.kind === "video").length;
+  const favoriteCount = items.filter((i) => favoriteIds.has(i.id)).length;
 
   return (
     <div
@@ -482,6 +532,9 @@ export function MediaAlbumTab() {
           <span className="rounded-full border border-slate-700/80 bg-slate-900/60 px-3 py-1">
             {videoCount} vídeo{videoCount === 1 ? "" : "s"}
           </span>
+          <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-amber-200/90">
+            {favoriteCount} favorito{favoriteCount === 1 ? "" : "s"}
+          </span>
         </div>
       </header>
 
@@ -496,6 +549,7 @@ export function MediaAlbumTab() {
               { id: "all", label: "Tudo" },
               { id: "photo", label: "Fotos" },
               { id: "video", label: "Vídeos" },
+              { id: "favorites", label: "Favoritos" },
             ] as const
           ).map((option) => {
             const selected = filter === option.id;
@@ -508,7 +562,9 @@ export function MediaAlbumTab() {
                 onClick={() => setFilter(option.id)}
                 className={`rounded-lg px-3.5 py-1.5 text-sm font-semibold transition ${
                   selected
-                    ? "bg-sky-500 text-slate-950 shadow-sm shadow-sky-500/20"
+                    ? option.id === "favorites"
+                      ? "bg-amber-400 text-slate-950 shadow-sm shadow-amber-400/20"
+                      : "bg-sky-500 text-slate-950 shadow-sm shadow-sky-500/20"
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
@@ -574,8 +630,10 @@ export function MediaAlbumTab() {
                       item={item}
                       selectMode={selectMode}
                       selected={selectedIds.has(item.id)}
+                      favorited={favoriteIds.has(item.id)}
                       onOpen={() => setActiveId(item.id)}
                       onToggleSelect={() => toggleSelect(item.id)}
+                      onToggleFavorite={() => toggleFavorite(item.id)}
                       onDownload={() => void downloadAlbumItem(item)}
                       onGoToFlight={() => goToFlight(item)}
                     />
@@ -628,6 +686,7 @@ export function MediaAlbumTab() {
           item={activeItem}
           count={photoItems.length}
           index={activePhotoIndex}
+          favorited={favoriteIds.has(activeItem.id)}
           neighborItems={
             activePhotoIndex >= 0
               ? [
@@ -649,6 +708,7 @@ export function MediaAlbumTab() {
             const next = photoItems[(activePhotoIndex + 1) % photoItems.length];
             if (next) setActiveId(next.id);
           }}
+          onToggleFavorite={() => toggleFavorite(activeItem.id)}
           onDownload={() => void downloadPhoto(activeItem)}
           onGoToFlight={() => goToFlight(activeItem)}
         />
@@ -657,7 +717,9 @@ export function MediaAlbumTab() {
       {activeItem?.kind === "video" ? (
         <AlbumVideoModal
           item={activeItem}
+          favorited={favoriteIds.has(activeItem.id)}
           onClose={closeViewer}
+          onToggleFavorite={() => toggleFavorite(activeItem.id)}
           onGoToFlight={() => goToFlight(activeItem)}
         />
       ) : null}
@@ -669,16 +731,20 @@ function AlbumTile({
   item,
   selectMode,
   selected,
+  favorited,
   onOpen,
   onToggleSelect,
+  onToggleFavorite,
   onDownload,
   onGoToFlight,
 }: {
   item: AlbumMediaItem;
   selectMode: boolean;
   selected: boolean;
+  favorited: boolean;
   onOpen: () => void;
   onToggleSelect: () => void;
+  onToggleFavorite: () => void;
   onDownload: () => void;
   onGoToFlight: () => void;
 }) {
@@ -737,6 +803,41 @@ function AlbumTile({
           }`}
         >
           ✓
+        </span>
+      ) : null}
+
+      {!selectMode ? (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(event) => {
+            stop(event);
+            onToggleFavorite();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleFavorite();
+            }
+          }}
+          className={`pointer-events-auto absolute left-1.5 top-1.5 z-10 flex size-8 items-center justify-center rounded-full border transition ${
+            favorited
+              ? "border-amber-400/70 bg-amber-400 text-slate-950 opacity-100"
+              : "border-slate-600/80 bg-slate-950/80 text-slate-100 opacity-100 md:opacity-0 md:group-hover:opacity-100"
+          } hover:border-amber-400 hover:bg-amber-400 hover:text-slate-950`}
+          title={favorited ? "Remover dos favoritos" : "Favoritar"}
+          aria-label={favorited ? "Remover dos favoritos" : "Favoritar"}
+          aria-pressed={favorited}
+        >
+          <FavoriteStarIcon filled={favorited} />
+        </span>
+      ) : favorited ? (
+        <span
+          className="pointer-events-none absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full border border-amber-400/70 bg-amber-400 text-slate-950"
+          aria-hidden="true"
+        >
+          <FavoriteStarIcon filled />
         </span>
       ) : null}
 
@@ -931,16 +1032,26 @@ function EmptyAlbum({ filter }: { filter: MediaFilter }) {
       ? "Nenhuma foto encontrada nos seus voos."
       : filter === "video"
         ? "Nenhum vídeo pronto encontrado nos seus voos."
-        : "Quando fotos ou vídeos forem adicionados aos seus voos, eles aparecem aqui.";
+        : filter === "favorites"
+          ? "Toque na estrela de uma foto ou vídeo para guardá-lo nos favoritos."
+          : "Quando fotos ou vídeos forem adicionados aos seus voos, eles aparecem aqui.";
 
   return (
     <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 px-6 py-12 text-center">
       <div className="flex size-16 items-center justify-center rounded-2xl border border-slate-700 bg-slate-900 text-sky-400">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-7 w-7">
-          <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" />
-        </svg>
+        {filter === "favorites" ? (
+          <span className="text-amber-400">
+            <FavoriteStarIcon filled className="h-7 w-7" />
+          </span>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-7 w-7">
+            <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" />
+          </svg>
+        )}
       </div>
-      <h3 className="mt-4 text-base font-bold text-slate-100">Álbum vazio</h3>
+      <h3 className="mt-4 text-base font-bold text-slate-100">
+        {filter === "favorites" ? "Nenhum favorito ainda" : "Álbum vazio"}
+      </h3>
       <p className="mt-2 max-w-md text-sm text-slate-500">{copy}</p>
     </div>
   );
@@ -979,20 +1090,24 @@ function AlbumPhotoLightbox({
   item,
   count,
   index,
+  favorited,
   neighborItems = [],
   onClose,
   onPrev,
   onNext,
+  onToggleFavorite,
   onDownload,
   onGoToFlight,
 }: {
   item: AlbumMediaItem;
   count: number;
   index: number;
+  favorited: boolean;
   neighborItems?: AlbumMediaItem[];
   onClose: () => void;
   onPrev: () => void;
   onNext: () => void;
+  onToggleFavorite: () => void;
   onDownload: () => void;
   onGoToFlight: () => void;
 }) {
@@ -1133,6 +1248,19 @@ function AlbumPhotoLightbox({
           </p>
         </div>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          <button
+            type="button"
+            onClick={onToggleFavorite}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+              favorited
+                ? "border-amber-400/50 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25"
+                : "border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+            }`}
+            aria-pressed={favorited}
+          >
+            <FavoriteStarIcon filled={favorited} />
+            {favorited ? "Favorito" : "Favoritar"}
+          </button>
           <FlightCtaButton onClick={onGoToFlight} />
           <button
             type="button"
@@ -1211,6 +1339,19 @@ function AlbumPhotoLightbox({
       <div className="flex shrink-0 flex-wrap gap-2 border-t border-slate-800 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
         <button
           type="button"
+          onClick={onToggleFavorite}
+          className={`min-h-12 flex items-center justify-center gap-1.5 rounded-xl border px-4 py-3 text-base font-semibold ${
+            favorited
+              ? "border-amber-400/50 bg-amber-400/15 text-amber-100"
+              : "border-slate-600 bg-slate-900 text-slate-200"
+          }`}
+          aria-pressed={favorited}
+          aria-label={favorited ? "Remover dos favoritos" : "Favoritar"}
+        >
+          <FavoriteStarIcon filled={favorited} />
+        </button>
+        <button
+          type="button"
           onClick={onGoToFlight}
           className="min-h-12 flex-1 rounded-xl border border-sky-500/40 bg-sky-500/15 px-4 py-3 text-base font-semibold text-sky-100"
         >
@@ -1240,11 +1381,15 @@ function AlbumPhotoLightbox({
 
 function AlbumVideoModal({
   item,
+  favorited,
   onClose,
+  onToggleFavorite,
   onGoToFlight,
 }: {
   item: AlbumMediaItem;
+  favorited: boolean;
   onClose: () => void;
+  onToggleFavorite: () => void;
   onGoToFlight: () => void;
 }) {
   const video = item.video;
@@ -1424,6 +1569,19 @@ function AlbumVideoModal({
             {meta ? <p className="text-xs text-slate-500">{meta}</p> : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onToggleFavorite}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                favorited
+                  ? "border-amber-400/50 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25"
+                  : "border-slate-700 text-slate-300 hover:bg-slate-800"
+              }`}
+              aria-pressed={favorited}
+            >
+              <FavoriteStarIcon filled={favorited} />
+              <span className="hidden sm:inline">{favorited ? "Favorito" : "Favoritar"}</span>
+            </button>
             <FlightCtaButton onClick={onGoToFlight} />
             <button
               type="button"
