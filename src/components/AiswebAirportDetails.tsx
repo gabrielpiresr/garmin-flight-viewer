@@ -10,6 +10,7 @@ import type {
   AiswebDeclaredDistance,
   AiswebFrequency,
   AiswebNavaid,
+  AiswebNotam,
   AiswebRemark,
   AiswebRotaer,
   AiswebSunTimes,
@@ -59,7 +60,7 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-type DetailSubTab = "meteorologia" | "detalhes" | "cartas" | "suplementos";
+type DetailSubTab = "meteorologia" | "detalhes" | "notams" | "cartas" | "suplementos";
 
 function formatNotamDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -137,6 +138,18 @@ function IconMap() {
   return (
     <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <path d="M3 4.75L8 3l4 2 5-1.25V15.5L12 17l-4-2-5 1.25V4.75z" />
+    </svg>
+  );
+}
+
+function IconNotam() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M4 3.75A.75.75 0 014.75 3h10.5a.75.75 0 01.75.75v12.5a.75.75 0 01-1.14.64L10 14.06l-4.86 2.83A.75.75 0 014 16.25V3.75zm2 1.5v9.12l3.36-1.96a.75.75 0 01.78 0L13.5 14.37V5.25H6z"
+        clipRule="evenodd"
+      />
     </svg>
   );
 }
@@ -871,6 +884,51 @@ function SupplementsPanel({ supplements }: { supplements: AiswebSupplement[] }) 
   );
 }
 
+function NotamsPanel({ notams }: { notams: AiswebNotam[] }) {
+  if (!notams.length) {
+    return <p className="text-xs text-slate-500">Nenhum NOTAM ativo para este aeródromo.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {notams.map((item) => (
+        <article
+          key={item.id || `${item.icao}-${item.number}-${item.issuedAt}`}
+          className="rounded-xl border border-sky-500/20 bg-slate-950/50 px-3 py-2.5"
+        >
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-xs font-bold tracking-wide text-sky-200">
+              {item.number || item.id || "NOTAM"}
+              {item.type ? ` · ${item.type}` : ""}
+            </p>
+            {item.status ? <p className="text-[10px] uppercase text-slate-500">{item.status}</p> : null}
+          </div>
+          {item.text ? (
+            <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{item.text}</p>
+          ) : (
+            <p className="text-[12px] text-slate-500">Sem texto.</p>
+          )}
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+            {item.category ? <span>{item.category}</span> : null}
+            {item.qCode ? <span>Q: {item.qCode}</span> : null}
+            {item.lowerLimit || item.upperLimit ? (
+              <span>
+                {[item.lowerLimit, item.upperLimit].filter(Boolean).join(" → ")}
+              </span>
+            ) : null}
+            {item.issuedAt ? <span>Emitido: {formatNotamDate(item.issuedAt)}</span> : null}
+            {item.validFrom || item.validTo ? (
+              <span>
+                Válido: {formatNotamDate(item.validFrom)} → {formatNotamDate(item.validTo)}
+              </span>
+            ) : null}
+            {item.schedule ? <span>{item.schedule}</span> : null}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export function AiswebAirportDetailTabs({
   airport,
   meteorology,
@@ -886,6 +944,7 @@ export function AiswebAirportDetailTabs({
   const complements = rotaer?.complements || [];
   const charts = airport.charts || [];
   const supplements = airport.supplements || [];
+  const notams = airport.notams || [];
 
   useEffect(() => {
     setSubTab("meteorologia");
@@ -894,6 +953,11 @@ export function AiswebAirportDetailTabs({
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
+    {
+      id: "notams" as const,
+      label: `NOTAMs (${notams.length})`,
+      icon: <IconNotam />,
+    },
     {
       id: "suplementos" as const,
       label: `Suplementos (${supplements.length})`,
@@ -934,6 +998,7 @@ export function AiswebAirportDetailTabs({
           <ExpandableComplements complements={complements} />
         </div>
       ) : null}
+      {subTab === "notams" ? <NotamsPanel notams={notams} /> : null}
       {subTab === "suplementos" ? <SupplementsPanel supplements={supplements} /> : null}
       {subTab === "cartas" ? <ChartsPanel charts={charts} /> : null}
     </div>

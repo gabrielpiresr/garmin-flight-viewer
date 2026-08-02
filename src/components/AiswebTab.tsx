@@ -2,8 +2,10 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
   type SetStateAction,
@@ -12,6 +14,7 @@ import {
   getAiswebBootstrap,
   lookupAiswebIcao,
   saveAiswebWatchlist,
+  searchAiswebAerodromes,
 } from "../lib/aiswebDb";
 import {
   analyzeWindVsRunways,
@@ -29,6 +32,7 @@ import {
   type AiswebTafSegment,
 } from "../lib/aiswebMetar";
 import type {
+  AiswebAerodromeMatch,
   AiswebAirportBundle,
   AiswebDashboard,
   AiswebMinimumCheck,
@@ -107,14 +111,34 @@ import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
 import { useToast } from "./ui/ToastProvider";
 
-const inputClass =
-  "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm uppercase tracking-wide text-slate-100 outline-none transition placeholder:normal-case placeholder:tracking-normal placeholder:text-slate-600 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/10";
+const searchInputClass =
+  "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/10";
 const btnSecondary =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50";
-const btnPrimary =
-  "inline-flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-3.5 py-2 text-sm font-semibold text-white shadow-lg shadow-cyan-950/30 transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50";
 const selectClass =
   "rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-200 outline-none focus:border-cyan-500";
+
+function looksLikeIcaoCode(value: string): boolean {
+  return /^[A-Za-z0-9]{4}$/.test(String(value || "").trim());
+}
+
+function formatAerodromeMatchLabel(match: AiswebAerodromeMatch): string {
+  const city = String(match.city || "").trim();
+  const name = String(match.name || "").trim();
+  const uf = String(match.uf || "").trim().toUpperCase();
+  const place = [city, uf].filter(Boolean).join("/");
+  const showName =
+    Boolean(name) &&
+    name
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase() !==
+      city
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+  return [match.icao, showName ? name : null, place ? `(${place})` : null].filter(Boolean).join(" ");
+}
 
 type AiswebSubTab = "condicoes" | "notams";
 
@@ -403,7 +427,9 @@ function ConditionsBoard({
   temporaryIcao,
   onDismissTemporary,
   onAddTemporary,
+  onRemoveFromWatchlist,
   addingTemporary,
+  removingIcao,
   notamAlerts,
   onToggleNotamAlert,
   togglingNotamIcao,
@@ -420,7 +446,9 @@ function ConditionsBoard({
   temporaryIcao: string | null;
   onDismissTemporary: () => void;
   onAddTemporary: () => void;
+  onRemoveFromWatchlist: (icao: string) => void;
   addingTemporary: boolean;
+  removingIcao: string | null;
   notamAlerts: Record<string, boolean>;
   onToggleNotamAlert: (icao: string, enabled: boolean) => void;
   togglingNotamIcao: string | null;
@@ -448,7 +476,9 @@ function ConditionsBoard({
     : null;
 
   if (!airports.length) {
-    return <EmptyPanel>Adicione aeródromos à lista para ver as condições.</EmptyPanel>;
+    return (
+      <EmptyPanel>Consulte um aeródromo acima para ver as condições ou adicioná-lo à lista.</EmptyPanel>
+    );
   }
 
   return (
@@ -471,6 +501,7 @@ function ConditionsBoard({
               <th className="px-2 py-2 font-semibold" title="Avisos de suplemento AIP por e-mail">
                 SUP
               </th>
+              <th className="px-2 py-2 text-right font-semibold">Lista</th>
             </tr>
           </thead>
           <tbody>
@@ -480,10 +511,13 @@ function ConditionsBoard({
               const checks = evaluateMinimums(parsed, minimums, { rotaer: airport.rotaer });
               const active = selected?.icao === airport.icao;
               const isTemporary = temporaryIcao === airport.icao;
+              const removing = removingIcao === airport.icao;
               return (
                 <tr
                   key={isTemporary ? `temp-${airport.icao}` : airport.icao}
                   className={`cursor-pointer border-t border-slate-800/80 text-slate-200 transition ${
+                    isLoadingMet ? "animate-pulse" : ""
+                  } ${
                     isTemporary
                       ? active
                         ? "bg-amber-500/15"
@@ -504,7 +538,7 @@ function ConditionsBoard({
                     </span>
                     {isTemporary ? (
                       <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-wide text-amber-500/90">
-                        consulta
+                        {isLoadingMet ? "carregando" : "consulta"}
                       </span>
                     ) : null}
                   </td>
@@ -602,6 +636,61 @@ function ConditionsBoard({
                       </button>
                     )}
                   </td>
+                  <td className="px-2 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                    {isTemporary ? (
+                      <div className="inline-flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-cyan-500/40 bg-cyan-500/15 text-cyan-200 transition hover:bg-cyan-500/25 disabled:opacity-50"
+                          onClick={onAddTemporary}
+                          disabled={addingTemporary || isLoadingMet}
+                          aria-label={`Adicionar ${airport.icao} à lista`}
+                          title="Adicionar à lista"
+                        >
+                          {addingTemporary ? (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-200" />
+                          ) : (
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                              <path d="M10 4a.75.75 0 01.75.75v4.5h4.5a.75.75 0 010 1.5h-4.5v4.5a.75.75 0 01-1.5 0v-4.5h-4.5a.75.75 0 010-1.5h4.5v-4.5A.75.75 0 0110 4z" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:opacity-50"
+                          onClick={onDismissTemporary}
+                          disabled={addingTemporary}
+                          aria-label={`Fechar consulta de ${airport.icao}`}
+                          title="Fechar consulta"
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                          </svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700 text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-50"
+                        onClick={() => onRemoveFromWatchlist(airport.icao)}
+                        disabled={removing}
+                        aria-label={`Remover ${airport.icao} da lista`}
+                        title="Remover da lista"
+                      >
+                        {removing ? (
+                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400/30 border-t-slate-200" />
+                        ) : (
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                            <path
+                              fillRule="evenodd"
+                              d="M8.75 1A2.75 2.75 0 006 3.75V4h-.167A2.25 2.25 0 003.592 6.02l-.748 8.23A2.75 2.75 0 005.58 17.25h8.84a2.75 2.75 0 002.736-2.999l-.748-8.23A2.25 2.25 0 0014.167 4H14v-.25A2.75 2.75 0 0011.25 1h-2.5zM9.5 4v-.25c0-.69.56-1.25 1.25-1.25h2.5c.69 0 1.25.56 1.25 1.25V4h-5zM7.5 7.75a.75.75 0 01.75.75v5.5a.75.75 0 01-1.5 0V8.5a.75.75 0 01.75-.75zm5.75.75a.75.75 0 00-1.5 0v5.5a.75.75 0 001.5 0V8.5z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -615,7 +704,10 @@ function ConditionsBoard({
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold tracking-widest text-cyan-300">{selected.icao}</h3>
-                <span className="text-[11px] text-slate-500">Carregando METAR…</span>
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-300" />
+                  Carregando METAR…
+                </span>
               </div>
               <Skeleton className="h-24 w-full rounded-lg" />
               <Skeleton className="h-40 w-full rounded-lg" />
@@ -643,32 +735,10 @@ function ConditionsBoard({
                 </p>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {selectedIsTemporary ? (
-                <>
-                  <button
-                    type="button"
-                    className={btnSecondary}
-                    onClick={onDismissTemporary}
-                    disabled={addingTemporary}
-                  >
-                    Fechar consulta
-                  </button>
-                  <button
-                    type="button"
-                    className={btnPrimary}
-                    onClick={onAddTemporary}
-                    disabled={addingTemporary}
-                  >
-                    {addingTemporary ? "Adicionando…" : "Adicionar à lista"}
-                  </button>
-                </>
-              ) : null}
-              <StatusCluster
-                checks={evaluateMinimums(selectedParsed, minimums, { rotaer: selected.rotaer })}
-                setTooltip={setTooltip}
-              />
-            </div>
+            <StatusCluster
+              checks={evaluateMinimums(selectedParsed, minimums, { rotaer: selected.rotaer })}
+              setTooltip={setTooltip}
+            />
           </div>
 
           <AiswebAirportDetailTabs
@@ -762,10 +832,18 @@ export function AiswebTab() {
   const [togglingNotamIcao, setTogglingNotamIcao] = useState<string | null>(null);
   const [togglingSupplementIcao, setTogglingSupplementIcao] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
-  const [addInput, setAddInput] = useState("");
+  const [lookupSearching, setLookupSearching] = useState(false);
+  const [lookupOpen, setLookupOpen] = useState(false);
+  const [lookupHighlight, setLookupHighlight] = useState(0);
   const [lookupInput, setLookupInput] = useState("");
+  const [lookupMatches, setLookupMatches] = useState<AiswebAerodromeMatch[]>([]);
   const [lookupResult, setLookupResult] = useState<AiswebAirportBundle | null>(null);
+  const [lookupLoadingIcao, setLookupLoadingIcao] = useState<string | null>(null);
   const [addingLookup, setAddingLookup] = useState(false);
+  const [removingIcao, setRemovingIcao] = useState<string | null>(null);
+  const lookupSearchSeqRef = useRef(0);
+  const lookupSkipPreviewRef = useRef(false);
+  const lookupContainerRef = useRef<HTMLDivElement | null>(null);
   const [lastFetchedAt, setLastFetchedAt] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [subTab, setSubTab] = useState<AiswebSubTab>("condicoes");
@@ -908,6 +986,12 @@ export function AiswebTab() {
   const temporaryIcao =
     lookupResult && !watchlist.includes(lookupResult.icao) ? lookupResult.icao : null;
 
+  const tableLoadingIcaos = useMemo(() => {
+    const next = new Set(loadingIcaos);
+    if (lookupLoadingIcao) next.add(lookupLoadingIcao);
+    return next;
+  }, [loadingIcaos, lookupLoadingIcao]);
+
   useEffect(() => {
     if (notamFilter !== "all" && !watchlist.includes(notamFilter)) setNotamFilter("all");
   }, [watchlist, notamFilter]);
@@ -1045,50 +1129,201 @@ export function AiswebTab() {
     }
   }
 
-  async function handleAddToWatchlist() {
-    const icao = normalizeIcao(addInput);
-    if (icao.length !== 4) {
-      showToast({ variant: "warning", message: "Informe um ICAO válido com 4 caracteres." });
-      return;
-    }
-    if (watchlist.includes(icao)) {
-      showToast({ variant: "warning", message: `${icao} já está na lista.` });
-      return;
-    }
-    setAddInput("");
-    await persistWatchlist([...watchlist, icao], `${icao} adicionado à lista.`);
-  }
-
   async function handleRemove(icao: string) {
-    await persistWatchlist(
-      watchlist.filter((code) => code !== icao),
-      `${icao} removido da lista.`,
-    );
+    const code = normalizeIcao(icao);
+    if (!code) return;
+    setRemovingIcao(code);
+    try {
+      await persistWatchlist(
+        watchlist.filter((item) => item !== code),
+        `${code} removido da lista.`,
+      );
+    } finally {
+      setRemovingIcao(null);
+    }
   }
 
-  async function handleLookup() {
-    const icao = normalizeIcao(lookupInput);
+  async function applyLookupIcao(icaoCode: string) {
+    const icao = normalizeIcao(icaoCode);
     if (icao.length !== 4) {
       showToast({ variant: "warning", message: "Informe um ICAO válido com 4 caracteres." });
       return;
     }
+    lookupSearchSeqRef.current += 1;
+    lookupSkipPreviewRef.current = true;
     setLookingUp(true);
+    setLookupOpen(false);
+    setLookupMatches([]);
+    setLookupInput(icao);
+    setSubTab("condicoes");
+    setSelectedIcao(icao);
+    setLookupLoadingIcao(icao);
+
+    const alreadyListed =
+      watchlist.includes(icao) || (dashboard?.airports ?? []).some((a) => a.icao === icao);
+    if (!alreadyListed) {
+      setLookupResult(placeholderAirport(icao));
+    } else {
+      setLookupResult(null);
+    }
+
     try {
       const result = await lookupAiswebIcao(icao);
-      setSubTab("condicoes");
-      setSelectedIcao(result.icao);
       if (watchlist.includes(icao) || (dashboard?.airports ?? []).some((a) => a.icao === icao)) {
+        mergeAirport(result);
         setLookupResult(null);
       } else {
         setLookupResult(result);
       }
+      setSelectedIcao(result.icao);
     } catch (error) {
+      setLookupResult((prev) => (prev?.icao === icao && !prev.met.metar ? null : prev));
       showToast({
         variant: "error",
         message: error instanceof Error ? error.message : "Falha na consulta AISWEB.",
       });
     } finally {
+      setLookupLoadingIcao(null);
       setLookingUp(false);
+    }
+  }
+
+  useEffect(() => {
+    const query = lookupInput.trim().slice(0, 80);
+    if (query.length < 4 || lookingUp) {
+      lookupSearchSeqRef.current += 1;
+      setLookupMatches([]);
+      setLookupSearching(false);
+      if (query.length < 4) setLookupOpen(false);
+      return;
+    }
+
+    if (lookupSkipPreviewRef.current) {
+      lookupSkipPreviewRef.current = false;
+      setLookupSearching(false);
+      return;
+    }
+
+    setLookupSearching(true);
+    const seq = ++lookupSearchSeqRef.current;
+    const timer = window.setTimeout(() => {
+      void searchAiswebAerodromes(query, 5)
+        .then(({ matches }) => {
+          if (seq !== lookupSearchSeqRef.current) return;
+          setLookupMatches(matches);
+          setLookupHighlight(0);
+          setLookupOpen(true);
+          setLookupSearching(false);
+        })
+        .catch(() => {
+          if (seq !== lookupSearchSeqRef.current) return;
+          setLookupMatches([]);
+          setLookupSearching(false);
+        });
+    }, 280);
+
+    return () => window.clearTimeout(timer);
+  }, [lookupInput, lookingUp]);
+
+  useEffect(() => {
+    if (!lookupOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!lookupContainerRef.current?.contains(event.target as Node)) {
+        setLookupOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [lookupOpen]);
+
+  async function handleLookup() {
+    const query = lookupInput.trim().slice(0, 80);
+    if (!query) {
+      showToast({ variant: "warning", message: "Informe um ICAO, cidade ou nome do aeródromo." });
+      return;
+    }
+
+    if (lookupOpen && lookupMatches.length > 0) {
+      const pick = lookupMatches[Math.min(lookupHighlight, lookupMatches.length - 1)] || lookupMatches[0];
+      if (pick) {
+        await handleSelectLookupMatch(pick);
+        return;
+      }
+    }
+
+    if (looksLikeIcaoCode(query)) {
+      await applyLookupIcao(query);
+      return;
+    }
+
+    if (query.length < 4) {
+      showToast({ variant: "warning", message: "Digite ao menos 4 letras para buscar por cidade/nome." });
+      return;
+    }
+
+    setLookingUp(true);
+    setLookupOpen(false);
+    let singleIcao: string | null = null;
+    try {
+      const { matches } = await searchAiswebAerodromes(query, 5);
+      if (!matches.length) {
+        showToast({
+          variant: "warning",
+          message: `Nenhum aeródromo encontrado para "${query}". Tente o ICAO ou outro nome/cidade.`,
+        });
+        return;
+      }
+      if (matches.length === 1) {
+        singleIcao = matches[0].icao;
+        setLookupInput(singleIcao);
+        return;
+      }
+      setLookupMatches(matches);
+      setLookupHighlight(0);
+      setLookupOpen(true);
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha na busca AISWEB.",
+      });
+    } finally {
+      setLookingUp(false);
+    }
+
+    if (singleIcao) {
+      await applyLookupIcao(singleIcao);
+    }
+  }
+
+  async function handleSelectLookupMatch(match: AiswebAerodromeMatch) {
+    setLookupInput(match.icao);
+    setLookupOpen(false);
+    setLookupMatches([]);
+    await applyLookupIcao(match.icao);
+  }
+
+  function handleLookupKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      setLookupOpen(false);
+      return;
+    }
+
+    if (lookupOpen && lookupMatches.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setLookupHighlight((prev) => (prev + 1) % lookupMatches.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setLookupHighlight((prev) => (prev - 1 + lookupMatches.length) % lookupMatches.length);
+        return;
+      }
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleLookup();
     }
   }
 
@@ -1151,68 +1386,93 @@ export function AiswebTab() {
       </header>
 
       <section className="rounded-xl border border-slate-700/80 bg-slate-900/30 p-3 sm:p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          {watchlist.length === 0 ? (
-            <p className="text-sm text-slate-500">Nenhum aeródromo na lista.</p>
-          ) : (
-            watchlist.map((icao) => (
-              <span
-                key={icao}
-                className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-bold tracking-widest text-cyan-200"
-              >
-                {icao}
-                <button
-                  type="button"
-                  className="rounded-full p-0.5 text-cyan-300/80 transition hover:bg-cyan-500/20 hover:text-white disabled:opacity-50"
-                  onClick={() => void handleRemove(icao)}
-                  disabled={savingWatchlist}
-                  aria-label={`Remover ${icao}`}
-                >
-                  ×
-                </button>
-              </span>
-            ))
-          )}
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="flex gap-2">
+        <div className="flex gap-2" ref={lookupContainerRef}>
+          <div className="relative min-w-0 flex-1">
             <input
-              className={inputClass}
-              value={addInput}
-              maxLength={4}
-              placeholder="ICAO (ex: SBGR)"
-              onChange={(e) => setAddInput(normalizeIcao(e.target.value))}
-              onKeyDown={(e) => e.key === "Enter" && void handleAddToWatchlist()}
-              disabled={savingWatchlist}
-            />
-            <button
-              type="button"
-              className={btnPrimary}
-              onClick={() => void handleAddToWatchlist()}
-              disabled={savingWatchlist || addInput.length !== 4}
-            >
-              Adicionar
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <input
-              className={inputClass}
+              className={`${searchInputClass} ${lookingUp ? "pr-10" : ""}`}
               value={lookupInput}
-              maxLength={4}
-              placeholder="Consultar ICAO"
-              onChange={(e) => setLookupInput(normalizeIcao(e.target.value))}
-              onKeyDown={(e) => e.key === "Enter" && void handleLookup()}
+              maxLength={80}
+              placeholder="Consultar ICAO, cidade ou nome"
+              autoComplete="off"
+              role="combobox"
+              aria-expanded={lookupOpen}
+              aria-controls="aisweb-lookup-results"
+              aria-autocomplete="list"
+              onChange={(e) => {
+                lookupSkipPreviewRef.current = false;
+                setLookupInput(e.target.value.slice(0, 80));
+                setLookupOpen(true);
+              }}
+              onFocus={() => {
+                if (lookupMatches.length > 0 || lookupInput.trim().length >= 4) {
+                  setLookupOpen(true);
+                }
+              }}
+              onKeyDown={handleLookupKeyDown}
               disabled={lookingUp}
             />
-            <button
-              type="button"
-              className={btnSecondary}
-              onClick={() => void handleLookup()}
-              disabled={lookingUp || lookupInput.length !== 4}
-            >
-              {lookingUp ? "…" : "Consultar"}
-            </button>
+            {lookingUp ? (
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-300" />
+              </span>
+            ) : null}
+            {lookupOpen && lookupInput.trim().length >= 4 ? (
+              <div
+                id="aisweb-lookup-results"
+                role="listbox"
+                className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-lg border border-slate-700 bg-slate-950 text-sm text-slate-100 shadow-xl shadow-slate-950/50"
+              >
+                {lookupSearching && lookupMatches.length === 0 ? (
+                  <div className="px-3 py-2.5 text-xs text-slate-500">Buscando…</div>
+                ) : null}
+                {!lookupSearching && lookupMatches.length === 0 ? (
+                  <div className="px-3 py-2.5 text-xs text-slate-500">
+                    Nenhum aeródromo encontrado
+                  </div>
+                ) : null}
+                {lookupMatches.map((match, index) => {
+                  const active = index === lookupHighlight;
+                  return (
+                    <button
+                      key={match.icao}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      data-active={active ? "true" : undefined}
+                      onMouseEnter={() => setLookupHighlight(index)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        void handleSelectLookupMatch(match);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition ${
+                        active ? "bg-cyan-500/15 text-cyan-50" : "hover:bg-slate-800"
+                      }`}
+                    >
+                      <span className="min-w-0 truncate">{formatAerodromeMatchLabel(match)}</span>
+                      <span className="shrink-0 font-mono text-xs font-bold tracking-widest text-cyan-300">
+                        {match.icao}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
+          <button
+            type="button"
+            className={btnSecondary}
+            onClick={() => void handleLookup()}
+            disabled={lookingUp || !lookupInput.trim()}
+          >
+            {lookingUp ? (
+              <span className="inline-flex items-center gap-2">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400/30 border-t-slate-200" />
+                Consultando
+              </span>
+            ) : (
+              "Consultar"
+            )}
+          </button>
         </div>
       </section>
 
@@ -1250,14 +1510,16 @@ export function AiswebTab() {
           temporaryIcao={temporaryIcao}
           onDismissTemporary={handleDismissTemporary}
           onAddTemporary={() => void handleAddLookupToWatchlist()}
+          onRemoveFromWatchlist={(icao) => void handleRemove(icao)}
           addingTemporary={addingLookup || savingWatchlist}
+          removingIcao={removingIcao}
           notamAlerts={notamAlerts}
           onToggleNotamAlert={(icao, enabled) => void handleToggleNotamAlert(icao, enabled)}
           togglingNotamIcao={togglingNotamIcao}
           supplementAlerts={supplementAlerts}
           onToggleSupplementAlert={(icao, enabled) => void handleToggleSupplementAlert(icao, enabled)}
           togglingSupplementIcao={togglingSupplementIcao}
-          loadingIcaos={loadingIcaos}
+          loadingIcaos={tableLoadingIcaos}
         />
       ) : null}
 

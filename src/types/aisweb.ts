@@ -231,6 +231,15 @@ export type AiswebRotaer = {
   error?: string | null;
 };
 
+export type AiswebAerodromeMatch = {
+  icao: string;
+  name: string | null;
+  city: string | null;
+  uf: string | null;
+  status: string | null;
+  score?: number;
+};
+
 export type AiswebAirportBundle = {
   icao: string;
   met: AiswebMetarTaf;

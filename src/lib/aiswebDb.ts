@@ -1,5 +1,6 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 import type {
+  AiswebAerodromeMatch,
   AiswebAirportBundle,
   AiswebDashboard,
   AiswebPlatformSettings,
@@ -17,6 +18,8 @@ type AiswebResponse = {
     watchlist: AiswebWatchlist;
   };
   airport?: AiswebAirportBundle;
+  query?: string;
+  matches?: AiswebAerodromeMatch[];
   chart?: {
     contentType: string;
     filename: string;
@@ -87,6 +90,21 @@ export async function lookupAiswebIcao(icaoCode: string): Promise<AiswebAirportB
   });
   if (!response.airport) throw new Error("Dados do aeródromo não retornados.");
   return response.airport;
+}
+
+export async function searchAiswebAerodromes(
+  query: string,
+  limit = 5,
+): Promise<{ query: string; matches: AiswebAerodromeMatch[] }> {
+  const response = await execute({
+    action: "searchAiswebAerodromes",
+    query,
+    limit,
+  });
+  return {
+    query: response.query || String(query || "").trim(),
+    matches: Array.isArray(response.matches) ? response.matches : [],
+  };
 }
 
 export async function saveAiswebWatchlist(

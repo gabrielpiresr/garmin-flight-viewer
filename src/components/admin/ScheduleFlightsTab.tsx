@@ -2994,9 +2994,16 @@ type ScheduleFlightsTabProps = {
   onFocusWeekConsumed?: () => void;
   /** Vitrine somente leitura: agenda + filtros, sem edição. */
   publicDisplayMode?: boolean;
+  /** Painel embutido no display multi-coluna (sem título/descrição próprios). */
+  boardPanel?: boolean;
 };
 
-export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed, publicDisplayMode = false }: ScheduleFlightsTabProps = {}) {
+export function ScheduleFlightsTab({
+  focusWeekStart = null,
+  onFocusWeekConsumed,
+  publicDisplayMode = false,
+  boardPanel = false,
+}: ScheduleFlightsTabProps = {}) {
   const readOnlyDisplay = publicDisplayMode;
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -5000,32 +5007,34 @@ export function ScheduleFlightsTab({ focusWeekStart = null, onFocusWeekConsumed,
   }
 
   return (
-    <div className="flex w-full flex-col gap-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-            {readOnlyDisplay ? "Escala pública" : "Escala"}
-          </h2>
-          <p className="text-xs text-slate-500">
-            {readOnlyDisplay
-              ? "Visualização somente leitura da agenda — ideal para exibir no computador da escola."
-              : "Mesma dinâmica da Escala Automática, focada apenas em voos já marcados."}
-          </p>
+    <div className={`flex w-full flex-col ${boardPanel ? "gap-3" : "gap-5"}`}>
+      {!boardPanel ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+              {readOnlyDisplay ? "Display da escola" : "Escala"}
+            </h2>
+            <p className="text-xs text-slate-500">
+              {readOnlyDisplay
+                ? "Visualização somente leitura — personalize as colunas no botão Layout."
+                : "Mesma dinâmica da Escala Automática, focada apenas em voos já marcados."}
+            </p>
+          </div>
+          {!readOnlyDisplay ? (
+            <button
+              type="button"
+              onClick={() => window.open("/escala-publica", "_blank", "noopener,noreferrer")}
+              className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
+              title="Abrir display da escola em nova aba (TV / totem)"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M4.75 3A1.75 1.75 0 003 4.75v10.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0017 15.25V4.75A1.75 1.75 0 0015.25 3H4.75zM5 5h10v10H5V5zm7.75 8.25a.75.75 0 00-1.5 0v1.69l-2.22-2.22a.75.75 0 00-1.06 1.06l2.22 2.22H8.5a.75.75 0 000 1.5h3.25a.75.75 0 00.75-.75V13.25z" />
+              </svg>
+              Display da escola
+            </button>
+          ) : null}
         </div>
-        {!readOnlyDisplay ? (
-          <button
-            type="button"
-            onClick={() => window.open("/escala-publica", "_blank", "noopener,noreferrer")}
-            className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
-            title="Abrir escala em nova aba para exibição no computador da escola"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path d="M4.75 3A1.75 1.75 0 003 4.75v10.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0017 15.25V4.75A1.75 1.75 0 0015.25 3H4.75zM5 5h10v10H5V5zm7.75 8.25a.75.75 0 00-1.5 0v1.69l-2.22-2.22a.75.75 0 00-1.06 1.06l2.22 2.22H8.5a.75.75 0 000 1.5h3.25a.75.75 0 00.75-.75V13.25z" />
-            </svg>
-            Escala pública
-          </button>
-        ) : null}
-      </div>
+      ) : null}
 
       {!readOnlyDisplay ? <SagaScheduleSyncLogPanel logs={sagaSyncLogs} onClear={() => setSagaSyncLogs([])} /> : null}
 

@@ -13,7 +13,17 @@ function normalizeIcao(value) {
     .slice(0, 4);
 }
 
-/** Detecta Metar/Notam/Detalhes + ICAO (texto ou id de botão). */
+function normalizeSearchText(value) {
+  return cleanString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9/ ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Detecta Metar/Notam/Detalhes + ICAO ou busca por nome/cidade (texto ou id de botão). */
 function parseWppAiswebCommand(text, responseId = "") {
   const idRaw = cleanString(responseId);
   const idMatch = idRaw.match(/^(metar|notams?|detalhes?|aerodromo)_([A-Za-z0-9]{4})$/i);
@@ -24,12 +34,139 @@ function parseWppAiswebCommand(text, responseId = "") {
   }
 
   const raw = cleanString(text);
-  const match = raw.match(/^(metar|notams?|detalhes?|aerodromo)\s*[:\-]?\s*([A-Za-z0-9]{3,4})\b/i);
+  const match = raw.match(/^(metar|notams?|detalhes?|aerodromo)\s*[:\-]?\s+(.+)$/i);
   if (!match) return null;
   const kind = normalizeAiswebCommandKind(match[1]);
-  const icao = normalizeIcao(match[2]);
-  if (!kind || icao.length !== 4) return null;
-  return { kind, icao };
+  const rest = cleanString(match[2]);
+  if (!kind || !rest) return null;
+
+  const compact = rest.replace(/\s+/g, "");
+  const icao = normalizeIcao(compact);
+  if (/^[A-Za-z0-9]{4}$/.test(compact) && icao.length === 4) {
+    return { kind, icao };
+  }
+
+  const query = rest.slice(0, 80);
+  if (!normalizeSearchText(query)) return null;
+  return { kind, query };
+}
+
+const METAR_WATCH_HOURS = [2, 4, 8];
+
+/** Acompanhar / Parar acompanhamento de METAR (botão ou texto). */
+function parseWppMetarWatchCommand(text, responseId = "") {
+  const candidates = [cleanString(responseId), cleanString(text)].filter(Boolean);
+  for (const raw of candidates) {
+    const id = raw.trim();
+    const stopMatch = id.match(/^watch_stop(?:_([A-Za-z0-9]{4}))?$/i);
+    if (stopMatch) {
+      const icao = stopMatch[1] ? normalizeIcao(stopMatch[1]) : null;
+      return { action: "stop", icao: icao && icao.length === 4 ? icao : null };
+    }
+    const hoursMatch = id.match(/^watch_([A-Za-z0-9]{4})_([248])$/i);
+    if (hoursMatch) {
+      const icao = normalizeIcao(hoursMatch[1]);
+      const hours = Number(hoursMatch[2]);
+      if (icao.length === 4 && METAR_WATCH_HOURS.includes(hours)) {
+        return { action: "start", icao, hours };
+      }
+    }
+    const chooseMatch = id.match(/^watch_([A-Za-z0-9]{4})$/i);
+    if (chooseMatch) {
+      const icao = normalizeIcao(chooseMatch[1]);
+      if (icao.length === 4) return { action: "choose_hours", icao };
+    }
+  }
+
+  for (const raw of candidates) {
+    const normalized = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (
+      normalized === "parar acompanhamento" ||
+      normalized === "parar metar" ||
+      normalized === "parar notificacoes" ||
+      normalized === "stop metar" ||
+      normalized === "watch stop"
+    ) {
+      return { action: "stop", icao: null };
+    }
+
+    const startMatch = normalized.match(
+      /^(?:acompanhar|monitorar|ouvir|watch)\s+(?:metar\s+)?([a-z0-9]{4})(?:\s+(\d+)\s*h(?:oras?)?)?$/i,
+    );
+    if (startMatch) {
+      const icao = normalizeIcao(startMatch[1]);
+      if (icao.length !== 4) continue;
+      if (startMatch[2]) {
+        const hours = Number(startMatch[2]);
+        if (METAR_WATCH_HOURS.includes(hours)) return { action: "start", icao, hours };
+        return null;
+      }
+      return { action: "choose_hours", icao };
+    }
+
+    const stopIcaoMatch = normalized.match(
+      /^(?:parar|stop)\s+(?:acompanhamento\s+)?(?:metar\s+)?([a-z0-9]{4})$/i,
+    );
+    if (stopIcaoMatch) {
+      const icao = normalizeIcao(stopIcaoMatch[1]);
+      if (icao.length === 4) return { action: "stop", icao };
+    }
+  }
+  return null;
+}
+
+function formatWppMetarWatchHoursMessage({ icao, nickname }) {
+  const greet = nickname ? `${nickname}, ` : "";
+  return [
+    `${greet}por quanto tempo quer receber cada METAR/TAF novo de *${icao}*?`,
+    "",
+    "Durante a janela eu te aviso na hora quando sair boletim novo.",
+    "",
+    "Escolha 2, 4 ou 8 horas:",
+  ].join("\n");
+}
+
+function formatWppMetarWatchStartedMessage({ icao, hours, expiresAt, nickname }) {
+  const greet = nickname ? `${nickname}, ` : "";
+  const until = formatWppDateTime(expiresAt);
+  return [
+    `${greet}acompanhamento de *${icao}* ativado por *${hours}h*.`,
+    "",
+    `Vou te mandar cada METAR ou TAF novo até *${until}*.`,
+    "",
+    "Para encerrar antes, toque em *Parar* ou envie *Parar acompanhamento*.",
+  ].join("\n");
+}
+
+function formatWppMetarWatchStoppedMessage({ icao, nickname }) {
+  const greet = nickname ? `${nickname}, ` : "";
+  if (icao) {
+    return `${greet}parei o acompanhamento de METAR/TAF de *${icao}*.`;
+  }
+  return `${greet}parei o acompanhamento de METAR/TAF.`;
+}
+
+function formatWppMetarWatchExpiredMessage({ icao, hours, nickname }) {
+  const greet = nickname ? `${nickname}, ` : "";
+  return [
+    `${greet}o acompanhamento de *${icao}* (${hours}h) encerrou.`,
+    "",
+    `Se quiser continuar, envie *Metar ${icao}* e toque em *Acompanhar*.`,
+  ].join("\n");
+}
+
+function formatWppMetarWatchUpdatePrefix({ icao, changedMetar, changedTaf }) {
+  const parts = [];
+  if (changedMetar) parts.push("METAR");
+  if (changedTaf) parts.push("TAF");
+  const what = parts.length ? parts.join(" + ") : "METAR/TAF";
+  return `🔔 *Novo ${what}* · *${icao}*`;
 }
 
 /** "Metar" / "Outro Metar" sem ICAO → ajuda de uso. */
@@ -60,17 +197,128 @@ function formatWppMetarHelpMessage(nickname) {
   return [
     `${greet}para consultar o METAR de um aeródromo, envie:`,
     "",
-    "*Metar {ICAO}*",
+    "*Metar {ICAO}* ou *Metar {cidade/nome}*",
     "",
     "Exemplos:",
     "• Metar SBSP",
-    "• Metar SBBH",
-    "• Metar SBGR",
+    "• Metar Paraty",
+    "• Metar Congonhas",
+    "",
+    "Se você mandar o nome da cidade, eu mostro até 3 aeródromos parecidos pra você escolher.",
     "",
     "Depois você também pode pedir:",
     "• *Notam SBSP* — últimos NOTAMs",
     "• *Detalhes SBSP* — operação, frequências e pistas",
+    "• *Acompanhar SBSP* — avisar cada METAR/TAF novo por 2, 4 ou 8 horas",
+    "• *Parar acompanhamento* — encerrar o listener",
   ].join("\n");
+}
+
+function scoreAerodromeMatch(item, queryNorm) {
+  if (!queryNorm) return 0;
+  const icao = normalizeSearchText(item?.icao);
+  const city = normalizeSearchText(item?.city);
+  const name = normalizeSearchText(item?.name);
+  const uf = normalizeSearchText(item?.uf);
+  const haystack = `${icao} ${city} ${name} ${uf}`.trim();
+  let score = 0;
+
+  if (icao === queryNorm) score += 120;
+  if (city === queryNorm) score += 90;
+  if (name === queryNorm) score += 80;
+  if (city.startsWith(queryNorm)) score += 55;
+  if (name.startsWith(queryNorm)) score += 45;
+  if (city.includes(queryNorm)) score += 35;
+  if (name.includes(queryNorm)) score += 28;
+  if (icao.startsWith(queryNorm)) score += 22;
+  if (haystack.includes(queryNorm)) score += 8;
+
+  const tokens = queryNorm.split(/\s+/).filter((token) => token.length >= 2);
+  for (const token of tokens) {
+    if (icao === token) score += 50;
+    if (city === token) score += 40;
+    else if (city.startsWith(token)) score += 22;
+    else if (city.includes(token)) score += 14;
+    if (name === token) score += 30;
+    else if (name.startsWith(token)) score += 16;
+    else if (name.includes(token)) score += 10;
+    if (uf === token) score += 12;
+  }
+
+  if (normalizeSearchText(item?.status) === "ativo") score += 3;
+  if (icao.startsWith("sb")) score += 1;
+  return score;
+}
+
+/** Ranqueia aeródromos pelo nome/cidade/ICAO e devolve os melhores. */
+function rankAerodromeMatches(aerodromes, query, limit = 3) {
+  const queryNorm = normalizeSearchText(query);
+  if (!queryNorm) return [];
+  const minScore = queryNorm.length <= 2 ? 40 : 18;
+  const scored = [];
+  for (const item of Array.isArray(aerodromes) ? aerodromes : []) {
+    const icao = normalizeIcao(item?.icao);
+    if (!icao || icao.length !== 4) continue;
+    const score = scoreAerodromeMatch({ ...item, icao }, queryNorm);
+    if (score < minScore) continue;
+    scored.push({
+      icao,
+      name: cleanString(item?.name) || null,
+      city: cleanString(item?.city) || null,
+      uf: cleanString(item?.uf).toUpperCase() || null,
+      status: cleanString(item?.status) || null,
+      score,
+    });
+  }
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.icao.startsWith("SB") !== b.icao.startsWith("SB")) return a.icao.startsWith("SB") ? -1 : 1;
+    return a.icao.localeCompare(b.icao);
+  });
+  const seen = new Set();
+  const unique = [];
+  for (const item of scored) {
+    if (seen.has(item.icao)) continue;
+    seen.add(item.icao);
+    unique.push(item);
+    if (unique.length >= Math.max(1, Number(limit) || 3)) break;
+  }
+  return unique;
+}
+
+function formatAerodromeChoiceLabel(match) {
+  const place = [cleanString(match?.city), cleanString(match?.uf).toUpperCase()].filter(Boolean).join("/");
+  const name = cleanString(match?.name);
+  const city = cleanString(match?.city);
+  const showName = Boolean(name && normalizeSearchText(name) !== normalizeSearchText(city));
+  return [cleanString(match?.icao), showName ? name : null, place ? `(${place})` : null].filter(Boolean).join(" ");
+}
+
+function formatAerodromeButtonTitle(match) {
+  const icao = cleanString(match?.icao).toUpperCase();
+  const place = cleanString(match?.city || match?.name);
+  const title = place ? `${icao} ${place}` : icao;
+  return title.slice(0, 20);
+}
+
+function aiswebCommandVerb(kind) {
+  if (kind === "notam") return "Notam";
+  if (kind === "details") return "Detalhes";
+  return "Metar";
+}
+
+function formatWppAerodromeChoiceMessage({ kind, query, matches, nickname }) {
+  const greet = nickname ? `${nickname}, ` : "";
+  const verb = aiswebCommandVerb(kind);
+  const lines = [
+    `${greet}encontrei estes aeródromos para *${cleanString(query)}*:`,
+    "",
+  ];
+  (Array.isArray(matches) ? matches : []).forEach((match, index) => {
+    lines.push(`${index + 1}. *${formatAerodromeChoiceLabel(match)}*`);
+  });
+  lines.push("", `Toque em uma opção para eu gerar o ${verb}:`);
+  return lines.join("\n");
 }
 
 function normalizeAiswebCommandKind(value) {
@@ -971,7 +1219,13 @@ function buildSunCardSvg(sun, icaoCode) {
 module.exports = {
   parseWppAiswebCommand,
   parseWppMetarHelpCommand,
+  parseWppMetarWatchCommand,
   parseWppMetarCommand,
+  normalizeSearchText,
+  rankAerodromeMatches,
+  formatAerodromeChoiceLabel,
+  formatAerodromeButtonTitle,
+  formatWppAerodromeChoiceMessage,
   analyzeWindVsRunways,
   evaluateMinimums,
   formatWind,
@@ -979,6 +1233,11 @@ module.exports = {
   formatTafForWhatsApp,
   formatWppMetarMessage,
   formatWppMetarHelpMessage,
+  formatWppMetarWatchHoursMessage,
+  formatWppMetarWatchStartedMessage,
+  formatWppMetarWatchStoppedMessage,
+  formatWppMetarWatchExpiredMessage,
+  formatWppMetarWatchUpdatePrefix,
   formatWppNotamsMessage,
   formatWppAirportDetailsMessage,
   formatWppAirportDetailsMessages,
@@ -987,4 +1246,5 @@ module.exports = {
   buildSunCardSvg,
   buildAirportMapPng,
   statusEmoji,
+  METAR_WATCH_HOURS,
 };
