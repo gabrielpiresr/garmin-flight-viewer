@@ -1087,7 +1087,7 @@ export function AiswebConditionVisuals({
           Visualização TAF: <span className="font-semibold">{previewLabel}</span>
         </p>
       ) : null}
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 @2xl:grid-cols-2">
         <AiswebWindRose parsed={parsed} rotaer={rotaer} />
         <AiswebCloudStack parsed={parsed} />
       </div>

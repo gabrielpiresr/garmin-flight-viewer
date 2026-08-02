@@ -240,7 +240,7 @@ function StatusCluster({
   setTooltip: Dispatch<SetStateAction<StatusTooltipState>>;
 }) {
   return (
-    <div className="inline-flex items-center gap-1.5">
+    <div className="inline-flex max-w-full flex-wrap items-center gap-1.5">
       {checks.map((check) => (
         <button
           key={check.condition}
@@ -263,7 +263,7 @@ function RawMessage({ label, value, empty }: { label: string; value: string; emp
     <div>
       <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
       {value ? (
-        <div className="rounded-md bg-slate-950/70 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-slate-200">
+        <div className="overflow-x-auto rounded-md bg-slate-950/70 px-3 py-2.5 font-mono text-[13px] leading-relaxed break-words text-slate-200">
           {value}
         </div>
       ) : (
@@ -745,12 +745,13 @@ function ConditionsBoard({
             airport={selected}
             meteorology={
               <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
+                <div className="grid gap-3 @2xl:grid-cols-2">
+                  <div className="min-w-0">
                     <RawMessage label="METAR" value={selected.met.metar} empty="METAR indisponível." />
                     <DecodedMetar value={selected.met.metar} />
                   </div>
-                  <TafMessage
+                  <div className="min-w-0">
+                    <TafMessage
                     value={selected.met.taf}
                     empty="TAF indisponível."
                     activeSegmentId={tafPreview?.segmentId ?? null}
@@ -765,6 +766,7 @@ function ConditionsBoard({
                       setTafPreview({ segmentId: segment.id, label: segment.label, parsed: merged });
                     }}
                   />
+                  </div>
                 </div>
                 <AiswebConditionVisuals
                   parsed={visualParsed}
@@ -796,11 +798,11 @@ function NotamCard({ notam }: { notam: AiswebNotam }) {
           </span>
         ) : null}
       </div>
-      <div className="mb-2 grid gap-1 text-[11px] text-slate-400 sm:grid-cols-2">
-        <p>
+      <div className="mb-2 grid gap-1 text-[11px] text-slate-400 @md:grid-cols-2">
+        <p className="min-w-0 break-words">
           <span className="text-slate-500">Emitido:</span> {formatDateTime(notam.issuedAt)}
         </p>
-        <p>
+        <p className="min-w-0 break-words">
           <span className="text-slate-500">Válido:</span> {formatDateTime(notam.validFrom)} →{" "}
           {formatDateTime(notam.validTo)}
         </p>
@@ -810,7 +812,7 @@ function NotamCard({ notam }: { notam: AiswebNotam }) {
   );
 }
 
-export function AiswebTab() {
+export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } = {}) {
   const { showToast } = useToast();
   const [dashboard, setDashboard] = useState<AiswebDashboard | null>(() => {
     const cached = readBootstrapCache();
@@ -970,6 +972,11 @@ export function AiswebTab() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (boardRefreshToken == null || boardRefreshToken < 1) return;
+    void loadDashboard({ soft: true });
+  }, [boardRefreshToken, loadDashboard]);
 
   const watchlist = dashboard?.watchlist.icaoCodes ?? [];
   const notamAlerts = dashboard?.watchlist.notamAlerts ?? {};
@@ -1358,7 +1365,7 @@ export function AiswebTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="@container space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-slate-500">
           Atualizado: {lastFetchedAt ? formatDateTime(lastFetchedAt) : "—"}
@@ -1386,8 +1393,8 @@ export function AiswebTab() {
       </header>
 
       <section className="rounded-xl border border-slate-700/80 bg-slate-900/30 p-3 sm:p-4">
-        <div className="flex gap-2" ref={lookupContainerRef}>
-          <div className="relative min-w-0 flex-1">
+        <div className="flex flex-wrap gap-2" ref={lookupContainerRef}>
+          <div className="relative min-w-0 flex-1 basis-48">
             <input
               className={`${searchInputClass} ${lookingUp ? "pr-10" : ""}`}
               value={lookupInput}
@@ -1460,7 +1467,7 @@ export function AiswebTab() {
           </div>
           <button
             type="button"
-            className={btnSecondary}
+            className={`${btnSecondary} grow @sm:grow-0`}
             onClick={() => void handleLookup()}
             disabled={lookingUp || !lookupInput.trim()}
           >
@@ -1558,7 +1565,7 @@ export function AiswebTab() {
                   : `Nenhum NOTAM ativo para ${notamFilter}.`}
             </EmptyPanel>
           ) : (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid gap-3 @2xl:grid-cols-2">
               {filteredNotams.map((notam) => (
                 <NotamCard
                   key={notam.id || `${notam.icao}-${notam.number}-${notam.issuedAt}`}

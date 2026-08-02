@@ -2996,6 +2996,8 @@ type ScheduleFlightsTabProps = {
   publicDisplayMode?: boolean;
   /** Painel embutido no display multi-coluna (sem título/descrição próprios). */
   boardPanel?: boolean;
+  /** Incrementado pelo display da escola para forçar soft-refresh (manual ou a cada 10 min). */
+  boardRefreshToken?: number;
 };
 
 export function ScheduleFlightsTab({
@@ -3003,6 +3005,7 @@ export function ScheduleFlightsTab({
   onFocusWeekConsumed,
   publicDisplayMode = false,
   boardPanel = false,
+  boardRefreshToken,
 }: ScheduleFlightsTabProps = {}) {
   const readOnlyDisplay = publicDisplayMode;
   const { user } = useAuth();
@@ -3377,15 +3380,25 @@ export function ScheduleFlightsTab({
       }
     };
 
+    // No board multi-coluna o timer fica no PublicSchedulePage (botão Reload + 10 min).
+    if (boardPanel) {
+      if (boardRefreshToken != null && boardRefreshToken > 0) {
+        void refreshCurrentEvents();
+      }
+      return () => {
+        disposed = true;
+      };
+    }
+
     const intervalId = window.setInterval(() => {
       void refreshCurrentEvents();
-    }, 15 * 60 * 1000);
+    }, 10 * 60 * 1000);
 
     return () => {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [actorUserId, fetchWeekBundle, publicDisplayMode, selectedWeekStart]);
+  }, [actorUserId, boardPanel, boardRefreshToken, fetchWeekBundle, publicDisplayMode, selectedWeekStart]);
 
   // Navega ±1 semana mantendo a página no lugar (refresh em segundo plano).
   const goToWeekOffset = useCallback(

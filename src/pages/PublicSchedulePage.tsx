@@ -68,14 +68,26 @@ function formatDateLabel(now: Date): string {
   });
 }
 
-function DisplayPanelContent({ panelId }: { panelId: PublicDisplayPanelId }) {
+function DisplayPanelContent({
+  panelId,
+  boardRefreshToken,
+}: {
+  panelId: PublicDisplayPanelId;
+  boardRefreshToken: number;
+}) {
   switch (panelId) {
     case "escala":
-      return <ScheduleFlightsTab publicDisplayMode boardPanel />;
+      return (
+        <ScheduleFlightsTab
+          publicDisplayMode
+          boardPanel
+          boardRefreshToken={boardRefreshToken}
+        />
+      );
     case "jornada":
       return <PublicJourneyCatalogPanel />;
     case "aisweb":
-      return <AiswebTab />;
+      return <AiswebTab boardRefreshToken={boardRefreshToken} />;
     case "manuais":
       return <ManuaisTab />;
     case "manobras":
@@ -386,6 +398,8 @@ export function PublicSchedulePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draft, setDraft] = useState<PublicDisplayBoardConfig>(board);
   const [now, setNow] = useState(() => new Date());
+  const [boardRefreshToken, setBoardRefreshToken] = useState(0);
+  const [reloading, setReloading] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
@@ -400,6 +414,13 @@ export function PublicSchedulePage() {
       root.style.fontSize = previous;
     };
   }, [board.zoom]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setBoardRefreshToken((token) => token + 1);
+    }, 10 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function persistBoard(next: PublicDisplayBoardConfig) {
     savePublicDisplayBoard(next);
@@ -416,12 +437,20 @@ export function PublicSchedulePage() {
     persistBoard({ ...board, zoom });
   }
 
+  function handleReload() {
+    if (reloading) return;
+    setReloading(true);
+    setBoardRefreshToken((token) => token + 1);
+    window.setTimeout(() => setReloading(false), 1200);
+  }
+
   if (loading) return <PublicScheduleLoading />;
   if (!user || (user.role !== "admin" && user.role !== "instrutor")) {
     return <PublicScheduleAccessDenied />;
   }
 
   const columnCount = board.columns.length;
+  const hasLivePanels = board.columns.some((panelId) => panelId === "escala" || panelId === "aisweb");
 
   return (
     <div className="flex h-[100dvh] min-h-screen w-full flex-col overflow-hidden bg-slate-950 text-slate-100">
@@ -431,7 +460,8 @@ export function PublicSchedulePage() {
             Display da escola
           </p>
           <p className="truncate text-xs text-slate-500">
-            {columnCount} coluna{columnCount === 1 ? "" : "s"} · toque no título da coluna para trocar
+            {columnCount} coluna{columnCount === 1 ? "" : "s"}
+            {hasLivePanels ? " · escala/AISWEB atualizam a cada 10 min" : ""} · toque no título para trocar
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -440,6 +470,27 @@ export function PublicSchedulePage() {
             <p className="mt-1 text-[11px] capitalize text-slate-500">{formatDateLabel(now)}</p>
           </div>
           <ZoomControl value={board.zoom} onChange={updateZoom} />
+          <button
+            type="button"
+            onClick={handleReload}
+            disabled={reloading}
+            title="Atualizar escala e AISWEB agora"
+            className="inline-flex min-h-12 items-center gap-2 rounded-2xl border border-slate-600 bg-slate-900/80 px-4 text-sm font-semibold text-slate-200 transition active:bg-slate-800 disabled:opacity-60"
+          >
+            <svg
+              className={`h-5 w-5 ${reloading ? "animate-spin" : ""}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466.75.75 0 10-1.061 1.06 7 7 0 0011.697-3.138.75.75 0 00-1.435-.388zM4.688 8.576a5.5 5.5 0 019.201-2.466.75.75 0 101.061-1.06A7 7 0 003.253 8.188a.75.75 0 101.435.388z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Atualizar
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -461,13 +512,13 @@ export function PublicSchedulePage() {
       </header>
 
       <div
-        className={`grid min-h-0 flex-1 gap-2 p-2 sm:gap-3 sm:p-3 ${
+        className={`grid min-h-0 min-w-0 flex-1 gap-2 p-2 sm:gap-3 sm:p-3 ${
           columnCount === 1
             ? "grid-cols-1"
             : columnCount === 2
-              ? "grid-cols-1 md:grid-cols-2"
+              ? "grid-cols-1 lg:grid-cols-2"
               : columnCount === 3
-                ? "grid-cols-1 md:grid-cols-3"
+                ? "grid-cols-1 lg:grid-cols-2 xl:grid-cols-3"
                 : "grid-cols-1 md:grid-cols-2 xl:grid-cols-4"
         }`}
       >
@@ -484,9 +535,9 @@ export function PublicSchedulePage() {
                 onSelect={(nextPanelId) => updateColumnPanel(index, nextPanelId)}
               />
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3 touch-pan-y">
+            <div className="@container min-h-0 min-w-0 flex-1 overflow-auto p-3 touch-pan-y">
               <Suspense fallback={<PanelFallback />}>
-                <DisplayPanelContent panelId={panelId} />
+                <DisplayPanelContent panelId={panelId} boardRefreshToken={boardRefreshToken} />
               </Suspense>
             </div>
           </section>

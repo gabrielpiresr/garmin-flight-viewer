@@ -290,7 +290,7 @@ function FrequencyList({ frequencies }: { frequencies: AiswebFrequency[] }) {
     return <p className="text-xs text-slate-500">Sem frequências COM no ROTAER.</p>;
   }
   return (
-    <div className="grid gap-1.5 sm:grid-cols-2">
+    <div className="grid gap-1.5 @md:grid-cols-2">
       {frequencies.map((f, i) => (
         <div
           key={`${f.service}-${i}`}
@@ -393,7 +393,7 @@ function NavaidsPanel({ navaids }: { navaids: AiswebNavaid[] }) {
     return <p className="text-xs text-slate-500">Sem auxílios NAV no ROTAER.</p>;
   }
   return (
-    <div className="grid gap-1.5 sm:grid-cols-2">
+    <div className="grid gap-1.5 @md:grid-cols-2">
       {navaids.map((nav, i) => (
         <div
           key={`${nav.type}-${nav.ident || i}`}
@@ -656,7 +656,7 @@ function ChartsPanel({ charts }: { charts: AiswebChart[] }) {
   const previewHeightClass = "h-[min(80vh,56rem)]";
 
   return (
-    <div className="grid gap-3 lg:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
+    <div className="grid gap-3 @4xl:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
       <div className={`flex ${previewHeightClass} flex-col gap-1.5 overflow-y-auto pr-1`}>
         {charts.map((chart) => {
           const active = chart.id === selectedId;
@@ -840,7 +840,7 @@ export function AiswebAirportTopCards({ airport }: { airport: AiswebAirportBundl
   }, [airport.notams]);
 
   return (
-    <div className="grid gap-2 md:grid-cols-2">
+    <div className="grid gap-2 @2xl:grid-cols-2">
       <OperationCard rotaer={airport.rotaer} airspace={airport.airspace} lastNotamAt={lastNotamAt} />
       <SunCard sun={airport.sun || null} />
     </div>
@@ -973,7 +973,7 @@ export function AiswebAirportDetailTabs({
       {subTab === "detalhes" ? (
         <div className="space-y-3">
           <AiswebAirportTopCards airport={airport} />
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 @2xl:grid-cols-2">
             <div className="min-w-0 rounded-xl border border-slate-700/70 bg-slate-950/40 p-3">
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Frequências</p>
               <FrequencyList frequencies={frequencies} />
