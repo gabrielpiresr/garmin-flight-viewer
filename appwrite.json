@@ -11,6 +11,16 @@
       "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
     },
     {
+      "functionId": "aisweb-metar-watch",
+      "name": "AISWEB METAR Watch",
+      "runtime": "node-22",
+      "entrypoint": "src/metarWatchCron.js",
+      "path": "functions/admin-users",
+      "schedule": "*/15 * * * *",
+      "timeout": 60,
+      "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
+    },
+    {
       "functionId": "instructor-patch-flight",
       "name": "Instructor Patch Flight",
       "runtime": "node-22",

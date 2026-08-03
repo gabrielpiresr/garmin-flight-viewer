@@ -5,6 +5,7 @@ const AISWEB_SETTINGS_KEY = "aiswebSettings";
 const AISWEB_WATCHLIST_PREFIX = "aiswebWatchlist:";
 const AISWEB_METAR_WATCH_PREFIX = "aiswebMetarWatch:";
 const AISWEB_METAR_WATCH_HOURS = [2, 4, 8];
+const MAX_METAR_WATCHES_PER_PHONE = 6;
 const AISWEB_CACHE_TTL_MS = 5 * 60 * 1000;
 const AERODROME_CATALOG_TTL_MS = 60 * 60 * 1000;
 const MAX_WATCHLIST = 12;
@@ -1004,15 +1005,32 @@ function watchlistKey(userId) {
   return `${AISWEB_WATCHLIST_PREFIX}${cleanString(userId)}`;
 }
 
-function metarWatchKey(phone) {
+function metarWatchKey(phone, icaoCode = "") {
   const digits = cleanString(phone).replace(/\D/g, "");
-  return digits ? `${AISWEB_METAR_WATCH_PREFIX}${digits}` : "";
+  if (!digits) return "";
+  const icao = normalizeIcao(icaoCode);
+  if (icao && icao.length === 4) return `${AISWEB_METAR_WATCH_PREFIX}${digits}:${icao}`;
+  return `${AISWEB_METAR_WATCH_PREFIX}${digits}`;
+}
+
+function parseMetarWatchKey(key) {
+  const raw = cleanString(key);
+  if (!raw.startsWith(AISWEB_METAR_WATCH_PREFIX)) return { phone: "", icao: "", legacy: false };
+  const rest = raw.slice(AISWEB_METAR_WATCH_PREFIX.length);
+  const match = rest.match(/^(\d+)(?::([A-Za-z0-9]{4}))?$/i);
+  if (!match) {
+    return { phone: rest.replace(/\D/g, ""), icao: "", legacy: !rest.includes(":") };
+  }
+  const icao = normalizeIcao(match[2] || "");
+  return {
+    phone: cleanString(match[1]).replace(/\D/g, ""),
+    icao: icao.length === 4 ? icao : "",
+    legacy: !match[2],
+  };
 }
 
 function phoneFromMetarWatchKey(key) {
-  const raw = cleanString(key);
-  if (!raw.startsWith(AISWEB_METAR_WATCH_PREFIX)) return "";
-  return cleanString(raw.slice(AISWEB_METAR_WATCH_PREFIX.length)).replace(/\D/g, "");
+  return parseMetarWatchKey(key).phone;
 }
 
 function sanitizeMetarWatchHours(value) {
@@ -1042,31 +1060,92 @@ function publicMetarWatch(raw, updatedAt = null) {
   };
 }
 
-async function loadMetarWatch(deps, phone) {
-  const key = metarWatchKey(phone);
-  if (!key) return null;
-  const doc = await deps.getSettingDoc(key);
-  if (!doc) return null;
+async function loadMetarWatch(deps, phone, icaoCode) {
+  const icao = normalizeIcao(icaoCode);
+  const key = metarWatchKey(phone, icao);
+  if (!key || !icao || icao.length !== 4) return null;
+  let doc = await deps.getSettingDoc(key);
+  // Compat: formato antigo era um doc por telefone (sem ICAO na chave).
+  if (!doc) {
+    const legacyKey = metarWatchKey(phone);
+    const legacyDoc = legacyKey ? await deps.getSettingDoc(legacyKey) : null;
+    if (legacyDoc) {
+      let legacyRaw = {};
+      try {
+        legacyRaw = JSON.parse(legacyDoc.settings_json || "{}");
+      } catch {
+        legacyRaw = {};
+      }
+      const legacyWatch = publicMetarWatch(
+        { ...legacyRaw, phone: legacyRaw.phone || phoneFromMetarWatchKey(legacyDoc.key) },
+        legacyDoc.$updatedAt || legacyRaw.updatedAt || null,
+      );
+      if (legacyWatch.icao === icao) return legacyWatch;
+    }
+    return null;
+  }
   let raw = {};
   try {
     raw = JSON.parse(doc.settings_json || "{}");
   } catch {
     raw = {};
   }
-  return publicMetarWatch({ ...raw, phone: raw.phone || phoneFromMetarWatchKey(doc.key) }, doc.$updatedAt || raw.updatedAt || null);
+  return publicMetarWatch(
+    { ...raw, phone: raw.phone || phoneFromMetarWatchKey(doc.key), icao: raw.icao || icao },
+    doc.$updatedAt || raw.updatedAt || null,
+  );
+}
+
+async function listMetarWatchesForPhone(deps, phone) {
+  const digits = cleanString(phone).replace(/\D/g, "");
+  if (!digits || typeof deps.listSettingDocsByPrefix !== "function") return [];
+  const docs = await deps.listSettingDocsByPrefix(`${AISWEB_METAR_WATCH_PREFIX}${digits}`);
+  const out = [];
+  const seen = new Set();
+  for (const doc of Array.isArray(docs) ? docs : []) {
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const parsedKey = parseMetarWatchKey(doc.key);
+    const watch = publicMetarWatch(
+      {
+        ...raw,
+        phone: raw.phone || parsedKey.phone || digits,
+        icao: raw.icao || parsedKey.icao,
+      },
+      doc.$updatedAt || raw.updatedAt || null,
+    );
+    if (!watch.active || !watch.icao) continue;
+    if (seen.has(watch.icao)) continue;
+    seen.add(watch.icao);
+    out.push({ ...watch, docKey: doc.key, legacy: parsedKey.legacy });
+  }
+  return out;
 }
 
 async function saveMetarWatch(deps, input) {
   const phone = cleanString(input?.phone).replace(/\D/g, "");
-  const key = metarWatchKey(phone);
-  if (!key) {
-    throw Object.assign(new Error("Telefone inválido para acompanhamento METAR."), { status: 400 });
-  }
   const hours = sanitizeMetarWatchHours(input?.hours);
   const icao = normalizeIcao(input?.icao);
-  if (!hours || !icao || icao.length !== 4) {
-    throw Object.assign(new Error("Informe ICAO e duração válida (2, 4 ou 8 horas)."), { status: 400 });
+  const key = metarWatchKey(phone, icao);
+  if (!key || !hours || !icao || icao.length !== 4) {
+    throw Object.assign(new Error("Informe telefone, ICAO e duração válida (2, 4 ou 8 horas)."), { status: 400 });
   }
+
+  if (typeof deps.listSettingDocsByPrefix === "function") {
+    const existing = await listMetarWatchesForPhone(deps, phone);
+    const already = existing.some((item) => item.icao === icao);
+    if (!already && existing.length >= MAX_METAR_WATCHES_PER_PHONE) {
+      throw Object.assign(
+        new Error(`Limite de ${MAX_METAR_WATCHES_PER_PHONE} acompanhamentos ativos por WhatsApp.`),
+        { status: 400 },
+      );
+    }
+  }
+
   const startedAt = cleanString(input?.startedAt) || nowIso();
   const expiresAt =
     cleanString(input?.expiresAt) ||
@@ -1088,19 +1167,78 @@ async function saveMetarWatch(deps, input) {
   if (!saved) {
     throw Object.assign(new Error("Não foi possível salvar o acompanhamento METAR."), { status: 500 });
   }
+
+  // Migra/remove doc legado (um por telefone) se era deste ICAO ou ficou órfão.
+  const legacyKey = metarWatchKey(phone);
+  if (legacyKey && legacyKey !== key && typeof deps.getSettingDoc === "function") {
+    const legacyDoc = await deps.getSettingDoc(legacyKey);
+    if (legacyDoc) {
+      let legacyRaw = {};
+      try {
+        legacyRaw = JSON.parse(legacyDoc.settings_json || "{}");
+      } catch {
+        legacyRaw = {};
+      }
+      const legacyIcao = normalizeIcao(legacyRaw.icao);
+      if (!legacyIcao || legacyIcao === icao) {
+        if (typeof deps.deleteSettingDoc === "function") {
+          await deps.deleteSettingDoc(legacyKey);
+        }
+      }
+    }
+  }
+
   return next;
 }
 
-async function clearMetarWatch(deps, phone) {
-  const key = metarWatchKey(phone);
-  if (!key || typeof deps.deleteSettingDoc !== "function") {
-    if (!key) return false;
-    const existing = await loadMetarWatch(deps, phone);
-    if (!existing) return false;
-    await deps.upsertPlatformSettingDoc(key, { ...existing, active: false, expiresAt: nowIso(), updatedAt: nowIso() });
-    return true;
+async function clearMetarWatch(deps, phone, icaoCode = null) {
+  const digits = cleanString(phone).replace(/\D/g, "");
+  if (!digits) return { cleared: 0, icaos: [] };
+  const wantedIcao = normalizeIcao(icaoCode);
+  const watches = typeof deps.listSettingDocsByPrefix === "function"
+    ? await listMetarWatchesForPhone(deps, digits)
+    : [];
+
+  // Fallback sem list: tenta chave nova + legada.
+  if (!watches.length) {
+    const keys = [];
+    if (wantedIcao && wantedIcao.length === 4) keys.push(metarWatchKey(digits, wantedIcao));
+    keys.push(metarWatchKey(digits));
+    let cleared = 0;
+    const icaos = [];
+    for (const key of keys.filter(Boolean)) {
+      if (typeof deps.deleteSettingDoc === "function") {
+        const ok = await deps.deleteSettingDoc(key);
+        if (ok) {
+          cleared += 1;
+          if (wantedIcao) icaos.push(wantedIcao);
+        }
+      }
+    }
+    return { cleared, icaos };
   }
-  return deps.deleteSettingDoc(key);
+
+  const targets = wantedIcao && wantedIcao.length === 4
+    ? watches.filter((item) => item.icao === wantedIcao)
+    : watches;
+  const icaos = [];
+  let cleared = 0;
+  for (const item of targets) {
+    const key = item.docKey || metarWatchKey(digits, item.icao);
+    if (!key) continue;
+    if (typeof deps.deleteSettingDoc === "function") {
+      const ok = await deps.deleteSettingDoc(key);
+      if (ok) {
+        cleared += 1;
+        icaos.push(item.icao);
+      }
+    } else {
+      await deps.upsertPlatformSettingDoc(key, { ...item, active: false, expiresAt: nowIso(), updatedAt: nowIso() });
+      cleared += 1;
+      icaos.push(item.icao);
+    }
+  }
+  return { cleared, icaos };
 }
 
 function sanitizeIcaoList(values, { fallbackDefault = "", allowEmpty = false } = {}) {
@@ -1342,6 +1480,7 @@ module.exports = {
   AISWEB_WATCHLIST_PREFIX,
   AISWEB_METAR_WATCH_PREFIX,
   AISWEB_METAR_WATCH_HOURS,
+  MAX_METAR_WATCHES_PER_PHONE,
   DEFAULT_MINIMUMS,
   normalizeIcao,
   loadSettings,
@@ -1352,13 +1491,16 @@ module.exports = {
   userIdFromWatchlistKey,
   mergeSeenNotamIds,
   metarWatchKey,
+  parseMetarWatchKey,
   phoneFromMetarWatchKey,
   sanitizeMetarWatchHours,
   publicMetarWatch,
   loadMetarWatch,
+  listMetarWatchesForPhone,
   saveMetarWatch,
   clearMetarWatch,
   fetchMet,
+  fetchRotaer,
   fetchNotams,
   fetchSupplements,
   fetchAirportBundle,

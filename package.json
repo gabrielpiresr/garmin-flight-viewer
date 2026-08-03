@@ -13,6 +13,7 @@
     "pwa:assets": "node scripts/generate-pwa-assets.mjs",
     "appwrite:deploy-admin-function": "node scripts/deploy-admin-function.mjs",
     "appwrite:deploy-admin-users": "node scripts/deploy-admin-users-function.mjs",
+    "appwrite:deploy-aisweb-metar-watch": "node scripts/deploy-aisweb-metar-watch.mjs",
     "appwrite:deploy-instructor-patch-function": "node scripts/deploy-instructor-patch-function.mjs",
     "appwrite:setup": "node scripts/setup-appwrite.mjs",
     "appwrite:setup-sign-flight": "node scripts/setup-sign-flight.mjs",

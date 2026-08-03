@@ -132,22 +132,37 @@ function formatWppMetarWatchHoursMessage({ icao, nickname }) {
   ].join("\n");
 }
 
-function formatWppMetarWatchStartedMessage({ icao, hours, expiresAt, nickname }) {
+function formatWppMetarWatchStartedMessage({ icao, hours, expiresAt, nickname, activeIcaos }) {
   const greet = nickname ? `${nickname}, ` : "";
   const until = formatWppDateTime(expiresAt);
-  return [
+  const others = (Array.isArray(activeIcaos) ? activeIcaos : [])
+    .map((code) => cleanString(code).toUpperCase())
+    .filter((code) => code && code !== cleanString(icao).toUpperCase());
+  const lines = [
     `${greet}acompanhamento de *${icao}* ativado por *${hours}h*.`,
     "",
     `Vou te mandar cada METAR ou TAF novo até *${until}*.`,
-    "",
-    "Para encerrar antes, toque em *Parar* ou envie *Parar acompanhamento*.",
-  ].join("\n");
+  ];
+  if (others.length) {
+    lines.push("", `Também ativos: ${others.map((code) => `*${code}*`).join(", ")}`);
+  } else {
+    lines.push("", "Pode ativar outros aeródromos ao mesmo tempo (ex.: *Acompanhar SBSP*).");
+  }
+  lines.push("", "Para encerrar este, toque em *Parar* ou envie *Parar acompanhamento*.");
+  return lines.join("\n");
 }
 
-function formatWppMetarWatchStoppedMessage({ icao, nickname }) {
+function formatWppMetarWatchStoppedMessage({ icao, icaos, nickname }) {
   const greet = nickname ? `${nickname}, ` : "";
+  const list = Array.isArray(icaos) ? icaos.map((code) => cleanString(code).toUpperCase()).filter(Boolean) : [];
   if (icao) {
     return `${greet}parei o acompanhamento de METAR/TAF de *${icao}*.`;
+  }
+  if (list.length === 1) {
+    return `${greet}parei o acompanhamento de METAR/TAF de *${list[0]}*.`;
+  }
+  if (list.length > 1) {
+    return `${greet}parei o acompanhamento de METAR/TAF de ${list.map((code) => `*${code}*`).join(", ")}.`;
   }
   return `${greet}parei o acompanhamento de METAR/TAF.`;
 }
@@ -209,8 +224,8 @@ function formatWppMetarHelpMessage(nickname) {
     "Depois você também pode pedir:",
     "• *Notam SBSP* — últimos NOTAMs",
     "• *Detalhes SBSP* — operação, frequências e pistas",
-    "• *Acompanhar SBSP* — avisar cada METAR/TAF novo por 2, 4 ou 8 horas",
-    "• *Parar acompanhamento* — encerrar o listener",
+    "• *Acompanhar SBSP* — avisar cada METAR/TAF novo por 2, 4 ou 8 horas (pode ativar vários aeródromos)",
+    "• *Parar acompanhamento* — encerrar o(s) listener(s)",
   ].join("\n");
 }
 

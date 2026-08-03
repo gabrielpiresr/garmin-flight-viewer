@@ -17566,6 +17566,12 @@ function aiswebMetarWatchDeps() {
     getSettingDoc,
     upsertPlatformSettingDoc,
     deleteSettingDoc: deletePlatformSettingDoc,
+    listSettingDocsByPrefix: async (prefix) => {
+      if (!PLATFORM_SETTINGS_COLLECTION_ID || !prefix) return [];
+      return listAllDocuments(PLATFORM_SETTINGS_COLLECTION_ID, [
+        sdk.Query.startsWith("key", prefix),
+      ]).catch(() => []);
+    },
   };
 }
 
@@ -17611,20 +17617,35 @@ async function sendWppMetarWatchStartAction(settings, incoming, icaoCode, hoursV
   const startedAt = nowIso();
   const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
 
-  await aiswebService.saveMetarWatch(aiswebMetarWatchDeps(), {
-    phone,
+  try {
+    await aiswebService.saveMetarWatch(aiswebMetarWatchDeps(), {
+      phone,
+      icao,
+      hours,
+      startedAt,
+      expiresAt,
+      lastMetar: met?.metar || "",
+      lastTaf: met?.taf || "",
+      nickname,
+      userId: cleanString(profile?.user_id),
+      active: true,
+    });
+  } catch (err) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: cleanString(err?.message) || "Não consegui ativar o acompanhamento agora.",
+    });
+    return "start_failed";
+  }
+
+  const active = await aiswebService.listMetarWatchesForPhone(aiswebMetarWatchDeps(), phone).catch(() => []);
+  const body = wppMetar.formatWppMetarWatchStartedMessage({
     icao,
     hours,
-    startedAt,
     expiresAt,
-    lastMetar: met?.metar || "",
-    lastTaf: met?.taf || "",
     nickname,
-    userId: cleanString(profile?.user_id),
-    active: true,
+    activeIcaos: active.map((item) => item.icao),
   });
-
-  const body = wppMetar.formatWppMetarWatchStartedMessage({ icao, hours, expiresAt, nickname });
   await sendWppBotReply(settings, {
     to: incoming.from,
     body,
@@ -17641,10 +17662,10 @@ async function sendWppMetarWatchStopAction(settings, incoming, icaoCode = null) 
   const phone = normalizeWppRecipientPhone(incoming.from);
   const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
   const nickname = wppProfileDisplayNickname(profile);
-  const existing = await aiswebService.loadMetarWatch(aiswebMetarWatchDeps(), phone);
   const wantedIcao = aiswebService.normalizeIcao(icaoCode);
+  const active = await aiswebService.listMetarWatchesForPhone(aiswebMetarWatchDeps(), phone).catch(() => []);
 
-  if (!existing?.active) {
+  if (!active.length) {
     await sendWppTextMessage(settings, {
       to: incoming.from,
       body: nickname
@@ -17654,18 +17675,31 @@ async function sendWppMetarWatchStopAction(settings, incoming, icaoCode = null) 
     return "not_active";
   }
 
-  if (wantedIcao && wantedIcao.length === 4 && existing.icao !== wantedIcao) {
+  if (wantedIcao && wantedIcao.length === 4 && !active.some((item) => item.icao === wantedIcao)) {
     await sendWppTextMessage(settings, {
       to: incoming.from,
-      body: `O acompanhamento ativo agora é de *${existing.icao}*, não de ${wantedIcao}. Envie *Parar acompanhamento* para encerrar.`,
+      body: [
+        `Não encontrei acompanhamento ativo de *${wantedIcao}*.`,
+        "",
+        `Ativos agora: ${active.map((item) => `*${item.icao}*`).join(", ")}`,
+        "Envie *Parar acompanhamento* para encerrar todos.",
+      ].join("\n"),
     });
     return "icao_mismatch";
   }
 
-  await aiswebService.clearMetarWatch(aiswebMetarWatchDeps(), phone);
-  const body = wppMetar.formatWppMetarWatchStoppedMessage({ icao: existing.icao, nickname });
+  const result = await aiswebService.clearMetarWatch(
+    aiswebMetarWatchDeps(),
+    phone,
+    wantedIcao && wantedIcao.length === 4 ? wantedIcao : null,
+  );
+  const body = wppMetar.formatWppMetarWatchStoppedMessage({
+    icao: wantedIcao && wantedIcao.length === 4 ? wantedIcao : null,
+    icaos: result?.icaos || [],
+    nickname,
+  });
   await sendWppTextMessage(settings, { to: incoming.from, body });
-  return "stopped";
+  return result?.cleared ? "stopped" : "not_active";
 }
 
 async function handleWppMetarWatchCommand(settings, incoming, command) {
@@ -22716,6 +22750,11 @@ async function runAiswebMetarWatchScan(log = () => {}) {
   const metByIcao = new Map();
   const settingsByIcao = new Map();
   const now = Date.now();
+  const normalizeBulletin = (value) =>
+    cleanString(value)
+      .replace(/\s+/g, " ")
+      .replace(/=\s*$/, "")
+      .trim();
 
   async function metFor(icao) {
     if (metByIcao.has(icao)) return metByIcao.get(icao);
@@ -22740,11 +22779,24 @@ async function runAiswebMetarWatchScan(log = () => {}) {
     } catch {
       raw = {};
     }
-    const phone = aiswebService.phoneFromMetarWatchKey(doc.key) || cleanString(raw.phone).replace(/\D/g, "");
-    const watch = aiswebService.publicMetarWatch({ ...raw, phone }, doc.$updatedAt || raw.updatedAt || null);
+    const parsedKey = aiswebService.parseMetarWatchKey(doc.key);
+    const phone = parsedKey.phone || cleanString(raw.phone).replace(/\D/g, "");
+    const watch = aiswebService.publicMetarWatch(
+      { ...raw, phone, icao: raw.icao || parsedKey.icao },
+      doc.$updatedAt || raw.updatedAt || null,
+    );
     if (!watch.phone || !watch.icao || !watch.hours) {
       await deletePlatformSettingDoc(doc.key).catch(() => false);
       continue;
+    }
+
+    // Migra doc legado (telefone sem ICAO na chave) para o formato novo.
+    if (parsedKey.legacy) {
+      const nextKey = aiswebService.metarWatchKey(watch.phone, watch.icao);
+      if (nextKey && nextKey !== doc.key) {
+        await upsertPlatformSettingDoc(nextKey, { ...watch, updatedAt: nowIso() }).catch(() => null);
+        await deletePlatformSettingDoc(doc.key).catch(() => false);
+      }
     }
 
     const expiresMs = Date.parse(watch.expiresAt || "") || 0;
@@ -22783,38 +22835,44 @@ async function runAiswebMetarWatchScan(log = () => {}) {
     }
     if (!met || met.error) continue;
 
-    const currentMetar = cleanString(met.metar);
-    const currentTaf = cleanString(met.taf);
-    const changedMetar = Boolean(currentMetar) && currentMetar !== cleanString(watch.lastMetar);
-    const changedTaf = Boolean(currentTaf) && currentTaf !== cleanString(watch.lastTaf);
+    const currentMetar = normalizeBulletin(met.metar);
+    const currentTaf = normalizeBulletin(met.taf);
+    const previousMetar = normalizeBulletin(watch.lastMetar);
+    const previousTaf = normalizeBulletin(watch.lastTaf);
+    const changedMetar = Boolean(currentMetar) && currentMetar !== previousMetar;
+    const changedTaf = Boolean(currentTaf) && currentTaf !== previousTaf;
     const shouldNotify = changedMetar || changedTaf;
 
+    let notifyOk = false;
     if (shouldNotify) {
       try {
-        const [airport, aiswebSettings] = await Promise.all([
-          aiswebService.fetchAirportBundle(watch.icao),
+        // Path leve: MET já buscado + ROTAER só para vento/mínimos.
+        // Evita fetchAirportBundle (NOTAM/cartas/sol/suplementos) que atrasa e falha o ciclo.
+        const [rotaer, aiswebSettings] = await Promise.all([
+          aiswebService.fetchRotaer(watch.icao).catch(() => null),
           aiswebSettingsCached(),
         ]);
-        const parsed = airport?.met?.parsed || met.parsed || null;
-        const analysis = wppMetar.analyzeWindVsRunways(parsed, airport?.rotaer?.runways);
+        const parsed = met.parsed || null;
+        const analysis = wppMetar.analyzeWindVsRunways(parsed, rotaer?.runways);
         const checks = wppMetar.evaluateMinimums(
           parsed,
           aiswebSettings?.minimums || aiswebService.DEFAULT_MINIMUMS,
-          { rotaer: airport?.rotaer },
+          { rotaer },
         );
-        const airportName = [airport?.rotaer?.name, airport?.rotaer?.city, airport?.rotaer?.uf]
+        const airportName = [rotaer?.name, rotaer?.city, rotaer?.uf]
           .map(cleanString)
           .filter(Boolean)
           .join(" · ");
         await sendWppMetarWatchUpdate(
           wppSettings,
           watch,
-          airport?.met || met,
+          met,
           airportName,
           checks,
           analysis,
           { metar: changedMetar, taf: changedTaf },
         );
+        notifyOk = true;
         notified += 1;
       } catch (err) {
         errors += 1;
@@ -22822,7 +22880,9 @@ async function runAiswebMetarWatchScan(log = () => {}) {
       }
     }
 
-    if (shouldNotify || cleanString(watch.lastMetar) !== currentMetar || cleanString(watch.lastTaf) !== currentTaf) {
+    // Só avança lastMetar/lastTaf depois de notificar com sucesso.
+    // Se o WhatsApp falhar, o próximo scan tenta de novo em vez de "comer" o boletim.
+    if (notifyOk) {
       await aiswebService
         .saveMetarWatch(aiswebMetarWatchDeps(), {
           ...watch,
@@ -24380,12 +24440,11 @@ module.exports = async ({ req, res, log, error }) => {
       ]);
       const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
-      const aiswebNotamAlerts = await runAiswebNotamAlertScan(log)
-        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
-      const aiswebSupplementAlerts = await runAiswebSupplementAlertScan(log)
-        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
-      const aiswebMetarWatch = await runAiswebMetarWatchScan(log)
-        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
+      // METAR watch roda em function/schedule próprio (aisweb-metar-watch) a cada ~15 min.
+      const [aiswebNotamAlerts, aiswebSupplementAlerts] = await Promise.all([
+        runAiswebNotamAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
+        runAiswebSupplementAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
+      ]);
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
         await recordSagaAllUsersSyncFailure(cronSyncInput, err);
@@ -24400,7 +24459,6 @@ module.exports = async ({ req, res, log, error }) => {
         wppTomorrowFlightReminder,
         aiswebNotamAlerts,
         aiswebSupplementAlerts,
-        aiswebMetarWatch,
       });
     }
 
@@ -24586,6 +24644,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "runFlightReminderScan") {
       if (actorUserId) await requireAdmin(actorUserId);
       const result = await runFlightReminderScan(actorUserId || "system");
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "runAiswebMetarWatchScan") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const result = await runAiswebMetarWatchScan(log);
       return jsonResponse(res, 200, { ok: true, ...result });
     }
 
