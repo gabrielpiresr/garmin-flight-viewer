@@ -539,6 +539,21 @@ function parseStartHour(startTime: string): number {
   return (Number.isFinite(hh) ? hh : 0) + (Number.isFinite(mm) ? mm : 0) / 60;
 }
 
+function draftChangesAircraftPlacement(
+  draft: FlightFormDraft,
+  existing: ExistingScheduledFlight | null | undefined,
+  weekStart: string,
+): boolean {
+  if (!existing) return true;
+  const draftDate = draft.dateIso || weekDateFromStart(weekStart, draft.dayOfWeek);
+  return (
+    draftDate !== existing.date ||
+    normalizeAircraftIdent(draft.aircraftRegistration) !== normalizeAircraftIdent(existing.aircraftRegistration) ||
+    parseScheduleTimeToMinutes(draft.startTime) !== parseScheduleTimeToMinutes(existing.startTime) ||
+    Math.round(draft.durationHours * 60) !== Math.round(existing.durationHours * 60)
+  );
+}
+
 function normalizeTimeInput(value: string): string | null {
   const match = /^(\d{2}):(\d{2})$/.exec(value);
   if (!match) return null;
@@ -4472,6 +4487,8 @@ export function ScheduleFlightsTab({
 
   const liveFlexibleFit = useMemo(() => {
     if (!formDraft || !flexibleAdjustEnabled || !weekData) return null;
+    const existing = formDraft.id ? flights.find((row) => row.id === formDraft.id) : null;
+    if (!draftChangesAircraftPlacement(formDraft, existing, weekData.week.weekStart)) return null;
     return resolveFlexibleFit(
       {
         dayOfWeek: formDraft.dayOfWeek,
@@ -4483,7 +4500,7 @@ export function ScheduleFlightsTab({
       formDraft.durationHours,
       { excludeFlightId: formDraft.id },
     );
-  }, [flexibleAdjustEnabled, formDraft, resolveFlexibleFit, weekData]);
+  }, [flexibleAdjustEnabled, flights, formDraft, resolveFlexibleFit, weekData]);
 
   async function handleSaveForm() {
     if (!user || !weekData || !formDraft) return;
@@ -4497,8 +4514,12 @@ export function ScheduleFlightsTab({
       return;
     }
 
+    const existingDraftFlight = formDraft.id ? flights.find((row) => row.id === formDraft.id) : null;
+    const shouldResolveFlexibleFit =
+      flexibleAdjustEnabled &&
+      draftChangesAircraftPlacement(formDraft, existingDraftFlight, weekData.week.weekStart);
     const flexiblePlan =
-      flexibleAdjustEnabled
+      shouldResolveFlexibleFit
         ? resolveFlexibleFit(
             {
               dayOfWeek: formDraft.dayOfWeek,
