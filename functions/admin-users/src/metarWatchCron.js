@@ -5,16 +5,17 @@
  * Agendar esta function a cada 10–15 min (separado do cron pesado de listSummaries).
  */
 module.exports = async (context) => {
-  const { req } = context;
   const payload = { action: "runAiswebMetarWatchScan" };
   const raw = JSON.stringify(payload);
-  try {
-    Object.defineProperty(req, "bodyJson", { value: payload, configurable: true });
-  } catch {
-    req.bodyJson = payload;
-  }
-  req.body = raw;
-  req.bodyRaw = raw;
-  req.payload = payload;
-  return require("./main")(context);
+  const req = context.req;
+  const patchedReq = new Proxy(req, {
+    get(target, prop, receiver) {
+      if (prop === "bodyJson") return payload;
+      if (prop === "body" || prop === "bodyRaw") return raw;
+      if (prop === "payload") return payload;
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return require("./main")({ ...context, req: patchedReq });
 };

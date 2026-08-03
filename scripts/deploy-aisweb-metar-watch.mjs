@@ -180,8 +180,14 @@ async function copyVariablesFromAdminUsers(functions, fileEnv, apiKey) {
     await upsertVariable(functions, variable.key, value, Boolean(variable.secret));
     copied += 1;
   }
-  // Garante API key mesmo se a origem não listou.
+  // Garante API key e credenciais AISWEB mesmo se a origem não listou secrets.
   await upsertVariable(functions, "APPWRITE_API_KEY", apiKey, true);
+  const aiswebApiKey =
+    process.env.AISWEB_API_KEY || fileEnv.AISWEB_API_KEY || "1729957010";
+  const aiswebApiPass =
+    process.env.AISWEB_API_PASS || fileEnv.AISWEB_API_PASS || "e4d1ca4f-43ca-11f1-a4e0-0050569ac2e1";
+  await upsertVariable(functions, "AISWEB_API_KEY", aiswebApiKey, true);
+  await upsertVariable(functions, "AISWEB_API_PASS", aiswebApiPass, true);
   console.log(`Variables copied=${copied} skipped=${skipped}`);
 }
 

@@ -23,6 +23,7 @@
     "appwrite:migrate:flights": "node scripts/migrate-flight-ownership.mjs",
     "appwrite:migrate:flight-list-fields": "node scripts/migrate-flight-list-fields.mjs",
     "appwrite:set-role": "node scripts/set-user-role.mjs",
+    "appwrite:provision-album-admin": "node scripts/provision-album-admin-user.mjs",
     "appwrite:migrate:multi-role": "node src/scripts/add-multi-role-fields.mjs",
     "appwrite:fix-profile-permissions": "node scripts/fix-profile-read-permissions.mjs",
     "appwrite:fix-profiles-collection-permissions": "node scripts/fix-profiles-collection-permissions.mjs",
