@@ -107,6 +107,7 @@ function writeBootstrapCache(settings: AiswebDashboard["settings"], watchlist: A
 }
 import { AiswebConditionVisuals } from "./AiswebMetVisuals";
 import { AiswebAirportDetailTabs } from "./AiswebAirportDetails";
+import { AiswebFlightPlanningTab } from "./AiswebFlightPlanningTab";
 import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
 import { useToast } from "./ui/ToastProvider";
@@ -140,7 +141,7 @@ function formatAerodromeMatchLabel(match: AiswebAerodromeMatch): string {
   return [match.icao, showName ? name : null, place ? `(${place})` : null].filter(Boolean).join(" ");
 }
 
-type AiswebSubTab = "condicoes" | "notams";
+type AiswebSubTab = "condicoes" | "notams" | "planejamento";
 
 type StatusTooltipState = {
   check: AiswebMinimumCheck;
@@ -1017,6 +1018,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
           id: "notams" as const,
           label: `NOTAMs${dashboard ? ` (${dashboard.notams.length})` : ""}`,
         },
+        { id: "planejamento" as const, label: "Planejamento" },
       ] as const,
     [dashboard],
   );
@@ -1491,14 +1493,14 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
         accent="cyan"
       />
 
-      {loading && !dashboard ? (
+      {loading && !dashboard && subTab !== "planejamento" ? (
         <div className="space-y-3">
           <Skeleton className="h-40 w-full rounded-xl" />
           <Skeleton className="h-28 w-full rounded-xl" />
         </div>
       ) : null}
 
-      {!loading && loadError && !dashboard ? (
+      {!loading && loadError && !dashboard && subTab !== "planejamento" ? (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-center">
           <p className="text-sm text-rose-200">{loadError}</p>
           <button type="button" className={`${btnSecondary} mt-3`} onClick={() => void loadDashboard()}>
@@ -1576,6 +1578,8 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
           )}
         </section>
       ) : null}
+
+      {subTab === "planejamento" ? <AiswebFlightPlanningTab /> : null}
 
       <StatusTooltipCard state={tooltip} />
     </div>

@@ -745,7 +745,8 @@ function parseSuplementos(xml, fallbackIcao) {
     const id = xmlTag(body, "id") || xmlAttr(match[1], "id");
     if (!id) continue;
     const status = cleanString(xmlTag(body, "status")).toLowerCase();
-    if (status && !status.includes("vigor") && status !== "active") continue;
+    // Keep items without status; drop only clearly cancelled/expired ones.
+    if (status && /cancel|encerr|expir|inativ|revogad/.test(status)) continue;
     const n = xmlTag(body, "n");
     const serie = xmlTag(body, "serie");
     const number = [serie, n].filter(Boolean).join("") || n || id;
@@ -931,6 +932,309 @@ function isAllowedChartUrl(rawUrl) {
   }
 }
 
+function airspaceBBox(points, padDeg = 0.4) {
+  if (!Array.isArray(points) || points.length === 0) return null;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const p of points) {
+    const lat = Number(p?.lat);
+    const lng = Number(p?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  }
+  if (!Number.isFinite(minLat)) return null;
+  return {
+    minLng: minLng - padDeg,
+    minLat: minLat - padDeg,
+    maxLng: maxLng + padDeg,
+    maxLat: maxLat + padDeg,
+  };
+}
+
+function pointInRing(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi || 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygon(lng, lat, rings) {
+  if (!rings?.length) return false;
+  if (!pointInRing(lng, lat, rings[0])) return false;
+  for (let i = 1; i < rings.length; i++) {
+    if (pointInRing(lng, lat, rings[i])) return false;
+  }
+  return true;
+}
+
+function geometryContainsPoint(geometry, lng, lat) {
+  if (!geometry) return false;
+  if (geometry.type === "Polygon") return pointInPolygon(lng, lat, geometry.coordinates);
+  if (geometry.type === "MultiPolygon") {
+    return geometry.coordinates.some((poly) => pointInPolygon(lng, lat, poly));
+  }
+  return false;
+}
+
+function routeIntersectsGeometry(points, geometry) {
+  if (!geometry || !points?.length) return false;
+  for (const p of points) {
+    if (geometryContainsPoint(geometry, p.lng, p.lat)) return true;
+  }
+  if (points.length < 2) return false;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const steps = 12;
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const lng = a.lng + (b.lng - a.lng) * t;
+      const lat = a.lat + (b.lat - a.lat) * t;
+      if (geometryContainsPoint(geometry, lng, lat)) return true;
+    }
+  }
+  return false;
+}
+
+function formatAirspaceLimit(value, unit) {
+  if (value == null || value === "") return null;
+  const u = String(unit || "").toUpperCase();
+  const n = Number(value);
+  if (u === "FL" && Number.isFinite(n)) return `FL${String(Math.round(n)).padStart(3, "0")}`;
+  if (Number.isFinite(n)) return `${Math.round(n)} ${u || "FT"}`.trim();
+  return String(value);
+}
+
+async function fetchWfsFeatures(layer, bbox) {
+  const params = new URLSearchParams({
+    service: "WFS",
+    version: "1.0.0",
+    request: "GetFeature",
+    typeName: layer,
+    bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
+    outputFormat: "application/json",
+    maxFeatures: "250",
+  });
+  const response = await fetch(`${GEOAISWEB_WMS_BASE}?${params.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw Object.assign(new Error(`WFS ${layer} falhou (${response.status}).`), { status: 502 });
+  }
+  const data = await response.json();
+  return Array.isArray(data?.features) ? data.features : [];
+}
+
+async function queryAirspaceAlongRoute(rawPoints) {
+  const points = (Array.isArray(rawPoints) ? rawPoints : [])
+    .map((p) => ({ lat: Number(p?.lat), lng: Number(p?.lng) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+    .slice(0, 120);
+  if (points.length === 0) return [];
+
+  // Densify for chronological entry detection
+  const dense = [];
+  if (points.length) dense.push(points[0]);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const R = 6371000;
+    const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+    const dLon = ((b.lng - a.lng) * Math.PI) / 180;
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const h =
+      Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    const steps = Math.max(1, Math.ceil(dist / 3500));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      dense.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
+    }
+  }
+  const cumNm = [0];
+  for (let i = 1; i < dense.length; i++) {
+    const a = dense[i - 1];
+    const b = dense[i];
+    const R = 6371000;
+    const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+    const dLon = ((b.lng - a.lng) * Math.PI) / 180;
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const h =
+      Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    cumNm.push(cumNm[i - 1] + dist / 1852);
+  }
+
+  function entryNm(geometry) {
+    if (!geometry) return null;
+    for (let i = 0; i < dense.length; i++) {
+      if (geometryContainsPoint(geometry, dense[i].lng, dense[i].lat)) return cumNm[i];
+    }
+    return null;
+  }
+
+  const bbox = airspaceBBox(dense, 0.4);
+  if (!bbox) return [];
+
+  const layers = [
+    { type: "CTA", layer: "ICA:CTA" },
+    { type: "TMA", layer: "ICA:TMA" },
+    { type: "CTR", layer: "ICA:CTR" },
+    { type: "ATZ", layer: "ICA:ATZ" },
+  ];
+
+  const collections = await Promise.all(
+    layers.map(async ({ type, layer }) => {
+      try {
+        const features = await fetchWfsFeatures(layer, bbox);
+        return features
+          .filter((f) => routeIntersectsGeometry(dense, f?.geometry || null))
+          .map((f) => {
+            const props = f?.properties || {};
+            const ident = String(props.ident || props.icao || f.id || "").trim() || "—";
+            const name = String(props.nam || props.name || ident).trim();
+            return {
+              type,
+              ident,
+              name,
+              lower: formatAirspaceLimit(props.lowerlimi1, props.lowerlimit || props.codedistv1),
+              upper: formatAirspaceLimit(props.upperlimit, props.uplimituni || props.uomdistver),
+              fir: props.relatedfir ? String(props.relatedfir) : null,
+              entryDistanceNm: entryNm(f?.geometry || null),
+              frequencies: [],
+            };
+          });
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  const map = new Map();
+  for (const hit of collections.flat()) {
+    const key = `${hit.type}:${hit.ident}:${hit.name}`;
+    const prev = map.get(key);
+    if (!prev || (hit.entryDistanceNm ?? Infinity) < (prev.entryDistanceNm ?? Infinity)) {
+      map.set(key, hit);
+    }
+  }
+
+  const hits = [...map.values()].sort(
+    (a, b) =>
+      (a.entryDistanceNm ?? Infinity) - (b.entryDistanceNm ?? Infinity) ||
+      String(a.name).localeCompare(String(b.name), "pt-BR"),
+  );
+
+  // Attach COM frequencies from ROTAER for CTR/ATZ (ident often = ICAO)
+  const icaoSet = new Set();
+  for (const hit of hits) {
+    if (hit.type === "CTA") continue;
+    const id = String(hit.ident || "").toUpperCase();
+    if (/^[A-Z]{4}$/.test(id)) icaoSet.add(id);
+    else {
+      const m = id.match(/^([A-Z]{4})(?:_|$)/);
+      if (m) icaoSet.add(m[1]);
+    }
+  }
+  const freqByIcao = new Map();
+  await Promise.all(
+    [...icaoSet].map(async (icao) => {
+      try {
+        const rotaer = await fetchRotaer(icao);
+        const freqs = (rotaer?.frequencies || [])
+          .filter((f) => /^(APP|TWR|GND|ATIS|AFIS|ACC|CLEARANCE|CLNC|RADIO|INFO)/i.test(f.service))
+          .slice(0, 6)
+          .map((f) => ({ service: f.service, mhz: (f.frequenciesMhz || []).join(" · ") }));
+        freqByIcao.set(icao, freqs);
+      } catch {
+        freqByIcao.set(icao, []);
+      }
+    }),
+  );
+
+  return hits.map((hit) => {
+    const id = String(hit.ident || "").toUpperCase();
+    let icao = /^[A-Z]{4}$/.test(id) ? id : null;
+    if (!icao) {
+      const m = id.match(/^([A-Z]{4})(?:_|$)/);
+      icao = m ? m[1] : null;
+    }
+    if (!icao) return hit;
+    return { ...hit, frequencies: freqByIcao.get(icao) || [] };
+  });
+}
+
+/** Geometries for map export (TMA/CTA/CTR). WMS default TMA style is nearly invisible on topo. */
+async function queryAirspaceGeometries(rawPoints) {
+  const points = (Array.isArray(rawPoints) ? rawPoints : [])
+    .map((p) => ({ lat: Number(p?.lat), lng: Number(p?.lng) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+    .slice(0, 120);
+  if (points.length === 0) return [];
+
+  const dense = [];
+  if (points.length) dense.push(points[0]);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const R = 6371000;
+    const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+    const dLon = ((b.lng - a.lng) * Math.PI) / 180;
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const h =
+      Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    const steps = Math.max(1, Math.ceil(dist / 3500));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      dense.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
+    }
+  }
+
+  const bbox = airspaceBBox(dense, 0.35);
+  if (!bbox) return [];
+
+  const layers = [
+    { type: "TMA", layer: "ICA:TMA" },
+    { type: "CTA", layer: "ICA:CTA" },
+    { type: "CTR", layer: "ICA:CTR" },
+  ];
+
+  const collections = await Promise.all(
+    layers.map(async ({ type, layer }) => {
+      try {
+        const features = await fetchWfsFeatures(layer, bbox);
+        return features
+          .filter((f) => routeIntersectsGeometry(dense, f?.geometry || null))
+          .map((f) => ({
+            type,
+            geometry: f?.geometry || null,
+          }))
+          .filter((f) => f.geometry);
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  return collections.flat().slice(0, 120);
+}
+
 /** Proxy chart PDF as base64 so the browser can preview (API sends Content-Disposition: attachment). */
 async function fetchChartPreview(rawUrl) {
   if (!isAllowedChartUrl(rawUrl)) {
@@ -958,6 +1262,47 @@ async function fetchChartPreview(rawUrl) {
   return {
     contentType: "application/pdf",
     filename,
+    base64: buffer.toString("base64"),
+    byteLength: buffer.length,
+  };
+}
+
+function isAllowedMapUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || ""));
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname.toLowerCase();
+    return (
+      host === "geoaisweb.decea.mil.br" ||
+      host.endsWith(".arcgisonline.com") ||
+      host === "server.arcgisonline.com" ||
+      host === "services.arcgisonline.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function proxyMapImage(rawUrl) {
+  if (!isAllowedMapUrl(rawUrl)) {
+    throw Object.assign(new Error("URL de mapa não permitida."), { status: 400 });
+  }
+  const response = await fetch(String(rawUrl), {
+    method: "GET",
+    headers: { Accept: "image/png,image/jpeg,*/*" },
+  });
+  if (!response.ok) {
+    throw Object.assign(new Error(`Falha ao baixar mapa (${response.status}).`), { status: 502 });
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) {
+    throw Object.assign(new Error("Mapa vazio."), { status: 502 });
+  }
+  if (buffer.length > 6 * 1024 * 1024) {
+    throw Object.assign(new Error("Mapa muito grande."), { status: 413 });
+  }
+  return {
+    contentType: response.headers.get("content-type") || "image/png",
     base64: buffer.toString("base64"),
     byteLength: buffer.length,
   };
@@ -1509,4 +1854,7 @@ module.exports = {
   buildDashboard,
   publicSettings,
   fetchChartPreview,
+  queryAirspaceAlongRoute,
+  queryAirspaceGeometries,
+  proxyMapImage,
 };

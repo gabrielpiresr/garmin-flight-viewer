@@ -25150,6 +25150,47 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { chart });
     }
 
+    if (action === "queryAirspaceAlongRoute") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const airspaces = await aiswebService.queryAirspaceAlongRoute(payload.points || payload.route || []);
+      return jsonResponse(res, 200, { airspaces });
+    }
+
+    if (action === "queryAirspaceGeometries") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const geometries = await aiswebService.queryAirspaceGeometries(payload.points || payload.route || []);
+      return jsonResponse(res, 200, { geometries });
+    }
+
+    if (action === "fetchAiswebMetBatch") {
+      // Public METAR/TAF refresh for offline briefing tablets (capped).
+      const rawIcaos = Array.isArray(payload.icaoCodes)
+        ? payload.icaoCodes
+        : Array.isArray(payload.icaos)
+          ? payload.icaos
+          : [];
+      const icaoCodes = [
+        ...new Set(
+          rawIcaos
+            .map((code) => aiswebService.normalizeIcao(code))
+            .filter((code) => code && code.length === 4),
+        ),
+      ].slice(0, 8);
+      if (!icaoCodes.length) {
+        throw Object.assign(new Error("Informe ao menos um ICAO válido."), { status: 400 });
+      }
+      const mets = await Promise.all(
+        icaoCodes.map(async (icao) => aiswebService.fetchMet(icao, { bypassCache: true })),
+      );
+      return jsonResponse(res, 200, { mets });
+    }
+
+    if (action === "proxyMapImage") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const image = await aiswebService.proxyMapImage(payload.url || payload.link);
+      return jsonResponse(res, 200, { image });
+    }
+
     if (action === "sendAiswebNotamAlertTest") {
       await requireAdmin(actorUserId);
       const to = cleanString(payload.to);

@@ -22,6 +22,7 @@ test("guest can access required public flows in strict mode", () => {
     "createPublicLiabilityWaiverContract",
     "impersonateStudent",
     "notifyCrmLeadEvent",
+    "fetchAiswebMetBatch",
   ]) {
     const decision = authorizeGuestAction({
       action,

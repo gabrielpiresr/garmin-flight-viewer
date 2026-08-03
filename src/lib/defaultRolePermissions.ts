@@ -29,6 +29,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp", "settings.gopro", "settings.aisweb",
   "atualizacoes", "atualizacoes.agendamentos",
+  "contracts", "contracts.layouts", "contracts.emitidos",
   "album",
 ];
 
@@ -111,6 +112,14 @@ export function getDefaultPermissionsForPortal(portalType: "admin" | "instrutor"
     case "instrutor": return DEFAULT_INSTRUTOR_PERMISSIONS;
     case "aluno": return DEFAULT_ALUNO_PERMISSIONS;
   }
+}
+
+/** Role admin restrito: só a aba Álbum (vê todas as mídias via portal/label admin). */
+export function buildAlbumOnlyAdminPermissions(): RolePermissions {
+  return {
+    tabs: Object.fromEntries(ALL_ADMIN_TABS.map((k) => [k, k === "album"])) as Record<AdminTabKey, boolean>,
+    actions: Object.fromEntries(ALL_ACTIONS.map((k) => [k, false])) as Record<ActionKey, boolean>,
+  };
 }
 
 /**

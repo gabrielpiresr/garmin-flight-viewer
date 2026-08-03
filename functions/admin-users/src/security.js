@@ -5,6 +5,7 @@ const SECURITY_MODES = Object.freeze({
 
 const PUBLIC_GUEST_ACTIONS = new Set([
   "createPublicLiabilityWaiverContract",
+  "fetchAiswebMetBatch",
   "getEmailBrandSettings",
   "getOnboardingPublic",
   "getPublicFlightReviewShare",

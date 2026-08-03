@@ -4,6 +4,23 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      // GeoAISWEB WFS/WMS has no CORS — proxy for local flight-plan tools.
+      "/geoaisweb-proxy": {
+        target: "https://geoaisweb.decea.mil.br",
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/geoaisweb-proxy/, ""),
+      },
+      "/esri-proxy": {
+        target: "https://services.arcgisonline.com",
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/esri-proxy/, ""),
+      },
+    },
+  },
   build: {
     rollupOptions: {
       output: {

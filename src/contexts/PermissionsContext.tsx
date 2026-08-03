@@ -53,8 +53,8 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
         if ((user.activeRoleSlug || user.role) === "admin") return true;
         if (isLoading) return false;
         if (!permissions) return true;
-        const val = permissions.tabs[tabKey];
-        return val !== false;
+        // Allowlist: só libera o que estiver explicitamente true (evita vazar abas ausentes do JSON)
+        return permissions.tabs[tabKey] === true;
       },
     [permissions, user, isLoading],
   );
@@ -66,8 +66,7 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
         if ((user.activeRoleSlug || user.role) === "admin") return true;
         if (isLoading) return false;
         if (!permissions) return true;
-        const val = permissions.actions[actionKey];
-        return val !== false;
+        return permissions.actions[actionKey] === true;
       },
     [permissions, user, isLoading],
   );

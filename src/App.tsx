@@ -18,6 +18,9 @@ const InstructorLayout = lazy(() =>
 const OfflineLogbookPage = lazy(() =>
   import("./pages/OfflineLogbookPage").then((module) => ({ default: module.OfflineLogbookPage })),
 );
+const OfflineFlightBriefingPage = lazy(() =>
+  import("./pages/OfflineFlightBriefingPage").then((module) => ({ default: module.OfflineFlightBriefingPage })),
+);
 const VideoHelperSetupPage = lazy(() =>
   import("./pages/VideoHelperSetupPage").then((module) => ({ default: module.VideoHelperSetupPage })),
 );
@@ -97,6 +100,7 @@ export default function App() {
   const bootFallback = migrationLabel ? <RoleMigrationOverlay label={migrationLabel} /> : <AppLoading />;
   const clearMigration = () => setMigrationLabel(null);
   const isOfflineLogbookRoute = window.location.pathname === "/offline/diario-bordo";
+  const isOfflineBriefingRoute = window.location.pathname.startsWith("/offline/briefing/");
   const isVideoHelperRoute = window.location.pathname === "/video-helper";
   const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
   const isFlightReviewClubRoute = window.location.pathname === "/flight-review-club";
@@ -130,6 +134,14 @@ export default function App() {
     return (
       <Suspense fallback={<AppLoading />}>
         <OfflineLogbookPage />
+      </Suspense>
+    );
+  }
+
+  if (isOfflineBriefingRoute) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <OfflineFlightBriefingPage />
       </Suspense>
     );
   }

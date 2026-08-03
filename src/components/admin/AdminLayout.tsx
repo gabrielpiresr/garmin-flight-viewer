@@ -804,6 +804,16 @@ export function AdminLayout() {
     setSection(target);
   }
 
+  // Roles restritos (ex.: só Álbum): se a rota atual não for permitida, vai para a primeira aba visível
+  useEffect(() => {
+    if (permissionsLoading) return;
+    if (visibleNavItems.length === 0) return;
+    if (canTab(section as AdminTabKey)) return;
+    const fallback = visibleNavItems[0];
+    if (!fallback || fallback.id === section) return;
+    openSection(fallback.id);
+  }, [permissionsLoading, visibleNavItems, section, canTab]);
+
   function openReportsSection(subTab: ReportsSubTab) {
     setReportsTab(subTab);
     setSection("reports", { path: pathForRoute(REPORTS_ROUTES, subTab) });

@@ -109,6 +109,8 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "atualizacoes.agendamentos", label: "Agendamentos" },
     ],
   },
+  { label: "AISWEB", parentKey: "aisweb" },
+  { label: "Álbum", parentKey: "album" },
   {
     label: "Configurações",
     parentKey: "settings",

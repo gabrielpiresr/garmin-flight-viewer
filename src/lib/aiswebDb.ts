@@ -7,6 +7,7 @@ import type {
   AiswebPlatformSettingsInput,
   AiswebWatchlist,
 } from "../types/aisweb";
+import type { FlightPlanAirspaceHit } from "../types/flightPlanning";
 
 type AiswebResponse = {
   message?: string;
@@ -26,6 +27,20 @@ type AiswebResponse = {
     base64: string;
     byteLength: number;
   };
+  airspaces?: FlightPlanAirspaceHit[];
+  image?: {
+    contentType: string;
+    base64: string;
+    byteLength: number;
+  };
+  geometries?: Array<{
+    type: string;
+    geometry: {
+      type: string;
+      coordinates?: unknown;
+    } | null;
+  }>;
+  mets?: AiswebAirportBundle["met"][];
 };
 
 async function execute(payload: Record<string, unknown>): Promise<AiswebResponse> {
@@ -224,4 +239,48 @@ export function prefetchAiswebChartBlobs(links: string[], limit = 3): void {
       /* ignore prefetch errors */
     });
   }
+}
+
+/** Detect CTA/TMA/CTR/ATZ polygons intersected by a route (server-side WFS). */
+export async function queryAirspaceAlongRoute(
+  points: Array<{ lat: number; lng: number }>,
+): Promise<FlightPlanAirspaceHit[]> {
+  const response = await execute({
+    action: "queryAirspaceAlongRoute",
+    points: points.map((p) => ({ lat: p.lat, lng: p.lng })),
+  });
+  return Array.isArray(response.airspaces) ? response.airspaces : [];
+}
+
+/** Airspace polygons for map rasterization (server WFS; used when browser CORS blocks GeoAISWEB). */
+export async function queryAirspaceGeometries(
+  points: Array<{ lat: number; lng: number }>,
+): Promise<Array<{ type: string; geometry: { type: string; coordinates?: unknown } | null }>> {
+  const response = await execute({
+    action: "queryAirspaceGeometries",
+    points: points.map((p) => ({ lat: p.lat, lng: p.lng })),
+  });
+  return Array.isArray(response.geometries) ? response.geometries : [];
+}
+
+/** Public METAR/TAF batch refresh (offline briefing). */
+export async function fetchAiswebMetBatch(
+  icaoCodes: string[],
+): Promise<AiswebAirportBundle["met"][]> {
+  const response = await execute({
+    action: "fetchAiswebMetBatch",
+    icaoCodes,
+  });
+  return Array.isArray(response.mets) ? response.mets : [];
+}
+
+/** Proxy allowed map tile/export URLs (Esri / GeoAISWEB) as data URL. */
+export async function proxyMapImageDataUrl(url: string): Promise<string | null> {
+  const response = await execute({
+    action: "proxyMapImage",
+    url,
+  });
+  if (!response.image?.base64) return null;
+  const type = response.image.contentType || "image/png";
+  return `data:${type};base64,${response.image.base64}`;
 }
