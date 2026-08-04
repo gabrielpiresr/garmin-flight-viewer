@@ -1,11 +1,19 @@
 import L from "leaflet";
-import { useEffect, useMemo, useState } from "react";
-import { MapContainer, Marker, Polyline, TileLayer, WMSTileLayer, useMap } from "react-leaflet";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MapContainer, Marker, Polyline, TileLayer, WMSTileLayer, useMap, useMapEvents } from "react-leaflet";
+import {
+  WINDY_OVERLAYS,
+  buildWindyEmbedUrl,
+  type WindyOverlayId,
+} from "../lib/windyEmbed";
+import { WindyIsobarsIcon, WindyOverlayIcon } from "../lib/windyOverlayIcons";
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
 
-type MapStyle = "satellite" | "roads" | "terrain";
+type MapStyle = "satellite" | "roads" | "terrain" | "windy";
 
-const TILES: Record<MapStyle, { url: string; attribution: string; maxZoom: number; subdomains?: string }> = {
+type BaseMapStyle = Exclude<MapStyle, "windy">;
+
+const TILES: Record<BaseMapStyle, { url: string; attribution: string; maxZoom: number; subdomains?: string }> = {
   satellite: {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles © Esri",
@@ -20,18 +28,24 @@ const TILES: Record<MapStyle, { url: string; attribution: string; maxZoom: numbe
   terrain: {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles © Esri",
-    maxZoom: 19,
+    maxZoom: 18,
   },
 };
 
 const WMS_LAYERS = [
-  { id: "cta", label: "CTA", layer: "ICA:CTA", defaultOn: true },
-  { id: "tma", label: "TMA", layer: "ICA:TMA", defaultOn: true },
-  { id: "ctr", label: "CTR", layer: "ICA:CTR", defaultOn: true },
-  { id: "atz", label: "ATZ", layer: "ICA:ATZ", defaultOn: false },
+  { id: "cta", label: "CTA", layer: "ICA:CTA", defaultOn: false },
+  { id: "tma", label: "TMA", layer: "ICA:TMA", defaultOn: false },
+  { id: "ctr", label: "CTR", layer: "ICA:CTR", defaultOn: false },
+  { id: "atz", label: "ATZ", layer: "ICA:ATZ", defaultOn: true },
 ] as const;
 
 const WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
+
+type WindyView = { lat: number; lon: number; zoom: number };
+
+type WindyTransform = { dx: number; dy: number; scale: number };
+
+const IDENTITY_TRANSFORM: WindyTransform = { dx: 0, dy: 0, scale: 1 };
 
 function FitRoute({ positions }: { positions: [number, number][] }) {
   const map = useMap();
@@ -46,6 +60,122 @@ function FitRoute({ positions }: { positions: [number, number][] }) {
       map.fitBounds(L.latLngBounds(positions), { padding: [36, 36], animate: false });
     });
   }, [map, positions]);
+  return null;
+}
+
+function buildViewUrl(view: WindyView, overlay: WindyOverlayId, pressure: boolean) {
+  return buildWindyEmbedUrl({
+    lat: view.lat,
+    lon: view.lon,
+    zoom: view.zoom,
+    overlay,
+    pressure,
+    marker: false,
+    message: false,
+  });
+}
+
+function seedFromPositions(positions: [number, number][]): WindyView {
+  if (positions.length === 1) {
+    return { lat: positions[0]![0], lon: positions[0]![1], zoom: 10 };
+  }
+  const center = L.latLngBounds(positions).getCenter();
+  return { lat: center.lat, lon: center.lng, zoom: 8 };
+}
+
+function readViewFromUrl(url: string): WindyView | null {
+  try {
+    const u = new URL(url);
+    const lat = Number(u.searchParams.get("lat"));
+    const lon = Number(u.searchParams.get("lon"));
+    const zoom = Number(u.searchParams.get("zoom"));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(zoom)) return null;
+    return { lat, lon, zoom };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Durante pan/zoom: CSS transform acompanha o Leaflet.
+ * Ao soltar: pede reload do embed (double-buffer no pai).
+ */
+function WindyBackgroundSync({
+  overlay,
+  pressure,
+  committedView,
+  onTransform,
+  onSettle,
+}: {
+  overlay: WindyOverlayId;
+  pressure: boolean;
+  committedView: WindyView | null;
+  onTransform: (t: WindyTransform) => void;
+  onSettle: (view: WindyView, opts?: { force?: boolean }) => void;
+}) {
+  const map = useMap();
+  const committedRef = useRef(committedView);
+  committedRef.current = committedView;
+  const onTransformRef = useRef(onTransform);
+  onTransformRef.current = onTransform;
+  const onSettleRef = useRef(onSettle);
+  onSettleRef.current = onSettle;
+  const settleTimer = useRef<number | null>(null);
+
+  const applyTransform = useCallback(() => {
+    const committed = committedRef.current;
+    if (!committed) return;
+    const scale = 2 ** (map.getZoom() - committed.zoom);
+    const pt = map.latLngToContainerPoint([committed.lat, committed.lon]);
+    const size = map.getSize();
+    onTransformRef.current({
+      dx: pt.x - size.x / 2,
+      dy: pt.y - size.y / 2,
+      scale,
+    });
+  }, [map]);
+
+  const scheduleSettle = useCallback(() => {
+    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      const c = map.getCenter();
+      onSettleRef.current({
+        lat: c.lat,
+        lon: c.lng,
+        zoom: Math.round(map.getZoom()),
+      });
+    }, 220);
+  }, [map]);
+
+  useMapEvents({
+    move: applyTransform,
+    zoom: applyTransform,
+    moveend: scheduleSettle,
+    zoomend: scheduleSettle,
+  });
+
+  // Overlay / isóbaras: forçar novo embed no view atual.
+  useEffect(() => {
+    const boot = window.setTimeout(() => {
+      const c = map.getCenter();
+      onSettleRef.current(
+        {
+          lat: c.lat,
+          lon: c.lng,
+          zoom: Math.round(map.getZoom()),
+        },
+        { force: true },
+      );
+    }, 100);
+    return () => window.clearTimeout(boot);
+  }, [map, overlay, pressure]);
+
+  useEffect(() => {
+    return () => {
+      if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+    };
+  }, []);
+
   return null;
 }
 
@@ -74,7 +204,9 @@ export function FlightPlanMap({
   destLabel,
   className = "",
 }: FlightPlanMapProps) {
-  const [mapStyle, setMapStyle] = useState<MapStyle>("terrain");
+  const [mapStyle, setMapStyle] = useState<MapStyle>("windy");
+  const [windyOverlay, setWindyOverlay] = useState<WindyOverlayId>("clouds");
+  const [windyPressure, setWindyPressure] = useState(false);
   const [layersOn, setLayersOn] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(WMS_LAYERS.map((l) => [l.id, l.defaultOn])),
   );
@@ -83,7 +215,79 @@ export function FlightPlanMap({
     () => waypoints.map((w) => [w.lat, w.lng] as [number, number]),
     [waypoints],
   );
-  const tiles = TILES[mapStyle];
+
+  const isWindy = mapStyle === "windy";
+  const tiles = !isWindy ? TILES[mapStyle] : null;
+  const seedView = useMemo(() => seedFromPositions(positions), [positions]);
+  const activeOverlay = WINDY_OVERLAYS.find((o) => o.id === windyOverlay);
+
+  const [committedView, setCommittedView] = useState<WindyView | null>(null);
+  const [slotA, setSlotA] = useState<string | null>(null);
+  const [slotB, setSlotB] = useState<string | null>(null);
+  const [front, setFront] = useState<"a" | "b">("a");
+  const [loadingSlot, setLoadingSlot] = useState<"a" | "b" | null>(null);
+  const [transform, setTransform] = useState<WindyTransform>(IDENTITY_TRANSFORM);
+
+  const frontUrl = front === "a" ? slotA : slotB;
+
+  useEffect(() => {
+    if (!isWindy) {
+      setCommittedView(null);
+      setSlotA(null);
+      setSlotB(null);
+      setFront("a");
+      setLoadingSlot(null);
+      setTransform(IDENTITY_TRANSFORM);
+      return;
+    }
+    const url = buildViewUrl(seedView, windyOverlay, windyPressure);
+    setCommittedView(seedView);
+    setSlotA(url);
+    setSlotB(null);
+    setFront("a");
+    setLoadingSlot(null);
+    setTransform(IDENTITY_TRANSFORM);
+    // Seed only when entering windy or route changes — overlay swaps go through onSettle(force).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWindy, seedView]);
+
+  const handleTransform = useCallback((t: WindyTransform) => {
+    setTransform(t);
+  }, []);
+
+  const handleSettle = useCallback(
+    (view: WindyView, opts?: { force?: boolean }) => {
+      if (!isWindy) return;
+      const url = buildViewUrl(view, windyOverlay, windyPressure);
+      if (!opts?.force && url === frontUrl && !loadingSlot) {
+        setCommittedView(view);
+        setTransform(IDENTITY_TRANSFORM);
+        return;
+      }
+      if (loadingSlot === "a" && slotA === url) return;
+      if (loadingSlot === "b" && slotB === url) return;
+
+      const target: "a" | "b" = front === "a" ? "b" : "a";
+      if (target === "a") setSlotA(url);
+      else setSlotB(url);
+      setLoadingSlot(target);
+    },
+    [isWindy, windyOverlay, windyPressure, frontUrl, front, loadingSlot, slotA, slotB],
+  );
+
+  const onSlotLoad = useCallback(
+    (slot: "a" | "b") => {
+      if (loadingSlot !== slot) return;
+      const url = slot === "a" ? slotA : slotB;
+      if (!url) return;
+      const next = readViewFromUrl(url);
+      if (next) setCommittedView(next);
+      setFront(slot);
+      setLoadingSlot(null);
+      setTransform(IDENTITY_TRANSFORM);
+    },
+    [loadingSlot, slotA, slotB],
+  );
 
   if (positions.length === 0) {
     return (
@@ -103,6 +307,7 @@ export function FlightPlanMap({
               ["terrain", "Relevo"],
               ["satellite", "Satélite"],
               ["roads", "Mapa"],
+              ["windy", "Windy"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -118,6 +323,52 @@ export function FlightPlanMap({
           ))}
         </div>
       </div>
+
+      {isWindy ? (
+        <div className="space-y-1.5 border-b border-slate-800 bg-slate-950/40 px-2.5 py-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 self-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Camada Windy
+            </span>
+            {WINDY_OVERLAYS.map((item) => {
+              const on = windyOverlay === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  title={item.description}
+                  onClick={() => setWindyOverlay(item.id)}
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${
+                    on
+                      ? "bg-cyan-500/25 text-cyan-200 ring-1 ring-cyan-400/40"
+                      : "bg-slate-900 text-slate-500 ring-1 ring-slate-700 hover:text-slate-300"
+                  }`}
+                >
+                  <WindyOverlayIcon id={item.id} className="h-3 w-3" />
+                  {item.label}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              title="Isóbaras de pressão"
+              onClick={() => setWindyPressure((v) => !v)}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${
+                windyPressure
+                  ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/40"
+                  : "bg-slate-900 text-slate-500 ring-1 ring-slate-700 hover:text-slate-300"
+              }`}
+            >
+              <WindyIsobarsIcon className="h-3 w-3" />
+              Isóbaras
+            </button>
+          </div>
+          {activeOverlay ? (
+            <p className="text-[10px] text-slate-500">{activeOverlay.description}</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap gap-1.5 border-b border-slate-800 bg-slate-950/40 px-2.5 py-1.5">
         <span className="mr-1 self-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           Espaço aéreo
@@ -140,22 +391,88 @@ export function FlightPlanMap({
           );
         })}
       </div>
-      <div className="h-[360px] w-full bg-slate-950 [&_.leaflet-control-attribution]:text-[9px]">
+
+      <div className="relative h-[450px] w-full overflow-hidden bg-slate-950 [&_.leaflet-control-attribution]:text-[9px]">
+        {isWindy && (slotA || slotB) ? (
+          <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+            {slotA ? (
+              <iframe
+                key={`a:${slotA}`}
+                title="Windy fundo A"
+                src={slotA}
+                onLoad={() => onSlotLoad("a")}
+                className="absolute inset-0 border-0 transition-opacity duration-150 ease-out"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  transformOrigin: "50% 50%",
+                  willChange: front === "a" ? "transform, opacity" : "opacity",
+                  opacity: front === "a" ? 1 : 0,
+                  zIndex: front === "a" ? 2 : 1,
+                  transform:
+                    front === "a"
+                      ? `translate3d(${transform.dx}px, ${transform.dy}px, 0) scale(${transform.scale})`
+                      : "none",
+                }}
+                referrerPolicy="no-referrer-when-downgrade"
+                tabIndex={-1}
+                aria-hidden
+              />
+            ) : null}
+            {slotB ? (
+              <iframe
+                key={`b:${slotB}`}
+                title="Windy fundo B"
+                src={slotB}
+                onLoad={() => onSlotLoad("b")}
+                className="absolute inset-0 border-0 transition-opacity duration-150 ease-out"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  transformOrigin: "50% 50%",
+                  willChange: front === "b" ? "transform, opacity" : "opacity",
+                  opacity: front === "b" ? 1 : 0,
+                  zIndex: front === "b" ? 2 : 1,
+                  transform:
+                    front === "b"
+                      ? `translate3d(${transform.dx}px, ${transform.dy}px, 0) scale(${transform.scale})`
+                      : "none",
+                }}
+                referrerPolicy="no-referrer-when-downgrade"
+                tabIndex={-1}
+                aria-hidden
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <MapContainer
+          key={isWindy ? "windy" : mapStyle}
           center={positions[0]!}
           zoom={8}
-          className="h-full w-full"
+          className={`relative z-10 h-full w-full ${isWindy ? "flight-plan-windy-overlay" : ""}`}
           scrollWheelZoom
           zoomControl
         >
           <FitRoute positions={positions} />
-          <TileLayer
-            key={mapStyle}
-            attribution={tiles.attribution}
-            url={tiles.url}
-            maxZoom={tiles.maxZoom}
-            {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
-          />
+          {isWindy ? (
+            <WindyBackgroundSync
+              overlay={windyOverlay}
+              pressure={windyPressure}
+              committedView={committedView}
+              onTransform={handleTransform}
+              onSettle={handleSettle}
+            />
+          ) : null}
+          {!isWindy && tiles ? (
+            <TileLayer
+              key={mapStyle}
+              attribution={tiles.attribution}
+              url={tiles.url}
+              maxZoom={tiles.maxZoom}
+              {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
+            />
+          ) : null}
           {WMS_LAYERS.map((layer) =>
             layersOn[layer.id] ? (
               <WMSTileLayer
@@ -184,6 +501,41 @@ export function FlightPlanMap({
           })}
         </MapContainer>
       </div>
+
+      {isWindy ? (
+        <p className="border-t border-slate-800 bg-slate-950/50 px-2.5 py-1.5 text-[10px] text-slate-500">
+          Fundo Windy acompanha o pan/zoom e só recarrega o embed ao soltar.{" "}
+          <a
+            href="https://www.windy.com/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-cyan-400 hover:text-cyan-300"
+          >
+            windy.com
+          </a>
+        </p>
+      ) : null}
+
+      <style>{`
+        .flight-plan-windy-overlay.leaflet-container {
+          background: transparent !important;
+        }
+        .flight-plan-windy-overlay .leaflet-tile-pane {
+          background: transparent !important;
+        }
+        .flight-plan-windy-overlay .leaflet-pane {
+          z-index: auto;
+        }
+        .flight-plan-windy-overlay .leaflet-overlay-pane,
+        .flight-plan-windy-overlay .leaflet-marker-pane,
+        .flight-plan-windy-overlay .leaflet-tooltip-pane,
+        .flight-plan-windy-overlay .leaflet-popup-pane {
+          z-index: 400;
+        }
+        .flight-plan-windy-overlay .leaflet-control-container {
+          z-index: 500;
+        }
+      `}</style>
     </div>
   );
 }

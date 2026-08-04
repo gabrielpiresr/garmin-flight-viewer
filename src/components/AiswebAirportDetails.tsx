@@ -19,6 +19,7 @@ import type {
   AiswebWebcamsResult,
 } from "../types/aisweb";
 import { Tabs } from "./ui/Tabs";
+import { AiswebSatelliteTab } from "./AiswebSatelliteTab";
 
 type AirportMapStyle = "satellite" | "roads" | "terrain";
 type AirspaceLayerId = "tma" | "ctr" | "atz" | "fir";
@@ -62,7 +63,7 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-type DetailSubTab = "meteorologia" | "detalhes" | "webcams" | "notams" | "cartas" | "suplementos";
+type DetailSubTab = "meteorologia" | "satelite" | "detalhes" | "webcams" | "notams" | "cartas" | "suplementos";
 
 function formatNotamDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -1232,6 +1233,7 @@ export function AiswebAirportDetailTabs({
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
+    { id: "satelite" as const, label: "Satélite", icon: <IconMap /> },
     { id: "webcams" as const, label: "Webcams", icon: <IconMap /> },
     {
       id: "notams" as const,
@@ -1250,6 +1252,13 @@ export function AiswebAirportDetailTabs({
     <div className="space-y-3">
       <Tabs items={items} value={subTab} onChange={setSubTab} ariaLabel="Subabas AISWEB" accent="cyan" />
       {subTab === "meteorologia" ? meteorology : null}
+      {subTab === "satelite" ? (
+        <AiswebSatelliteTab
+          icao={airport.icao}
+          lat={rotaer?.lat}
+          lon={rotaer?.lng}
+        />
+      ) : null}
       {subTab === "webcams" ? <WindyWebcamsPanel airport={airport} /> : null}
       {subTab === "detalhes" ? (
         <div className="space-y-3">
