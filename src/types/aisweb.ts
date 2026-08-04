@@ -207,6 +207,56 @@ export type AiswebAirspace = {
   };
 };
 
+export type AiswebWebcam = {
+  webcamId: number;
+  title: string;
+  status: string;
+  viewCount: number | null;
+  lastUpdatedOn: string | null;
+  distanceKm: number | null;
+  categories: Array<{ id: string; name: string }>;
+  image: {
+    preview: string;
+    thumbnail: string;
+    icon: string;
+  };
+  location: {
+    lat: number | null;
+    lng: number | null;
+    city: string | null;
+    region: string | null;
+    regionCode: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  player: {
+    live: string | null;
+    day: string | null;
+    month: string | null;
+    year: string | null;
+    lifetime: string | null;
+  };
+  urls: {
+    detail: string | null;
+    provider: string | null;
+  };
+};
+
+export type AiswebWebcamsResult = {
+  provider: "Windy";
+  attributionUrl: string;
+  icao: string | null;
+  airportName: string | null;
+  city: string | null;
+  uf: string | null;
+  radiusKm: number;
+  center: { lat: number; lng: number };
+  total: number;
+  webcams: AiswebWebcam[];
+  fetchedAt: string;
+  cached?: boolean;
+};
+
 export type AiswebRotaer = {
   icao: string;
   name: string | null;

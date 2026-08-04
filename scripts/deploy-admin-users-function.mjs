@@ -285,6 +285,8 @@ async function main() {
     process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || "";
   const googleCalendarPrivateKey =
     process.env.GOOGLE_CALENDAR_PRIVATE_KEY || env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
+  const windyWebcamsApiKey =
+    process.env.WINDY_WEBCAMS_API_KEY || env.WINDY_WEBCAMS_API_KEY || env.VITE_WINDY_WEBCAMS_API_KEY || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
   const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
@@ -418,6 +420,7 @@ async function main() {
     process.env.AISWEB_API_PASS || env.AISWEB_API_PASS || "e4d1ca4f-43ca-11f1-a4e0-0050569ac2e1";
   await upsertVariable(functions, "AISWEB_API_KEY", aiswebApiKey, true);
   await upsertVariable(functions, "AISWEB_API_PASS", aiswebApiPass, true);
+  if (windyWebcamsApiKey) await upsertVariable(functions, "WINDY_WEBCAMS_API_KEY", windyWebcamsApiKey, true);
 
   const buffer = fs.readFileSync(archivePath);
   const code = InputFile.fromBuffer(buffer, "admin-users-function.tar.gz");

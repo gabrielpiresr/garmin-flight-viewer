@@ -166,6 +166,9 @@ async function copyVariablesFromAdminUsers(functions, fileEnv, apiKey) {
     if ((value == null || value === "") && variable.key === "AISWEB_API_PASS") {
       value = process.env.AISWEB_API_PASS || fileEnv.AISWEB_API_PASS || "";
     }
+    if ((value == null || value === "") && variable.key === "WINDY_WEBCAMS_API_KEY") {
+      value = process.env.WINDY_WEBCAMS_API_KEY || fileEnv.WINDY_WEBCAMS_API_KEY || fileEnv.VITE_WINDY_WEBCAMS_API_KEY || "";
+    }
     if ((value == null || value === "") && variable.key === "WORKER_SECRET") {
       value = process.env.WORKER_SECRET || fileEnv.WORKER_SECRET || fileEnv.VITE_CF_WORKER_SECRET || "";
     }
@@ -186,8 +189,11 @@ async function copyVariablesFromAdminUsers(functions, fileEnv, apiKey) {
     process.env.AISWEB_API_KEY || fileEnv.AISWEB_API_KEY || "1729957010";
   const aiswebApiPass =
     process.env.AISWEB_API_PASS || fileEnv.AISWEB_API_PASS || "e4d1ca4f-43ca-11f1-a4e0-0050569ac2e1";
+  const windyWebcamsApiKey =
+    process.env.WINDY_WEBCAMS_API_KEY || fileEnv.WINDY_WEBCAMS_API_KEY || fileEnv.VITE_WINDY_WEBCAMS_API_KEY || "";
   await upsertVariable(functions, "AISWEB_API_KEY", aiswebApiKey, true);
   await upsertVariable(functions, "AISWEB_API_PASS", aiswebApiPass, true);
+  if (windyWebcamsApiKey) await upsertVariable(functions, "WINDY_WEBCAMS_API_KEY", windyWebcamsApiKey, true);
   console.log(`Variables copied=${copied} skipped=${skipped}`);
 }
 

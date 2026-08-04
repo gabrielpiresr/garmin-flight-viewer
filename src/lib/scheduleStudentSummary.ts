@@ -19,6 +19,7 @@ import {
   type FlightDisplayInfo,
 } from "./flightDisplay";
 import type { StudentTrainingTrack, TrainingMission, TrainingStage } from "../types/trainingTrack";
+import { findNextOpenMissionIndex } from "./journeyNextMission";
 
 type FlightOutcome = "approved" | "failed" | "";
 
@@ -39,6 +40,10 @@ export type ScheduleStudentNextMission = {
   missionName: string;
   missionType: string;
   durationMinutes: number;
+  /** Índice 0-based da missão na trilha (para rótulo "N de M"). */
+  missionIndex: number;
+  /** Total de missões na trilha. */
+  missionTotal: number;
   /** Manobras/descrição da missão (mesma lista do card da jornada). */
   maneuvers: string[];
 };
@@ -154,14 +159,10 @@ export async function loadNextMissions(
       stage.missions.map((mission) => ({ stage, mission })),
     );
     if (missionRows.length === 0) continue;
-    const lastApprovedIndex = missionRows.reduce(
-      (lastIdx, row, idx) => (approvedMissionIds.has(row.mission.id) ? idx : lastIdx),
-      -1,
+    const firstOpenIndex = findNextOpenMissionIndex(
+      missionRows.map((row) => row.mission.id),
+      approvedMissionIds,
     );
-    const firstOpenIndex =
-      lastApprovedIndex >= 0
-        ? missionRows.findIndex((row, i) => i > lastApprovedIndex && !approvedMissionIds.has(row.mission.id))
-        : missionRows.findIndex((row) => !approvedMissionIds.has(row.mission.id));
     if (firstOpenIndex < 0) continue; // trilha completa
     const next = missionRows[firstOpenIndex]!;
     result.push({
@@ -170,6 +171,8 @@ export async function loadNextMissions(
       missionName: next.mission.name,
       missionType: next.mission.type,
       durationMinutes: next.mission.durationMinutes,
+      missionIndex: firstOpenIndex,
+      missionTotal: missionRows.length,
       maneuvers: next.mission.maneuvers ?? [],
     });
   }

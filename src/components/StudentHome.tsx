@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { getStudentCreditStatement } from "../lib/creditsDb";
-import { listStudentTrainingFlights, type SavedFlightListItem } from "../lib/flightsDb";
 import { FLIGHT_CREDIT_PURCHASE_PATH, navigateToTab } from "../lib/routedTabs";
-import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
-import type { TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
+import { loadNextMissions } from "../lib/scheduleStudentSummary";
 import { NoticeFeed } from "./NoticeFeed";
 import { UpcomingFlightsCard } from "./UpcomingFlightsCard";
 import { StudentPageHeader, StudentStatusCard } from "./student/StudentExperience";
@@ -36,23 +34,6 @@ function formatDateLabel(valueIso: string): string {
   const date = new Date(valueIso);
   if (Number.isNaN(date.getTime())) return "agora";
   return date.toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-}
-
-function flightMissionIds(flight: SavedFlightListItem): string[] {
-  const fromMaterialized = (() => {
-    if (!flight.training_mission_ids_json) return [];
-    try {
-      const parsed = JSON.parse(flight.training_mission_ids_json);
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && Boolean(id)) : [];
-    } catch {
-      return [];
-    }
-  })();
-  return Array.from(new Set([...fromMaterialized, flight.training_mission_id ?? ""].filter(Boolean)));
-}
-
-function flattenTrackMissions(track: TrainingTrack): Array<{ stage: TrainingStage; mission: TrainingMission }> {
-  return track.stages.flatMap((stage) => stage.missions.map((mission) => ({ stage, mission })));
 }
 
 function formatMissionDuration(minutes: number | null | undefined): string | null {
@@ -108,33 +89,19 @@ export function StudentHome({ onOpenFlights, onOpenNotices, onOpenSchedule, onOp
     }
     setMissionLoading(true);
     try {
-      const tracksRes = await listStudentTrainingTracks(user.id);
-      const assignments = (tracksRes.data ?? []).filter((row) => row.track);
-      const assignment = assignments[0];
-      const track = assignment?.track ?? null;
-      if (!track) {
+      // Mesma lógica da jornada: após a última missão aprovada (pula vazias anteriores).
+      const { nextMissions } = await loadNextMissions(user.id);
+      const next = nextMissions[0] ?? null;
+      if (!next) {
         setNextMission(null);
         return;
       }
-
-      const trackIds = assignments.map((row) => row.trackId).filter(Boolean);
-      const flightsRes = await listStudentTrainingFlights({ userId: user.id, role: user.role }, trackIds);
-      const completedIds = new Set((flightsRes.data ?? []).flatMap((flight) => flightMissionIds(flight)));
-      const rows = flattenTrackMissions(track);
-      if (rows.length === 0) {
-        setNextMission(null);
-        return;
-      }
-
-      const nextIndex = rows.findIndex((row) => !completedIds.has(row.mission.id));
-      const index = nextIndex >= 0 ? nextIndex : rows.length - 1;
-      const row = rows[index];
       setNextMission({
-        trackName: track.name,
-        stageName: row.stage.name,
-        missionName: row.mission.name,
-        progressLabel: nextIndex >= 0 ? `${index + 1} de ${rows.length}` : "Trilha concluida",
-        durationLabel: formatMissionDuration(row.mission.durationMinutes),
+        trackName: next.trackName,
+        stageName: next.stageName,
+        missionName: next.missionName,
+        progressLabel: `${next.missionIndex + 1} de ${next.missionTotal}`,
+        durationLabel: formatMissionDuration(next.durationMinutes),
       });
     } catch {
       setNextMission(null);

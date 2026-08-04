@@ -1484,12 +1484,13 @@ export async function importSelfFlightsFromSaga(
 }
 
 export async function importAllInstructorFlightsFromSaga(
-  options: { onProgress?: (progress: SagaImportProgress) => void } = {},
+  options: { operationsDays?: number; onProgress?: (progress: SagaImportProgress) => void } = {},
 ): Promise<SagaImportSummary> {
   const { functionId } = getAdminFunctionClient();
   const importRunId = crypto.randomUUID();
+  const operationsDays = Number(options.operationsDays) > 0 ? Number(options.operationsDays) : 7;
   const createdExecution = await createAdminFunctionExecution(
-    { action: "sagaImportAllInstructorFlights", importRunId },
+    { action: "sagaImportAllInstructorFlights", importRunId, operationsDays },
     true,
   );
   let execution: Awaited<ReturnType<typeof waitForFunctionExecution>> | null = null;

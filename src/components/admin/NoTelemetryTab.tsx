@@ -688,6 +688,7 @@ export function NoTelemetryTab() {
   const [deletingGhostId, setDeletingGhostId] = useState<string | null>(null);
   const [openGhostMenuId, setOpenGhostMenuId] = useState<string | null>(null);
   const [sagaImporting, setSagaImporting] = useState(false);
+  const [syncWindowDays, setSyncWindowDays] = useState(7);
   const [syncProgress, setSyncProgress] = useState<SagaImportProgress | null>(null);
   const [syncOverlayVisible, setSyncOverlayVisible] = useState(false);
   const [filterState, setFilterState] = useState<AdminReportFilterState>({
@@ -795,6 +796,7 @@ export function NoTelemetryTab() {
     setSyncProgress(null);
     try {
       const summary = await importAllInstructorFlightsFromSaga({
+        operationsDays: syncWindowDays,
         onProgress: (progress) => setSyncProgress(progress),
       });
       const novos = (summary.flightsCreated ?? 0) + (summary.flightsUpdated ?? 0);
@@ -907,6 +909,19 @@ export function NoTelemetryTab() {
               Criar temporário
             </button>
           ) : null}
+          <select
+            value={syncWindowDays}
+            onChange={(e) => setSyncWindowDays(Number(e.target.value))}
+            disabled={sagaImporting}
+            aria-label="Dias para sincronizar"
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-50"
+          >
+            {[7, 30, 60, 180, 360].map((days) => (
+              <option key={days} value={days}>
+                {days} dias
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={() => void handleSagaSync()}

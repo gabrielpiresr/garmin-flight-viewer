@@ -17434,6 +17434,79 @@ async function uploadWppPngBuffer(png, fileName) {
   return appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, uploaded.$id);
 }
 
+function formatWppWebcamDistanceKm(value) {
+  const distance = Number(value);
+  if (!Number.isFinite(distance)) return "N/D";
+  return `${distance.toLocaleString("pt-BR", {
+    maximumFractionDigits: distance < 10 ? 1 : 0,
+  })}km`;
+}
+
+function formatWppWebcamCaption(webcam, airport = null) {
+  const city =
+    cleanString(webcam?.location?.city) ||
+    cleanString(airport?.rotaer?.city) ||
+    cleanString(webcam?.title).split(/[:›-]/)[0] ||
+    "Local";
+  return `${city.slice(0, 80)} - ${formatWppWebcamDistanceKm(webcam?.distanceKm)}`;
+}
+
+async function uploadWppRemoteImage(url, fileName) {
+  const imageUrl = cleanString(url);
+  if (!imageUrl) throw Object.assign(new Error("URL da webcam indisponivel."), { status: 400 });
+  const response = await fetch(imageUrl, {
+    headers: { Accept: "image/jpeg,image/png,image/webp,*/*" },
+  });
+  if (!response.ok) {
+    throw Object.assign(new Error(`Falha ao baixar imagem da webcam (${response.status}).`), { status: 502 });
+  }
+  const contentType = cleanString(response.headers.get("content-type")).toLowerCase();
+  if (contentType && !contentType.startsWith("image/")) {
+    throw Object.assign(new Error("URL da webcam nao retornou imagem."), { status: 502 });
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw Object.assign(new Error("Imagem da webcam vazia."), { status: 502 });
+  return uploadWppPngBuffer(buffer, fileName);
+}
+
+function wppWebcamImageUrl(webcam) {
+  return cleanString(webcam?.image?.preview || webcam?.image?.thumbnail || webcam?.image?.icon);
+}
+
+async function sendWppNearestWindyWebcams(settings, to, airportOrRotaer, options = {}) {
+  const icao = aiswebService.normalizeIcao(options.icao || airportOrRotaer?.icao || airportOrRotaer?.rotaer?.icao);
+  const rotaer = airportOrRotaer?.rotaer || airportOrRotaer || {};
+  if (!icao || icao.length !== 4) return "invalid_icao";
+
+  const result = await aiswebService.fetchWindyWebcamsForAirport({
+    icaoCode: icao,
+    lat: rotaer?.lat,
+    lng: rotaer?.lng,
+    name: rotaer?.name,
+    city: rotaer?.city,
+    uf: rotaer?.uf,
+    radiusKm: options.radiusKm || 60,
+    limit: options.limit || 3,
+  });
+  const webcams = (result?.webcams || []).filter((webcam) => wppWebcamImageUrl(webcam)).slice(0, 3);
+  let sent = 0;
+  for (const webcam of webcams) {
+    try {
+      const imageUrl = wppWebcamImageUrl(webcam);
+      const stableUrl = await uploadWppRemoteImage(imageUrl, `wpp-windy-${icao}-${webcam.webcamId || sent + 1}.jpg`);
+      await sendWppImageMessage(settings, {
+        to,
+        link: stableUrl,
+        caption: formatWppWebcamCaption(webcam, { rotaer }),
+      });
+      sent += 1;
+    } catch (err) {
+      console.warn(`[wppWebhook] windy webcam image failed icao=${icao} webcam=${cleanString(webcam?.webcamId)} error=${cleanString(err?.message).slice(0, 240)}`);
+    }
+  }
+  return sent ? `webcams_sent_${sent}` : "webcams_not_found";
+}
+
 async function renderWppSvgToPng(svg, options = {}) {
   const sharp = getSharpModule();
   if (!sharp) throw Object.assign(new Error("Renderizacao de imagem nao disponivel neste runtime."), { status: 500 });
@@ -17525,6 +17598,18 @@ async function sendWppMetarConditions(settings, incoming, icaoCode) {
   } catch (err) {
     console.warn(`[wppWebhook] metar images fallback icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
     imageStatus = `sent_text_only:${cleanString(err?.message).slice(0, 120)}`;
+  }
+
+  try {
+    const webcamStatus = await sendWppNearestWindyWebcams(settings, incoming.from, airport, {
+      icao,
+      limit: 3,
+      radiusKm: 60,
+    });
+    imageStatus = `${imageStatus}:${webcamStatus}`;
+  } catch (err) {
+    console.warn(`[wppWebhook] windy webcams fallback icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+    imageStatus = `${imageStatus}:webcams_failed`;
   }
 
   await sleep(2000);
@@ -17716,7 +17801,7 @@ async function handleWppMetarWatchCommand(settings, incoming, command) {
   return "skipped";
 }
 
-async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks, analysis, changed) {
+async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks, analysis, changed, rotaer = null) {
   const icao = watch.icao;
   const prefix = wppMetar.formatWppMetarWatchUpdatePrefix({
     icao,
@@ -17736,6 +17821,15 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
     }),
   ].join("\n");
   await sendWppTextMessage(settings, { to: watch.phone, body: body.slice(0, 4096) });
+  try {
+    await sendWppNearestWindyWebcams(settings, watch.phone, rotaer || { icao }, {
+      icao,
+      limit: 3,
+      radiusKm: 60,
+    });
+  } catch (err) {
+    console.warn(`[aisweb-metar-watch] windy webcams fallback ${watch.phone}/${icao}: ${cleanString(err?.message).slice(0, 240)}`);
+  }
   await sendWppBotReply(settings, {
     to: watch.phone,
     body: `Acompanhamento de ${icao} segue ativo. Toque em Parar para encerrar.`,
@@ -21113,8 +21207,11 @@ async function createFlightCreditCheckoutForUser(
     throw Object.assign(new Error("Este pacote nao participa do desconto seg-sex."), { status: 403 });
   }
   const requestedCustomHours = Number(customHoursInput);
-  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
+  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 10) / 10 : null;
   const hasCustomHours = customHours !== null && customHours > 0;
+  if (hasCustomHours && Number.isFinite(requestedCustomHours) && Math.abs(requestedCustomHours - customHours) > 1e-9) {
+    throw Object.assign(new Error("Quantidade de horas personalizada deve ter no maximo 1 casa decimal (ex.: 1.1)."), { status: 400 });
+  }
   const sortedPackages = publicFlightCreditSalesConfig({ studentPurchasesEnabled: true, packages }, null, true).packages
     .filter((pkg) => !weekdayOnly || pkg.weekdayDiscountEligible !== false)
     .sort((a, b) => a.hours - b.hours);
@@ -21302,8 +21399,11 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     throw Object.assign(new Error("Este pacote nao participa do desconto seg-sex."), { status: 403 });
   }
   const requestedCustomHours = Number(customHoursInput);
-  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 100) / 100 : null;
+  const customHours = Number.isFinite(requestedCustomHours) ? Math.round(requestedCustomHours * 10) / 10 : null;
   const hasCustomHours = customHours !== null && customHours > 0;
+  if (hasCustomHours && Number.isFinite(requestedCustomHours) && Math.abs(requestedCustomHours - customHours) > 1e-9) {
+    throw Object.assign(new Error("Quantidade de horas personalizada deve ter no maximo 1 casa decimal (ex.: 1.1)."), { status: 400 });
+  }
   const requestedCustomHourPrice = Number(customHourPriceInput);
   const customHourPrice = Number.isFinite(requestedCustomHourPrice)
     ? Math.round(requestedCustomHourPrice * 100) / 100
@@ -22871,6 +22971,7 @@ async function runAiswebMetarWatchScan(log = () => {}) {
           checks,
           analysis,
           { metar: changedMetar, taf: changedTaf },
+          rotaer,
         );
         notifyOk = true;
         notified += 1;
@@ -23988,38 +24089,20 @@ async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, oper
     `semSagaKey=${diagnostics.skippedNoSagaKey} presentesNoSAGA=${diagnostics.skippedPresentInSaga}`,
   );
 
+  // Não apaga voos locais só porque sumiram na janela do SAGA.
+  // Isso preserva telemetria/vídeos; exclusão continua só por ação explícita do usuário.
   const deletedFlights = [];
   for (const doc of staleDocs) {
     const flightId = cleanString(doc?.$id);
     if (!flightId) continue;
-    try {
-      const deletionActorId = actorUserId === "system"
-        ? cleanString(doc?.student_user_id || doc?.user_id || doc?.instructor_user_id)
-        : actorUserId;
-      if (!deletionActorId) throw new Error("Voo SAGA sem usuario vinculado para autorizar a exclusao.");
-      await sagaDeleteFlight(deletionActorId, { flightId });
-      const sagaFlightId = cleanString(doc?.saga_flight_id);
-      deletedFlights.push({
-        flightId,
-        sagaFlightId,
-        reason: "missing_in_saga",
-        message: "Voo removido localmente por ter sido apagado no SAGA.",
-      });
-      diagnostics.deleted += 1;
-      logs.push(`Voo removido por exclusao no SAGA: local=${flightId}${sagaFlightId ? ` saga=${sagaFlightId}` : ""}.`);
-    } catch (err) {
-      const sagaFlightId = cleanString(doc?.saga_flight_id);
-      const message = cleanString(err?.message || err);
-      diagnostics.failed += 1;
-      diagnostics.failures.push({
-        flightId,
-        sagaFlightId,
-        message,
-      });
-      logs.push(`Falha ao remover voo local ${flightId}${sagaFlightId ? ` (saga=${sagaFlightId})` : ""}: ${message}.`);
-    }
+    const sagaFlightId = cleanString(doc?.saga_flight_id);
+    logs.push(
+      `Voo ausente no SAGA preservado localmente: local=${flightId}${sagaFlightId ? ` saga=${sagaFlightId}` : ""}.`,
+    );
   }
-  logs.push(`[saga-sync-cleanup] resultado removidos=${diagnostics.deleted} falhas=${diagnostics.failed}.`);
+  logs.push(
+    `[saga-sync-cleanup] resultado preservados=${diagnostics.candidates} removidos=0 (hard delete desativado no sync).`,
+  );
   return { deletedFlights, diagnostics };
 }
 
@@ -24803,9 +24886,10 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "sagaImportAllInstructorFlights") {
       if (!actorUserId) return jsonResponse(res, 401, { ok: false, message: "Autenticacao necessaria." });
       await requireAdmin(actorUserId);
+      const operationsDays = Math.max(1, Math.min(365, Math.round(Number(payload.operationsDays)) || 7));
       const result = await sagaImportSelfFlights(actorUserId, log, cleanString(payload.importRunId) || null, {
         allInstructors: true,
-        operationsDays: 7,
+        operationsDays,
       });
       return jsonResponse(res, 200, result);
     }
@@ -25189,6 +25273,21 @@ module.exports = async ({ req, res, log, error }) => {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const image = await aiswebService.proxyMapImage(payload.url || payload.link);
       return jsonResponse(res, 200, { image });
+    }
+
+    if (action === "searchWindyWebcams") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const webcams = await aiswebService.fetchWindyWebcamsForAirport({
+        icaoCode: payload.icaoCode || payload.icao,
+        lat: payload.lat,
+        lng: payload.lng,
+        name: payload.name || payload.airportName,
+        city: payload.city,
+        uf: payload.uf,
+        radiusKm: payload.radiusKm,
+        limit: payload.limit,
+      });
+      return jsonResponse(res, 200, { webcams });
     }
 
     if (action === "sendAiswebNotamAlertTest") {

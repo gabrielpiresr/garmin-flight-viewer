@@ -9,6 +9,10 @@ const MAX_METAR_WATCHES_PER_PHONE = 6;
 const AISWEB_CACHE_TTL_MS = 5 * 60 * 1000;
 const AERODROME_CATALOG_TTL_MS = 60 * 60 * 1000;
 const MAX_WATCHLIST = 12;
+const WINDY_WEBCAMS_API_BASE = "https://api.windy.com/webcams/api/v3/webcams";
+const WINDY_WEBCAMS_CACHE_TTL_MS = 2 * 60 * 1000;
+const WINDY_WEBCAMS_DEFAULT_RADIUS_KM = 60;
+const WINDY_WEBCAMS_MAX_RADIUS_KM = 250;
 
 const DEFAULT_MINIMUMS = [
   { condition: "vfr_diurno", label: "VFR DIURNO", ceilingFt: 2000, visibilityKm: 5, maxWindKt: 14 },
@@ -23,6 +27,7 @@ const solCache = new Map();
 const cartasCache = new Map();
 const suplementosCache = new Map();
 const geilocCache = new Map();
+const windyWebcamsCache = new Map();
 let aerodromeCatalogCache = null;
 
 const GEOAISWEB_WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
@@ -40,6 +45,44 @@ function normalizeIcao(value) {
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 4);
+}
+
+function windyWebcamsApiKey() {
+  return cleanString(process.env.WINDY_WEBCAMS_API_KEY);
+}
+
+function finiteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const n = finiteNumber(value);
+  if (n == null) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function roundNumber(value, digits = 1) {
+  const n = finiteNumber(value);
+  if (n == null) return null;
+  const factor = 10 ** digits;
+  return Math.round(n * factor) / factor;
+}
+
+function haversineKm(aLat, aLng, bLat, bLng) {
+  const lat1 = finiteNumber(aLat);
+  const lng1 = finiteNumber(aLng);
+  const lat2 = finiteNumber(bLat);
+  const lng2 = finiteNumber(bLng);
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return null;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const earthKm = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const s1 = Math.sin(dLat / 2);
+  const s2 = Math.sin(dLng / 2);
+  const h = s1 * s1 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * s2 * s2;
+  return earthKm * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
 function aiswebCredentials() {
@@ -1820,6 +1863,180 @@ async function buildDashboard(deps, userId) {
   return { settings, watchlist, airports, notams };
 }
 
+function normalizeWindyWebcam(item, center) {
+  const location = item?.location || {};
+  const lat = finiteNumber(location.latitude);
+  const lng = finiteNumber(location.longitude);
+  const distanceKm = lat == null || lng == null ? null : haversineKm(center.lat, center.lng, lat, lng);
+  const categories = Array.isArray(item?.categories)
+    ? item.categories
+        .map((category) => ({
+          id: cleanString(category?.id),
+          name: cleanString(category?.name),
+        }))
+        .filter((category) => category.id || category.name)
+    : [];
+  const imageCurrent = item?.images?.current || {};
+  const imageDaylight = item?.images?.daylight || {};
+  const player = item?.player || {};
+  const urls = item?.urls || {};
+
+  return {
+    webcamId: finiteNumber(item?.webcamId),
+    title: cleanString(item?.title),
+    status: cleanString(item?.status),
+    viewCount: finiteNumber(item?.viewCount),
+    lastUpdatedOn: cleanString(item?.lastUpdatedOn) || null,
+    distanceKm: roundNumber(distanceKm, 1),
+    categories,
+    image: {
+      preview: cleanString(imageCurrent.preview || imageDaylight.preview || imageCurrent.thumbnail || imageDaylight.thumbnail),
+      thumbnail: cleanString(imageCurrent.thumbnail || imageDaylight.thumbnail || imageCurrent.preview || imageDaylight.preview),
+      icon: cleanString(imageCurrent.icon || imageDaylight.icon),
+    },
+    location: {
+      lat,
+      lng,
+      city: cleanString(location.city) || null,
+      region: cleanString(location.region) || null,
+      regionCode: cleanString(location.region_code) || null,
+      country: cleanString(location.country) || null,
+      countryCode: cleanString(location.country_code) || null,
+    },
+    player: {
+      live: cleanString(player.live) || null,
+      day: cleanString(player.day) || null,
+      month: cleanString(player.month) || null,
+      year: cleanString(player.year) || null,
+      lifetime: cleanString(player.lifetime) || null,
+    },
+    urls: {
+      detail: cleanString(urls.detail) || null,
+      provider: cleanString(urls.provider) || null,
+    },
+  };
+}
+
+function scoreWindyWebcam(webcam, hints) {
+  let score = 0;
+  if (webcam.status === "active") score += 1000;
+  if ((webcam.categories || []).some((category) => category.id === "airport")) score += 250;
+  if ((webcam.categories || []).some((category) => category.id === "meteo")) score += 120;
+  const haystack = [
+    webcam.title,
+    webcam.location?.city,
+    webcam.location?.region,
+    ...(webcam.categories || []).map((category) => category.name),
+  ]
+    .join(" ")
+    .toLocaleLowerCase("pt-BR");
+  const normalizedHaystack = normalizeWindyHint(haystack);
+  for (const hint of hints) {
+    if (hint && normalizedHaystack.includes(hint)) score += 80;
+  }
+  const distance = finiteNumber(webcam.distanceKm);
+  if (distance != null) score += Math.max(0, 200 - distance * 4);
+  const views = finiteNumber(webcam.viewCount);
+  if (views != null) score += Math.min(80, Math.log10(Math.max(1, views)) * 15);
+  return score;
+}
+
+function normalizeWindyHint(value) {
+  return cleanString(value)
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchWindyWebcamsForAirport(input = {}) {
+  const apiKey = windyWebcamsApiKey();
+  if (!apiKey) {
+    throw Object.assign(new Error("Chave da API de webcams do Windy não configurada."), { status: 500 });
+  }
+
+  let icao = normalizeIcao(input.icaoCode || input.icao);
+  let lat = finiteNumber(input.lat ?? input.latitude);
+  let lng = finiteNumber(input.lng ?? input.longitude);
+  let airportName = cleanString(input.name || input.airportName);
+  let city = cleanString(input.city);
+  let uf = cleanString(input.uf);
+
+  if ((lat == null || lng == null) && icao && icao.length === 4) {
+    const bundle = await fetchAirportBundle(icao);
+    lat = finiteNumber(bundle?.rotaer?.lat);
+    lng = finiteNumber(bundle?.rotaer?.lng);
+    airportName = airportName || cleanString(bundle?.rotaer?.name);
+    city = city || cleanString(bundle?.rotaer?.city);
+    uf = uf || cleanString(bundle?.rotaer?.uf);
+  }
+
+  if (lat == null || lng == null) {
+    throw Object.assign(new Error("Coordenadas do aeródromo indisponíveis para buscar webcams próximas."), {
+      status: 400,
+    });
+  }
+
+  const radiusKm = clampNumber(input.radiusKm, 1, WINDY_WEBCAMS_MAX_RADIUS_KM, WINDY_WEBCAMS_DEFAULT_RADIUS_KM);
+  const limit = Math.trunc(clampNumber(input.limit, 1, 12, 8));
+  const fetchLimit = Math.min(50, Math.max(limit * 4, 20));
+  const cacheKey = `${roundNumber(lat, 4)},${roundNumber(lng, 4)},${roundNumber(radiusKm, 1)},${fetchLimit}`;
+  const cached = cacheGet(windyWebcamsCache, cacheKey);
+  if (cached) {
+    return { ...cached, cached: true };
+  }
+
+  const url = new URL(WINDY_WEBCAMS_API_BASE);
+  url.searchParams.set("nearby", `${lat},${lng},${radiusKm}`);
+  url.searchParams.set("limit", String(fetchLimit));
+  url.searchParams.set("offset", "0");
+  url.searchParams.set("lang", "pt");
+  url.searchParams.set("include", "images,location,player,urls,categories");
+
+  const response = await fetch(url, {
+    headers: {
+      "x-windy-api-key": apiKey,
+      accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    const snippet = (await response.text().catch(() => "")).slice(0, 300);
+    throw Object.assign(new Error(snippet || `Falha Windy webcams (${response.status}).`), {
+      status: response.status === 401 || response.status === 403 ? 502 : 502,
+    });
+  }
+
+  const payload = await response.json();
+  const center = { lat, lng };
+  const hints = [icao, airportName, city, uf].map(normalizeWindyHint).filter(Boolean);
+  const webcams = (Array.isArray(payload?.webcams) ? payload.webcams : [])
+    .map((item) => normalizeWindyWebcam(item, center))
+    .filter((webcam) => webcam.webcamId != null && webcam.status === "active")
+    .sort((a, b) => scoreWindyWebcam(b, hints) - scoreWindyWebcam(a, hints))
+    .slice(0, limit);
+
+  const result = {
+    provider: "Windy",
+    attributionUrl: "https://www.windy.com/webcams",
+    icao: icao || null,
+    airportName: airportName || null,
+    city: city || null,
+    uf: uf || null,
+    radiusKm: roundNumber(radiusKm, 1),
+    center,
+    total: finiteNumber(payload?.total) ?? webcams.length,
+    webcams,
+    fetchedAt: nowIso(),
+    cached: false,
+  };
+  cacheSet(windyWebcamsCache, cacheKey, result);
+  const cachedEntry = windyWebcamsCache.get(cacheKey);
+  if (cachedEntry) cachedEntry.expiresAt = Date.now() + WINDY_WEBCAMS_CACHE_TTL_MS;
+  return result;
+}
+
 module.exports = {
   AISWEB_SETTINGS_KEY,
   AISWEB_WATCHLIST_PREFIX,
@@ -1857,4 +2074,5 @@ module.exports = {
   queryAirspaceAlongRoute,
   queryAirspaceGeometries,
   proxyMapImage,
+  fetchWindyWebcamsForAirport,
 };

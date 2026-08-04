@@ -187,7 +187,7 @@ export function PaymentLinkModal({
 
   const selectedPackage = packages.find((p) => p.id === selectedPackageId);
   const parsedCustomHours = Number(customHoursInput.replace(",", "."));
-  const customHours = Number.isFinite(parsedCustomHours) ? Math.round(parsedCustomHours * 100) / 100 : 0;
+  const customHours = Number.isFinite(parsedCustomHours) ? Math.round(parsedCustomHours * 10) / 10 : 0;
   const parsedCustomHourPrice = Number(customHourPriceInput.replace(",", "."));
   const customHourPrice = Number.isFinite(parsedCustomHourPrice) ? Math.round(parsedCustomHourPrice * 100) / 100 : 0;
   const customReference = packageReferenceForCustomHours(packages, customHours);
@@ -381,10 +381,14 @@ export function PaymentLinkModal({
                 <input
                   type="number"
                   min="0.5"
-                  step="0.5"
+                  step="0.1"
+                  inputMode="decimal"
                   value={customHoursInput}
-                  onChange={(e) => setCustomHoursInput(e.target.value)}
-                  placeholder="Ex.: 11.5"
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (next === "" || /^\d*[.,]?\d{0,1}$/.test(next)) setCustomHoursInput(next);
+                  }}
+                  placeholder="Ex.: 1.1"
                   className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-emerald-500 focus:outline-none"
                 />
               </div>

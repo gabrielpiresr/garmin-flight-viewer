@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, WMSTileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
-import { prefetchAiswebChartBlobs, previewAiswebChartBlob } from "../lib/aiswebDb";
+import { prefetchAiswebChartBlobs, previewAiswebChartBlob, searchWindyWebcamsForAirport } from "../lib/aiswebDb";
 import type {
   AiswebAirportBundle,
   AiswebAirspace,
@@ -15,6 +15,8 @@ import type {
   AiswebRotaer,
   AiswebSunTimes,
   AiswebSupplement,
+  AiswebWebcam,
+  AiswebWebcamsResult,
 } from "../types/aisweb";
 import { Tabs } from "./ui/Tabs";
 
@@ -60,7 +62,7 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-type DetailSubTab = "meteorologia" | "detalhes" | "notams" | "cartas" | "suplementos";
+type DetailSubTab = "meteorologia" | "detalhes" | "webcams" | "notams" | "cartas" | "suplementos";
 
 function formatNotamDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -929,6 +931,283 @@ function NotamsPanel({ notams }: { notams: AiswebNotam[] }) {
   );
 }
 
+function formatWebcamDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDistanceKm(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} km`;
+}
+
+function webcamPlayerUrl(webcam: AiswebWebcam | null): string {
+  if (!webcam) return "";
+  return webcam.player.live || webcam.player.day || webcam.player.month || "";
+}
+
+function webcamPreviewUrl(webcam: AiswebWebcam | null): string {
+  if (!webcam) return "";
+  return webcam.image.preview || webcam.image.thumbnail || webcam.image.icon || "";
+}
+
+function WebcamCard({
+  webcam,
+  active,
+  onSelect,
+}: {
+  webcam: AiswebWebcam;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const categories = webcam.categories.map((c) => c.name || c.id).filter(Boolean).slice(0, 2);
+  const preview = webcamPreviewUrl(webcam);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`grid w-full grid-cols-[5rem_minmax(0,1fr)] gap-2 rounded-lg border p-2 text-left transition ${
+        active
+          ? "border-cyan-500/60 bg-cyan-500/10"
+          : "border-slate-700/70 bg-slate-950/45 hover:border-slate-600 hover:bg-slate-900/70"
+      }`}
+    >
+      <div className="h-16 overflow-hidden rounded-md bg-slate-900">
+        {preview ? (
+          <img src={preview} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-[10px] text-slate-600">Sem imagem</div>
+        )}
+      </div>
+      <div className="min-w-0">
+        <p className="line-clamp-2 text-xs font-semibold leading-snug text-slate-100">{webcam.title || "Webcam"}</p>
+        <p className="mt-1 truncate text-[10px] text-slate-500">
+          {[webcam.location.city, webcam.location.region].filter(Boolean).join(" · ") || "Local N/D"}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
+            {formatDistanceKm(webcam.distanceKm)}
+          </span>
+          {categories.map((category) => (
+            <span key={category} className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+              {category}
+            </span>
+          ))}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function WindyWebcamsPanel({ airport }: { airport: AiswebAirportBundle }) {
+  const [result, setResult] = useState<AiswebWebcamsResult | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasCoords =
+    airport.rotaer?.lat != null &&
+    airport.rotaer?.lng != null &&
+    Number.isFinite(airport.rotaer.lat) &&
+    Number.isFinite(airport.rotaer.lng);
+
+  useEffect(() => {
+    setResult(null);
+    setSelectedId(null);
+    setError(null);
+  }, [airport.icao]);
+
+  async function loadWebcams() {
+    if (!hasCoords) {
+      setError("Coordenadas indisponíveis no ROTAER para buscar webcams próximas.");
+      setResult(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await searchWindyWebcamsForAirport(airport, { radiusKm: 60, limit: 8 });
+      setResult(next);
+      setSelectedId((current) => {
+        if (current && next.webcams.some((webcam) => webcam.webcamId === current)) return current;
+        return next.webcams[0]?.webcamId ?? null;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao buscar webcams do Windy.");
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadWebcams();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [airport.icao, hasCoords]);
+
+  const webcams = result?.webcams || [];
+  const selected = webcams.find((webcam) => webcam.webcamId === selectedId) || webcams[0] || null;
+  const playerUrl = webcamPlayerUrl(selected);
+  const previewUrl = webcamPreviewUrl(selected);
+
+  if (!hasCoords) {
+    return (
+      <div className="rounded-xl border border-dashed border-slate-700/70 px-3 py-8 text-center text-xs text-slate-500">
+        Coordenadas indisponíveis para buscar webcams próximas.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Webcams próximas</p>
+          <p className="text-[11px] text-slate-500">
+            {result
+              ? `${webcams.length}/${result.total} em até ${formatDistanceKm(result.radiusKm)} · Windy`
+              : `Raio ${formatDistanceKm(60)} · Windy`}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadWebcams()}
+          disabled={loading}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466.75.75 0 10-1.061 1.06 7 7 0 0011.697-3.138.75.75 0 00-1.435-.388zM4.688 8.576a5.5 5.5 0 019.201-2.466.75.75 0 101.061-1.06A7 7 0 003.253 8.188a.75.75 0 101.435.388z"
+              clipRule="evenodd"
+            />
+          </svg>
+          Atualizar
+        </button>
+      </div>
+
+      {loading && !result ? (
+        <div className="grid gap-3 @4xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="h-80 animate-pulse rounded-xl border border-slate-800 bg-slate-950/60" />
+          <div className="space-y-2">
+            <div className="h-20 animate-pulse rounded-lg border border-slate-800 bg-slate-950/50" />
+            <div className="h-20 animate-pulse rounded-lg border border-slate-800 bg-slate-950/50" />
+            <div className="h-20 animate-pulse rounded-lg border border-slate-800 bg-slate-950/50" />
+          </div>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-5 text-center">
+          <p className="text-sm text-rose-200">{error}</p>
+        </div>
+      ) : null}
+
+      {!loading && !error && result && webcams.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-700/70 px-3 py-8 text-center text-xs text-slate-500">
+          Nenhuma webcam ativa encontrada próxima a {airport.icao}.
+        </div>
+      ) : null}
+
+      {selected ? (
+        <div className="grid gap-3 @4xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-100">{selected.title || "Webcam"}</p>
+                <p className="truncate text-[11px] text-slate-500">
+                  {[selected.location.city, selected.location.region].filter(Boolean).join(" · ") || "Local N/D"} ·{" "}
+                  {formatDistanceKm(selected.distanceKm)} · {formatWebcamDate(selected.lastUpdatedOn)}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {selected.urls.detail ? (
+                  <a
+                    href={selected.urls.detail}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] font-semibold text-cyan-400 hover:text-cyan-300"
+                  >
+                    Windy ↗
+                  </a>
+                ) : null}
+                {selected.urls.provider ? (
+                  <a
+                    href={selected.urls.provider}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] font-semibold text-slate-400 hover:text-slate-200"
+                  >
+                    Fonte ↗
+                  </a>
+                ) : null}
+              </div>
+            </div>
+            <div className="aspect-video bg-slate-950">
+              {playerUrl ? (
+                <iframe
+                  key={`${selected.webcamId}-${playerUrl}`}
+                  title={selected.title || "Webcam Windy"}
+                  src={playerUrl}
+                  className="h-full w-full"
+                  loading="lazy"
+                  allowFullScreen
+                />
+              ) : previewUrl ? (
+                <img
+                  src={previewUrl}
+                  alt={selected.title || "Webcam Windy"}
+                  className="h-full w-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-xs text-slate-500">
+                  Preview indisponível.
+                </div>
+              )}
+            </div>
+            <div className="border-t border-slate-800 px-3 py-2 text-[10px] text-slate-500">
+              Imagens fornecidas por{" "}
+              <a
+                href={result?.attributionUrl || "https://www.windy.com/webcams"}
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold text-cyan-400 hover:text-cyan-300"
+              >
+                Windy
+              </a>
+              .
+            </div>
+          </div>
+
+          <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+            {webcams.map((webcam) => (
+              <WebcamCard
+                key={webcam.webcamId}
+                webcam={webcam}
+                active={selected.webcamId === webcam.webcamId}
+                onSelect={() => setSelectedId(webcam.webcamId)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AiswebAirportDetailTabs({
   airport,
   meteorology,
@@ -953,6 +1232,7 @@ export function AiswebAirportDetailTabs({
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
+    { id: "webcams" as const, label: "Webcams", icon: <IconMap /> },
     {
       id: "notams" as const,
       label: `NOTAMs (${notams.length})`,
@@ -970,6 +1250,7 @@ export function AiswebAirportDetailTabs({
     <div className="space-y-3">
       <Tabs items={items} value={subTab} onChange={setSubTab} ariaLabel="Subabas AISWEB" accent="cyan" />
       {subTab === "meteorologia" ? meteorology : null}
+      {subTab === "webcams" ? <WindyWebcamsPanel airport={airport} /> : null}
       {subTab === "detalhes" ? (
         <div className="space-y-3">
           <AiswebAirportTopCards airport={airport} />

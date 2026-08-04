@@ -5,6 +5,7 @@ import type {
   AiswebDashboard,
   AiswebPlatformSettings,
   AiswebPlatformSettingsInput,
+  AiswebWebcamsResult,
   AiswebWatchlist,
 } from "../types/aisweb";
 import type { FlightPlanAirspaceHit } from "../types/flightPlanning";
@@ -41,6 +42,7 @@ type AiswebResponse = {
     } | null;
   }>;
   mets?: AiswebAirportBundle["met"][];
+  webcams?: AiswebWebcamsResult;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<AiswebResponse> {
@@ -272,6 +274,25 @@ export async function fetchAiswebMetBatch(
     icaoCodes,
   });
   return Array.isArray(response.mets) ? response.mets : [];
+}
+
+export async function searchWindyWebcamsForAirport(
+  airport: AiswebAirportBundle,
+  options?: { radiusKm?: number; limit?: number },
+): Promise<AiswebWebcamsResult> {
+  const response = await execute({
+    action: "searchWindyWebcams",
+    icaoCode: airport.icao,
+    lat: airport.rotaer?.lat ?? null,
+    lng: airport.rotaer?.lng ?? null,
+    name: airport.rotaer?.name ?? null,
+    city: airport.rotaer?.city ?? null,
+    uf: airport.rotaer?.uf ?? null,
+    radiusKm: options?.radiusKm ?? 60,
+    limit: options?.limit ?? 8,
+  });
+  if (!response.webcams) throw new Error("Webcams do Windy não retornadas.");
+  return response.webcams;
 }
 
 /** Proxy allowed map tile/export URLs (Esri / GeoAISWEB) as data URL. */

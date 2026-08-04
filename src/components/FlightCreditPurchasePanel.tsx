@@ -69,7 +69,7 @@ export function FlightCreditPurchasePanel({
   const selectedPackage = modelPackages.find((pkg) => pkg.id === selectedPackageId) ?? null;
 
   const parsedCustomHours = Number(customHoursInput.replace(",", "."));
-  const customHours = Number.isFinite(parsedCustomHours) ? Math.round(parsedCustomHours * 100) / 100 : 0;
+  const customHours = Number.isFinite(parsedCustomHours) ? Math.round(parsedCustomHours * 10) / 10 : 0;
   const customReference = packageReferenceForCustomHours(modelPackages, customHours);
   const customHourPrice = customReference != null ? hourPriceFor(customReference) : null;
   const customTotal =
@@ -307,11 +307,14 @@ export function FlightCreditPurchasePanel({
               <input
                 type="number"
                 min="0.5"
-                step="0.5"
+                step="0.1"
                 inputMode="decimal"
                 value={customHoursInput}
-                onChange={(event) => setCustomHoursInput(event.target.value)}
-                placeholder="Ex.: 11,5"
+                onChange={(event) => {
+                  const next = event.target.value;
+                  if (next === "" || /^\d*[.,]?\d{0,1}$/.test(next)) setCustomHoursInput(next);
+                }}
+                placeholder="Ex.: 1,1"
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
               />
             </label>

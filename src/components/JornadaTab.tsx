@@ -4,6 +4,7 @@ import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { decodeFlightRecord, type FlightRecordMeta } from "../lib/flightRecordCodec";
 import { getFlightRecordMetaBatch, getSavedFlight, listStudentTrainingFlights, type SavedFlightFull, type SavedFlightListItem } from "../lib/flightsDb";
 import { aggregateJourneyMetrics, type JourneyMetrics } from "../lib/journeyMetrics";
+import { findNextOpenMissionIndex } from "../lib/journeyNextMission";
 import { listJourneyTelemetrySummaries } from "../lib/flightTelemetryMetricsDb";
 import { listGroundAircraftIdents } from "../lib/aircraftDb";
 import { SCHOOL_ID } from "../lib/appwrite";
@@ -43,6 +44,28 @@ type MissionTimelineItem = {
   index: number;
   status: "done" | "next" | "locked";
 };
+
+type MissionLayoutMode = "carousel" | "grid";
+
+const MISSION_LAYOUT_STORAGE_KEY = "jornada.missionLayout.v1";
+
+function readMissionLayoutMode(): MissionLayoutMode {
+  if (typeof window === "undefined") return "grid";
+  try {
+    const raw = window.localStorage.getItem(MISSION_LAYOUT_STORAGE_KEY);
+    return raw === "carousel" || raw === "grid" ? raw : "grid";
+  } catch {
+    return "grid";
+  }
+}
+
+function persistMissionLayoutMode(mode: MissionLayoutMode) {
+  try {
+    window.localStorage.setItem(MISSION_LAYOUT_STORAGE_KEY, mode);
+  } catch {
+    /* ignore */
+  }
+}
 
 type JourneySection = "formacao" | "evolucao";
 
@@ -110,7 +133,19 @@ function useFormationProgress(): FormationState {
         .filter((f) => f.training_track_id)
         .map((f) => f.id);
 
-      if (flightsNeedingFullData.length === 0 && allTrackFlightIds.length === 0) return;
+      if (flightsNeedingFullData.length === 0 && allTrackFlightIds.length === 0) {
+        if (cancelled) return;
+        setState({
+          tracks,
+          flights: baseFlights.map((flight) => ({ ...flight, trainingMissionIds: flightMissionIds(flight) })),
+          fullFlights: [],
+          approvedMissionIds: new Set(),
+          flightOutcomes: new Map(),
+          loading: false,
+          error: errorMessage,
+        });
+        return;
+      }
       if (cancelled) return;
 
       const fullFlights: SavedFlightFull[] = [];
@@ -202,17 +237,18 @@ function useFormationProgress(): FormationState {
       const baseFlights = flightsRes.data ?? [];
       const initialFlights = baseFlights.map((flight) => ({ ...flight, trainingMissionIds: flightMissionIds(flight) }));
 
+      // Mantém skeleton até saber missões aprovadas — evita piscada ao pular para a missão atual.
       setState({
         tracks,
         flights: initialFlights,
         fullFlights: [],
         approvedMissionIds: new Set(),
         flightOutcomes: new Map(),
-        loading: false,
+        loading: true,
         error: error?.message ?? null,
       });
 
-      void enrichFlightDetails(baseFlights, tracks, error?.message ?? null);
+      await enrichFlightDetails(baseFlights, tracks, error?.message ?? null);
     }
 
     void load();
@@ -295,6 +331,128 @@ function SectionCard({ title, subtitle, compact = false, children }: { title: st
       </div>
       {children}
     </section>
+  );
+}
+
+function MissionLayoutToggle({
+  value,
+  onChange,
+}: {
+  value: MissionLayoutMode;
+  onChange: (mode: MissionLayoutMode) => void;
+}) {
+  return (
+    <div className="flex rounded-lg border border-slate-700 p-0.5" role="group" aria-label="Visualização das missões">
+      <button
+        type="button"
+        onClick={() => onChange("grid")}
+        className={`rounded-md px-2.5 py-1 text-xs transition ${value === "grid" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+        aria-pressed={value === "grid"}
+      >
+        Grade
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("carousel")}
+        className={`rounded-md px-2.5 py-1 text-xs transition ${value === "carousel" ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+        aria-pressed={value === "carousel"}
+      >
+        Carrossel
+      </button>
+    </div>
+  );
+}
+
+function MissionCard({
+  item,
+  maneuverArticles,
+  missionFlights,
+  flightOutcomes,
+  layout,
+  onOpenManeuverStudy,
+  onOpenFlightReview,
+}: {
+  item: MissionTimelineItem;
+  maneuverArticles: ManeuverArticle[];
+  missionFlights: Array<SavedFlightListItem & { trainingMissionIds: string[] }>;
+  flightOutcomes: Map<string, FlightOutcome>;
+  layout: MissionLayoutMode;
+  onOpenManeuverStudy: (mission: TrainingMission, articleIds: string[]) => void;
+  onOpenFlightReview: (missionName: string, flightId: string, missionIndex: number) => void;
+}) {
+  return (
+    <article
+      data-mission-status={item.status}
+      className={`rounded-2xl border p-3 transition ${
+        layout === "carousel" ? "w-64 shrink-0" : "min-w-0 w-full"
+      } ${
+        item.status === "done"
+          ? "border-emerald-400/40 bg-emerald-500/10"
+          : item.status === "next"
+            ? "border-amber-300/60 bg-amber-400/10 shadow-lg shadow-amber-950/20"
+            : "border-slate-700/70 bg-slate-950/30"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-black ${
+            item.status === "done"
+              ? "bg-emerald-400 text-emerald-950"
+              : item.status === "next"
+                ? "bg-amber-300 text-amber-950"
+                : "bg-slate-800 text-slate-500"
+          }`}
+        >
+          {item.status === "done" ? "OK" : item.index + 1}
+        </span>
+        <h3 className="min-w-0 flex-1 pt-0.5 text-base font-black leading-tight text-slate-100">{item.mission.name}</h3>
+        <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-400">
+          {item.status === "done" ? "Concluída" : item.status === "next" ? "Próxima" : "Futura"}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-slate-400">
+        {item.mission.durationMinutes} min · {item.mission.type}
+      </p>
+      {item.mission.maneuvers.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-xs text-slate-400">
+          {item.mission.maneuvers.slice(0, 3).map((maneuver, idx) => (
+            <li key={`${item.mission.id}-${idx}`} className="line-clamp-2">
+              {maneuver}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="mt-3 space-y-2">
+        {maneuverArticles.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => onOpenManeuverStudy(item.mission, maneuverArticles.map((article) => article.id))}
+            className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"
+          >
+            Detalhes das manobras
+          </button>
+        ) : null}
+        {missionFlights.map((missionFlight) => {
+          const outcome = flightOutcomes.get(missionFlight.id) ?? null;
+          return (
+            <button
+              key={missionFlight.id}
+              type="button"
+              onClick={() => onOpenFlightReview(item.mission.name, missionFlight.id, item.index)}
+              className={`block w-full rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${
+                outcome === "approved"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                  : outcome === "failed"
+                    ? "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                    : "border-slate-600/50 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50"
+              }`}
+            >
+              Flight Review{missionFlight.flight_date ? ` · ${formatFlightDate(missionFlight.flight_date)}` : ""}
+            </button>
+          );
+        })}
+      </div>
+    </article>
   );
 }
 
@@ -450,6 +608,7 @@ function FormationJourney({
   const [groundAircraftIdents, setGroundAircraftIdents] = useState<Set<string>>(new Set());
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
+  const [missionLayout, setMissionLayout] = useState<MissionLayoutMode>(() => readMissionLayoutMode());
   const visibleTimelineScrollerRef = useRef<HTMLDivElement | null>(null);
   const deepLinkedMissionRef = useRef("");
   const activeTracks = useMemo(
@@ -468,10 +627,10 @@ function FormationJourney({
   );
   const approvedMissionIds = state.approvedMissionIds;
   const missionRows = useMemo(() => (track ? flattenTrackMissions(track) : []), [track]);
-  const lastApprovedIndex = missionRows.reduce((lastIdx, row, idx) => (approvedMissionIds.has(row.mission.id) ? idx : lastIdx), -1);
-  const firstOpenIndex = lastApprovedIndex >= 0
-    ? missionRows.findIndex((row, i) => i > lastApprovedIndex && !approvedMissionIds.has(row.mission.id))
-    : missionRows.findIndex((row) => !approvedMissionIds.has(row.mission.id));
+  const firstOpenIndex = findNextOpenMissionIndex(
+    missionRows.map((row) => row.mission.id),
+    approvedMissionIds,
+  );
   const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
   const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
     ...row,
@@ -643,13 +802,18 @@ function FormationJourney({
   }, [drillView.kind, onDrillViewChange]);
 
   useEffect(() => {
-    if (drillView.kind !== "timeline") return;
+    if (state.loading || drillView.kind !== "timeline" || missionLayout !== "carousel") return;
     const scroller = visibleTimelineScrollerRef.current;
     if (!scroller) return;
     const nextCard = scroller.querySelector<HTMLElement>('[data-mission-status="next"]');
     if (!nextCard) return;
     nextCard.scrollIntoView({ behavior: "auto", inline: "center", block: "nearest" });
-  }, [drillView.kind, selectedTrackId, visibleStageId, visibleTimeline]);
+  }, [state.loading, drillView.kind, missionLayout, selectedTrackId, visibleStageId, firstOpenIndex]);
+
+  const setMissionLayoutAndPersist = (mode: MissionLayoutMode) => {
+    setMissionLayout(mode);
+    persistMissionLayoutMode(mode);
+  };
 
   if (state.loading) {
     return (
@@ -775,97 +939,53 @@ function FormationJourney({
             className="mb-3"
           />
         ) : null}
-        {visibleStage ? (
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-            <span>{formatInteger(visibleStageCompletedCount)} de {formatInteger(visibleTimeline.length)} missões concluídas</span>
-            <span>{formatHours(visibleStageTotalMinutes / 60)} planejadas</span>
-          </div>
-        ) : null}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          {visibleStage ? (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <span>{formatInteger(visibleStageCompletedCount)} de {formatInteger(visibleTimeline.length)} missões concluídas</span>
+              <span>{formatHours(visibleStageTotalMinutes / 60)} planejadas</span>
+            </div>
+          ) : (
+            <span />
+          )}
+          <MissionLayoutToggle value={missionLayout} onChange={setMissionLayoutAndPersist} />
+        </div>
         {visibleTimeline.length > 0 ? (
-          <div ref={visibleTimelineScrollerRef} className="flex gap-3 overflow-x-auto pb-2">
-          {visibleTimeline.map((item) => {
-            const maneuverSectionIds = item.mission.maneuverSectionIds ?? [];
-            const maneuverArticles = Array.from(
-              new Map(
-                maneuverSectionIds
-                  .flatMap((sectionId) => maneuverArticlesBySection.get(sectionId) ?? [])
-                  .map((article) => [article.id, article]),
-              ).values(),
-            );
-            const missionFlights = trackFlights.filter((flight) => flight.trainingMissionIds.includes(item.mission.id));
-            return (
-            <article
-              key={item.mission.id}
-              data-mission-status={item.status}
-              className={`w-64 shrink-0 rounded-2xl border p-3 transition ${
-                item.status === "done"
-                  ? "border-emerald-400/40 bg-emerald-500/10"
-                  : item.status === "next"
-                    ? "border-amber-300/60 bg-amber-400/10 shadow-lg shadow-amber-950/20"
-                    : "border-slate-700/70 bg-slate-950/30"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-black ${
-                  item.status === "done" ? "bg-emerald-400 text-emerald-950" : item.status === "next" ? "bg-amber-300 text-amber-950" : "bg-slate-800 text-slate-500"
-                }`}>
-                  {item.status === "done" ? "OK" : item.index + 1}
-                </span>
-                <h3 className="min-w-0 flex-1 pt-0.5 text-base font-black leading-tight text-slate-100">{item.mission.name}</h3>
-                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-400">
-                  {item.status === "done" ? "Concluída" : item.status === "next" ? "Próxima" : "Futura"}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-slate-400">{item.mission.durationMinutes} min · {item.mission.type}</p>
-              {item.mission.maneuvers.length > 0 ? (
-                <ul className="mt-2 space-y-1 text-xs text-slate-400">
-                  {item.mission.maneuvers.slice(0, 3).map((maneuver, idx) => (
-                    <li key={`${item.mission.id}-${idx}`} className="line-clamp-2">{maneuver}</li>
-                  ))}
-                </ul>
-              ) : null}
-              <div className="mt-3 space-y-2">
-                {maneuverArticles.length > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => setDrillView({
-                      kind: "maneuver-study",
-                      mission: item.mission,
-                      articleIds: maneuverArticles.map((article) => article.id),
-                    })}
-                    className="block w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-semibold text-sky-400 hover:bg-sky-500/20"
-                  >
-                    Detalhes das manobras
-                  </button>
-                ) : null}
-                {missionFlights.map((missionFlight) => {
-                  const outcome = state.flightOutcomes.get(missionFlight.id) ?? null;
-                  return (
-                    <button
-                      key={missionFlight.id}
-                      type="button"
-                      onClick={() => setDrillView({
-                        kind: "flight-review",
-                        missionName: item.mission.name,
-                        flightId: missionFlight.id,
-                        missionIndex: item.index,
-                      })}
-                      className={`block w-full rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${
-                        outcome === "approved"
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                          : outcome === "failed"
-                            ? "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                            : "border-slate-600/50 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50"
-                      }`}
-                    >
-                      Flight Review{missionFlight.flight_date ? ` · ${formatFlightDate(missionFlight.flight_date)}` : ""}
-                    </button>
-                  );
-                })}
-              </div>
-            </article>
-            );
-          })}
+          <div
+            ref={missionLayout === "carousel" ? visibleTimelineScrollerRef : undefined}
+            className={
+              missionLayout === "carousel"
+                ? "flex gap-3 overflow-x-auto pb-2"
+                : "grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3"
+            }
+          >
+            {visibleTimeline.map((item) => {
+              const maneuverSectionIds = item.mission.maneuverSectionIds ?? [];
+              const maneuverArticles = Array.from(
+                new Map(
+                  maneuverSectionIds
+                    .flatMap((sectionId) => maneuverArticlesBySection.get(sectionId) ?? [])
+                    .map((article) => [article.id, article]),
+                ).values(),
+              );
+              const missionFlights = trackFlights.filter((flight) => flight.trainingMissionIds.includes(item.mission.id));
+              return (
+                <MissionCard
+                  key={item.mission.id}
+                  item={item}
+                  maneuverArticles={maneuverArticles}
+                  missionFlights={missionFlights}
+                  flightOutcomes={state.flightOutcomes}
+                  layout={missionLayout}
+                  onOpenManeuverStudy={(mission, articleIds) =>
+                    setDrillView({ kind: "maneuver-study", mission, articleIds })
+                  }
+                  onOpenFlightReview={(missionName, flightId, missionIndex) =>
+                    setDrillView({ kind: "flight-review", missionName, flightId, missionIndex })
+                  }
+                />
+              );
+            })}
           </div>
         ) : (
           <div className="rounded-2xl border border-dashed border-slate-700/70 bg-slate-950/30 p-4 text-sm text-slate-400">
