@@ -27,6 +27,7 @@ const databases = new sdk.Databases(client);
 const users = new sdk.Users(client);
 const storage = new sdk.Storage(client);
 const functions = new sdk.Functions(client);
+const avatars = new sdk.Avatars(client);
 
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID;
@@ -15571,6 +15572,22 @@ function defaultSchoolRules() {
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
     ),
+    flightReviewClub: {
+      enabled: false,
+      landingPageType: "internal_public_page",
+      externalUrl: "",
+      showInStudentMenu: false,
+      benefits: [],
+      ctaSubscriptionUrl: "",
+      trialFlightCount: 0,
+      lpHeroTitle: "Flight Review Club",
+      lpHeroSubtitle: "Revise seus voos com telemetria, videos, fotos e dados reais para evoluir com mais clareza em cada etapa da formacao.",
+      lpCoverImageUrl: "",
+      lpCtaLabel: "Assinar o Flight Review Club",
+      lpValueProps: [],
+      lpBenefitItems: [],
+      pricingRules: [],
+    },
   };
 }
 
@@ -15902,6 +15919,42 @@ function publicSchoolRules(settings, updatedAt) {
         : [],
       ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
       trialFlightCount: (() => { const n = Number(settings?.flightReviewClub?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
+      lpHeroTitle: cleanString(settings?.flightReviewClub?.lpHeroTitle).slice(0, 120) || defaults.flightReviewClub.lpHeroTitle,
+      lpHeroSubtitle: cleanString(settings?.flightReviewClub?.lpHeroSubtitle).slice(0, 500) || defaults.flightReviewClub.lpHeroSubtitle,
+      lpCoverImageUrl: cleanString(settings?.flightReviewClub?.lpCoverImageUrl).slice(0, 2048),
+      lpCtaLabel: cleanString(settings?.flightReviewClub?.lpCtaLabel).slice(0, 80) || defaults.flightReviewClub.lpCtaLabel,
+      lpValueProps: Array.isArray(settings?.flightReviewClub?.lpValueProps)
+        ? settings.flightReviewClub.lpValueProps.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 12)
+        : [],
+      lpBenefitItems: Array.isArray(settings?.flightReviewClub?.lpBenefitItems)
+        ? settings.flightReviewClub.lpBenefitItems
+            .map((item) => ({
+              text: cleanString(item?.text).slice(0, 500),
+              imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
+            }))
+            .filter((item) => item.text)
+            .slice(0, 20)
+        : [],
+      pricingRules: Array.isArray(settings?.flightReviewClub?.pricingRules)
+        ? settings.flightReviewClub.pricingRules
+            .map((rule, index) => {
+              const minHours = Math.max(0, Number(rule?.minHours) || 0);
+              const rawMax = rule?.maxHours === null || rule?.maxHours === undefined || rule?.maxHours === "" ? null : Number(rule.maxHours);
+              const maxHours = Number.isFinite(rawMax) ? Math.max(minHours, rawMax) : null;
+              const amount = Number(rule?.amount);
+              return {
+                id: cleanString(rule?.id) || `frc-price-${index + 1}`,
+                trainingTrackId: cleanString(rule?.trainingTrackId).slice(0, 128),
+                trainingTrackName: cleanString(rule?.trainingTrackName).slice(0, 160),
+                minHours: Math.round(minHours * 10) / 10,
+                maxHours: maxHours === null ? null : Math.round(maxHours * 10) / 10,
+                amount: Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0,
+                active: rule?.active !== false,
+              };
+            })
+            .filter((rule) => rule.trainingTrackId && rule.amount > 0)
+            .slice(0, 50)
+        : [],
     },
     flightEvaluation: (() => {
       const defaults = {
@@ -17434,6 +17487,121 @@ async function uploadWppPngBuffer(png, fileName) {
   return appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, uploaded.$id);
 }
 
+/** Cache de mapas Windy no WhatsApp METAR — TTL por ICAO. */
+const WPP_WINDY_MAP_CACHE_TTL_MS = 45 * 60 * 1000;
+/** Zoom do print Windy no WPP (menor = mais área). */
+const WPP_WINDY_MAP_ZOOM = 8;
+
+function wppWindyMapCacheFileId(icao, kind) {
+  const code = aiswebService.normalizeIcao(icao).toLowerCase() || "xxxx";
+  const safeKind = kind === "sat" ? "sat" : "clouds";
+  return `wpp_windy_${code}_${safeKind}_z${WPP_WINDY_MAP_ZOOM}`;
+}
+
+async function getFreshWppWindyMapCacheUrl(icao, kind) {
+  if (!FLIGHTS_CSV_BUCKET_ID) return null;
+  const fileId = wppWindyMapCacheFileId(icao, kind);
+  try {
+    const file = await storage.getFile(FLIGHTS_CSV_BUCKET_ID, fileId);
+    const stamp = Date.parse(file?.$updatedAt || file?.$createdAt || "");
+    if (!Number.isFinite(stamp)) return null;
+    if (Date.now() - stamp > WPP_WINDY_MAP_CACHE_TTL_MS) return null;
+    return appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, fileId);
+  } catch {
+    return null;
+  }
+}
+
+async function putWppWindyMapCache(icao, kind, buffer) {
+  if (!FLIGHTS_CSV_BUCKET_ID) throw Object.assign(new Error("Storage nao configurado."), { status: 500 });
+  const fileId = wppWindyMapCacheFileId(icao, kind);
+  const safeKind = kind === "sat" ? "sat" : "clouds";
+  const safeName = `wpp-metar-windy-${safeKind}-${aiswebService.normalizeIcao(icao)}.jpg`;
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([buffer], safeName, { type: "image/jpeg" })
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(buffer, safeName)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de imagem nao suportado neste runtime."), { status: 500 });
+
+  await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, fileId).catch(() => undefined);
+  await storage.createFile(FLIGHTS_CSV_BUCKET_ID, fileId, inputFile, [
+    sdk.Permission.read(sdk.Role.any()),
+  ]);
+  return appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, fileId);
+}
+
+function buildWppWindySiteLink(overlay, lat, lng, zoom = WPP_WINDY_MAP_ZOOM) {
+  const layer = overlay === "satellite" ? "satellite" : "clouds";
+  if (lat == null || lng == null || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    return `https://www.windy.com/${layer}`;
+  }
+  return `https://www.windy.com/${layer}?${Number(lat)},${Number(lng)},${zoom}`;
+}
+
+async function resolveWppWindyMapUrls(icao, lat, lng) {
+  let cloudsMapUrl = await getFreshWppWindyMapCacheUrl(icao, "clouds");
+  let satMapUrl = await getFreshWppWindyMapCacheUrl(icao, "sat");
+  let mapSource = "cache";
+
+  if (cloudsMapUrl && satMapUrl) {
+    return { cloudsMapUrl, satMapUrl, mapSource };
+  }
+
+  const sharp = getSharpModule();
+  const snaps = await wppMetar.buildMetarWeatherMapSnapshots(lat, lng, icao, sharp, {
+    zoom: WPP_WINDY_MAP_ZOOM,
+    captureScreenshot: async (url) => {
+      const result = await avatars.getScreenshot({
+        url,
+        viewportWidth: 900,
+        viewportHeight: 700,
+        sleep: 5,
+        width: 900,
+        height: 700,
+        quality: 82,
+        output: sdk.ImageFormat.Jpeg,
+        theme: sdk.Theme.Dark,
+      });
+      return result;
+    },
+  });
+  mapSource = snaps?.source || "unknown";
+  if (snaps?.cloudsJpeg) {
+    cloudsMapUrl = await putWppWindyMapCache(icao, "clouds", snaps.cloudsJpeg);
+  }
+  if (snaps?.satelliteJpeg) {
+    satMapUrl = await putWppWindyMapCache(icao, "sat", snaps.satelliteJpeg);
+  }
+  return { cloudsMapUrl, satMapUrl, mapSource };
+}
+
+async function sendWppWindyMapMessages(settings, to, icao, lat, lng, maps) {
+  const cloudsMapUrl = maps?.cloudsMapUrl || null;
+  const satMapUrl = maps?.satMapUrl || null;
+  if (cloudsMapUrl) {
+    await sendWppImageMessage(settings, { to, link: cloudsMapUrl });
+  }
+  if (satMapUrl) {
+    await sendWppImageMessage(settings, { to, link: satMapUrl });
+  }
+  if (cloudsMapUrl || satMapUrl) {
+    await sendWppUrlButtonMessage(settings, {
+      to,
+      body: `Mapas meteorológicos · ${icao}`,
+      displayText: "Abrir no Windy",
+      url: buildWppWindySiteLink("clouds", lat, lng),
+    }).catch((err) => {
+      console.warn(`[wppWebhook] windy cta failed icao=${icao} error=${cleanString(err?.message).slice(0, 200)}`);
+    });
+  }
+  if (cloudsMapUrl || satMapUrl) {
+    return maps?.mapSource || "sent";
+  }
+  return "empty";
+}
+
 function formatWppWebcamDistanceKm(value) {
   const distance = Number(value);
   if (!Number.isFinite(distance)) return "N/D";
@@ -17542,6 +17710,14 @@ async function sendWppMetarConditions(settings, incoming, icaoCode) {
     return "metar_unavailable";
   }
 
+  // Dispara Windy o quanto antes (em paralelo com texto/SVGs/webcams).
+  const lat = airport?.rotaer?.lat;
+  const lng = airport?.rotaer?.lng;
+  const windyMapsPromise = resolveWppWindyMapUrls(icao, lat, lng).catch((err) => {
+    console.warn(`[wppWebhook] metar windy resolve icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+    return null;
+  });
+
   const parsed = airport?.met?.parsed || null;
   const analysis = wppMetar.analyzeWindVsRunways(parsed, airport?.rotaer?.runways);
   const checks = wppMetar.evaluateMinimums(
@@ -17601,15 +17777,31 @@ async function sendWppMetarConditions(settings, incoming, icaoCode) {
   }
 
   try {
-    const webcamStatus = await sendWppNearestWindyWebcams(settings, incoming.from, airport, {
-      icao,
-      limit: 3,
-      radiusKm: 60,
-    });
-    imageStatus = `${imageStatus}:${webcamStatus}`;
+    try {
+      const webcamStatus = await sendWppNearestWindyWebcams(settings, incoming.from, airport, {
+        icao,
+        limit: 3,
+        radiusKm: 60,
+      });
+      imageStatus = `${imageStatus}:${webcamStatus}`;
+    } catch (err) {
+      console.warn(`[wppWebhook] windy webcams fallback icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+      imageStatus = `${imageStatus}:webcams_failed`;
+    }
+
+    const maps = await windyMapsPromise;
+    if (maps) {
+      const windyStatus = await sendWppWindyMapMessages(settings, incoming.from, icao, lat, lng, maps);
+      imageStatus =
+        windyStatus === "empty"
+          ? `${imageStatus}:windy_maps_empty`
+          : `${imageStatus}:windy_maps:${maps.mapSource === "cache" ? "cache_hit" : maps.mapSource || windyStatus}`;
+    } else {
+      imageStatus = `${imageStatus}:windy_maps_failed`;
+    }
   } catch (err) {
-    console.warn(`[wppWebhook] windy webcams fallback icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
-    imageStatus = `${imageStatus}:webcams_failed`;
+    console.warn(`[wppWebhook] metar windy/webcams icao=${icao} error=${cleanString(err?.message).slice(0, 240)}`);
+    imageStatus = `${imageStatus}:windy_webcams_bundle_failed`;
   }
 
   await sleep(2000);
@@ -17803,6 +17995,14 @@ async function handleWppMetarWatchCommand(settings, incoming, command) {
 
 async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks, analysis, changed, rotaer = null) {
   const icao = watch.icao;
+  const lat = rotaer?.lat;
+  const lng = rotaer?.lng;
+  // Dispara Windy cedo, em paralelo com texto/webcams.
+  const windyMapsPromise = resolveWppWindyMapUrls(icao, lat, lng).catch((err) => {
+    console.warn(`[aisweb-metar-watch] windy resolve ${watch.phone}/${icao}: ${cleanString(err?.message).slice(0, 240)}`);
+    return null;
+  });
+
   const prefix = wppMetar.formatWppMetarWatchUpdatePrefix({
     icao,
     changedMetar: changed?.metar === true,
@@ -17821,6 +18021,7 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
     }),
   ].join("\n");
   await sendWppTextMessage(settings, { to: watch.phone, body: body.slice(0, 4096) });
+
   try {
     await sendWppNearestWindyWebcams(settings, watch.phone, rotaer || { icao }, {
       icao,
@@ -17830,6 +18031,16 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
   } catch (err) {
     console.warn(`[aisweb-metar-watch] windy webcams fallback ${watch.phone}/${icao}: ${cleanString(err?.message).slice(0, 240)}`);
   }
+
+  try {
+    const maps = await windyMapsPromise;
+    if (maps) {
+      await sendWppWindyMapMessages(settings, watch.phone, icao, lat, lng, maps);
+    }
+  } catch (err) {
+    console.warn(`[aisweb-metar-watch] windy maps fallback ${watch.phone}/${icao}: ${cleanString(err?.message).slice(0, 240)}`);
+  }
+
   await sendWppBotReply(settings, {
     to: watch.phone,
     body: `Acompanhamento de ${icao} segue ativo. Toque em Parar para encerrar.`,
@@ -21139,6 +21350,129 @@ async function getFlightCreditPackagesForStudentUserId(studentUserId) {
     config.packages = filterFlightCreditPackagesForUser(config.packages, profile, authUser);
   }
   return config;
+}
+
+async function getPrimaryStudentTrainingAssignment(studentUserId) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId || !STUDENT_TRACKS_COLLECTION_ID) return null;
+  const rows = await listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeUserId]),
+    sdk.Query.limit(100),
+  ]).catch(() => []);
+  return rows.find((row) => row.is_primary === true) || rows[0] || null;
+}
+
+async function getStudentFlownHours(studentUserId) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId || !FLIGHTS_COLLECTION_ID) return 0;
+  const flights = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeUserId]),
+    sdk.Query.limit(5000),
+    ...selectQuery(["flight_status", "block_time_minutes", "total_flight_minutes", "duration_sec"]),
+  ]).catch(() => []);
+  const total = flights.reduce((sum, flight) => sum + flightHoursFromDoc(flight), 0);
+  return Math.round(total * 10) / 10;
+}
+
+function selectFlightReviewClubPricingRule(rules, trackId, flownHours) {
+  return (Array.isArray(rules) ? rules : [])
+    .filter((rule) => rule?.active !== false && cleanString(rule?.trainingTrackId) === cleanString(trackId))
+    .sort((a, b) => Number(a.minHours || 0) - Number(b.minHours || 0))
+    .find((rule) => {
+      const min = Math.max(0, Number(rule.minHours) || 0);
+      const max = rule.maxHours === null || rule.maxHours === undefined || rule.maxHours === "" ? null : Number(rule.maxHours);
+      return flownHours >= min && (max === null || !Number.isFinite(max) || flownHours <= max);
+    }) || null;
+}
+
+async function createFlightReviewClubCheckout(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role !== "aluno") {
+    throw Object.assign(new Error("A assinatura do Flight Review Club esta disponivel apenas para alunos."), { status: 403 });
+  }
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  if (!club.enabled) throw Object.assign(new Error("Flight Review Club nao esta ativo."), { status: 403 });
+  const assignment = await getPrimaryStudentTrainingAssignment(actorUserId);
+  if (!assignment) throw Object.assign(new Error("Aluno sem trilha ativa para calcular o preco do Flight Review Club."), { status: 422 });
+  if (assignment.is_flight_review_club_member === true) {
+    throw Object.assign(new Error("Voce ja esta ativo no Flight Review Club."), { status: 409 });
+  }
+  const flownHours = await getStudentFlownHours(actorUserId);
+  const pricingRule = selectFlightReviewClubPricingRule(club.pricingRules, assignment.track_id, flownHours);
+  if (!pricingRule) {
+    throw Object.assign(new Error("Nenhuma regra de preco do Flight Review Club atende sua trilha e horas voadas."), { status: 404 });
+  }
+  const actor = await users.get({ userId: actorUserId });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const amount = Math.round(Number(pricingRule.amount) * 100) / 100;
+  const proposalId = sdk.ID.unique();
+  const membershipId = `frc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 28)}`;
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    proposalId,
+    {
+      school_id: SCHOOL_ID,
+      lead_id: actorUserId,
+      lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
+      lead_email: cleanString(actor.email),
+      hours: 0,
+      hour_price: 0,
+      total_value: amount,
+      products_json: JSON.stringify({
+        kind: "flight_review_club_subscription",
+        studentUserId: actorUserId,
+        assignmentId: cleanString(assignment.$id),
+        membershipId,
+        pricingRule: {
+          id: cleanString(pricingRule.id),
+          trainingTrackId: cleanString(pricingRule.trainingTrackId),
+          trainingTrackName: cleanString(pricingRule.trainingTrackName),
+          minHours: Number(pricingRule.minHours) || 0,
+          maxHours: pricingRule.maxHours ?? null,
+          amount,
+          flownHours,
+        },
+        products: [],
+      }),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCaktoOfferForProposal(doc);
+    const updated = await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    });
+    return {
+      proposalId: updated.$id,
+      paymentUrl: payment.paymentUrl,
+      amount,
+      pricingRuleId: cleanString(pricingRule.id),
+      trainingTrackName: cleanString(pricingRule.trainingTrackName),
+      flownHours,
+    };
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+  }
 }
 
 async function listStaffCreditPurchaseStudents(search = "") {
@@ -24959,6 +25293,11 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "createFlightCreditCheckout") {
       const checkout = await createFlightCreditCheckout(actorUserId, payload.packageId, payload.customHours, payload.weekdayOnly === true);
+      return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "createFlightReviewClubCheckout") {
+      const checkout = await createFlightReviewClubCheckout(actorUserId);
       return jsonResponse(res, 200, { checkout });
     }
 

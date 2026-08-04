@@ -779,6 +779,212 @@ async function fetchMapTileBuffer(z, x, y) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+function goesSnapshotCandidateTimes(now = new Date()) {
+  const times = [];
+  const base = new Date(now.getTime());
+  base.setUTCSeconds(0, 0);
+  base.setUTCMinutes(Math.floor(base.getUTCMinutes() / 10) * 10);
+  for (let i = 1; i <= 8; i += 1) {
+    const at = new Date(base.getTime() - i * 10 * 60_000);
+    times.push(at.toISOString().replace(/\.\d{3}Z$/, "Z"));
+  }
+  times.push(base.toISOString().slice(0, 10));
+  const yesterday = new Date(base.getTime() - 86_400_000);
+  times.push(yesterday.toISOString().slice(0, 10));
+  return times;
+}
+
+async function fetchNasaWorldviewSnapshot({
+  layer,
+  lat,
+  lng,
+  width = 800,
+  height = 600,
+  degSpan = 2.4,
+}) {
+  const d = Number(degSpan);
+  const bbox = `${Number(lng) - d},${Number(lat) - d},${Number(lng) + d},${Number(lat) + d}`;
+  for (const time of goesSnapshotCandidateTimes()) {
+    const url =
+      `https://wvs.earthdata.nasa.gov/api/v1/snapshot?REQUEST=GetSnapshot` +
+      `&LAYERS=${encodeURIComponent(layer)}` +
+      `&CRS=EPSG:4326` +
+      `&TIME=${encodeURIComponent(time)}` +
+      `&BBOX=${bbox}` +
+      `&FORMAT=image/jpeg` +
+      `&WIDTH=${width}` +
+      `&HEIGHT=${height}`;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "image/jpeg,image/*" },
+      });
+      if (!response.ok) continue;
+      const type = String(response.headers.get("content-type") || "");
+      if (!type.includes("image/")) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const buf = Buffer.from(await response.arrayBuffer());
+      // Snapshots vazios/erro costumam ser bem pequenos.
+      if (buf.length < 8_000) continue;
+      return { buffer: buf, time, layer };
+    } catch {
+      // tenta próximo timestamp
+    }
+  }
+  return null;
+}
+
+async function labelWeatherSnapshotJpeg(jpegBuffer, { icao, title, subtitle, credit }, sharpFactory) {
+  if (!sharpFactory || !jpegBuffer) return null;
+  const meta = await sharpFactory(jpegBuffer).metadata();
+  const width = meta.width || 800;
+  const height = meta.height || 600;
+  const creditText = credit || `source: windy.com · ${icao}`;
+  const labelSvg = Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <rect x="12" y="12" width="300" height="58" rx="10" fill="rgb(2 6 23)" fill-opacity="0.78"/>
+  <text x="26" y="36" fill="white" font-size="16" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(title)}</text>
+  <text x="26" y="56" fill="rgb(148 163 184)" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(subtitle || icao)}</text>
+  <text x="${width - 14}" y="${height - 14}" text-anchor="end" fill="white" fill-opacity="0.8" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(creditText)}</text>
+</svg>`);
+  return sharpFactory(jpegBuffer)
+    .composite([{ input: labelSvg, left: 0, top: 0 }])
+    .jpeg({ quality: 84 })
+    .toBuffer();
+}
+
+function buildWindyEmbedScreenshotUrl({ lat, lng, zoom = 8, overlay = "clouds", marker = true }) {
+  const query = new URLSearchParams({
+    lat: String(lat),
+    lon: String(lng),
+    detailLat: String(lat),
+    detailLon: String(lng),
+    zoom: String(zoom),
+    level: "surface",
+    overlay: String(overlay),
+    product: "ecmwf",
+    menu: "",
+    message: "",
+    marker: marker ? "true" : "",
+    calendar: "now",
+    pressure: "",
+    type: "map",
+    location: "coordinates",
+    detail: "",
+    metricWind: "kt",
+    metricTemp: "°C",
+    radarRange: "-1",
+  });
+  return `https://embed.windy.com/embed2.html?${query.toString()}`;
+}
+
+async function captureBufferFromScreenshotFn(captureScreenshot, url) {
+  if (typeof captureScreenshot !== "function") return null;
+  const raw = await captureScreenshot(url);
+  if (!raw) return null;
+  const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+  if (buf.length < 8_000) return null;
+  return buf;
+}
+
+/**
+ * Snapshots Windy (nuvens + satélite) centrados no aeródromo.
+ * Preferência: screenshot headless do embed Windy (via Appwrite Avatars).
+ * Fallback: NASA Worldview/GOES se o screenshot falhar.
+ */
+async function buildMetarWeatherMapSnapshots(lat, lng, icao, sharpFactory, options = {}) {
+  if (!sharpFactory) throw new Error("Sharp indisponível.");
+  if (lat == null || lng == null || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    return null;
+  }
+  const safeIcao = normalizeIcao(icao) || "AD";
+  const zoom = Number(options.zoom) || 8;
+  const captureScreenshot = options.captureScreenshot;
+  const latN = Number(lat);
+  const lngN = Number(lng);
+
+  const cloudsEmbed = buildWindyEmbedScreenshotUrl({
+    lat: latN,
+    lng: lngN,
+    zoom,
+    overlay: "clouds",
+    marker: true,
+  });
+  const satEmbed = buildWindyEmbedScreenshotUrl({
+    lat: latN,
+    lng: lngN,
+    zoom,
+    overlay: "satellite",
+    marker: true,
+  });
+
+  let cloudsRaw = null;
+  let satRaw = null;
+  let source = "windy";
+
+  try {
+    // Sequencial: o serviço de screenshot é mais estável assim, e o Windy precisa de sleep.
+    const cloudsBuf = await captureBufferFromScreenshotFn(captureScreenshot, cloudsEmbed);
+    const satBuf = await captureBufferFromScreenshotFn(captureScreenshot, satEmbed);
+    if (cloudsBuf) cloudsRaw = { buffer: cloudsBuf, label: "Windy · Nuvens" };
+    if (satBuf) satRaw = { buffer: satBuf, label: "Windy · Satélite" };
+  } catch (err) {
+    console.warn(
+      `[wppMetar] windy screenshot failed icao=${safeIcao} error=${String(err?.message || err).slice(0, 200)}`,
+    );
+  }
+
+  if (!cloudsRaw && !satRaw) {
+    source = "goes_fallback";
+    const [goesClouds, goesSat] = await Promise.all([
+      fetchNasaWorldviewSnapshot({
+        layer: "GOES-East_ABI_Band13_Clean_Infrared",
+        lat: latN,
+        lng: lngN,
+      }),
+      fetchNasaWorldviewSnapshot({
+        layer: "GOES-East_ABI_GeoColor",
+        lat: latN,
+        lng: lngN,
+      }),
+    ]);
+    if (goesClouds) cloudsRaw = { buffer: goesClouds.buffer, label: `GOES IR · ${goesClouds.time || ""}`.trim() };
+    if (goesSat) satRaw = { buffer: goesSat.buffer, label: `GOES GeoColor · ${goesSat.time || ""}`.trim() };
+  }
+
+  const credit = source === "windy" ? `source: windy.com · ${safeIcao}` : `source: NASA/NOAA GOES · ${safeIcao}`;
+  const [cloudsJpeg, satelliteJpeg] = await Promise.all([
+    cloudsRaw
+      ? labelWeatherSnapshotJpeg(
+          cloudsRaw.buffer,
+          {
+            icao: safeIcao,
+            title: source === "windy" ? `Nuvens · ${safeIcao}` : `Nuvens IR · ${safeIcao}`,
+            subtitle: cloudsRaw.label,
+            credit,
+          },
+          sharpFactory,
+        )
+      : null,
+    satRaw
+      ? labelWeatherSnapshotJpeg(
+          satRaw.buffer,
+          {
+            icao: safeIcao,
+            title: `Satélite · ${safeIcao}`,
+            subtitle: satRaw.label,
+            credit,
+          },
+          sharpFactory,
+        )
+      : null,
+  ]);
+
+  if (!cloudsJpeg && !satelliteJpeg) return null;
+  return { cloudsJpeg, satelliteJpeg, source };
+}
+
 /**
  * Monta imagem satélite 3x3 tiles (estilo da aba Detalhes) com marcador do aeródromo.
  * Retorna PNG buffer — o caller faz upload.
@@ -1260,6 +1466,8 @@ module.exports = {
   buildCloudStackSvg,
   buildSunCardSvg,
   buildAirportMapPng,
+  buildMetarWeatherMapSnapshots,
+  buildWindyEmbedScreenshotUrl,
   statusEmoji,
   METAR_WATCH_HOURS,
 };
