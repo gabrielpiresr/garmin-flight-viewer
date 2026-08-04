@@ -8,6 +8,7 @@ import {
 } from "../lib/windyEmbed";
 import { WindyIsobarsIcon, WindyOverlayIcon } from "../lib/windyOverlayIcons";
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
+import { REA_LAYER_TOGGLES_PLANNING, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "./ReaRoutesOverlay";
 
 type MapStyle = "satellite" | "roads" | "terrain" | "windy";
 
@@ -39,6 +40,8 @@ const WMS_LAYERS = [
   { id: "atz", label: "ATZ", layer: "ICA:ATZ", defaultOn: true },
 ] as const;
 
+type PlanLayerId = (typeof WMS_LAYERS)[number]["id"] | (typeof REA_LAYER_TOGGLES_PLANNING)[number]["id"];
+
 const WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 
 type WindyView = { lat: number; lon: number; zoom: number };
@@ -50,14 +53,18 @@ const IDENTITY_TRANSFORM: WindyTransform = { dx: 0, dy: 0, scale: 1 };
 function FitRoute({ positions }: { positions: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
-    if (positions.length === 0) return;
+    const valid = positions.filter(
+      (p): p is [number, number] =>
+        Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]),
+    );
+    if (valid.length === 0) return;
     window.requestAnimationFrame(() => {
       map.invalidateSize(false);
-      if (positions.length === 1) {
-        map.setView(positions[0]!, 10, { animate: false });
+      if (valid.length === 1) {
+        map.setView(valid[0]!, 10, { animate: false });
         return;
       }
-      map.fitBounds(L.latLngBounds(positions), { padding: [36, 36], animate: false });
+      map.fitBounds(L.latLngBounds(valid), { padding: [36, 36], animate: false });
     });
   }, [map, positions]);
   return null;
@@ -76,10 +83,17 @@ function buildViewUrl(view: WindyView, overlay: WindyOverlayId, pressure: boolea
 }
 
 function seedFromPositions(positions: [number, number][]): WindyView {
-  if (positions.length === 1) {
-    return { lat: positions[0]![0], lon: positions[0]![1], zoom: 10 };
+  const valid = positions.filter(
+    (p): p is [number, number] =>
+      Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]),
+  );
+  if (valid.length === 0) {
+    return { lat: -15.78, lon: -47.93, zoom: 5 };
   }
-  const center = L.latLngBounds(positions).getCenter();
+  if (valid.length === 1) {
+    return { lat: valid[0]![0], lon: valid[0]![1], zoom: 10 };
+  }
+  const center = L.latLngBounds(valid).getCenter();
   return { lat: center.lat, lon: center.lng, zoom: 8 };
 }
 
@@ -187,7 +201,8 @@ function pointIcon(label: string, color: string) {
       <span style="font:700 9px/1 ui-monospace,monospace;color:#e2e8f0;background:rgba(2,6,23,.75);padding:2px 4px;border-radius:4px">${label}</span>
     </div>`,
     iconSize: [64, 28],
-    iconAnchor: [32, 8],
+    // Centro do círculo (14px incl. borda): 7px do topo
+    iconAnchor: [32, 7],
   });
 }
 
@@ -207,12 +222,18 @@ export function FlightPlanMap({
   const [mapStyle, setMapStyle] = useState<MapStyle>("windy");
   const [windyOverlay, setWindyOverlay] = useState<WindyOverlayId>("clouds");
   const [windyPressure, setWindyPressure] = useState(false);
-  const [layersOn, setLayersOn] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(WMS_LAYERS.map((l) => [l.id, l.defaultOn])),
+  const [layersOn, setLayersOn] = useState<Record<PlanLayerId, boolean>>(() =>
+    Object.fromEntries([
+      ...WMS_LAYERS.map((l) => [l.id, l.defaultOn]),
+      ...REA_LAYER_TOGGLES_PLANNING.map((l) => [l.id, l.defaultOn]),
+    ]) as Record<PlanLayerId, boolean>,
   );
 
   const positions = useMemo(
-    () => waypoints.map((w) => [w.lat, w.lng] as [number, number]),
+    () =>
+      waypoints
+        .filter((w) => Number.isFinite(w.lat) && Number.isFinite(w.lng))
+        .map((w) => [w.lat, w.lng] as [number, number]),
     [waypoints],
   );
 
@@ -390,6 +411,24 @@ export function FlightPlanMap({
             </button>
           );
         })}
+        {REA_LAYER_TOGGLES_PLANNING.map((layer) => {
+          const on = layersOn[layer.id] === true;
+          return (
+            <button
+              key={layer.id}
+              type="button"
+              title={layer.title}
+              onClick={() => setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))}
+              className={`rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${
+                on
+                  ? "bg-amber-500/30 text-amber-100 ring-1 ring-amber-400/50"
+                  : "bg-slate-900 text-slate-500 ring-1 ring-slate-700 hover:text-slate-300"
+              }`}
+            >
+              {layer.label}
+            </button>
+          );
+        })}
       </div>
 
       <div className="relative h-[450px] w-full overflow-hidden bg-slate-950 [&_.leaflet-control-attribution]:text-[9px]">
@@ -487,7 +526,15 @@ export function FlightPlanMap({
               />
             ) : null,
           )}
-          <Polyline positions={positions} pathOptions={{ color: "#22d3ee", weight: 3.2, opacity: 0.95 }} />
+          <ReaRoutesOverlayBoundary>
+            <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} />
+            <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} />
+          </ReaRoutesOverlayBoundary>
+          <Polyline
+            positions={positions}
+            pathOptions={{ color: "#22d3ee", weight: 3.2, opacity: 0.95 }}
+            pane="overlayPane"
+          />
           {positions.map((pos, idx) => {
             const isFirst = idx === 0;
             const isLast = idx === positions.length - 1;

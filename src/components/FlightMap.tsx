@@ -1,8 +1,11 @@
 import L from "leaflet";
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import type { FlightPoint, TrafficPatternAnalysis } from "../types/flight";
+import { REA_LAYER_TOGGLES, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "./ReaRoutesOverlay";
+
+type AirspaceLayerId = (typeof REA_LAYER_TOGGLES)[number]["id"];
 
 function calcBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const phi1 = (lat1 * Math.PI) / 180;
@@ -156,12 +159,20 @@ function ImperativeRouteLayers({
   const map = useMap();
 
   useEffect(() => {
-    const renderer = L.canvas({ padding: 0.35 });
+    // Garante trajeto acima da REA (pane 350)
+    let routePane = map.getPane("flight-route-pane");
+    if (!routePane) {
+      routePane = map.createPane("flight-route-pane");
+      routePane.style.zIndex = "450";
+    }
+
+    const renderer = L.canvas({ padding: 0.35, pane: "flight-route-pane" });
     const group = L.layerGroup().addTo(map);
 
     // Trajeto base (todo o voo) — esmaecido quando há seleção
     L.polyline(positions, {
       renderer,
+      pane: "flight-route-pane",
       color: "#d946ef",
       weight: 2.4,
       opacity: selectedPositions.length > 1 ? 0.4 : 0.9,
@@ -177,6 +188,7 @@ function ImperativeRouteLayers({
         if (seg.positions.length < 2) continue;
         L.polyline(seg.positions, {
           renderer,
+          pane: "flight-route-pane",
           color: seg.color,
           weight: 3.4,
           opacity: 0.95,
@@ -187,6 +199,7 @@ function ImperativeRouteLayers({
       // Sem padrão de circuito — trajeto selecionado em fúcsia uniforme
       L.polyline(selectedPositions, {
         renderer,
+        pane: "flight-route-pane",
         color: "#d946ef",
         weight: 3.4,
         opacity: 0.95,
@@ -197,6 +210,7 @@ function ImperativeRouteLayers({
     for (const pos of sampleForMarkers(positions, 20)) {
       L.circleMarker(pos, {
         renderer,
+        pane: "flight-route-pane",
         radius: 3,
         color: "#fff",
         fillColor: "#d946ef",
@@ -207,10 +221,18 @@ function ImperativeRouteLayers({
     }
 
     for (const marker of arrowMarkers) {
-      L.marker(marker.pos, { icon: arrowIcon(marker.deg), interactive: false }).addTo(group);
+      L.marker(marker.pos, {
+        icon: arrowIcon(marker.deg),
+        pane: "flight-route-pane",
+        interactive: false,
+      }).addTo(group);
     }
     if (planeMarker) {
-      L.marker(planeMarker.pos, { icon: planeIcon(planeMarker.deg), interactive: false }).addTo(group);
+      L.marker(planeMarker.pos, {
+        icon: planeIcon(planeMarker.deg),
+        pane: "flight-route-pane",
+        interactive: false,
+      }).addTo(group);
     }
 
     map.invalidateSize(false);
@@ -243,6 +265,10 @@ type Props = {
 
 export const FlightMap = memo(
   function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs, coloredSegments }: Props) {
+    const [layersOn, setLayersOn] = useState<Record<AirspaceLayerId, boolean>>(() =>
+      Object.fromEntries(REA_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn])) as Record<AirspaceLayerId, boolean>,
+    );
+
     const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
       const [t0, t1] = selectedRangeT;
@@ -329,11 +355,36 @@ export const FlightMap = memo(
     }
 
     return (
-      <div className={className ?? "h-72 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950 md:h-96"}>
+      <div
+        className={`relative ${className ?? "h-72 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950 md:h-96"}`}
+      >
+        <div className="pointer-events-none absolute left-2 top-2 z-[1000] flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5">
+          <span className="rounded-md bg-slate-950/80 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 backdrop-blur-sm">
+            Espaço aéreo
+          </span>
+          {REA_LAYER_TOGGLES.map((layer) => {
+            const on = layersOn[layer.id] === true;
+            return (
+              <button
+                key={layer.id}
+                type="button"
+                onClick={() => setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))}
+                className={`pointer-events-auto rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide backdrop-blur-sm transition ${
+                  on
+                    ? "bg-amber-500/30 text-amber-100 ring-1 ring-amber-400/50"
+                    : "bg-slate-950/80 text-slate-500 ring-1 ring-slate-700 hover:text-slate-300"
+                }`}
+                title={layer.title}
+              >
+                {layer.label}
+              </button>
+            );
+          })}
+        </div>
         <MapContainer
           center={center}
           zoom={11}
-          className="h-full w-full"
+          className="h-full w-full [&_.leaflet-control-attribution]:text-[9px]"
           scrollWheelZoom
           zoomAnimation
           markerZoomAnimation
@@ -341,7 +392,7 @@ export const FlightMap = memo(
           preferCanvas
         >
           <TileLayer
-            attribution="Tiles &copy; Esri"
+            attribution="Tiles &copy; Esri · REA/REH GeoAISWEB DECEA"
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
             maxZoom={18}
             keepBuffer={4}
@@ -349,6 +400,10 @@ export const FlightMap = memo(
             updateWhenZooming
             opacity={1}
           />
+          <ReaRoutesOverlayBoundary>
+            <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} />
+            <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} />
+          </ReaRoutesOverlayBoundary>
           <ResizeInvalidator />
           <ImperativeRouteLayers
             positions={positions}

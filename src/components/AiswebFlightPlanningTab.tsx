@@ -15,8 +15,10 @@ import {
   formatDistanceNm,
   formatEteHours,
   formatFuel,
+  snapWaypointsToFixes,
   summarizeFlightPlanRoute,
 } from "../lib/flightPlanningRoute";
+import { collectReaFixPoints, loadReaRoutes, type ReaFixPoint } from "../lib/reaRoutesDb";
 import { normalizeIcao } from "../lib/aiswebMetar";
 import {
   offlineBriefingPath,
@@ -487,6 +489,8 @@ export function AiswebFlightPlanningTab() {
   const [airspaces, setAirspaces] = useState<FlightPlanAirspaceHit[]>([]);
   const [airspaceLoading, setAirspaceLoading] = useState(false);
   const [airspaceError, setAirspaceError] = useState<string | null>(null);
+  const [reaFixes, setReaFixes] = useState<ReaFixPoint[]>([]);
+
   const [generated, setGenerated] = useState(false);
 
   useEffect(() => {
@@ -536,10 +540,10 @@ export function AiswebFlightPlanningTab() {
     return destCoords;
   }, [airports, destination, destCoords]);
 
-  const waypoints = useMemo(
-    () => buildFullRouteWaypoints(routeText, effectiveOrigin, effectiveDest),
-    [routeText, effectiveOrigin, effectiveDest],
-  );
+  const waypoints = useMemo(() => {
+    const raw = buildFullRouteWaypoints(routeText, effectiveOrigin, effectiveDest);
+    return snapWaypointsToFixes(raw, reaFixes);
+  }, [routeText, effectiveOrigin, effectiveDest, reaFixes]);
   const cruise = Number(String(cruiseSpeedKt).replace(",", "."));
   const burn = Number(String(fuelBurn).replace(",", "."));
   const routeSummary = useMemo(
@@ -550,6 +554,21 @@ export function AiswebFlightPlanningTab() {
       }),
     [waypoints, cruise, burn],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([loadReaRoutes("rea"), loadReaRoutes("reh")])
+      .then(([rea, reh]) => {
+        if (cancelled) return;
+        setReaFixes(collectReaFixPoints([...rea.features, ...reh.features]));
+      })
+      .catch(() => {
+        if (!cancelled) setReaFixes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

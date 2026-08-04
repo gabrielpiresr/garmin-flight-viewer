@@ -4,9 +4,10 @@ const NM_IN_M = 1852;
 /** Mean Earth radius (m) — closer to common aviation GC calculators than 6371 km. */
 const EARTH_RADIUS_M = 6_371_008.8;
 
-/** Compact ICAO FPL / NexAtlas fix: 2306S04634W or 230600S0463400W */
+/** Compact ICAO FPL / NexAtlas: 2306S04634W, 230600S0463400W, 2331.32S04504.93W */
 const COMPACT_COORD =
-  /^(\d{2})(\d{2})(\d{2})?([NS])(\d{3})(\d{2})(\d{2})?([EW])$/i;
+  /^(\d{2})(\d{2})(?:(\d{2})|\.(\d{1,4}))?([NS])\/?(\d{3})(\d{2})(?:(\d{2})|\.(\d{1,4}))?([EW])$/i;
+
 
 const SKIP_TOKENS = new Set([
   "DCT",
@@ -29,23 +30,47 @@ function dmsToDecimal(deg: number, min: number, sec: number, hemi: string): numb
 }
 
 export function parseCompactAviationCoord(token: string): { lat: number; lng: number } | null {
-  const match = String(token || "").trim().toUpperCase().match(COMPACT_COORD);
+  const normalized = String(token || "")
+    .trim()
+    .toUpperCase()
+    .replace(/,/g, ".");
+  const match = normalized.match(COMPACT_COORD);
   if (!match) return null;
   const latDeg = Number(match[1]);
-  const latMin = Number(match[2]);
-  const latSec = match[3] != null ? Number(match[3]) : 0;
-  const lngDeg = Number(match[5]);
-  const lngMin = Number(match[6]);
-  const lngSec = match[7] != null ? Number(match[7]) : 0;
-  if (![latDeg, latMin, latSec, lngDeg, lngMin, lngSec].every(Number.isFinite)) return null;
-  if (latDeg > 90 || lngDeg > 180 || latMin >= 60 || lngMin >= 60 || latSec >= 60 || lngSec >= 60) {
-    return null;
+  const latMinWhole = Number(match[2]);
+  const lngDeg = Number(match[6]);
+  const lngMinWhole = Number(match[7]);
+  if (![latDeg, latMinWhole, lngDeg, lngMinWhole].every(Number.isFinite)) return null;
+  if (latDeg > 90 || lngDeg > 180 || latMinWhole >= 60 || lngMinWhole >= 60) return null;
+
+  let latMin = latMinWhole;
+  let latSec = 0;
+  if (match[3] != null) {
+    latSec = Number(match[3]);
+    if (!Number.isFinite(latSec) || latSec >= 60) return null;
+  } else if (match[4] != null) {
+    const frac = Number(`0.${match[4]}`);
+    if (!Number.isFinite(frac)) return null;
+    latMin += frac;
   }
+
+  let lngMin = lngMinWhole;
+  let lngSec = 0;
+  if (match[8] != null) {
+    lngSec = Number(match[8]);
+    if (!Number.isFinite(lngSec) || lngSec >= 60) return null;
+  } else if (match[9] != null) {
+    const frac = Number(`0.${match[9]}`);
+    if (!Number.isFinite(frac)) return null;
+    lngMin += frac;
+  }
+
   return {
-    lat: dmsToDecimal(latDeg, latMin, latSec, match[4]!),
-    lng: dmsToDecimal(lngDeg, lngMin, lngSec, match[8]!),
+    lat: dmsToDecimal(latDeg, latMin, latSec, match[5]!),
+    lng: dmsToDecimal(lngDeg, lngMin, lngSec, match[10]!),
   };
 }
+
 
 export function formatCoordLabel(lat: number, lng: number): string {
   const latH = lat >= 0 ? "N" : "S";
@@ -108,6 +133,46 @@ export function parseFplRouteText(raw: string): FlightPlanWaypoint[] {
 }
 
 const NEAR_ENDPOINT_M = 1852 * 1.5; // 1.5 NM
+
+/**
+ * FPL/NexAtlas costuma exportar DDMM (sem segundos). Isso desloca o ponto vs o
+ * fixo da carta. Se estiver perto de um fixo REA/REH, usa a coordenada precisa.
+ */
+export function snapWaypointsToFixes(
+  waypoints: FlightPlanWaypoint[],
+  fixes: Array<{ lat: number; lon?: number; lng?: number; name?: string }>,
+  maxDistM = NEAR_ENDPOINT_M,
+): FlightPlanWaypoint[] {
+  if (!waypoints.length || !fixes.length) return waypoints;
+  const catalog = fixes
+    .map((f) => {
+      const lon = f.lon ?? f.lng;
+      if (!Number.isFinite(f.lat) || lon == null || !Number.isFinite(lon)) return null;
+      return { lat: f.lat, lng: lon as number, name: f.name };
+    })
+    .filter((f): f is { lat: number; lng: number; name?: string } => f != null);
+  if (!catalog.length) return waypoints;
+
+  return waypoints.map((wp) => {
+    if (wp.kind === "origin" || wp.kind === "destination" || wp.kind === "airport") return wp;
+    let best: { lat: number; lng: number; name?: string } | null = null;
+    let bestDist = Infinity;
+    for (const fix of catalog) {
+      const d = haversineM(wp, fix);
+      if (d < bestDist) {
+        bestDist = d;
+        best = fix;
+      }
+    }
+    if (!best || bestDist > maxDistM) return wp;
+    return {
+      ...wp,
+      lat: best.lat,
+      lng: best.lng,
+      label: best.name?.trim() ? best.name.trim().toUpperCase() : wp.label,
+    };
+  });
+}
 
 /** NexAtlas omits dep/arr — prepend/append airport coordinates when available. */
 export function buildFullRouteWaypoints(
