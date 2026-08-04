@@ -144,13 +144,16 @@ export function snapWaypointsToFixes(
   maxDistM = NEAR_ENDPOINT_M,
 ): FlightPlanWaypoint[] {
   if (!waypoints.length || !fixes.length) return waypoints;
-  const catalog = fixes
-    .map((f) => {
-      const lon = f.lon ?? f.lng;
-      if (!Number.isFinite(f.lat) || lon == null || !Number.isFinite(lon)) return null;
-      return { lat: f.lat, lng: lon as number, name: f.name };
-    })
-    .filter((f): f is { lat: number; lng: number; name?: string } => f != null);
+  const catalog: Array<{ lat: number; lng: number; name?: string }> = [];
+  for (const f of fixes) {
+    const lon = f.lon ?? f.lng;
+    if (!Number.isFinite(f.lat) || lon == null || !Number.isFinite(lon)) continue;
+    catalog.push({
+      lat: f.lat,
+      lng: lon,
+      ...(f.name != null && f.name !== "" ? { name: f.name } : {}),
+    });
+  }
   if (!catalog.length) return waypoints;
 
   return waypoints.map((wp) => {
