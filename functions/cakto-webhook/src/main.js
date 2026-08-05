@@ -16,6 +16,7 @@ const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLE
 const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || "school_costs";
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID || "";
+const STUDENT_TRACKS_COLLECTION_ID = process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID || "";
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || "";
 const WEBHOOK_TOKEN = process.env.CAKTO_WEBHOOK_TOKEN || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
@@ -603,6 +604,48 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
   }
 }
 
+async function findPrimaryStudentTrack(studentUserId) {
+  if (!STUDENT_TRACKS_COLLECTION_ID || !studentUserId) return null;
+  const result = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.limit(100),
+  ]);
+  return result.documents.find((doc) => doc.is_primary === true) || result.documents[0] || null;
+}
+
+async function fulfillFlightReviewClubSubscription(receiptId, proposal, normalized) {
+  const metadata = safeParse(proposal?.products_json, null);
+  if (!proposal || !metadata || Array.isArray(metadata) || metadata.kind !== "flight_review_club_subscription") {
+    return { applicable: false, membershipId: "" };
+  }
+  const studentUserId = clean(metadata.studentUserId);
+  if (!studentUserId) throw new Error("Proposta FRC sem aluno vinculado.");
+  if (!STUDENT_TRACKS_COLLECTION_ID) throw new Error("Colecao de trilhas do aluno nao configurada para ativar o FRC.");
+  const assignmentId = clean(metadata.assignmentId);
+  const assignment = assignmentId
+    ? await databases.getDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, assignmentId).catch(() => null)
+    : await findPrimaryStudentTrack(studentUserId);
+  if (!assignment) throw new Error("Vinculo de trilha do aluno nao encontrado para ativar o FRC.");
+  if (clean(assignment.student_user_id) !== studentUserId) {
+    throw new Error("Vinculo de trilha nao pertence ao aluno da proposta FRC.");
+  }
+  await databases.updateDocument(DATABASE_ID, STUDENT_TRACKS_COLLECTION_ID, assignment.$id, {
+    is_flight_review_club_member: true,
+    updated_at: new Date().toISOString(),
+  });
+  const membershipId = clean(metadata.membershipId) || `frc_${crypto.createHash("sha256").update(proposal.$id).digest("hex").slice(0, 28)}`;
+  await updateFulfillment(receiptId, proposal.$id, {
+    status: "completed",
+    error: "",
+    creditId: membershipId,
+    sagaStatus: "not_applicable",
+    sagaError: "",
+    sagaMarker: "",
+  });
+  return { applicable: true, membershipId };
+}
+
 async function notifyAdminsOfSale(receiptId, normalized, proposal) {
   const metadata = safeParse(proposal?.products_json, null);
   const snapshot = metadata && !Array.isArray(metadata) ? asObject(metadata.snapshot) : {};
@@ -769,6 +812,21 @@ module.exports = async ({ req, res, log, error }) => {
           status: "failed",
           error: fulfillmentError?.message || String(fulfillmentError),
           creditId: clean(proposalMetadata?.creditId),
+        }).catch(() => undefined);
+        throw fulfillmentError;
+      }
+    } else if (normalized.eventType === "purchase_approved" && proposalMetadata?.kind === "flight_review_club_subscription") {
+      try {
+        const fulfillment = await fulfillFlightReviewClubSubscription(documentId, proposal, normalized);
+        log(`Cakto FRC fulfilled: proposal=${proposalId} membership=${fulfillment.membershipId}`);
+      } catch (fulfillmentError) {
+        await updateFulfillment(documentId, proposalId, {
+          status: "failed",
+          error: fulfillmentError?.message || String(fulfillmentError),
+          creditId: clean(proposalMetadata?.membershipId),
+          sagaStatus: "not_applicable",
+          sagaError: "",
+          sagaMarker: "",
         }).catch(() => undefined);
         throw fulfillmentError;
       }

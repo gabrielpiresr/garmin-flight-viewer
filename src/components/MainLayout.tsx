@@ -42,6 +42,7 @@ const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default
 const StudentDreTab = lazy(() => import("./StudentDreTab").then((module) => ({ default: module.StudentDreTab })));
 const StudentHome = lazy(() => import("./StudentHome").then((module) => ({ default: module.StudentHome })));
 const StudentScheduleTab = lazy(() => import("./StudentScheduleTab").then((module) => ({ default: module.StudentScheduleTab })));
+const StudentEndorsementsTab = lazy(() => import("./StudentEndorsementsTab").then((module) => ({ default: module.StudentEndorsementsTab })));
 const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 const AiswebTab = lazy(() => import("./AiswebTab").then((module) => ({ default: module.AiswebTab })));
@@ -238,6 +239,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "endossos",
+    label: "Endossos",
+    sublabel: "Arquivos para voo solo",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M6.75 2.25A2.25 2.25 0 004.5 4.5v15a2.25 2.25 0 002.25 2.25h10.5a2.25 2.25 0 002.25-2.25V8.56a2.25 2.25 0 00-.659-1.591l-4.31-4.31A2.25 2.25 0 0012.94 2.25H6.75z" />
+      </svg>
+    ),
+  },
+  {
     id: "album",
     label: "Álbum",
     sublabel: "Fotos e vídeos dos voos",
@@ -261,6 +272,7 @@ const SECTION_ROUTES = [
   { id: "manobras", path: "/aluno/manobras" },
   { id: "painel", path: "/aluno/painel" },
   { id: "perfil", path: "/aluno/perfil" },
+  { id: "endossos", path: "/aluno/endossos" },
   { id: "ajuda", path: "/aluno/ajuda" },
   { id: "dre", path: "/aluno/edb" },
   { id: "fuelings", path: "/aluno/abastecimentos" },
@@ -273,7 +285,7 @@ const SECTION_ROUTES = [
 const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
   { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb"] },
   { label: "Evoluir", ids: ["jornada", "manobras", "painel", "manuais", "avisos", "album"] },
-  { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "indique-ganhe"] },
+  { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe"] },
   { label: "Suporte", ids: ["ajuda"] },
 ];
 
@@ -639,6 +651,7 @@ export function MainLayout() {
     enabled: rules.flightReviewClub.enabled,
     isClubMember,
     lpUrl: clubLpUrl,
+    ctaSubscriptionUrl: rules.flightReviewClub.ctaSubscriptionUrl,
     trialFlightCount: rules.flightReviewClub.trialFlightCount,
     benefits: rules.flightReviewClub.benefits,
   };
@@ -877,6 +890,13 @@ export function MainLayout() {
             <div hidden={section !== "perfil"}>
               <LazyTab section="perfil">
                 <AlunoProfileDashboard />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("endossos") && (
+            <div hidden={section !== "endossos"}>
+              <LazyTab section="endossos">
+                <StudentEndorsementsTab />
               </LazyTab>
             </div>
           )}

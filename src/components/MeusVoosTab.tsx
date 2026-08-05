@@ -18,6 +18,7 @@ import {
   type FlightDisplayInfo,
 } from "../lib/flightDisplay";
 import { isFlightEvaluationEligible, isScheduledFlightStatus } from "../lib/flightEvaluationEligibility";
+import { buildFlightReviewClubTrialIndexMap } from "../lib/flightReviewClubTrial";
 import {
   deleteSavedFlight,
   getSavedFlight,
@@ -1038,13 +1039,13 @@ export function MeusVoosTab() {
   const trialFlightIndexById = useMemo(() => {
     const map: Record<string, number> = {};
     if (!isStudentView) return map;
-    const realFlights = items.filter((item) => !isScheduledFlightStatus(item, infoById[item.id]));
-    realFlights
-      .slice()
-      .sort((a, b) => getFlightDateTimeMs(a, infoById[a.id]) - getFlightDateTimeMs(b, infoById[b.id]))
-      .forEach((item, index) => {
-        map[item.id] = index;
-      });
+    const indexes = buildFlightReviewClubTrialIndexMap(
+      items,
+      (item) => !isScheduledFlightStatus(item, infoById[item.id]),
+    );
+    indexes.forEach((index, flightId) => {
+      map[flightId] = index;
+    });
     return map;
   }, [isStudentView, items, infoById]);
   const consolidatedSummary = useMemo(() => {

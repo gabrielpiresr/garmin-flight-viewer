@@ -72,6 +72,7 @@
     "appwrite:setup-logbook-anac": "node scripts/setup-logbook-anac.mjs",
     "appwrite:setup-edb-audit": "node scripts/setup-edb-audit.mjs",
     "appwrite:setup-flight-review": "node scripts/setup-flight-review-collections.mjs",
+    "appwrite:setup-solo-flight": "node scripts/setup-solo-flight-collections.mjs",
     "appwrite:setup-public-flight-review-share": "node scripts/setup-public-flight-review-share.mjs",
     "appwrite:setup-flight-photos": "node scripts/setup-flight-photos.mjs",
     "appwrite:setup-flight-review-club": "node scripts/setup-flight-review-club.mjs",

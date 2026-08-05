@@ -41,6 +41,7 @@ import type { FlightPoint, FlightSegment, FlightSummary } from "../types/flight"
 import CsvWorker from "../workers/csvWorker?worker";
 import { FlightCharts } from "./FlightCharts";
 import { FlightMap } from "./FlightMap";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { SegmentSelector } from "./SegmentSelector";
 import { SegmentSummary } from "./SegmentSummary";
 import { useToast } from "./ui/ToastProvider";
@@ -49,6 +50,7 @@ type Props = {
   flightId?: string;
   parsedResult?: ParseResult;
   publicMode?: boolean;
+  clubLocked?: boolean;
 };
 
 /** Binary search: finds GPS point closest to targetT (ms epoch). O(log n). */
@@ -77,7 +79,7 @@ function findHoverPos(
   return best ? [best.lat, best.lon] : null;
 }
 
-export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Props) {
+export function TelemetriaTab({ flightId, parsedResult, publicMode = false, clubLocked = false }: Props) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -930,7 +932,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false }: Pr
     </div>
   );
 
-  return mainContent;
+  return clubLocked ? <FlightReviewClubGate>{mainContent}</FlightReviewClubGate> : mainContent;
 }
 
 const ALERT_SEVERITY_CLASS: Record<string, string> = {

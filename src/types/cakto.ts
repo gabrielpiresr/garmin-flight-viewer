@@ -65,3 +65,23 @@ export type CaktoReceiptPage = {
     pending: number;
   };
 };
+
+export type FlightReviewClubCheckout = {
+  proposalId: string;
+  paymentUrl: string;
+  amount: number;
+  pricingRuleId: string;
+  trainingTrackName: string;
+  flownHours: number;
+};
+
+export type FlightReviewClubQuote = {
+  amount: number;
+  discountPercent: number;
+  pricingRuleId: string;
+  trainingTrackId: string;
+  trainingTrackName: string;
+  minHours: number;
+  maxHours: number | null;
+  flownHours: number;
+};

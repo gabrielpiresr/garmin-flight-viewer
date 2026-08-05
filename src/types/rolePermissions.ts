@@ -56,12 +56,14 @@ export type AdminTabKey =
   | "settings.wpp"
   | "settings.gopro"
   | "settings.aisweb"
+  | "settings.solo-flight"
   | "flight-review"
   | "contracts"
   | "contracts.layouts"
   | "contracts.emitidos"
   | "atualizacoes"
   | "atualizacoes.agendamentos"
+  | "solo-flight"
   | "aisweb"
   | "album";
 
@@ -88,6 +90,7 @@ export type InstructorTabKey =
   | "contratos"
   | "reports"
   | "indique-ganhe"
+  | "solo-flight"
   | "aisweb"
   | "album"
   | "painel";
@@ -109,6 +112,7 @@ export type StudentTabKey =
   | "fuelings"
   | "contratos"
   | "indique-ganhe"
+  | "endossos"
   | "aisweb"
   | "album"
   | "painel";
@@ -242,12 +246,14 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.wpp": "Configurações › WPP",
   "settings.gopro": "Configurações › GoPro",
   "settings.aisweb": "Configurações › AISWEB",
+  "settings.solo-flight": "Configurações › Voo solo",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
   "contracts.layouts": "Contratos › Layouts",
   "contracts.emitidos": "Contratos › Emitidos",
   "atualizacoes": "Atualizações",
   "atualizacoes.agendamentos": "Atualizações › Agendamentos",
+  "solo-flight": "Voo solo",
   "aisweb": "AISWEB",
   "album": "Álbum",
 };
@@ -275,6 +281,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "contratos": "Contratos",
   "reports": "Relatórios",
   "indique-ganhe": "Indique e ganhe",
+  "solo-flight": "Voo solo",
   "aisweb": "AISWEB",
   "album": "Álbum",
   "painel": "Painel",
@@ -297,6 +304,7 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "fuelings": "Abastecimentos",
   "contratos": "Contratos",
   "indique-ganhe": "Indique e ganhe",
+  "endossos": "Endossos",
   "aisweb": "AISWEB",
   "album": "Álbum",
   "painel": "Painel",

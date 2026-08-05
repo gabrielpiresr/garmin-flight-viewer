@@ -363,6 +363,8 @@ export type CalendarFlightItem = {
   totalWeightLabel: string;
   aircraftRegistration: string;
   dayOfWeek: number;
+  /** Data do voo (YYYY-MM-DD) — usada na visão mensal. */
+  date?: string;
   startHour: number;
   durationHours: number;
   /** Tempo de voo líquido (sem briefing/debriefing) — usado nas somas de horas. */
@@ -1041,6 +1043,280 @@ function ScheduleLegend({
   );
 }
 
+function AgendaReloadIcon({ spinning }: { spinning?: boolean }) {
+  return (
+    <svg
+      className={`h-3.5 w-3.5 ${spinning ? "animate-spin" : ""}`}
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466.75.75 0 10-1.061 1.06 7 7 0 0011.697-3.138.75.75 0 00-1.435-.388zM4.688 8.576a5.5 5.5 0 019.201-2.466.75.75 0 101.061-1.06A7 7 0 003.253 8.188a.75.75 0 101.435.388z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+/** Setas + Hoje + reload — Hoje fica à direita das setas. */
+function AgendaNavControls({
+  hasPrev,
+  hasNext,
+  onPrev,
+  onNext,
+  onGoToToday,
+  onReload,
+  reloading = false,
+  prevTitle = "Anterior",
+  nextTitle = "Próximo",
+}: {
+  hasPrev?: boolean;
+  hasNext?: boolean;
+  onPrev?: () => void;
+  onNext?: () => void;
+  onGoToToday?: () => void;
+  onReload?: () => void;
+  reloading?: boolean;
+  prevTitle?: string;
+  nextTitle?: string;
+}) {
+  if (!onPrev && !onNext && !onGoToToday && !onReload) return null;
+  return (
+    <div className="flex items-center gap-1">
+      {onPrev || onNext ? (
+        <>
+          <button
+            type="button"
+            onClick={onPrev}
+            disabled={!hasPrev}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+            title={prevTitle}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={!hasNext}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+            title={nextTitle}
+          >
+            ›
+          </button>
+        </>
+      ) : null}
+      {onGoToToday ? (
+        <button
+          type="button"
+          onClick={onGoToToday}
+          className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+          title="Ir para hoje"
+        >
+          Hoje
+        </button>
+      ) : null}
+      {onReload ? (
+        <button
+          type="button"
+          onClick={onReload}
+          disabled={reloading}
+          className="inline-flex items-center justify-center rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 hover:text-sky-200 disabled:opacity-50"
+          title="Atualizar dados"
+        >
+          <AgendaReloadIcon spinning={reloading} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function monthKeyFromIso(iso: string): string {
+  return iso.slice(0, 7);
+}
+
+function shiftMonthKey(monthKey: string, delta: number): string {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
+  const date = new Date(year, month - 1 + delta, 1, 12, 0, 0);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthTitle(monthKey: string): string {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
+  const label = new Date(year, month - 1, 1, 12, 0, 0).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function buildMonthGridCells(monthKey: string): Array<{ date: string; inMonth: boolean; dayOfWeek: number }> {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const monthIndex = Number(monthRaw) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return [];
+  const first = new Date(year, monthIndex, 1, 12, 0, 0);
+  const startOffset = (first.getDay() + 6) % 7; // segunda = 0
+  const gridStart = new Date(year, monthIndex, 1 - startOffset, 12, 0, 0);
+  const cells: Array<{ date: string; inMonth: boolean; dayOfWeek: number }> = [];
+  for (let i = 0; i < 42; i++) {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + i);
+    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    cells.push({
+      date: iso,
+      inMonth: date.getMonth() === monthIndex,
+      dayOfWeek: date.getDay(),
+    });
+  }
+  while (cells.length > 28) {
+    const tail = cells.slice(-7);
+    if (tail.every((cell) => !cell.inMonth)) {
+      cells.splice(cells.length - 7, 7);
+      continue;
+    }
+    break;
+  }
+  return cells;
+}
+
+type MonthAircraftDaySummary = {
+  registration: string;
+  colorClass: string;
+  flights: number;
+  hours: number;
+  plannedHours: number | null;
+  theoreticalHours: number | null;
+  risk: MaintenanceRiskLevel;
+  maintenance?: string;
+};
+
+function monthRiskFlagClass(risk: MaintenanceRiskLevel): string {
+  if (risk === "high") return "bg-red-500";
+  if (risk === "medium") return "bg-amber-400";
+  return "";
+}
+
+function MonthlyCalendarGrid({
+  monthKey,
+  summariesByDate,
+  loading = false,
+  hasPrevMonth,
+  hasNextMonth,
+  onPrevMonth,
+  onNextMonth,
+  onGoToToday,
+  onReload,
+  reloading = false,
+  onDayClick,
+}: {
+  monthKey: string;
+  summariesByDate: Map<string, MonthAircraftDaySummary[]>;
+  colorByAircraft?: Map<string, string>;
+  loading?: boolean;
+  hasPrevMonth?: boolean;
+  hasNextMonth?: boolean;
+  onPrevMonth?: () => void;
+  onNextMonth?: () => void;
+  onGoToToday?: () => void;
+  onReload?: () => void;
+  reloading?: boolean;
+  onDayClick?: (dateIso: string) => void;
+}) {
+  const cells = useMemo(() => buildMonthGridCells(monthKey), [monthKey]);
+
+  return (
+    <section className={`w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 sm:p-4 ${loading ? "opacity-60" : ""}`}>
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda mensal</p>
+          <p className="mt-0.5 text-sm font-semibold text-slate-200">{formatMonthTitle(monthKey)}</p>
+          <p className="mt-1 text-[10px] text-slate-500">Resumo por avião · Plan = previsto · Teor = média diária</p>
+        </div>
+        <AgendaNavControls
+          hasPrev={hasPrevMonth}
+          hasNext={hasNextMonth}
+          onPrev={onPrevMonth}
+          onNext={onNextMonth}
+          onGoToToday={onGoToToday}
+          onReload={onReload}
+          reloading={reloading}
+          prevTitle="Mês anterior"
+          nextTitle="Próximo mês"
+        />
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {DAY_ORDER.map((day) => (
+          <div key={`head-${day}`} className="px-1 pb-1 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            {DAY_LABEL[day]}
+          </div>
+        ))}
+        {cells.map((cell) => {
+          const summaries = summariesByDate.get(cell.date) ?? [];
+          const today = isDateToday(new Date(`${cell.date}T12:00:00`));
+          return (
+            <button
+              key={cell.date}
+              type="button"
+              onClick={() => onDayClick?.(cell.date)}
+              className={`flex min-h-[96px] flex-col overflow-hidden rounded-md border p-1 text-left transition-colors sm:min-h-[120px] ${
+                cell.inMonth
+                  ? today
+                    ? "border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/15"
+                    : "border-slate-700/70 bg-slate-950/40 hover:bg-slate-900/70"
+                  : "border-slate-800/40 bg-slate-950/20 opacity-45 hover:opacity-70"
+              }`}
+            >
+              <span className={`mb-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold ${
+                today ? "bg-sky-300 text-slate-950" : cell.inMonth ? "text-slate-200" : "text-slate-500"
+              }`}>
+                {Number(cell.date.slice(8, 10))}
+              </span>
+              <div className="flex min-h-0 flex-1 flex-col gap-0.5">
+                {summaries.length === 0 ? (
+                  <span className="text-[10px] text-slate-600">—</span>
+                ) : (
+                  summaries.map((row) => {
+                    const flagClass = monthRiskFlagClass(row.risk);
+                    return (
+                      <div
+                        key={`${cell.date}-${row.registration}`}
+                        className={`relative flex min-h-0 flex-1 flex-col justify-center rounded px-1 py-0.5 text-[10px] leading-tight text-white sm:text-[11px] ${aircraftCardColor(row.colorClass)}`}
+                        title={`${row.registration}: ${row.flights} voo(s), ${row.hours.toFixed(1)}h${row.maintenance ? ` · ${row.maintenance}` : ""}`}
+                      >
+                        {flagClass ? (
+                          <span
+                            className={`absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full ring-1 ring-black/25 ${flagClass}`}
+                            title={row.maintenance ? `Manutenção ${row.maintenance}` : row.risk === "high" ? "Risco alto" : "Risco médio"}
+                          />
+                        ) : null}
+                        <span className="truncate pr-2 font-semibold">{row.registration}</span>
+                        <span className="truncate opacity-95">
+                          {row.flights} voo{row.flights === 1 ? "" : "s"} · {row.hours.toFixed(1)}h
+                        </span>
+                        <span className="truncate opacity-90">
+                          Plan {row.plannedHours == null ? "—" : `${row.plannedHours.toFixed(0)}h`}
+                        </span>
+                        <span className="truncate opacity-90">
+                          Teor {row.theoreticalHours == null ? "—" : `${row.theoreticalHours.toFixed(0)}h`}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function CalendarGrid({
   items,
   days = DAY_ORDER,
@@ -1065,6 +1341,8 @@ export function CalendarGrid({
   hasPrevWeek,
   hasNextWeek,
   onGoToToday,
+  onReload,
+  reloading = false,
   privacyMode = false,
   showGeneratorLegend = true,
   getItemColor,
@@ -1106,6 +1384,9 @@ export function CalendarGrid({
   hasNextWeek?: boolean;
   /** Volta a agenda para a data de hoje. */
   onGoToToday?: () => void;
+  /** Recarrega os dados da escala sem refresh da página. */
+  onReload?: () => void;
+  reloading?: boolean;
   privacyMode?: boolean;
   showGeneratorLegend?: boolean;
   showTotals?: boolean;
@@ -1134,6 +1415,7 @@ export function CalendarGrid({
   /** Briefing+debriefing (h) a subtrair no rótulo do preview — exibe horas de voo. */
   previewBufferHours?: number;
 }) {
+  void showGeneratorLegend;
   const calendarDays = days;
   const rowHeight = useCalendarRowHeight(52, 38);
   const isMobile = useIsMobileViewport();
@@ -1477,53 +1759,20 @@ export function CalendarGrid({
             instructorColumns={instructorCols}
           />
         </div>
-        {(onPrevWeek || onNextWeek || onGoToToday) && (
-          <div className="flex items-center gap-1">
-            {onGoToToday ? (
-              <button
-                type="button"
-                onClick={onGoToToday}
-                className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
-                title="Ir para hoje"
-              >
-                Hoje
-              </button>
-            ) : null}
-            {onPrevWeek || onNextWeek ? (
-              <>
-                <button
-                  type="button"
-                  onClick={onPrevWeek}
-                  disabled={!hasPrevWeek}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-                  title="Semana anterior"
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  onClick={onNextWeek}
-                  disabled={!hasNextWeek}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-                  title="Próxima semana"
-                >
-                  ›
-                </button>
-              </>
-            ) : null}
-          </div>
-        )}
+        {(onPrevWeek || onNextWeek || onGoToToday || onReload) ? (
+          <AgendaNavControls
+            hasPrev={hasPrevWeek}
+            hasNext={hasNextWeek}
+            onPrev={onPrevWeek}
+            onNext={onNextWeek}
+            onGoToToday={onGoToToday}
+            onReload={onReload}
+            reloading={reloading}
+            prevTitle="Semana anterior"
+            nextTitle="Próxima semana"
+          />
+        ) : null}
       </div>
-      {draggable ? (
-        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar, ou clique e arraste no vazio para criar. Ao soltar, confirme no modal.</p>
-      ) : onEmptySlotClick ? (
-        <p className="mb-2 text-[11px] text-slate-600">Clique e arraste no vazio para criar um voo com a duração do arrasto.</p>
-      ) : null}
-      {showGeneratorLegend ? (
-        <p className="mb-2 text-[11px] text-slate-600">
-          <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
-        </p>
-      ) : null}
       {gridColumns.length === 0 ? (
         <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
           Nenhum voo no período.
@@ -1962,6 +2211,8 @@ function DailyCalendarGrid({
   hasPrevWeek,
   hasNextWeek,
   onGoToToday,
+  onReload,
+  reloading = false,
   backgroundSupply,
   clubMemberByStudentId,
   getItemColor,
@@ -1995,6 +2246,8 @@ function DailyCalendarGrid({
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   onGoToToday?: () => void;
+  onReload?: () => void;
+  reloading?: boolean;
   backgroundSupply?: ScheduleWeekData["supplies"][number] | null;
   clubMemberByStudentId?: Record<string, boolean>;
   projectionRows?: AircraftProjectionRow[];
@@ -2271,18 +2524,8 @@ function DailyCalendarGrid({
 
   return (
     <>
-      {/* Day selector */}
+      {/* Day selector: setas · dias · Hoje · reload */}
       <div className="mb-3 flex items-center gap-1">
-        {onGoToToday ? (
-          <button
-            type="button"
-            onClick={onGoToToday}
-            className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
-            title="Ir para hoje"
-          >
-            Hoje
-          </button>
-        ) : null}
         <button
           type="button"
           onClick={handlePrevDay}
@@ -2325,13 +2568,29 @@ function DailyCalendarGrid({
         >
           ›
         </button>
+        {onGoToToday ? (
+          <button
+            type="button"
+            onClick={onGoToToday}
+            className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+            title="Ir para hoje"
+          >
+            Hoje
+          </button>
+        ) : null}
+        {onReload ? (
+          <button
+            type="button"
+            onClick={onReload}
+            disabled={reloading}
+            className="inline-flex items-center justify-center rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 hover:text-sky-200 disabled:opacity-50"
+            title="Atualizar dados"
+          >
+            <AgendaReloadIcon spinning={reloading} />
+          </button>
+        ) : null}
       </div>
 
-      {draggable ? (
-        <p className="mb-2 text-[11px] text-slate-600">Arraste um voo para reagendar, ou clique e arraste no vazio para criar. Ao soltar, confirme no modal.</p>
-      ) : onEmptySlotClick ? (
-        <p className="mb-2 text-[11px] text-slate-600">Clique e arraste no vazio para criar um voo com a duração do arrasto.</p>
-      ) : null}
       <div className="mb-2">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Agenda diária</p>
         <ScheduleLegend
@@ -2341,9 +2600,6 @@ function DailyCalendarGrid({
           instructorColumns={instructorColumns ?? []}
         />
       </div>
-      <p className="mb-2 text-[11px] text-slate-600">
-        <span className="text-amber-200">*</span> Voo agendado fora do gerador automático de escala.
-      </p>
 
       {columns.length === 0 ? (
         <p className="rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-center text-sm text-slate-500">
@@ -2724,6 +2980,8 @@ function HorizontalTimelineBoard({
   hasPrevWeek,
   hasNextWeek,
   onGoToToday,
+  onReload,
+  reloading = false,
   showDayInItems = false,
   slotPreviewDurationHours = null,
 }: {
@@ -2746,6 +3004,8 @@ function HorizontalTimelineBoard({
   hasPrevWeek?: boolean;
   hasNextWeek?: boolean;
   onGoToToday?: () => void;
+  onReload?: () => void;
+  reloading?: boolean;
   showDayInItems?: boolean;
   slotPreviewDurationHours?: number | null;
 }) {
@@ -2833,55 +3093,22 @@ function HorizontalTimelineBoard({
             instructorColumns={instructorColumns}
           />
         </div>
-        {!daySelector && (onPrevWeek || onNextWeek || onGoToToday) ? (
-          <div className="flex items-center gap-1">
-            {onGoToToday ? (
-              <button
-                type="button"
-                onClick={onGoToToday}
-                className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
-                title="Ir para hoje"
-              >
-                Hoje
-              </button>
-            ) : null}
-            {onPrevWeek || onNextWeek ? (
-              <>
-                <button
-                  type="button"
-                  onClick={onPrevWeek}
-                  disabled={!hasPrevWeek}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-                  title="Semana anterior"
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  onClick={onNextWeek}
-                  disabled={!hasNextWeek}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
-                  title="Próxima semana"
-                >
-                  ›
-                </button>
-              </>
-            ) : null}
-          </div>
+        {!daySelector && (onPrevWeek || onNextWeek || onGoToToday || onReload) ? (
+          <AgendaNavControls
+            hasPrev={hasPrevWeek}
+            hasNext={hasNextWeek}
+            onPrev={onPrevWeek}
+            onNext={onNextWeek}
+            onGoToToday={onGoToToday}
+            onReload={onReload}
+            reloading={reloading}
+            prevTitle="Semana anterior"
+            nextTitle="Próxima semana"
+          />
         ) : null}
       </div>
       {daySelector ? (
         <div className="mb-3 flex items-center gap-1">
-          {onGoToToday ? (
-            <button
-              type="button"
-              onClick={onGoToToday}
-              className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
-              title="Ir para hoje"
-            >
-              Hoje
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={handlePrevDay}
@@ -2924,6 +3151,27 @@ function HorizontalTimelineBoard({
           >
             ›
           </button>
+          {onGoToToday ? (
+            <button
+              type="button"
+              onClick={onGoToToday}
+              className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-sky-200"
+              title="Ir para hoje"
+            >
+              Hoje
+            </button>
+          ) : null}
+          {onReload ? (
+            <button
+              type="button"
+              onClick={onReload}
+              disabled={reloading}
+              className="inline-flex items-center justify-center rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-300 hover:bg-slate-700 hover:text-sky-200 disabled:opacity-50"
+              title="Atualizar dados"
+            >
+              <AgendaReloadIcon spinning={reloading} />
+            </button>
+          ) : null}
         </div>
       ) : null}
       {rows.length === 0 ? (
@@ -3125,14 +3373,22 @@ export function ScheduleFlightsTab({
   const [visibleAircraft, setVisibleAircraft] = useState<string[]>([]);
   const [visibleInstructors, setVisibleInstructors] = useState<string[]>([]);
   // Padrao da aba Escala: semanal (diária no mobile), por aviao, cores por status e timeline normal.
-  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily">(() => (isMobileViewport() ? "daily" : "weekly"));
+  const [agendaView, setAgendaView] = useState<"weekly" | "three-day" | "daily" | "monthly">(() => (isMobileViewport() ? "daily" : "weekly"));
   const [scheduleGroupBy, setScheduleGroupBy] = useState<ScheduleGroupBy>("aircraft");
   const [hideCancelledFlights, setHideCancelledFlights] = useState(false);
+  const [aircraftOnlyFilter, setAircraftOnlyFilter] = useState(false);
+  const [secondaryFiltersOpen, setSecondaryFiltersOpen] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
   const [invertedTimeline, setInvertedTimeline] = useState(false);
   const [agendaBlockSize, setAgendaBlockSize] = useState<AgendaBlockSize>("off");
   const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(true);
   const [pendingFlexibleShifts, setPendingFlexibleShifts] = useState<FlexibleFitShift[]>([]);
+  const [selectedMonthKey, setSelectedMonthKey] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [monthFlights, setMonthFlights] = useState<ExistingScheduledFlight[]>([]);
+  const [monthLoading, setMonthLoading] = useState(false);
   // Mobile: resumos recolhidos por padrão
   const [mobileAircraftSummaryOpen, setMobileAircraftSummaryOpen] = useState(false);
   const [mobileInstructorSummaryOpen, setMobileInstructorSummaryOpen] = useState(false);
@@ -3451,6 +3707,88 @@ export function ScheduleFlightsTab({
   const loadWeekRef = useRef(loadWeek);
   loadWeekRef.current = loadWeek;
 
+  const loadMonth = useCallback(
+    async (monthKey: string, options?: { force?: boolean }) => {
+      if (!actorUserId || !actorRole || !monthKey) return;
+      const [yearRaw, monthRaw] = monthKey.split("-");
+      const year = Number(yearRaw);
+      const month = Number(monthRaw);
+      if (!Number.isFinite(year) || !Number.isFinite(month)) return;
+      const monthStart = `${monthKey}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const monthEnd = `${monthKey}-${String(lastDay).padStart(2, "0")}`;
+      const weeks = weekOptionsRef.current.filter(
+        (week) => week.weekStart <= monthEnd && week.weekEnd >= monthStart,
+      );
+      // Sem opções no picker: gera semanas sintéticas cobrindo o mês.
+      const weekStarts = weeks.length > 0
+        ? weeks.map((week) => week.weekStart)
+        : (() => {
+            const starts: string[] = [];
+            let cursor = mondayWeekStartIso(new Date(`${monthStart}T12:00:00`));
+            while (cursor <= monthEnd) {
+              starts.push(cursor);
+              const next = new Date(`${cursor}T12:00:00`);
+              next.setDate(next.getDate() + 7);
+              cursor = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
+            }
+            return starts;
+          })();
+
+      setMonthLoading(true);
+      try {
+        const bundles = await Promise.all(
+          weekStarts.map((weekStart) => {
+            const option = weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+            return fetchWeekBundle(weekStart, option, options?.force === true);
+          }),
+        );
+        const byId = new Map<string, ExistingScheduledFlight>();
+        for (const bundle of bundles) {
+          for (const row of bundle.rows) {
+            if (row.date < monthStart || row.date > monthEnd) continue;
+            byId.set(row.id, row);
+          }
+        }
+        const merged = Array.from(byId.values()).sort((a, b) => {
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return a.startTime.localeCompare(b.startTime);
+        });
+        setMonthFlights(merged);
+        // Mantém aeronaves/regras a partir do primeiro bundle (ou da semana atual).
+        const anchor = bundles.find((bundle) => bundle.data.week.weekStart === selectedWeekStart) ?? bundles[0];
+        if (anchor) {
+          setScheduleRules(anchor.schedule);
+          const actives = anchor.aircraftRows.filter((aircraft) => aircraft.active !== false);
+          setActiveAircrafts(actives);
+          if (!weekDataRef.current) applyWeekBundle(anchor);
+        }
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setMonthLoading(false);
+      }
+    },
+    [actorRole, actorUserId, applyWeekBundle, fetchWeekBundle, selectedWeekStart],
+  );
+
+  const loadMonthRef = useRef(loadMonth);
+  loadMonthRef.current = loadMonth;
+
+  useEffect(() => {
+    if (agendaView !== "monthly") return;
+    void loadMonthRef.current(selectedMonthKey);
+  }, [agendaView, selectedMonthKey]);
+
+  const reloadAgenda = useCallback(() => {
+    if (agendaView === "monthly") {
+      void loadMonthRef.current(selectedMonthKey, { force: true });
+      return;
+    }
+    if (!selectedWeekStart) return;
+    void loadWeekRef.current(selectedWeekStart, undefined, { showSkeleton: false, force: true });
+  }, [agendaView, selectedMonthKey, selectedWeekStart]);
+
   useEffect(() => {
     if (!publicDisplayMode || !actorUserId || !selectedWeekStart) return;
 
@@ -3540,13 +3878,18 @@ export function ScheduleFlightsTab({
     const now = new Date();
     const weekStart = mondayWeekStartIso(now);
     const todayDow = now.getDay();
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    if (agendaView === "monthly") {
+      setSelectedMonthKey(monthKey);
+      return;
+    }
     setAgendaView("daily");
     setSelectedDay(todayDow);
     if (weekStart === selectedWeekStart) return;
     const option = weekOptionsRef.current.find((row) => row.weekStart === weekStart);
     setSelectedWeekStart(weekStart);
     void loadWeekRef.current(weekStart, option, { showSkeleton: false });
-  }, [selectedWeekStart]);
+  }, [agendaView, selectedWeekStart]);
 
   useEffect(() => {
     if (!actorUserId) {
@@ -3771,13 +4114,29 @@ export function ScheduleFlightsTab({
     [aircraftOptions],
   );
 
+  /** Idents de type=aviao — filtro "Somente avião". */
+  const airplaneOnlyIdents = useMemo(() => {
+    const idents = new Set<string>();
+    for (const aircraft of activeAircrafts) {
+      if (aircraft.type !== "aviao") continue;
+      const ident = normalizeAircraftIdent(aircraft.registration);
+      if (ident) idents.add(ident);
+    }
+    return idents;
+  }, [activeAircrafts]);
+
   const calendarAircraftColumns = useMemo<AircraftColumn[]>(
     () =>
-      visibleAircraft.map((registration) => ({
-        registration,
-        colorClass: colorByAircraft.get(registration) ?? AIRCRAFT_COLOR_CLASSES[0]!,
-      })),
-    [colorByAircraft, visibleAircraft],
+      visibleAircraft
+        .filter((registration) => {
+          if (!aircraftOnlyFilter) return true;
+          return airplaneOnlyIdents.has(normalizeAircraftIdent(registration));
+        })
+        .map((registration) => ({
+          registration,
+          colorClass: colorByAircraft.get(registration) ?? AIRCRAFT_COLOR_CLASSES[0]!,
+        })),
+    [aircraftOnlyFilter, airplaneOnlyIdents, colorByAircraft, visibleAircraft],
   );
 
   /** Só aviões reais (type=aviao) mantêm coluna vazia; ground/espera/visita só com eventos. */
@@ -4085,6 +4444,7 @@ export function ScheduleFlightsTab({
         .filter((row) => {
           if (hideCancelledFlights && row.flightStatus === "Cancelado") return false;
           const aircraftIdent = normalizeAircraftIdent(row.aircraftRegistration);
+          if (aircraftOnlyFilter && aircraftIdent && !airplaneOnlyIdents.has(aircraftIdent)) return false;
           const aircraftVisible =
             !aircraftIdent ||
             visibleAircraft.some((registration) => normalizeAircraftIdent(registration) === aircraftIdent);
@@ -4105,6 +4465,7 @@ export function ScheduleFlightsTab({
             totalWeightLabel: totalWeightByFlightId.get(row.id) ?? "—",
             aircraftRegistration: row.aircraftRegistration ?? "Aeronave",
             dayOfWeek,
+            date: row.date,
             startHour,
             durationHours: row.durationHours,
             flightStatus: normalizeScheduleFlightStatus(row.flightStatus),
@@ -4116,7 +4477,7 @@ export function ScheduleFlightsTab({
             notes: row.notes ?? null,
           };
         }),
-    [flights, hideCancelledFlights, studentDisplayName, instructorDisplayName, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
+    [flights, hideCancelledFlights, aircraftOnlyFilter, airplaneOnlyIdents, studentDisplayName, instructorDisplayName, totalWeightByFlightId, visibleAircraft, visibleInstructors, netFlightHours],
   );
 
   const cancelledFlightCount = useMemo(
@@ -4380,9 +4741,262 @@ export function ScheduleFlightsTab({
 
   const projectionLoading = aircraftBaseHours === null || (projectionHoursSource === "planeIt" && planeIt.loading);
 
+  const monthSummariesByDate = useMemo(() => {
+    const map = new Map<string, MonthAircraftDaySummary[]>();
+    if (agendaView !== "monthly") return map;
+
+    const [yearRaw, monthRaw] = selectedMonthKey.split("-");
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return map;
+    const monthStart = `${selectedMonthKey}-01`;
+    const lastDay = new Date(year, month, 0).getDate();
+    const monthEnd = `${selectedMonthKey}-${String(lastDay).padStart(2, "0")}`;
+    const today = new Date();
+    const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const dayCount = Math.max(
+      1,
+      Math.ceil((new Date(`${monthEnd}T12:00:00`).getTime() - new Date(`${todayIso}T12:00:00`).getTime()) / 86400000) + 1,
+    );
+    const avg = scheduleRules.maintenanceAvgHoursPerDay;
+    const maintenanceEnabled = scheduleRules.maintenanceAlertEnabled && avg > 0;
+
+    type TheoInfo = { hoursByDate: Map<string, number | null>; riskByDate: Map<string, MaintenanceRiskLevel>; codeByDate: Map<string, string | undefined> };
+    const theoByIdent = new Map<string, TheoInfo>();
+    const realHoursByReg = new Map<string, number | null>();
+
+    for (const aircraft of activeAircrafts) {
+      if (aircraft.type !== "aviao") continue;
+      const ident = normalizeAircraftIdent(aircraft.registration);
+      if (!ident) continue;
+      const reg = aircraft.registration.trim().toUpperCase();
+      const info = aircraftBaseHours?.get(reg);
+      const base = projectionHoursSource === "planeIt"
+        ? planeItHoursByRegistration.get(reg) ?? null
+        : info?.hours ?? null;
+      realHoursByReg.set(ident, base);
+
+      const hoursByDate = new Map<string, number | null>();
+      const riskByDate = new Map<string, MaintenanceRiskLevel>();
+      const codeByDate = new Map<string, string | undefined>();
+      if (base == null || !maintenanceEnabled) {
+        // Sem teórica: dias do mês ficam sem valor / risco baixo.
+      } else {
+        const series = projectMaintenanceRisk({
+          currentHours: base,
+          avgHoursPerDay: avg,
+          items: (info?.maintenanceDue ?? []).map((item) => ({
+            code: item.code,
+            title: item.title,
+            intervalHours: item.intervalHours,
+            downtimeDays: item.downtimeDays,
+          })),
+          fromDate: todayIso,
+          dayCount,
+        });
+        // Preenche do início do mês até o fim (passados = baseline).
+        for (let day = 1; day <= lastDay; day += 1) {
+          const date = `${selectedMonthKey}-${String(day).padStart(2, "0")}`;
+          if (date < todayIso) {
+            hoursByDate.set(date, Number(base.toFixed(1)));
+            riskByDate.set(date, "low");
+            continue;
+          }
+          const projected = series[date];
+          hoursByDate.set(date, projected?.theoreticalHours ?? Number(base.toFixed(1)));
+          riskByDate.set(date, projected?.risk ?? "low");
+          codeByDate.set(date, projected?.maintenanceCode);
+        }
+      }
+      theoByIdent.set(ident, { hoursByDate, riskByDate, codeByDate });
+    }
+
+    // Horas planejadas acumuladas até cada dia (apenas voos futuros, como na projeção semanal).
+    const now = Date.now();
+    const plannedEvents: Array<{ ident: string; date: string; hours: number }> = [];
+    for (const row of monthFlights) {
+      if (row.flightStatus === "Cancelado" || row.flightStatus === "Realizado" || row.isBlocked) continue;
+      const startMs = new Date(`${row.date}T${row.startTime}:00`).getTime();
+      if (!Number.isFinite(startMs) || startMs <= now) continue;
+      const ident = normalizeAircraftIdent(row.aircraftRegistration);
+      if (!ident) continue;
+      if (aircraftOnlyFilter && !airplaneOnlyIdents.has(ident)) continue;
+      const aircraftVisible = visibleAircraft.some((registration) => normalizeAircraftIdent(registration) === ident);
+      if (!aircraftVisible) continue;
+      plannedEvents.push({ ident, date: row.date, hours: netFlightHours(row) });
+    }
+
+    // Risco planejado: cruza manutenção com horas planejadas (janela média/alta).
+    type PlannedRiskInfo = { riskByDate: Map<string, MaintenanceRiskLevel>; codeByDate: Map<string, string | undefined> };
+    const plannedRiskByIdent = new Map<string, PlannedRiskInfo>();
+    if (maintenanceEnabled && aircraftBaseHours) {
+      for (const aircraft of activeAircrafts) {
+        if (aircraft.type !== "aviao") continue;
+        const ident = normalizeAircraftIdent(aircraft.registration);
+        if (!ident) continue;
+        const reg = aircraft.registration.trim().toUpperCase();
+        const info = aircraftBaseHours.get(reg);
+        const base = realHoursByReg.get(ident) ?? null;
+        const riskByDate = new Map<string, MaintenanceRiskLevel>();
+        const codeByDate = new Map<string, string | undefined>();
+        if (base == null) {
+          plannedRiskByIdent.set(ident, { riskByDate, codeByDate });
+          continue;
+        }
+        const riskItems = (info?.maintenanceDue ?? []).filter((item) => item.intervalHours > 0 && (item.downtimeDays ?? 0) > 0);
+        const regEvents = plannedEvents.filter((event) => event.ident === ident);
+        let cursor = base;
+        let groundedRemaining = 0;
+        let activeItem: (typeof riskItems)[number] | null = null;
+        let pendingPostMedium: { offset: number; item: (typeof riskItems)[number] } | null = null;
+        for (let offset = 0; offset < dayCount; offset += 1) {
+          const dateObj = new Date(`${todayIso}T12:00:00`);
+          dateObj.setDate(dateObj.getDate() + offset);
+          const date = formatLocalDateISO(dateObj);
+          if (date > monthEnd) break;
+
+          let risk: MaintenanceRiskLevel = "low";
+          let maintenance: string | undefined;
+          if (pendingPostMedium && pendingPostMedium.offset === offset) {
+            risk = "medium";
+            maintenance = pendingPostMedium.item.code;
+            pendingPostMedium = null;
+          }
+          const dayAdd = regEvents.filter((event) => event.date === date).reduce((sum, event) => sum + event.hours, 0);
+          if (groundedRemaining > 0 && activeItem) {
+            risk = "high";
+            maintenance = activeItem.code;
+            groundedRemaining -= 1;
+            if (groundedRemaining === 0) {
+              pendingPostMedium = { offset: offset + 1, item: activeItem };
+              activeItem = null;
+            }
+          } else {
+            const before = cursor;
+            cursor = Number((cursor + dayAdd).toFixed(1));
+            let crossedRisk: { item: (typeof riskItems)[number] } | null = null;
+            for (const item of riskItems) {
+              const due = (Math.floor(before / item.intervalHours) + 1) * item.intervalHours;
+              if (before < due && cursor >= due) {
+                crossedRisk = { item };
+                break;
+              }
+            }
+            if (crossedRisk) {
+              risk = "medium";
+              maintenance = crossedRisk.item.code;
+              groundedRemaining = effectiveDowntimeDays(
+                date,
+                Math.max(1, Math.round(crossedRisk.item.downtimeDays as number)),
+              );
+              activeItem = crossedRisk.item;
+            }
+          }
+          if (date >= monthStart && date <= monthEnd) {
+            riskByDate.set(date, risk);
+            codeByDate.set(date, maintenance);
+          }
+        }
+        plannedRiskByIdent.set(ident, { riskByDate, codeByDate });
+      }
+    }
+
+    const byDateIdent = new Map<string, { registration: string; flights: number; hours: number }>();
+    for (const row of monthFlights) {
+      // Mensal: cancelados nunca entram no resumo.
+      if (row.flightStatus === "Cancelado") continue;
+      if (row.isBlocked) continue;
+      const ident = normalizeAircraftIdent(row.aircraftRegistration);
+      if (!ident) continue;
+      if (aircraftOnlyFilter && !airplaneOnlyIdents.has(ident)) continue;
+      const aircraftVisible = visibleAircraft.some((registration) => normalizeAircraftIdent(registration) === ident);
+      if (!aircraftVisible) continue;
+      if (row.instructorId) {
+        if (!visibleInstructors.includes(row.instructorId)) continue;
+      } else if (!visibleInstructors.includes("__none__")) {
+        continue;
+      }
+      const key = `${row.date}|${ident}`;
+      const registration = row.aircraftRegistration ?? ident;
+      const current = byDateIdent.get(key) ?? { registration, flights: 0, hours: 0 };
+      current.flights += 1;
+      current.hours += netFlightHours(row);
+      byDateIdent.set(key, current);
+    }
+
+    // Sempre um card por avião visível (mesmo sem voos) em cada dia do mês.
+    const aircraftRows = visibleAircraft
+      .filter((registration) => {
+        if (!aircraftOnlyFilter) return true;
+        return airplaneOnlyIdents.has(normalizeAircraftIdent(registration));
+      })
+      .map((registration) => ({
+        registration,
+        ident: normalizeAircraftIdent(registration),
+      }))
+      .filter((row) => row.ident)
+      .sort((a, b) => a.registration.localeCompare(b.registration, "pt-BR"));
+
+    for (let day = 1; day <= lastDay; day += 1) {
+      const date = `${selectedMonthKey}-${String(day).padStart(2, "0")}`;
+      const summaries: MonthAircraftDaySummary[] = [];
+      for (const aircraft of aircraftRows) {
+        const stats = byDateIdent.get(`${date}|${aircraft.ident}`) ?? {
+          registration: aircraft.registration,
+          flights: 0,
+          hours: 0,
+        };
+        const realHours = realHoursByReg.get(aircraft.ident) ?? null;
+        const plannedExtra = plannedEvents
+          .filter((event) => event.ident === aircraft.ident && event.date <= date)
+          .reduce((sum, event) => sum + event.hours, 0);
+        const plannedHours = realHours == null ? null : Number((realHours + plannedExtra).toFixed(1));
+        const theo = theoByIdent.get(aircraft.ident);
+        const theoreticalHours = theo?.hoursByDate.get(date)
+          ?? (date < todayIso && realHours != null ? Number(realHours.toFixed(1)) : theo?.hoursByDate.get(date) ?? null);
+        const plannedRisk = plannedRiskByIdent.get(aircraft.ident);
+        const theoRisk = theo?.riskByDate.get(date) ?? "low";
+        const planRisk = plannedRisk?.riskByDate.get(date) ?? "low";
+        const riskRank = (level: MaintenanceRiskLevel) => (level === "high" ? 2 : level === "medium" ? 1 : 0);
+        const risk = riskRank(planRisk) >= riskRank(theoRisk) ? planRisk : theoRisk;
+        const maintenance = risk === planRisk
+          ? plannedRisk?.codeByDate.get(date)
+          : theo?.codeByDate.get(date);
+        summaries.push({
+          registration: stats.registration || aircraft.registration,
+          colorClass: colorByAircraft.get(aircraft.registration) ?? AIRCRAFT_COLOR_CLASSES[0]!,
+          flights: stats.flights,
+          hours: Number(stats.hours.toFixed(1)),
+          plannedHours,
+          theoreticalHours: theoreticalHours ?? (realHours == null ? null : Number(realHours.toFixed(1))),
+          risk,
+          maintenance,
+        });
+      }
+      map.set(date, summaries);
+    }
+    return map;
+  }, [
+    agendaView,
+    activeAircrafts,
+    aircraftBaseHours,
+    aircraftOnlyFilter,
+    airplaneOnlyIdents,
+    colorByAircraft,
+    monthFlights,
+    netFlightHours,
+    planeItHoursByRegistration,
+    projectionHoursSource,
+    scheduleRules.maintenanceAlertEnabled,
+    scheduleRules.maintenanceAvgHoursPerDay,
+    selectedMonthKey,
+    visibleAircraft,
+    visibleInstructors,
+  ]);
+
   // Linhas da agenda invertida (linha do tempo horizontal)
   const timelineRows = useMemo<TimelineRow[]>(() => {
-    if (!invertedTimeline) return [];
+    if (!invertedTimeline || agendaView === "monthly") return [];
     const days = agendaView === "three-day" ? threeDayWindow : DAY_ORDER;
     const activeDays: number[] = agendaView === "daily" ? [selectedDay] : [...days];
     const baseWeekStart = weekData?.week.weekStart ?? selectedWeekStart;
@@ -5561,160 +6175,245 @@ export function ScheduleFlightsTab({
           ) : null}
 
           {/* Calendar grid */}
-          <div className={`order-3 space-y-0 transition-opacity ${weekRefreshing ? "pointer-events-none opacity-60" : ""}`}>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              {/* Ocupa a linha inteira no mobile para os botões não ficarem espremidos. */}
-              <div className="flex w-full overflow-hidden rounded-lg border border-slate-700 sm:w-auto">
-                <button
-                  type="button"
-                  onClick={() => setAgendaView("weekly")}
-                  className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "weekly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  Semanal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAgendaView("three-day")}
-                  className={`flex-1 border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "three-day" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  3 dias
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAgendaView("daily")}
-                  className={`flex-1 px-3 py-2 text-xs transition-colors sm:flex-none sm:py-1.5 ${agendaView === "daily" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  Diária
-                </button>
-              </div>
-              <div className="flex overflow-hidden rounded-lg border border-slate-700">
-                <button
-                  type="button"
-                  onClick={() => setScheduleGroupBy("aircraft")}
-                  className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  Por avião
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setScheduleGroupBy("instructor")}
-                  className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  Por instrutor
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setScheduleGroupBy("none")}
-                  className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${scheduleGroupBy === "none" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                >
-                  Nenhum
-                </button>
-              </div>
-              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
-                <input
-                  type="checkbox"
-                  checked={hideCancelledFlights}
-                  onChange={(event) => setHideCancelledFlights(event.target.checked)}
-                  className="h-4 w-4 accent-sky-500"
-                />
-                <span>
-                  Ocultar cancelados
-                  {cancelledFlightCount > 0 ? <span className="ml-1 text-slate-500">({cancelledFlightCount})</span> : null}
-                </span>
-              </label>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cores</span>
-                <div className="flex overflow-hidden rounded-lg border border-slate-700">
-                  <button
-                    type="button"
-                    onClick={() => setColorScheme("aircraft")}
-                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${colorScheme === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Por avião
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setColorScheme("status")}
-                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${colorScheme === "status" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Por status
-                  </button>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Horas</span>
-                <div className="flex overflow-hidden rounded-lg border border-slate-700">
-                  <button
-                    type="button"
-                    onClick={() => setProjectionHoursSource("system")}
-                    className={`border-r border-slate-700 px-3 py-2 text-xs transition-colors sm:py-1.5 ${projectionHoursSource === "system" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Sistema
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setProjectionHoursSource("planeIt")}
-                    className={`px-3 py-2 text-xs transition-colors sm:py-1.5 ${projectionHoursSource === "planeIt" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
-                  >
-                    Plane It
-                  </button>
-                </div>
-                {projectionHoursSource === "planeIt" && planeIt.error ? (
-                  <span className="text-[10px] font-medium text-amber-300">indisp.</span>
-                ) : null}
-              </div>
-              {!readOnlyDisplay ? (
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Tamanho do bloco</span>
-                <div className="flex overflow-hidden rounded-lg border border-slate-700">
-                  {AGENDA_BLOCK_SIZE_OPTIONS.map((option, index) => (
+          <div className={`order-3 space-y-0 transition-opacity ${weekRefreshing || monthLoading ? "pointer-events-none opacity-60" : ""}`}>
+            <div className="mb-2 space-y-2">
+              <div className="flex w-full flex-wrap items-end justify-between gap-x-3 gap-y-2">
+                {/* Principais: periodicidade, somente avião, ocultar cancelados, horas, bloco, ajuste */}
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Periodicidade</span>
+                  <div className="flex h-8 overflow-hidden rounded-lg border border-slate-700">
                     <button
-                      key={String(option.value)}
                       type="button"
-                      onClick={() => setAgendaBlockSize(option.value)}
-                      className={`${index < AGENDA_BLOCK_SIZE_OPTIONS.length - 1 ? "border-r border-slate-700" : ""} px-3 py-2 text-xs transition-colors sm:py-1.5 ${
-                        agendaBlockSize === option.value ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
-                      }`}
+                      onClick={() => {
+                        const monthKey = selectedWeekStart
+                          ? monthKeyFromIso(selectedWeekStart)
+                          : selectedMonthKey;
+                        setSelectedMonthKey(monthKey);
+                        setAircraftOnlyFilter(true);
+                        setAgendaView("monthly");
+                      }}
+                      className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${agendaView === "monthly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
                     >
-                      {option.label}
+                      Mensal
                     </button>
-                  ))}
+                    <button
+                      type="button"
+                      onClick={() => setAgendaView("weekly")}
+                      className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${agendaView === "weekly" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    >
+                      Semanal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAgendaView("three-day")}
+                      className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${agendaView === "three-day" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    >
+                      3 dias
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAgendaView("daily")}
+                      className={`h-full px-2.5 text-xs transition-colors sm:px-3 ${agendaView === "daily" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                    >
+                      Diária
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Somente avião</span>
+                  <label className={`inline-flex h-8 cursor-pointer items-center justify-center rounded-lg border px-3 ${
+                    aircraftOnlyFilter
+                      ? "border-sky-500/40 bg-sky-600/20 text-sky-300"
+                      : "border-slate-700 bg-slate-900/50 text-slate-300"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={aircraftOnlyFilter}
+                      onChange={(event) => setAircraftOnlyFilter(event.target.checked)}
+                      className="h-3.5 w-3.5 accent-sky-500"
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    Ocultar cancelados
+                    {cancelledFlightCount > 0 ? <span className="ml-1 font-medium normal-case tracking-normal text-slate-500">({cancelledFlightCount})</span> : null}
+                  </span>
+                  <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-lg border border-slate-700 bg-slate-900/50 px-3 text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={hideCancelledFlights}
+                      onChange={(event) => setHideCancelledFlights(event.target.checked)}
+                      className="h-3.5 w-3.5 accent-sky-500"
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Horas</span>
+                  <div className="flex h-8 items-center gap-1.5">
+                    <div className="flex h-full overflow-hidden rounded-lg border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setProjectionHoursSource("system")}
+                        className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${projectionHoursSource === "system" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Sistema
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProjectionHoursSource("planeIt")}
+                        className={`h-full px-2.5 text-xs transition-colors sm:px-3 ${projectionHoursSource === "planeIt" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Plane It
+                      </button>
+                    </div>
+                    {projectionHoursSource === "planeIt" && planeIt.error ? (
+                      <span className="text-[10px] font-medium text-amber-300">indisp.</span>
+                    ) : null}
+                  </div>
+                </div>
+                {!readOnlyDisplay ? (
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Tamanho do bloco</span>
+                  <div className="flex h-8 overflow-hidden rounded-lg border border-slate-700">
+                    {AGENDA_BLOCK_SIZE_OPTIONS.map((option, index) => (
+                      <button
+                        key={String(option.value)}
+                        type="button"
+                        onClick={() => setAgendaBlockSize(option.value)}
+                        className={`h-full px-2.5 text-xs transition-colors sm:px-3 ${index < AGENDA_BLOCK_SIZE_OPTIONS.length - 1 ? "border-r border-slate-700" : ""} ${
+                          agendaBlockSize === option.value ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                ) : null}
+                {!readOnlyDisplay ? (
+                <div className="flex flex-col gap-1" title={`Move vizinhos em até ±${FLEXIBLE_ADJUST_MAX_MINUTES} min para encaixar o bloco`}>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Ajuste flexível</span>
+                  <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-lg border border-slate-700 bg-slate-900/50 px-3 text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={flexibleAdjustEnabled}
+                      onChange={(event) => setFlexibleAdjustEnabled(event.target.checked)}
+                      className="h-3.5 w-3.5 accent-sky-500"
+                    />
+                  </label>
+                </div>
+                ) : null}
+                <div className="flex flex-col gap-1">
+                  <span className="invisible text-[10px] font-semibold uppercase tracking-wider text-slate-500 select-none">&nbsp;</span>
+                  <button
+                    type="button"
+                    onClick={() => setSecondaryFiltersOpen((open) => !open)}
+                    className="inline-flex h-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-900/50 px-3 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  >
+                    {secondaryFiltersOpen ? "Menos filtros ▴" : "Mais filtros ▾"}
+                  </button>
                 </div>
               </div>
+
+              {secondaryFiltersOpen ? (
+                <div className="flex w-full flex-wrap items-end justify-between gap-x-3 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/30 p-2">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Agrupar</span>
+                    <div className="flex h-8 overflow-hidden rounded-lg border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setScheduleGroupBy("aircraft")}
+                        className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${scheduleGroupBy === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Por avião
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setScheduleGroupBy("instructor")}
+                        className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${scheduleGroupBy === "instructor" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Por instrutor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setScheduleGroupBy("none")}
+                        className={`h-full px-2.5 text-xs transition-colors sm:px-3 ${scheduleGroupBy === "none" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Nenhum
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cores</span>
+                    <div className="flex h-8 overflow-hidden rounded-lg border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setColorScheme("aircraft")}
+                        className={`h-full border-r border-slate-700 px-2.5 text-xs transition-colors sm:px-3 ${colorScheme === "aircraft" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Por avião
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setColorScheme("status")}
+                        className={`h-full px-2.5 text-xs transition-colors sm:px-3 ${colorScheme === "status" ? "bg-sky-600/20 text-sky-300" : "text-slate-400 hover:bg-slate-800"}`}
+                      >
+                        Por status
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Timeline invertida</span>
+                    <label className={`inline-flex h-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-900/50 px-3 text-slate-300 ${agendaView === "monthly" ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+                      <input
+                        type="checkbox"
+                        checked={invertedTimeline}
+                        onChange={(event) => setInvertedTimeline(event.target.checked)}
+                        disabled={agendaView === "monthly"}
+                        className="h-3.5 w-3.5 accent-sky-500"
+                      />
+                    </label>
+                  </div>
+                </div>
               ) : null}
-              {!readOnlyDisplay ? (
-              <label
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs sm:py-1.5 ${
-                  flexibleAdjustEnabled
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
-                    : "border-slate-700 bg-slate-900/50 text-slate-300"
-                }`}
-                title={`Move vizinhos em até ±${FLEXIBLE_ADJUST_MAX_MINUTES} min para encaixar o bloco`}
-              >
-                <input
-                  type="checkbox"
-                  checked={flexibleAdjustEnabled}
-                  onChange={(event) => setFlexibleAdjustEnabled(event.target.checked)}
-                  className="h-4 w-4 accent-amber-500"
-                />
-                <span>Ajuste flexível</span>
-              </label>
-              ) : null}
-              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-xs text-slate-300 sm:py-1.5">
-                <input
-                  type="checkbox"
-                  checked={invertedTimeline}
-                  onChange={(event) => setInvertedTimeline(event.target.checked)}
-                  className="h-4 w-4 accent-sky-500"
-                />
-                <span>Invertida (tempo na horizontal)</span>
-              </label>
             </div>
 
             {/* Deslize horizontal ao navegar entre datas/semanas. */}
             <div className="overflow-hidden">
             <div ref={boardSlideRef}>
-            {invertedTimeline ? (
+            {agendaView === "monthly" ? (
+              <MonthlyCalendarGrid
+                monthKey={selectedMonthKey}
+                summariesByDate={monthSummariesByDate}
+                colorByAircraft={colorByAircraft}
+                loading={monthLoading}
+                hasPrevMonth
+                hasNextMonth
+                onPrevMonth={() => {
+                  slideBoard("back");
+                  setSelectedMonthKey((current) => shiftMonthKey(current, -1));
+                }}
+                onNextMonth={() => {
+                  slideBoard("forward");
+                  setSelectedMonthKey((current) => shiftMonthKey(current, 1));
+                }}
+                onGoToToday={goToToday}
+                onReload={reloadAgenda}
+                reloading={monthLoading || weekRefreshing}
+                onDayClick={(dateIso) => {
+                  const weekStart = mondayWeekStartIso(new Date(`${dateIso}T12:00:00`));
+                  const dow = new Date(`${dateIso}T12:00:00`).getDay();
+                  setSelectedDay(dow);
+                  setAgendaView("daily");
+                  if (weekStart !== selectedWeekStart) {
+                    const option = weekOptionsRef.current.find((row) => row.weekStart === weekStart);
+                    setSelectedWeekStart(weekStart);
+                    void loadWeekRef.current(weekStart, option, { showSkeleton: false });
+                  }
+                }}
+              />
+            ) : invertedTimeline ? (
               <HorizontalTimelineBoard
                 rows={timelineRows}
                 title={
@@ -5744,6 +6443,8 @@ export function ScheduleFlightsTab({
                 onPrevWeek={() => { slideBoard("back"); (agendaView === "three-day" ? goToPreviousThreeDayPeriod : () => goToWeekOffset(-1))(); }}
                 onNextWeek={() => { slideBoard("forward"); (agendaView === "three-day" ? goToNextThreeDayPeriod : () => goToWeekOffset(1))(); }}
                 onGoToToday={goToToday}
+                onReload={reloadAgenda}
+                reloading={weekRefreshing}
                 onItemClick={handleCalendarItemClick}
                 tooltipOnlyClick={readOnlyDisplay}
                 onEmptySlotClick={readOnlyDisplay ? undefined : applyEmptySlotTarget}
@@ -5802,6 +6503,8 @@ export function ScheduleFlightsTab({
                   goToWeekOffset(1);
                 }}
                 onGoToToday={goToToday}
+                onReload={reloadAgenda}
+                reloading={weekRefreshing}
                 onItemClick={handleCalendarItemClick}
                 tooltipOnlyClick={readOnlyDisplay}
                 onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {
@@ -5845,6 +6548,8 @@ export function ScheduleFlightsTab({
                   onPrevWeek={() => { slideBoard("back"); goToWeekOffset(-1); }}
                   onNextWeek={() => { slideBoard("forward"); goToWeekOffset(1); }}
                   onGoToToday={goToToday}
+                  onReload={reloadAgenda}
+                  reloading={weekRefreshing}
                   onItemClick={handleCalendarItemClick}
                   tooltipOnlyClick={readOnlyDisplay}
                   onItemDrop={readOnlyDisplay || !canEditFlight ? undefined : (item, target) => {

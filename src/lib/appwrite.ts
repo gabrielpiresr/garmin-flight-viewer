@@ -102,6 +102,12 @@ export const INSTRUCTOR_STUDENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID as string | undefined) ?? "instructor_students";
 export const PROFILE_DOCUMENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_PROFILE_DOCUMENTS_COL_ID as string | undefined) ?? "profile_documents";
+export const SOLO_FLIGHT_ENDORSEMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SOLO_FLIGHT_ENDORSEMENTS_COL_ID as string | undefined) ?? "solo_flight_endorsements";
+export const SOLO_FLIGHT_REQUESTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SOLO_FLIGHT_REQUESTS_COL_ID as string | undefined) ?? "solo_flight_requests";
+export const SOLO_FLIGHT_DECISIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SOLO_FLIGHT_DECISIONS_COL_ID as string | undefined) ?? "solo_flight_decisions";
 
 // Custos e financeiro
 export const INSTRUCTOR_COSTS_COL_ID =

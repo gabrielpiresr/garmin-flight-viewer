@@ -7,6 +7,10 @@ export type WppConnectionSettings = {
   tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
   paymentReceivedTemplate: WppTransactionalTemplateSettings;
   bookingRequestedTemplate: WppTransactionalTemplateSettings;
+  soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
+  soloFlightAwarenessTemplate: WppTransactionalTemplateSettings;
+  soloFlightCoordinatorPhone: string;
+  soloFlightSgsoPhone: string;
   incomingAutoReply: WppIncomingAutoReplySettings;
   businessName: string | null;
   verifiedName: string | null;
@@ -88,6 +92,10 @@ export type WppConnectionInput = {
   tomorrowFlightReminderTemplate?: WppTomorrowFlightReminderTemplateSettings;
   paymentReceivedTemplate?: WppTransactionalTemplateSettings;
   bookingRequestedTemplate?: WppTransactionalTemplateSettings;
+  soloFlightApprovalTemplate?: WppTransactionalTemplateSettings;
+  soloFlightAwarenessTemplate?: WppTransactionalTemplateSettings;
+  soloFlightCoordinatorPhone?: string;
+  soloFlightSgsoPhone?: string;
   incomingAutoReply?: WppIncomingAutoReplySettings;
 };
 

@@ -4,6 +4,7 @@ import {
   FLIGHT_PHOTOS_COL_ID,
   isAppwriteConfigured,
 } from "./appwrite";
+import { buildFlightReviewClubTrialIndexMap } from "./flightReviewClubTrial";
 import { listAllSavedFlights, type SavedFlightListItem } from "./flightsDb";
 import { deriveThumbUrl } from "./photoThumbnails";
 import type { UserRole } from "./rbac";
@@ -21,6 +22,7 @@ export type AlbumMediaItem = {
   flightId: string;
   flightDate: string | null;
   aircraftIdent: string | null;
+  trialFlightIndex: number | null;
   createdAt: string;
   sortAt: string;
   fileName: string;
@@ -126,7 +128,7 @@ function flightMetaMap(flights: SavedFlightListItem[]): Map<string, SavedFlightL
   return new Map(flights.map((flight) => [flight.id, flight]));
 }
 
-function toAlbumPhoto(photo: FlightPhoto, flight: SavedFlightListItem | undefined): AlbumMediaItem | null {
+function toAlbumPhoto(photo: FlightPhoto, flight: SavedFlightListItem | undefined, trialFlightIndex: number | null): AlbumMediaItem | null {
   if (!photo.file_url) return null;
   const createdAt = photo.created_at || "";
   const flightDate = flight?.flight_date || null;
@@ -136,6 +138,7 @@ function toAlbumPhoto(photo: FlightPhoto, flight: SavedFlightListItem | undefine
     flightId: photo.flight_id,
     flightDate,
     aircraftIdent: flight?.aircraft_ident ?? null,
+    trialFlightIndex,
     createdAt,
     sortAt: flightDate || createdAt,
     fileName: photo.file_name,
@@ -148,7 +151,7 @@ function toAlbumPhoto(photo: FlightPhoto, flight: SavedFlightListItem | undefine
   };
 }
 
-function toAlbumVideo(video: FlightVideo, flight: SavedFlightListItem | undefined): AlbumMediaItem | null {
+function toAlbumVideo(video: FlightVideo, flight: SavedFlightListItem | undefined, trialFlightIndex: number | null): AlbumMediaItem | null {
   if (video.processing_status !== "ready" || !video.file_url) return null;
   const createdAt = video.created_at || "";
   const flightDate = flight?.flight_date || null;
@@ -158,6 +161,7 @@ function toAlbumVideo(video: FlightVideo, flight: SavedFlightListItem | undefine
     flightId: video.flight_id,
     flightDate,
     aircraftIdent: flight?.aircraft_ident ?? null,
+    trialFlightIndex,
     createdAt,
     sortAt: flightDate || createdAt,
     fileName: `Vídeo · ${flight?.aircraft_ident || "voo"}`,
@@ -185,6 +189,7 @@ export async function listUserMediaAlbum(viewer: {
 
   const flightIds = flights.map((flight) => flight.id);
   const meta = flightMetaMap(flights);
+  const indexes = buildFlightReviewClubTrialIndexMap(flights);
 
   try {
     const [photos, videos] = await Promise.all([
@@ -198,11 +203,11 @@ export async function listUserMediaAlbum(viewer: {
 
     const items: AlbumMediaItem[] = [];
     for (const photo of photos) {
-      const item = toAlbumPhoto(photo, meta.get(photo.flight_id));
+      const item = toAlbumPhoto(photo, meta.get(photo.flight_id), indexes.get(photo.flight_id) ?? null);
       if (item) items.push(item);
     }
     for (const video of videos) {
-      const item = toAlbumVideo(video, meta.get(video.flight_id));
+      const item = toAlbumVideo(video, meta.get(video.flight_id), indexes.get(video.flight_id) ?? null);
       if (item) items.push(item);
     }
 

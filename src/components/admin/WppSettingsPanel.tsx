@@ -11,6 +11,7 @@ import {
   testWppConnection,
   updateWppTemplate,
 } from "../../lib/wppDb";
+import { ensureSoloFlightWppTemplates } from "../../lib/soloFlightDb";
 import type {
   WppConnectionInput,
   WppConnectionSettings,
@@ -65,6 +66,20 @@ const DEFAULT_BOOKING_REQUESTED_TEMPLATE: WppTransactionalTemplateSettings = {
   templateName: "solicitacao_agendamento_voo",
   language: "pt_BR",
   bodyParameters: ["student_name", "flight_date", "start_time", "aircraft", "duration", "status"],
+};
+
+const DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "voo_solo_aprovacao",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "flight_date", "route", "flags_summary", "request_id"],
+};
+
+const DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "voo_solo_ciencia",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "flight_date", "route", "status", "request_id"],
 };
 
 const DEFAULT_INCOMING_AUTO_REPLY_MESSAGE =
@@ -556,12 +571,17 @@ export function WppSettingsPanel() {
   const [tomorrowFlightReminderTemplate, setTomorrowFlightReminderTemplate] = useState<WppTomorrowFlightReminderTemplateSettings>(DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
   const [paymentReceivedTemplate, setPaymentReceivedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
   const [bookingRequestedTemplate, setBookingRequestedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_BOOKING_REQUESTED_TEMPLATE);
+  const [soloFlightApprovalTemplate, setSoloFlightApprovalTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
+  const [soloFlightAwarenessTemplate, setSoloFlightAwarenessTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+  const [soloFlightCoordinatorPhone, setSoloFlightCoordinatorPhone] = useState("");
+  const [soloFlightSgsoPhone, setSoloFlightSgsoPhone] = useState("");
   const [incomingAutoReply, setIncomingAutoReply] = useState<WppIncomingAutoReplySettings>(DEFAULT_INCOMING_AUTO_REPLY);
   const [templates, setTemplates] = useState<WppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingTemplates, setSavingTemplates] = useState(false);
+  const [ensuringSoloTemplates, setEnsuringSoloTemplates] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
   const [testing, setTesting] = useState(false);
   const [activeSection, setActiveSection] = useState<WppSettingsSection>("bot");
@@ -587,6 +607,10 @@ export function WppSettingsPanel() {
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
       setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
+      setSoloFlightApprovalTemplate(next.soloFlightApprovalTemplate ?? DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
+      setSoloFlightAwarenessTemplate(next.soloFlightAwarenessTemplate ?? DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+      setSoloFlightCoordinatorPhone(next.soloFlightCoordinatorPhone ?? "");
+      setSoloFlightSgsoPhone(next.soloFlightSgsoPhone ?? "");
       setIncomingAutoReply(incomingAutoReplyForm(next));
       if (next.apiKeyConfigured && next.wabaId) await loadTemplates();
     } catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar integração." }); }
@@ -601,7 +625,28 @@ export function WppSettingsPanel() {
     }
     setSaving(true);
     try {
-      await saveWppSettings({ ...form, flightReviewReadyTemplate: flightReviewTemplate, tomorrowFlightReminderTemplate, paymentReceivedTemplate, bookingRequestedTemplate, incomingAutoReply });
+      await saveWppSettings({
+        ...form,
+        flightReviewReadyTemplate: flightReviewTemplate,
+        tomorrowFlightReminderTemplate,
+        paymentReceivedTemplate,
+        bookingRequestedTemplate,
+        incomingAutoReply,
+        soloFlightApprovalTemplate: {
+          ...soloFlightApprovalTemplate,
+          templateName: soloFlightApprovalTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightApprovalTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightApprovalTemplate.bodyParameters,
+        },
+        soloFlightAwarenessTemplate: {
+          ...soloFlightAwarenessTemplate,
+          templateName: soloFlightAwarenessTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightAwarenessTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightAwarenessTemplate.bodyParameters,
+        },
+        soloFlightCoordinatorPhone: soloFlightCoordinatorPhone.trim(),
+        soloFlightSgsoPhone: soloFlightSgsoPhone.trim(),
+      });
       const tested = await testWppConnection();
       setSettings(tested); setForm(connectionForm(tested));
       setIncomingAutoReply(incomingAutoReplyForm(tested));
@@ -716,6 +761,20 @@ export function WppSettingsPanel() {
           language: bookingRequestedTemplate.language.trim() || "pt_BR",
           bodyParameters: bookingRequestedTemplate.bodyParameters,
         },
+        soloFlightApprovalTemplate: {
+          ...soloFlightApprovalTemplate,
+          templateName: soloFlightApprovalTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightApprovalTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightApprovalTemplate.bodyParameters,
+        },
+        soloFlightAwarenessTemplate: {
+          ...soloFlightAwarenessTemplate,
+          templateName: soloFlightAwarenessTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightAwarenessTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightAwarenessTemplate.bodyParameters,
+        },
+        soloFlightCoordinatorPhone: soloFlightCoordinatorPhone.trim(),
+        soloFlightSgsoPhone: soloFlightSgsoPhone.trim(),
       });
       setSettings(next);
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
@@ -727,6 +786,19 @@ export function WppSettingsPanel() {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
     } finally {
       setSavingTemplates(false);
+    }
+  }
+
+  async function createSoloTemplates() {
+    setEnsuringSoloTemplates(true);
+    try {
+      await ensureSoloFlightWppTemplates();
+      showToast({ variant: "success", message: "Templates de voo solo criados/listados no Meta." });
+      await loadTemplates();
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar templates de voo solo." });
+    } finally {
+      setEnsuringSoloTemplates(false);
     }
   }
 
@@ -1041,6 +1113,55 @@ export function WppSettingsPanel() {
               <strong className="block text-slate-300">VariÃ¡veis</strong>
               student_name, flight_date, presentation_time, start_time, aircraft, duration, status, booking_url
             </div>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100">Voo solo</h3>
+              <p className="mt-1 text-xs text-slate-500">Templates utilitários pt_BR para aprovação com flags e ciência sem flags.</p>
+            </div>
+            <button type="button" onClick={() => void createSoloTemplates()} disabled={ensuringSoloTemplates || !connected} className={secondaryButton}>
+              {ensuringSoloTemplates ? "Criando..." : "Criar templates Meta"}
+            </button>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-xs font-medium text-slate-400">WhatsApp coordenador
+              <input value={soloFlightCoordinatorPhone} onChange={(e) => setSoloFlightCoordinatorPhone(e.target.value)} placeholder="55..." className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">WhatsApp SGSO
+              <input value={soloFlightSgsoPhone} onChange={(e) => setSoloFlightSgsoPhone(e.target.value)} placeholder="55..." className={inputClass} />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-2">
+              <input type="checkbox" checked={soloFlightApprovalTemplate.enabled} onChange={(e) => setSoloFlightApprovalTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar aprovação quando houver flags
+            </label>
+            <label className="text-xs font-medium text-slate-400">Template aprovação
+              <input value={soloFlightApprovalTemplate.templateName} onChange={(e) => setSoloFlightApprovalTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="voo_solo_aprovacao" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={soloFlightApprovalTemplate.language} onChange={(e) => setSoloFlightApprovalTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros aprovação
+              <input value={soloFlightApprovalTemplate.bodyParameters.join(", ")} onChange={(e) => setSoloFlightApprovalTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, route, flags_summary, request_id" className={inputClass} />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-2">
+              <input type="checkbox" checked={soloFlightAwarenessTemplate.enabled} onChange={(e) => setSoloFlightAwarenessTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar ciência quando aprovado automaticamente
+            </label>
+            <label className="text-xs font-medium text-slate-400">Template ciência
+              <input value={soloFlightAwarenessTemplate.templateName} onChange={(e) => setSoloFlightAwarenessTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="voo_solo_ciencia" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={soloFlightAwarenessTemplate.language} onChange={(e) => setSoloFlightAwarenessTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros ciência
+              <input value={soloFlightAwarenessTemplate.bodyParameters.join(", ")} onChange={(e) => setSoloFlightAwarenessTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, route, status, request_id" className={inputClass} />
+            </label>
           </div>
         </div>
       </section>

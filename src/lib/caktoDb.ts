@@ -4,6 +4,8 @@ import type {
   CaktoReceiptFilters,
   CaktoSettings,
   CaktoSettingsInput,
+  FlightReviewClubCheckout,
+  FlightReviewClubQuote,
 } from "../types/cakto";
 import type { CrmProposal, CrmProposalInput } from "../types/proposal";
 
@@ -16,6 +18,8 @@ type CaktoResponse = {
   limit?: number;
   offset?: number;
   summary?: CaktoReceiptPage["summary"];
+  checkout?: FlightReviewClubCheckout;
+  quote?: FlightReviewClubQuote;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<CaktoResponse> {
@@ -72,4 +76,16 @@ export async function listCaktoReceipts(filters: CaktoReceiptFilters): Promise<C
     offset: response.offset ?? filters.offset ?? 0,
     summary: response.summary ?? { approved: 0, refunded: 0, pending: 0 },
   };
+}
+
+export async function createFlightReviewClubCheckout(): Promise<FlightReviewClubCheckout> {
+  const response = await execute({ action: "createFlightReviewClubCheckout" });
+  if (!response.checkout) throw new Error(response.message || "Checkout do Flight Review Club nao retornado.");
+  return response.checkout;
+}
+
+export async function quoteFlightReviewClubCheckout(): Promise<FlightReviewClubQuote> {
+  const response = await execute({ action: "quoteFlightReviewClubCheckout" });
+  if (!response.quote) throw new Error(response.message || "Preco do Flight Review Club nao retornado.");
+  return response.quote;
 }

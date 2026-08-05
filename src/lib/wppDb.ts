@@ -69,6 +69,10 @@ export async function saveWppNotificationTemplates(
     tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
     paymentReceivedTemplate: WppTransactionalTemplateSettings;
     bookingRequestedTemplate: WppTransactionalTemplateSettings;
+    soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
+    soloFlightAwarenessTemplate: WppTransactionalTemplateSettings;
+    soloFlightCoordinatorPhone: string;
+    soloFlightSgsoPhone: string;
   },
 ): Promise<WppConnectionSettings> {
   const response = await execute({

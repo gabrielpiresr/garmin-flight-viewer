@@ -16,6 +16,10 @@ function LockIcon() {
 export function FlightReviewClubGate({ children }: { children?: ReactNode }) {
   const { lpUrl } = useFlightReviewClub();
 
+  function handleSubscribe() {
+    window.location.href = lpUrl;
+  }
+
   const lockBody = (
     <>
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-sky-500/15 text-sky-400">
@@ -27,14 +31,13 @@ export function FlightReviewClubGate({ children }: { children?: ReactNode }) {
           Acesse análises detalhadas, vídeos e telemetria completos dos seus voos.
         </p>
       </div>
-      <a
-        href={lpUrl}
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
+        type="button"
+        onClick={handleSubscribe}
         className="rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-black text-slate-950 transition hover:bg-sky-300"
       >
-        Conhecer o Flight Review Club
-      </a>
+        Assinar agora
+      </button>
     </>
   );
 
@@ -48,10 +51,10 @@ export function FlightReviewClubGate({ children }: { children?: ReactNode }) {
 
   return (
     <div className="relative min-h-[280px]">
-      <div aria-hidden="true" className="pointer-events-none select-none opacity-30 blur-sm">
+      <div aria-hidden="true" className="pointer-events-none select-none scale-[1.01] opacity-70 blur-[2px]">
         {children}
       </div>
-      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 rounded-xl bg-slate-950/85 px-6 py-10 text-center">
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 rounded-xl bg-slate-950/55 px-6 py-10 text-center backdrop-blur-[1px]">
         {lockBody}
       </div>
     </div>

@@ -84,6 +84,7 @@ const AtualizacoesAdminTab = lazy(() =>
 );
 const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
 const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
+const AdminSoloFlightTab = lazy(() => import("./AdminSoloFlightTab").then((module) => ({ default: module.AdminSoloFlightTab })));
 
 type AdminSection =
   | "home"
@@ -103,6 +104,7 @@ type AdminSection =
   | "disparos"
   | "receipts"
   | "atualizacoes"
+  | "solo-flight"
   | "aisweb"
   | "album";
 
@@ -322,12 +324,22 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "solo-flight",
+    label: "Voo solo",
+    sublabel: "Fila de aprovacao",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3 12l18-7-7 18-3-8-8-3z" />
+      </svg>
+    ),
+  },
 ];
 
 const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "students", "users", "atualizacoes", "aisweb", "album", "reports", "contents"],
+    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "album", "reports", "contents"],
   },
   {
     title: "Frota",
@@ -592,6 +604,7 @@ const SETTINGS_ROUTES = [
   { id: "wpp", path: "/admin/configuracoes/wpp" },
   { id: "gopro", path: "/admin/configuracoes/gopro" },
   { id: "aisweb", path: "/admin/configuracoes/aisweb" },
+  { id: "solo-flight", path: "/admin/configuracoes/voo-solo" },
   { id: "importacoes", path: "/admin/configuracoes/importacoes", aliases: ["/admin/import"] },
 ] satisfies readonly TabRoute<SettingsSubTab>[];
 
@@ -613,6 +626,7 @@ const ADMIN_ROUTES = [
   { id: "contracts", path: "/admin/contratos" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "solo-flight", path: "/admin/voo-solo" },
   { id: "aisweb", path: "/admin/aisweb" },
   { id: "album", path: "/admin/album" },
 ] satisfies readonly TabRoute<AdminSection>[];
@@ -626,6 +640,7 @@ const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
 
 const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   rules: "Regras",
+  frc: "FRC",
   email: "E-mail",
   brand: "Aparencia",
   badges: "Badges",
@@ -637,6 +652,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   wpp: "WPP",
   gopro: "GoPro",
   aisweb: "AISWEB",
+  "solo-flight": "Voo solo",
   importacoes: "Importações",
 };
 
@@ -1128,6 +1144,13 @@ export function AdminLayout() {
             <div hidden={section !== "atualizacoes"}>
               <LazyTab>
                 <AtualizacoesAdminTab subTab={atualizacoesTab} onSubTabChange={changeAtualizacoesTab} />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("solo-flight") && (
+            <div hidden={section !== "solo-flight"}>
+              <LazyTab>
+                <AdminSoloFlightTab />
               </LazyTab>
             </div>
           )}

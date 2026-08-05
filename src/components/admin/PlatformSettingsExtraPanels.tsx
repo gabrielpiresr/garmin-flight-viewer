@@ -2,15 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { BUCKET_ID, ID, NOTICES_BUCKET_ID, Permission, Role, storage } from "../../lib/appwrite";
 import { getEmailBrandSettings, saveEmailBrandSettings } from "../../lib/notificationsDb";
 import { applySchoolTheme, getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
+import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import type { EmailBrandSettings, EmailBrandSettingsInput } from "../../types/notification";
 import {
   DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   DEFAULT_SCHOOL_RULES,
+  DEFAULT_SOLO_FLIGHT_RULES,
   EMAIL_NOTIFICATION_EVENT_OPTIONS,
   SCHOOL_FONT_OPTIONS,
   type SchoolRules,
   type SchoolRulesInput,
+  type SoloFlightAutomaticCriterionKey,
 } from "../../types/schoolRules";
+import type { TrainingTrack } from "../../types/trainingTrack";
 import {
   DEFAULT_FLIGHT_EVALUATION_RULES,
   FLIGHT_EVALUATION_CRITERION_KEYS,
@@ -677,6 +681,321 @@ export function FlightReviewClubPanel() {
   const { showToast } = useToast();
   const [settings, setSettings] = useState<SchoolRules | null>(null);
   const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
+  const [tracks, setTracks] = useState<TrainingTrack[]>([]);
+  const [newBenefitText, setNewBenefitText] = useState("");
+  const [newBenefitImage, setNewBenefitImage] = useState("");
+  const [newValueProp, setNewValueProp] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const club = form.flightReviewClub ?? DEFAULT_FLIGHT_REVIEW_CLUB_RULES;
+  const setClub = (patch: Partial<typeof club>) =>
+    setForm((prev) => ({ ...prev, flightReviewClub: { ...(prev.flightReviewClub ?? DEFAULT_FLIGHT_REVIEW_CLUB_RULES), ...patch } }));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [next, trackResult] = await Promise.all([
+        getSchoolRules(),
+        listTrainingTracks({ includeInactive: true }),
+      ]);
+      setSettings(next);
+      setForm(toRulesForm(next));
+      setTracks(trackResult.data ?? []);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (error) showToast({ variant: "error", message: error }); }, [error, showToast]);
+
+  async function handleSave() {
+    if (club.enabled && club.landingPageType === "external_url" && !club.externalUrl.trim()) {
+      setError("Informe o link externo da Landing Page do Flight Review Club.");
+      return;
+    }
+    if (club.pricingRules.some((rule) => rule.active && (!rule.trainingTrackId || rule.amount <= 0))) {
+      setError("Cada regra de preco ativa precisa ter trilha e valor.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const current = await getSchoolRules();
+      const saved = await saveSchoolRules({ ...toRulesForm(current), flightReviewClub: club });
+      setSettings(saved);
+      setForm(toRulesForm(saved));
+      showToast({ variant: "success", message: "Configuracoes do Flight Review Club salvas." });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function uploadCover(file: File | null) {
+    if (!file) return;
+    try {
+      setClub({ lpCoverImageUrl: await uploadPublicAsset(file, "Imagem da LP do FRC") });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function uploadBenefitImage(index: number, file: File | null) {
+    if (!file) return;
+    try {
+      const imageUrl = await uploadPublicAsset(file, "Imagem de beneficio do FRC");
+      setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, imageUrl } : item) });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  function addBenefitItem() {
+    const text = newBenefitText.trim();
+    if (!text || club.lpBenefitItems.length >= 20) return;
+    setClub({ lpBenefitItems: [...club.lpBenefitItems, { text, imageUrl: newBenefitImage.trim() }] });
+    setNewBenefitText("");
+    setNewBenefitImage("");
+  }
+
+  function addValueProp() {
+    const text = newValueProp.trim();
+    if (!text || club.lpValueProps.length >= 12) return;
+    setClub({ lpValueProps: [...club.lpValueProps, text] });
+    setNewValueProp("");
+  }
+
+  function addPricingRule() {
+    const track = tracks[0];
+    setClub({
+      pricingRules: [
+        ...club.pricingRules,
+        {
+          id: crypto.randomUUID(),
+          trainingTrackId: track?.id ?? "",
+          trainingTrackName: track?.name ?? "",
+          minHours: 0,
+          maxHours: null,
+          amount: 0,
+          discountPercent: 0,
+          active: true,
+        },
+      ],
+    });
+  }
+
+  function updatePricingRule(index: number, patch: Partial<(typeof club.pricingRules)[number]>) {
+    setClub({
+      pricingRules: club.pricingRules.map((rule, i) => {
+        if (i !== index) return rule;
+        const next = { ...rule, ...patch };
+        if (patch.trainingTrackId !== undefined) {
+          const track = tracks.find((item) => item.id === patch.trainingTrackId);
+          next.trainingTrackName = track?.name ?? "";
+        }
+        return next;
+      }),
+    });
+  }
+
+  if (loading) return <SettingsSkeleton rows={8} />;
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Flight Review Club</h3>
+            <p className="mt-1 text-xs text-slate-500">Acesso, LP, checkout Cakto e preco por trilha/faixa de horas.</p>
+          </div>
+          <p className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
+            Atualizado: {formatUpdatedAt(settings?.updatedAt ?? null)}
+          </p>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200">
+            <input type="checkbox" checked={club.enabled} onChange={(e) => setClub({ enabled: e.target.checked })} className="h-4 w-4 accent-sky-500" />
+            Ativar Flight Review Club
+          </label>
+
+          {club.enabled ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Tipo de landing page
+                  <select value={club.landingPageType} onChange={(e) => setClub({ landingPageType: e.target.value as "internal_public_page" | "external_url" })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500">
+                    <option value="internal_public_page">Pagina publica interna (/flight-review-club)</option>
+                    <option value="external_url">URL externa</option>
+                  </select>
+                </label>
+                <label className="text-xs text-slate-400">
+                  Link externo da LP
+                  <input type="url" value={club.externalUrl} onChange={(e) => setClub({ externalUrl: e.target.value })} disabled={club.landingPageType !== "external_url"} placeholder="https://suaescola.com/clube" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 disabled:opacity-50" />
+                </label>
+                <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-950/30 p-3 text-sm text-slate-200 md:col-span-2">
+                  <input type="checkbox" checked={club.showInStudentMenu} onChange={(e) => setClub({ showInStudentMenu: e.target.checked })} className="h-4 w-4 accent-sky-500" />
+                  Mostrar no menu lateral do aluno
+                </label>
+                <label className="text-xs text-slate-400">
+                  Link fallback do CTA
+                  <input type="url" value={club.ctaSubscriptionUrl} onChange={(e) => setClub({ ctaSubscriptionUrl: e.target.value })} placeholder="https://suaescola.com/assinar" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <span className="mt-1 block text-[11px] text-slate-500">Usado para visitantes sem login ou quando nao houver preco aplicavel.</span>
+                </label>
+                <label className="text-xs text-slate-400">
+                  Termo de adesao
+                  <input type="url" value={club.adhesionTermUrl} onChange={(e) => setClub({ adhesionTermUrl: e.target.value })} placeholder="https://suaescola.com/termo-frc.pdf" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <span className="mt-1 block text-[11px] text-slate-500">Link aberto no checkbox de aceite antes do checkout.</span>
+                </label>
+                <label className="text-xs text-slate-400">
+                  Voos de trial
+                  <input type="number" min={0} max={20} step={1} value={club.trialFlightCount} onChange={(e) => setClub({ trialFlightCount: Math.max(0, Math.round(Number(e.target.value))) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Landing page interna</p>
+                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                  <label className="text-xs text-slate-400">
+                    Titulo
+                    <input value={club.lpHeroTitle} onChange={(e) => setClub({ lpHeroTitle: e.target.value })} maxLength={120} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Texto do botao
+                    <input value={club.lpCtaLabel} onChange={(e) => setClub({ lpCtaLabel: e.target.value })} maxLength={80} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  </label>
+                  <label className="text-xs text-slate-400 md:col-span-2">
+                    Subtitulo
+                    <textarea value={club.lpHeroSubtitle} onChange={(e) => setClub({ lpHeroSubtitle: e.target.value })} rows={3} maxLength={500} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  </label>
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-xs text-slate-400">Imagem de capa</label>
+                    <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
+                      <div className="flex min-h-28 items-center justify-center overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950/50">
+                        {club.lpCoverImageUrl ? <img src={club.lpCoverImageUrl} alt="Capa atual" className="h-full max-h-32 w-full object-cover" /> : <span className="text-xs text-slate-500">Sem capa</span>}
+                      </div>
+                      <div className="space-y-2">
+                        <input type="file" accept="image/*" onChange={(e) => void uploadCover(e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-xs file:text-slate-200" />
+                        <input type="url" value={club.lpCoverImageUrl} onChange={(e) => setClub({ lpCoverImageUrl: e.target.value })} placeholder="Ou cole uma URL publica" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Beneficios com imagem</p>
+                <div className="mt-3 space-y-3">
+                  {club.lpBenefitItems.map((benefit, index) => (
+                    <div key={index} className="grid gap-3 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 md:grid-cols-[120px_minmax(0,1fr)_auto]">
+                      <div className="flex h-20 items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-950/50">
+                        {benefit.imageUrl ? <img src={benefit.imageUrl} alt="" className="h-full w-full object-cover" /> : <span className="text-[11px] text-slate-500">Sem imagem</span>}
+                      </div>
+                      <div className="space-y-2">
+                        <input value={benefit.text} onChange={(e) => setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, text: e.target.value } : item) })} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <input type="url" value={benefit.imageUrl} onChange={(e) => setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, imageUrl: e.target.value } : item) })} placeholder="URL da imagem" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-100 outline-none focus:border-sky-500" />
+                          <input type="file" accept="image/*" onChange={(e) => void uploadBenefitImage(index, e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 file:mr-2 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-[11px] file:text-slate-200" />
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => setClub({ lpBenefitItems: club.lpBenefitItems.filter((_, i) => i !== index) })} className="self-start rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10">Remover</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <input type="text" value={newBenefitText} onChange={(e) => setNewBenefitText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBenefitItem(); } }} placeholder="Texto do beneficio..." maxLength={500} className="min-w-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <input type="url" value={newBenefitImage} onChange={(e) => setNewBenefitImage(e.target.value)} placeholder="URL da imagem (opcional)" className="min-w-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <button type="button" onClick={addBenefitItem} disabled={!newBenefitText.trim() || club.lpBenefitItems.length >= 20} className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-40">Adicionar</button>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Textos de valor</p>
+                <div className="mt-2 space-y-2">
+                  {club.lpValueProps.map((prop, index) => (
+                    <div key={index} className="flex gap-2">
+                      <input value={prop} onChange={(e) => setClub({ lpValueProps: club.lpValueProps.map((item, i) => i === index ? e.target.value : item) })} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      <button type="button" onClick={() => setClub({ lpValueProps: club.lpValueProps.filter((_, i) => i !== index) })} className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10">Remover</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <input value={newValueProp} onChange={(e) => setNewValueProp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addValueProp(); } }} placeholder="Adicionar texto..." maxLength={500} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <button type="button" onClick={addValueProp} disabled={!newValueProp.trim() || club.lpValueProps.length >= 12} className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-40">Adicionar</button>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Preco por trilha e horas voadas</p>
+                    <p className="mt-1 text-[11px] text-slate-500">Ex.: Piloto privado, 0 a 20h, R$ 1490. O checkout usa a primeira regra ativa compativel.</p>
+                  </div>
+                  <button type="button" onClick={addPricingRule} className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500">+ Regra</button>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {club.pricingRules.map((rule, index) => (
+                    <div key={rule.id || index} className="grid gap-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 md:grid-cols-[minmax(180px,1.4fr)_100px_100px_120px_105px_auto_auto] md:items-end">
+                      <label className="text-xs text-slate-400">
+                        Trilha
+                        <select value={rule.trainingTrackId} onChange={(e) => updatePricingRule(index, { trainingTrackId: e.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500">
+                          <option value="">Selecione</option>
+                          {tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-400">
+                        Horas min
+                        <input type="number" min={0} step={0.1} value={rule.minHours} onChange={(e) => updatePricingRule(index, { minHours: Math.max(0, Number(e.target.value) || 0) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      </label>
+                      <label className="text-xs text-slate-400">
+                        Horas max
+                        <input type="number" min={0} step={0.1} value={rule.maxHours ?? ""} onChange={(e) => updatePricingRule(index, { maxHours: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0) })} placeholder="Sem max" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      </label>
+                      <label className="text-xs text-slate-400">
+                        Valor
+                        <input type="number" min={0} step={0.01} value={rule.amount} onChange={(e) => updatePricingRule(index, { amount: Math.max(0, Number(e.target.value) || 0) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      </label>
+                      <label className="text-xs text-slate-400">
+                        Desconto %
+                        <input type="number" min={0} max={95} step={1} value={rule.discountPercent ?? 0} onChange={(e) => updatePricingRule(index, { discountPercent: Math.min(95, Math.max(0, Math.round(Number(e.target.value) || 0))) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                      </label>
+                      <label className="flex items-center gap-2 pb-2 text-xs text-slate-300">
+                        <input type="checkbox" checked={rule.active} onChange={(e) => updatePricingRule(index, { active: e.target.checked })} className="accent-sky-500" />
+                        Ativa
+                      </label>
+                      <button type="button" onClick={() => setClub({ pricingRules: club.pricingRules.filter((_, i) => i !== index) })} className="rounded px-2 py-2 text-xs text-red-300 hover:bg-red-500/10">Remover</button>
+                    </div>
+                  ))}
+                  {club.pricingRules.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-slate-700 px-3 py-5 text-center text-sm text-slate-500">Nenhuma regra de preco configurada.</p>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <button type="button" onClick={() => void handleSave()} disabled={saving} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50">
+          {saving ? "Salvando..." : "Salvar Flight Review Club"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function FlightReviewClubPanelLegacy() {
+  const { showToast } = useToast();
+  const [settings, setSettings] = useState<SchoolRules | null>(null);
+  const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
   const [newBenefit, setNewBenefit] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1060,6 +1379,116 @@ export function FlightEvaluationSettingsPanel() {
         >
           {saving ? "Salvando..." : "Salvar avaliação do voo"}
         </button>
+      </div>
+    </section>
+  );
+}
+
+const SOLO_AUTO_LABELS: Record<SoloFlightAutomaticCriterionKey, string> = {
+  recentDualCommand: "Voo duplo comando recente",
+  minimumAge: "Idade mínima",
+  activeEndorsement: "Endosso ativo anexado",
+  cutoffBefore: "Corte antes do limite",
+  previousDestinationNavigation: "Navegação prévia ao destino",
+  previousAlternateFlight: "Voo prévio ao alternativo",
+  metarAlunoSolo: "METAR dentro do mínimo aluno_solo",
+};
+
+export function SoloFlightRulesPanel() {
+  const { showToast } = useToast();
+  const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const rules = await getSchoolRules();
+      setForm(toRulesForm(rules));
+      setUpdatedAt(rules.updatedAt);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const current = await getSchoolRules();
+      const saved = await saveSchoolRules({ ...toRulesForm(current), soloFlight: form.soloFlight });
+      setForm(toRulesForm(saved));
+      setUpdatedAt(saved.updatedAt);
+      showToast({ variant: "success", message: "Critérios de voo solo salvos." });
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message || "Falha ao salvar voo solo." });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <SettingsSkeleton rows={6} />;
+  if (error) return <section className="rounded-xl border border-red-900/50 bg-red-950/20 p-4 text-sm text-red-200">{error}</section>;
+
+  const solo = form.soloFlight ?? DEFAULT_SOLO_FLIGHT_RULES;
+
+  return (
+    <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-slate-100">Voo solo</h2>
+          <p className="mt-1 text-sm text-slate-500">Última atualização: {formatUpdatedAt(updatedAt)}</p>
+        </div>
+        <button type="button" onClick={() => void save()} disabled={saving} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60">
+          {saving ? "Salvando..." : "Salvar critérios"}
+        </button>
+      </div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-4">
+        <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 text-sm text-slate-200">
+          <input type="checkbox" checked={solo.enabled} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, enabled: e.target.checked } }))} />
+          Fluxo ativo
+        </label>
+        <label className="text-xs font-medium text-slate-400">Janela DC (dias)
+          <input type="number" min={1} max={30} value={solo.dualCommandWindowDays} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, dualCommandWindowDays: Number(e.target.value) } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+        </label>
+        <label className="text-xs font-medium text-slate-400">Idade mínima
+          <input type="number" min={14} max={80} value={solo.minimumAge} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, minimumAge: Number(e.target.value) } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+        </label>
+        <label className="text-xs font-medium text-slate-400">Corte antes de
+          <input type="time" value={solo.cutoffBeforeTime} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, cutoffBeforeTime: e.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+        </label>
+      </div>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2">
+        {(Object.keys(SOLO_AUTO_LABELS) as SoloFlightAutomaticCriterionKey[]).map((key) => (
+          <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-200">
+            <span>{SOLO_AUTO_LABELS[key]}</span>
+            <input type="checkbox" checked={solo.automaticCriteria[key]} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, automaticCriteria: { ...solo.automaticCriteria, [key]: e.target.checked } } }))} />
+          </label>
+        ))}
+      </div>
+
+      <div className="mt-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-200">Critérios manuais</h3>
+          <button type="button" onClick={() => setForm((current) => ({ ...current, soloFlight: { ...solo, manualCriteria: [...solo.manualCriteria, { id: `manual_${Date.now()}`, label: "", enabled: true }] } }))} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800">Adicionar</button>
+        </div>
+        {solo.manualCriteria.map((item, index) => (
+          <div key={item.id} className="grid gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+            <input type="checkbox" checked={item.enabled} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, manualCriteria: solo.manualCriteria.map((row) => row.id === item.id ? { ...row, enabled: e.target.checked } : row) } }))} />
+            <input value={item.label} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, manualCriteria: solo.manualCriteria.map((row) => row.id === item.id ? { ...row, label: e.target.value } : row) } }))} placeholder={`Criterio manual ${index + 1}`} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+            <button type="button" onClick={() => setForm((current) => ({ ...current, soloFlight: { ...solo, manualCriteria: solo.manualCriteria.filter((row) => row.id !== item.id) } }))} className="rounded-lg border border-red-900/50 px-3 py-2 text-xs font-semibold text-red-300 hover:bg-red-950/30">Remover</button>
+          </div>
+        ))}
       </div>
     </section>
   );

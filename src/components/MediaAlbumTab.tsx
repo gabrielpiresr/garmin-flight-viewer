@@ -11,6 +11,8 @@ import {
 import { createPortal } from "react-dom";
 import Hls from "hls.js";
 import { useAuth } from "../contexts/AuthContext";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
+import { isFlightReviewClubTrialIndex } from "../lib/flightReviewClubTrial";
 import {
   listUserMediaAlbum,
   type AlbumMediaItem,
@@ -241,6 +243,12 @@ type DayGroup = {
 
 export function MediaAlbumTab() {
   const { user } = useAuth();
+  const {
+    enabled: clubEnabled,
+    isClubMember,
+    trialFlightCount,
+    lpUrl,
+  } = useFlightReviewClub();
   const [items, setItems] = useState<AlbumMediaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -252,6 +260,7 @@ export function MediaAlbumTab() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
+  const [frcExclusiveOpen, setFrcExclusiveOpen] = useState(false);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const historyPushedRef = useRef(false);
   const viewerWasOpenRef = useRef(false);
@@ -312,6 +321,14 @@ export function MediaAlbumTab() {
     [filtered, visibleCount],
   );
 
+  const isItemLocked = useCallback(
+    (item: AlbumMediaItem) => {
+      if (!clubEnabled || user?.role !== "aluno" || isClubMember) return false;
+      return !isFlightReviewClubTrialIndex(item.trialFlightIndex, trialFlightCount);
+    },
+    [clubEnabled, isClubMember, trialFlightCount, user?.role],
+  );
+
   const dayGroups = useMemo(() => {
     const groups: DayGroup[] = [];
     const byKey = new Map<string, AlbumMediaItem[]>();
@@ -350,13 +367,16 @@ export function MediaAlbumTab() {
   }, [filtered.length, hasMore, visibleCount]);
 
   const activeItem = useMemo(
-    () => items.find((item) => item.id === activeId) ?? null,
-    [activeId, items],
+    () => {
+      const item = items.find((candidate) => candidate.id === activeId) ?? null;
+      return item && !isItemLocked(item) ? item : null;
+    },
+    [activeId, isItemLocked, items],
   );
 
   const photoItems = useMemo(
-    () => filtered.filter((item) => item.kind === "photo"),
-    [filtered],
+    () => filtered.filter((item) => item.kind === "photo" && !isItemLocked(item)),
+    [filtered, isItemLocked],
   );
 
   const activePhotoIndex = useMemo(() => {
@@ -408,19 +428,22 @@ export function MediaAlbumTab() {
   }, []);
 
   const selectVisibleDownloadable = useCallback(() => {
-    setSelectedIds(new Set(visibleItems.filter(itemCanDownload).map((item) => item.id)));
-  }, [visibleItems]);
+    setSelectedIds(new Set(visibleItems.filter((item) => itemCanDownload(item) && !isItemLocked(item)).map((item) => item.id)));
+  }, [isItemLocked, visibleItems]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
   }, []);
 
   const handleDownloadSelected = useCallback(async () => {
-    const downloadable = selectedItems.filter(itemCanDownload);
+    const downloadable = selectedItems.filter((item) => itemCanDownload(item) && !isItemLocked(item));
     const skipped = selectedItems.length - downloadable.length;
+    const lockedCount = selectedItems.filter(isItemLocked).length;
     if (downloadable.length === 0) {
       setDownloadNotice(
-        skipped > 0
+        lockedCount > 0
+          ? "Itens bloqueados pelo Flight Review Club ficam disponiveis apos a assinatura."
+          : skipped > 0
           ? "Vídeos GoPro não podem ser baixados por aqui. Selecione fotos ou vídeos enviados."
           : "Nenhum arquivo selecionado para baixar.",
       );
@@ -482,7 +505,7 @@ export function MediaAlbumTab() {
     } finally {
       setDownloading(false);
     }
-  }, [selectedItems]);
+  }, [isItemLocked, selectedItems]);
 
   const goToFlight = useCallback(
     (item: AlbumMediaItem) => {
@@ -631,10 +654,23 @@ export function MediaAlbumTab() {
                       selectMode={selectMode}
                       selected={selectedIds.has(item.id)}
                       favorited={favoriteIds.has(item.id)}
-                      onOpen={() => setActiveId(item.id)}
+                      locked={isItemLocked(item)}
+                      onOpen={() => {
+                        if (isItemLocked(item)) {
+                          setFrcExclusiveOpen(true);
+                          return;
+                        }
+                        setActiveId(item.id);
+                      }}
                       onToggleSelect={() => toggleSelect(item.id)}
                       onToggleFavorite={() => toggleFavorite(item.id)}
-                      onDownload={() => void downloadAlbumItem(item)}
+                      onDownload={() => {
+                        if (isItemLocked(item)) {
+                          setFrcExclusiveOpen(true);
+                          return;
+                        }
+                        void downloadAlbumItem(item);
+                      }}
                       onGoToFlight={() => goToFlight(item)}
                     />
                   ))}
@@ -723,8 +759,66 @@ export function MediaAlbumTab() {
           onGoToFlight={() => goToFlight(activeItem)}
         />
       ) : null}
+
+      <FlightReviewClubExclusiveModal
+        open={frcExclusiveOpen}
+        onClose={() => setFrcExclusiveOpen(false)}
+        lpUrl={lpUrl}
+      />
     </div>
   );
+}
+
+function FlightReviewClubExclusiveModal({
+  open,
+  onClose,
+  lpUrl,
+}: {
+  open: boolean;
+  onClose: () => void;
+  lpUrl: string;
+}) {
+  if (!open) return null;
+  const overlay = (
+    <div
+      className="fixed inset-0 z-[1200] flex items-end justify-center bg-slate-950/80 px-3 py-3 backdrop-blur-sm sm:items-center sm:px-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Conteudo exclusivo do Flight Review Club"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl shadow-black/50"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-xs font-semibold uppercase tracking-widest text-sky-300/80">Conteudo exclusivo</p>
+        <h3 className="mt-2 text-xl font-black text-white">Disponivel para membros do FRC</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Este video ou foto faz parte do acervo exclusivo do Flight Review Club. Membros conseguem abrir, assistir em tela cheia e revisar os detalhes completos do voo.
+        </p>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+          >
+            Agora nao
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.href = lpUrl;
+            }}
+            className="min-h-11 rounded-xl bg-sky-400 px-5 py-2 text-sm font-black text-slate-950 hover:bg-sky-300"
+          >
+            Conhecer o FRC
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.body);
 }
 
 function AlbumTile({
@@ -732,6 +826,7 @@ function AlbumTile({
   selectMode,
   selected,
   favorited,
+  locked,
   onOpen,
   onToggleSelect,
   onToggleFavorite,
@@ -742,6 +837,7 @@ function AlbumTile({
   selectMode: boolean;
   selected: boolean;
   favorited: boolean;
+  locked: boolean;
   onOpen: () => void;
   onToggleSelect: () => void;
   onToggleFavorite: () => void;
@@ -751,10 +847,11 @@ function AlbumTile({
   const duration = formatDuration(item.durationSec);
   const caption = [item.aircraftIdent, item.flightDate].filter(Boolean).join(" · ");
   const gopro = itemIsGopro(item);
-  const canDownload = itemCanDownload(item);
+  const canDownload = itemCanDownload(item) && !locked;
 
   function handleClick() {
     if (selectMode) {
+      if (locked) return;
       onToggleSelect();
       return;
     }
@@ -775,22 +872,24 @@ function AlbumTile({
       aria-label={item.kind === "video" ? `Abrir vídeo ${item.fileName}` : `Abrir foto ${item.fileName}`}
       aria-pressed={selectMode ? selected : undefined}
     >
-      {item.kind === "photo" ? (
-        <LazyAlbumImage
-          thumbSrc={item.thumbUrl || (item.photo ? deriveThumbUrl(item.fileUrl, item.photo.r2_key) : "")}
-          fullSrc={item.fileUrl}
-          decodeSrc={item.downloadUrl || item.fileUrl}
-          alt={item.fileName}
-        />
-      ) : gopro ? (
-        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800">
-          <span className="rounded-full border border-slate-600 bg-slate-950/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
-            GoPro
-          </span>
-        </div>
-      ) : (
-        <VideoThumb url={item.fileUrl} />
-      )}
+      <div className={`h-full w-full ${locked ? "scale-105 blur-[5px]" : ""}`}>
+        {item.kind === "photo" ? (
+          <LazyAlbumImage
+            thumbSrc={item.thumbUrl || (item.photo ? deriveThumbUrl(item.fileUrl, item.photo.r2_key) : "")}
+            fullSrc={item.fileUrl}
+            decodeSrc={item.downloadUrl || item.fileUrl}
+            alt={item.fileName}
+          />
+        ) : gopro ? (
+          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800">
+            <span className="rounded-full border border-slate-600 bg-slate-950/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
+              GoPro
+            </span>
+          </div>
+        ) : (
+          <VideoThumb url={item.fileUrl} />
+        )}
+      </div>
 
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent opacity-0 transition group-hover:opacity-100" />
 
@@ -856,6 +955,15 @@ function AlbumTile({
             </span>
           ) : null}
         </>
+      ) : null}
+
+      {locked ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950/45 px-2 text-center">
+          <span className="rounded-full border border-sky-300/40 bg-sky-400/15 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-sky-100">
+            FRC
+          </span>
+          <span className="mt-1 text-[10px] font-semibold text-white">Assine para abrir</span>
+        </div>
       ) : null}
 
       {!selectMode ? (

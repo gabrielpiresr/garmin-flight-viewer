@@ -1,7 +1,7 @@
-import { Client, Functions } from "node-appwrite";
+import { Client, Functions, ID, Query } from "node-appwrite";
 import { InputFile } from "node-appwrite/file";
 import { createGzip } from "node:zlib";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
@@ -9,10 +9,45 @@ import { Readable, Writable } from "node:stream";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const directory = join(root, "functions", "cakto-webhook");
+const envPath = join(root, ".env.local");
+const functionId = process.env.CAKTO_WEBHOOK_FUNCTION_ID || "cakto-webhook";
 const endpoint = process.env.APPWRITE_ENDPOINT || "https://sfo.cloud.appwrite.io/v1";
 const projectId = process.env.APPWRITE_PROJECT_ID || "6a01ac8a0009fbf94f05";
 const apiKey = process.env.APPWRITE_API_KEY;
 if (!apiKey) throw new Error("APPWRITE_API_KEY é obrigatória.");
+
+function parseEnvFile(filePath) {
+  if (!existsSync(filePath)) return {};
+  const entries = {};
+  for (const line of readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const index = trimmed.indexOf("=");
+    entries[trimmed.slice(0, index)] = trimmed.slice(index + 1);
+  }
+  return entries;
+}
+
+async function upsertVariable(functions, key, value, secret = false) {
+  if (!value) return;
+  const variables = [];
+  let offset = 0;
+  while (true) {
+    const page = await functions.listVariables({
+      functionId,
+      queries: [Query.limit(100), Query.offset(offset)],
+    });
+    variables.push(...(page.variables || []));
+    if (!page.variables || page.variables.length < 100 || variables.length >= (page.total || 0)) break;
+    offset += 100;
+  }
+  const current = variables.find((variable) => variable.key === key);
+  if (current) {
+    await functions.updateVariable({ functionId, variableId: current.$id, key, value, secret });
+    return;
+  }
+  await functions.createVariable({ functionId, variableId: ID.unique(), key, value, secret });
+}
 
 function header(name, size) {
   const buffer = Buffer.alloc(512);
@@ -52,8 +87,15 @@ await pipeline(Readable.from(Buffer.concat(chunks)), createGzip(), new Writable(
 }));
 const archive = Buffer.concat(compressed);
 const functions = new Functions(new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey));
+const env = parseEnvFile(envPath);
+const studentTracksCollectionId =
+  process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID ||
+  env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID ||
+  env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID ||
+  "student_training_tracks";
+await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
 const deployment = await functions.createDeployment({
-  functionId: "cakto-webhook",
+  functionId,
   code: InputFile.fromBuffer(archive, "cakto-webhook.tar.gz"),
   activate: true,
   entrypoint: "src/main.js",
@@ -61,7 +103,7 @@ const deployment = await functions.createDeployment({
 });
 console.log(`Deployment criado: ${deployment.$id}`);
 for (let attempt = 0; attempt < 90; attempt += 1) {
-  const current = await functions.getDeployment({ functionId: "cakto-webhook", deploymentId: deployment.$id });
+  const current = await functions.getDeployment({ functionId, deploymentId: deployment.$id });
   if (current.status === "ready") {
     console.log("Deployment pronto e ativo.");
     break;

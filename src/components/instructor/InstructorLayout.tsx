@@ -17,6 +17,7 @@ const InstructorFlightsTab = lazy(() =>
   import("./InstructorFlightsTab").then((module) => ({ default: module.InstructorFlightsTab })),
 );
 const InstructorHome = lazy(() => import("./InstructorHome").then((module) => ({ default: module.InstructorHome })));
+const InstructorSoloFlightTab = lazy(() => import("./InstructorSoloFlightTab").then((module) => ({ default: module.InstructorSoloFlightTab })));
 const InstructorProfileTab = lazy(() =>
   import("./InstructorProfileTab").then((module) => ({ default: module.InstructorProfileTab })),
 );
@@ -60,6 +61,7 @@ type InstructorSection =
   | "contratos"
   | "indique-ganhe"
   | "reports"
+  | "solo-flight"
   | "aisweb"
   | "album"
   | "painel";
@@ -113,6 +115,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M1.5 8.67c0-1.213.84-2.266 2.024-2.49l13.5-2.56a2.25 2.25 0 012.669 2.21v12.34a2.25 2.25 0 01-2.67 2.21l-13.5-2.56A2.532 2.532 0 011.5 15.33V8.67z" />
         <path d="M20.25 8.99a.75.75 0 011.5 0v5.02a.75.75 0 01-1.5 0V8.99z" />
+      </svg>
+    ),
+  },
+  {
+    id: "solo-flight",
+    label: "Voo solo",
+    sublabel: "Solicitacoes e validacoes",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M3 12l18-7-7 18-3-8-8-3z" />
       </svg>
     ),
   },
@@ -287,6 +299,7 @@ const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "home",
   "flights",
   "schedule",
+  "solo-flight",
   "aisweb",
   "album",
   "students",
@@ -325,6 +338,7 @@ const SECTION_ROUTES = [
   { id: "contratos", path: "/instrutor/contratos" },
   { id: "reports", path: "/instrutor/relatorios" },
   { id: "indique-ganhe", path: "/instrutor/indique-ganhe" },
+  { id: "solo-flight", path: "/instrutor/voo-solo" },
   { id: "aisweb", path: "/instrutor/aisweb" },
   { id: "album", path: "/instrutor/album" },
 ] satisfies readonly TabRoute<InstructorSection>[];
@@ -663,7 +677,7 @@ export function InstructorLayout() {
               </LazyTab>
             </div>
           )}
-          {openedSections.has("users") && (
+          {section === "users" && (
             <div hidden={section !== "users"}>
               <LazyTab>
                 <AdminUsersTab />
@@ -727,6 +741,13 @@ export function InstructorLayout() {
             <div hidden={section !== "indique-ganhe"}>
               <LazyTab>
                 <ReferAndEarnTab portalRole="instrutor" />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("solo-flight") && (
+            <div hidden={section !== "solo-flight"}>
+              <LazyTab>
+                <InstructorSoloFlightTab />
               </LazyTab>
             </div>
           )}

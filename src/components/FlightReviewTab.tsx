@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { getAircraftByRegistration } from "../lib/aircraftDb";
 import {
   analyzeFlightManeuver,
@@ -2883,10 +2884,11 @@ type PublicFlightReviewData = {
   maneuverTemplates: ManeuverTemplate[];
 };
 
-export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
+export function FlightReviewTab({ flightId, publicData, publicMode = false, clubLocked = false }: {
   flightId: string;
   publicData?: PublicFlightReviewData;
   publicMode?: boolean;
+  clubLocked?: boolean;
 }) {
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -3978,5 +3980,5 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false }: {
     </div>
   );
 
-  return content;
+  return clubLocked && maneuvers.length > 0 ? <FlightReviewClubGate>{content}</FlightReviewClubGate> : content;
 }

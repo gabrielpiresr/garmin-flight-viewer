@@ -36,6 +36,7 @@ import {
   FlightEvaluationSettingsPanel,
   FlightReviewClubPanel,
   ScheduleRulesPanel,
+  SoloFlightRulesPanel,
 } from "./PlatformSettingsExtraPanels";
 import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
 import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
@@ -54,6 +55,7 @@ export type SettingsSubTab =
   | "email"
   | "brand"
   | "rules"
+  | "frc"
   | "badges"
   | "tracks"
   | "financeiro"
@@ -63,6 +65,7 @@ export type SettingsSubTab =
   | "wpp"
   | "gopro"
   | "aisweb"
+  | "solo-flight"
   | "importacoes";
 
 const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = [
@@ -72,6 +75,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path fillRule="evenodd" d="M9.664 1.319a.75.75 0 01.672 0l6.25 3.125A.75.75 0 0117 5.115v4.768c0 3.227-1.953 6.133-4.942 7.346l-1.776.721a.75.75 0 01-.564 0l-1.776-.721A7.93 7.93 0 013 9.883V5.115a.75.75 0 01.414-.671l6.25-3.125zM13.78 7.78a.75.75 0 00-1.06-1.06L9 10.44 7.28 8.72a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.06 0l4.25-4.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "frc",
+    label: "FRC",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2.5l2.25 4.56 5.03.73-3.64 3.55.86 5.01L10 13.98l-4.5 2.37.86-5.01-3.64-3.55 5.03-.73L10 2.5z" />
       </svg>
     ),
   },
@@ -176,6 +188,15 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
     ),
   },
   {
+    id: "solo-flight" as SettingsSubTab,
+    label: "Voo solo",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M2.5 10.5l15-6-6 15-2-6-7-3z" />
+      </svg>
+    ),
+  },
+  {
     id: "importacoes" as SettingsSubTab,
     label: "Importações",
     icon: (
@@ -193,6 +214,7 @@ const SUB_TABS: Array<{ id: SettingsSubTab; label: string; icon: ReactNode }> = 
 /** Mapeamento de sub-aba de configurações → AdminTabKey para controle de permissões */
 const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   rules:       "settings.regras",
+  frc:         "settings.regras",
   email:       "settings.email",
   brand:       "settings.aparencia",
   badges:      "settings.badges",
@@ -204,6 +226,7 @@ const SETTINGS_SUB_TAB_KEY: Record<SettingsSubTab, AdminTabKey> = {
   wpp:         "settings.wpp",
   gopro:       "settings.gopro",
   aisweb:      "settings.aisweb",
+  "solo-flight": "settings.solo-flight",
   importacoes: "import",
 };
 
@@ -859,8 +882,12 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("rules") ? (
         <div hidden={activeSubTab !== "rules"} className="space-y-6">
           <ScheduleRulesPanel />
-          <FlightReviewClubPanel />
           <FlightEvaluationSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("frc") ? (
+        <div hidden={activeSubTab !== "frc"}>
+          <FlightReviewClubPanel />
         </div>
       ) : null}
       {openedSubTabs.has("badges") ? (
@@ -905,6 +932,11 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
       {openedSubTabs.has("wpp") ? (
         <div hidden={activeSubTab !== "wpp"}>
           <WppSettingsPanel />
+        </div>
+      ) : null}
+      {openedSubTabs.has("solo-flight") ? (
+        <div hidden={activeSubTab !== "solo-flight"}>
+          <SoloFlightRulesPanel />
         </div>
       ) : null}
       {openedSubTabs.has("gopro") ? (

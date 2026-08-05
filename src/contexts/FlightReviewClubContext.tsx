@@ -4,6 +4,7 @@ export type FlightReviewClubContextValue = {
   enabled: boolean;
   isClubMember: boolean;
   lpUrl: string;
+  ctaSubscriptionUrl: string;
   trialFlightCount: number;
   benefits: string[];
 };
@@ -12,6 +13,7 @@ const FlightReviewClubContext = createContext<FlightReviewClubContextValue>({
   enabled: false,
   isClubMember: false,
   lpUrl: "/flight-review-club",
+  ctaSubscriptionUrl: "",
   trialFlightCount: 0,
   benefits: [],
 });

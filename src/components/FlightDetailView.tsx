@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
-import { FlightReviewClubGate } from "./FlightReviewClubGate";
+import { isFlightReviewClubTrialIndex } from "../lib/flightReviewClubTrial";
 import { getSavedFlight } from "../lib/flightsDb";
 import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
@@ -117,7 +117,7 @@ export function FlightDetailView({
 }: Props) {
   const { user } = useAuth();
   const { enabled: clubEnabled, isClubMember, trialFlightCount } = useFlightReviewClub();
-  const isTrial = trialFlightIndex !== undefined && trialFlightCount > 0 && trialFlightIndex < trialFlightCount;
+  const isTrial = isFlightReviewClubTrialIndex(trialFlightIndex, trialFlightCount);
   const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember && !isTrial;
   const defaultSubTab = initialSubTab ?? "ficha";
   const [activeSubTab, setActiveSubTab] = useState<SubTab>(defaultSubTab);
@@ -397,19 +397,19 @@ export function FlightDetailView({
 
         {visitedSubTabs.has("telemetria") ? (
           <div hidden={activeSubTab !== "telemetria"} className="min-h-0 min-w-0">
-            {gatedByClub ? <FlightReviewClubGate /> : <TelemetriaTab flightId={flightId} parsedResult={parsedResult} />}
+            <TelemetriaTab flightId={flightId} parsedResult={parsedResult} clubLocked={gatedByClub} />
           </div>
         ) : null}
 
         {visitedSubTabs.has("videos") ? (
           <div hidden={activeSubTab !== "videos"} className="min-h-0 min-w-0">
-            {gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />}
+            <VideosTab flightId={flightId} clubLocked={gatedByClub} />
           </div>
         ) : null}
 
         {visitedSubTabs.has("fotos") ? (
           <div hidden={activeSubTab !== "fotos"} className="min-h-0 min-w-0">
-            {gatedByClub ? <FlightReviewClubGate /> : <PhotosTab flightId={flightId} />}
+            <PhotosTab flightId={flightId} clubLocked={gatedByClub} />
           </div>
         ) : null}
 
@@ -427,7 +427,7 @@ export function FlightDetailView({
 
         {visitedSubTabs.has("flight-review") && flightId ? (
           <div hidden={activeSubTab !== "flight-review"} className="min-h-0 min-w-0">
-            {gatedByClub ? <FlightReviewClubGate /> : <FlightReviewTab flightId={flightId} />}
+            <FlightReviewTab flightId={flightId} clubLocked={gatedByClub} />
           </div>
         ) : null}
       </div>

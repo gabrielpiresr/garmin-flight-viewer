@@ -11,6 +11,7 @@
 import { createPortal } from "react-dom";
 import Hls from "hls.js";
 import { ExportModal, type ExportProgress } from "./ExportModal";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { buildBlankOverlay, renderOverlayVideo, uploadOverlayAndComposite } from "../lib/renderOverlayVideo";
 import { downloadVideoFile } from "../lib/videoDownload";
 import { useAuth } from "../contexts/AuthContext";
@@ -590,10 +591,11 @@ async function pickFilesFromHelper(): Promise<SelectedFile[]> {
   });
 }
 
-export function VideosTab({ flightId, publicMode = false, publicVideos }: {
+export function VideosTab({ flightId, publicMode = false, publicVideos, clubLocked = false }: {
   flightId: string | undefined;
   publicMode?: boolean;
   publicVideos?: FlightVideo[];
+  clubLocked?: boolean;
 }) {
   const { user } = useAuth();
   const isInstructor = !publicMode && (user?.role === "instrutor" || user?.role === "admin");
@@ -1450,22 +1452,40 @@ export function VideosTab({ flightId, publicMode = false, publicVideos }: {
             ))}
           </ul>
         ) : videos.length > 0 ? (
-          <div className="space-y-3">
-            <QueuedVideosPlayer videos={videos} publicMode={publicMode} />
-            <ul className="space-y-2">
-              {videos.map((v) => (
-                <VideoCard
-                  key={v.id}
-                  video={v}
-                  isInstructor={isInstructor}
-                  publicMode={publicMode}
-                  showInlinePlayer={false}
-                  onDelete={() => void handleDeleteVideo(v.id)}
-                  onRetry={() => void handleRetry(v.id)}
-                />
-              ))}
-            </ul>
-          </div>
+          clubLocked ? (
+            <FlightReviewClubGate>
+              <ul className="space-y-2">
+                {videos.map((v) => (
+                  <VideoCard
+                    key={v.id}
+                    video={v}
+                    isInstructor={false}
+                    publicMode={publicMode}
+                    showInlinePlayer={false}
+                    onDelete={() => undefined}
+                    onRetry={() => undefined}
+                  />
+                ))}
+              </ul>
+            </FlightReviewClubGate>
+          ) : (
+            <div className="space-y-3">
+              <QueuedVideosPlayer videos={videos} publicMode={publicMode} />
+              <ul className="space-y-2">
+                {videos.map((v) => (
+                  <VideoCard
+                    key={v.id}
+                    video={v}
+                    isInstructor={isInstructor}
+                    publicMode={publicMode}
+                    showInlinePlayer={false}
+                    onDelete={() => void handleDeleteVideo(v.id)}
+                    onRetry={() => void handleRetry(v.id)}
+                  />
+                ))}
+              </ul>
+            </div>
+          )
         ) : null}
       </div>
     </div>

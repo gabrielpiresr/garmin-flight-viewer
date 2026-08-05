@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type TouchEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode, type TouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "../contexts/AuthContext";
 import {
@@ -15,6 +15,7 @@ import {
   probeImageUrl,
   UPLOAD_PREVIEW_MAX_EDGE,
 } from "../lib/photoThumbnails";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { Skeleton } from "./ui/Skeleton";
 
 const LIGHTBOX_SWIPE_THRESHOLD_PX = 56;
@@ -94,10 +95,12 @@ export function PhotosTab({
   flightId,
   publicMode = false,
   publicPhotos,
+  clubLocked = false,
 }: {
   flightId: string | undefined;
   publicMode?: boolean;
   publicPhotos?: FlightPhoto[];
+  clubLocked?: boolean;
 }) {
   const { user } = useAuth();
   const canUpload = !publicMode && (user?.role === "admin" || user?.role === "instrutor");
@@ -446,7 +449,7 @@ export function PhotosTab({
                 : "Fotos enviadas para este voo aparecerão aqui."}
             </p>
           </div>
-          {photos.length > 0 ? (
+          {photos.length > 0 && !clubLocked ? (
             <button
               type="button"
               onClick={() => void handleDownloadAll()}
@@ -470,7 +473,8 @@ export function PhotosTab({
         ) : photos.length === 0 ? (
           <PhotosEmptyState canUpload={canUpload} onPick={() => inputRef.current?.click()} />
         ) : (
-          <div className={galleryGridClass}>
+          <FlightReviewClubGateWrapper locked={clubLocked}>
+            <div className={galleryGridClass}>
             {visiblePhotos.map((photo) => (
               <article key={photo.id} className={galleryCardClass}>
                 <button
@@ -525,11 +529,12 @@ export function PhotosTab({
               />
             ))}
             {hasMorePhotos ? <div ref={loadMoreRef} className="col-span-full h-px" aria-hidden="true" /> : null}
-          </div>
+            </div>
+          </FlightReviewClubGateWrapper>
         )}
       </section>
 
-      {activePhoto ? (
+      {activePhoto && !clubLocked ? (
         <PhotoLightbox
           photo={activePhoto}
           count={photos.length}
@@ -543,6 +548,10 @@ export function PhotosTab({
       ) : null}
     </div>
   );
+}
+
+function FlightReviewClubGateWrapper({ locked, children }: { locked: boolean; children: ReactNode }) {
+  return locked ? <FlightReviewClubGate>{children}</FlightReviewClubGate> : <>{children}</>;
 }
 
 function UploadStatus({ status }: { status: UploadItemStatus }) {

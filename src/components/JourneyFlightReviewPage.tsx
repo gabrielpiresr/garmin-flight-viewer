@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
-import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
-import { getSavedFlight, type SavedFlightFull } from "../lib/flightsDb";
+import { buildFlightReviewClubTrialIndexMap, isFlightReviewClubTrialIndex } from "../lib/flightReviewClubTrial";
+import { getSavedFlight, listAllSavedFlights, type SavedFlightFull } from "../lib/flightsDb";
+import { isScheduledFlightStatus } from "../lib/flightEvaluationEligibility";
 import { createFlightPublicShare } from "../lib/publicFlightReviewShare";
 import { FlightReviewTab } from "./FlightReviewTab";
 import { PhotosTab } from "./PhotosTab";
@@ -98,10 +99,11 @@ export function FlightSummaryPanel({ flight, missionName }: { flight: SavedFligh
   );
 }
 
-export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, onBack }: Props) {
+export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props) {
   const { user } = useAuth();
   const { enabled: clubEnabled, isClubMember, trialFlightCount } = useFlightReviewClub();
-  const isTrial = missionIndex !== undefined && trialFlightCount > 0 && missionIndex < trialFlightCount;
+  const [trialFlightIndex, setTrialFlightIndex] = useState<number | null>(null);
+  const isTrial = isFlightReviewClubTrialIndex(trialFlightIndex, trialFlightCount);
   const gatedByClub = clubEnabled && user?.role === "aluno" && !isClubMember && !isTrial;
   const [activeTab, setActiveTab] = useState<JourneyFlightReviewTab>("resumo");
   const [flight, setFlight] = useState<SavedFlightFull | null>(null);
@@ -128,6 +130,25 @@ export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, o
       cancelled = true;
     };
   }, [flightId]);
+
+  useEffect(() => {
+    if (!user?.id || user.role !== "aluno" || trialFlightCount <= 0) {
+      setTrialFlightIndex(null);
+      return;
+    }
+    let cancelled = false;
+    void listAllSavedFlights({ userId: user.id, role: "aluno" }, { maxItems: 5000 }).then(({ data }) => {
+      if (cancelled) return;
+      const indexes = buildFlightReviewClubTrialIndexMap(
+        data ?? [],
+        (item) => !isScheduledFlightStatus(item),
+      );
+      setTrialFlightIndex(indexes.get(flightId) ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [flightId, trialFlightCount, user?.id, user?.role]);
 
   async function handleCreatePublicShare() {
     setShareBusy(true);
@@ -180,10 +201,10 @@ export function JourneyFlightReviewPage({ flightId, missionName, missionIndex, o
       ) : flight ? (
         <>
           {activeTab === "resumo" ? <FlightSummaryPanel flight={flight} missionName={missionName} /> : null}
-          {activeTab === "telemetria" ? (gatedByClub ? <FlightReviewClubGate /> : <TelemetriaTab flightId={flightId} />) : null}
-          {activeTab === "flight-review" ? (gatedByClub ? <FlightReviewClubGate /> : <FlightReviewTab flightId={flightId} />) : null}
-          {activeTab === "videos" ? (gatedByClub ? <FlightReviewClubGate /> : <VideosTab flightId={flightId} />) : null}
-          {activeTab === "fotos" ? (gatedByClub ? <FlightReviewClubGate /> : <PhotosTab flightId={flightId} />) : null}
+          {activeTab === "telemetria" ? <TelemetriaTab flightId={flightId} clubLocked={gatedByClub} /> : null}
+          {activeTab === "flight-review" ? <FlightReviewTab flightId={flightId} clubLocked={gatedByClub} /> : null}
+          {activeTab === "videos" ? <VideosTab flightId={flightId} clubLocked={gatedByClub} /> : null}
+          {activeTab === "fotos" ? <PhotosTab flightId={flightId} clubLocked={gatedByClub} /> : null}
         </>
       ) : null}
     </div>
