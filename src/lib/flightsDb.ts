@@ -363,6 +363,15 @@ function toStorageCsvFileName(sourceFilename: string): string {
   return `${safeBase}.csv`;
 }
 
+function csvAuditSummary(csvText: unknown, csvFileId?: string | null): Record<string, unknown> {
+  const text = typeof csvText === "string" ? csvText : "";
+  return {
+    csv_text_char_count: text.length,
+    csv_text_inline: text.length > 0,
+    csv_file_id: csvFileId ?? null,
+  };
+}
+
 async function assertFlightNotLocked(id: string): Promise<{ locked: boolean; error: Error | null }> {
   const doc = await databases!.getDocument(DB_ID, COL_ID, id, [Query.select(["instructor_signed"])]);
   if (doc.instructor_signed) {
@@ -1335,8 +1344,7 @@ export async function updateFlight(id: string, payload: {
           instructor_signed: current.instructor_signed ?? null,
           student_signed: current.student_signed ?? null,
           admin_operator_signed: current.admin_operator_signed ?? null,
-          csv_text: current.csv_text ?? null,
-          csv_file_id: current.csv_file_id ?? null,
+          ...csvAuditSummary(current.csv_text, (current.csv_file_id as string | null | undefined) ?? null),
         },
         afterSnapshot: {
           id,
@@ -1346,7 +1354,7 @@ export async function updateFlight(id: string, payload: {
           aircraft_ident: payload.aircraft_ident ?? null,
           flight_date: scheduleFields.flight_date,
           start_time: scheduleFields.start_time,
-          csv_text: payload.csv_text,
+          ...csvAuditSummary(payload.csv_text, csvFileId),
         },
       });
     }
