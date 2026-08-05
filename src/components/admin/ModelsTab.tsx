@@ -715,6 +715,7 @@ type ProgramForm = {
   reference_section: string;
   recurrence_hours: string;
   recurrence_days: string;
+  estimated_downtime_days: string;
   tolerance_hours: string;
   tolerance_days: string;
   manufacturer: string;
@@ -744,6 +745,7 @@ const emptyProgramForm: ProgramForm = {
   reference_section: "",
   recurrence_hours: "50",
   recurrence_days: "",
+  estimated_downtime_days: "",
   tolerance_hours: "",
   tolerance_days: "",
   manufacturer: "",
@@ -823,6 +825,9 @@ function programPayload(modelId: string, form: ProgramForm): ProgramItemPayload 
     reference_section: form.reference_section.trim() || null,
     recurrence_rules: rulesJson(form.recurrence_hours, form.recurrence_days, true) ?? "[]",
     tolerance_rules: rulesJson(form.tolerance_hours, form.tolerance_days, false),
+    estimated_downtime_days: positiveNumber(form.estimated_downtime_days)
+      ? Math.round(positiveNumber(form.estimated_downtime_days)!)
+      : null,
     manufacturer: form.manufacturer.trim() || null,
     model: form.model.trim() || null,
     serial_from: form.serial_from.trim() || null,
@@ -890,6 +895,7 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
       reference_section: item.reference_section ?? "",
       recurrence_hours: recurrence.hours,
       recurrence_days: recurrence.days,
+      estimated_downtime_days: item.estimated_downtime_days != null ? String(item.estimated_downtime_days) : "",
       tolerance_hours: tolerance.hours,
       tolerance_days: tolerance.days,
       manufacturer: item.manufacturer ?? "",
@@ -1028,6 +1034,13 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
             <TextArea label="Descrição técnica *" value={form.description} onChange={(value) => setForm((f) => ({ ...f, description: value }))} className="md:col-span-3" tooltip="Descrição técnica do item conforme referência adotada." />
             <NumberField label="Recorrência por horas" value={form.recurrence_hours} onChange={(value) => setForm((f) => ({ ...f, recurrence_hours: value }))} suffix="h" tooltip="Intervalo em horas. O sistema apenas salva a regra agora." />
             <NumberField label="Recorrência por calendário" value={form.recurrence_days} onChange={(value) => setForm((f) => ({ ...f, recurrence_days: value }))} suffix="dias" tooltip="Intervalo em dias corridos. O sistema apenas salva a regra agora." />
+            <NumberField
+              label="Dias parado (previsão)"
+              value={form.estimated_downtime_days}
+              onChange={(value) => setForm((f) => ({ ...f, estimated_downtime_days: value }))}
+              suffix="dias"
+              tooltip="Quantos dias o avião fica parado nesta manutenção. Usado na previsão teórica e nos alertas de risco da escala."
+            />
             <NumberField label="Tolerância por horas" value={form.tolerance_hours} onChange={(value) => setForm((f) => ({ ...f, tolerance_hours: value }))} suffix="h" tooltip="Tolerância em horas, apenas registrada nesta fase." />
             <NumberField label="Tolerância por calendário" value={form.tolerance_days} onChange={(value) => setForm((f) => ({ ...f, tolerance_days: value }))} suffix="dias" tooltip="Tolerância em dias, apenas registrada nesta fase." />
             <TextArea label="Notas de baseline" value={form.baseline_notes} onChange={(value) => setForm((f) => ({ ...f, baseline_notes: value }))} />
@@ -1075,7 +1088,7 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
       ) : null}
 
       {!formMode ? <div className="mt-4 overflow-x-auto rounded-lg border border-slate-800">
-        <table className="min-w-[1120px] text-sm">
+        <table className="min-w-[1200px] text-sm">
           <thead className="bg-slate-950/50 text-xs uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-3 py-2 text-left">Código</th>
@@ -1085,6 +1098,7 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
               <th className="px-3 py-2 text-left">Área</th>
               <th className="px-3 py-2 text-left">Prioridade</th>
               <th className="px-3 py-2 text-left">Recorrência</th>
+              <th className="px-3 py-2 text-left">Parada</th>
               <th className="px-3 py-2 text-left">Documento</th>
               <th className="px-3 py-2 text-left">Tarefas</th>
               <th className="px-3 py-2" />
@@ -1092,9 +1106,9 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading ? (
-              <tr><td className="px-3 py-4 text-slate-500" colSpan={10}>Carregando...</td></tr>
+              <tr><td className="px-3 py-4 text-slate-500" colSpan={11}>Carregando...</td></tr>
             ) : items.length === 0 ? (
-              <tr><td className="px-3 py-4 text-slate-500" colSpan={10}>Nenhum item cadastrado para este modelo.</td></tr>
+              <tr><td className="px-3 py-4 text-slate-500" colSpan={11}>Nenhum item cadastrado para este modelo.</td></tr>
             ) : items.map((item) => (
               <tr key={item.id}>
                 <td className="px-3 py-2 font-mono text-slate-200">{item.code}</td>
@@ -1104,6 +1118,11 @@ export function MaintenanceProgramPanel({ model, onClose }: { model: AircraftMod
                 <td className="px-3 py-2 text-slate-400">{PROGRAM_AREA_LABELS[item.maintenance_area] ?? item.maintenance_area}</td>
                 <td className="px-3 py-2 text-slate-400">{PROGRAM_PRIORITY_LABELS[item.priority] ?? item.priority}</td>
                 <td className="px-3 py-2 text-slate-400">{formatRuleList(item.recurrence_rules)}</td>
+                <td className="px-3 py-2 text-slate-400">
+                  {item.estimated_downtime_days != null && item.estimated_downtime_days > 0
+                    ? `${item.estimated_downtime_days}d`
+                    : "—"}
+                </td>
                 <td className="px-3 py-2 text-slate-400">{item.reference_document}</td>
                 <td className="px-3 py-2 text-slate-400">{item.checklist_tasks.length}</td>
                 <td className="px-3 py-2">

@@ -15,6 +15,8 @@ export type AircraftMaintenanceDue = {
   title: string;
   /** Intervalo da recorrência (h). Quando várias vencem juntas, prevalece o maior intervalo (ex.: 600h engloba a 100h). */
   intervalHours: number;
+  /** Dias estimados de parada; null = sem previsão de risco para este item. */
+  downtimeDays: number | null;
 };
 
 export type AircraftBaseHours = {
@@ -92,7 +94,14 @@ function maintenanceDueList(modelItems: MaintenanceProgramItem[]): AircraftMaint
     if (isExcludedMaintenanceItem(item)) continue;
     const interval = parseHoursInterval(item.recurrence_rules);
     if (interval == null) continue;
-    due.push({ code: item.code, title: item.title, intervalHours: interval });
+    due.push({
+      code: item.code,
+      title: item.title,
+      intervalHours: interval,
+      downtimeDays: item.estimated_downtime_days != null && item.estimated_downtime_days > 0
+        ? Math.round(item.estimated_downtime_days)
+        : null,
+    });
   }
   return due.sort((a, b) => b.intervalHours - a.intervalHours);
 }

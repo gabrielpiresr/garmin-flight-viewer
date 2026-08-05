@@ -286,6 +286,7 @@ export function ScheduleSettingsPanel() {
         emailNotifications: rules.emailNotifications,
         flightReviewClub: rules.flightReviewClub,
         flightEvaluation: rules.flightEvaluation,
+        soloFlight: rules.soloFlight,
         scheduleStudentHelp: rules.scheduleStudentHelp,
       });
       setRules(saved);
@@ -521,6 +522,32 @@ export function ScheduleSettingsPanel() {
         {nullableField("weeklyMaxFlightHours", "Horas de voo por semana", "Total máximo de horas de voo (acionamento → corte, sem briefing/debriefing) que o aluno pode ter agendado na mesma semana, fim de semana incluído.", { step: 0.5 })}
         {nullableField("weekendMaxFlights", "Voos no fim de semana", "Quantidade máxima de voos que o aluno pode ter agendados no sábado + domingo da mesma semana.")}
         {nullableField("weekendMaxFlightHours", "Horas de voo no fim de semana", "Total máximo de horas de voo (acionamento → corte) que o aluno pode ter agendado no sábado + domingo da mesma semana.", { step: 0.5 })}
+      </Section>
+
+      <Section
+        title="Alerta de manutenção"
+        description="Previsão teórica de parada com base na média de horas/dia e nos dias parados cadastrados no programa de manutenção."
+      >
+        <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4 space-y-2">
+          <ToggleField
+            label="Ativar alerta de manutenção"
+            tooltip="Exibe na escala a previsão teórica de horas e as flags de risco (baixa/média/alta) de parada por manutenção para alunos, admin e instrutores."
+            checked={schedule.maintenanceAlertEnabled}
+            onChange={(next) => setSchedule({ maintenanceAlertEnabled: next })}
+          />
+          <ToggleField
+            label="Bloquear data mais provável de parada"
+            tooltip="Quando ativo, alunos não conseguem marcar novos voos nos dias de risco alto (parada prevista). Voos já marcados não são cancelados. Admin e instrutores continuam livres."
+            checked={schedule.maintenanceBlockLikelyDowntime}
+            onChange={(next) => setSchedule({ maintenanceBlockLikelyDowntime: next })}
+          />
+        </div>
+        {numberField(
+          "maintenanceAvgHoursPerDay",
+          "Horas voadas em média por dia",
+          "Média usada na previsão teórica: quantas horas o avião voa por dia em média. Dias parados por manutenção não entram nessa contagem.",
+          { step: 0.25 },
+        )}
       </Section>
 
       <Section title="Créditos" description="Como o saldo de horas do aluno é exigido na hora de marcar o voo.">

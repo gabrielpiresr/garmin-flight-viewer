@@ -33,6 +33,13 @@ import { ScheduleStudentSummaryPanel } from "./ScheduleStudentSummaryPanel";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import {
+  projectMaintenanceRisk,
+  effectiveDowntimeDays,
+  adminTheoreticalRiskTextClass,
+  type MaintenanceRiskDay,
+  type MaintenanceRiskLevel,
+} from "../../lib/maintenanceRiskProjection";
 import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import {
   getSagaScheduleEventsCached,
@@ -723,13 +730,28 @@ function resolveInstructorDraft(
 /** Célula da linha de projeção de horas por aeronave (abaixo do Total da agenda). */
 type ProjectionCell = {
   hours: number | null;
-  /** Nome da manutenção que vence neste dia (célula destacada em vermelho). */
+  /** Mesma janela de risco da teórica (média/alta) quando há dias de parada configurados. */
+  risk?: MaintenanceRiskLevel;
+  /** Código da manutenção que motiva o destaque neste dia. */
   maintenance?: string;
+  grounded?: boolean;
+};
+
+type TheoreticalProjectionCell = {
+  hours: number | null;
+  risk: MaintenanceRiskLevel;
+  maintenance?: string;
+  grounded?: boolean;
 };
 
 type AircraftProjectionRow = {
   registration: string;
   hoursByDay: Partial<Record<number, ProjectionCell>>;
+};
+
+type AircraftTheoreticalProjectionRow = {
+  registration: string;
+  hoursByDay: Partial<Record<number, TheoreticalProjectionCell>>;
 };
 type ProjectionHoursSource = "system" | "planeIt";
 type PlaneItTotalsState = {
@@ -795,24 +817,52 @@ function eventStyleClasses(color: string, unassigned: boolean, draggable: boolea
   return `overflow-hidden rounded px-1.5 py-1 text-left text-[10px] text-white ${color} ${strike} ${pointer}`;
 }
 
-function aircraftProjectionCellClass(maintenance?: string): string {
-  return maintenance
-    ? "border-red-500/60 bg-red-500/15 font-semibold text-red-300"
-    : "border-slate-800/60 bg-slate-950/40 text-slate-400";
+function plannedProjectionCellClass(cell?: ProjectionCell): string {
+  if (!cell || cell.hours == null) return "border-slate-800/60 bg-slate-950/40 text-slate-400";
+  if (cell.risk === "high" || cell.risk === "medium") return adminTheoreticalRiskTextClass(cell.risk);
+  if (cell.maintenance) return "border-red-500/60 bg-red-500/15 font-semibold text-red-300";
+  return "border-slate-800/60 bg-slate-950/40 text-slate-400";
+}
+
+function theoreticalProjectionCellClass(cell?: TheoreticalProjectionCell): string {
+  if (!cell || cell.hours == null) return "border-slate-800/60 bg-slate-950/40 text-slate-500";
+  return adminTheoreticalRiskTextClass(cell.risk);
 }
 
 function AircraftProjectionCell({ cell }: { cell?: ProjectionCell }) {
   const maintenance = cell?.maintenance;
+  const maintenanceLabel = maintenance ? (cell?.grounded ? "parado" : maintenance) : null;
   return (
     <div
-      className={`rounded border px-1 py-1 text-center text-xs font-semibold tabular-nums ${aircraftProjectionCellClass(maintenance)}`}
+      className={`mx-auto mt-1 flex min-h-[28px] max-w-full flex-col items-center justify-center rounded border px-1 py-0.5 text-center text-[11px] font-semibold leading-tight tabular-nums ${plannedProjectionCellClass(cell)}`}
+      title={maintenance ? `Previsão planejada · ${maintenance}` : "Previsão planejada (voos agendados)"}
     >
-      {cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}
-      {maintenance ? (
-        <span className="block truncate text-[9px] font-semibold leading-tight text-red-300">
-          {maintenance}
-        </span>
-      ) : null}
+      <span className="truncate max-w-full">{cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}</span>
+      {maintenanceLabel ? <span className="max-w-full truncate text-[9px] font-semibold opacity-90">{maintenanceLabel}</span> : null}
+    </div>
+  );
+}
+
+function TheoreticalProjectionCellView({ cell }: { cell?: TheoreticalProjectionCell }) {
+  const maintenanceLabel = cell?.maintenance ? (cell.grounded ? "parado" : cell.maintenance) : null;
+  return (
+    <div
+      className={`mx-auto mt-0.5 flex min-h-[24px] max-w-full flex-col items-center justify-center rounded border px-1 py-0.5 text-center text-[10px] font-semibold leading-tight tabular-nums ${theoreticalProjectionCellClass(cell)}`}
+      title={cell?.maintenance ? `Previsão teórica · ${cell.maintenance}` : "Previsão teórica (média diária)"}
+    >
+      <span className="truncate max-w-full">{cell?.hours == null ? "—" : `${cell.hours.toFixed(1)}h`}</span>
+      {maintenanceLabel ? <span className="max-w-full truncate text-[8px] font-semibold opacity-90">{maintenanceLabel}</span> : null}
+    </div>
+  );
+}
+
+function ProjectionRowLabels({ showTheoretical }: { showTheoretical?: boolean }) {
+  // Espaço equivalente a: cor+nome (~18px) + totais (~14px) para alinhar com as linhas de projeção.
+  return (
+    <div className="flex flex-col items-end justify-start pt-[2px] text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+      <div className="h-[34px]" aria-hidden />
+      <p className="flex min-h-[28px] items-center leading-none">Plan.</p>
+      {showTheoretical ? <p className="mt-0.5 flex min-h-[24px] items-center leading-none">Teor.</p> : null}
     </div>
   );
 }
@@ -1021,6 +1071,7 @@ export function CalendarGrid({
   blockedSlots,
   projectionRows,
   projectionLoading = false,
+  theoreticalProjectionRows,
   pastBeforeDate,
   onDayHeaderClick,
   slotPreviewDurationHours = null,
@@ -1064,6 +1115,8 @@ export function CalendarGrid({
   projectionRows?: AircraftProjectionRow[];
   /** Horas-base da Frota ainda carregando: mostra skeleton no lugar das linhas de projeção. */
   projectionLoading?: boolean;
+  /** Previsão teórica (média diária + paradas) abaixo da projeção real. */
+  theoreticalProjectionRows?: AircraftTheoreticalProjectionRow[];
   /** Escala do aluno: dias anteriores a esta data (ISO) ficam escurecidos e sem agendamento. */
   pastBeforeDate?: string;
   /** Semanal/3 dias: clicar no cabeçalho do dia abre a visão diária naquele dia. */
@@ -1508,26 +1561,35 @@ export function CalendarGrid({
               })}
             </tr>
             <tr>
-              <th className="w-8 pb-1 text-right text-[10px] font-medium text-slate-600 sm:w-12" />
+              <th className="w-10 pb-1 align-top text-right text-[10px] font-medium text-slate-600 sm:w-14">
+                {groupBy === "aircraft" && (projectionRows || theoreticalProjectionRows) ? (
+                  <ProjectionRowLabels showTheoretical={Boolean(theoreticalProjectionRows)} />
+                ) : null}
+              </th>
               {gridColumns.map(({ day, column }) => {
                 const key = `${day}|${column.key}`;
                 const totals = cellTotals.get(key) ?? { flights: 0, hours: 0 };
                 const projectionCell = groupBy === "aircraft" ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day] : undefined;
                 const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
+                const showProjection = groupBy === "aircraft" && Boolean(projectionRows || theoreticalProjectionRows);
                 return (
-                <th key={`${day}-${column.key}`} className={`bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}>
-                  <div className="flex items-center justify-center gap-1">
+                <th key={`${day}-${column.key}`} className={`align-top bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}>
+                  <div className="flex h-[18px] items-center justify-center gap-1">
                     <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
                     <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
                   </div>
-                  <p className="truncate text-[10px] font-normal text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
-                  {projectionLoading && groupBy === "aircraft" ? (
-                    <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
-                  ) : projectionCell ? (
-                    <p className={`mx-auto mt-1 truncate rounded border px-1 py-0.5 text-[11px] font-semibold ${aircraftProjectionCellClass(projectionCell.maintenance)}`}>
-                      {projectionCell.hours == null ? "—" : `${projectionCell.hours.toFixed(1)}h`}
-                      {projectionCell.maintenance ? ` · ${projectionCell.maintenance}` : ""}
-                    </p>
+                  <p className="h-[14px] truncate text-[10px] font-normal leading-[14px] text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
+                  {showProjection ? (
+                    projectionLoading ? (
+                      <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
+                    ) : (
+                      <AircraftProjectionCell cell={projectionCell} />
+                    )
+                  ) : null}
+                  {groupBy === "aircraft" && theoreticalProjectionRows ? (
+                    <TheoreticalProjectionCellView
+                      cell={theoreticalProjectionRows.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]}
+                    />
                   ) : null}
                 </th>
                 );
@@ -1905,6 +1967,7 @@ function DailyCalendarGrid({
   getItemColor,
   projectionRows,
   projectionLoading = false,
+  theoreticalProjectionRows,
   slotPreviewDurationHours = null,
   alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
   resolveFlexibleFit,
@@ -1936,6 +1999,7 @@ function DailyCalendarGrid({
   clubMemberByStudentId?: Record<string, boolean>;
   projectionRows?: AircraftProjectionRow[];
   projectionLoading?: boolean;
+  theoreticalProjectionRows?: AircraftTheoreticalProjectionRow[];
   slotPreviewDurationHours?: number | null;
   alwaysVisibleAircraftIdents?: ReadonlySet<string>;
   resolveFlexibleFit?: (
@@ -2293,20 +2357,29 @@ function DailyCalendarGrid({
           >
             <thead>
               <tr>
-                <th className="w-8 pb-2 sm:w-12" />
+                <th className="w-10 pb-2 align-top text-right sm:w-14">
+                  {groupBy === "aircraft" && (projectionRows || theoreticalProjectionRows) ? (
+                    <ProjectionRowLabels showTheoretical={Boolean(theoreticalProjectionRows)} />
+                  ) : null}
+                </th>
                 {columns.map((col) => (
-                  <th key={col.key} className="pb-2 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
+                  <th key={col.key} className="align-top pb-2 text-center">
+                    <div className="flex h-[18px] items-center justify-center gap-1.5">
                       <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${groupBy === "instructor" ? `${col.colorClass} border-2 bg-slate-800` : aircraftCardColor(col.colorClass)}`} />
                       <span className="text-xs font-semibold text-slate-300">{col.label}</span>
                     </div>
-                    <p className="text-[10px] text-slate-500">
+                    <p className="h-[14px] text-[10px] leading-[14px] text-slate-500">
                       {col.items.length} voo{col.items.length !== 1 ? "s" : ""} · {col.items.reduce((s, i) => s + (i.flightHours ?? i.durationHours), 0).toFixed(1)}h
                     </p>
                     {groupBy === "aircraft" && projectionLoading ? (
-                      <Skeleton className="mx-auto mt-1 h-4 w-14 rounded" />
+                      <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
                     ) : groupBy === "aircraft" ? (
                       <AircraftProjectionCell cell={projectionRows?.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]} />
+                    ) : null}
+                    {groupBy === "aircraft" && theoreticalProjectionRows ? (
+                      <TheoreticalProjectionCellView
+                        cell={theoreticalProjectionRows.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]}
+                      />
                     ) : null}
                   </th>
                 ))}
@@ -2625,6 +2698,7 @@ type TimelineRow = {
   dayLabel?: string;
   summaryLabel?: string;
   projectionCell?: ProjectionCell;
+  theoreticalProjectionCell?: TheoreticalProjectionCell;
 };
 
 const TIMELINE_MIN_PX_PER_HOUR = Math.round(96 * 0.8);
@@ -2883,11 +2957,21 @@ function HorizontalTimelineBoard({
                 <div className="flex w-24 shrink-0 flex-col items-end justify-center pr-1 text-right sm:w-36 sm:pr-2">
                   <span className="max-w-full truncate text-[11px] font-semibold text-slate-300">{row.label}</span>
                   {row.summaryLabel ? <span className="max-w-full truncate text-[10px] font-normal text-slate-500">{row.summaryLabel}</span> : null}
-                  {row.projectionCell ? (
-                    <span className={`mt-0.5 max-w-full truncate rounded border px-1 py-0.5 text-xs font-semibold tabular-nums ${aircraftProjectionCellClass(row.projectionCell.maintenance)}`}>
-                      {row.projectionCell.hours == null ? "—" : `${row.projectionCell.hours.toFixed(1)}h`}
-                      {row.projectionCell.maintenance ? ` · ${row.projectionCell.maintenance}` : ""}
-                    </span>
+                  {row.projectionCell || row.theoreticalProjectionCell ? (
+                    <div className="mt-0.5 flex w-full flex-col items-end gap-0.5">
+                      {row.projectionCell ? (
+                        <div className="flex max-w-full items-center gap-1">
+                          <span className="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-slate-500">Plan.</span>
+                          <AircraftProjectionCell cell={row.projectionCell} />
+                        </div>
+                      ) : null}
+                      {row.theoreticalProjectionCell ? (
+                        <div className="flex max-w-full items-center gap-1">
+                          <span className="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-slate-500">Teor.</span>
+                          <TheoreticalProjectionCellView cell={row.theoreticalProjectionCell} />
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
                 <div
@@ -4051,6 +4135,8 @@ export function ScheduleFlightsTab({
 
   // Projeção de horas totais por aeronave (tipo avião) ao fim de cada dia da semana:
   // horas atuais (Frota) + tempo de voo agendado (sem briefing/debriefing) até o dia.
+  // Aviso de manutenção: mesma janela da teórica (médio no cruzamento, alto nos dias
+  // de parada, médio no dia seguinte) — baseada nas horas planejadas, não na média.
   const projectionRows = useMemo(() => {
     if (!weekData || !aircraftBaseHours) return [];
     const buffers = (scheduleRules.bufferBeforeMinutes + scheduleRules.bufferAfterMinutes) / 60;
@@ -4091,7 +4177,19 @@ export function ScheduleFlightsTab({
         });
       }
     }
+    const today = new Date();
+    const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
     const baseWeekStart = weekData.week.weekStart;
+    const weekEnd = weekDateFromStart(baseWeekStart, 0);
+    const dayIndexByDate = new Map<string, number>();
+    for (const day of DAY_ORDER) {
+      dayIndexByDate.set(weekDateFromStart(baseWeekStart, day), day);
+    }
+    const simDayCount = Math.max(
+      1,
+      Math.ceil((new Date(`${weekEnd}T12:00:00`).getTime() - new Date(`${todayIso}T12:00:00`).getTime()) / 86400000) + 1,
+    );
+
     return activeAircrafts
       .filter((aircraft) => aircraft.type === "aviao")
       .map((aircraft) => {
@@ -4100,37 +4198,185 @@ export function ScheduleFlightsTab({
         const base = projectionHoursSource === "planeIt"
           ? planeItHoursByRegistration.get(reg) ?? null
           : info?.hours ?? null;
-        const dueList = info?.maintenanceDue ?? [];
+        const dueList = (info?.maintenanceDue ?? []).filter((item) => item.intervalHours > 0);
+        const applyRiskWindows = scheduleRules.maintenanceAlertEnabled;
+        const riskItems = applyRiskWindows
+          ? dueList.filter((item) => (item.downtimeDays ?? 0) > 0)
+          : [];
         const hoursByDay: Partial<Record<number, ProjectionCell>> = {};
         if (base == null) {
-          for (const day of DAY_ORDER) hoursByDay[day] = { hours: null };
-        } else {
-          const regEvents = events.filter((event) => event.reg === reg);
-          // Acumulado anterior à semana (eventos futuros antes de segunda) para
-          // detectar em qual dia a projeção CRUZA o vencimento da manutenção.
-          let previous = base + regEvents
-            .filter((event) => event.date < baseWeekStart)
-            .reduce((sum, event) => sum + event.hours, 0);
-          for (const day of DAY_ORDER) {
-            const dayDate = weekDateFromStart(baseWeekStart, day);
-            const value = Number((base + regEvents
-              .filter((event) => event.date <= dayDate)
-              .reduce((sum, event) => sum + event.hours, 0)).toFixed(1));
-            // Quando mais de uma manutenção vence no mesmo dia (ex.: 600h também é
-            // múltiplo da 100h), prevalece a de MAIOR intervalo — menor frequência.
-            const hit = dueList
-              .filter((item) => {
-                const nextMultiple = (Math.floor(previous / item.intervalHours) + 1) * item.intervalHours;
-                return nextMultiple <= value + 1e-9;
-              })
-              .sort((a, b) => b.intervalHours - a.intervalHours)[0];
-            hoursByDay[day] = { hours: value, maintenance: hit ? hit.code : undefined };
-            previous = value;
+          for (const day of DAY_ORDER) hoursByDay[day] = { hours: null, risk: "low" };
+          return { registration: aircraft.registration, hoursByDay };
+        }
+
+        // Dias passados da semana exibida: baseline sem risco.
+        for (const day of DAY_ORDER) {
+          const dayDate = weekDateFromStart(baseWeekStart, day);
+          if (dayDate < todayIso) {
+            hoursByDay[day] = { hours: Number(base.toFixed(1)), risk: "low" };
           }
+        }
+
+        const regEvents = events.filter((event) => event.reg === reg);
+        let cursor = base;
+        let groundedRemaining = 0;
+        let activeItem: (typeof riskItems)[number] | null = null;
+        let pendingPostMedium: { offset: number; item: (typeof riskItems)[number] } | null = null;
+
+        for (let offset = 0; offset < simDayCount; offset += 1) {
+          const dateObj = new Date(`${todayIso}T12:00:00`);
+          dateObj.setDate(dateObj.getDate() + offset);
+          const date = formatLocalDateISO(dateObj);
+
+          let risk: MaintenanceRiskLevel = "low";
+          let maintenance: string | undefined;
+          let grounded = false;
+
+          if (pendingPostMedium && pendingPostMedium.offset === offset) {
+            risk = "medium";
+            maintenance = pendingPostMedium.item.code;
+            pendingPostMedium = null;
+          }
+
+          const dayAdd = regEvents
+            .filter((event) => event.date === date)
+            .reduce((sum, event) => sum + event.hours, 0);
+
+          if (groundedRemaining > 0 && activeItem) {
+            risk = "high";
+            grounded = true;
+            maintenance = activeItem.code;
+            groundedRemaining -= 1;
+            if (groundedRemaining === 0) {
+              pendingPostMedium = { offset: offset + 1, item: activeItem };
+              activeItem = null;
+            }
+            cursor = Number((cursor + dayAdd).toFixed(1));
+            const dayKey = dayIndexByDate.get(date);
+            if (dayKey !== undefined) {
+              hoursByDay[dayKey] = { hours: cursor, risk, maintenance, grounded };
+            }
+            continue;
+          }
+
+          const hoursBefore = cursor;
+          cursor = Number((hoursBefore + dayAdd).toFixed(1));
+
+          const crossedRisk = riskItems
+            .map((item) => ({
+              item,
+              due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
+            }))
+            .filter(({ due }) => hoursBefore < due - 1e-9 && cursor + 1e-9 >= due)
+            .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
+
+          const crossedAny = dueList
+            .map((item) => ({
+              item,
+              due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
+            }))
+            .filter(({ due }) => hoursBefore < due - 1e-9 && cursor + 1e-9 >= due)
+            .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
+
+          if (crossedRisk) {
+            risk = "medium";
+            maintenance = crossedRisk.item.code;
+            groundedRemaining = effectiveDowntimeDays(
+              date,
+              Math.max(1, Math.round(crossedRisk.item.downtimeDays as number)),
+            );
+            activeItem = crossedRisk.item;
+          } else if (crossedAny) {
+            maintenance = crossedAny.item.code;
+          }
+
+          const dayKey = dayIndexByDate.get(date);
+          if (dayKey !== undefined) {
+            hoursByDay[dayKey] = { hours: cursor, risk, maintenance, grounded };
+          }
+        }
+
+        // Garante todas as células da semana (ex.: semana futura ainda não preenchida pelo loop).
+        for (const day of DAY_ORDER) {
+          if (hoursByDay[day]) continue;
+          const dayDate = weekDateFromStart(baseWeekStart, day);
+          const value = Number((base + regEvents
+            .filter((event) => event.date <= dayDate)
+            .reduce((sum, event) => sum + event.hours, 0)).toFixed(1));
+          hoursByDay[day] = { hours: value, risk: "low" };
+        }
+
+        return { registration: aircraft.registration, hoursByDay };
+      });
+  }, [weekData, aircraftBaseHours, scheduleRules.bufferBeforeMinutes, scheduleRules.bufferAfterMinutes, scheduleRules.sagaOnlySchedule, scheduleRules.maintenanceAlertEnabled, flights, activeAircrafts, netFlightHours, projectionHoursSource, planeItHoursByRegistration]);
+
+  const theoreticalProjectionRows = useMemo(() => {
+    if (!scheduleRules.maintenanceAlertEnabled || !weekData || !aircraftBaseHours) return undefined;
+    const avg = scheduleRules.maintenanceAvgHoursPerDay;
+    if (!(avg > 0)) return undefined;
+    const today = new Date();
+    const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const baseWeekStart = weekData.week.weekStart;
+    // Horizonte: de hoje até o domingo da semana exibida (+ folga).
+    // `base` = horas reais atuais usadas como valor de ontem (início de hoje).
+    const weekEnd = weekDateFromStart(baseWeekStart, 0);
+    const dayCount = Math.max(
+      14,
+      Math.ceil((new Date(`${weekEnd}T12:00:00`).getTime() - new Date(`${todayIso}T12:00:00`).getTime()) / 86400000) + 8,
+    );
+    return activeAircrafts
+      .filter((aircraft) => aircraft.type === "aviao")
+      .map((aircraft) => {
+        const reg = aircraft.registration.trim().toUpperCase();
+        const info = aircraftBaseHours.get(reg);
+        const base = projectionHoursSource === "planeIt"
+          ? planeItHoursByRegistration.get(reg) ?? null
+          : info?.hours ?? null;
+        const hoursByDay: Partial<Record<number, TheoreticalProjectionCell>> = {};
+        if (base == null) {
+          for (const day of DAY_ORDER) hoursByDay[day] = { hours: null, risk: "low" };
+          return { registration: aircraft.registration, hoursByDay };
+        }
+        const series = projectMaintenanceRisk({
+          currentHours: base,
+          avgHoursPerDay: avg,
+          items: (info?.maintenanceDue ?? []).map((item) => ({
+            code: item.code,
+            title: item.title,
+            intervalHours: item.intervalHours,
+            downtimeDays: item.downtimeDays,
+          })),
+          fromDate: todayIso,
+          dayCount,
+        });
+        for (const day of DAY_ORDER) {
+          const dayDate = weekDateFromStart(baseWeekStart, day);
+          if (dayDate < todayIso) {
+            // Dias passados: mantém o baseline (sem somar média).
+            hoursByDay[day] = { hours: Number(base.toFixed(1)), risk: "low" };
+            continue;
+          }
+          const projected: MaintenanceRiskDay | undefined = series[dayDate];
+          hoursByDay[day] = projected
+            ? {
+                hours: projected.theoreticalHours,
+                risk: projected.risk,
+                maintenance: projected.maintenanceCode,
+                grounded: projected.grounded,
+              }
+            : { hours: Number(base.toFixed(1)), risk: "low" };
         }
         return { registration: aircraft.registration, hoursByDay };
       });
-  }, [weekData, aircraftBaseHours, scheduleRules, flights, activeAircrafts, netFlightHours, projectionHoursSource, planeItHoursByRegistration]);
+  }, [
+    scheduleRules.maintenanceAlertEnabled,
+    scheduleRules.maintenanceAvgHoursPerDay,
+    weekData,
+    aircraftBaseHours,
+    activeAircrafts,
+    projectionHoursSource,
+    planeItHoursByRegistration,
+  ]);
 
   const projectionLoading = aircraftBaseHours === null || (projectionHoursSource === "planeIt" && planeIt.loading);
 
@@ -4172,11 +4418,14 @@ export function ScheduleFlightsTab({
           projectionCell: scheduleGroupBy === "aircraft"
             ? projectionRows.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]
             : undefined,
+          theoreticalProjectionCell: scheduleGroupBy === "aircraft"
+            ? theoreticalProjectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]
+            : undefined,
         });
       }
     }
     return rows;
-  }, [invertedTimeline, agendaView, alwaysVisibleAircraftIdents, calendarItems, selectedDay, threeDayWindow, weekData, selectedWeekStart, scheduleColumns, scheduleGroupBy, projectionRows]);
+  }, [invertedTimeline, agendaView, alwaysVisibleAircraftIdents, calendarItems, selectedDay, threeDayWindow, weekData, selectedWeekStart, scheduleColumns, scheduleGroupBy, projectionRows, theoreticalProjectionRows]);
 
   const selectedSupplyForBackground = useMemo(() => {
     if (!weekData || visibleAircraft.length !== 1) return null;
@@ -5513,6 +5762,7 @@ export function ScheduleFlightsTab({
                 getItemColor={resolveItemColor}
                 projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
                 projectionLoading={projectionLoading}
+                theoreticalProjectionRows={scheduleGroupBy === "aircraft" ? theoreticalProjectionRows : undefined}
                 colorByAircraft={colorByAircraft}
                 borderByInstructor={borderByInstructor}
                 backgroundSupply={selectedSupplyForBackground}
@@ -5588,6 +5838,7 @@ export function ScheduleFlightsTab({
                   clubMemberByStudentId={clubMemberByStudentId}
                   projectionRows={scheduleGroupBy === "aircraft" ? projectionRows : undefined}
                   projectionLoading={projectionLoading}
+                  theoreticalProjectionRows={scheduleGroupBy === "aircraft" ? theoreticalProjectionRows : undefined}
                   hasPrevWeek={hasPreviousWeek}
                   hasNextWeek={hasNextWeek}
                   onSelectDay={setSelectedDay}

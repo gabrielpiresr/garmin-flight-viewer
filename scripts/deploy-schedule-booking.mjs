@@ -81,6 +81,12 @@ const env = {
   APPWRITE_SCHEDULE_SLOT_LOCKS_COLLECTION_ID: "schedule_slot_locks",
   APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID: process.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID,
   APPWRITE_OPERATIONAL_WEEKS_COLLECTION_ID: process.env.VITE_APPWRITE_OP_WEEKS_COL_ID || byName.get("aircraft_operational_weeks"),
+  APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COLLECTION_ID:
+    process.env.VITE_APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID || byName.get("maintenance_program_items") || "",
+  APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID:
+    process.env.VITE_APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID || byName.get("maintenance_work_orders") || "",
+  APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COLLECTION_ID:
+    process.env.VITE_APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID || byName.get("aircraft_horimeter_corrections") || "aircraft_horimeter_corrections",
   SCHOOL_ID: process.env.VITE_SCHOOL_ID || "escola_principal",
 };
 
@@ -114,9 +120,16 @@ if (mergedScopes.length !== (currentFn.scopes || []).length) {
   console.log(`Scopes atualizados: ${mergedScopes.join(", ")}`);
 }
 
+const optionalEnvKeys = new Set([
+  "APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID",
+  "APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COLLECTION_ID",
+]);
 const variables = await functions.listVariables({ functionId });
 for (const [key, value] of Object.entries(env)) {
-  if (!value) throw new Error(`Variável ausente: ${key}`);
+  if (!value) {
+    if (optionalEnvKeys.has(key)) continue;
+    throw new Error(`Variável ausente: ${key}`);
+  }
   const current = variables.variables.find((item) => item.key === key);
   if (current) await functions.updateVariable({ functionId, variableId: current.$id, key, value, secret: false });
   else await functions.createVariable({ functionId, variableId: ID.unique(), key, value, secret: false });

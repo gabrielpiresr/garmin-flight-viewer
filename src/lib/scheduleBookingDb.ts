@@ -68,6 +68,22 @@ type FunctionResponse = {
   endTime?: string;
   creditsByModel?: PublicCreditByModel[];
   blockedSlots?: PublicBlockedSlot[];
+  /** registration → date → risco (legado; preferir maintenanceTheoryContext). */
+  maintenanceRiskByAircraft?: Record<string, Record<string, "low" | "medium" | "high">> | null;
+  /** Base da previsão teórica (mesma da linha Teórica do admin) — o cliente aplica o algoritmo local. */
+  maintenanceTheoryContext?: {
+    avgHoursPerDay: number;
+    aircrafts: Array<{
+      registration: string;
+      hours: number;
+      maintenanceDue: Array<{
+        code: string;
+        title: string;
+        intervalHours: number;
+        downtimeDays: number | null;
+      }>;
+    }>;
+  } | null;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<FunctionResponse> {
@@ -104,6 +120,8 @@ export async function getPublicSchedule(dateFrom: string, dateTo: string, opts?:
     flights: response.flights ?? [],
     creditsByModel: response.creditsByModel ?? [],
     blockedSlots: response.blockedSlots ?? [],
+    maintenanceRiskByAircraft: response.maintenanceRiskByAircraft ?? null,
+    maintenanceTheoryContext: response.maintenanceTheoryContext ?? null,
   };
 }
 

@@ -20,6 +20,12 @@ import type { ScheduleStudentHelpConfig } from "../types/scheduleStudentHelp";
 import { getSchoolRules } from "../lib/schoolRulesDb";
 import { filterScheduleBundleForStudentView } from "../lib/scheduleStudentVisibility";
 import { normalizeScheduleFlightStatus, type FlightStatus } from "../lib/flightsDb";
+import {
+  projectMaintenanceRisk,
+  riskLevelLabel,
+  maintenanceRiskTextClass,
+  type MaintenanceRiskLevel,
+} from "../lib/maintenanceRiskProjection";
 import { useAuth } from "../contexts/AuthContext";
 import { AgendamentoTab } from "./AgendamentoTab";
 import {
@@ -64,6 +70,21 @@ function getStudentFlightCardClasses(item: CalendarFlightItem): string {
   if (item.isBlocked) return "bg-red-900/60 border-red-500/50 text-red-200";
   if (!item.isOwn) return "bg-slate-700/70 border-slate-600/50";
   return STATUS_COLOR[item.flightStatus ?? "Não confirmado"] ?? "bg-slate-600/90 border-slate-500/60";
+}
+
+function normalizeAircraftIdentKey(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function lookupMaintenanceRisk(
+  map: Map<string, Record<string, MaintenanceRiskLevel>> | undefined,
+  registration: string,
+  dateIso: string,
+): MaintenanceRiskLevel {
+  if (!map || !registration || !dateIso) return "low";
+  const raw = registration.trim().toUpperCase();
+  const norm = normalizeAircraftIdentKey(registration);
+  return map.get(raw)?.[dateIso] ?? map.get(norm)?.[dateIso] ?? "low";
 }
 
 function studentItemColor(item: CalendarFlightItem): string {
@@ -313,6 +334,8 @@ function StudentAircraftBoard({
   headerDays,
   disablePrev,
   minSelectableDate,
+  maintenanceRiskByAircraft,
+  maintenanceAlertEnabled,
 }: {
   days: readonly number[];
   items: CalendarFlightItem[];
@@ -334,6 +357,8 @@ function StudentAircraftBoard({
   disablePrev?: boolean;
   /** Escala do aluno: dias anteriores a esta data (ISO) não podem ser selecionados. */
   minSelectableDate?: string;
+  maintenanceRiskByAircraft?: Map<string, Record<string, MaintenanceRiskLevel>>;
+  maintenanceAlertEnabled?: boolean;
 }) {
   const isMobile = useIsMobile();
   // Colunas mais estreitas no mobile (160 → 120 → 96) + calha de horas reduzida.
@@ -493,17 +518,32 @@ function StudentAircraftBoard({
                   <thead>
                     <tr>
                       <th className="w-7 sm:w-10" />
-                      {cols.map((col) => (
-                        <th key={col.registration} className="pb-1 text-center">
-                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300">
-                            <span
-                              className={`h-2 w-2 shrink-0 rounded-full ${(colorByAircraft.get(col.registration) ?? AIRCRAFT_COLOR_CLASSES[0]!).split(" ")[0]}`}
-                            />
-                            {col.registration}
-                          </span>
-                          <p className="text-[10px] font-normal text-slate-500">{col.items.length} voo{col.items.length !== 1 ? "s" : ""}</p>
+                      {cols.map((col) => {
+                        const dayIso = toLocalIso(dayDate);
+                        const risk = maintenanceAlertEnabled
+                          ? lookupMaintenanceRisk(maintenanceRiskByAircraft, col.registration, dayIso)
+                          : null;
+                        return (
+                        <th key={col.registration} className="pb-1 text-center align-top">
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                              <span
+                                className={`h-2 w-2 shrink-0 rounded-full ${(colorByAircraft.get(col.registration) ?? AIRCRAFT_COLOR_CLASSES[0]!).split(" ")[0]}`}
+                              />
+                              {col.registration}
+                            </span>
+                            {risk ? (
+                              <span
+                                className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold leading-tight ${maintenanceRiskTextClass(risk)}`}
+                                title={riskLevelLabel(risk)}
+                              >
+                                {risk === "high" ? "Alta" : risk === "medium" ? "Média" : "Baixa"}
+                              </span>
+                            ) : null}
+                          </div>
                         </th>
-                      ))}
+                        );
+                      })}
                     </tr>
                   </thead>
                   <tbody>
@@ -1122,6 +1162,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
   const [onlyMyFlights, setOnlyMyFlights] = useState(false);
   const [blockedSlots, setBlockedSlots] = useState<PublicBlockedSlot[]>([]);
+  const [maintenanceTheoryContext, setMaintenanceTheoryContext] = useState<NonNullable<WeekBundle["maintenanceTheoryContext"]> | null>(null);
 
   // Cache de semanas já carregadas + dedupe de fetches em andamento (invalidado nas mutações).
   const weekCacheRef = useRef(new Map<string, WeekBundle>());
@@ -1194,6 +1235,46 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       .catch(() => {});
   }, []);
 
+  // Mesma previsão TEÓRICA do admin/instrutor (média/dia), com "hoje" do browser.
+  const maintenanceRiskByAircraft = useMemo(() => {
+    const map = new Map<string, Record<string, MaintenanceRiskLevel>>();
+    if (!rules.maintenanceAlertEnabled || !maintenanceTheoryContext) return map;
+    const avg = maintenanceTheoryContext.avgHoursPerDay;
+    if (!(avg > 0)) return map;
+    const today = toLocalIso(new Date());
+    // Horizonte amplo o bastante para a grade + modal de agendamento (~3 meses).
+    const dayCount = 100;
+    for (const aircraft of maintenanceTheoryContext.aircrafts) {
+      const series = projectMaintenanceRisk({
+        currentHours: aircraft.hours,
+        avgHoursPerDay: avg,
+        items: aircraft.maintenanceDue,
+        fromDate: today,
+        dayCount,
+      });
+      const byDate: Record<string, MaintenanceRiskLevel> = {};
+      for (const [date, day] of Object.entries(series)) {
+        byDate[date] = day.risk;
+      }
+      const raw = aircraft.registration.trim().toUpperCase();
+      const norm = normalizeAircraftIdentKey(aircraft.registration);
+      map.set(raw, byDate);
+      if (norm && norm !== raw) map.set(norm, byDate);
+    }
+    return map;
+  }, [rules.maintenanceAlertEnabled, maintenanceTheoryContext]);
+
+  const bookingMaintenanceRisk = useMemo((): MaintenanceRiskLevel => {
+    if (!rules.maintenanceAlertEnabled || !flightDate || !aircraftIdent) return "low";
+    return lookupMaintenanceRisk(maintenanceRiskByAircraft, aircraftIdent, flightDate);
+  }, [rules.maintenanceAlertEnabled, flightDate, aircraftIdent, maintenanceRiskByAircraft]);
+
+  const bookingMaintenanceBlocked =
+    !actingForStudentId &&
+    rules.maintenanceAlertEnabled &&
+    rules.maintenanceBlockLikelyDowntime &&
+    bookingMaintenanceRisk === "high";
+
   useEffect(() => {
     let cancelled = false;
     const apply = (data: WeekBundle) => {
@@ -1203,6 +1284,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       setAircrafts(data.aircrafts);
       setFlights(data.flights);
       setBlockedSlots(data.blockedSlots);
+      setMaintenanceTheoryContext(data.maintenanceTheoryContext ?? null);
       setAircraftIdent((current) => {
         if (current && data.aircrafts.some((aircraft) => aircraft.registration === current)) return current;
         return data.aircrafts[0]?.registration || "";
@@ -1789,6 +1871,18 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       showToast({ variant: "error", message: "Horário indisponível: já existe um voo nesse intervalo ou o horário não comporta este voo." });
       return;
     }
+    if (
+      !actingForStudentId &&
+      rules.maintenanceAlertEnabled &&
+      rules.maintenanceBlockLikelyDowntime &&
+      (lookupMaintenanceRisk(maintenanceRiskByAircraft, newAircraft, newDate) === "high")
+    ) {
+      showToast({
+        variant: "error",
+        message: "Este dia está na janela mais provável de parada por manutenção — não é possível remarcar para esta data.",
+      });
+      return;
+    }
     setProposedReason("");
     setProposedChange({ flight, aircraftIdent: newAircraft, flightDate: newDate, startTime: newStart });
   }
@@ -1820,6 +1914,13 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       showToast({
         variant: "error",
         message: bookingCreditCheck.message ?? "Crédito insuficiente para este voo.",
+      });
+      return;
+    }
+    if (bookingMaintenanceBlocked) {
+      showToast({
+        variant: "error",
+        message: "Este dia está na janela mais provável de parada por manutenção — não é possível marcar novos voos.",
       });
       return;
     }
@@ -2046,6 +2147,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                 headerDays={headerDays}
                 onItemClick={handleItemClick}
                 onEmptySlotClick={mode === "booking" ? openBookingAt : undefined}
+                maintenanceAlertEnabled={rules.maintenanceAlertEnabled}
+                maintenanceRiskByAircraft={maintenanceRiskByAircraft}
               />
             </div>
           )}
@@ -2483,6 +2586,17 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
               <div><p className="text-sky-300">Corte</p><strong>{preview.cutoff}</strong></div>
               <div><p className="text-sky-300">Encerramento</p><strong>{preview.end}</strong></div>
             </div>
+
+            {rules.maintenanceAlertEnabled && aircraftIdent && flightDate ? (
+              <div className={`rounded-lg border px-3 py-2 text-xs ${maintenanceRiskTextClass(bookingMaintenanceRisk)}`}>
+                <p className="font-semibold leading-snug">{riskLevelLabel(bookingMaintenanceRisk)}</p>
+                {bookingMaintenanceBlocked ? (
+                  <p className="mt-1 opacity-90">
+                    Novas marcações de alunos estão bloqueadas neste dia.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             </>)}
 
             {bookingStep === 2 && (<>
@@ -2511,6 +2625,17 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                 <div><p className="text-slate-500">Encerramento</p><strong className="text-slate-200">{preview.end}</strong></div>
               </div>
             </div>
+
+            {rules.maintenanceAlertEnabled && aircraftIdent && flightDate ? (
+              <div className={`rounded-lg border px-3 py-2 text-xs ${maintenanceRiskTextClass(bookingMaintenanceRisk)}`}>
+                <p className="font-semibold leading-snug">{riskLevelLabel(bookingMaintenanceRisk)}</p>
+                {bookingMaintenanceBlocked ? (
+                  <p className="mt-1 opacity-90">
+                    Novas marcações de alunos estão bloqueadas neste dia.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             {/* Flexibilidade de horário */}
             <div>
@@ -2580,6 +2705,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                         startTimeInvalid ||
                         waitlistBlocked ||
                         durationOptions.length === 0 ||
+                        bookingMaintenanceBlocked ||
                         (bookingCreditCheck.blocked && !bookingCreditPending)
                       }
                       onClick={() => setBookingStep(2)}
@@ -2600,6 +2726,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                         noSlotsForDay ||
                         startTimeInvalid ||
                         waitlistBlocked ||
+                        bookingMaintenanceBlocked ||
                         bookingCreditCheck.blocked
                       }
                       onClick={() => void submitBooking()}

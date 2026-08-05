@@ -35,6 +35,18 @@ const PROFILE_DOCUMENTS_COLLECTION_ID =
   process.env.APPWRITE_PROFILE_DOCUMENTS_COLLECTION_ID ||
   process.env.APPWRITE_PROFILE_DOCUMENTS_COL_ID ||
   "profile_documents";
+const SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID =
+  process.env.APPWRITE_SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID ||
+  process.env.APPWRITE_SOLO_FLIGHT_ENDORSEMENTS_COL_ID ||
+  "solo_flight_endorsements";
+const SOLO_FLIGHT_REQUESTS_COLLECTION_ID =
+  process.env.APPWRITE_SOLO_FLIGHT_REQUESTS_COLLECTION_ID ||
+  process.env.APPWRITE_SOLO_FLIGHT_REQUESTS_COL_ID ||
+  "solo_flight_requests";
+const SOLO_FLIGHT_DECISIONS_COLLECTION_ID =
+  process.env.APPWRITE_SOLO_FLIGHT_DECISIONS_COLLECTION_ID ||
+  process.env.APPWRITE_SOLO_FLIGHT_DECISIONS_COL_ID ||
+  "solo_flight_decisions";
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
 const FLIGHT_VIDEOS_COLLECTION_ID =
   process.env.APPWRITE_VIDEOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_VIDEOS_COLLECTION_ID || "6a0200bf00297bfc2231";
@@ -14546,6 +14558,43 @@ const DEFAULT_WPP_BOOKING_REQUESTED_PARAMETERS = [
   "duration",
   "status",
 ];
+const DEFAULT_WPP_SOLO_FLIGHT_APPROVAL_PARAMETERS = [
+  "student_name",
+  "flight_date",
+  "route",
+  "flags_summary",
+  "request_id",
+];
+const DEFAULT_WPP_SOLO_FLIGHT_AWARENESS_PARAMETERS = [
+  "student_name",
+  "flight_date",
+  "route",
+  "status",
+  "request_id",
+];
+const DEFAULT_SOLO_FLIGHT_MANUAL_CRITERIA = [
+  { id: "endorsement_printed", label: "Aluno está com o endosso impresso", enabled: true },
+  { id: "two_positive_evaluations", label: "Aluno avaliado positivamente por dois instrutores ou pelo coordenador", enabled: true },
+  { id: "anac_board_private_pilot", label: "Piloto privado: aluno aprovado na Banca da ANAC", enabled: true },
+  { id: "critical_positions_briefing", label: "Briefing mencionou posições críticas da CTR Jundiaí", enabled: true },
+];
+const DEFAULT_SOLO_FLIGHT_RULES = {
+  enabled: true,
+  automaticCriteria: {
+    recentDualCommand: true,
+    minimumAge: true,
+    activeEndorsement: true,
+    cutoffBefore: true,
+    previousDestinationNavigation: true,
+    previousAlternateFlight: true,
+    metarAlunoSolo: true,
+  },
+  dualCommandWindowDays: 5,
+  minimumAge: 18,
+  cutoffBeforeTime: "16:00",
+  metarMinimumCondition: "aluno_solo",
+  manualCriteria: DEFAULT_SOLO_FLIGHT_MANUAL_CRITERIA,
+};
 const WPP_INCOMING_MATCH_MODES = new Set(["id", "content"]);
 const WPP_INCOMING_RULE_OPERATORS = new Set(["equals", "contains", "starts_with"]);
 const WPP_INCOMING_ACTIONS = new Set([
@@ -14604,6 +14653,38 @@ function sha256(value) {
 function snapshotJson(value) {
   const text = stableStringify(value ?? null);
   return text.length > 65535 ? text.slice(0, 65535) : text;
+}
+
+function snapshotJsonMax(value, maxLength) {
+  const max = Math.max(2, Number(maxLength) || 65535);
+  const text = stableStringify(value ?? null);
+  if (text.length <= max) return text;
+  const compact = Array.isArray(value)
+    ? value.slice(0, 30).map((item) => {
+        if (!item || typeof item !== "object") return item;
+        return {
+          key: cleanString(item.key || item.code || item.type).slice(0, 64) || undefined,
+          status: cleanString(item.status).slice(0, 32) || undefined,
+          ok: typeof item.ok === "boolean" || item.ok === null ? item.ok : undefined,
+          icao: cleanString(item.icao).slice(0, 4) || undefined,
+          message: cleanString(item.message || item.label || item.title).slice(0, 180) || undefined,
+        };
+      })
+    : value && typeof value === "object"
+      ? {
+          requestType: cleanString(value.requestType).slice(0, 32) || undefined,
+          flightDate: cleanString(value.flightDate).slice(0, 10) || undefined,
+          cutoffTime: cleanString(value.cutoffTime).slice(0, 8) || undefined,
+          originIcao: cleanString(value.originIcao).slice(0, 4) || undefined,
+          route: cleanString(value.route).slice(0, 180) || undefined,
+          destinationIcaos: Array.isArray(value.destinationIcaos) ? value.destinationIcaos.slice(0, 12) : undefined,
+          alternateIcaos: Array.isArray(value.alternateIcaos) ? value.alternateIcaos.slice(0, 12) : undefined,
+        }
+      : value;
+  const compactText = stableStringify({ truncated: true, value: compact });
+  if (compactText.length <= max) return compactText;
+  const fallback = stableStringify({ truncated: true });
+  return fallback.length <= max ? fallback : "{}";
 }
 
 async function createAuditEvent(actorUserId, input = {}) {
@@ -14682,7 +14763,7 @@ function toAuditEventDto(doc) {
 
 async function listFlightAuditEvents(payload = {}) {
   const flightId = cleanString(payload.flightId);
-  if (!flightId) throw Object.assign(new Error("Voo nÃ£o informado."), { status: 400 });
+  if (!flightId) throw Object.assign(new Error("Voo não informado."), { status: 400 });
   if (!AUDIT_EVENTS_COLLECTION_ID) return [];
   const res = await databases.listDocuments(DATABASE_ID, AUDIT_EVENTS_COLLECTION_ID, [
     sdk.Query.equal("entity_type", ["flight"]),
@@ -15568,6 +15649,9 @@ function defaultSchoolRules() {
       maxBookingLeadDays: 365,
       studentHiddenAircraftIdents: [],
       studentWaitlistAircraftIdents: [],
+      maintenanceAlertEnabled: false,
+      maintenanceBlockLikelyDowntime: false,
+      maintenanceAvgHoursPerDay: 5,
     },
     emailNotifications: Object.fromEntries(
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
@@ -15579,6 +15663,7 @@ function defaultSchoolRules() {
       showInStudentMenu: false,
       benefits: [],
       ctaSubscriptionUrl: "",
+      adhesionTermUrl: "",
       trialFlightCount: 0,
       lpHeroTitle: "Flight Review Club",
       lpHeroSubtitle: "Revise seus voos com telemetria, videos, fotos e dados reais para evoluir com mais clareza em cada etapa da formacao.",
@@ -15588,6 +15673,7 @@ function defaultSchoolRules() {
       lpBenefitItems: [],
       pricingRules: [],
     },
+    soloFlight: DEFAULT_SOLO_FLIGHT_RULES,
   };
 }
 
@@ -15807,6 +15893,36 @@ function sanitizeScheduleStudentHelp(input) {
   };
 }
 
+function sanitizeSoloFlightRules(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaults = DEFAULT_SOLO_FLIGHT_RULES;
+  const rawAuto = raw.automaticCriteria && typeof raw.automaticCriteria === "object" ? raw.automaticCriteria : {};
+  const automaticCriteria = Object.fromEntries(
+    Object.keys(defaults.automaticCriteria).map((key) => [
+      key,
+      Boolean(rawAuto[key] ?? defaults.automaticCriteria[key]),
+    ]),
+  );
+  const manualCriteria = (Array.isArray(raw.manualCriteria) ? raw.manualCriteria : defaults.manualCriteria)
+    .map((item, index) => ({
+      id: cleanString(item?.id || `manual_${index + 1}`).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 64),
+      label: cleanString(item?.label).slice(0, 240),
+      enabled: item?.enabled !== false,
+    }))
+    .filter((item) => item.id && item.label)
+    .slice(0, 20);
+  const cutoff = cleanString(raw.cutoffBeforeTime);
+  return {
+    enabled: raw.enabled !== false,
+    automaticCriteria,
+    dualCommandWindowDays: Math.min(30, Math.max(1, Math.round(Number(raw.dualCommandWindowDays ?? defaults.dualCommandWindowDays)) || defaults.dualCommandWindowDays)),
+    minimumAge: Math.min(80, Math.max(14, Math.round(Number(raw.minimumAge ?? defaults.minimumAge)) || defaults.minimumAge)),
+    cutoffBeforeTime: /^\d{2}:\d{2}$/.test(cutoff) ? cutoff : defaults.cutoffBeforeTime,
+    metarMinimumCondition: "aluno_solo",
+    manualCriteria: manualCriteria.length ? manualCriteria : defaults.manualCriteria,
+  };
+}
+
 function publicSchoolRules(settings, updatedAt) {
   const defaults = defaultSchoolRules();
   const minRequestHours = Math.max(0.5, sanitizeHours(settings?.schedule?.minRequestHours, defaults.schedule.minRequestHours));
@@ -15896,6 +16012,14 @@ function publicSchoolRules(settings, updatedAt) {
       studentWaitlistAircraftIdents: Array.isArray(settings?.schedule?.studentWaitlistAircraftIdents)
         ? [...new Set(settings.schedule.studentWaitlistAircraftIdents.map((value) => cleanString(value).toUpperCase()).filter(Boolean))]
         : [],
+      maintenanceAlertEnabled: Boolean(settings?.schedule?.maintenanceAlertEnabled),
+      maintenanceBlockLikelyDowntime: Boolean(settings?.schedule?.maintenanceBlockLikelyDowntime),
+      maintenanceAvgHoursPerDay: (() => {
+        const value = Number(settings?.schedule?.maintenanceAvgHoursPerDay ?? defaults.schedule.maintenanceAvgHoursPerDay);
+        return Number.isFinite(value) && value > 0
+          ? Math.max(0.25, Math.round(value * 2) / 2)
+          : defaults.schedule.maintenanceAvgHoursPerDay;
+      })(),
     },
     scheduleStudentHelp: (() => sanitizeScheduleStudentHelp(settings?.scheduleStudentHelp))(),
     emailNotifications: Object.fromEntries(
@@ -15918,6 +16042,7 @@ function publicSchoolRules(settings, updatedAt) {
         ? settings.flightReviewClub.benefits.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 20)
         : [],
       ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
+      adhesionTermUrl: cleanString(settings?.flightReviewClub?.adhesionTermUrl).slice(0, 2048),
       trialFlightCount: (() => { const n = Number(settings?.flightReviewClub?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
       lpHeroTitle: cleanString(settings?.flightReviewClub?.lpHeroTitle).slice(0, 120) || defaults.flightReviewClub.lpHeroTitle,
       lpHeroSubtitle: cleanString(settings?.flightReviewClub?.lpHeroSubtitle).slice(0, 500) || defaults.flightReviewClub.lpHeroSubtitle,
@@ -15942,6 +16067,7 @@ function publicSchoolRules(settings, updatedAt) {
               const rawMax = rule?.maxHours === null || rule?.maxHours === undefined || rule?.maxHours === "" ? null : Number(rule.maxHours);
               const maxHours = Number.isFinite(rawMax) ? Math.max(minHours, rawMax) : null;
               const amount = Number(rule?.amount);
+              const discountPercent = Number(rule?.discountPercent);
               return {
                 id: cleanString(rule?.id) || `frc-price-${index + 1}`,
                 trainingTrackId: cleanString(rule?.trainingTrackId).slice(0, 128),
@@ -15949,6 +16075,7 @@ function publicSchoolRules(settings, updatedAt) {
                 minHours: Math.round(minHours * 10) / 10,
                 maxHours: maxHours === null ? null : Math.round(maxHours * 10) / 10,
                 amount: Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0,
+                discountPercent: Number.isFinite(discountPercent) ? Math.min(95, Math.max(0, Math.round(discountPercent))) : 0,
                 active: rule?.active !== false,
               };
             })
@@ -15996,6 +16123,7 @@ function publicSchoolRules(settings, updatedAt) {
         disclaimer: cleanString(raw.disclaimer).slice(0, 2000),
       };
     })(),
+    soloFlight: sanitizeSoloFlightRules(settings?.soloFlight),
     updatedAt: updatedAt || null,
   };
 }
@@ -16099,6 +16227,10 @@ function defaultWppSettings() {
     tomorrowFlightReminderTemplate: defaultWppTomorrowFlightReminderTemplate(),
     paymentReceivedTemplate: defaultWppPaymentReceivedTemplate(),
     bookingRequestedTemplate: defaultWppBookingRequestedTemplate(),
+    soloFlightApprovalTemplate: defaultWppSoloFlightApprovalTemplate(),
+    soloFlightAwarenessTemplate: defaultWppSoloFlightAwarenessTemplate(),
+    soloFlightCoordinatorPhone: "",
+    soloFlightSgsoPhone: "",
     incomingAutoReply: defaultWppIncomingAutoReplySettings(),
     businessName: null,
     verifiedName: null,
@@ -16253,6 +16385,10 @@ function publicWppSettings(settings, updatedAt) {
     tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(safe.tomorrowFlightReminderTemplate),
     paymentReceivedTemplate: sanitizeWppTransactionalTemplate(safe.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
     bookingRequestedTemplate: sanitizeWppTransactionalTemplate(safe.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
+    soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(safe.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
+    soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(safe.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+    soloFlightCoordinatorPhone: normalizeWppRecipientPhone(safe.soloFlightCoordinatorPhone),
+    soloFlightSgsoPhone: normalizeWppRecipientPhone(safe.soloFlightSgsoPhone),
     incomingAutoReply: sanitizeWppIncomingAutoReply(safe.incomingAutoReply || {
       enabled: safe.incomingAutoReplyEnabled,
       message: safe.incomingAutoReplyMessage,
@@ -16280,6 +16416,10 @@ async function loadWppSettings() {
       tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(settings.tomorrowFlightReminderTemplate),
       paymentReceivedTemplate: sanitizeWppTransactionalTemplate(settings.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
       bookingRequestedTemplate: sanitizeWppTransactionalTemplate(settings.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
+      soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(settings.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
+      soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(settings.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+      soloFlightCoordinatorPhone: normalizeWppRecipientPhone(settings.soloFlightCoordinatorPhone),
+      soloFlightSgsoPhone: normalizeWppRecipientPhone(settings.soloFlightSgsoPhone),
       incomingAutoReply: sanitizeWppIncomingAutoReply(settings.incomingAutoReply || {
         enabled: settings.incomingAutoReplyEnabled,
         message: settings.incomingAutoReplyMessage,
@@ -16323,6 +16463,14 @@ async function saveWppSettings(input) {
     bookingRequestedTemplate: raw.bookingRequestedTemplate
       ? sanitizeWppTransactionalTemplate(raw.bookingRequestedTemplate, defaultWppBookingRequestedTemplate())
       : sanitizeWppTransactionalTemplate(current.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
+    soloFlightApprovalTemplate: raw.soloFlightApprovalTemplate
+      ? sanitizeWppTransactionalTemplate(raw.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate())
+      : sanitizeWppTransactionalTemplate(current.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
+    soloFlightAwarenessTemplate: raw.soloFlightAwarenessTemplate
+      ? sanitizeWppTransactionalTemplate(raw.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate())
+      : sanitizeWppTransactionalTemplate(current.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+    soloFlightCoordinatorPhone: normalizeWppRecipientPhone(raw.soloFlightCoordinatorPhone || current.soloFlightCoordinatorPhone),
+    soloFlightSgsoPhone: normalizeWppRecipientPhone(raw.soloFlightSgsoPhone || current.soloFlightSgsoPhone),
     incomingAutoReply: sanitizeWppIncomingAutoReply(raw.incomingAutoReply, {
       current: current.incomingAutoReply,
       generateToken: true,
@@ -16355,6 +16503,16 @@ async function saveWppNotificationTemplates(input) {
       input?.bookingRequestedTemplate || current.bookingRequestedTemplate,
       defaultWppBookingRequestedTemplate(),
     ),
+    soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(
+      input?.soloFlightApprovalTemplate || current.soloFlightApprovalTemplate,
+      defaultWppSoloFlightApprovalTemplate(),
+    ),
+    soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(
+      input?.soloFlightAwarenessTemplate || current.soloFlightAwarenessTemplate,
+      defaultWppSoloFlightAwarenessTemplate(),
+    ),
+    soloFlightCoordinatorPhone: normalizeWppRecipientPhone(input?.soloFlightCoordinatorPhone || current.soloFlightCoordinatorPhone),
+    soloFlightSgsoPhone: normalizeWppRecipientPhone(input?.soloFlightSgsoPhone || current.soloFlightSgsoPhone),
   };
   const saved = await persistWppSettings(next, doc);
   return publicWppSettings(next, saved.$updatedAt || nowIso());
@@ -16835,7 +16993,7 @@ async function sendWppUrlButtonMessage(settings, input) {
   const body = cleanString(input?.body).slice(0, 1024);
   const url = cleanString(input?.url).slice(0, 2048);
   const displayText = cleanString(input?.displayText || "Ver detalhes").slice(0, 20);
-  if (!to || !body || !url || !displayText) throw Object.assign(new Error("Informe telefone, mensagem e URL para enviar botao WhatsApp."), { status: 400 });
+  if (!to || !body || !url || !displayText) throw Object.assign(new Error("Informe telefone, mensagem e URL para enviar botão WhatsApp."), { status: 400 });
   const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
     method: "POST",
     body: {
@@ -16921,6 +17079,11 @@ function sanitizeWppTemplateParameterKeys(value, defaults = DEFAULT_WPP_TOMORROW
     "presentation_time",
     "duration",
     "status",
+    "request_id",
+    "flags_summary",
+    "destination",
+    "alternates",
+    "request_type",
   ]);
   const raw = Array.isArray(value) ? value : defaults;
   const next = raw.map(cleanString).filter((item) => allowed.has(item)).slice(0, 12);
@@ -16980,6 +17143,737 @@ async function sendWppListMessage(settings, input) {
 
 async function sendWppTemplateTest(input) {
   return sendWppTemplateMessage(input);
+}
+
+function soloFlightJson(value, fallback) {
+  return parseJsonObject(value, fallback);
+}
+
+function normalizeSoloFlightIcaos(value) {
+  const raw = Array.isArray(value) ? value : cleanString(value).split(/[,;\s]+/);
+  return [
+    ...new Set(
+      raw
+        .map((code) => aiswebService.normalizeIcao(code))
+        .filter((code) => code && code.length === 4),
+    ),
+  ].slice(0, 8);
+}
+
+function toSoloFlightEndorsement(doc) {
+  if (!doc) return null;
+  const fileId = cleanString(doc.file_id);
+  return {
+    id: doc.$id,
+    studentUserId: cleanString(doc.student_user_id),
+    fileId,
+    fileName: cleanString(doc.file_name) || "Endosso",
+    mimeType: cleanString(doc.mime_type) || "application/octet-stream",
+    fileSize: Number(doc.file_size) || 0,
+    version: Number(doc.version) || 1,
+    active: doc.active !== false,
+    notes: cleanString(doc.notes),
+    uploadedBy: cleanString(doc.uploaded_by),
+    uploadedAt: cleanString(doc.uploaded_at || doc.$createdAt),
+    createdAt: cleanString(doc.created_at || doc.$createdAt),
+    updatedAt: cleanString(doc.updated_at || doc.$updatedAt),
+    fileUrl: fileId ? appwritePublicStorageFileViewUrl(FLIGHTS_CSV_BUCKET_ID, fileId) : "",
+  };
+}
+
+function toSoloFlightRequest(doc) {
+  return {
+    id: doc.$id,
+    studentUserId: cleanString(doc.student_user_id),
+    instructorUserId: cleanString(doc.instructor_user_id),
+    sourceFlightId: cleanString(doc.source_flight_id) || null,
+    requestType: cleanString(doc.request_type) === "primeiro_circuito_solo" ? "primeiro_circuito_solo" : "voo_solo",
+    flightDate: cleanString(doc.flight_date),
+    startTime: cleanString(doc.start_time),
+    cutoffTime: cleanString(doc.cutoff_time),
+    originIcao: cleanString(doc.origin_icao),
+    destinationIcaos: soloFlightJson(doc.destination_icaos_json, []),
+    alternateIcaos: soloFlightJson(doc.alternate_icaos_json, []),
+    manualChecks: soloFlightJson(doc.manual_checks_json, []),
+    automaticChecks: soloFlightJson(doc.automatic_checks_json, []),
+    metarChecks: soloFlightJson(doc.metar_checks_json, []),
+    flags: soloFlightJson(doc.flags_json, []),
+    status: cleanString(doc.status) || "draft",
+    finalDecision: cleanString(doc.final_decision),
+    decidedByRole: cleanString(doc.decided_by_role),
+    decidedByPhone: cleanString(doc.decided_by_phone),
+    decidedByUserId: cleanString(doc.decided_by_user_id),
+    decidedAt: cleanString(doc.decided_at),
+    decisionReason: cleanString(doc.decision_reason),
+    studentName: cleanString(doc.student_name),
+    instructorName: cleanString(doc.instructor_name),
+    route: cleanString(doc.route),
+    wppMessages: soloFlightJson(doc.wpp_messages_json, []),
+    createdAt: cleanString(doc.created_at || doc.$createdAt),
+    updatedAt: cleanString(doc.updated_at || doc.$updatedAt),
+  };
+}
+
+function profileDisplayName(profile, fallback = "") {
+  return cleanString(profile?.full_name) || cleanString(profile?.nickname) || cleanString(fallback) || "Aluno";
+}
+
+function profileShortName(profile, fallback = "") {
+  return cleanString(profile?.nickname) || cleanString(profile?.full_name) || cleanString(fallback) || "aluno";
+}
+
+async function requireSoloFlightActor(actorUserId, allowed = ["admin", "instrutor", "aluno"]) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (!allowed.includes(role)) {
+    throw Object.assign(new Error("Usuario sem permissao para voo solo."), { status: 403 });
+  }
+  return role;
+}
+
+async function getLatestSoloFlightEndorsement(studentUserId) {
+  if (!SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID || !studentUserId) return null;
+  const docs = await listAllDocuments(SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.orderDesc("uploaded_at"),
+    sdk.Query.limit(1),
+  ]).catch(() => []);
+  return toSoloFlightEndorsement(docs[0] || null);
+}
+
+async function listSoloFlightEndorsements(actorUserId, payload = {}) {
+  const role = await requireSoloFlightActor(actorUserId);
+  const studentUserId = cleanString(payload.studentUserId || payload.userId || (role === "aluno" ? actorUserId : ""));
+  if (!studentUserId) throw Object.assign(new Error("Aluno não informado."), { status: 400 });
+  if (role === "aluno" && studentUserId !== actorUserId) {
+    throw Object.assign(new Error("Aluno sem permissao para listar estes endossos."), { status: 403 });
+  }
+  const docs = await listAllDocuments(SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.orderDesc("uploaded_at"),
+    sdk.Query.limit(50),
+  ]);
+  return docs.map(toSoloFlightEndorsement);
+}
+
+async function createSoloFlightEndorsement(actorUserId, payload = {}) {
+  const role = await requireSoloFlightActor(actorUserId);
+  const studentUserId = cleanString(payload.studentUserId || payload.userId || (role === "aluno" ? actorUserId : ""));
+  if (!studentUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
+  if (role === "aluno" && studentUserId !== actorUserId) {
+    throw Object.assign(new Error("Aluno sem permissao para anexar este endosso."), { status: 403 });
+  }
+  const mimeType = cleanString(payload.mimeType || "application/octet-stream").slice(0, 128);
+  if (mimeType !== "application/pdf" && !mimeType.startsWith("image/")) {
+    throw Object.assign(new Error("O endosso deve ser PDF ou imagem."), { status: 400 });
+  }
+  const previous = await listAllDocuments(SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.orderDesc("version"),
+    sdk.Query.limit(25),
+  ]).catch(() => []);
+  await Promise.all(
+    previous
+      .filter((doc) => doc.active !== false)
+      .map((doc) => databases.updateDocument(DATABASE_ID, SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, doc.$id, { active: false, updated_at: nowIso() }).catch(() => null)),
+  );
+  const nextVersion = previous.reduce((max, doc) => Math.max(max, Number(doc.version) || 0), 0) + 1;
+  const now = nowIso();
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      student_user_id: studentUserId,
+      file_id: cleanString(payload.fileId).slice(0, 64),
+      file_name: cleanString(payload.fileName || "Endosso").slice(0, 255),
+      mime_type: mimeType,
+      file_size: Math.max(0, Math.round(Number(payload.fileSize) || 0)),
+      version: nextVersion,
+      active: true,
+      notes: cleanString(payload.notes).slice(0, 1024),
+      uploaded_by: actorUserId,
+      uploaded_at: now,
+      created_at: now,
+      updated_at: now,
+    },
+    ADMIN_DOC_PERMS,
+  );
+  return toSoloFlightEndorsement(doc);
+}
+
+async function deleteSoloFlightEndorsement(actorUserId, payload = {}) {
+  const role = await requireSoloFlightActor(actorUserId);
+  const endorsementId = cleanString(payload.endorsementId || payload.id);
+  if (!endorsementId) throw Object.assign(new Error("Endosso nao informado."), { status: 400 });
+  const doc = await databases.getDocument(DATABASE_ID, SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, endorsementId);
+  if (role === "aluno" && cleanString(doc.student_user_id) !== actorUserId) {
+    throw Object.assign(new Error("Aluno sem permissao para excluir este endosso."), { status: 403 });
+  }
+  await databases.deleteDocument(DATABASE_ID, SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID, endorsementId);
+  const fileId = cleanString(doc.file_id);
+  if (fileId) await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, fileId).catch(() => null);
+  return { id: endorsementId };
+}
+
+function soloFlightCheck({ id, label, kind = "automatic", enabled = true, applicable = true, ok = null, details = "", value = undefined }) {
+  const flag = Boolean(enabled && applicable && ok !== true);
+  return { id, label, kind, enabled, applicable, ok, flag, details: cleanString(details), ...(value === undefined ? {} : { value }) };
+}
+
+function soloFlagFromCheck(check) {
+  return { id: check.id, label: check.label, details: check.details, severity: "warning" };
+}
+
+function ageOnDate(birthDate, date) {
+  const birth = cleanString(birthDate);
+  const target = cleanString(date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birth) || !/^\d{4}-\d{2}-\d{2}$/.test(target)) return null;
+  const [by, bm, bd] = birth.split("-").map(Number);
+  const [ty, tm, td] = target.split("-").map(Number);
+  let age = ty - by;
+  if (tm < bm || (tm === bm && td < bd)) age -= 1;
+  return age;
+}
+
+function dateDiffDays(left, right) {
+  const a = new Date(`${cleanString(left)}T00:00:00Z`);
+  const b = new Date(`${cleanString(right)}T00:00:00Z`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null;
+  return Math.round((a.getTime() - b.getTime()) / 86400000);
+}
+
+function timeToMinutes(value) {
+  const match = cleanString(value).match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+
+function soloFlightLegIcaos(leg) {
+  return [leg?.dep, leg?.arr].map((v) => aiswebService.normalizeIcao(v)).filter((v) => v && v.length === 4);
+}
+
+function soloFlightHasDualCommand(flight, meta) {
+  const legs = Array.isArray(meta?.legs) ? meta.legs : [];
+  const text = [
+    ...legs.flatMap((leg) => [leg?.role, leg?.studentRole, leg?.instructorRole, leg?.mission, leg?.lesson]),
+    flight?.instructorUserId ? "instrutor" : "",
+  ]
+    .map((v) => cleanString(v).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase())
+    .join(" ");
+  if (/\b(sl|solo)\b/.test(text)) return false;
+  return /\b(dc|duplo|comando|instrutor|instructor|dual)\b/.test(text) || Boolean(flight?.instructorUserId);
+}
+
+async function soloFlightCompletedFlights(studentUserId, plannedDate, excludeFlightId = "") {
+  if (!FLIGHTS_COLLECTION_ID || !studentUserId) return [];
+  const docs = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [studentUserId]),
+    sdk.Query.equal("flight_status", ["Realizado"]),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.limit(200),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ]).catch(() => []);
+  return docs
+    .filter((doc) => doc.$id !== excludeFlightId)
+    .map((doc) => ({ doc, flight: toFlight(doc), meta: decodeFlightMeta(doc.csv_text || "") }))
+    .filter((item) => !plannedDate || !item.flight.flightDate || item.flight.flightDate <= plannedDate);
+}
+
+async function buildSoloFlightRequestSnapshot(actorUserId, input = {}) {
+  const requestType = cleanString(input.requestType) === "primeiro_circuito_solo" ? "primeiro_circuito_solo" : "voo_solo";
+  let sourceFlight = null;
+  let sourceMeta = null;
+  const sourceFlightId = cleanString(input.sourceFlightId);
+  if (sourceFlightId) {
+    const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, sourceFlightId, selectQuery(FLIGHT_DETAIL_SELECT));
+    sourceMeta = decodeFlightMeta(doc.csv_text || "");
+    sourceFlight = toFlight(doc);
+  }
+  const studentUserId = cleanString(input.studentUserId || sourceFlight?.studentUserId);
+  if (!studentUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
+  const flightDate = cleanString(input.flightDate || sourceFlight?.flightDate).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(flightDate)) throw Object.assign(new Error("Data do voo solo inválida."), { status: 400 });
+  const originIcao = aiswebService.normalizeIcao(input.originIcao || sourceFlight?.firstDepIcao);
+  const destinationIcaos = normalizeSoloFlightIcaos(input.destinationIcaos || input.destinations || sourceFlight?.lastArrIcao);
+  const alternateIcaos = normalizeSoloFlightIcaos(input.alternateIcaos || input.alternates);
+  if (!destinationIcaos.length) throw Object.assign(new Error("Informe ao menos um aeródromo de destino."), { status: 400 });
+  const cutoffFromMeta = cleanString(sourceMeta?.header?.engineCutoffTimeUtc || sourceMeta?.header?.cutoffTime || sourceMeta?.header?.endTime || sourceFlight?.startTime);
+  const cutoffTime = cleanString(input.cutoffTime || cutoffFromMeta).slice(0, 8);
+  const startTime = cleanString(input.startTime || sourceFlight?.startTime).slice(0, 8);
+  const route = [originIcao, ...destinationIcaos, ...alternateIcaos.map((icao) => `ALT ${icao}`)].filter(Boolean).join(" -> ");
+  return {
+    requestType,
+    sourceFlightId: sourceFlightId || null,
+    sourceFlight,
+    studentUserId,
+    instructorUserId: cleanString(sourceFlight?.instructorUserId) || actorUserId,
+    flightDate,
+    startTime,
+    cutoffTime,
+    originIcao,
+    destinationIcaos,
+    alternateIcaos,
+    route,
+    manualChecks: Array.isArray(input.manualChecks) ? input.manualChecks : [],
+  };
+}
+
+async function evaluateSoloFlight(actorUserId, payload = {}) {
+  const role = await requireSoloFlightActor(actorUserId, ["admin", "instrutor"]);
+  const { publicSettings: schoolRules } = await loadSchoolRules();
+  const rules = sanitizeSoloFlightRules(schoolRules.soloFlight);
+  const snapshot = await buildSoloFlightRequestSnapshot(actorUserId, payload.request || payload);
+  const profiles = await getProfilesByUserIds([snapshot.studentUserId, snapshot.instructorUserId]);
+  const studentProfile = profiles.get(snapshot.studentUserId) || null;
+  const instructorProfile = profiles.get(snapshot.instructorUserId) || null;
+  const endorsement = await getLatestSoloFlightEndorsement(snapshot.studentUserId);
+  const completed = await soloFlightCompletedFlights(snapshot.studentUserId, snapshot.flightDate, snapshot.sourceFlightId || "");
+  const auto = rules.automaticCriteria || {};
+  const checks = [];
+
+  const recentDual = completed.find((item) => {
+    if (!soloFlightHasDualCommand(item.flight, item.meta)) return false;
+    const diff = dateDiffDays(snapshot.flightDate, item.flight.flightDate);
+    return diff !== null && diff >= 0 && diff <= rules.dualCommandWindowDays;
+  });
+  checks.push(soloFlightCheck({
+    id: "recentDualCommand",
+    label: `Voo duplo comando nos últimos ${rules.dualCommandWindowDays} dias`,
+    enabled: auto.recentDualCommand,
+    ok: Boolean(recentDual),
+    details: recentDual ? `Último DC em ${recentDual.flight.flightDate}.` : "Nenhum voo duplo comando recente encontrado.",
+  }));
+
+  const age = ageOnDate(studentProfile?.birth_date, snapshot.flightDate);
+  checks.push(soloFlightCheck({
+    id: "minimumAge",
+    label: `Aluno com ${rules.minimumAge} anos completos`,
+    enabled: auto.minimumAge,
+    ok: age === null ? null : age >= rules.minimumAge,
+    details: age === null ? "Data de nascimento indisponível." : `Idade calculada: ${age} anos.`,
+    value: age,
+  }));
+
+  checks.push(soloFlightCheck({
+    id: "activeEndorsement",
+    label: "Endosso ativo anexado",
+    enabled: auto.activeEndorsement,
+    ok: Boolean(endorsement?.fileId),
+    details: endorsement ? `Endosso v${endorsement.version}: ${endorsement.fileName}.` : "Nenhum endosso ativo anexado.",
+  }));
+
+  const cutoffMinutes = timeToMinutes(snapshot.cutoffTime);
+  const limitMinutes = timeToMinutes(rules.cutoffBeforeTime);
+  checks.push(soloFlightCheck({
+    id: "cutoffBefore",
+    label: `Corte antes de ${rules.cutoffBeforeTime}`,
+    enabled: auto.cutoffBefore,
+    ok: cutoffMinutes === null || limitMinutes === null ? null : cutoffMinutes < limitMinutes,
+    details: cutoffMinutes === null ? "Horário de corte previsto não informado." : `Corte previsto: ${snapshot.cutoffTime}.`,
+  }));
+
+  const destinationNav = completed.find((item) => {
+    const legs = Array.isArray(item.meta?.legs) ? item.meta.legs : [];
+    return legs.some((leg) => {
+      const hasDest = soloFlightLegIcaos(leg).some((icao) => snapshot.destinationIcaos.includes(icao));
+      return hasDest && parseDurationToMinutes(leg?.navTime) > 0;
+    });
+  });
+  checks.push(soloFlightCheck({
+    id: "previousDestinationNavigation",
+    label: "Navegação prévia ao destino",
+    enabled: auto.previousDestinationNavigation,
+    ok: Boolean(destinationNav),
+    details: destinationNav ? `Encontrada em voo de ${destinationNav.flight.flightDate}.` : "Nenhuma navegação prévia para o destino foi encontrada.",
+  }));
+
+  const alternateFlight = snapshot.alternateIcaos.length
+    ? completed.find((item) => {
+        const legs = Array.isArray(item.meta?.legs) ? item.meta.legs : [];
+        return legs.some((leg) => soloFlightLegIcaos(leg).some((icao) => snapshot.alternateIcaos.includes(icao)));
+      })
+    : null;
+  checks.push(soloFlightCheck({
+    id: "previousAlternateFlight",
+    label: "Voo prévio ao aeródromo alternativo",
+    enabled: auto.previousAlternateFlight,
+    applicable: snapshot.alternateIcaos.length > 0,
+    ok: snapshot.alternateIcaos.length ? Boolean(alternateFlight) : true,
+    details: snapshot.alternateIcaos.length
+      ? alternateFlight ? `Encontrado em voo de ${alternateFlight.flight.flightDate}.` : "Nenhum voo prévio ao alternativo foi encontrado."
+      : "Sem alternativo informado.",
+  }));
+
+  const metarChecks = [];
+  if (auto.metarAlunoSolo) {
+    const targets = [...new Set([snapshot.originIcao, ...snapshot.destinationIcaos, ...snapshot.alternateIcaos].filter(Boolean))];
+    for (const icao of targets) {
+      try {
+        const [met, rotaer, aisSettings] = await Promise.all([
+          aiswebService.fetchMet(icao, { bypassCache: true }),
+          aiswebService.fetchRotaer(icao).catch(() => null),
+          aiswebService.loadSettings({ getSettingDoc }).catch(() => null),
+        ]);
+        const minimums = aisSettings?.minimums || aiswebService.DEFAULT_MINIMUMS;
+        const soloCheck = wppMetar.evaluateMinimums(met?.parsed || null, minimums, { rotaer })
+          .find((item) => item.condition === "aluno_solo");
+        metarChecks.push(soloFlightCheck({
+          id: `metar_${icao}`,
+          label: `METAR ${icao} dentro de aluno_solo`,
+          kind: "metar",
+          enabled: true,
+          ok: soloCheck?.overallOk === true,
+          details: soloCheck?.overallOk === true
+            ? "Limites aluno_solo atendidos."
+            : (soloCheck?.reasons || []).join("; ") || cleanString(met?.error) || "METAR indisponível ou insuficiente.",
+          value: { icao, metar: met?.metar || "", check: soloCheck || null },
+        }));
+      } catch (err) {
+        metarChecks.push(soloFlightCheck({
+          id: `metar_${icao}`,
+          label: `METAR ${icao} dentro de aluno_solo`,
+          kind: "metar",
+          enabled: true,
+          ok: null,
+          details: cleanString(err?.message) || "METAR indisponível.",
+          value: { icao },
+        }));
+      }
+    }
+  }
+
+  const configuredManual = rules.manualCriteria.filter((item) => item.enabled !== false);
+  const inputManual = new Map(snapshot.manualChecks.map((item) => [cleanString(item.id), item]));
+  const manualChecks = configuredManual.map((item) => {
+    const received = inputManual.get(item.id) || {};
+    const notApplicable = snapshot.requestType === "primeiro_circuito_solo" && item.id === "endorsement_printed";
+    return soloFlightCheck({
+      id: item.id,
+      label: item.label,
+      kind: "manual",
+      enabled: true,
+      applicable: !notApplicable && received.notApplicable !== true,
+      ok: notApplicable || received.notApplicable === true ? true : received.checked === true,
+      details: notApplicable ? "Não aplicável ao primeiro circuito solo." : received.checked === true ? "Marcado pelo instrutor." : "Pendente de marcação manual.",
+    });
+  });
+
+  const allChecks = [...checks, ...manualChecks, ...metarChecks];
+  const flags = allChecks.filter((check) => check.flag).map(soloFlagFromCheck);
+  return {
+    student: studentProfile ? {
+      userId: snapshot.studentUserId,
+      fullName: cleanString(studentProfile.full_name),
+      nickname: cleanString(studentProfile.nickname),
+      birthDate: cleanString(studentProfile.birth_date),
+      phone: cleanString(studentProfile.phone),
+    } : null,
+    instructor: instructorProfile ? {
+      userId: snapshot.instructorUserId,
+      fullName: cleanString(instructorProfile.full_name),
+      nickname: cleanString(instructorProfile.nickname),
+      phone: cleanString(instructorProfile.phone),
+    } : null,
+    endorsement,
+    requestSnapshot: {
+      studentUserId: snapshot.studentUserId,
+      instructorUserId: snapshot.instructorUserId,
+      requestType: snapshot.requestType,
+      sourceFlightId: snapshot.sourceFlightId,
+      flightDate: snapshot.flightDate,
+      startTime: snapshot.startTime,
+      cutoffTime: snapshot.cutoffTime,
+      originIcao: snapshot.originIcao,
+      destinationIcaos: snapshot.destinationIcaos,
+      alternateIcaos: snapshot.alternateIcaos,
+      route: snapshot.route,
+    },
+    automaticChecks: checks,
+    manualChecks,
+    metarChecks,
+    flags,
+    status: flags.length ? "pending_approval" : "auto_approved",
+  };
+}
+
+function soloFlightTemplateContext(request, evaluation) {
+  const flagsSummary = (request.flags || []).length
+    ? request.flags.map((flag) => flag.label).join("; ").slice(0, 500)
+    : "Sem pendências";
+  return {
+    student_name: request.studentName || profileShortName(evaluation?.student),
+    flight_date: formatDateBr(request.flightDate),
+    start_time: request.startTime || "-",
+    route: request.route || "-",
+    status: request.status === "auto_approved" ? "aprovado automaticamente" : request.status,
+    request_id: request.id,
+    flags_summary: flagsSummary,
+    destination: (request.destinationIcaos || []).join(", ") || "-",
+    alternates: (request.alternateIcaos || []).join(", ") || "-",
+    request_type: request.requestType === "primeiro_circuito_solo" ? "primeiro circuito solo" : "voo solo",
+  };
+}
+
+async function notifySoloFlightStakeholders(request, evaluation) {
+  const { settings } = await loadWppSettings();
+  const phones = [
+    { role: "coordenador", to: normalizeWppRecipientPhone(settings.soloFlightCoordinatorPhone) },
+    { role: "sgso", to: normalizeWppRecipientPhone(settings.soloFlightSgsoPhone) },
+  ].filter((item, index, arr) => item.to && arr.findIndex((other) => other.to === item.to) === index);
+  if (!phones.length) return [];
+  const template = request.flags.length
+    ? settings.soloFlightApprovalTemplate
+    : settings.soloFlightAwarenessTemplate;
+  if (template?.enabled === false) return [];
+  const context = soloFlightTemplateContext(request, evaluation);
+  const keys = sanitizeWppTemplateParameterKeys(template?.bodyParameters, request.flags.length ? DEFAULT_WPP_SOLO_FLIGHT_APPROVAL_PARAMETERS : DEFAULT_WPP_SOLO_FLIGHT_AWARENESS_PARAMETERS);
+  const sent = [];
+  for (const target of phones) {
+    const base = { to: target.to, kind: request.flags.length ? "approval" : "awareness", sentAt: nowIso(), messageId: null };
+    try {
+      const messageId = await sendWppTemplateMessage({
+        to: target.to,
+        templateName: template.templateName,
+        language: template.language,
+        bodyParameters: keys.map((key) => cleanString(context[key]) || "-"),
+      });
+      sent.push({ ...base, messageId, role: target.role });
+      if (request.flags.length) {
+        const { settings: refreshed } = await loadWppSettings();
+        const interactiveId = await sendWppBotReply(refreshed, {
+          to: target.to,
+          body: `Decida a solicitacao de voo solo ${request.id} (${context.student_name}, ${context.flight_date}).`,
+          buttons: [
+            { id: `solo_approve_${request.id}`, title: "Aprovar" },
+            { id: `solo_reject_${request.id}`, title: "Rejeitar" },
+          ],
+        });
+        sent.push({ ...base, kind: "approval_buttons", messageId: interactiveId, role: target.role });
+      }
+    } catch (err) {
+      sent.push({ ...base, role: target.role, error: cleanString(err?.message).slice(0, 500) });
+    }
+  }
+  return sent;
+}
+
+async function createSoloFlightRequest(actorUserId, payload = {}) {
+  await requireSoloFlightActor(actorUserId, ["admin", "instrutor"]);
+  const evaluation = await evaluateSoloFlight(actorUserId, payload);
+  const snapshot = evaluation.requestSnapshot;
+  const status = evaluation.flags.length ? "pending_approval" : "auto_approved";
+  const now = nowIso();
+  const studentName = profileDisplayName(evaluation.student);
+  const instructorName = profileDisplayName(evaluation.instructor, "Instrutor");
+  let requestDoc = await databases.createDocument(
+    DATABASE_ID,
+    SOLO_FLIGHT_REQUESTS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      student_user_id: snapshot.studentUserId || evaluation.student?.userId || cleanString(payload.request?.studentUserId),
+      instructor_user_id: evaluation.instructor?.userId || actorUserId,
+      source_flight_id: snapshot.sourceFlightId || null,
+      request_type: snapshot.requestType,
+      flight_date: snapshot.flightDate,
+      start_time: snapshot.startTime,
+      cutoff_time: snapshot.cutoffTime,
+      origin_icao: snapshot.originIcao,
+      destination_icaos_json: snapshotJsonMax(snapshot.destinationIcaos, 255),
+      alternate_icaos_json: snapshotJsonMax(snapshot.alternateIcaos, 255),
+      manual_checks_json: snapshotJsonMax(evaluation.manualChecks, 1024),
+      automatic_checks_json: snapshotJsonMax(evaluation.automaticChecks, 2048),
+      metar_checks_json: snapshotJsonMax(evaluation.metarChecks, 2048),
+      flags_json: snapshotJsonMax(evaluation.flags, 2048),
+      request_snapshot_json: snapshotJsonMax(snapshot, 1024),
+      status,
+      final_decision: status === "auto_approved" ? "approved" : "",
+      decided_by_role: status === "auto_approved" ? "system" : "",
+      decided_by_phone: "",
+      decided_by_user_id: status === "auto_approved" ? "system" : "",
+      decided_at: status === "auto_approved" ? now : "",
+      decision_reason: status === "auto_approved" ? "Sem flags; aprovado automaticamente." : "",
+      student_name: studentName,
+      instructor_name: instructorName,
+      route: snapshot.route,
+      wpp_messages_json: "[]",
+      created_by: actorUserId,
+      created_at: now,
+      updated_at: now,
+    },
+    ADMIN_DOC_PERMS,
+  );
+  const request = toSoloFlightRequest(requestDoc);
+  const sent = await notifySoloFlightStakeholders(request, evaluation);
+  if (sent.length) {
+    requestDoc = await databases.updateDocument(DATABASE_ID, SOLO_FLIGHT_REQUESTS_COLLECTION_ID, request.id, {
+      wpp_messages_json: snapshotJsonMax(sent, 1024),
+      updated_at: nowIso(),
+    });
+  }
+  return toSoloFlightRequest(requestDoc);
+}
+
+async function listSoloFlightRequests(actorUserId, payload = {}) {
+  const role = await requireSoloFlightActor(actorUserId);
+  const queries = [
+    sdk.Query.orderDesc("created_at"),
+    sdk.Query.limit(Math.min(100, Math.max(1, Math.round(Number(payload.limit) || 50)))),
+  ];
+  const status = cleanString(payload.status);
+  if (status) queries.push(sdk.Query.equal("status", [status]));
+  if (role === "aluno") queries.push(sdk.Query.equal("student_user_id", [actorUserId]));
+  else if (role === "instrutor") queries.push(sdk.Query.equal("instructor_user_id", [actorUserId]));
+  else {
+    const studentUserId = cleanString(payload.studentUserId);
+    const instructorUserId = cleanString(payload.instructorUserId);
+    if (studentUserId) queries.push(sdk.Query.equal("student_user_id", [studentUserId]));
+    if (instructorUserId) queries.push(sdk.Query.equal("instructor_user_id", [instructorUserId]));
+  }
+  const docs = await listAllDocuments(SOLO_FLIGHT_REQUESTS_COLLECTION_ID, queries);
+  return docs.map(toSoloFlightRequest);
+}
+
+async function recordSoloFlightDecision({ requestId, decision, source, actorUserId = "", actorRole = "", actorPhone = "", reason = "" }) {
+  if (!SOLO_FLIGHT_DECISIONS_COLLECTION_ID) return null;
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    SOLO_FLIGHT_DECISIONS_COLLECTION_ID,
+    sdk.ID.unique(),
+    {
+      school_id: SCHOOL_ID,
+      request_id: requestId,
+      decision,
+      source,
+      actor_user_id: actorUserId,
+      actor_role: actorRole,
+      actor_phone: actorPhone,
+      reason: cleanString(reason).slice(0, 2048),
+      created_at: nowIso(),
+    },
+    ADMIN_DOC_PERMS,
+  );
+  return {
+    id: doc.$id,
+    requestId: doc.request_id,
+    decision: doc.decision,
+    source: doc.source,
+    actorUserId: cleanString(doc.actor_user_id),
+    actorRole: cleanString(doc.actor_role),
+    actorPhone: cleanString(doc.actor_phone),
+    reason: cleanString(doc.reason),
+    createdAt: cleanString(doc.created_at || doc.$createdAt),
+  };
+}
+
+async function decideSoloFlightRequest(actorUserId, payload = {}, source = "panel") {
+  const actorRole = source === "panel" ? await requireSoloFlightActor(actorUserId, ["admin"]) : cleanString(payload.actorRole || "whatsapp");
+  const requestId = cleanString(payload.requestId || payload.id);
+  const decision = cleanString(payload.decision) === "rejected" || cleanString(payload.decision) === "reject" ? "rejected" : "approved";
+  if (!requestId) throw Object.assign(new Error("Solicitação não informada."), { status: 400 });
+  const doc = await databases.getDocument(DATABASE_ID, SOLO_FLIGHT_REQUESTS_COLLECTION_ID, requestId);
+  if (doc.status !== "pending_approval") {
+    await recordSoloFlightDecision({ requestId, decision: "ignored", source, actorUserId, actorRole, actorPhone: payload.actorPhone, reason: `Solicitação já estava ${doc.status}.` });
+    return toSoloFlightRequest(doc);
+  }
+  const now = nowIso();
+  const updated = await databases.updateDocument(DATABASE_ID, SOLO_FLIGHT_REQUESTS_COLLECTION_ID, requestId, {
+    status: decision === "approved" ? "approved" : "rejected",
+    final_decision: decision,
+    decided_by_role: actorRole,
+    decided_by_phone: cleanString(payload.actorPhone).slice(0, 32),
+    decided_by_user_id: cleanString(actorUserId).slice(0, 64),
+    decided_at: now,
+    decision_reason: cleanString(payload.reason).slice(0, 2048),
+    updated_at: now,
+  });
+  await recordSoloFlightDecision({ requestId, decision, source, actorUserId, actorRole, actorPhone: payload.actorPhone, reason: payload.reason });
+  return toSoloFlightRequest(updated);
+}
+
+function soloFlightDecisionFromIncoming(incoming) {
+  const candidates = [incoming?.responseId, incoming?.text].map(cleanString).filter(Boolean);
+  for (const raw of candidates) {
+    const match = raw.match(/^solo_(approve|reject)_([A-Za-z0-9._-]+)$/i);
+    if (match) {
+      return { decision: match[1].toLowerCase() === "reject" ? "rejected" : "approved", requestId: match[2] };
+    }
+  }
+  return null;
+}
+
+async function handleSoloFlightWppDecision(incoming) {
+  const parsed = soloFlightDecisionFromIncoming(incoming);
+  if (!parsed) return null;
+  const { settings } = await loadWppSettings();
+  const from = normalizeWppRecipientPhone(incoming.from);
+  const allowed = [
+    { role: "coordenador", phone: normalizeWppRecipientPhone(settings.soloFlightCoordinatorPhone) },
+    { role: "sgso", phone: normalizeWppRecipientPhone(settings.soloFlightSgsoPhone) },
+  ].filter((item) => item.phone);
+  const match = allowed.find((item) => wppPhoneMatchScore(from, item.phone) >= 120);
+  if (!match) {
+    await recordSoloFlightDecision({
+      requestId: parsed.requestId,
+      decision: "ignored",
+      source: "whatsapp",
+      actorPhone: from,
+      actorRole: "unknown",
+      reason: "Telefone não autorizado.",
+    });
+    return { handled: true, status: "ignored_unauthorized" };
+  }
+  const request = await decideSoloFlightRequest("", {
+    requestId: parsed.requestId,
+    decision: parsed.decision,
+    actorPhone: from,
+    actorRole: match.role,
+    reason: `Decisão recebida por WhatsApp (${match.role}).`,
+  }, "whatsapp");
+  await sendWppTextMessage(settings, {
+    to: from,
+    body: `Solicitação ${request.id} ${request.status === "approved" ? "aprovada" : "rejeitada"}.`,
+  }).catch(() => null);
+  return { handled: true, status: request.status, requestId: request.id };
+}
+
+async function ensureSoloFlightWppTemplates() {
+  await listWppTemplates().catch(() => []);
+  const templates = await listWppTemplates();
+  const byName = new Map(templates.map((template) => [cleanString(template.name), template]));
+  const specs = [
+    {
+      name: "voo_solo_aprovacao",
+      headerText: "Aprovação de voo solo",
+      bodyText: "Solicitação de voo solo para {{1}} em {{2}}. Rota/aeródromos: {{3}}. Pendências: {{4}}. Código: {{5}}.",
+      footerText: "Decida pelo botão enviado em seguida ou pelo painel.",
+    },
+    {
+      name: "voo_solo_ciencia",
+      headerText: "Voo solo aprovado",
+      bodyText: "Voo solo de {{1}} em {{2}} aprovado automaticamente. Rota/aeródromos: {{3}}. Status: {{4}}. Código: {{5}}.",
+      footerText: "Mensagem automática de ciência.",
+    },
+  ];
+  const result = [];
+  for (const spec of specs) {
+    if (byName.has(spec.name)) {
+      result.push(byName.get(spec.name));
+      continue;
+    }
+    result.push(await createWppTemplate({
+      ...spec,
+      category: "UTILITY",
+      language: "pt_BR",
+    }));
+  }
+  return result;
 }
 
 function isWppWebhookVerification(req) {
@@ -18868,7 +19762,7 @@ async function handleWppIncomingWebhook(payload, log) {
   const incomingAutoReply = sanitizeWppIncomingAutoReply(settings.incomingAutoReply);
   const messages = extractWppIncomingMessages(payload)
     .filter((message) => !message.phoneNumberId || message.phoneNumberId === cleanString(settings.phoneNumberId));
-  if (!incomingAutoReply.enabled || !messages.length) {
+  if (!messages.length) {
     return { ok: true, received: messages.length, replied: 0, skipped: messages.length };
   }
 
@@ -18884,6 +19778,15 @@ async function handleWppIncomingWebhook(payload, log) {
         log(`[wppWebhook] duplicate skipped messageId=${incoming.messageId}`);
         continue;
       }
+
+      const soloDecision = await handleSoloFlightWppDecision(incoming);
+      if (soloDecision?.handled) {
+        replied += 1;
+        actionResults.push({ action: "solo_flight_decision", status: soloDecision.status, requestId: soloDecision.requestId || null, matchedRuleId: null });
+        continue;
+      }
+
+      if (!incomingAutoReply.enabled) continue;
 
       const metarHelp = wppMetar.parseWppMetarHelpCommand(incoming.text, incoming.responseId);
       if (metarHelp) {
@@ -21387,7 +22290,7 @@ function selectFlightReviewClubPricingRule(rules, trackId, flownHours) {
     }) || null;
 }
 
-async function createFlightReviewClubCheckout(actorUserId) {
+async function quoteFlightReviewClubCheckout(actorUserId) {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const role = await getActorRole(actorUserId);
   if (role !== "aluno") {
@@ -21406,9 +22309,46 @@ async function createFlightReviewClubCheckout(actorUserId) {
   if (!pricingRule) {
     throw Object.assign(new Error("Nenhuma regra de preco do Flight Review Club atende sua trilha e horas voadas."), { status: 404 });
   }
+  const amount = Math.round(Number(pricingRule.amount) * 100) / 100;
+  const discountPercent = Number.isFinite(Number(pricingRule.discountPercent))
+    ? Math.min(95, Math.max(0, Math.round(Number(pricingRule.discountPercent))))
+    : 0;
+  return {
+    amount,
+    discountPercent,
+    pricingRuleId: cleanString(pricingRule.id),
+    trainingTrackId: cleanString(pricingRule.trainingTrackId),
+    trainingTrackName: cleanString(pricingRule.trainingTrackName),
+    minHours: Number(pricingRule.minHours) || 0,
+    maxHours: pricingRule.maxHours ?? null,
+    flownHours,
+    assignmentId: cleanString(assignment.$id),
+  };
+}
+
+function defaultWppSoloFlightApprovalTemplate() {
+  return {
+    enabled: true,
+    templateName: "voo_solo_aprovacao",
+    language: "pt_BR",
+    bodyParameters: DEFAULT_WPP_SOLO_FLIGHT_APPROVAL_PARAMETERS,
+  };
+}
+
+function defaultWppSoloFlightAwarenessTemplate() {
+  return {
+    enabled: true,
+    templateName: "voo_solo_ciencia",
+    language: "pt_BR",
+    bodyParameters: DEFAULT_WPP_SOLO_FLIGHT_AWARENESS_PARAMETERS,
+  };
+}
+
+async function createFlightReviewClubCheckout(actorUserId) {
+  const quote = await quoteFlightReviewClubCheckout(actorUserId);
   const actor = await users.get({ userId: actorUserId });
   const profile = await getProfileByUserId(actorUserId).catch(() => null);
-  const amount = Math.round(Number(pricingRule.amount) * 100) / 100;
+  const amount = quote.amount;
   const proposalId = sdk.ID.unique();
   const membershipId = `frc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 28)}`;
   const doc = await databases.createDocument(
@@ -21426,16 +22366,17 @@ async function createFlightReviewClubCheckout(actorUserId) {
       products_json: JSON.stringify({
         kind: "flight_review_club_subscription",
         studentUserId: actorUserId,
-        assignmentId: cleanString(assignment.$id),
+        assignmentId: quote.assignmentId,
         membershipId,
         pricingRule: {
-          id: cleanString(pricingRule.id),
-          trainingTrackId: cleanString(pricingRule.trainingTrackId),
-          trainingTrackName: cleanString(pricingRule.trainingTrackName),
-          minHours: Number(pricingRule.minHours) || 0,
-          maxHours: pricingRule.maxHours ?? null,
+          id: quote.pricingRuleId,
+          trainingTrackId: quote.trainingTrackId,
+          trainingTrackName: quote.trainingTrackName,
+          minHours: quote.minHours,
+          maxHours: quote.maxHours,
           amount,
-          flownHours,
+          discountPercent: quote.discountPercent,
+          flownHours: quote.flownHours,
         },
         products: [],
       }),
@@ -21462,9 +22403,9 @@ async function createFlightReviewClubCheckout(actorUserId) {
       proposalId: updated.$id,
       paymentUrl: payment.paymentUrl,
       amount,
-      pricingRuleId: cleanString(pricingRule.id),
-      trainingTrackName: cleanString(pricingRule.trainingTrackName),
-      flownHours,
+      pricingRuleId: quote.pricingRuleId,
+      trainingTrackName: quote.trainingTrackName,
+      flownHours: quote.flownHours,
     };
   } catch (error) {
     await updateProposalPayment(doc.$id, {
@@ -21898,7 +22839,7 @@ async function sendFlightCreditPaymentLinkEmail(actorUserId, input = {}) {
     eyebrow: "Pagamento",
     title: "Seu link de pagamento esta pronto",
     intro: "A escola gerou um link de pagamento para voce.",
-    body: "Use o botao abaixo para concluir o pagamento com seguranca. Depois da confirmacao, os creditos e produtos vinculados ao link serao lancados automaticamente.",
+    body: "Use o botão abaixo para concluir o pagamento com segurança. Depois da confirmação, os créditos e produtos vinculados ao link serão lançados automaticamente.",
     details,
     ctaLabel: "Abrir pagamento",
     url: safePaymentUrl,
@@ -25296,6 +26237,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { checkout });
     }
 
+    if (action === "quoteFlightReviewClubCheckout") {
+      const quote = await quoteFlightReviewClubCheckout(actorUserId);
+      return jsonResponse(res, 200, { quote });
+    }
+
     if (action === "createFlightReviewClubCheckout") {
       const checkout = await createFlightReviewClubCheckout(actorUserId);
       return jsonResponse(res, 200, { checkout });
@@ -25675,6 +26621,41 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, result });
     }
 
+    if (action === "listSoloFlightEndorsements") {
+      const endorsements = await listSoloFlightEndorsements(actorUserId, payload);
+      return jsonResponse(res, 200, { endorsements });
+    }
+
+    if (action === "createSoloFlightEndorsement") {
+      const endorsement = await createSoloFlightEndorsement(actorUserId, payload);
+      return jsonResponse(res, 200, { endorsement });
+    }
+
+    if (action === "deleteSoloFlightEndorsement") {
+      await deleteSoloFlightEndorsement(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "evaluateSoloFlight") {
+      const evaluation = await evaluateSoloFlight(actorUserId, payload);
+      return jsonResponse(res, 200, { evaluation });
+    }
+
+    if (action === "createSoloFlightRequest") {
+      const request = await createSoloFlightRequest(actorUserId, payload);
+      return jsonResponse(res, 200, { request });
+    }
+
+    if (action === "listSoloFlightRequests") {
+      const requests = await listSoloFlightRequests(actorUserId, payload);
+      return jsonResponse(res, 200, { requests });
+    }
+
+    if (action === "decideSoloFlightRequest") {
+      const request = await decideSoloFlightRequest(actorUserId, payload);
+      return jsonResponse(res, 200, { request });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "createUser") {
@@ -25921,6 +26902,12 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       const messageId = await sendWppTemplateTest(payload.test);
       return jsonResponse(res, 200, { ok: true, messageId });
+    }
+
+    if (action === "ensureSoloFlightWppTemplates") {
+      await requireAdmin(actorUserId);
+      const templates = await ensureSoloFlightWppTemplates();
+      return jsonResponse(res, 200, { ok: true, templates });
     }
 
     if (action === "saveGoogleCalendarSettings") {

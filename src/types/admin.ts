@@ -138,6 +138,8 @@ export type MaintenanceProgramItem = {
   engine_model: string | null;
   baseline_source: MaintenanceBaselineSource | null;
   baseline_notes: string | null;
+  /** Dias estimados de parada do avião nesta manutenção (previsão da escala). */
+  estimated_downtime_days: number | null;
   grounding_if_overdue: boolean;
   block_dispatch: boolean;
   requires_release: boolean;

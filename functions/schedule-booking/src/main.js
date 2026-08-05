@@ -84,6 +84,9 @@ function defaultScheduleRules() {
     maxBookingLeadDays: 365,
     studentHiddenAircraftIdents: [],
     studentWaitlistAircraftIdents: [],
+    maintenanceAlertEnabled: false,
+    maintenanceBlockLikelyDowntime: false,
+    maintenanceAvgHoursPerDay: 5,
   };
 }
 
@@ -94,6 +97,7 @@ function normalizeRules(raw) {
   // nightFlightStartHour stored as decimal hours (e.g. 18.5 = 18:30)
   const nightH = Number(raw?.nightFlightStartHour);
   const nightFlightStartHour = Number.isFinite(nightH) && nightH >= 0 && nightH < 24 ? nightH : defaults.nightFlightStartHour;
+  const avgHours = number(raw?.maintenanceAvgHoursPerDay, defaults.maintenanceAvgHoursPerDay);
   return {
     ...defaults,
     ...raw,
@@ -123,6 +127,9 @@ function normalizeRules(raw) {
     studentWaitlistAircraftIdents: Array.isArray(raw?.studentWaitlistAircraftIdents)
       ? [...new Set(raw.studentWaitlistAircraftIdents.map((value) => clean(value).toUpperCase()).filter(Boolean))]
       : [],
+    maintenanceAlertEnabled: raw?.maintenanceAlertEnabled === true,
+    maintenanceBlockLikelyDowntime: raw?.maintenanceBlockLikelyDowntime === true,
+    maintenanceAvgHoursPerDay: Math.max(0.25, avgHours > 0 ? avgHours : defaults.maintenanceAvgHoursPerDay),
   };
 }
 
@@ -405,6 +412,335 @@ function validateBookingLeadDates(date, presentationMs, rules) {
   const maxDate = addDays(today, rules.maxBookingLeadDays);
   if (date > maxDate) {
     fail(`Agendamento permitido até ${brDate(maxDate)} (${rules.maxBookingLeadDays} dias de antecedência).`);
+  }
+}
+
+function parseHoursInterval(recurrenceRules) {
+  try {
+    const parsed = JSON.parse(recurrenceRules || "[]");
+    if (!Array.isArray(parsed)) return null;
+    const hoursRule = parsed.find((rule) => rule?.type === "hours");
+    return typeof hoursRule?.value === "number" && hoursRule.value > 0 ? hoursRule.value : null;
+  } catch {
+    return null;
+  }
+}
+
+function projectMaintenanceRiskServer(params) {
+  const avg = params.avgHoursPerDay > 0 ? params.avgHoursPerDay : 0;
+  const dayCount = Math.max(0, Math.floor(params.dayCount));
+  const items = (params.items || [])
+    .filter((item) => item.intervalHours > 0 && (item.downtimeDays || 0) > 0)
+    .map((item) => ({ ...item, downtimeDays: Math.max(1, Math.round(item.downtimeDays)) }))
+    .sort((a, b) => b.intervalHours - a.intervalHours);
+  const byDate = {};
+  let hours = Number.isFinite(params.currentHours) ? params.currentHours : 0;
+  let groundedRemaining = 0;
+  let activeItem = null;
+  let pendingPostMedium = null;
+
+  function effectiveDowntimeDays(hitDate, downtimeDays) {
+    const base = Math.max(1, Math.round(downtimeDays));
+    for (let i = 1; i <= base; i += 1) {
+      const weekday = new Date(`${addDays(hitDate, i)}T12:00:00`).getDay();
+      if (weekday === 0 || weekday === 6) return base + 1;
+    }
+    return base;
+  }
+
+  for (let offset = 0; offset < dayCount; offset += 1) {
+    const date = addDays(params.fromDate, offset);
+    let risk = "low";
+    let grounded = false;
+    if (pendingPostMedium && pendingPostMedium.offset === offset) {
+      risk = "medium";
+      pendingPostMedium = null;
+    }
+    if (groundedRemaining > 0 && activeItem) {
+      risk = "high";
+      grounded = true;
+      groundedRemaining -= 1;
+      if (groundedRemaining === 0) {
+        pendingPostMedium = { offset: offset + 1, item: activeItem };
+        activeItem = null;
+      }
+      byDate[date] = { risk, grounded, hours };
+      continue;
+    }
+    if (avg <= 0) {
+      byDate[date] = { risk, grounded, hours };
+      continue;
+    }
+    const hoursBefore = hours;
+    hours = Number((hours + avg).toFixed(4));
+    const crossed = items
+      .map((item) => ({
+        item,
+        due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
+      }))
+      .filter(({ due }) => hoursBefore < due - 1e-9 && hours + 1e-9 >= due)
+      .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
+    if (crossed) {
+      risk = "medium";
+      groundedRemaining = effectiveDowntimeDays(date, crossed.item.downtimeDays);
+      activeItem = crossed.item;
+    }
+    byDate[date] = { risk, grounded, hours };
+  }
+  return byDate;
+}
+
+function programItemsCollectionId() {
+  return process.env.APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COLLECTION_ID
+    || process.env.APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID
+    || "";
+}
+
+function workOrdersCollectionId() {
+  return process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COLLECTION_ID
+    || process.env.APPWRITE_MAINTENANCE_WORK_ORDERS_COL_ID
+    || "";
+}
+
+function isExcludedMaintenanceItem(doc) {
+  const haystack = `${clean(doc.code)} ${clean(doc.title)}`.toLowerCase();
+  return haystack.includes("transit") || haystack.includes("trânsito") || haystack.includes("diaria") || haystack.includes("diária");
+}
+
+function parseProgramTheoryItems(docs) {
+  return (docs || [])
+    .filter((doc) => !clean(doc.deleted_at) && !isExcludedMaintenanceItem(doc))
+    .map((doc) => {
+      const intervalHours = parseHoursInterval(doc.recurrence_rules);
+      let downtimeDays = null;
+      try {
+        const baseline = JSON.parse(doc.baseline_json || "{}");
+        const raw = baseline?.estimated_downtime_days;
+        const asNum = typeof raw === "number" ? raw : Number(raw);
+        if (Number.isFinite(asNum) && asNum > 0) downtimeDays = Math.round(asNum);
+      } catch {
+        downtimeDays = null;
+      }
+      if (downtimeDays == null) {
+        const rawDoc = doc.estimated_downtime_days;
+        const asNum = typeof rawDoc === "number" ? rawDoc : Number(rawDoc);
+        if (Number.isFinite(asNum) && asNum > 0) downtimeDays = Math.round(asNum);
+      }
+      return {
+        code: clean(doc.code),
+        title: clean(doc.title),
+        intervalHours: intervalHours || 0,
+        downtimeDays,
+      };
+    })
+    .filter((item) => item.intervalHours > 0);
+}
+
+async function listProgramTheoryItemsByModel(modelId) {
+  const programColId = programItemsCollectionId();
+  if (!programColId || !modelId) return [];
+  try {
+    const result = await databases.listDocuments(DATABASE_ID, programColId, [
+      sdk.Query.equal("aircraft_model_id", [modelId]),
+      sdk.Query.limit(200),
+    ]);
+    return parseProgramTheoryItems(result.documents);
+  } catch {
+    return [];
+  }
+}
+
+function flightHoursFromDoc(doc) {
+  const block = number(doc.block_time_minutes, 0);
+  if (block > 0) return block / 60;
+  const total = number(doc.total_flight_minutes, 0);
+  if (total > 0) return total / 60;
+  const durationSec = number(doc.duration_sec, 0);
+  if (durationSec > 0) return durationSec / 3600;
+  return 0;
+}
+
+function flightDateMsFromDoc(doc) {
+  const date = clean(doc.flight_date) || clean(doc.$createdAt).slice(0, 10);
+  const time = clean(doc.start_time);
+  const ms = new Date(time ? `${date}T${time}` : date).getTime();
+  return Number.isFinite(ms) ? ms : Date.parse(doc.$createdAt || "") || 0;
+}
+
+/**
+ * Contexto da previsão TEÓRICA (média/dia) — mesma base da linha "Teórica" do admin.
+ * O cliente do aluno aplica projectMaintenanceRisk localmente com a data de hoje do browser,
+ * para bater 100% com a escala do admin/instrutor.
+ */
+async function buildMaintenanceTheoryContext(rules, aircraftDocs) {
+  if (!rules.maintenanceAlertEnabled) return null;
+  const avg = number(rules.maintenanceAvgHoursPerDay, 0);
+  if (!(avg > 0)) return null;
+  if (!programItemsCollectionId()) return null;
+
+  const modelIds = [...new Set((aircraftDocs || []).map((doc) => clean(doc.model_id)).filter(Boolean))];
+  const itemsByModel = {};
+  await Promise.all(modelIds.map(async (modelId) => {
+    itemsByModel[modelId] = await listProgramTheoryItemsByModel(modelId);
+  }));
+
+  const woCol = workOrdersCollectionId();
+  let orders = [];
+  if (woCol) {
+    try {
+      const result = await databases.listDocuments(DATABASE_ID, woCol, [sdk.Query.limit(500)]);
+      orders = result.documents || [];
+    } catch {
+      orders = [];
+    }
+  }
+  const ordersByAircraftId = {};
+  for (const order of orders) {
+    const id = clean(order.aircraft_id);
+    if (!id) continue;
+    if (!ordersByAircraftId[id]) ordersByAircraftId[id] = [];
+    ordersByAircraftId[id].push(order);
+  }
+
+  // Correções de horímetro — mesmo ajuste da Frota/admin.
+  const correctionsCol = process.env.APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COLLECTION_ID
+    || process.env.APPWRITE_AIRCRAFT_HORIMETER_CORRECTIONS_COL_ID
+    || "aircraft_horimeter_corrections";
+  let corrections = [];
+  try {
+    const result = await databases.listDocuments(DATABASE_ID, correctionsCol, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.limit(500),
+    ]);
+    corrections = result.documents || [];
+  } catch {
+    corrections = [];
+  }
+  const correctionsByAircraftId = {};
+  for (const row of corrections) {
+    const id = clean(row.aircraft_id);
+    if (!id) continue;
+    if (!correctionsByAircraftId[id]) correctionsByAircraftId[id] = [];
+    correctionsByAircraftId[id].push(row);
+  }
+
+  let flights = [];
+  if (FLIGHTS_ID) {
+    try {
+      // Mesma ideia da Frota/admin: soma horas de voos desde o baseline (não só "Realizado").
+      const result = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [
+        sdk.Query.equal("school_id", [SCHOOL_ID]),
+        sdk.Query.limit(5000),
+      ]);
+      flights = result.documents || [];
+    } catch {
+      try {
+        const result = await databases.listDocuments(DATABASE_ID, FLIGHTS_ID, [sdk.Query.limit(5000)]);
+        flights = result.documents || [];
+      } catch {
+        flights = [];
+      }
+    }
+  }
+  const flightsByReg = {};
+  for (const doc of flights) {
+    const reg = clean(doc.aircraft_ident).toUpperCase();
+    if (!reg) continue;
+    if (!flightsByReg[reg]) flightsByReg[reg] = [];
+    flightsByReg[reg].push(doc);
+  }
+
+  const now = Date.now();
+  const aircrafts = [];
+  for (const doc of aircraftDocs || []) {
+    const type = clean(doc.type).toLowerCase();
+    if (type && type !== "aviao") continue;
+    const regDisplay = clean(doc.registration).toUpperCase();
+    if (!regDisplay) continue;
+
+    const allItems = itemsByModel[clean(doc.model_id)] || [];
+
+    let originalBaselineMs = 0;
+    let originalTtaf = number(doc.logbook_ttaf, NaN);
+    if (Number.isFinite(originalTtaf)) {
+      originalBaselineMs = doc.logbook_opening_date ? Date.parse(doc.logbook_opening_date) || 0 : 0;
+    } else {
+      const aircraftOrders = ordersByAircraftId[doc.$id] || [];
+      const baseline = aircraftOrders
+        .filter((order) => clean(order.work_order_type) === "migration_baseline")
+        .sort((a, b) => Date.parse(b.opened_at || "") - Date.parse(a.opened_at || ""))[0];
+      if (baseline) {
+        originalTtaf = number(baseline.aircraft_ttaf, NaN);
+        originalBaselineMs = Date.parse(baseline.opened_at || "") || 0;
+      }
+    }
+
+    // Aplica correção de horímetro mais recente (mesma regra da Frota).
+    const aircraftCorrections = correctionsByAircraftId[doc.$id] || [];
+    const latestCorrection = aircraftCorrections
+      .filter((row) => Date.parse(row.corrected_at || "") <= now)
+      .sort((a, b) => Date.parse(b.corrected_at || "") - Date.parse(a.corrected_at || ""))[0];
+    let baselineMs = originalBaselineMs;
+    let ttaf = originalTtaf;
+    if (latestCorrection && Number.isFinite(number(latestCorrection.ttaf_value, NaN))) {
+      baselineMs = Date.parse(latestCorrection.corrected_at || "") || baselineMs;
+      ttaf = number(latestCorrection.ttaf_value, NaN);
+    }
+    if (!Number.isFinite(ttaf)) continue;
+
+    const regFlights = flightsByReg[regDisplay] || [];
+    let flown = 0;
+    for (const flight of regFlights) {
+      // Frota/admin não exclui Cancelado na soma de horas-base — manter igual.
+      const ms = flightDateMsFromDoc(flight);
+      if (baselineMs && ms < baselineMs) continue;
+      if (ms > now) continue;
+      flown += flightHoursFromDoc(flight);
+    }
+    const hours = Number((ttaf + flown).toFixed(1));
+    aircrafts.push({
+      registration: regDisplay,
+      hours,
+      maintenanceDue: allItems.map((item) => ({
+        code: item.code,
+        title: item.title,
+        intervalHours: item.intervalHours,
+        downtimeDays: item.downtimeDays,
+      })),
+    });
+  }
+
+  return {
+    avgHoursPerDay: avg,
+    aircrafts,
+  };
+}
+
+async function validateMaintenanceDowntimeBlock(rules, actorRole, aircraft, flightDate) {
+  if (actorRole !== "aluno") return;
+  if (!rules.maintenanceAlertEnabled || !rules.maintenanceBlockLikelyDowntime) return;
+  if (!aircraft || !flightDate) return;
+  const theory = await buildMaintenanceTheoryContext(rules, [aircraft]);
+  const entry = (theory?.aircrafts || []).find((row) => (
+    normalizeRegistration(row.registration) === normalizeRegistration(aircraft.registration)
+    || clean(row.registration).toUpperCase() === clean(aircraft.registration).toUpperCase()
+  ));
+  if (!entry || entry.hours == null) return;
+  const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  if (flightDate < today) return;
+  const dayCount = Math.max(
+    14,
+    Math.ceil((new Date(`${flightDate}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) / 86400000) + 3,
+  );
+  const series = projectMaintenanceRiskServer({
+    currentHours: entry.hours,
+    avgHoursPerDay: rules.maintenanceAvgHoursPerDay,
+    items: entry.maintenanceDue,
+    fromDate: today,
+    dayCount,
+  });
+  if (series[flightDate]?.risk === "high") {
+    fail("Este dia está na janela mais provável de parada por manutenção — não é possível marcar novos voos.");
   }
 }
 
@@ -1518,12 +1854,17 @@ async function handleCalendar(payload, actorId, actorRole, rules, profile) {
     }
   }
 
+  const maintenanceTheoryContext = rules.maintenanceAlertEnabled
+    ? await buildMaintenanceTheoryContext(rules, aircrafts.documents).catch(() => null)
+    : null;
+
   return {
     mode: rules.mode,
     rules,
     aircrafts: publicAircrafts,
     flights: publicFlights,
     blockedSlots: visibleBlockedSlots,
+    maintenanceTheoryContext,
   };
 }
 
@@ -1557,6 +1898,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
   validateBookingLeadDates(date, presentationMs, rules);
+  if (!waitlistBooking) {
+    await validateMaintenanceDowntimeBlock(rules, actorRole, aircraft, date);
+  }
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
   if (!waitlistBooking) {
@@ -2037,6 +2381,9 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
   validateBookingLeadDates(date, presentationMs, rules);
+  if (!waitlistBooking) {
+    await validateMaintenanceDowntimeBlock(rules, actorRole, aircraft, date);
+  }
   const isNight = startMinute >= rules.nightFlightStartHour * 60;
   if (isNight && (!rules.allowNightFlights || !rules.nightBookingWeekdays.includes(day))) fail("Voos noturnos não podem ser marcados neste dia.");
   if (!waitlistBooking) {

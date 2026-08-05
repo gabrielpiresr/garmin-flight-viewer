@@ -10,6 +10,22 @@ import {
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
+export type FlightReviewClubBenefitItem = {
+  text: string;
+  imageUrl: string;
+};
+
+export type FlightReviewClubPricingRule = {
+  id: string;
+  trainingTrackId: string;
+  trainingTrackName: string;
+  minHours: number;
+  maxHours: number | null;
+  amount: number;
+  discountPercent: number;
+  active: boolean;
+};
+
 export type FlightReviewClubRules = {
   enabled: boolean;
   landingPageType: FlightReviewClubLpType;
@@ -17,7 +33,40 @@ export type FlightReviewClubRules = {
   showInStudentMenu: boolean;
   benefits: string[];
   ctaSubscriptionUrl: string;
+  adhesionTermUrl: string;
   trialFlightCount: number;
+  lpHeroTitle: string;
+  lpHeroSubtitle: string;
+  lpCoverImageUrl: string;
+  lpCtaLabel: string;
+  lpValueProps: string[];
+  lpBenefitItems: FlightReviewClubBenefitItem[];
+  pricingRules: FlightReviewClubPricingRule[];
+};
+
+export type SoloFlightAutomaticCriterionKey =
+  | "recentDualCommand"
+  | "minimumAge"
+  | "activeEndorsement"
+  | "cutoffBefore"
+  | "previousDestinationNavigation"
+  | "previousAlternateFlight"
+  | "metarAlunoSolo";
+
+export type SoloFlightManualCriterion = {
+  id: string;
+  label: string;
+  enabled: boolean;
+};
+
+export type SoloFlightRules = {
+  enabled: boolean;
+  automaticCriteria: Record<SoloFlightAutomaticCriterionKey, boolean>;
+  dualCommandWindowDays: number;
+  minimumAge: number;
+  cutoffBeforeTime: string;
+  metarMinimumCondition: "aluno_solo";
+  manualCriteria: SoloFlightManualCriterion[];
 };
 
 export type StudentPortalTab =
@@ -31,6 +80,7 @@ export type StudentPortalTab =
   | "manuais"
   | "manobras"
   | "ajuda"
+  | "endossos"
   | "perfil"
   | "dre"       // EDB — opcional, desativado por padrão
   | "fuelings"  // Abastecimentos — opcional, desativado por padrão
@@ -100,6 +150,12 @@ export type FlightScheduleRules = {
    * quando nenhum avião real está livre no horário; a confirmação depende de ajustes/cancelamentos.
    */
   studentWaitlistAircraftIdents: string[];
+  /** Exibe alerta/flag de probabilidade de parada por manutenção na escala. */
+  maintenanceAlertEnabled: boolean;
+  /** Impede novas marcações de alunos nos dias de risco alto (parada mais provável). */
+  maintenanceBlockLikelyDowntime: boolean;
+  /** Média de horas voadas por dia usada na previsão teórica de manutenção. */
+  maintenanceAvgHoursPerDay: number;
 };
 
 export type EmailNotificationRule = {
@@ -115,6 +171,7 @@ export type SchoolRules = {
   emailNotifications: Record<NotificationEventType, EmailNotificationRule>;
   flightReviewClub: FlightReviewClubRules;
   flightEvaluation: FlightEvaluationRules;
+  soloFlight: SoloFlightRules;
   updatedAt: string | null;
 };
 
@@ -131,6 +188,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "manuais", label: "Manuais" },
   { id: "manobras", label: "Manobras" },
   { id: "ajuda", label: "Ajuda" },
+  { id: "endossos", label: "Endossos" },
   { id: "perfil", label: "Perfil" },
   // Abas opcionais — desativadas por padrão, admin pode ativar por escola e/ou por role
   { id: "dre", label: "EDB", defaultEnabled: false },
@@ -157,7 +215,55 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
   showInStudentMenu: false,
   benefits: [],
   ctaSubscriptionUrl: "",
+  adhesionTermUrl: "",
   trialFlightCount: 0,
+  lpHeroTitle: "Flight Review Club",
+  lpHeroSubtitle:
+    "Revise seus voos com telemetria, videos, fotos e dados reais para evoluir com mais clareza em cada etapa da formacao.",
+  lpCoverImageUrl: "",
+  lpCtaLabel: "Assinar o Flight Review Club",
+  lpValueProps: [],
+  lpBenefitItems: [],
+  pricingRules: [],
+};
+
+export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
+  enabled: true,
+  automaticCriteria: {
+    recentDualCommand: true,
+    minimumAge: true,
+    activeEndorsement: true,
+    cutoffBefore: true,
+    previousDestinationNavigation: true,
+    previousAlternateFlight: true,
+    metarAlunoSolo: true,
+  },
+  dualCommandWindowDays: 5,
+  minimumAge: 18,
+  cutoffBeforeTime: "16:00",
+  metarMinimumCondition: "aluno_solo",
+  manualCriteria: [
+    {
+      id: "endorsement_printed",
+      label: "Aluno esta com o endosso impresso",
+      enabled: true,
+    },
+    {
+      id: "two_positive_evaluations",
+      label: "Aluno avaliado positivamente por dois instrutores ou pelo coordenador",
+      enabled: true,
+    },
+    {
+      id: "anac_board_private_pilot",
+      label: "Piloto privado: aluno aprovado na Banca da ANAC",
+      enabled: true,
+    },
+    {
+      id: "critical_positions_briefing",
+      label: "Briefing mencionou posicoes criticas da CTR Jundiai",
+      enabled: true,
+    },
+  ],
 };
 
 export const DEFAULT_PLATFORM_THEME_RULES: PlatformThemeRules = {
@@ -204,6 +310,9 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   maxBookingLeadDays: 365,
   studentHiddenAircraftIdents: [],
   studentWaitlistAircraftIdents: [],
+  maintenanceAlertEnabled: false,
+  maintenanceBlockLikelyDowntime: false,
+  maintenanceAvgHoursPerDay: 5,
 };
 
 export const DEFAULT_STUDENT_TABS: Record<StudentPortalTab, boolean> = STUDENT_PORTAL_TAB_OPTIONS.reduce(
@@ -235,6 +344,7 @@ export const DEFAULT_SCHOOL_RULES: SchoolRules = {
   emailNotifications: DEFAULT_EMAIL_NOTIFICATION_RULES,
   flightReviewClub: DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   flightEvaluation: DEFAULT_FLIGHT_EVALUATION_RULES,
+  soloFlight: DEFAULT_SOLO_FLIGHT_RULES,
   updatedAt: null,
 };
 
@@ -268,6 +378,47 @@ function normalizeNullableHours(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 2) / 2 : null;
+}
+
+function normalizeMoney(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 100) / 100 : 0;
+}
+
+function normalizeTime(value: unknown, fallback: string): string {
+  const raw = String(value ?? "").trim();
+  return /^\d{2}:\d{2}$/.test(raw) ? raw : fallback;
+}
+
+function normalizeSoloFlightRules(input: unknown): SoloFlightRules {
+  const raw = input && typeof input === "object" ? (input as Partial<SoloFlightRules>) : {};
+  const defaults = DEFAULT_SOLO_FLIGHT_RULES;
+  const rawAuto: Partial<Record<SoloFlightAutomaticCriterionKey, boolean>> =
+    raw.automaticCriteria && typeof raw.automaticCriteria === "object" ? raw.automaticCriteria : {};
+  const automaticCriteria = (Object.keys(defaults.automaticCriteria) as SoloFlightAutomaticCriterionKey[]).reduce(
+    (acc, key) => ({
+      ...acc,
+      [key]: rawAuto[key] ?? defaults.automaticCriteria[key],
+    }),
+    {} as Record<SoloFlightAutomaticCriterionKey, boolean>,
+  );
+  const manualCriteria = (Array.isArray(raw.manualCriteria) ? raw.manualCriteria : defaults.manualCriteria)
+    .map((item, index) => ({
+      id: String(item?.id || `manual_${index + 1}`).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 64),
+      label: String(item?.label || "").trim().slice(0, 240),
+      enabled: item?.enabled !== false,
+    }))
+    .filter((item) => item.id && item.label)
+    .slice(0, 20);
+  return {
+    enabled: raw.enabled !== false,
+    automaticCriteria,
+    dualCommandWindowDays: normalizeInteger(raw.dualCommandWindowDays, 1, 30, defaults.dualCommandWindowDays),
+    minimumAge: normalizeInteger(raw.minimumAge, 14, 80, defaults.minimumAge),
+    cutoffBeforeTime: normalizeTime(raw.cutoffBeforeTime, defaults.cutoffBeforeTime),
+    metarMinimumCondition: "aluno_solo",
+    manualCriteria: manualCriteria.length ? manualCriteria : defaults.manualCriteria,
+  };
 }
 
 export function normalizeSchoolRules(input: unknown): SchoolRules {
@@ -359,6 +510,12 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       studentWaitlistAircraftIdents: Array.isArray(raw.schedule?.studentWaitlistAircraftIdents)
         ? [...new Set(raw.schedule.studentWaitlistAircraftIdents.map((value) => String(value).trim().toUpperCase()).filter(Boolean))]
         : [],
+      maintenanceAlertEnabled: Boolean(raw.schedule?.maintenanceAlertEnabled),
+      maintenanceBlockLikelyDowntime: Boolean(raw.schedule?.maintenanceBlockLikelyDowntime),
+      maintenanceAvgHoursPerDay: Math.max(
+        0.25,
+        normalizeHours(raw.schedule?.maintenanceAvgHoursPerDay, DEFAULT_FLIGHT_SCHEDULE_RULES.maintenanceAvgHoursPerDay),
+      ),
     },
     scheduleStudentHelp: normalizeScheduleStudentHelp(
       raw.scheduleStudentHelp,
@@ -388,10 +545,59 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
           ? club.benefits.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 20)
           : [],
         ctaSubscriptionUrl: typeof club?.ctaSubscriptionUrl === "string" ? club.ctaSubscriptionUrl.slice(0, 2048) : "",
+        adhesionTermUrl: typeof club?.adhesionTermUrl === "string" ? club.adhesionTermUrl.slice(0, 2048) : "",
         trialFlightCount: (() => { const n = Number(club?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
+        lpHeroTitle: typeof club?.lpHeroTitle === "string" && club.lpHeroTitle.trim()
+          ? club.lpHeroTitle.slice(0, 120)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroTitle,
+        lpHeroSubtitle: typeof club?.lpHeroSubtitle === "string" && club.lpHeroSubtitle.trim()
+          ? club.lpHeroSubtitle.slice(0, 500)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroSubtitle,
+        lpCoverImageUrl: typeof club?.lpCoverImageUrl === "string" ? club.lpCoverImageUrl.slice(0, 2048) : "",
+        lpCtaLabel: typeof club?.lpCtaLabel === "string" && club.lpCtaLabel.trim()
+          ? club.lpCtaLabel.slice(0, 80)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpCtaLabel,
+        lpValueProps: Array.isArray(club?.lpValueProps)
+          ? club.lpValueProps.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 12)
+          : [],
+        lpBenefitItems: Array.isArray(club?.lpBenefitItems)
+          ? club.lpBenefitItems
+              .map((item) => ({
+                text: String(item?.text ?? "").slice(0, 500).trim(),
+                imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
+              }))
+              .filter((item) => item.text)
+              .slice(0, 20)
+          : [],
+        pricingRules: Array.isArray(club?.pricingRules)
+          ? club.pricingRules
+              .map((rule, index) => {
+                const minHours = Math.max(0, Number(rule?.minHours) || 0);
+                const rawMax = rule?.maxHours === null || rule?.maxHours === undefined
+                  ? null
+                  : Number(rule.maxHours);
+                const maxHours = Number.isFinite(rawMax) && rawMax !== null ? Math.max(minHours, rawMax) : null;
+                return {
+                  id: String(rule?.id || `frc-price-${index + 1}`).slice(0, 64),
+                  trainingTrackId: String(rule?.trainingTrackId ?? "").slice(0, 128),
+                  trainingTrackName: String(rule?.trainingTrackName ?? "").slice(0, 160),
+                  minHours: Math.round(minHours * 10) / 10,
+                  maxHours: maxHours === null ? null : Math.round(maxHours * 10) / 10,
+                  amount: normalizeMoney(rule?.amount),
+                  discountPercent: (() => {
+                    const n = Number(rule?.discountPercent ?? 0);
+                    return Number.isFinite(n) ? Math.min(95, Math.max(0, Math.round(n))) : 0;
+                  })(),
+                  active: rule?.active !== false,
+                };
+              })
+              .filter((rule) => rule.trainingTrackId && rule.amount > 0)
+              .slice(0, 50)
+          : [],
       };
     })(),
     flightEvaluation: normalizeFlightEvaluationRules(raw.flightEvaluation),
+    soloFlight: normalizeSoloFlightRules(raw.soloFlight),
     updatedAt: raw.updatedAt ?? null,
   };
 }

@@ -151,6 +151,12 @@ function toProgramItem(doc: Record<string, unknown>): MaintenanceProgramItem {
     engine_model: text(applicability, "engine_model"),
     baseline_source: (text(baseline, "baseline_source") as MaintenanceProgramItem["baseline_source"]) ?? null,
     baseline_notes: text(baseline, "baseline_notes"),
+    estimated_downtime_days: (() => {
+      const fromBaseline = num(baseline, "estimated_downtime_days");
+      if (fromBaseline != null && fromBaseline > 0) return Math.round(fromBaseline);
+      const fromDoc = num(doc, "estimated_downtime_days");
+      return fromDoc != null && fromDoc > 0 ? Math.round(fromDoc) : null;
+    })(),
     grounding_if_overdue: bool(doc, "grounding_if_overdue"),
     block_dispatch: bool(doc, "block_dispatch"),
     requires_release: bool(doc, "requires_release", true),
@@ -265,6 +271,7 @@ function programItemDocument(data: Partial<ProgramItemPayload>): Record<string, 
     baseline_json: stringifyJsonObject({
       baseline_source: data.baseline_source,
       baseline_notes: data.baseline_notes,
+      estimated_downtime_days: data.estimated_downtime_days ?? null,
     }),
     grounding_if_overdue: data.grounding_if_overdue,
     block_dispatch: data.block_dispatch,
