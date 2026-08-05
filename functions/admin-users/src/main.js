@@ -170,6 +170,10 @@ const WEB_PUSH_CONTACT = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.c
 const APP_URL = process.env.APP_URL || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
+const METEOBLUE_API_KEY = process.env.METEOBLUE_API_KEY || "";
+const METEOBLUE_LAT = Number(process.env.METEOBLUE_LAT ?? "-22.9754");
+const METEOBLUE_LON = Number(process.env.METEOBLUE_LON ?? "-44.3074");
+const METEOBLUE_ASL = Number(process.env.METEOBLUE_ASL ?? "2");
 const GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON || "";
 const GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || "";
 const GOOGLE_CALENDAR_PRIVATE_KEY = process.env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
@@ -26573,6 +26577,60 @@ module.exports = async ({ req, res, log, error }) => {
         limit: payload.limit,
       });
       return jsonResponse(res, 200, { webcams });
+    }
+
+    if (action === "getMeteoblueForecast") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      if (!METEOBLUE_API_KEY) {
+        throw Object.assign(new Error("METEOBLUE_API_KEY não configurada na function."), { status: 500 });
+      }
+      let lat = Number.isFinite(METEOBLUE_LAT) ? METEOBLUE_LAT : -22.9754;
+      let lon = Number.isFinite(METEOBLUE_LON) ? METEOBLUE_LON : -44.3074;
+      let asl = Number.isFinite(METEOBLUE_ASL) ? METEOBLUE_ASL : 2;
+      let icao = null;
+      try {
+        const settings = await aiswebService.loadSettings({ getSettingDoc });
+        const defaultIcao = cleanString(settings?.defaultIcao || "").toUpperCase();
+        if (defaultIcao.length === 4) {
+          const rotaer = await aiswebService.fetchRotaer(defaultIcao);
+          if (rotaer && Number.isFinite(rotaer.lat) && Number.isFinite(rotaer.lng)) {
+            lat = Number(rotaer.lat);
+            lon = Number(rotaer.lng);
+            icao = defaultIcao;
+            if (Number.isFinite(rotaer.altFt) && rotaer.altFt != null) {
+              asl = Math.round(Number(rotaer.altFt) * 0.3048);
+            }
+          }
+        }
+      } catch (err) {
+        log(`[getMeteoblueForecast] fallback env coords: ${err?.message || err}`);
+      }
+      const url = new URL("https://my.meteoblue.com/packages/basic-1h_basic-day");
+      url.searchParams.set("apikey", METEOBLUE_API_KEY);
+      url.searchParams.set("lat", String(lat));
+      url.searchParams.set("lon", String(lon));
+      url.searchParams.set("asl", String(asl));
+      url.searchParams.set("format", "json");
+      url.searchParams.set("windspeed", "kn");
+      url.searchParams.set("temperature", "C");
+      url.searchParams.set("precipitationamount", "mm");
+      const mbRes = await fetch(url.toString(), { method: "GET" });
+      if (!mbRes.ok) {
+        const body = await mbRes.text().catch(() => "");
+        throw Object.assign(
+          new Error(`Meteoblue HTTP ${mbRes.status}${body ? `: ${body.slice(0, 200)}` : ""}`),
+          { status: 502 },
+        );
+      }
+      const forecast = await mbRes.json();
+      return jsonResponse(res, 200, {
+        forecast,
+        lat,
+        lon,
+        asl,
+        icao,
+        fetchedAt: new Date().toISOString(),
+      });
     }
 
     if (action === "sendAiswebNotamAlertTest") {

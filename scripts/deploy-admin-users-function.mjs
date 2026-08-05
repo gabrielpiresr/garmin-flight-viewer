@@ -287,6 +287,10 @@ async function main() {
     process.env.GOOGLE_CALENDAR_PRIVATE_KEY || env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
   const windyWebcamsApiKey =
     process.env.WINDY_WEBCAMS_API_KEY || env.WINDY_WEBCAMS_API_KEY || env.VITE_WINDY_WEBCAMS_API_KEY || "";
+  const meteoblueApiKey = process.env.METEOBLUE_API_KEY || env.METEOBLUE_API_KEY || "";
+  const meteoblueLat = process.env.METEOBLUE_LAT || env.METEOBLUE_LAT || "-22.9754";
+  const meteoblueLon = process.env.METEOBLUE_LON || env.METEOBLUE_LON || "-44.3074";
+  const meteoblueAsl = process.env.METEOBLUE_ASL || env.METEOBLUE_ASL || "2";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
   const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
@@ -421,6 +425,10 @@ async function main() {
   await upsertVariable(functions, "AISWEB_API_KEY", aiswebApiKey, true);
   await upsertVariable(functions, "AISWEB_API_PASS", aiswebApiPass, true);
   if (windyWebcamsApiKey) await upsertVariable(functions, "WINDY_WEBCAMS_API_KEY", windyWebcamsApiKey, true);
+  if (meteoblueApiKey) await upsertVariable(functions, "METEOBLUE_API_KEY", meteoblueApiKey, true);
+  await upsertVariable(functions, "METEOBLUE_LAT", String(meteoblueLat));
+  await upsertVariable(functions, "METEOBLUE_LON", String(meteoblueLon));
+  await upsertVariable(functions, "METEOBLUE_ASL", String(meteoblueAsl));
 
   const buffer = fs.readFileSync(archivePath);
   const code = InputFile.fromBuffer(buffer, "admin-users-function.tar.gz");

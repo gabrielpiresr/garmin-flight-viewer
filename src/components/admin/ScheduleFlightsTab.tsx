@@ -69,6 +69,25 @@ import {
   sagaEventDaySegments,
   sagaEventOverlapsRange,
 } from "../../lib/sagaEventRange";
+import {
+  getMeteoblueForecast,
+  readShowWeatherPref,
+  writeShowWeatherPref,
+} from "../../lib/meteoblueDb";
+import {
+  daySummaryByDate,
+  hourSlotsByDate,
+} from "../../lib/meteoblueWeather";
+import type { DayWeatherSummary, HourWeatherSlot, MeteoblueForecastBundle } from "../../types/meteoblue";
+import {
+  ScheduleDayWeather,
+  ScheduleDayWeatherIcon,
+  ScheduleHourlyWeatherColumn,
+  ScheduleWeatherColumnHeader,
+  WEATHER_COLUMN_KEY,
+  WEATHER_COLUMN_WIDTH_PX,
+  weatherColumnStyle,
+} from "../ScheduleWeather";
 import { SLOT_HOURS, type SlotState } from "../../types/admin";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, type FlightScheduleRules } from "../../types/schoolRules";
 import type {
@@ -778,6 +797,17 @@ type ScheduleColumn = {
   instructorId?: string | null;
 };
 
+const WEATHER_SCHEDULE_COLUMN: ScheduleColumn = {
+  key: WEATHER_COLUMN_KEY,
+  label: "Clima",
+  colorClass: "border-slate-500",
+  groupBy: "none",
+};
+
+function isWeatherScheduleColumn(column: ScheduleColumn): boolean {
+  return column.key === WEATHER_COLUMN_KEY;
+}
+
 const EMPTY_AIRCRAFT_IDENT_SET: ReadonlySet<string> = new Set();
 
 function flexibleSlotPreviewClass(status: FlexibleFitResult["status"] | null | undefined): string {
@@ -794,6 +824,7 @@ function formatFlexibleShiftLabel(fromMinute: number, toMinute: number): string 
 
 /** Colunas de avião real (type=aviao) ficam visíveis mesmo sem eventos; ground/espera/visita só com eventos. */
 function scheduleColumnAlwaysVisible(column: ScheduleColumn, alwaysVisibleAircraftIdents: ReadonlySet<string>): boolean {
+  if (isWeatherScheduleColumn(column)) return true;
   if (column.groupBy === "none") return true;
   if (column.groupBy !== "aircraft") return false;
   const ident = normalizeAircraftIdent(column.aircraftRegistration ?? column.key);
@@ -870,6 +901,7 @@ function ProjectionRowLabels({ showTheoretical }: { showTheoretical?: boolean })
 }
 
 function scheduleColumnItemMatches(item: CalendarFlightItem, column: ScheduleColumn): boolean {
+  if (isWeatherScheduleColumn(column)) return false;
   if (column.groupBy === "none") return true;
   if (column.groupBy === "aircraft") {
     return (
@@ -935,6 +967,7 @@ function flightEndsAtMinute(
 }
 
 function scheduleColumnTarget(column: ScheduleColumn): Partial<CalendarDropTarget> {
+  if (isWeatherScheduleColumn(column)) return {};
   if (column.groupBy === "aircraft") {
     return { targetAircraftRegistration: column.aircraftRegistration || column.key };
   }
@@ -1213,6 +1246,10 @@ function MonthlyCalendarGrid({
   onReload,
   reloading = false,
   onDayClick,
+  weatherByDate,
+  hourWeatherByDate,
+  weatherLocationLabel,
+  showWeather = false,
 }: {
   monthKey: string;
   summariesByDate: Map<string, MonthAircraftDaySummary[]>;
@@ -1226,6 +1263,10 @@ function MonthlyCalendarGrid({
   onReload?: () => void;
   reloading?: boolean;
   onDayClick?: (dateIso: string) => void;
+  weatherByDate?: Map<string, DayWeatherSummary>;
+  hourWeatherByDate?: Map<string, HourWeatherSlot[]>;
+  weatherLocationLabel?: string | null;
+  showWeather?: boolean;
 }) {
   const cells = useMemo(() => buildMonthGridCells(monthKey), [monthKey]);
 
@@ -1258,6 +1299,7 @@ function MonthlyCalendarGrid({
         {cells.map((cell) => {
           const summaries = summariesByDate.get(cell.date) ?? [];
           const today = isDateToday(new Date(`${cell.date}T12:00:00`));
+          const weather = showWeather ? weatherByDate?.get(cell.date) : undefined;
           return (
             <button
               key={cell.date}
@@ -1271,11 +1313,24 @@ function MonthlyCalendarGrid({
                   : "border-slate-800/40 bg-slate-950/20 opacity-45 hover:opacity-70"
               }`}
             >
-              <span className={`mb-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold ${
-                today ? "bg-sky-300 text-slate-950" : cell.inMonth ? "text-slate-200" : "text-slate-500"
-              }`}>
-                {Number(cell.date.slice(8, 10))}
-              </span>
+              <div className="mb-0.5 flex items-center gap-1">
+                <span className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold ${
+                  today ? "bg-sky-300 text-slate-950" : cell.inMonth ? "text-slate-200" : "text-slate-500"
+                }`}>
+                  {Number(cell.date.slice(8, 10))}
+                </span>
+                {weather ? <ScheduleDayWeatherIcon day={weather} size={28} /> : null}
+              </div>
+              {weather ? (
+                <div className="mb-1 flex justify-center" onClick={(e) => e.stopPropagation()}>
+                  <ScheduleDayWeather
+                    day={weather}
+                    daySlots={hourWeatherByDate?.get(cell.date) ?? []}
+                    locationLabel={weatherLocationLabel}
+                    compact
+                  />
+                </div>
+              ) : null}
               <div className="flex min-h-0 flex-1 flex-col gap-0.5">
                 {summaries.length === 0 ? (
                   <span className="text-[10px] text-slate-600">—</span>
@@ -1356,6 +1411,11 @@ export function CalendarGrid({
   alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
   resolveFlexibleFit,
   previewBufferHours = 0,
+  weatherByDate,
+  hourWeatherByDate,
+  weatherLocationLabel,
+  showWeatherChip = false,
+  showWeatherColumn = false,
 }: {
   items: CalendarFlightItem[];
   days?: readonly number[];
@@ -1414,6 +1474,13 @@ export function CalendarGrid({
   ) => FlexibleFitResult | null;
   /** Briefing+debriefing (h) a subtrair no rótulo do preview — exibe horas de voo. */
   previewBufferHours?: number;
+  weatherByDate?: Map<string, DayWeatherSummary>;
+  hourWeatherByDate?: Map<string, HourWeatherSlot[]>;
+  weatherLocationLabel?: string | null;
+  /** Chip de clima sob o número do dia (mensal/semanal). */
+  showWeatherChip?: boolean;
+  /** Coluna estreita de clima a cada 3h (visão 3 dias). */
+  showWeatherColumn?: boolean;
 }) {
   void showGeneratorLegend;
   const calendarDays = days;
@@ -1441,27 +1508,33 @@ export function CalendarGrid({
   // Aviões reais (type=aviao) sempre aparecem; ground/espera/visita só no dia em que há eventos.
   const alwaysVisibleIdents = alwaysVisibleAircraftIdents;
   const gridColumns = useMemo<Array<{ day: number; column: ScheduleColumn }>>(() => {
-    if (baseColumns.length > 0) {
-      return calendarDays.flatMap((day) =>
-        baseColumns
-          .filter(
-            (column) =>
-              scheduleColumnAlwaysVisible(column, alwaysVisibleIdents) ||
-              items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)),
-          )
-          .map((column) => ({ day, column })),
-      );
-    }
-    return calendarDays.map((day) => ({
-      day,
-      column: {
-        key: `__empty-${day}`,
-        label: "—",
-        colorClass: AIRCRAFT_COLOR_CLASSES[0]!,
-        groupBy: "none",
-      },
-    }));
-  }, [alwaysVisibleIdents, baseColumns, calendarDays, items]);
+    const buildDayAircraft = (day: number): ScheduleColumn[] => {
+      if (baseColumns.length > 0) {
+        return baseColumns.filter(
+          (column) =>
+            scheduleColumnAlwaysVisible(column, alwaysVisibleIdents) ||
+            items.some((item) => item.dayOfWeek === day && scheduleColumnItemMatches(item, column)),
+        );
+      }
+      return [
+        {
+          key: `__empty-${day}`,
+          label: "—",
+          colorClass: AIRCRAFT_COLOR_CLASSES[0]!,
+          groupBy: "none",
+        },
+      ];
+    };
+    return calendarDays.flatMap((day) => {
+      const dateIso = formatLocalDateISO(dayOfWeekToDate(weekStart, day));
+      const aircraftColsForDay = buildDayAircraft(day);
+      const withWeather =
+        showWeatherColumn && weatherByDate?.has(dateIso)
+          ? [WEATHER_SCHEDULE_COLUMN, ...aircraftColsForDay]
+          : aircraftColsForDay;
+      return withWeather.map((column) => ({ day, column }));
+    });
+  }, [alwaysVisibleIdents, baseColumns, calendarDays, items, showWeatherColumn, weatherByDate, weekStart]);
   const columnsByDay = useMemo(() => {
     const map = new Map<number, ScheduleColumn[]>();
     for (const day of calendarDays) {
@@ -1781,8 +1854,29 @@ export function CalendarGrid({
       <div className="w-full overflow-x-auto">
         <table
           className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
-          style={isMobile ? { minWidth: `${gridColumns.length * MOBILE_MIN_COLUMN_PX + MOBILE_HOURS_GUTTER_PX}px` } : undefined}
+          style={
+            isMobile
+              ? {
+                  minWidth: `${
+                    gridColumns.reduce(
+                      (sum, entry) =>
+                        sum + (isWeatherScheduleColumn(entry.column) ? WEATHER_COLUMN_WIDTH_PX : MOBILE_MIN_COLUMN_PX),
+                      MOBILE_HOURS_GUTTER_PX,
+                    )
+                  }px`,
+                }
+              : undefined
+          }
         >
+          <colgroup>
+            <col className="w-8 sm:w-12" />
+            {gridColumns.map(({ day, column }) => (
+              <col
+                key={`col-${day}-${column.key}`}
+                style={isWeatherScheduleColumn(column) ? weatherColumnStyle : undefined}
+              />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               <th className="w-8 pb-1 text-right text-[10px] font-medium text-slate-600 sm:w-12" />
@@ -1793,6 +1887,8 @@ export function CalendarGrid({
                 const today = isDateToday(date);
                 const past = isDayPast(day);
                 const clickable = Boolean(onDayHeaderClick);
+                const dateIso = formatLocalDateISO(date);
+                const weather = showWeatherChip && !showWeatherColumn ? weatherByDate?.get(dateIso) : undefined;
                 return (
                   <th
                     key={day}
@@ -1802,9 +1898,26 @@ export function CalendarGrid({
                     className={`rounded-t-md border-l-2 border-sky-500/30 bg-slate-800/25 pb-1 text-center text-[10px] font-semibold text-slate-400 sm:text-xs ${past ? "opacity-40" : ""} ${clickable ? "cursor-pointer transition-colors hover:bg-sky-500/15 hover:text-sky-200" : ""}`}
                   >
                     <span className="block uppercase">{DAY_LABEL[day]}</span>
-                    <span className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
-                      {date.getDate()}
-                    </span>
+                    <div className="mt-0.5 flex items-center justify-center gap-1">
+                      <span className={`flex h-6 w-6 items-center justify-center rounded-full ${today ? "bg-sky-300 text-slate-950" : "text-slate-300"}`}>
+                        {date.getDate()}
+                      </span>
+                      {weather ? (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <ScheduleDayWeatherIcon day={weather} size={28} />
+                        </span>
+                      ) : null}
+                    </div>
+                    {weather ? (
+                      <div className="mt-1 flex justify-center" onClick={(e) => e.stopPropagation()}>
+                        <ScheduleDayWeather
+                          day={weather}
+                          daySlots={hourWeatherByDate?.get(dateIso) ?? []}
+                          locationLabel={weatherLocationLabel}
+                          compact
+                        />
+                      </div>
+                    ) : null}
                   </th>
                 );
               })}
@@ -1817,29 +1930,42 @@ export function CalendarGrid({
               </th>
               {gridColumns.map(({ day, column }) => {
                 const key = `${day}|${column.key}`;
+                const isWeather = isWeatherScheduleColumn(column);
                 const totals = cellTotals.get(key) ?? { flights: 0, hours: 0 };
-                const projectionCell = groupBy === "aircraft" ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day] : undefined;
+                const projectionCell = groupBy === "aircraft" && !isWeather
+                  ? projectionRows?.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]
+                  : undefined;
                 const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
-                const showProjection = groupBy === "aircraft" && Boolean(projectionRows || theoreticalProjectionRows);
+                const showProjection = groupBy === "aircraft" && !isWeather && Boolean(projectionRows || theoreticalProjectionRows);
                 return (
-                <th key={`${day}-${column.key}`} className={`align-top bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}>
-                  <div className="flex h-[18px] items-center justify-center gap-1">
-                    <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
-                    <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
-                  </div>
-                  <p className="h-[14px] truncate text-[10px] font-normal leading-[14px] text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
-                  {showProjection ? (
-                    projectionLoading ? (
-                      <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
-                    ) : (
-                      <AircraftProjectionCell cell={projectionCell} />
-                    )
-                  ) : null}
-                  {groupBy === "aircraft" && theoreticalProjectionRows ? (
-                    <TheoreticalProjectionCellView
-                      cell={theoreticalProjectionRows.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]}
-                    />
-                  ) : null}
+                <th
+                  key={`${day}-${column.key}`}
+                  className={`align-top bg-slate-800/10 pb-1 text-center ${isFirstDayColumn ? "border-l-2 border-sky-500/30" : ""} ${isDayPast(day) ? "opacity-40" : ""}`}
+                  style={isWeather ? weatherColumnStyle : undefined}
+                >
+                  {isWeather ? (
+                    <ScheduleWeatherColumnHeader />
+                  ) : (
+                    <>
+                      <div className="flex h-[18px] items-center justify-center gap-1">
+                        <span className={`h-2.5 w-2.5 shrink-0 rounded border ${groupBy === "instructor" ? `${column.colorClass} border-2 bg-slate-800` : aircraftCardColor(column.colorClass)}`} />
+                        <span className="truncate text-[10px] font-semibold text-slate-300 sm:text-[11px]">{column.label}</span>
+                      </div>
+                      <p className="h-[14px] truncate text-[10px] font-normal leading-[14px] text-slate-500">{totals.flights} voo{totals.flights === 1 ? "" : "s"} · {totals.hours.toFixed(1)}h</p>
+                      {showProjection ? (
+                        projectionLoading ? (
+                          <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
+                        ) : (
+                          <AircraftProjectionCell cell={projectionCell} />
+                        )
+                      ) : null}
+                      {groupBy === "aircraft" && theoreticalProjectionRows ? (
+                        <TheoreticalProjectionCellView
+                          cell={theoreticalProjectionRows.find((row) => row.registration === column.aircraftRegistration)?.hoursByDay[day]}
+                        />
+                      ) : null}
+                    </>
+                  )}
                 </th>
                 );
               })}
@@ -1860,6 +1986,28 @@ export function CalendarGrid({
                 const cellKey = `${day}|${column.key}`;
                 const isFirstDayColumn = (columnsByDay.get(day)?.[0]?.key ?? "") === column.key;
                 const cellPast = isDayPast(day);
+                const isWeather = isWeatherScheduleColumn(column);
+                if (isWeather) {
+                  const dateIso = formatLocalDateISO(dayOfWeekToDate(weekStart, day));
+                  const slots = hourWeatherByDate?.get(dateIso) ?? [];
+                  return (
+                    <td
+                      key={cellKey}
+                      className={`align-top p-0 ${isFirstDayColumn ? "border-l-2 border-sky-500/30 pl-0.5" : ""}`}
+                      style={weatherColumnStyle}
+                    >
+                      <ScheduleHourlyWeatherColumn
+                        slots={slots}
+                        daySlots={hourWeatherByDate?.get(dateIso) ?? slots}
+                        locationLabel={weatherLocationLabel}
+                        calendarStartHour={CALENDAR_START_HOUR}
+                        calendarEndHour={calendarEndHour}
+                        rowHeight={rowHeight}
+                        boardHeight={boardHeight}
+                      />
+                    </td>
+                  );
+                }
                 return (
                 <td key={cellKey} className={`align-top p-0 ${isFirstDayColumn ? "border-l-2 border-sky-500/30 pl-0.5" : ""}`}>
                   <div
@@ -2223,6 +2371,10 @@ function DailyCalendarGrid({
   alwaysVisibleAircraftIdents = EMPTY_AIRCRAFT_IDENT_SET,
   resolveFlexibleFit,
   previewBufferHours = 0,
+  weatherByDate,
+  hourWeatherByDate,
+  weatherLocationLabel,
+  showWeatherColumn = false,
 }: {
   items: CalendarFlightItem[];
   selectedDay: number;
@@ -2261,6 +2413,10 @@ function DailyCalendarGrid({
     options?: { cellItems?: CalendarFlightItem[]; excludeFlightId?: string },
   ) => FlexibleFitResult | null;
   previewBufferHours?: number;
+  weatherByDate?: Map<string, DayWeatherSummary>;
+  hourWeatherByDate?: Map<string, HourWeatherSlot[]>;
+  weatherLocationLabel?: string | null;
+  showWeatherColumn?: boolean;
 }) {
   const rowHeight = useCalendarRowHeight(64, 38);
   const isMobile = useIsMobileViewport();
@@ -2278,7 +2434,7 @@ function DailyCalendarGrid({
 
   // Aviões reais sempre; ground/espera/visita só com eventos no dia.
   const columns = useMemo<DailyCol[]>(() => {
-    return inputColumns
+    const aircraftCols = inputColumns
       .map((column) => ({
         key: column.key,
         label: column.label,
@@ -2289,7 +2445,21 @@ function DailyCalendarGrid({
       .filter(
         (col) => scheduleColumnAlwaysVisible(col.column, alwaysVisibleAircraftIdents) || col.items.length > 0,
       );
-  }, [alwaysVisibleAircraftIdents, dayItems, inputColumns]);
+    const dateIso = formatLocalDateISO(dayOfWeekToDate(weekStart, selectedDay));
+    if (showWeatherColumn && weatherByDate?.has(dateIso)) {
+      return [
+        {
+          key: WEATHER_COLUMN_KEY,
+          label: "Clima",
+          colorClass: WEATHER_SCHEDULE_COLUMN.colorClass,
+          column: WEATHER_SCHEDULE_COLUMN,
+          items: [] as CalendarFlightItem[],
+        },
+        ...aircraftCols,
+      ];
+    }
+    return aircraftCols;
+  }, [alwaysVisibleAircraftIdents, dayItems, inputColumns, selectedDay, showWeatherColumn, weatherByDate, weekStart]);
 
   const layoutByCol = useMemo(() => {
     const out = new Map<string, Array<{ item: CalendarFlightItem; columnIndex: number; columnCount: number }>>();
@@ -2609,8 +2779,29 @@ function DailyCalendarGrid({
         <div className="w-full overflow-x-auto">
           <table
             className="w-full table-fixed border-separate border-spacing-0.5 sm:border-spacing-1"
-            style={isMobile ? { minWidth: `${columns.length * MOBILE_MIN_COLUMN_PX + MOBILE_HOURS_GUTTER_PX}px` } : undefined}
+            style={
+              isMobile
+                ? {
+                    minWidth: `${
+                      columns.reduce(
+                        (sum, col) =>
+                          sum + (isWeatherScheduleColumn(col.column) ? WEATHER_COLUMN_WIDTH_PX : MOBILE_MIN_COLUMN_PX),
+                        MOBILE_HOURS_GUTTER_PX,
+                      )
+                    }px`,
+                  }
+                : undefined
+            }
           >
+            <colgroup>
+              <col className="w-10 sm:w-14" />
+              {columns.map((col) => (
+                <col
+                  key={`col-${col.key}`}
+                  style={isWeatherScheduleColumn(col.column) ? weatherColumnStyle : undefined}
+                />
+              ))}
+            </colgroup>
             <thead>
               <tr>
                 <th className="w-10 pb-2 align-top text-right sm:w-14">
@@ -2618,27 +2809,40 @@ function DailyCalendarGrid({
                     <ProjectionRowLabels showTheoretical={Boolean(theoreticalProjectionRows)} />
                   ) : null}
                 </th>
-                {columns.map((col) => (
-                  <th key={col.key} className="align-top pb-2 text-center">
-                    <div className="flex h-[18px] items-center justify-center gap-1.5">
-                      <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${groupBy === "instructor" ? `${col.colorClass} border-2 bg-slate-800` : aircraftCardColor(col.colorClass)}`} />
-                      <span className="text-xs font-semibold text-slate-300">{col.label}</span>
-                    </div>
-                    <p className="h-[14px] text-[10px] leading-[14px] text-slate-500">
-                      {col.items.length} voo{col.items.length !== 1 ? "s" : ""} · {col.items.reduce((s, i) => s + (i.flightHours ?? i.durationHours), 0).toFixed(1)}h
-                    </p>
-                    {groupBy === "aircraft" && projectionLoading ? (
-                      <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
-                    ) : groupBy === "aircraft" ? (
-                      <AircraftProjectionCell cell={projectionRows?.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]} />
-                    ) : null}
-                    {groupBy === "aircraft" && theoreticalProjectionRows ? (
-                      <TheoreticalProjectionCellView
-                        cell={theoreticalProjectionRows.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]}
-                      />
-                    ) : null}
+                {columns.map((col) => {
+                  const isWeather = isWeatherScheduleColumn(col.column);
+                  return (
+                  <th
+                    key={col.key}
+                    className="align-top pb-2 text-center"
+                    style={isWeather ? weatherColumnStyle : undefined}
+                  >
+                    {isWeather ? (
+                      <ScheduleWeatherColumnHeader />
+                    ) : (
+                      <>
+                        <div className="flex h-[18px] items-center justify-center gap-1.5">
+                          <span className={`h-2.5 w-2.5 flex-shrink-0 rounded border ${groupBy === "instructor" ? `${col.colorClass} border-2 bg-slate-800` : aircraftCardColor(col.colorClass)}`} />
+                          <span className="text-xs font-semibold text-slate-300">{col.label}</span>
+                        </div>
+                        <p className="h-[14px] text-[10px] leading-[14px] text-slate-500">
+                          {col.items.length} voo{col.items.length !== 1 ? "s" : ""} · {col.items.reduce((s, i) => s + (i.flightHours ?? i.durationHours), 0).toFixed(1)}h
+                        </p>
+                        {groupBy === "aircraft" && projectionLoading ? (
+                          <Skeleton className="mx-auto mt-1 h-[22px] w-14 rounded" />
+                        ) : groupBy === "aircraft" ? (
+                          <AircraftProjectionCell cell={projectionRows?.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]} />
+                        ) : null}
+                        {groupBy === "aircraft" && theoreticalProjectionRows ? (
+                          <TheoreticalProjectionCellView
+                            cell={theoreticalProjectionRows.find((row) => row.registration === col.key)?.hoursByDay[selectedDay]}
+                          />
+                        ) : null}
+                      </>
+                    )}
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -2655,6 +2859,27 @@ function DailyCalendarGrid({
                 </td>
                 {columns.map((col) => {
                   const entries = (layoutByCol.get(col.key) ?? []);
+                  if (isWeatherScheduleColumn(col.column)) {
+                    const dateIso = formatLocalDateISO(dayOfWeekToDate(weekStart, selectedDay));
+                    const slots = hourWeatherByDate?.get(dateIso) ?? [];
+                    return (
+                      <td
+                        key={col.key}
+                        className="align-top p-0"
+                        style={weatherColumnStyle}
+                      >
+                        <ScheduleHourlyWeatherColumn
+                          slots={slots}
+                          daySlots={slots}
+                          locationLabel={weatherLocationLabel}
+                          calendarStartHour={CALENDAR_START_HOUR}
+                          calendarEndHour={calendarEndHour}
+                          rowHeight={rowHeight}
+                          boardHeight={boardHeight}
+                        />
+                      </td>
+                    );
+                  }
                   return (
                     <td key={col.key} className="align-top p-0">
                       <div
@@ -3380,6 +3605,8 @@ export function ScheduleFlightsTab({
   const [secondaryFiltersOpen, setSecondaryFiltersOpen] = useState(false);
   const [colorScheme, setColorScheme] = useState<"aircraft" | "status">("status");
   const [invertedTimeline, setInvertedTimeline] = useState(false);
+  const [showWeather, setShowWeather] = useState(() => readShowWeatherPref(true));
+  const [weatherBundle, setWeatherBundle] = useState<MeteoblueForecastBundle | null>(null);
   const [agendaBlockSize, setAgendaBlockSize] = useState<AgendaBlockSize>("off");
   const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(true);
   const [pendingFlexibleShifts, setPendingFlexibleShifts] = useState<FlexibleFitShift[]>([]);
@@ -3457,6 +3684,32 @@ export function ScheduleFlightsTab({
     lastErrorToastRef.current = error;
     showToast({ variant: "error", message: error });
   }, [error, showToast]);
+
+  useEffect(() => {
+    if (!showWeather || !actorUserId) {
+      if (!showWeather) setWeatherBundle(null);
+      return;
+    }
+    let cancelled = false;
+    void getMeteoblueForecast()
+      .then((bundle) => {
+        if (!cancelled) setWeatherBundle(bundle);
+      })
+      .catch(() => {
+        if (!cancelled) setWeatherBundle(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showWeather, actorUserId]);
+
+  const weatherByDate = useMemo(() => daySummaryByDate(weatherBundle), [weatherBundle]);
+  const hourWeatherByDate = useMemo(() => hourSlotsByDate(weatherBundle), [weatherBundle]);
+  const weatherLocationLabel = useMemo(() => {
+    if (!weatherBundle) return null;
+    const coords = `${weatherBundle.lat.toFixed(4)}, ${weatherBundle.lon.toFixed(4)}`;
+    return weatherBundle.icao ? `${weatherBundle.icao} · ${coords}` : coords;
+  }, [weatherBundle]);
 
   const runSagaScheduleSync = useCallback(
     async (
@@ -6375,6 +6628,25 @@ export function ScheduleFlightsTab({
                       />
                     </label>
                   </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Previsão do tempo</span>
+                    <label className={`inline-flex h-8 cursor-pointer items-center justify-center rounded-lg border px-3 ${
+                      showWeather
+                        ? "border-sky-500/40 bg-sky-600/20 text-sky-300"
+                        : "border-slate-700 bg-slate-900/50 text-slate-300"
+                    }`}>
+                      <input
+                        type="checkbox"
+                        checked={showWeather}
+                        onChange={(event) => {
+                          const next = event.target.checked;
+                          setShowWeather(next);
+                          writeShowWeatherPref(next);
+                        }}
+                        className="h-3.5 w-3.5 accent-sky-500"
+                      />
+                    </label>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -6390,6 +6662,10 @@ export function ScheduleFlightsTab({
                 loading={monthLoading}
                 hasPrevMonth
                 hasNextMonth
+                weatherByDate={weatherByDate}
+                hourWeatherByDate={hourWeatherByDate}
+                weatherLocationLabel={weatherLocationLabel}
+                showWeather={showWeather}
                 onPrevMonth={() => {
                   slideBoard("back");
                   setSelectedMonthKey((current) => shiftMonthKey(current, -1));
@@ -6470,6 +6746,11 @@ export function ScheduleFlightsTab({
                 clubMemberByStudentId={clubMemberByStudentId}
                 weekStart={weekData.week.weekStart}
                 nightStartHour={scheduleRules.nightFlightStartHour}
+                weatherByDate={weatherByDate}
+                hourWeatherByDate={hourWeatherByDate}
+                weatherLocationLabel={weatherLocationLabel}
+                showWeatherChip={showWeather && agendaView === "weekly"}
+                showWeatherColumn={showWeather && agendaView === "three-day"}
                 slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
                 previewBufferHours={
                   !readOnlyDisplay && scheduleRules.sagaOnlySchedule ? scheduleBuffersHours(scheduleRules) : 0
@@ -6524,6 +6805,10 @@ export function ScheduleFlightsTab({
                   aircraftColumns={calendarAircraftColumns}
                   instructorColumns={calendarInstructorColumns}
                   nightStartHour={scheduleRules.nightFlightStartHour}
+                  weatherByDate={weatherByDate}
+                  hourWeatherByDate={hourWeatherByDate}
+                  weatherLocationLabel={weatherLocationLabel}
+                  showWeatherColumn={showWeather}
                   slotPreviewDurationHours={readOnlyDisplay ? null : agendaBlockPreviewDurationHours(agendaBlockSize, scheduleRules)}
                   previewBufferHours={
                     !readOnlyDisplay && scheduleRules.sagaOnlySchedule ? scheduleBuffersHours(scheduleRules) : 0
