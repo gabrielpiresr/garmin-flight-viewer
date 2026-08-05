@@ -63,6 +63,11 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
       comment: { ...settings.flightEvaluation.comment },
       disclaimer: settings.flightEvaluation.disclaimer,
     },
+    soloFlight: {
+      ...settings.soloFlight,
+      automaticCriteria: { ...settings.soloFlight.automaticCriteria },
+      manualCriteria: settings.soloFlight.manualCriteria.map((item) => ({ ...item })),
+    },
     emailNotifications: Object.fromEntries(
       EMAIL_NOTIFICATION_EVENT_OPTIONS.map((item) => [item.id, { ...settings.emailNotifications[item.id] }]),
     ) as SchoolRulesInput["emailNotifications"],
