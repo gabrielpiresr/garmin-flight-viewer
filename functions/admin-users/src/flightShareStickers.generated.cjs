@@ -1536,22 +1536,15 @@ function baseDefs(data) {
     </defs>
   `;
 }
-function svgShell(data, body) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${STICKER_WIDTH}" height="${STICKER_HEIGHT}" viewBox="0 0 ${STICKER_WIDTH} ${STICKER_HEIGHT}">
+function svgShell(data, body, width = STICKER_WIDTH, height = STICKER_HEIGHT) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     ${baseDefs(data)}
     ${body}
   </svg>`;
 }
-function brandMark(data, x, y, width = 360) {
-  const href = logoHref(data);
-  if (href) {
-    return `
-      <g>
-        <image href="${escapeXml(href)}" x="${x}" y="${y}" width="${width}" height="116" preserveAspectRatio="xMinYMid meet" />
-      </g>
-    `;
-  }
-  return "";
+function fullBleedBg(showBackground, width, height, color = "#020617") {
+  if (!showBackground) return "";
+  return `<rect x="0" y="0" width="${width}" height="${height}" fill="${color}" />`;
 }
 function smallBrand(data, x, y) {
   const href = logoHref(data);
@@ -1560,20 +1553,12 @@ function smallBrand(data, x, y) {
   }
   return "";
 }
-function outerCard(showBackground, x, y, width, height, opacity = 0.43) {
-  if (!showBackground) return "";
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="41.6" fill="#020617" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.14" />`;
-}
-function innerCard(showBackground, x, y, width, height, radius = 31.2, opacity = 0.74) {
-  if (!showBackground) return "";
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="#0f172a" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.12" />`;
-}
-function metricBlock(label, value, x, y, width = 395) {
+function metricBlock(label, value, x, y, width = 395, height = 120) {
   return `
     <g>
-      <rect x="${x}" y="${y}" width="${width}" height="160" rx="22.1" fill="#0f172a" fill-opacity="0.76" stroke="#ffffff" stroke-opacity="0.12" />
-      ${fitText(label, x + 34, y + 58, { color: "#94a3b8", fontSize: 28, fontWeight: 700, maxWidth: width - 68, letterSpacing: 1.2 })}
-      ${fitText(value, x + 34, y + 116, { fontSize: 44, fontWeight: 900, maxWidth: width - 68 })}
+      <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="18.2" fill="#0f172a" fill-opacity="0.76" stroke="#ffffff" stroke-opacity="0.12" />
+      ${fitText(label, x + 28, y + 42, { color: "#94a3b8", fontSize: 24, fontWeight: 700, maxWidth: width - 56, letterSpacing: 1 })}
+      ${fitText(value, x + 28, y + 86, { fontSize: 36, fontWeight: 900, maxWidth: width - 56 })}
     </g>
   `;
 }
@@ -1614,7 +1599,7 @@ function projectOsm(lat, lon, zoom) {
   };
 }
 function chooseOsmZoom(points, targetWidth, targetHeight) {
-  for (let zoom = 16; zoom >= 3; zoom--) {
+  for (let zoom = 18; zoom >= 3; zoom--) {
     const projected = points.map((point) => projectOsm(point.lat, point.lon, zoom));
     const width = Math.max(...projected.map((point) => point.x)) - Math.min(...projected.map((point) => point.x));
     const height = Math.max(...projected.map((point) => point.y)) - Math.min(...projected.map((point) => point.y));
@@ -1647,9 +1632,9 @@ async function imageUrlToDataUrl(url) {
 }
 async function buildRouteMap(points) {
   if (points.length < 2) return null;
-  const width = 848;
-  const height = 842;
-  const padding = 56;
+  const width = 1080;
+  const height = 720;
+  const padding = 40;
   const sampled = samplePoints(points, 900);
   const zoom = chooseOsmZoom(sampled, width - padding * 2, height - padding * 2);
   const projected = sampled.map((point) => projectOsm(point.lat, point.lon, zoom));
@@ -1657,15 +1642,22 @@ async function buildRouteMap(points) {
   const maxX = Math.max(...projected.map((point) => point.x));
   const minY = Math.min(...projected.map((point) => point.y));
   const maxY = Math.max(...projected.map((point) => point.y));
+  const routeW = Math.max(maxX - minX, 1);
+  const routeH = Math.max(maxY - minY, 1);
+  const scale = Math.min(
+    (width - padding * 2) / routeW,
+    (height - padding * 2) / routeH
+  );
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
-  const left = centerX - width / 2;
-  const top = centerY - height / 2;
+  const leftWorld = centerX - width / (2 * scale);
+  const topWorld = centerY - height / (2 * scale);
+  const tileSize = 256 * scale;
   const maxTile = 2 ** zoom;
-  const tileMinX = Math.floor(left / 256);
-  const tileMaxX = Math.floor((left + width) / 256);
-  const tileMinY = Math.max(0, Math.floor(top / 256));
-  const tileMaxY = Math.min(maxTile - 1, Math.floor((top + height) / 256));
+  const tileMinX = Math.floor(leftWorld / 256);
+  const tileMaxX = Math.floor((leftWorld + width / scale) / 256);
+  const tileMinY = Math.max(0, Math.floor(topWorld / 256));
+  const tileMaxY = Math.min(maxTile - 1, Math.floor((topWorld + height / scale) / 256));
   const tiles = [];
   for (let tileX = tileMinX; tileX <= tileMaxX; tileX++) {
     for (let tileY = tileMinY; tileY <= tileMaxY; tileY++) {
@@ -1676,23 +1668,90 @@ async function buildRouteMap(points) {
       if (!href) continue;
       tiles.push({
         href,
-        x: tileX * 256 - left,
-        y: tileY * 256 - top
+        x: tileX * 256 * scale - leftWorld * scale,
+        y: tileY * 256 * scale - topWorld * scale
       });
     }
   }
   return {
     width,
     height,
+    tileSize,
     tiles,
-    routePoints: projected.map((point) => ({ x: point.x - left, y: point.y - top }))
+    routePoints: projected.map((point) => ({
+      x: (point.x - leftWorld) * scale,
+      y: (point.y - topWorld) * scale
+    }))
   };
+}
+function routePointsInBox(data, box) {
+  const map = data.routeMap;
+  if (map && map.routePoints.length >= 2) {
+    const scaleX = box.w / map.width;
+    const scaleY = box.h / map.height;
+    return map.routePoints.map((point) => ({
+      x: box.x + point.x * scaleX,
+      y: box.y + point.y * scaleY
+    }));
+  }
+  if (data.points.length < 2) return [];
+  const sampled = samplePoints(data.points, 320);
+  const lats = sampled.map((point) => point.lat);
+  const lons = sampled.map((point) => point.lon);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const latSpan = maxLat - minLat || 1e-4;
+  const lonSpan = maxLon - minLon || 1e-4;
+  return sampled.map((point) => ({
+    x: box.x + (point.lon - minLon) / lonSpan * box.w,
+    y: box.y + box.h - (point.lat - minLat) / latSpan * box.h
+  }));
 }
 function routePathFromMap(map, box) {
   if (!map || map.routePoints.length < 2) return "";
   const scaleX = box.w / map.width;
   const scaleY = box.h / map.height;
   return map.routePoints.map((point, index) => `${index === 0 ? "M" : "L"} ${(box.x + point.x * scaleX).toFixed(1)} ${(box.y + point.y * scaleY).toFixed(1)}`).join(" ");
+}
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+function routeProgressColor(t) {
+  const clamped = Math.max(0, Math.min(1, t));
+  const stops = [
+    { t: 0, r: 34, g: 197, b: 94 },
+    { t: 0.5, r: 59, g: 130, b: 246 },
+    { t: 1, r: 239, g: 68, b: 68 }
+  ];
+  const endIndex = stops.findIndex((stop) => stop.t >= clamped);
+  const next = stops[endIndex < 0 ? stops.length - 1 : endIndex];
+  const prev = stops[Math.max(0, (endIndex < 0 ? stops.length - 1 : endIndex) - 1)];
+  const span = next.t - prev.t || 1;
+  const local = (clamped - prev.t) / span;
+  const r = Math.round(lerp(prev.r, next.r, local));
+  const g = Math.round(lerp(prev.g, next.g, local));
+  const b = Math.round(lerp(prev.b, next.b, local));
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+function routeGradientStroke(data, box, strokeWidth = 14) {
+  const points = routePointsInBox(data, box);
+  if (points.length < 2) return "";
+  const maxSegments = 120;
+  const step = Math.max(1, Math.ceil((points.length - 1) / maxSegments));
+  const parts = [];
+  for (let i = 0; i < points.length - 1; i += step) {
+    const nextIndex = Math.min(points.length - 1, i + step);
+    const a = points[i];
+    const b = points[nextIndex];
+    const t = i / (points.length - 1);
+    const color = routeProgressColor(t);
+    parts.push(
+      `<path d="M ${a.x.toFixed(1)} ${a.y.toFixed(1)} L ${b.x.toFixed(1)} ${b.y.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`
+    );
+  }
+  return parts.join("\n");
 }
 function routeAirportCodes(data) {
   const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
@@ -1751,31 +1810,36 @@ function routeEndpointMarkers(data, box) {
     `;
   }).join("");
 }
-function routeMapLayer(data, box, includeTiles) {
+function routeMapLayer(data, box, includeTiles, options = {}) {
+  const showEndpoints = options.showEndpoints ?? true;
+  const showFrame = options.showFrame ?? true;
+  const radius = options.radius ?? 33.8;
   const map = data.routeMap;
   const route = routePathFromMap(map, box) || routePath(data.points, box);
+  const track = routeGradientStroke(data, box, 14);
   const clipId = `gfvMapClip${Math.round(box.x)}${Math.round(box.y)}${Math.round(box.w)}${Math.round(box.h)}`;
   const tiles = includeTiles && map?.tiles.length ? map.tiles.map((tile) => {
     const scaleX = box.w / map.width;
     const scaleY = box.h / map.height;
-    return `<image href="${escapeXml(tile.href)}" x="${(box.x + tile.x * scaleX).toFixed(1)}" y="${(box.y + tile.y * scaleY).toFixed(1)}" width="${(256 * scaleX).toFixed(1)}" height="${(256 * scaleY).toFixed(1)}" preserveAspectRatio="none" />`;
+    const tileSize = map.tileSize ?? 256;
+    return `<image href="${escapeXml(tile.href)}" x="${(box.x + tile.x * scaleX).toFixed(1)}" y="${(box.y + tile.y * scaleY).toFixed(1)}" width="${(tileSize * scaleX).toFixed(1)}" height="${(tileSize * scaleY).toFixed(1)}" preserveAspectRatio="none" />`;
   }).join("") : "";
+  const clipRect = radius > 0 ? `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${radius}" />` : `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" />`;
   return `
     <defs>
       <clipPath id="${clipId}">
-        <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" />
+        ${clipRect}
       </clipPath>
     </defs>
     <g clip-path="url(#${clipId})">
-      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" fill="${includeTiles ? "#e5e7eb" : "#0f172a"}" fill-opacity="${includeTiles ? "0.96" : "0.32"}" />
+      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" ${radius > 0 ? `rx="${radius}"` : ""} fill="${includeTiles ? "#e5e7eb" : "#0f172a"}" fill-opacity="${includeTiles ? "0.96" : "0.32"}" />
       ${tiles}
       ${!includeTiles || !tiles ? Array.from({ length: 8 }, (_, index) => `<line x1="${box.x + index * (box.w / 7)}" y1="${box.y}" x2="${box.x + index * (box.w / 7)}" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
       ${!includeTiles || !tiles ? Array.from({ length: 7 }, (_, index) => `<line x1="${box.x}" y1="${box.y + index * (box.h / 6)}" x2="${box.x + box.w}" y2="${box.y + index * (box.h / 6)}" stroke="#ffffff" stroke-opacity="0.12" />`).join("") : ""}
-      <path d="${route}" fill="none" stroke="#ffffff" stroke-opacity="0.86" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
-      <path d="${route}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
-      ${route ? routeEndpointMarkers(data, box) : ""}
+      ${track || (route ? `<path d="${route}" fill="none" stroke="#3b82f6" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />` : "")}
+      ${route && showEndpoints ? routeEndpointMarkers(data, box) : ""}
       ${route ? "" : `<text x="${box.x + box.w / 2}" y="${box.y + box.h / 2}" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Rota indispon\xEDvel</text>`}
-      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="33.8" fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2" />
+      ${showFrame ? `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" ${radius > 0 ? `rx="${radius}"` : ""} fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2" />` : ""}
     </g>
   `;
 }
@@ -1832,38 +1896,98 @@ function summarySticker(data, options = {}) {
   const distance = formatDistanceNmKm(data.summary.distanceM, data.displayInfo.totalMiles);
   const altMax = formatMetricAlt(data.summary, data.chartData);
   const speedMax = formatMetricSpeed(data.summary, data.chartData);
+  const width = 1080;
+  const height = 560;
+  const pad = 48;
   const body = `
-    <g filter="url(#gfvShadow)">
-      ${outerCard(showBackground, 86, 360, 908, 980, 0.48)}
-      ${innerCard(showBackground, 128, 402, 824, 896, 33.8, 0.72)}
-      ${brandMark(data, 176, 468, 380)}
-      ${fitText(title, 176, 648, { fontSize: 58, fontWeight: 900, maxWidth: 728 })}
-      <rect x="176" y="724" width="728" height="4" rx="1.3" fill="url(#gfvAccent)" />
-      ${metricBlock("Tempo", data.durationDisplay, 176, 806)}
-      ${metricBlock("Dist\xE2ncia", distance, 508, 806)}
-      ${metricBlock("Alt. m\xE1xima", altMax, 176, 1014)}
-      ${metricBlock("Vel. m\xE1xima", speedMax, 508, 1014)}
+    <g>
+      ${fullBleedBg(showBackground, width, height)}
+      ${fitText(title, pad, 88, { fontSize: 44, fontWeight: 900, maxWidth: 680 })}
+      ${smallBrand(data, width - 300, 36)}
+      <rect x="${pad}" y="118" width="${width - pad * 2}" height="3" rx="1.3" fill="url(#gfvAccent)" />
+      ${metricBlock("Tempo", data.durationDisplay, pad, 160, 460, 130)}
+      ${metricBlock("Dist\xE2ncia", distance, pad + 492, 160, 460, 130)}
+      ${metricBlock("Alt. m\xE1xima", altMax, pad, 320, 460, 130)}
+      ${metricBlock("Vel. m\xE1xima", speedMax, pad + 492, 320, 460, 130)}
     </g>
   `;
-  return createSticker("summary", "Resumo do voo", "M\xE9tricas principais do voo.", data, body);
+  return createSticker("summary", "Resumo do voo", "M\xE9tricas principais do voo.", data, body, width, height);
 }
 function routeSticker(data, options = {}) {
   const showBackground = options.showBackground ?? true;
-  const box = { x: 116, y: 390, w: 848, h: 590 };
+  const width = 1080;
+  const height = 780;
+  const pad = 40;
+  const box = { x: pad, y: 120, w: width - pad * 2, h: 480 };
   const body = `
-    <g filter="url(#gfvShadow)">
-      ${outerCard(showBackground, 86, 142, 908, 1128, 0.34)}
-      ${fitText("Rota do voo", 132, 258, { fontSize: 58, fontWeight: 900, maxWidth: 520 })}
-      ${fitText(flightTitle(data), 132, 316, { color: "#cbd5e1", fontSize: 32, fontWeight: 700, maxWidth: 520 })}
-      ${smallBrand(data, 688, 220)}
-      ${routeMapLayer(data, box, true)}
-      <rect x="132" y="1024" width="816" height="184" rx="27.3" fill="#0f172a" fill-opacity="0.78" stroke="#ffffff" stroke-opacity="0.13" />
-      ${metricMini("Dist\xE2ncia", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 176, 1092)}
-      ${metricMini("Tempo", data.durationDisplay, 420, 1092)}
-      ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 664, 1092)}
+    <g>
+      ${fullBleedBg(showBackground, width, height)}
+      ${fitText("Rota do voo", pad, 58, { fontSize: 40, fontWeight: 900, maxWidth: 560 })}
+      ${fitText(flightTitle(data), pad, 96, { color: "#cbd5e1", fontSize: 24, fontWeight: 700, maxWidth: 560 })}
+      ${smallBrand(data, width - 300, 28)}
+      ${routeMapLayer(data, box, true, { radius: 20.8 })}
+      ${metricMini("Dist\xE2ncia", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), pad + 20, 660)}
+      ${metricMini("Tempo", data.durationDisplay, 380, 660)}
+      ${metricMini("Pousos", String(data.displayInfo.landings || "-"), 720, 660)}
     </g>
   `;
-  return createSticker("route", "Rota + m\xE9tricas", "Trilha GPS com tempo, dist\xE2ncia e pousos.", data, body);
+  return createSticker("route", "Rota + m\xE9tricas", "Trilha GPS com tempo, dist\xE2ncia e pousos.", data, body, width, height);
+}
+function cleanMapLogoOverlay(data, box) {
+  const href = logoHref(data);
+  if (!href) return "";
+  const logoW = 220;
+  const logoH = 72;
+  const pad = 28;
+  return `<image href="${escapeXml(href)}" x="${box.x + box.w - logoW - pad}" y="${box.y + pad}" width="${logoW}" height="${logoH}" preserveAspectRatio="xMaxYMid meet" />`;
+}
+function mapOverlayMetricCard(label, value, x, y, width, height) {
+  return `
+    <g>
+      <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="18.2" fill="#0f172a" fill-opacity="0.8" stroke="#ffffff" stroke-opacity="0.16" />
+      ${fitText(label, x + width / 2, y + 44, { color: "#94a3b8", fontSize: 24, fontWeight: 800, maxWidth: width - 40, anchor: "middle", letterSpacing: 1 })}
+      ${fitText(value, x + width / 2, y + 96, { fontSize: 40, fontWeight: 900, maxWidth: width - 40, anchor: "middle" })}
+    </g>
+  `;
+}
+function mapSticker(data, _options = {}) {
+  const width = 1080;
+  const height = 720;
+  const box = { x: 0, y: 0, w: width, h: height };
+  const body = `
+    <g>
+      ${routeMapLayer(data, box, true, { showEndpoints: true, showFrame: false, radius: 0 })}
+      ${cleanMapLogoOverlay(data, box)}
+    </g>
+  `;
+  return createSticker("map", "Mapa", "S\xF3 o mapa e o tra\xE7ado do voo.", data, body, width, height);
+}
+function mapStatsSticker(data, _options = {}) {
+  const width = 1080;
+  const height = 720;
+  const box = { x: 0, y: 0, w: width, h: height };
+  const cardW = 460;
+  const cardH = 140;
+  const gap = 28;
+  const totalW = cardW * 2 + gap;
+  const startX = (width - totalW) / 2;
+  const cardY = height - cardH - 36;
+  const body = `
+    <g>
+      ${routeMapLayer(data, box, true, { showEndpoints: true, showFrame: false, radius: 0 })}
+      ${cleanMapLogoOverlay(data, box)}
+      ${mapOverlayMetricCard("Tempo", data.durationDisplay, startX, cardY, cardW, cardH)}
+      ${mapOverlayMetricCard(
+    "Dist\xE2ncia",
+    formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles),
+    startX + cardW + gap,
+    cardY,
+    cardW,
+    cardH
+  )}
+    </g>
+  `;
+  return createSticker("mapStats", "Mapa + m\xE9tricas", "Mapa limpo com tempo e dist\xE2ncia.", data, body, width, height);
 }
 function legDistance(value) {
   const clean = value.trim();
@@ -1878,124 +2002,132 @@ function legTime(value) {
 function legRows(data, x, y, width) {
   const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
   if (legs.length === 0) {
-    return `<text x="${x + width / 2}" y="${y + 120}" fill="#cbd5e1" font-size="32" font-weight="700" text-anchor="middle">Pernas n\xE3o informadas na ficha.</text>`;
+    return `<text x="${x + width / 2}" y="${y + 80}" fill="#cbd5e1" font-size="28" font-weight="700" text-anchor="middle">Pernas n\xE3o informadas na ficha.</text>`;
   }
-  return legs.slice(0, 7).map((leg, index) => {
-    const rowY = y + index * 124;
-    const lineY = rowY + 70;
+  return legs.slice(0, 6).map((leg, index) => {
+    const rowY = y + index * 92;
+    const lineY = rowY + 52;
     const dep = clampText(leg.dep, "DEP").toUpperCase();
     const arr = clampText(leg.arr, "ARR").toUpperCase();
     const detail = `${legTime(leg.flightTime)} \xB7 ${legDistance(leg.distance)}`;
     return `
       <g>
-        ${fitText(detail, x + width / 2, rowY + 36, { color: "#f8fafc", fontSize: 34, fontWeight: 900, maxWidth: width - 220, anchor: "middle" })}
-        <rect x="${x + 122}" y="${lineY - 6}" width="${width - 244}" height="12" rx="3.9" fill="url(#gfvAccent)" />
-        <circle cx="${x + 122}" cy="${lineY}" r="10" fill="#f8fafc" />
-        <circle cx="${x + width - 122}" cy="${lineY}" r="10" fill="#f8fafc" />
-        ${fitText(dep, x, lineY + 48, { fontSize: 38, fontWeight: 900, maxWidth: 240 })}
-        ${fitText(arr, x + width, lineY + 48, { fontSize: 38, fontWeight: 900, maxWidth: 240, anchor: "end" })}
+        ${fitText(detail, x + width / 2, rowY + 28, { color: "#f8fafc", fontSize: 28, fontWeight: 900, maxWidth: width - 200, anchor: "middle" })}
+        <rect x="${x + 110}" y="${lineY - 5}" width="${width - 220}" height="10" rx="3.9" fill="url(#gfvAccent)" />
+        <circle cx="${x + 110}" cy="${lineY}" r="8" fill="#f8fafc" />
+        <circle cx="${x + width - 110}" cy="${lineY}" r="8" fill="#f8fafc" />
+        ${fitText(dep, x, lineY + 36, { fontSize: 30, fontWeight: 900, maxWidth: 220 })}
+        ${fitText(arr, x + width, lineY + 36, { fontSize: 30, fontWeight: 900, maxWidth: 220, anchor: "end" })}
       </g>
     `;
   }).join("");
 }
 function legsContentMetrics(data) {
   const legs = data.meta?.legs.filter((leg) => leg.dep || leg.arr) ?? [];
-  const visibleLegs = Math.max(1, Math.min(legs.length || 1, 7));
-  const rowsHeight = visibleLegs * 124;
-  const rowsBoxHeight = Math.max(240, rowsHeight + 96);
-  const outerHeight = 430 + rowsBoxHeight + 70 - 142;
-  return { rowsBoxHeight, outerHeight };
+  const visibleLegs = Math.max(1, Math.min(legs.length || 1, 6));
+  const rowsHeight = visibleLegs * 92;
+  const rowsBoxHeight = Math.max(180, rowsHeight + 48);
+  const height = 120 + rowsBoxHeight + 48;
+  return { rowsBoxHeight, height };
 }
 function legsSticker(data, options = {}) {
   const showBackground = options.showBackground ?? true;
   const layout = legsContentMetrics(data);
+  const width = 1080;
+  const height = layout.height;
+  const pad = 48;
   const body = `
-    <g filter="url(#gfvShadow)">
-      ${outerCard(showBackground, 86, 142, 908, layout.outerHeight, 0.46)}
-      ${brandMark(data, 132, 220, 360)}
-      ${innerCard(showBackground, 122, 430, 836, layout.rowsBoxHeight, 31.2, 0.74)}
-      ${legRows(data, 166, 490, 748)}
+    <g>
+      ${fullBleedBg(showBackground, width, height)}
+      ${fitText("Pernas do voo", pad, 64, { fontSize: 40, fontWeight: 900, maxWidth: 560 })}
+      ${smallBrand(data, width - 300, 28)}
+      ${legRows(data, pad + 24, 120, width - pad * 2 - 48)}
     </g>
   `;
-  return createSticker("legs", "Pernas do voo", "Uma linha para cada perna com tempo e dist\xE2ncia.", data, body);
+  return createSticker("legs", "Pernas do voo", "Uma linha para cada perna com tempo e dist\xE2ncia.", data, body, width, height);
 }
 function altitudeSticker(data, options = {}) {
   const showBackground = options.showBackground ?? true;
   const samples = samplesFromChart(data.chartData, ["gpsAltFt", "baroAltFt", "pressAltFt"]);
   const fallbackSamples = samples.length >= 2 ? samples : samplesFromPoints(data.points, "altitudeFt");
-  const box = { x: 134, y: 642, w: 812, h: 420 };
+  const width = 1080;
+  const height = 700;
+  const pad = 48;
+  const box = { x: pad, y: 200, w: width - pad * 2, h: 300 };
   const linePath = chartPath(fallbackSamples, box);
   const areaPath = chartAreaPath(fallbackSamples, box);
   const altMax = formatMetricAlt(data.summary, data.chartData);
   const body = `
-    <g filter="url(#gfvShadow)">
-      ${outerCard(showBackground, 86, 250, 908, 1280, 0.42)}
-      ${fitText("ALTIMETRIA", 136, 376, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 760, letterSpacing: 4 })}
-      ${fitText(altMax, 136, 470, { fontSize: 86, fontWeight: 900, maxWidth: 760 })}
-      ${fitText("Altitude m\xE1xima no voo", 142, 532, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 760 })}
-      <rect x="116" y="590" width="848" height="542" rx="31.2" fill="#0f172a" fill-opacity="0.72" />
+    <g>
+      ${fullBleedBg(showBackground, width, height)}
+      ${fitText("ALTIMETRIA", pad, 56, { color: "#94a3b8", fontSize: 24, fontWeight: 900, maxWidth: 420, letterSpacing: 3 })}
+      ${fitText(altMax, pad, 118, { fontSize: 60, fontWeight: 900, maxWidth: 520 })}
+      ${fitText("Altitude m\xE1xima", pad, 158, { color: "#cbd5e1", fontSize: 24, fontWeight: 700, maxWidth: 520 })}
+      ${smallBrand(data, width - 300, 28)}
       <path d="${areaPath}" fill="url(#gfvSoft)" />
-      <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
-      ${linePath ? "" : `<text x="540" y="870" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Altimetria indispon\xEDvel</text>`}
-      <line x1="134" y1="${box.y + box.h}" x2="946" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3" />
-      ${metricBlock("Tempo de voo", data.durationDisplay, 136, 1188, 380)}
-      ${metricBlock("Dist\xE2ncia", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), 564, 1188, 380)}
-      ${smallBrand(data, 136, 1408)}
+      <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
+      ${linePath ? "" : `<text x="${width / 2}" y="360" fill="#cbd5e1" font-size="30" font-weight="700" text-anchor="middle">Altimetria indispon\xEDvel</text>`}
+      <line x1="${pad}" y1="${box.y + box.h}" x2="${width - pad}" y2="${box.y + box.h}" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2" />
+      ${metricBlock("Tempo de voo", data.durationDisplay, pad, height - 160, 460, 110)}
+      ${metricBlock("Dist\xE2ncia", formatDistanceShort(data.summary.distanceM, data.displayInfo.totalMiles), pad + 492, height - 160, 460, 110)}
     </g>
   `;
-  return createSticker("altitude", "Altitude", "Gr\xE1fico de altimetria em fundo transparente.", data, body);
+  return createSticker("altitude", "Altitude", "Gr\xE1fico de altimetria em fundo transparente.", data, body, width, height);
 }
 function speedSticker(data, options = {}) {
   const showBackground = options.showBackground ?? true;
   const samples = samplesFromChart(data.chartData, ["iasKt", "gsKt", "tasKt"]);
   const fallbackSamples = samples.length >= 2 ? samples : samplesFromPoints(data.points, "speedKt");
-  const box = { x: 132, y: 626, w: 816, h: 430 };
+  const width = 1080;
+  const height = 700;
+  const pad = 48;
+  const box = { x: pad, y: 200, w: width - pad * 2, h: 300 };
   const linePath = chartPath(fallbackSamples, box);
   const areaPath = chartAreaPath(fallbackSamples, box);
   const maxSpeed = formatMetricSpeed(data.summary, data.chartData);
   const avgSpeed = data.summary.speedAvgMs !== null ? formatSpeedKt(data.summary.speedAvgMs) : formatKt(maxSeriesValue(data.chartData, ["iasKt", "gsKt"]));
   const body = `
-    <g filter="url(#gfvShadow)">
-      ${outerCard(showBackground, 86, 210, 908, 1360, 0.4)}
-      <circle cx="540" cy="424" r="204" fill="url(#gfvSoft)" />
-      ${fitText("VELOCIDADE", 540, 350, { color: "#94a3b8", fontSize: 30, fontWeight: 900, maxWidth: 700, anchor: "middle", letterSpacing: 4 })}
-      ${fitText(maxSpeed, 540, 468, { fontSize: 104, fontWeight: 900, maxWidth: 700, anchor: "middle" })}
-      ${fitText("m\xE1xima registrada", 540, 530, { color: "#cbd5e1", fontSize: 34, fontWeight: 700, maxWidth: 700, anchor: "middle" })}
-      <rect x="106" y="584" width="868" height="536" rx="35.1" fill="#0f172a" fill-opacity="0.72" />
+    <g>
+      ${fullBleedBg(showBackground, width, height)}
+      ${fitText("VELOCIDADE", pad, 56, { color: "#94a3b8", fontSize: 24, fontWeight: 900, maxWidth: 420, letterSpacing: 3 })}
+      ${fitText(maxSpeed, pad, 118, { fontSize: 60, fontWeight: 900, maxWidth: 520 })}
+      ${fitText("m\xE1xima registrada", pad, 158, { color: "#cbd5e1", fontSize: 24, fontWeight: 700, maxWidth: 520 })}
+      ${smallBrand(data, width - 300, 28)}
       <path d="${areaPath}" fill="url(#gfvSoft)" />
-      <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
-      ${linePath ? "" : `<text x="540" y="850" fill="#cbd5e1" font-size="34" font-weight="700" text-anchor="middle">Velocidade indispon\xEDvel</text>`}
-      ${metricBlock("Vel. m\xE9dia", avgSpeed, 136, 1188, 380)}
-      ${metricBlock("Tempo", data.durationDisplay, 564, 1188, 380)}
-      ${smallBrand(data, 136, 1418)}
+      <path d="${linePath}" fill="none" stroke="url(#gfvAccent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#gfvGlow)" />
+      ${linePath ? "" : `<text x="${width / 2}" y="360" fill="#cbd5e1" font-size="30" font-weight="700" text-anchor="middle">Velocidade indispon\xEDvel</text>`}
+      ${metricBlock("Vel. m\xE9dia", avgSpeed, pad, height - 160, 460, 110)}
+      ${metricBlock("Tempo", data.durationDisplay, pad + 492, height - 160, 460, 110)}
     </g>
   `;
-  return createSticker("speed", "Velocidade", "Gr\xE1fico de velocidade e destaques.", data, body);
+  return createSticker("speed", "Velocidade", "Gr\xE1fico de velocidade e destaques.", data, body, width, height);
 }
 function metricMini(label, value, x, y) {
   return `
     <g>
-      ${fitText(label, x, y, { color: "#94a3b8", fontSize: 25, fontWeight: 800, maxWidth: 206, letterSpacing: 1 })}
-      ${fitText(value, x, y + 62, { fontSize: 43, fontWeight: 900, maxWidth: 206 })}
+      ${fitText(label, x, y, { color: "#94a3b8", fontSize: 22, fontWeight: 800, maxWidth: 220, letterSpacing: 1 })}
+      ${fitText(value, x, y + 48, { fontSize: 36, fontWeight: 900, maxWidth: 220 })}
     </g>
   `;
 }
-function createSticker(id, title, description, data, body) {
+function createSticker(id, title, description, data, body, width = STICKER_WIDTH, height = STICKER_HEIGHT) {
   const fileBase = slugify(`${data.displayInfo.aircraft}-${id}-${data.displayInfo.flightDateIso ?? data.flightId}`);
   return {
     id,
     title,
     description,
     fileName: `${fileBase}.png`,
-    width: STICKER_WIDTH,
-    height: STICKER_HEIGHT,
-    svg: svgShell(data, body)
+    width,
+    height,
+    svg: svgShell(data, body, width, height)
   };
 }
 function buildFlightShareStickers(data, options = {}) {
   return [
     summarySticker(data, options),
     routeSticker(data, options),
+    mapSticker(data, options),
+    mapStatsSticker(data, options),
     legsSticker(data, options),
     altitudeSticker(data, options),
     speedSticker(data, options)

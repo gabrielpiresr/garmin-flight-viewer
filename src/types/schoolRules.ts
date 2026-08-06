@@ -240,12 +240,12 @@ export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
   },
   dualCommandWindowDays: 5,
   minimumAge: 18,
-  cutoffBeforeTime: "16:00",
+  cutoffBeforeTime: "19:00",
   metarMinimumCondition: "aluno_solo",
   manualCriteria: [
     {
       id: "endorsement_printed",
-      label: "Aluno esta com o endosso impresso",
+      label: "Aluno está com o endosso impresso",
       enabled: true,
     },
     {
@@ -260,7 +260,7 @@ export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
     },
     {
       id: "critical_positions_briefing",
-      label: "Briefing mencionou posicoes criticas da CTR Jundiai",
+      label: "Briefing mencionou posições críticas da CTR Jundiaí",
       enabled: true,
     },
   ],
@@ -410,12 +410,13 @@ function normalizeSoloFlightRules(input: unknown): SoloFlightRules {
     }))
     .filter((item) => item.id && item.label)
     .slice(0, 20);
+  const cutoffBeforeTime = normalizeTime(raw.cutoffBeforeTime, defaults.cutoffBeforeTime);
   return {
     enabled: raw.enabled !== false,
     automaticCriteria,
     dualCommandWindowDays: normalizeInteger(raw.dualCommandWindowDays, 1, 30, defaults.dualCommandWindowDays),
     minimumAge: normalizeInteger(raw.minimumAge, 14, 80, defaults.minimumAge),
-    cutoffBeforeTime: normalizeTime(raw.cutoffBeforeTime, defaults.cutoffBeforeTime),
+    cutoffBeforeTime: cutoffBeforeTime === "16:00" ? "19:00" : cutoffBeforeTime,
     metarMinimumCondition: "aluno_solo",
     manualCriteria: manualCriteria.length ? manualCriteria : defaults.manualCriteria,
   };

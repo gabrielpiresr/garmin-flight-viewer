@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { lookupAiswebIcao, searchAiswebAerodromes } from "../lib/aiswebDb";
+import { searchAiswebAerodromes } from "../lib/aiswebDb";
 import type { AiswebAerodromeMatch } from "../types/aisweb";
 import { useToast } from "./ui/ToastProvider";
 
@@ -55,7 +55,6 @@ export function AiswebAerodromePicker({
   const [lookupHighlight, setLookupHighlight] = useState(0);
   const [lookupOpen, setLookupOpen] = useState(false);
   const [lookupSearching, setLookupSearching] = useState(false);
-  const [lookingUp, setLookingUp] = useState(false);
   const lookupContainerRef = useRef<HTMLDivElement | null>(null);
   const lookupSeqRef = useRef(0);
 
@@ -63,11 +62,11 @@ export function AiswebAerodromePicker({
     () => Array.from(new Set(value.map(normalizeIcao).filter((item) => item.length === 4))),
     [value],
   );
-  const inputDisabled = disabled || (!multiple && normalizedValue.length > 0);
+  const inputDisabled = disabled;
 
   useEffect(() => {
     const query = lookupInput.trim().slice(0, 80);
-    if (query.length < 4 || lookingUp || disabled) {
+    if (query.length < 4 || disabled) {
       lookupSeqRef.current += 1;
       setLookupMatches([]);
       setLookupHighlight(0);
@@ -95,7 +94,7 @@ export function AiswebAerodromePicker({
     }, 280);
 
     return () => window.clearTimeout(timer);
-  }, [disabled, lookingUp, lookupInput]);
+  }, [disabled, lookupInput]);
 
   useEffect(() => {
     if (!lookupOpen) return;
@@ -106,36 +105,24 @@ export function AiswebAerodromePicker({
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [lookupOpen]);
 
-  async function addIcao(raw: string) {
+  function addIcao(raw: string) {
     const code = normalizeIcao(raw);
     if (!looksLikeIcaoCode(code)) {
-      showToast({ variant: "warning", message: "Informe um ICAO valido com 4 caracteres ou escolha um resultado da busca." });
+      showToast({ variant: "warning", message: "Informe um ICAO válido com 4 caracteres ou escolha um resultado da busca." });
       return;
     }
     if (normalizedValue.includes(code)) {
-      showToast({ variant: "warning", message: `${code} ja foi adicionado.` });
+      showToast({ variant: "warning", message: `${code} já foi adicionado.` });
       setLookupInput("");
       setLookupOpen(false);
       return;
     }
 
-    setLookingUp(true);
+    onChange(multiple ? [...normalizedValue, code] : [code]);
+    setLookupInput("");
+    setLookupMatches([]);
+    setLookupHighlight(0);
     setLookupOpen(false);
-    try {
-      await lookupAiswebIcao(code);
-      onChange(multiple ? [...normalizedValue, code] : [code]);
-      setLookupInput("");
-      setLookupMatches([]);
-      setLookupHighlight(0);
-      showToast({ variant: "success", message: `${code} validado no AISWEB.` });
-    } catch (error) {
-      showToast({
-        variant: "error",
-        message: error instanceof Error ? error.message : `Nao foi possivel validar ${code} no AISWEB.`,
-      });
-    } finally {
-      setLookingUp(false);
-    }
   }
 
   async function handleLookup() {
@@ -148,13 +135,13 @@ export function AiswebAerodromePicker({
     if (lookupOpen && lookupMatches.length > 0) {
       const pick = lookupMatches[Math.min(lookupHighlight, lookupMatches.length - 1)] || lookupMatches[0];
       if (pick) {
-        await addIcao(pick.icao);
+        addIcao(pick.icao);
         return;
       }
     }
 
     if (looksLikeIcaoCode(query)) {
-      await addIcao(query);
+      addIcao(query);
       return;
     }
 
@@ -163,16 +150,15 @@ export function AiswebAerodromePicker({
       return;
     }
 
-    setLookingUp(true);
     setLookupOpen(false);
     try {
       const { matches } = await searchAiswebAerodromes(query, 5);
       if (!matches.length) {
-        showToast({ variant: "warning", message: `Nenhum aerodromo encontrado para "${query}".` });
+        showToast({ variant: "warning", message: `Nenhum aeródromo encontrado para "${query}".` });
         return;
       }
       if (matches.length === 1) {
-        await addIcao(matches[0].icao);
+        addIcao(matches[0].icao);
         return;
       }
       setLookupMatches(matches);
@@ -180,8 +166,6 @@ export function AiswebAerodromePicker({
       setLookupOpen(true);
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha na busca AISWEB." });
-    } finally {
-      setLookingUp(false);
     }
   }
 
@@ -220,7 +204,7 @@ export function AiswebAerodromePicker({
         <div className="mt-1 flex flex-wrap gap-2" ref={lookupContainerRef}>
           <div className="relative min-w-0 flex-1 basis-48">
             <input
-              className={`${searchInputClass} ${lookingUp ? "pr-10" : ""}`}
+              className={searchInputClass}
               value={lookupInput}
               maxLength={80}
               placeholder="Consultar ICAO, cidade ou nome"
@@ -237,13 +221,8 @@ export function AiswebAerodromePicker({
                 if (lookupMatches.length > 0 || lookupInput.trim().length >= 4) setLookupOpen(true);
               }}
               onKeyDown={handleLookupKeyDown}
-              disabled={inputDisabled || lookingUp}
+              disabled={inputDisabled}
             />
-            {lookingUp ? (
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-300" />
-              </span>
-            ) : null}
             {lookupOpen && lookupInput.trim().length >= 4 ? (
               <div
                 id={`${label}-aisweb-lookup-results`}
@@ -251,7 +230,7 @@ export function AiswebAerodromePicker({
                 className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-lg border border-slate-700 bg-slate-950 text-sm text-slate-100 shadow-xl shadow-slate-950/50"
               >
                 {lookupSearching && lookupMatches.length === 0 ? <div className="px-3 py-2.5 text-xs text-slate-500">Buscando...</div> : null}
-                {!lookupSearching && lookupMatches.length === 0 ? <div className="px-3 py-2.5 text-xs text-slate-500">Nenhum aerodromo encontrado</div> : null}
+                {!lookupSearching && lookupMatches.length === 0 ? <div className="px-3 py-2.5 text-xs text-slate-500">Nenhum aeródromo encontrado</div> : null}
                 {lookupMatches.map((match, index) => {
                   const active = index === lookupHighlight;
                   return (
@@ -264,7 +243,7 @@ export function AiswebAerodromePicker({
                       onMouseEnter={() => setLookupHighlight(index)}
                       onMouseDown={(event) => {
                         event.preventDefault();
-                        void addIcao(match.icao);
+                        addIcao(match.icao);
                       }}
                       className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition ${
                         active ? "bg-cyan-500/15 text-cyan-50" : "hover:bg-slate-800"
@@ -278,8 +257,8 @@ export function AiswebAerodromePicker({
               </div>
             ) : null}
           </div>
-          <button type="button" className={`${btnSecondary} grow @sm:grow-0`} onClick={() => void handleLookup()} disabled={inputDisabled || lookingUp || !lookupInput.trim()}>
-            {lookingUp ? "Consultando" : "Adicionar"}
+          <button type="button" className={`${btnSecondary} grow @sm:grow-0`} onClick={() => void handleLookup()} disabled={inputDisabled || !lookupInput.trim()}>
+            Adicionar
           </button>
         </div>
       </label>
@@ -295,7 +274,7 @@ export function AiswebAerodromePicker({
             ) : null}
           </span>
         ))}
-        {normalizedValue.length === 0 ? <span className="text-xs text-slate-600">Nenhum aerodromo selecionado.</span> : null}
+        {normalizedValue.length === 0 ? <span className="text-xs text-slate-600">Nenhum aeródromo selecionado.</span> : null}
       </div>
     </div>
   );

@@ -14595,7 +14595,7 @@ const DEFAULT_SOLO_FLIGHT_RULES = {
   },
   dualCommandWindowDays: 5,
   minimumAge: 18,
-  cutoffBeforeTime: "16:00",
+  cutoffBeforeTime: "19:00",
   metarMinimumCondition: "aluno_solo",
   manualCriteria: DEFAULT_SOLO_FLIGHT_MANUAL_CRITERIA,
 };
@@ -15188,12 +15188,15 @@ async function notifyStudentFlightReviewReady(actorUserId, payload = {}) {
       wppResult = { status: "skipped", reason: "Aluno sem telefone cadastrado.", providerMessageId: null };
     } else {
       try {
+        // attvoo_2 (e similares): o token do link público vai no botão URL ({{1}}),
+        // não no corpo — a base do URL fica fixa no template da Meta.
         const messageId = await sendWppTemplateMessage({
           to: phone,
           templateName: wppConfig.templateName,
           language: wppConfig.language,
           headerParameters: [],
-          bodyParameters: [share.token],
+          bodyParameters: [],
+          buttonUrlParameters: [share.token],
         });
         wppResult = { status: "sent", reason: null, providerMessageId: messageId };
       } catch (error) {
@@ -15916,12 +15919,13 @@ function sanitizeSoloFlightRules(input) {
     .filter((item) => item.id && item.label)
     .slice(0, 20);
   const cutoff = cleanString(raw.cutoffBeforeTime);
+  const cutoffBeforeTime = /^\d{2}:\d{2}$/.test(cutoff) ? cutoff : defaults.cutoffBeforeTime;
   return {
     enabled: raw.enabled !== false,
     automaticCriteria,
     dualCommandWindowDays: Math.min(30, Math.max(1, Math.round(Number(raw.dualCommandWindowDays ?? defaults.dualCommandWindowDays)) || defaults.dualCommandWindowDays)),
     minimumAge: Math.min(80, Math.max(14, Math.round(Number(raw.minimumAge ?? defaults.minimumAge)) || defaults.minimumAge)),
-    cutoffBeforeTime: /^\d{2}:\d{2}$/.test(cutoff) ? cutoff : defaults.cutoffBeforeTime,
+    cutoffBeforeTime: cutoffBeforeTime === "16:00" ? "19:00" : cutoffBeforeTime,
     metarMinimumCondition: "aluno_solo",
     manualCriteria: manualCriteria.length ? manualCriteria : defaults.manualCriteria,
   };
@@ -16225,7 +16229,7 @@ function defaultWppSettings() {
     apiKey: "",
     flightReviewReadyTemplate: {
       enabled: true,
-      templateName: "avisodevoo",
+      templateName: "attvoo_2",
       language: "pt_BR",
     },
     tomorrowFlightReminderTemplate: defaultWppTomorrowFlightReminderTemplate(),
@@ -16261,7 +16265,7 @@ function defaultWppIncomingAutoReplySettings() {
 function defaultWppFlightReviewReadyTemplate() {
   return {
     enabled: true,
-    templateName: "avisodevoo",
+    templateName: "attvoo_2",
     language: "pt_BR",
   };
 }
@@ -16346,7 +16350,9 @@ function sanitizeWppIncomingAutoReply(input, options = {}) {
 function sanitizeWppFlightReviewReadyTemplate(input) {
   const raw = input && typeof input === "object" ? input : {};
   const defaults = defaultWppFlightReviewReadyTemplate();
-  const templateName = cleanString(raw.templateName || raw.name).toLowerCase();
+  let templateName = cleanString(raw.templateName || raw.name).toLowerCase();
+  // Migração: o link público saiu do body (avisodevoo) para o botão URL (attvoo_2).
+  if (templateName === "avisodevoo") templateName = defaults.templateName;
   const language = cleanString(raw.language) || defaults.language;
   return {
     enabled: raw.enabled === undefined ? defaults.enabled : raw.enabled !== false,
@@ -16640,13 +16646,23 @@ function wppTemplateComponents(input) {
   if (headerText) {
     const header = { type: "HEADER", format: "TEXT", text: headerText };
     const headerVars = [...headerText.matchAll(/\{\{(\d+)\}\}/g)];
-    if (headerVars.length) header.example = { header_text: headerVars.map((_, index) => `Exemplo ${index + 1}`) };
+    if (headerVars.length) {
+      const headerExamples = Array.isArray(input?.headerExamples) && input.headerExamples.length === headerVars.length
+        ? input.headerExamples.map((value) => cleanString(value) || "Exemplo")
+        : headerVars.map((_, index) => `Exemplo ${index + 1}`);
+      header.example = { header_text: headerExamples };
+    }
     components.push(header);
   }
   const body = { type: "BODY", text: bodyText };
   const indexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
   const count = indexes.length ? Math.max(...indexes) : 0;
-  if (count) body.example = { body_text: [Array.from({ length: count }, (_, index) => `Exemplo ${index + 1}`)] };
+  if (count) {
+    const bodyExamples = Array.isArray(input?.bodyExamples) && input.bodyExamples.length === count
+      ? input.bodyExamples.map((value) => cleanString(value) || "-")
+      : Array.from({ length: count }, (_, index) => `Exemplo ${index + 1}`);
+    body.example = { body_text: [bodyExamples] };
+  }
   components.push(body);
   if (footerText) components.push({ type: "FOOTER", text: footerText });
   const buttons = Array.isArray(input?.buttons) ? input.buttons.filter((button) => button && typeof button === "object").slice(0, 10) : [];
@@ -16769,16 +16785,53 @@ async function sendWppTemplateMessage(input) {
   if (!name || to.length < 10) throw Object.assign(new Error("Informe o template e um telefone válido com DDI."), { status: 400 });
   const headerParameters = (Array.isArray(input?.headerParameters) ? input.headerParameters : []).map((value) => ({ type: "text", text: cleanString(value) }));
   const parameters = (Array.isArray(input?.bodyParameters) ? input.bodyParameters : []).map((value) => ({ type: "text", text: cleanString(value) }));
+  const buttonUrlParameters = (Array.isArray(input?.buttonUrlParameters) ? input.buttonUrlParameters : [])
+    .map((value, index) => {
+      if (value && typeof value === "object") {
+        const text = cleanString(value.text ?? value.value);
+        if (!text) return null;
+        const rawIndex = Number(value.index);
+        return {
+          type: "button",
+          sub_type: "url",
+          index: String(Number.isFinite(rawIndex) && rawIndex >= 0 ? Math.round(rawIndex) : index),
+          parameters: [{ type: "text", text }],
+        };
+      }
+      const text = cleanString(value);
+      if (!text) return null;
+      return {
+        type: "button",
+        sub_type: "url",
+        index: String(index),
+        parameters: [{ type: "text", text }],
+      };
+    })
+    .filter(Boolean);
   const template = { name, language: { code: language } };
   const components = [];
   if (headerParameters.length) components.push({ type: "header", parameters: headerParameters });
   if (parameters.length) components.push({ type: "body", parameters });
+  if (buttonUrlParameters.length) components.push(...buttonUrlParameters);
   if (components.length) template.components = components;
   const response = await wppGraphRequest(settings, `${settings.phoneNumberId}/messages`, {
     method: "POST",
     body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template", template },
   });
-  return cleanString(response?.messages?.[0]?.id) || null;
+  const messageId = cleanString(response?.messages?.[0]?.id) || null;
+  if (messageId) {
+    await recordWppDeliveryStatus({
+      messageId,
+      status: "accepted",
+      recipient: to,
+      templateName: name,
+      language,
+      timestamp: String(Math.floor(Date.now() / 1000)),
+      source: "send",
+      reason: "accepted",
+    }).catch(() => null);
+  }
+  return messageId;
 }
 
 function saoPauloDateParts(date = new Date()) {
@@ -17246,6 +17299,19 @@ async function getLatestSoloFlightEndorsement(studentUserId) {
   return toSoloFlightEndorsement(docs[0] || null);
 }
 
+function soloFlightEndorsementFilePermissions(studentUserId) {
+  return [
+    sdk.Permission.read(sdk.Role.user(studentUserId)),
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.user(studentUserId)),
+    sdk.Permission.update(sdk.Role.label("instrutor")),
+    sdk.Permission.delete(sdk.Role.user(studentUserId)),
+    sdk.Permission.delete(sdk.Role.label("instrutor")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+  ];
+}
+
 async function listSoloFlightEndorsements(actorUserId, payload = {}) {
   const role = await requireSoloFlightActor(actorUserId);
   const studentUserId = cleanString(payload.studentUserId || payload.userId || (role === "aluno" ? actorUserId : ""));
@@ -17284,6 +17350,16 @@ async function createSoloFlightEndorsement(actorUserId, payload = {}) {
   );
   const nextVersion = previous.reduce((max, doc) => Math.max(max, Number(doc.version) || 0), 0) + 1;
   const now = nowIso();
+  const fileId = cleanString(payload.fileId).slice(0, 64);
+  const fileName = cleanString(payload.fileName || "Endosso").slice(0, 255);
+  if (fileId && FLIGHTS_CSV_BUCKET_ID) {
+    await storage.updateFile(
+      FLIGHTS_CSV_BUCKET_ID,
+      fileId,
+      fileName,
+      soloFlightEndorsementFilePermissions(studentUserId),
+    );
+  }
   const doc = await databases.createDocument(
     DATABASE_ID,
     SOLO_FLIGHT_ENDORSEMENTS_COLLECTION_ID,
@@ -17291,8 +17367,8 @@ async function createSoloFlightEndorsement(actorUserId, payload = {}) {
     {
       school_id: SCHOOL_ID,
       student_user_id: studentUserId,
-      file_id: cleanString(payload.fileId).slice(0, 64),
-      file_name: cleanString(payload.fileName || "Endosso").slice(0, 255),
+      file_id: fileId,
+      file_name: fileName,
       mime_type: mimeType,
       file_size: Math.max(0, Math.round(Number(payload.fileSize) || 0)),
       version: nextVersion,
@@ -17476,10 +17552,10 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
   const limitMinutes = timeToMinutes(rules.cutoffBeforeTime);
   checks.push(soloFlightCheck({
     id: "cutoffBefore",
-    label: `Corte antes de ${rules.cutoffBeforeTime}`,
+    label: `Corte até ${rules.cutoffBeforeTime}Z`,
     enabled: auto.cutoffBefore,
-    ok: cutoffMinutes === null || limitMinutes === null ? null : cutoffMinutes < limitMinutes,
-    details: cutoffMinutes === null ? "Horário de corte previsto não informado." : `Corte previsto: ${snapshot.cutoffTime}.`,
+    ok: cutoffMinutes === null || limitMinutes === null ? null : cutoffMinutes <= limitMinutes,
+    details: cutoffMinutes === null ? "Horário de corte previsto não informado." : `Corte previsto: ${snapshot.cutoffTime}Z.`,
   }));
 
   const destinationNav = completed.find((item) => {
@@ -17524,6 +17600,20 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
           aiswebService.fetchRotaer(icao).catch(() => null),
           aiswebService.loadSettings({ getSettingDoc }).catch(() => null),
         ]);
+        const metarText = cleanString(met?.metar);
+        // Aeródromos sem emissão de METAR (ex.: SDPW): aprovado sem flag.
+        if (!metarText) {
+          metarChecks.push(soloFlightCheck({
+            id: `metar_${icao}`,
+            label: `METAR ${icao} dentro de aluno_solo`,
+            kind: "metar",
+            enabled: true,
+            ok: true,
+            details: "Sem metar",
+            value: { icao, metar: "", check: null, noMetar: true },
+          }));
+          continue;
+        }
         const minimums = aisSettings?.minimums || aiswebService.DEFAULT_MINIMUMS;
         const soloCheck = wppMetar.evaluateMinimums(met?.parsed || null, minimums, { rotaer })
           .find((item) => item.condition === "aluno_solo");
@@ -17536,7 +17626,7 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
           details: soloCheck?.overallOk === true
             ? "Limites aluno_solo atendidos."
             : (soloCheck?.reasons || []).join("; ") || cleanString(met?.error) || "METAR indisponível ou insuficiente.",
-          value: { icao, metar: met?.metar || "", check: soloCheck || null },
+          value: { icao, metar: metarText, check: soloCheck || null },
         }));
       } catch (err) {
         metarChecks.push(soloFlightCheck({
@@ -17544,9 +17634,9 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
           label: `METAR ${icao} dentro de aluno_solo`,
           kind: "metar",
           enabled: true,
-          ok: null,
-          details: cleanString(err?.message) || "METAR indisponível.",
-          value: { icao },
+          ok: true,
+          details: "Sem metar",
+          value: { icao, metar: "", check: null, noMetar: true, error: cleanString(err?.message) },
         }));
       }
     }
@@ -17648,18 +17738,8 @@ async function notifySoloFlightStakeholders(request, evaluation) {
         bodyParameters: keys.map((key) => cleanString(context[key]) || "-"),
       });
       sent.push({ ...base, messageId, role: target.role });
-      if (request.flags.length) {
-        const { settings: refreshed } = await loadWppSettings();
-        const interactiveId = await sendWppBotReply(refreshed, {
-          to: target.to,
-          body: `Decida a solicitacao de voo solo ${request.id} (${context.student_name}, ${context.flight_date}).`,
-          buttons: [
-            { id: `solo_approve_${request.id}`, title: "Aprovar" },
-            { id: `solo_reject_${request.id}`, title: "Rejeitar" },
-          ],
-        });
-        sent.push({ ...base, kind: "approval_buttons", messageId: interactiveId, role: target.role });
-      }
+      // Botões Aprovar/Rejeitar vêm no template UTILITY (voo_solo_aprovacao).
+      // A resposta é resolvida pelo texto do botão + checklist pendente notificado a este telefone.
     } catch (err) {
       sent.push({ ...base, role: target.role, error: cleanString(err?.message).slice(0, 500) });
     }
@@ -17809,7 +17889,40 @@ function soloFlightDecisionFromIncoming(incoming) {
       return { decision: match[1].toLowerCase() === "reject" ? "rejected" : "approved", requestId: match[2] };
     }
   }
+  for (const raw of candidates) {
+    const normalized = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (["aprovar", "aprovado", "approve", "sim"].includes(normalized)) {
+      return { decision: "approved", requestId: null };
+    }
+    if (["rejeitar", "rejeitado", "reject", "recusar", "nao"].includes(normalized)) {
+      return { decision: "rejected", requestId: null };
+    }
+  }
   return null;
+}
+
+async function findPendingSoloFlightRequestForApprover(phone) {
+  if (!SOLO_FLIGHT_REQUESTS_COLLECTION_ID) return null;
+  const docs = await listAllDocuments(SOLO_FLIGHT_REQUESTS_COLLECTION_ID, [
+    sdk.Query.equal("status", ["pending_approval"]),
+    sdk.Query.orderDesc("created_at"),
+    sdk.Query.limit(30),
+  ]);
+  const normalizedPhone = normalizeWppRecipientPhone(phone);
+  const matched = [];
+  for (const doc of docs) {
+    const request = toSoloFlightRequest(doc);
+    const notified = (request.wppMessages || []).some((msg) => wppPhoneMatchScore(msg?.to, normalizedPhone) >= 120);
+    if (notified) matched.push(request);
+  }
+  if (matched.length) return matched[0];
+  return docs[0] ? toSoloFlightRequest(docs[0]) : null;
 }
 
 async function handleSoloFlightWppDecision(incoming) {
@@ -17824,7 +17937,7 @@ async function handleSoloFlightWppDecision(incoming) {
   const match = allowed.find((item) => wppPhoneMatchScore(from, item.phone) >= 120);
   if (!match) {
     await recordSoloFlightDecision({
-      requestId: parsed.requestId,
+      requestId: parsed.requestId || "unknown",
       decision: "ignored",
       source: "whatsapp",
       actorPhone: from,
@@ -17833,8 +17946,20 @@ async function handleSoloFlightWppDecision(incoming) {
     });
     return { handled: true, status: "ignored_unauthorized" };
   }
+  let requestId = cleanString(parsed.requestId);
+  if (!requestId) {
+    const pending = await findPendingSoloFlightRequestForApprover(from);
+    requestId = cleanString(pending?.id);
+  }
+  if (!requestId) {
+    await sendWppTextMessage(settings, {
+      to: from,
+      body: "Não encontrei um checklist de voo solo pendente para decidir.",
+    }).catch(() => null);
+    return { handled: true, status: "no_pending_request" };
+  }
   const request = await decideSoloFlightRequest("", {
-    requestId: parsed.requestId,
+    requestId,
     decision: parsed.decision,
     actorPhone: from,
     actorRole: match.role,
@@ -17842,9 +17967,27 @@ async function handleSoloFlightWppDecision(incoming) {
   }, "whatsapp");
   await sendWppTextMessage(settings, {
     to: from,
-    body: `Solicitação ${request.id} ${request.status === "approved" ? "aprovada" : "rejeitada"}.`,
+    body: `Checklist solo ${request.id} ${request.status === "approved" ? "aprovado" : "rejeitado"}.`,
   }).catch(() => null);
   return { handled: true, status: request.status, requestId: request.id };
+}
+
+function soloFlightTemplateHasQuickReplyButtons(template, titles) {
+  const wanted = new Set((titles || []).map((title) => cleanString(title).toLowerCase()).filter(Boolean));
+  if (!wanted.size) return false;
+  const components = Array.isArray(template?.components) ? template.components : [];
+  const buttonsComponent = components.find((component) => cleanString(component?.type).toUpperCase() === "BUTTONS");
+  const buttons = Array.isArray(buttonsComponent?.buttons) ? buttonsComponent.buttons : [];
+  const found = new Set(
+    buttons
+      .filter((button) => cleanString(button?.type).toUpperCase() === "QUICK_REPLY")
+      .map((button) => cleanString(button?.text).toLowerCase())
+      .filter(Boolean),
+  );
+  for (const title of wanted) {
+    if (!found.has(title)) return false;
+  }
+  return true;
 }
 
 async function ensureSoloFlightWppTemplates() {
@@ -17854,28 +17997,78 @@ async function ensureSoloFlightWppTemplates() {
   const specs = [
     {
       name: "voo_solo_aprovacao",
-      headerText: "Aprovação de voo solo",
-      bodyText: "Solicitação de voo solo para {{1}} em {{2}}. Rota/aeródromos: {{3}}. Pendências: {{4}}. Código: {{5}}.",
-      footerText: "Decida pelo botão enviado em seguida ou pelo painel.",
+      category: "UTILITY",
+      language: "pt_BR",
+      headerText: "Checklist de voo solo",
+      bodyText:
+        "Há um checklist de voo solo aguardando sua decisão.\n\n" +
+        "Aluno: {{1}}\n" +
+        "Data: {{2}}\n" +
+        "Rota/aeródromos: {{3}}\n" +
+        "Pendências: {{4}}\n" +
+        "Código: {{5}}\n\n" +
+        "Toque em Aprovar ou Rejeitar para registrar a decisão.",
+      footerText: "Somente coordenador ou SGSO",
+      bodyExamples: [
+        "Maria Souza",
+        "05/08/2026",
+        "SBJD - SBSP",
+        "METAR abaixo do mínimo para aluno solo",
+        "chk_solo_123",
+      ],
+      buttons: [
+        { type: "QUICK_REPLY", text: "Aprovar" },
+        { type: "QUICK_REPLY", text: "Rejeitar" },
+      ],
+      requireButtons: ["Aprovar", "Rejeitar"],
     },
     {
       name: "voo_solo_ciencia",
-      headerText: "Voo solo aprovado",
-      bodyText: "Voo solo de {{1}} em {{2}} aprovado automaticamente. Rota/aeródromos: {{3}}. Status: {{4}}. Código: {{5}}.",
-      footerText: "Mensagem automática de ciência.",
+      category: "UTILITY",
+      language: "pt_BR",
+      headerText: "Ciência de voo solo",
+      bodyText:
+        "O voo solo de {{1}} em {{2}} foi aprovado automaticamente.\n\n" +
+        "Rota/aeródromos: {{3}}\n" +
+        "Status: {{4}}\n" +
+        "Código: {{5}}.\n\n" +
+        "Esta mensagem é apenas para ciência.",
+      footerText: "Mensagem automática",
+      bodyExamples: [
+        "Maria Souza",
+        "05/08/2026",
+        "SBJD - circuito",
+        "aprovado automaticamente",
+        "chk_solo_456",
+      ],
+      buttons: [],
+      requireButtons: [],
     },
   ];
   const result = [];
   for (const spec of specs) {
-    if (byName.has(spec.name)) {
-      result.push(byName.get(spec.name));
+    const existing = byName.get(spec.name);
+    const hasRequiredButtons = !spec.requireButtons?.length || soloFlightTemplateHasQuickReplyButtons(existing, spec.requireButtons);
+    if (existing && hasRequiredButtons && cleanString(existing.status).toUpperCase() !== "REJECTED") {
+      result.push(existing);
       continue;
     }
-    result.push(await createWppTemplate({
-      ...spec,
-      category: "UTILITY",
-      language: "pt_BR",
-    }));
+    if (existing) {
+      await deleteWppTemplate(spec.name).catch(() => null);
+      byName.delete(spec.name);
+    }
+    const created = await createWppTemplate({
+      name: spec.name,
+      category: spec.category,
+      language: spec.language,
+      headerText: spec.headerText,
+      bodyText: spec.bodyText,
+      footerText: spec.footerText,
+      bodyExamples: spec.bodyExamples,
+      buttons: spec.buttons,
+    });
+    byName.set(spec.name, created);
+    result.push(created);
   }
   return result;
 }
@@ -17923,6 +18116,191 @@ function extractWppIncomingMessages(payload) {
     }
   }
   return messages;
+}
+
+function extractWppMessageStatuses(payload) {
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  const statuses = [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const value = change?.value && typeof change.value === "object" ? change.value : {};
+      const phoneNumberId = cleanString(value?.metadata?.phone_number_id);
+      const list = Array.isArray(value.statuses) ? value.statuses : [];
+      for (const item of list) {
+        const messageId = cleanString(item?.id);
+        const status = cleanString(item?.status).toLowerCase();
+        if (!messageId || !status) continue;
+        const errors = (Array.isArray(item?.errors) ? item.errors : []).map((err) => ({
+          code: Number(err?.code || 0) || null,
+          title: cleanString(err?.title),
+          message: cleanString(err?.message),
+          details: cleanString(err?.error_data?.details || err?.error_data?.message),
+        }));
+        statuses.push({
+          messageId,
+          status,
+          recipient: normalizeWppRecipientPhone(item?.recipient_id),
+          timestamp: cleanString(item?.timestamp) || String(Math.floor(Date.now() / 1000)),
+          phoneNumberId,
+          conversationId: cleanString(item?.conversation?.id) || null,
+          pricing: item?.pricing && typeof item.pricing === "object" ? item.pricing : null,
+          errors,
+        });
+      }
+    }
+  }
+  return statuses;
+}
+
+function formatWppDeliveryFailureReason(statusItem) {
+  const errors = Array.isArray(statusItem?.errors) ? statusItem.errors : [];
+  const first = errors[0];
+  if (!first) {
+    return cleanString(statusItem?.status) === "failed" ? "Falha na entrega (sem detalhe da Meta)." : "";
+  }
+  const parts = [first.title, first.message, first.details, first.code ? `código ${first.code}` : ""]
+    .map(cleanString)
+    .filter(Boolean);
+  return Array.from(new Set(parts)).join(" — ").slice(0, 2048) || "Falha na entrega.";
+}
+
+function wppDeliveryOccurredAt(timestamp) {
+  const raw = cleanString(timestamp);
+  if (/^\d{10}$/.test(raw)) return new Date(Number(raw) * 1000).toISOString();
+  if (/^\d{13}$/.test(raw)) return new Date(Number(raw)).toISOString();
+  if (raw && !Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
+  return nowIso();
+}
+
+async function recordWppDeliveryStatus(input) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return null;
+  const messageId = cleanString(input?.messageId);
+  const status = cleanString(input?.status).toLowerCase();
+  if (!messageId || !status) return null;
+  const occurredAt = cleanString(input?.occurredAt) || wppDeliveryOccurredAt(input?.timestamp);
+  const failureReason = formatWppDeliveryFailureReason(input);
+  const reason = cleanString(input?.reason) || failureReason || status;
+  const snapshot = snapshotJson({
+    messageId,
+    status,
+    recipient: normalizeWppRecipientPhone(input?.recipient),
+    templateName: cleanString(input?.templateName) || null,
+    language: cleanString(input?.language) || null,
+    timestamp: cleanString(input?.timestamp) || null,
+    phoneNumberId: cleanString(input?.phoneNumberId) || null,
+    conversationId: cleanString(input?.conversationId) || null,
+    errors: Array.isArray(input?.errors) ? input.errors : [],
+    pricing: input?.pricing || null,
+    source: cleanString(input?.source) || "webhook",
+  });
+  const entityId = sha256(messageId).slice(0, 64);
+  // Appwrite document IDs max 36 chars.
+  const docId = `wps_${sha256(`${messageId}|${status}|${cleanString(input?.timestamp) || occurredAt}`).slice(0, 32)}`;
+  try {
+    return await databases.createDocument(
+      DATABASE_ID,
+      AUDIT_EVENTS_COLLECTION_ID,
+      docId,
+      {
+        event_type: "wpp_delivery_status",
+        entity_type: "wpp_message",
+        entity_id: entityId,
+        actor_user_id: "",
+        actor_role: "system",
+        school_id: SCHOOL_ID,
+        occurred_at: occurredAt,
+        ip: null,
+        user_agent: null,
+        reason: reason.slice(0, 2048) || null,
+        before_snapshot_json: "null",
+        after_snapshot_json: snapshot,
+        before_hash: sha256("null"),
+        after_hash: sha256(snapshot),
+        event_hash: sha256(snapshot),
+      },
+      AUDIT_DOC_PERMS,
+    );
+  } catch (err) {
+    const code = Number(err?.code || err?.status || 0);
+    if (code === 409 || /already exists|document.*exists|duplicate/i.test(cleanString(err?.message))) return null;
+    console.warn(`[wppWebhook] delivery status persist failed: ${cleanString(err?.message).slice(0, 240)}`);
+    return null;
+  }
+}
+
+function publicWppDeliveryStatus(doc) {
+  const snap = parseJsonObject(doc?.after_snapshot_json, {});
+  const status = cleanString(snap.status).toLowerCase() || "unknown";
+  const errors = Array.isArray(snap.errors) ? snap.errors : [];
+  const storedReason = cleanString(doc?.reason);
+  const failureReason = status === "failed"
+    ? (storedReason && storedReason !== "failed" ? storedReason : formatWppDeliveryFailureReason({ status, errors }))
+    : null;
+  return {
+    id: doc.$id,
+    messageId: cleanString(snap.messageId || doc?.entity_id),
+    status,
+    recipient: normalizeWppRecipientPhone(snap.recipient),
+    templateName: cleanString(snap.templateName) || null,
+    language: cleanString(snap.language) || null,
+    occurredAt: cleanString(doc?.occurred_at) || null,
+    providerTimestamp: cleanString(snap.timestamp) || null,
+    source: cleanString(snap.source) || "webhook",
+    failureReason,
+    errors,
+  };
+}
+
+const WPP_STATUS_RANK = Object.freeze({
+  failed: 100,
+  read: 40,
+  delivered: 30,
+  sent: 20,
+  accepted: 10,
+  deleted: 5,
+});
+
+function collapseWppDeliveryStatuses(items) {
+  const byMessage = new Map();
+  for (const item of items) {
+    const key = cleanString(item?.messageId);
+    if (!key) continue;
+    const current = byMessage.get(key);
+    if (!current) {
+      byMessage.set(key, item);
+      continue;
+    }
+    const rankNew = WPP_STATUS_RANK[item.status] || 0;
+    const rankOld = WPP_STATUS_RANK[current.status] || 0;
+    if (rankNew > rankOld || (rankNew === rankOld && String(item.occurredAt || "") > String(current.occurredAt || ""))) {
+      byMessage.set(key, {
+        ...item,
+        templateName: item.templateName || current.templateName,
+        language: item.language || current.language,
+      });
+    } else if (!current.templateName && item.templateName) {
+      byMessage.set(key, { ...current, templateName: item.templateName, language: item.language || current.language });
+    }
+  }
+  return Array.from(byMessage.values()).sort((a, b) => String(b.occurredAt || "").localeCompare(String(a.occurredAt || "")));
+}
+
+async function listWppDeliveryStatuses(actorUserId, payload = {}) {
+  const messageId = cleanString(payload.messageId);
+  if (messageId) await requireInstructorOrAdmin(actorUserId);
+  else await requireAdmin(actorUserId);
+  if (!AUDIT_EVENTS_COLLECTION_ID) return [];
+  const limit = Math.min(Math.max(Number(payload.limit) || 40, 1), 100);
+  const queries = [
+    sdk.Query.equal("event_type", ["wpp_delivery_status"]),
+    sdk.Query.orderDesc("occurred_at"),
+    sdk.Query.limit(messageId ? 30 : Math.min(limit * 5, 150)),
+  ];
+  if (messageId) queries.splice(1, 0, sdk.Query.equal("entity_id", [sha256(messageId).slice(0, 64)]));
+  const res = await databases.listDocuments(DATABASE_ID, AUDIT_EVENTS_COLLECTION_ID, queries);
+  const collapsed = collapseWppDeliveryStatuses((res.documents || []).map(publicWppDeliveryStatus));
+  return messageId ? collapsed.slice(0, 1) : collapsed.slice(0, limit);
 }
 
 function applyWppIncomingTestOverride(message) {
@@ -18287,20 +18665,22 @@ async function buildWppFlightShareData(flightDoc) {
 async function renderWppStickerPng(sticker) {
   const sharp = getSharpModule();
   if (!sharp) throw Object.assign(new Error("Renderizacao de imagem nao disponivel neste runtime."), { status: 500 });
-  return sharp(Buffer.from(sticker.svg, "utf8"), { failOn: "none" })
-    .png()
-    .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 })
+  const width = Math.max(1, Number(sticker.width) || 1080);
+  const height = Math.max(1, Number(sticker.height) || 1920);
+  // Sem trim: preserva a proporção/altura do SVG (o trim antigo descartava o layout landscape).
+  return sharp(Buffer.from(sticker.svg, "utf8"), { failOn: "none", density: 96 })
+    .resize(width, height, { fit: "fill" })
     .flatten({ background: "#020617" })
     .png()
     .toBuffer();
 }
 
 function wppStickerCacheFileId(flightId, stickerId) {
-  const hash = sha256(`${cleanString(flightId)}:${cleanString(stickerId)}`).slice(0, 28);
+  const hash = sha256(`${cleanString(flightId)}:${cleanString(stickerId)}:v3-fullbleed`).slice(0, 28);
   return `wpp_${hash}`;
 }
 
-const WPP_FLIGHT_SHARE_STICKER_IDS = ["summary", "route", "legs", "altitude", "speed"];
+const WPP_FLIGHT_SHARE_STICKER_IDS = ["summary", "route", "map", "mapStats", "legs"];
 
 async function listCachedWppFlightShareStickerImages(flightDoc) {
   const flightId = cleanString(flightDoc?.$id);
@@ -19111,7 +19491,8 @@ async function uploadWppFlightShareStickerImages(flightDoc) {
   const cached = await listCachedWppFlightShareStickerImages(flightDoc);
   if (cached) return cached;
   const shareData = await buildWppFlightShareData(flightDoc);
-  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true }).slice(0, 5);
+  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true })
+    .filter((sticker) => WPP_FLIGHT_SHARE_STICKER_IDS.includes(sticker.id));
   const uploaded = [];
   for (const sticker of stickers) {
     uploaded.push(await uploadWppStickerPng(sticker, {
@@ -19136,7 +19517,8 @@ async function sendWppFlightShareStickerImages(settings, to, flightDoc) {
     return sent;
   }
   const shareData = await buildWppFlightShareData(flightDoc);
-  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true }).slice(0, 5);
+  const stickers = flightShareStickerTools.buildFlightShareStickers(shareData, { showBackground: true })
+    .filter((sticker) => WPP_FLIGHT_SHARE_STICKER_IDS.includes(sticker.id));
   let sent = 0;
   for (const sticker of stickers) {
     const image = await uploadWppStickerPng(sticker, {
@@ -19762,12 +20144,36 @@ async function runWppIncomingActions(settings, incoming, actions) {
 }
 
 async function handleWppIncomingWebhook(payload, log) {
+  const statusUpdates = extractWppMessageStatuses(payload);
+  let statusesRecorded = 0;
+  for (const statusItem of statusUpdates) {
+    const saved = await recordWppDeliveryStatus({
+      ...statusItem,
+      reason: formatWppDeliveryFailureReason(statusItem) || statusItem.status,
+      source: "webhook",
+      occurredAt: wppDeliveryOccurredAt(statusItem.timestamp),
+    });
+    if (saved) statusesRecorded += 1;
+    if (statusItem.status === "failed") {
+      log(`[wppWebhook] delivery failed messageId=${statusItem.messageId} to=${statusItem.recipient} reason=${formatWppDeliveryFailureReason(statusItem)}`);
+    } else {
+      log(`[wppWebhook] delivery status=${statusItem.status} messageId=${statusItem.messageId} to=${statusItem.recipient}`);
+    }
+  }
+
   const { settings } = await loadWppSettings();
   const incomingAutoReply = sanitizeWppIncomingAutoReply(settings.incomingAutoReply);
   const messages = extractWppIncomingMessages(payload)
     .filter((message) => !message.phoneNumberId || message.phoneNumberId === cleanString(settings.phoneNumberId));
   if (!messages.length) {
-    return { ok: true, received: messages.length, replied: 0, skipped: messages.length };
+    return {
+      ok: true,
+      received: 0,
+      replied: 0,
+      skipped: 0,
+      statuses: statusUpdates.length,
+      statusesRecorded,
+    };
   }
 
   let replied = 0;
@@ -19875,7 +20281,16 @@ async function handleWppIncomingWebhook(payload, log) {
     }
   }
   if (failures.length) log(`[wppWebhook] reply failures=${JSON.stringify(failures)}`);
-  return { ok: true, received: messages.length, replied, duplicates, failed: failures.length, actions: actionResults };
+  return {
+    ok: true,
+    received: messages.length,
+    replied,
+    duplicates,
+    failed: failures.length,
+    actions: actionResults,
+    statuses: statusUpdates.length,
+    statusesRecorded,
+  };
 }
 
 async function loadEmailSettings() {
@@ -26960,6 +27375,11 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       const messageId = await sendWppTemplateTest(payload.test);
       return jsonResponse(res, 200, { ok: true, messageId });
+    }
+
+    if (action === "listWppDeliveryStatuses") {
+      const deliveries = await listWppDeliveryStatuses(actorUserId, payload);
+      return jsonResponse(res, 200, { deliveries });
     }
 
     if (action === "ensureSoloFlightWppTemplates") {

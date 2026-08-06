@@ -7,6 +7,7 @@ import {
   type SavedFlightListItem,
 } from "../../lib/flightsDb";
 import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
+import { getCachedSchoolRules, getSchoolRules } from "../../lib/schoolRulesDb";
 import {
   createSoloFlightRequest,
   evaluateSoloFlight,
@@ -23,12 +24,16 @@ import {
   type SoloFlightRequest,
   type SoloFlightRequestType,
 } from "../../types/soloFlight";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES } from "../../types/schoolRules";
 import { AiswebAerodromePicker } from "../AiswebAerodromePicker";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
 const STEPS = ["Voo da escala", "Aeródromos", "Critérios manuais", "Resumo"] as const;
 const DEFAULT_SCHOOL_ORIGIN_ICAO = "SBJD";
+const DEFAULT_DESTINATION_ICAO = "SDCO";
+const DEFAULT_ALTERNATE_ICAO = "SDPW";
+const SOLO_CUTOFF_LIMIT_ZULU = "19:00";
 type Mode = "history" | "flow";
 type SoloAgendaFlight = SavedFlightListItem & {
   soloStudentName?: string;
@@ -109,6 +114,21 @@ function statusLabel(status: SoloFlightRequest["status"] | SoloFlightEvaluation[
   return labels[status] || status;
 }
 
+function statusBadgeClass(status: SoloFlightRequest["status"] | SoloFlightEvaluation["status"]): string {
+  if (status === "pending_approval" || status === "draft") return "border-amber-700 bg-amber-500/15 text-amber-200";
+  if (status === "rejected") return "border-red-800 bg-red-500/15 text-red-300";
+  if (status === "approved" || status === "auto_approved") return "border-emerald-700 bg-emerald-500/15 text-emerald-300";
+  return "border-slate-700 bg-slate-800 text-slate-300";
+}
+
+function sortRequestsNewestFirst(items: SoloFlightRequest[]): SoloFlightRequest[] {
+  return [...items].sort((a, b) => {
+    const left = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    const right = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    return left - right;
+  });
+}
+
 function flightTitle(flight: SoloAgendaFlight): string {
   return [flight.start_time ? `${flight.start_time}Z` : "sem horário", flight.aircraft_ident || "", flight.from_to || ""].filter(Boolean).join(" · ");
 }
@@ -187,6 +207,12 @@ function endTimeLabel(flight: SoloAgendaFlight): string {
   return addMinutesToTime(flight.start_time, flight.block_time_minutes || flight.total_flight_minutes) || "--:--";
 }
 
+function cutoffTimeForFlight(flight: SoloAgendaFlight, debriefingMinutes: number): string {
+  const blockMinutes = flight.block_time_minutes || flight.total_flight_minutes;
+  if (!blockMinutes || !Number.isFinite(blockMinutes)) return "";
+  return addMinutesToTime(flight.start_time, Math.max(0, blockMinutes - debriefingMinutes));
+}
+
 function activeEndorsement(items: SoloFlightEndorsement[]): SoloFlightEndorsement | null {
   return items.find((item) => item.active) || items[0] || null;
 }
@@ -199,6 +225,11 @@ function metarIcao(check: SoloFlightCheckResult): string {
 function metarRaw(check: SoloFlightCheckResult): string {
   const value = check.value && typeof check.value === "object" ? check.value as { metar?: unknown } : null;
   return String(value?.metar || "").trim();
+}
+
+function metarHasNoData(check: SoloFlightCheckResult): boolean {
+  const value = check.value && typeof check.value === "object" ? check.value as { noMetar?: unknown } : null;
+  return value?.noMetar === true || check.details === "Sem metar" || (!metarRaw(check) && check.ok === true);
 }
 
 function CheckRow({ check, compact = false }: { check: SoloFlightCheckResult; compact?: boolean }) {
@@ -224,11 +255,12 @@ function MetarChecklist({ checks }: { checks: SoloFlightCheckResult[] }) {
     <section className="rounded-lg border border-slate-800 bg-slate-950/35 p-4">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <h3 className="text-sm font-semibold text-slate-100">METAR dos aeródromos</h3>
-        <p className="text-xs text-slate-500">Todos precisam atender ao mínimo aluno_solo.</p>
+        <p className="text-xs text-slate-500">Mínimo aluno_solo; aeródromos sem METAR são aprovados automaticamente.</p>
       </div>
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         {checks.map((check) => {
           const ok = check.ok === true;
+          const noMetar = metarHasNoData(check);
           const raw = metarRaw(check);
           return (
             <div key={check.id} className={`rounded-lg border p-3 ${ok ? "border-emerald-800/70 bg-emerald-950/15" : "border-amber-800 bg-amber-950/20"}`}>
@@ -238,7 +270,7 @@ function MetarChecklist({ checks }: { checks: SoloFlightCheckResult[] }) {
                   <p className="mt-1 text-xs text-slate-400">{check.details}</p>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-200"}`}>
-                  {ok ? "ok" : "flag"}
+                  {noMetar ? "sem metar" : ok ? "ok" : "flag"}
                 </span>
               </div>
               {raw ? <p className="mt-2 rounded border border-slate-800 bg-slate-950/60 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-300">{raw}</p> : null}
@@ -247,6 +279,72 @@ function MetarChecklist({ checks }: { checks: SoloFlightCheckResult[] }) {
         })}
       </div>
     </section>
+  );
+}
+
+function RequestChecklistDetails({ request }: { request: SoloFlightRequest }) {
+  const checks = [...(request.automaticChecks || []), ...(request.manualChecks || []), ...(request.metarChecks || [])];
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+      <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4">
+        <p><span className="font-semibold text-slate-500">Tipo:</span> {requestTypeLabel(request.requestType)}</p>
+        <p><span className="font-semibold text-slate-500">Início:</span> {request.startTime || "--:--"}Z</p>
+        <p><span className="font-semibold text-slate-500">Corte:</span> {request.cutoffTime || "--:--"}Z</p>
+        <p><span className="font-semibold text-slate-500">Criado:</span> {request.createdAt ? new Date(request.createdAt).toLocaleString("pt-BR") : "-"}</p>
+      </div>
+      {request.flags.length ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-300">Flags</p>
+          {request.flags.map((flag) => (
+            <div key={flag.id} className="rounded border border-amber-900/60 bg-amber-950/20 px-2.5 py-1.5 text-xs text-amber-100">
+              <strong>{flag.label}</strong>
+              {flag.details ? <p className="mt-0.5 opacity-80">{flag.details}</p> : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-emerald-300">Sem flags.</p>
+      )}
+      {checks.length ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Itens do checklist</p>
+          <ul className="grid gap-1.5 sm:grid-cols-2">
+            {checks.map((check) => <CheckRow key={check.id} check={check} />)}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ExpandableRequestCard({ request }: { request: SoloFlightRequest }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-start justify-between gap-3 px-3 py-2.5 text-left"
+      >
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-slate-100">{request.studentName || request.studentUserId}</p>
+          <p className="mt-0.5 truncate text-xs text-slate-400">
+            {request.flightDate} · {request.route || "-"} · {requestTypeLabel(request.requestType)}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusBadgeClass(request.status)}`}>
+            {statusLabel(request.status)}
+          </span>
+          <span className="text-xs text-slate-500">{open ? "▾" : "▸"}</span>
+        </div>
+      </button>
+      {open ? (
+        <div className="px-3 pb-3">
+          <RequestChecklistDetails request={request} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -290,8 +388,8 @@ export function InstructorSoloFlightTab() {
   const [startTime, setStartTime] = useState("");
   const [cutoffTime, setCutoffTime] = useState("");
   const [originIcaos, setOriginIcaos] = useState<string[]>([]);
-  const [destinationIcaos, setDestinationIcaos] = useState<string[]>([]);
-  const [alternateIcaos, setAlternateIcaos] = useState<string[]>([]);
+  const [destinationIcaos, setDestinationIcaos] = useState<string[]>([DEFAULT_DESTINATION_ICAO]);
+  const [alternateIcaos, setAlternateIcaos] = useState<string[]>([DEFAULT_ALTERNATE_ICAO]);
   const [manualChecks, setManualChecks] = useState<SoloFlightManualCheck[]>(() =>
     SOLO_FLIGHT_DEFAULT_MANUAL_CHECKS.map((item) => ({ ...item })),
   );
@@ -303,6 +401,9 @@ export function InstructorSoloFlightTab() {
   const [requests, setRequests] = useState<SoloFlightRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [debriefingMinutes, setDebriefingMinutes] = useState(() =>
+    getCachedSchoolRules()?.schedule.bufferAfterMinutes ?? DEFAULT_FLIGHT_SCHEDULE_RULES.bufferAfterMinutes,
+  );
 
   const agendaDays = useMemo(() => {
     const today = isoToday();
@@ -312,9 +413,9 @@ export function InstructorSoloFlightTab() {
   const loadRequests = useCallback(async () => {
     setRequestsLoading(true);
     try {
-      setRequests(await listSoloFlightRequests({ instructorUserId: user?.id, limit: 20 }));
+      setRequests(sortRequestsNewestFirst(await listSoloFlightRequests({ instructorUserId: user?.id, limit: 50 })));
     } catch (error) {
-      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar solicitações." });
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar checklists." });
     } finally {
       setRequestsLoading(false);
     }
@@ -363,11 +464,20 @@ export function InstructorSoloFlightTab() {
     void loadFlights();
   }, [loadFlights, loadRequests]);
 
+  useEffect(() => {
+    void getSchoolRules()
+      .then((rules) => setDebriefingMinutes(rules.schedule.bufferAfterMinutes))
+      .catch(() => undefined);
+  }, []);
+
   const loadEndorsements = useCallback(async (studentUserId: string) => {
     if (!studentUserId) return;
     setEndorsementsLoading(true);
     try {
-      setEndorsements(await listSoloFlightEndorsements(studentUserId));
+      const items = await listSoloFlightEndorsements(studentUserId);
+      setEndorsements(
+        [...items].sort((a, b) => new Date(b.uploadedAt || b.createdAt || 0).getTime() - new Date(a.uploadedAt || a.createdAt || 0).getTime()),
+      );
     } catch (error) {
       setEndorsements([]);
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar endossos." });
@@ -383,6 +493,9 @@ export function InstructorSoloFlightTab() {
     setEvaluation(null);
     setEndorsements([]);
     setEndorsementUploadNotes("");
+    setOriginIcaos([]);
+    setDestinationIcaos([DEFAULT_DESTINATION_ICAO]);
+    setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
   }
 
   function pickFlight(flight: SoloAgendaFlight) {
@@ -390,10 +503,10 @@ export function InstructorSoloFlightTab() {
     setEvaluation(null);
     setFlightDate(flight.flight_date || isoToday());
     setStartTime((flight.start_time || "").slice(0, 5));
-    setCutoffTime(addMinutesToTime(flight.start_time, flight.block_time_minutes || flight.total_flight_minutes));
+    setCutoffTime(cutoffTimeForFlight(flight, debriefingMinutes));
     setOriginIcaos([DEFAULT_SCHOOL_ORIGIN_ICAO]);
-    setDestinationIcaos([]);
-    setAlternateIcaos([]);
+    setDestinationIcaos([DEFAULT_DESTINATION_ICAO]);
+    setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
     setEndorsements([]);
     setEndorsementUploadNotes("");
     void loadEndorsements(flight.student_user_id || "");
@@ -462,6 +575,8 @@ export function InstructorSoloFlightTab() {
     try {
       const uploaded = await uploadSoloFlightEndorsement({
         studentUserId,
+        uploaderUserId: user?.id,
+        uploaderRole: user?.role,
         file,
         notes: endorsementUploadNotes,
       });
@@ -509,14 +624,14 @@ export function InstructorSoloFlightTab() {
       const request = await createSoloFlightRequest(payload);
       showToast({
         variant: "success",
-        message: request.status === "pending_approval" ? "Solicitação enviada para aprovação." : "Voo solo aprovado automaticamente.",
+        message: request.status === "pending_approval" ? "Checklist enviado para aprovação." : "Checklist solo aprovado automaticamente.",
       });
-      setRequests((current) => [request, ...current]);
+      setRequests((current) => sortRequestsNewestFirst([request, ...current]));
       setMode("history");
       setStep(0);
       setEvaluation(null);
     } catch (error) {
-      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar a solicitação." });
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar o checklist." });
     } finally {
       setLoading(false);
     }
@@ -529,28 +644,26 @@ export function InstructorSoloFlightTab() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="text-lg font-semibold text-slate-100">Voo solo</h1>
-              <p className="mt-1 text-sm text-slate-500">Últimas solicitações e novo fluxo de aprovação.</p>
+              <p className="mt-1 text-sm text-slate-500">Últimos checklists e novo fluxo de aprovação.</p>
             </div>
             <button type="button" onClick={startNewFlow} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500">
-              Nova solicitação
+              Novo checklist solo
             </button>
           </div>
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-slate-100">Últimas solicitações</h2>
+            <h2 className="font-semibold text-slate-100">Últimos checklists</h2>
             <button type="button" onClick={() => void loadRequests()} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">
               Atualizar
             </button>
           </div>
           {requestsLoading ? <Skeleton className="mt-4 h-40 rounded-xl" /> : null}
-          {!requestsLoading && requests.length === 0 ? <p className="mt-4 text-sm text-slate-500">Nenhuma solicitação recente.</p> : null}
+          {!requestsLoading && requests.length === 0 ? <p className="mt-4 text-sm text-slate-500">Nenhum checklist recente.</p> : null}
           <div className="mt-4 space-y-2">
-            {requests.map((request) => (
-              <div key={request.id} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-300">
-                <strong className="text-slate-100">{request.studentName || request.studentUserId}</strong> · {request.flightDate} · {request.route || "-"} · {statusLabel(request.status)}
-              </div>
+            {sortRequestsNewestFirst(requests).map((request) => (
+              <ExpandableRequestCard key={request.id} request={request} />
             ))}
           </div>
         </section>
@@ -563,7 +676,7 @@ export function InstructorSoloFlightTab() {
       <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-slate-100">Nova solicitação de voo solo</h1>
+            <h1 className="text-lg font-semibold text-slate-100">Novo checklist solo</h1>
             <p className="mt-1 text-sm text-slate-500">
               {selectedFlight ? `${requestTypeLabel(requestType)} · ${formatDate(selectedFlight.flight_date)} · ${flightTitle(selectedFlight)}` : "Escolha um voo da agenda para começar."}
             </p>
@@ -593,7 +706,7 @@ export function InstructorSoloFlightTab() {
         <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <label className="text-xs font-medium text-slate-400">
-              Tipo de solicitação
+              Tipo de checklist
               <select
                 value={requestType}
                 onChange={(event) => {
@@ -672,19 +785,21 @@ export function InstructorSoloFlightTab() {
               <input type="date" value={flightDate} readOnly className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300" />
             </label>
             <label className="text-xs font-medium text-slate-400">
-              Início (Zulu)
+              Início (Z)
               <input type="time" value={startTime} readOnly className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300" />
             </label>
             <label className="text-xs font-medium text-slate-400">
-              Corte previsto (Zulu)
+              Corte previsto (Z)
               <input type="time" value={cutoffTime} onChange={(event) => { setCutoffTime(event.target.value); setEvaluation(null); }} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
             </label>
           </div>
-          <p className="mt-3 text-xs text-slate-500">Os horários deste fluxo são tratados em Zulu (UTC), conforme a escala importada.</p>
+          <p className="mt-3 text-xs text-slate-500">
+            Horários em Zulu (UTC). O corte é calculado antes do debriefing; limite solo: até {SOLO_CUTOFF_LIMIT_ZULU}Z.
+          </p>
           <div className="mt-5 grid gap-5 lg:grid-cols-3">
             <AiswebAerodromePicker label="Origem" value={originIcaos} onChange={(next) => { setOriginIcaos(next); setEvaluation(null); }} multiple={false} helper="SBJD é usado como padrão, mas pode ser alterado." />
-            <AiswebAerodromePicker label="Aeródromos de destino solo" value={destinationIcaos} onChange={(next) => { setDestinationIcaos(next); setEvaluation(null); }} helper="Use um ou mais aeródromos onde haverá operação solo." />
-            <AiswebAerodromePicker label="Aeródromos alternativos" value={alternateIcaos} onChange={(next) => { setAlternateIcaos(next); setEvaluation(null); }} helper="Informe os alternativos previstos para a solicitação." />
+            <AiswebAerodromePicker label="Aeródromos de destino solo" value={destinationIcaos} onChange={(next) => { setDestinationIcaos(next); setEvaluation(null); }} helper="Padrão: SDCO. Use um ou mais aeródromos onde haverá operação solo." />
+            <AiswebAerodromePicker label="Aeródromos alternativos" value={alternateIcaos} onChange={(next) => { setAlternateIcaos(next); setEvaluation(null); }} helper="Padrão: SDPW. Informe os alternativos previstos para o checklist." />
           </div>
           <div className="mt-5 flex justify-between gap-3">
             <button type="button" onClick={() => setStep(0)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Voltar</button>
@@ -702,7 +817,7 @@ export function InstructorSoloFlightTab() {
                 {endorsementsLoading ? <p className="mt-1 text-sm text-slate-500">Carregando endossos...</p> : null}
                 {!endorsementsLoading && endorsement ? (
                   <p className="mt-1 text-sm text-slate-400">
-                    {endorsement.fileName} · v{endorsement.version} · {new Date(endorsement.uploadedAt).toLocaleDateString("pt-BR")}
+                    Ativo: {endorsement.fileName} · v{endorsement.version} · {new Date(endorsement.uploadedAt).toLocaleDateString("pt-BR")}
                   </p>
                 ) : null}
                 {!endorsementsLoading && !endorsement ? <p className="mt-1 text-sm text-amber-300">Este aluno ainda não possui endosso anexado.</p> : null}
@@ -711,7 +826,7 @@ export function InstructorSoloFlightTab() {
               <div className="flex flex-wrap gap-2">
                 {endorsement ? (
                   <a href={endorsement.fileUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">
-                    Abrir endosso
+                    Abrir endosso ativo
                   </a>
                 ) : null}
                 <button type="button" onClick={() => void loadEndorsements(selectedFlight?.student_user_id || "")} disabled={endorsementsLoading} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50">
@@ -719,6 +834,30 @@ export function InstructorSoloFlightTab() {
                 </button>
               </div>
             </div>
+            {!endorsementsLoading && endorsements.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Histórico de endossos</p>
+                {endorsements.map((item) => (
+                  <div key={item.id} className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-slate-200">
+                        {item.fileName} · v{item.version}
+                        {item.active ? <span className="ml-2 rounded border border-emerald-700 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-emerald-300">ativo</span> : null}
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {new Date(item.uploadedAt).toLocaleString("pt-BR")}
+                        {item.notes ? ` · ${item.notes}` : ""}
+                      </p>
+                    </div>
+                    {item.fileUrl ? (
+                      <a href={item.fileUrl} target="_blank" rel="noreferrer" className="shrink-0 rounded border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800">
+                        Abrir
+                      </a>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <label className="text-xs font-medium text-slate-400">
                 Observação do endosso
@@ -778,8 +917,8 @@ export function InstructorSoloFlightTab() {
                   {evaluation?.flags.length ? `${evaluation.flags.length} item(ns) em flag.` : "Todos os critérios atendidos."}
                 </p>
               </div>
-              <span className={`w-fit rounded px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${evaluation?.flags.length ? "bg-amber-500/15 text-amber-200" : "bg-emerald-500/15 text-emerald-300"}`}>
-                {evaluation?.status === "pending_approval" ? "pendente" : "ok"}
+              <span className={`w-fit rounded border px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${evaluation ? statusBadgeClass(evaluation.status) : "border-slate-700 bg-slate-800 text-slate-300"}`}>
+                {evaluation ? statusLabel(evaluation.status) : "—"}
               </span>
             </div>
           </div>
@@ -794,7 +933,7 @@ export function InstructorSoloFlightTab() {
               <p className="mt-1 text-slate-100">{selectedFlight?.aircraft_ident || "Aeronave não informada"}</p>
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Horário Zulu</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Zulu</p>
               <p className="mt-1 text-slate-100">{startTime || "--:--"}Z-{cutoffTime || "--:--"}Z</p>
             </div>
             <div>
@@ -812,8 +951,8 @@ export function InstructorSoloFlightTab() {
 
           <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm text-slate-300">
             {evaluation?.flags.length
-              ? "Ao enviar, SGSO/coordenador decidem a solicitação."
-              : "Ao enviar, o voo solo é aprovado automaticamente."}
+              ? "Como há pendências, este checklist ficará aguardando aprovação do SGSO ou coordenador. Eles recebem a solicitação e decidem pelo WhatsApp ou pelo painel administrativo."
+              : "Sem pendências: ao enviar, o checklist solo é aprovado automaticamente e SGSO/coordenador recebem ciência."}
           </div>
 
           <div className="flex flex-wrap justify-between gap-3">
@@ -823,7 +962,7 @@ export function InstructorSoloFlightTab() {
                 {loading ? "Validando..." : "Revalidar"}
               </button>
               <button type="button" onClick={() => void submit()} disabled={loading || !evaluation} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
-                Enviar solicitação
+                Enviar checklist
               </button>
             </div>
           </div>

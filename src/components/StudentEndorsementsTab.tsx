@@ -43,7 +43,7 @@ export function StudentEndorsementsTab() {
     if (!file || !user) return;
     setUploading(true);
     try {
-      await uploadSoloFlightEndorsement({ studentUserId: user.id, file, notes });
+      await uploadSoloFlightEndorsement({ studentUserId: user.id, uploaderUserId: user.id, uploaderRole: user.role, file, notes });
       setNotes("");
       showToast({ variant: "success", message: "Endosso anexado." });
       await load();

@@ -35,15 +35,18 @@ async function executeSoloFlight(payload: Record<string, unknown>): Promise<Solo
   return response;
 }
 
-function endorsementFilePermissions(studentUserId: string): string[] {
-  return [
-    Permission.read(Role.user(studentUserId)),
-    Permission.read(Role.label("admin")),
-    Permission.read(Role.label("instrutor")),
-    Permission.update(Role.user(studentUserId)),
-    Permission.delete(Role.user(studentUserId)),
-    Permission.delete(Role.label("admin")),
-  ];
+function endorsementFilePermissions(uploaderUserId: string, uploaderRole?: string): string[] {
+  const permissions = new Set<string>([
+    Permission.read(Role.user(uploaderUserId)),
+    Permission.update(Role.user(uploaderUserId)),
+    Permission.delete(Role.user(uploaderUserId)),
+  ]);
+  if (uploaderRole === "instrutor" || uploaderRole === "admin") {
+    permissions.add(Permission.read(Role.label("instrutor")));
+    permissions.add(Permission.update(Role.label("instrutor")));
+    permissions.add(Permission.delete(Role.label("instrutor")));
+  }
+  return [...permissions];
 }
 
 export function getSoloFlightEndorsementUrl(fileId: string): string {
@@ -58,6 +61,8 @@ export async function listSoloFlightEndorsements(studentUserId?: string): Promis
 
 export async function uploadSoloFlightEndorsement(params: {
   studentUserId: string;
+  uploaderUserId?: string;
+  uploaderRole?: string;
   file: File;
   notes?: string;
 }): Promise<SoloFlightEndorsement> {
@@ -70,7 +75,7 @@ export async function uploadSoloFlightEndorsement(params: {
     BUCKET_ID,
     ID.unique(),
     params.file,
-    endorsementFilePermissions(params.studentUserId),
+    endorsementFilePermissions(params.uploaderUserId || params.studentUserId, params.uploaderRole),
   );
   try {
     const response = await executeSoloFlight({
