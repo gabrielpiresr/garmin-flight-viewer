@@ -492,34 +492,12 @@ function fullBleedBg(showBackground: boolean, width: number, height: number, col
   return `<rect x="0" y="0" width="${width}" height="${height}" fill="${color}" />`;
 }
 
-function brandMark(data: FlightShareData, x: number, y: number, width = 360): string {
-  const href = logoHref(data);
-  if (href) {
-    return `
-      <g>
-        <image href="${escapeXml(href)}" x="${x}" y="${y}" width="${width}" height="116" preserveAspectRatio="xMinYMid meet" />
-      </g>
-    `;
-  }
-  return "";
-}
-
 function smallBrand(data: FlightShareData, x: number, y: number): string {
   const href = logoHref(data);
   if (href) {
     return `<image href="${escapeXml(href)}" x="${x}" y="${y}" width="260" height="82" preserveAspectRatio="xMinYMid meet" />`;
   }
   return "";
-}
-
-function outerCard(showBackground: boolean, x: number, y: number, width: number, height: number, opacity = 0.43): string {
-  if (!showBackground) return "";
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="41.6" fill="#020617" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.14" />`;
-}
-
-function innerCard(showBackground: boolean, x: number, y: number, width: number, height: number, radius = 31.2, opacity = 0.74): string {
-  if (!showBackground) return "";
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="#0f172a" fill-opacity="${opacity}" stroke="#ffffff" stroke-opacity="0.12" />`;
 }
 
 function metricBlock(label: string, value: string, x: number, y: number, width = 395, height = 120): string {
