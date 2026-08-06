@@ -8,6 +8,7 @@ import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
 import { createFlightPublicShare, notifyStudentFlightReviewReady } from "../lib/publicFlightReviewShare";
+import { getWppDeliveryStatus } from "../lib/wppDb";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightAuditLogPanel } from "./admin/FlightAuditLogPanel";
 import { FlightShareStickersModal } from "./FlightShareStickersModal";
@@ -247,19 +248,46 @@ export function FlightDetailView({
       const notification = await notifyStudentFlightReviewReady(flightId);
       const emailStatus = notification.channels?.email;
       const wppStatus = notification.channels?.wpp;
-      const parts = [
+      const emailPart =
         emailStatus?.status === "sent"
           ? `E-mail enviado para ${emailStatus.address}.`
           : emailStatus?.reason
             ? `E-mail: ${emailStatus.reason}`
-            : null,
+            : null;
+      let wppPart =
         wppStatus?.status === "sent"
           ? `WhatsApp enviado para ${wppStatus.phone}.`
           : wppStatus?.reason
             ? `WhatsApp: ${wppStatus.reason}`
-            : null,
-      ].filter(Boolean);
-      setStudentNotifyStatus(parts.length ? parts.join(" ") : "Notificação processada.");
+            : null;
+      const joinParts = (...items: Array<string | null | undefined>) => items.filter(Boolean).join(" ");
+      setStudentNotifyStatus(joinParts(emailPart, wppPart) || "Notificação processada.");
+
+      const messageId = wppStatus?.providerMessageId?.trim();
+      if (wppStatus?.status === "sent" && messageId) {
+        setStudentNotifyStatus(joinParts(emailPart, wppPart, "Confirmando entrega..."));
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          const delivery = await getWppDeliveryStatus(messageId).catch(() => null);
+          if (!delivery) continue;
+          if (delivery.status === "failed") {
+            wppPart = `WhatsApp falhou para ${wppStatus.phone}: ${delivery.failureReason || "sem detalhe da Meta."}`;
+            setStudentNotifyStatus(joinParts(emailPart, wppPart));
+            return;
+          }
+          if (delivery.status === "delivered" || delivery.status === "read") {
+            wppPart = `WhatsApp ${delivery.status === "read" ? "lido" : "entregue"} para ${wppStatus.phone}.`;
+            setStudentNotifyStatus(joinParts(emailPart, wppPart));
+            return;
+          }
+          if (delivery.status === "sent" || delivery.status === "accepted") {
+            setStudentNotifyStatus(joinParts(emailPart, wppPart, `Status Meta: ${delivery.status}.`));
+          }
+        }
+        setStudentNotifyStatus(
+          joinParts(emailPart, wppPart, "Entrega ainda não confirmada pela Meta — veja Admin → WPP → Entregas."),
+        );
+      }
     } catch (err) {
       setStudentNotifyStatus((err as Error).message || "Nao foi possivel notificar o aluno.");
     } finally {

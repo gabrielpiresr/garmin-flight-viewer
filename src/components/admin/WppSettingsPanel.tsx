@@ -3,6 +3,7 @@ import {
   createWppTemplate,
   deleteWppTemplate,
   getWppSettings,
+  listWppDeliveryStatuses,
   listWppTemplates,
   saveWppBotSettings,
   saveWppSettings,
@@ -15,6 +16,7 @@ import { ensureSoloFlightWppTemplates } from "../../lib/soloFlightDb";
 import type {
   WppConnectionInput,
   WppConnectionSettings,
+  WppDeliveryStatus,
   WppFlightReviewReadyTemplateSettings,
   WppIncomingActionType,
   WppIncomingAutoReplyRule,
@@ -42,7 +44,7 @@ const EMPTY_CONNECTION: WppConnectionInput = {
 
 const DEFAULT_FLIGHT_REVIEW_TEMPLATE: WppFlightReviewReadyTemplateSettings = {
   enabled: true,
-  templateName: "avisodevoo",
+  templateName: "attvoo_2",
   language: "pt_BR",
 };
 
@@ -107,7 +109,7 @@ const WPP_BOT_ACTION_LABEL: Record<WppIncomingActionType, string> = {
   start_flight_booking: "Iniciar agendamento de voo",
 };
 
-type WppSettingsSection = "bot" | "connection" | "notifications" | "templates";
+type WppSettingsSection = "bot" | "connection" | "notifications" | "templates" | "deliveries";
 
 const WPP_SETTING_SECTIONS: Array<{
   id: WppSettingsSection;
@@ -118,7 +120,49 @@ const WPP_SETTING_SECTIONS: Array<{
   { id: "connection", title: "Conex\u00e3o Meta", description: "Conta e token" },
   { id: "notifications", title: "Automa\u00e7\u00f5es", description: "Templates usados" },
   { id: "templates", title: "Templates", description: "Biblioteca Meta" },
+  { id: "deliveries", title: "Entregas", description: "Status da Meta" },
 ];
+
+function deliveryStatusLabel(status: string): string {
+  switch (String(status || "").toLowerCase()) {
+    case "accepted":
+      return "Aceito pela Meta";
+    case "sent":
+      return "Enviado à operadora";
+    case "delivered":
+      return "Entregue";
+    case "read":
+      return "Lido";
+    case "failed":
+      return "Falhou";
+    case "deleted":
+      return "Apagado";
+    default:
+      return status || "Desconhecido";
+  }
+}
+
+function deliveryStatusStyle(status: string): string {
+  switch (String(status || "").toLowerCase()) {
+    case "delivered":
+    case "read":
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
+    case "sent":
+    case "accepted":
+      return "border-sky-500/40 bg-sky-500/10 text-sky-300";
+    case "failed":
+      return "border-red-500/40 bg-red-500/10 text-red-300";
+    default:
+      return "border-slate-700 bg-slate-900 text-slate-400";
+  }
+}
+
+function formatDeliveryWhen(value: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("pt-BR");
+}
 
 const WPP_MAX_REPLY_BUTTONS = 10;
 
@@ -336,6 +380,19 @@ function variableCount(text: string): number {
   return matches.length ? Math.max(...matches) : 0;
 }
 
+function urlButtonVariableSlots(template: WppTemplate): Array<{ index: number; label: string }> {
+  const buttons = template.components.find((component) => component.type.toUpperCase() === "BUTTONS")?.buttons ?? [];
+  return buttons
+    .map((button, index) => {
+      const type = String(button?.type || "").toUpperCase();
+      const url = String(button?.url || "");
+      if (type !== "URL" || variableCount(url) < 1) return null;
+      const text = String(button?.text || "Abrir link").trim() || "Abrir link";
+      return { index, label: `Botão URL “${text}” {{1}}` };
+    })
+    .filter((item): item is { index: number; label: string } => Boolean(item));
+}
+
 function statusStyle(status: string): string {
   if (status === "APPROVED") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
   if (status === "REJECTED" || status === "PAUSED" || status === "DISABLED") return "border-red-500/30 bg-red-500/10 text-red-300";
@@ -427,9 +484,11 @@ function TestTemplateModal({ template, onClose }: { template: WppTemplate; onClo
   const { showToast } = useToast();
   const headerCount = variableCount(componentText(template, "HEADER"));
   const count = variableCount(componentText(template, "BODY"));
+  const urlButtons = urlButtonVariableSlots(template);
   const [phone, setPhone] = useState("");
   const [headerValues, setHeaderValues] = useState<string[]>(() => Array.from({ length: headerCount }, () => ""));
   const [values, setValues] = useState<string[]>(() => Array.from({ length: count }, () => ""));
+  const [buttonUrlValues, setButtonUrlValues] = useState<string[]>(() => Array.from({ length: urlButtons.length }, () => ""));
   const [sending, setSending] = useState(false);
 
   async function send() {
@@ -437,13 +496,23 @@ function TestTemplateModal({ template, onClose }: { template: WppTemplate; onClo
       showToast({ variant: "warning", message: "Informe o telefone com DDI e DDD." });
       return;
     }
-    if ([...headerValues, ...values].some((value) => !value.trim())) {
+    if ([...headerValues, ...values, ...buttonUrlValues].some((value) => !value.trim())) {
       showToast({ variant: "warning", message: "Preencha todos os valores do template." });
       return;
     }
     setSending(true);
     try {
-      await sendWppTemplateTest({ templateName: template.name, language: template.language, to: phone, headerParameters: headerValues, bodyParameters: values });
+      await sendWppTemplateTest({
+        templateName: template.name,
+        language: template.language,
+        to: phone,
+        headerParameters: headerValues,
+        bodyParameters: values,
+        buttonUrlParameters: buttonUrlValues.map((value, index) => ({
+          index: urlButtons[index]?.index ?? index,
+          text: value,
+        })),
+      });
       showToast({ variant: "success", message: "Template de teste enviado para o WhatsApp informado." });
       onClose();
     } catch (error) {
@@ -464,6 +533,16 @@ function TestTemplateModal({ template, onClose }: { template: WppTemplate; onClo
         {values.map((value, index) => <label key={index} className="block text-xs font-medium text-slate-400">Valor de {`{{${index + 1}}}`}
           <input value={value} onChange={(e) => setValues((current) => current.map((item, itemIndex) => itemIndex === index ? e.target.value : item))} placeholder={`Exemplo para a variável ${index + 1}`} className={inputClass} />
         </label>)}
+        {urlButtons.map((button, index) => (
+          <label key={`url-btn-${button.index}`} className="block text-xs font-medium text-slate-400">{button.label}
+            <input
+              value={buttonUrlValues[index] || ""}
+              onChange={(e) => setButtonUrlValues((current) => current.map((item, itemIndex) => (itemIndex === index ? e.target.value : item)))}
+              placeholder="Sufixo dinâmico da URL (ex.: token do link)"
+              className={inputClass}
+            />
+          </label>
+        ))}
         <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Prévia</p><p className="whitespace-pre-wrap text-sm leading-6 text-slate-300">{componentText(template, "BODY") || "Sem conteúdo"}</p></div>
       </div>
       <div className="flex justify-end gap-3 border-t border-slate-800 px-5 py-4 sm:px-6"><button type="button" onClick={onClose} className={secondaryButton}>Cancelar</button><button type="button" onClick={() => void send()} disabled={sending || template.status !== "APPROVED"} className={primaryButton}>{sending ? "Enviando..." : "Enviar teste"}</button></div>
@@ -586,6 +665,8 @@ export function WppSettingsPanel() {
   const [testing, setTesting] = useState(false);
   const [activeSection, setActiveSection] = useState<WppSettingsSection>("bot");
   const [search, setSearch] = useState("");
+  const [deliveries, setDeliveries] = useState<WppDeliveryStatus[]>([]);
+  const [loadingDeliveries, setLoadingDeliveries] = useState(false);
   const [editorTemplate, setEditorTemplate] = useState<WppTemplate | "new" | null>(null);
   const [testTemplate, setTestTemplate] = useState<WppTemplate | null>(null);
   const [deleteTemplate, setDeleteTemplate] = useState<WppTemplate | null>(null);
@@ -596,6 +677,13 @@ export function WppSettingsPanel() {
     try { setTemplates(await listWppTemplates()); }
     catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar templates." }); }
     finally { setLoadingTemplates(false); }
+  }, [showToast]);
+
+  const loadDeliveries = useCallback(async () => {
+    setLoadingDeliveries(true);
+    try { setDeliveries(await listWppDeliveryStatuses({ limit: 40 })); }
+    catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar entregas." }); }
+    finally { setLoadingDeliveries(false); }
   }, [showToast]);
 
   const load = useCallback(async () => {
@@ -618,6 +706,10 @@ export function WppSettingsPanel() {
   }, [loadTemplates, showToast]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (activeSection === "deliveries") void loadDeliveries();
+  }, [activeSection, loadDeliveries]);
 
   async function connect() {
     if (!form.wabaId.trim() || !form.phoneNumberId.trim() || (!form.apiKey.trim() && !settings?.apiKeyConfigured)) {
@@ -1031,14 +1123,14 @@ export function WppSettingsPanel() {
             Enviar WhatsApp no botão Notificar aluno
           </label>
           <label className="text-xs font-medium text-slate-400">Aviso de voo pronto
-            <input value={flightReviewTemplate.templateName} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="avisodevoo" className={inputClass} />
+            <input value={flightReviewTemplate.templateName} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="attvoo_2" className={inputClass} />
           </label>
           <label className="text-xs font-medium text-slate-400">Idioma
             <input value={flightReviewTemplate.language} onChange={(e) => setFlightReviewTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
           </label>
           <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
-            <strong className="block text-slate-300">{"{{1}}"}</strong>
-            ID do link público
+            <strong className="block text-slate-300">Botão URL {"{{1}}"}</strong>
+            Token do link público (sufixo dinâmico do botão)
           </div>
         </div>
         <div className="border-t border-slate-800 p-5 sm:p-6">
@@ -1170,6 +1262,63 @@ export function WppSettingsPanel() {
         <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div><h2 className="font-semibold text-slate-100">Templates da conta</h2><p className="mt-1 text-sm text-slate-500">{templates.length} {templates.length === 1 ? "template sincronizado" : "templates sincronizados"} com a Meta.</p></div><div className="flex gap-2"><button type="button" onClick={() => void loadTemplates()} disabled={loadingTemplates || !settings?.apiKeyConfigured} className={secondaryButton}>{loadingTemplates ? "Atualizando..." : "Atualizar"}</button><button type="button" onClick={() => setEditorTemplate("new")} disabled={!connected} className={primaryButton}>+ Novo template</button></div></div>
         <div className="p-5 sm:p-6"><div className="relative mb-5"><svg viewBox="0 0 20 20" fill="currentColor" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"><path fillRule="evenodd" d="M9 3a6 6 0 104.472 10.002l3.763 3.763a.75.75 0 101.06-1.06l-3.763-3.763A6 6 0 009 3zM4.5 9a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0z" clipRule="evenodd" /></svg><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, categoria ou status..." className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 pl-10 pr-4 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500" /></div>
           {!connected ? <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-slate-700 bg-slate-950/30 p-8 text-center"><div><span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-slate-800 text-slate-500"><svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M8 4a4 4 0 117.446 2.032l2.261 2.26a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-.707.293H7v-2H5v-2H3.5a1 1 0 01-.707-1.707l5.175-5.175A4 4 0 018 4zm4-1.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" clipRule="evenodd" /></svg></span><p className="mt-4 text-sm font-medium text-slate-300">Conecte sua conta para carregar os templates</p><p className="mt-1 text-xs text-slate-600">Suas credenciais ficam protegidas na função administrativa do Appwrite.</p></div></div> : loadingTemplates ? <div className="space-y-3"><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /></div> : filtered.length === 0 ? <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><p className="text-sm font-medium text-slate-400">{search ? "Nenhum template encontrado" : "Nenhum template nesta conta"}</p><p className="mt-1 text-xs text-slate-600">{search ? "Tente buscar por outro termo." : "Crie o primeiro template para começar."}</p></div></div> : <div className="space-y-3">{filtered.map((template) => <article key={`${template.id}-${template.language}`} className="group rounded-xl border border-slate-800 bg-slate-950/40 p-4 transition hover:border-slate-700"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-mono text-sm font-semibold text-slate-200">{template.name}</h3><span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusStyle(template.status)}`}>{statusLabel(template.status)}</span></div><p className="mt-2 line-clamp-2 whitespace-pre-wrap text-sm leading-6 text-slate-500">{componentText(template, "BODY") || "Template sem corpo de mensagem"}</p><div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] uppercase tracking-wide text-slate-600"><span>{template.category}</span><span>{template.language}</span>{template.qualityScore ? <span>Qualidade: {template.qualityScore}</span> : null}</div></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => setTestTemplate(template)} disabled={template.status !== "APPROVED"} title={template.status !== "APPROVED" ? "Apenas templates aprovados podem ser enviados" : "Enviar teste"} className="rounded-lg border border-emerald-700/40 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-35">Testar</button><button type="button" onClick={() => setEditorTemplate(template)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800">Editar</button><button type="button" onClick={() => setDeleteTemplate(template)} className="rounded-lg border border-red-900/50 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/10">Excluir</button></div></div></article>)}</div>}
+        </div>
+      </section>
+
+      <section className={`${activeSection === "deliveries" ? "" : "hidden"} overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70`}>
+        <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <h2 className="font-semibold text-slate-100">Entregas recentes</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Status real da Meta via webhook: aceito, enviado, entregue, lido ou falha com motivo.
+            </p>
+          </div>
+          <button type="button" onClick={() => void loadDeliveries()} disabled={loadingDeliveries} className={secondaryButton}>
+            {loadingDeliveries ? "Atualizando..." : "Atualizar"}
+          </button>
+        </div>
+        <div className="p-5 sm:p-6">
+          {loadingDeliveries && deliveries.length === 0 ? (
+            <div className="space-y-3"><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /><Skeleton className="h-20 rounded-xl" /></div>
+          ) : deliveries.length === 0 ? (
+            <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center">
+              <div>
+                <p className="text-sm font-medium text-slate-400">Nenhuma entrega registrada ainda</p>
+                <p className="mt-1 text-xs text-slate-600">
+                  Envie um template ou use &quot;Notificar aluno&quot;. Os status da Meta aparecem aqui em seguida.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {deliveries.map((delivery) => (
+                <article key={delivery.id} className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${deliveryStatusStyle(delivery.status)}`}>
+                          {deliveryStatusLabel(delivery.status)}
+                        </span>
+                        {delivery.templateName ? (
+                          <span className="font-mono text-xs text-slate-300">{delivery.templateName}</span>
+                        ) : null}
+                      </div>
+                      <p className="text-sm text-slate-300">
+                        Para <span className="font-mono text-slate-100">{delivery.recipient || "—"}</span>
+                      </p>
+                      {delivery.failureReason ? (
+                        <p className="text-sm text-red-300">{delivery.failureReason}</p>
+                      ) : null}
+                      <p className="truncate font-mono text-[11px] text-slate-600" title={delivery.messageId}>
+                        {delivery.messageId}
+                      </p>
+                    </div>
+                    <p className="shrink-0 text-xs text-slate-500">{formatDeliveryWhen(delivery.occurredAt)}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

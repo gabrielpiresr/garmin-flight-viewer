@@ -2,6 +2,7 @@ import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
 import type {
   WppConnectionInput,
   WppConnectionSettings,
+  WppDeliveryStatus,
   WppFlightReviewReadyTemplateSettings,
   WppIncomingAutoReplySettings,
   WppTransactionalTemplateSettings,
@@ -17,6 +18,7 @@ type WppResponse = {
   templates?: WppTemplate[];
   template?: WppTemplate;
   messageId?: string;
+  deliveries?: WppDeliveryStatus[];
 };
 
 let templatesCache: { value: WppTemplate[]; expiresAt: number } | null = null;
@@ -157,4 +159,25 @@ export async function sendWppTemplateTest(
     test: input,
   });
   return response.messageId ?? null;
+}
+
+export async function listWppDeliveryStatuses(options?: {
+  limit?: number;
+  messageId?: string;
+}): Promise<WppDeliveryStatus[]> {
+  const response = await execute({
+    action: "listWppDeliveryStatuses",
+    limit: options?.limit ?? 40,
+    messageId: options?.messageId || undefined,
+  });
+  return response.deliveries ?? [];
+}
+
+export async function getWppDeliveryStatus(
+  messageId: string,
+): Promise<WppDeliveryStatus | null> {
+  const id = String(messageId || "").trim();
+  if (!id) return null;
+  const deliveries = await listWppDeliveryStatuses({ messageId: id, limit: 1 });
+  return deliveries[0] ?? null;
 }

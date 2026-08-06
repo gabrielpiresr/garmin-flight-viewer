@@ -131,10 +131,47 @@ export type WppTemplateInput = {
   buttons?: Array<Record<string, unknown>>;
 };
 
+export type WppTemplateButtonUrlParameter =
+  | string
+  | {
+      index?: number;
+      text?: string;
+      value?: string;
+    };
+
 export type WppTestTemplateInput = {
   templateName: string;
   language: string;
   to: string;
   headerParameters: string[];
   bodyParameters: string[];
+  buttonUrlParameters?: WppTemplateButtonUrlParameter[];
+};
+
+export type WppDeliveryStatusValue =
+  | "accepted"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "deleted"
+  | "unknown";
+
+export type WppDeliveryStatus = {
+  id: string;
+  messageId: string;
+  status: WppDeliveryStatusValue | string;
+  recipient: string;
+  templateName: string | null;
+  language: string | null;
+  occurredAt: string | null;
+  providerTimestamp: string | null;
+  source: string;
+  failureReason: string | null;
+  errors: Array<{
+    code: number | null;
+    title: string;
+    message: string;
+    details: string;
+  }>;
 };
