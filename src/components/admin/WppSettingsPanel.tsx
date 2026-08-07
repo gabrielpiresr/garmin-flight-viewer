@@ -1139,6 +1139,9 @@ export function WppSettingsPanel() {
               <input type="checkbox" checked={tomorrowFlightReminderTemplate.enabled} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
               Enviar lembrete automático às 19h para alunos com voo confirmado no dia seguinte
             </label>
+            <p className="sm:col-span-3 text-xs leading-5 text-slate-500">
+              Com escala somente no SAGA, o lembrete lê os voos confirmados direto da agenda do SAGA (não depende de sync local).
+            </p>
             <label className="text-xs font-medium text-slate-400">Lembrete de voo amanhã
               <input value={tomorrowFlightReminderTemplate.templateName} onChange={(e) => setTomorrowFlightReminderTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="lembrete_voo_amanha" className={inputClass} />
             </label>

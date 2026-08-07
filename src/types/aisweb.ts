@@ -25,6 +25,8 @@ export type AiswebWatchlist = {
   notamAlerts: Record<string, boolean>;
   /** Por ICAO: se true, envia e-mail quando sair suplemento AIP novo. */
   supplementAlerts: Record<string, boolean>;
+  /** Por ICAO: se true, envia e-mail quando sair aviso de aeródromo (REDEMET) novo. */
+  adWarningAlerts: Record<string, boolean>;
   updatedAt: string | null;
 };
 
@@ -97,6 +99,19 @@ export type AiswebSupplement = {
   publishedAt: string | null;
   ref: string | null;
   anexo: string | null;
+};
+
+/** Aviso de Aeródromo (AD WRNG) via API REDEMET. */
+export type AiswebAdWarning = {
+  id: string;
+  icao: string;
+  fir: string | null;
+  number: string | null;
+  text: string;
+  validFrom: string | null;
+  validTo: string | null;
+  status: string;
+  source: "REDEMET";
 };
 
 export type AiswebRunwayLight = {
@@ -296,6 +311,7 @@ export type AiswebAirportBundle = {
   rotaer: AiswebRotaer | null;
   notams: AiswebNotam[];
   supplements?: AiswebSupplement[];
+  adWarnings?: AiswebAdWarning[];
   sun: AiswebSunTimes | null;
   charts: AiswebChart[];
   airspace?: AiswebAirspace | null;

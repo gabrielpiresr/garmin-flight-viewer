@@ -422,8 +422,13 @@ async function main() {
   const aiswebApiKey = process.env.AISWEB_API_KEY || env.AISWEB_API_KEY || "1729957010";
   const aiswebApiPass =
     process.env.AISWEB_API_PASS || env.AISWEB_API_PASS || "e4d1ca4f-43ca-11f1-a4e0-0050569ac2e1";
+  const redemetApiKey =
+    process.env.REDEMET_API_KEY ||
+    env.REDEMET_API_KEY ||
+    "IZjiBB930icKHmXM3aA7rr9OviZWWl8rOpelFV57";
   await upsertVariable(functions, "AISWEB_API_KEY", aiswebApiKey, true);
   await upsertVariable(functions, "AISWEB_API_PASS", aiswebApiPass, true);
+  await upsertVariable(functions, "REDEMET_API_KEY", redemetApiKey, true);
   if (windyWebcamsApiKey) await upsertVariable(functions, "WINDY_WEBCAMS_API_KEY", windyWebcamsApiKey, true);
   if (meteoblueApiKey) await upsertVariable(functions, "METEOBLUE_API_KEY", meteoblueApiKey, true);
   await upsertVariable(functions, "METEOBLUE_LAT", String(meteoblueLat));

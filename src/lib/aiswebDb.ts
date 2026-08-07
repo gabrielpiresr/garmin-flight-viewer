@@ -73,6 +73,7 @@ function normalizeWatchlist(watchlist?: AiswebWatchlist | null): AiswebWatchlist
     icaoCodes: watchlist?.icaoCodes || [],
     notamAlerts: watchlist?.notamAlerts || {},
     supplementAlerts: watchlist?.supplementAlerts || {},
+    adWarningAlerts: watchlist?.adWarningAlerts || {},
     updatedAt: watchlist?.updatedAt || null,
   };
 }
@@ -129,22 +130,30 @@ export async function saveAiswebWatchlist(
   alerts?: {
     notamAlerts?: Record<string, boolean>;
     supplementAlerts?: Record<string, boolean>;
+    adWarningAlerts?: Record<string, boolean>;
   } | Record<string, boolean>,
 ): Promise<AiswebWatchlist> {
   // Compat: segundo arg antigo era só notamAlerts Record
-  const notamAlerts =
-    alerts && !("notamAlerts" in alerts) && !("supplementAlerts" in alerts)
-      ? (alerts as Record<string, boolean>)
-      : (alerts as { notamAlerts?: Record<string, boolean> } | undefined)?.notamAlerts;
-  const supplementAlerts =
-    alerts && ("supplementAlerts" in alerts || "notamAlerts" in alerts)
-      ? (alerts as { supplementAlerts?: Record<string, boolean> }).supplementAlerts
-      : undefined;
+  const isLegacy =
+    alerts &&
+    !("notamAlerts" in alerts) &&
+    !("supplementAlerts" in alerts) &&
+    !("adWarningAlerts" in alerts);
+  const notamAlerts = isLegacy
+    ? (alerts as Record<string, boolean>)
+    : (alerts as { notamAlerts?: Record<string, boolean> } | undefined)?.notamAlerts;
+  const supplementAlerts = !isLegacy
+    ? (alerts as { supplementAlerts?: Record<string, boolean> } | undefined)?.supplementAlerts
+    : undefined;
+  const adWarningAlerts = !isLegacy
+    ? (alerts as { adWarningAlerts?: Record<string, boolean> } | undefined)?.adWarningAlerts
+    : undefined;
   const response = await execute({
     action: "saveAiswebWatchlist",
     icaoCodes,
     ...(notamAlerts ? { notamAlerts } : {}),
     ...(supplementAlerts ? { supplementAlerts } : {}),
+    ...(adWarningAlerts ? { adWarningAlerts } : {}),
   });
   if (!response.watchlist) throw new Error("Watchlist AISWEB não retornada.");
   return normalizeWatchlist(response.watchlist);

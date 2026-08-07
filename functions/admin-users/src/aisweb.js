@@ -1,6 +1,7 @@
 "use strict";
 
 const AISWEB_API_BASE = "https://aisweb.decea.mil.br/api/";
+const REDEMET_API_BASE = "https://api-redemet.decea.mil.br";
 const AISWEB_SETTINGS_KEY = "aiswebSettings";
 const AISWEB_WATCHLIST_PREFIX = "aiswebWatchlist:";
 const AISWEB_METAR_WATCH_PREFIX = "aiswebMetarWatch:";
@@ -13,6 +14,8 @@ const WINDY_WEBCAMS_API_BASE = "https://api.windy.com/webcams/api/v3/webcams";
 const WINDY_WEBCAMS_CACHE_TTL_MS = 2 * 60 * 1000;
 const WINDY_WEBCAMS_DEFAULT_RADIUS_KM = 60;
 const WINDY_WEBCAMS_MAX_RADIUS_KM = 250;
+/** Janela padrão (h) para buscar avisos de aeródromo ainda válidos / recentes. */
+const AD_WARNING_LOOKBACK_HOURS = 36;
 
 const DEFAULT_MINIMUMS = [
   { condition: "vfr_diurno", label: "VFR DIURNO", ceilingFt: 2000, visibilityKm: 5, maxWindKt: 14 },
@@ -26,6 +29,7 @@ const rotaerCache = new Map();
 const solCache = new Map();
 const cartasCache = new Map();
 const suplementosCache = new Map();
+const adWarningCache = new Map();
 const geilocCache = new Map();
 const windyWebcamsCache = new Map();
 let aerodromeCatalogCache = null;
@@ -90,6 +94,154 @@ function aiswebCredentials() {
     apiKey: cleanString(process.env.AISWEB_API_KEY) || "1729957010",
     apiPass: cleanString(process.env.AISWEB_API_PASS) || "e4d1ca4f-43ca-11f1-a4e0-0050569ac2e1",
   };
+}
+
+function redemetApiKey() {
+  return cleanString(process.env.REDEMET_API_KEY) || "IZjiBB930icKHmXM3aA7rr9OviZWWl8rOpelFV57";
+}
+
+function formatRedemetHour(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  return `${y}${m}${day}${h}`;
+}
+
+function parseRedemetDateTime(value) {
+  const raw = cleanString(value);
+  if (!raw) return null;
+  // "2026-08-07 11:33:00" (UTC operacional REDEMET)
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (match) {
+    const iso = new Date(
+      Date.UTC(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3]),
+        Number(match[4]),
+        Number(match[5]),
+        Number(match[6] || 0),
+      ),
+    );
+    if (!Number.isNaN(iso.getTime())) return iso.toISOString();
+  }
+  const fallback = new Date(raw.includes("T") ? raw : raw.replace(" ", "T") + "Z");
+  return Number.isNaN(fallback.getTime()) ? null : fallback.toISOString();
+}
+
+function stableAdWarningId(icao, mens, validFrom, validTo) {
+  const basis = [normalizeIcao(icao), cleanString(mens), cleanString(validFrom), cleanString(validTo)].join("|");
+  let hash = 2166136261;
+  for (let i = 0; i < basis.length; i += 1) {
+    hash ^= basis.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `adw_${(hash >>> 0).toString(16)}`;
+}
+
+function parseAdWarningNumber(mens) {
+  const match = cleanString(mens).match(/\bAD\s*WRNG\s*(\d+)\b/i);
+  return match ? match[1] : null;
+}
+
+function normalizeAdWarningItem(raw, fallbackIcao) {
+  const icao = normalizeIcao(fallbackIcao);
+  const mens = cleanString(raw?.mens);
+  if (!mens) return null;
+  const validFrom = parseRedemetDateTime(raw?.validade_inicial);
+  const validTo = parseRedemetDateTime(raw?.validade_final);
+  const number = parseAdWarningNumber(mens);
+  const now = Date.now();
+  const toMs = validTo ? Date.parse(validTo) : NaN;
+  const fromMs = validFrom ? Date.parse(validFrom) : NaN;
+  let status = "UNKNOWN";
+  if (Number.isFinite(toMs) && toMs < now) status = "EXPIRED";
+  else if (Number.isFinite(fromMs) && fromMs > now) status = "SCHEDULED";
+  else if (Number.isFinite(toMs) || Number.isFinite(fromMs)) status = "ACTIVE";
+  return {
+    id: stableAdWarningId(icao, mens, validFrom || raw?.validade_inicial, validTo || raw?.validade_final),
+    icao,
+    fir: cleanString(raw?.id_fir) || null,
+    number,
+    text: mens,
+    validFrom,
+    validTo,
+    status,
+    source: "REDEMET",
+  };
+}
+
+function sortAdWarnings(items) {
+  return [...(items || [])].sort((a, b) => {
+    const ta = Date.parse(a.validFrom || a.validTo || "") || 0;
+    const tb = Date.parse(b.validFrom || b.validTo || "") || 0;
+    return tb - ta;
+  });
+}
+
+async function fetchAdWarnings(icaoCode, options = {}) {
+  const icao = normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) return [];
+  const bypassCache = options?.bypassCache === true;
+  if (!bypassCache) {
+    const cached = cacheGet(adWarningCache, icao);
+    if (cached) return cached;
+  }
+  const apiKey = redemetApiKey();
+  if (!apiKey) return [];
+
+  const lookbackHours = Number.isFinite(Number(options?.lookbackHours))
+    ? Math.min(Math.max(Number(options.lookbackHours), 1), 168)
+    : AD_WARNING_LOOKBACK_HOURS;
+  const now = new Date();
+  const dataIni = formatRedemetHour(new Date(now.getTime() - lookbackHours * 60 * 60 * 1000));
+  const dataFim = formatRedemetHour(now);
+
+  try {
+    const url = new URL(`${REDEMET_API_BASE}/mensagens/aviso/${encodeURIComponent(icao)}`);
+    url.searchParams.set("data_ini", dataIni);
+    url.searchParams.set("data_fim", dataFim);
+    url.searchParams.set("page_tam", "150");
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "X-Api-Key": apiKey,
+      },
+    });
+    const text = await response.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    if (!response.ok || !json || json.status !== true) {
+      return [];
+    }
+    const rows = Array.isArray(json?.data?.data) ? json.data.data : [];
+    const seen = new Set();
+    const items = [];
+    for (const row of rows) {
+      const item = normalizeAdWarningItem(row, icao);
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+      items.push(item);
+    }
+    // Preferência: ativos + agendados; mantém expirados recentes (útil no briefing).
+    const filtered = items.filter((item) => {
+      if (item.status !== "EXPIRED") return true;
+      if (!item.validTo) return true;
+      const age = Date.now() - Date.parse(item.validTo);
+      return Number.isFinite(age) && age >= 0 && age < 6 * 60 * 60 * 1000;
+    });
+    return cacheSet(adWarningCache, icao, sortAdWarnings(filtered.length ? filtered : items));
+  } catch {
+    return [];
+  }
 }
 
 function stripCdata(value) {
@@ -941,13 +1093,14 @@ async function resolveAirspace(rotaer) {
 
 async function fetchAirportBundle(icaoCode) {
   const icao = normalizeIcao(icaoCode);
-  const [met, notams, rotaer, sun, charts, supplements] = await Promise.all([
+  const [met, notams, rotaer, sun, charts, supplements, adWarnings] = await Promise.all([
     fetchMet(icao),
     fetchNotams(icao),
     fetchRotaer(icao),
     fetchSun(icao),
     fetchCartas(icao),
     fetchSupplements(icao),
+    fetchAdWarnings(icao),
   ]);
   const airspace = rotaer && !rotaer.error ? await resolveAirspace(rotaer) : null;
   return {
@@ -956,6 +1109,7 @@ async function fetchAirportBundle(icaoCode) {
     rotaer,
     notams,
     supplements,
+    adWarnings,
     sun,
     charts,
     airspace,
@@ -1694,6 +1848,10 @@ function sanitizeSupplementAlerts(rawAlerts, icaoCodes) {
   return sanitizeNotamAlerts(rawAlerts, icaoCodes);
 }
 
+function sanitizeAdWarningAlerts(rawAlerts, icaoCodes) {
+  return sanitizeNotamAlerts(rawAlerts, icaoCodes);
+}
+
 function sanitizeSeenNotamIds(rawSeen, icaoCodes, notamAlerts) {
   const out = {};
   const allowed = new Set(icaoCodes.filter((icao) => notamAlerts[icao] === true));
@@ -1719,14 +1877,20 @@ function sanitizeSeenSupplementIds(rawSeen, icaoCodes, supplementAlerts) {
   return sanitizeSeenNotamIds(rawSeen, icaoCodes, supplementAlerts);
 }
 
+function sanitizeSeenAdWarningIds(rawSeen, icaoCodes, adWarningAlerts) {
+  return sanitizeSeenNotamIds(rawSeen, icaoCodes, adWarningAlerts);
+}
+
 function publicWatchlist(raw, updatedAt) {
   const icaoCodes = sanitizeIcaoList(raw?.icaoCodes, { allowEmpty: true });
   const notamAlerts = sanitizeNotamAlerts(raw?.notamAlerts, icaoCodes);
   const supplementAlerts = sanitizeSupplementAlerts(raw?.supplementAlerts, icaoCodes);
+  const adWarningAlerts = sanitizeAdWarningAlerts(raw?.adWarningAlerts, icaoCodes);
   return {
     icaoCodes,
     notamAlerts,
     supplementAlerts,
+    adWarningAlerts,
     updatedAt: updatedAt || raw?.updatedAt || null,
   };
 }
@@ -1739,8 +1903,10 @@ async function loadWatchlist(deps, userId, defaultIcao) {
       icaoCodes,
       notamAlerts: sanitizeNotamAlerts({}, icaoCodes),
       supplementAlerts: sanitizeSupplementAlerts({}, icaoCodes),
+      adWarningAlerts: sanitizeAdWarningAlerts({}, icaoCodes),
       seenNotamIds: {},
       seenSupplementIds: {},
+      seenAdWarningIds: {},
       updatedAt: null,
     };
   }
@@ -1756,12 +1922,15 @@ async function loadWatchlist(deps, userId, defaultIcao) {
     : sanitizeIcaoList([], { fallbackDefault: defaultIcao });
   const notamAlerts = sanitizeNotamAlerts(raw.notamAlerts, icaoCodes);
   const supplementAlerts = sanitizeSupplementAlerts(raw.supplementAlerts, icaoCodes);
+  const adWarningAlerts = sanitizeAdWarningAlerts(raw.adWarningAlerts, icaoCodes);
   return {
     icaoCodes,
     notamAlerts,
     supplementAlerts,
+    adWarningAlerts,
     seenNotamIds: sanitizeSeenNotamIds(raw.seenNotamIds, icaoCodes, notamAlerts),
     seenSupplementIds: sanitizeSeenSupplementIds(raw.seenSupplementIds, icaoCodes, supplementAlerts),
+    seenAdWarningIds: sanitizeSeenAdWarningIds(raw.seenAdWarningIds, icaoCodes, adWarningAlerts),
     updatedAt: doc.$updatedAt || raw.updatedAt || null,
   };
 }
@@ -1786,6 +1955,14 @@ async function saveWatchlist(deps, userId, input = {}) {
       : input?.supplementAlerts != null
         ? input.supplementAlerts
         : previous.supplementAlerts,
+    icaoCodes,
+  );
+  const adWarningAlerts = sanitizeAdWarningAlerts(
+    Array.isArray(input)
+      ? previous.adWarningAlerts
+      : input?.adWarningAlerts != null
+        ? input.adWarningAlerts
+        : previous.adWarningAlerts,
     icaoCodes,
   );
 
@@ -1815,12 +1992,27 @@ async function saveWatchlist(deps, userId, input = {}) {
     }
   }
 
+  const nextSeenAdw = { ...(previous.seenAdWarningIds || {}) };
+  for (const icao of Object.keys(nextSeenAdw)) {
+    if (!icaoCodes.includes(icao) || !adWarningAlerts[icao]) delete nextSeenAdw[icao];
+  }
+  for (const icao of icaoCodes) {
+    const wasOn = previous.adWarningAlerts?.[icao] === true;
+    const isOn = adWarningAlerts[icao] === true;
+    if (isOn && !wasOn) {
+      const items = await fetchAdWarnings(icao, { bypassCache: true }).catch(() => []);
+      nextSeenAdw[icao] = items.map((item) => cleanString(item.id)).filter(Boolean).slice(0, 200);
+    }
+  }
+
   const next = {
     icaoCodes,
     notamAlerts,
     supplementAlerts,
+    adWarningAlerts,
     seenNotamIds: sanitizeSeenNotamIds(nextSeen, icaoCodes, notamAlerts),
     seenSupplementIds: sanitizeSeenSupplementIds(nextSeenSup, icaoCodes, supplementAlerts),
+    seenAdWarningIds: sanitizeSeenAdWarningIds(nextSeenAdw, icaoCodes, adWarningAlerts),
     updatedAt: nowIso(),
   };
   const saved = await deps.upsertPlatformSettingDoc(watchlistKey(userId), next);
@@ -2065,6 +2257,7 @@ module.exports = {
   fetchRotaer,
   fetchNotams,
   fetchSupplements,
+  fetchAdWarnings,
   fetchAirportBundle,
   fetchAerodromeCatalog,
   buildBootstrap,

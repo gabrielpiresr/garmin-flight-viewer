@@ -16863,7 +16863,8 @@ async function acquireWppTomorrowReminderRunLock(targetDate) {
   if (!AUDIT_EVENTS_COLLECTION_ID) return true;
   const safeDate = cleanString(targetDate);
   if (!safeDate) return false;
-  const docId = `wpp_tomorrow_reminder_${sha256(safeDate).slice(0, 24)}`;
+  // Appwrite document IDs max 36 chars.
+  const docId = `wpp_tmr_${sha256(safeDate).slice(0, 28)}`;
   const snapshot = snapshotJson({ targetDate: safeDate, createdAt: nowIso() });
   try {
     await databases.createDocument(
@@ -16909,21 +16910,70 @@ async function listConfirmedFlightsForDate(targetDate) {
   return docs.map(toFlight).filter((flight) => cleanString(flight.studentUserId));
 }
 
-async function getProfilesByUserIds(userIds) {
-  const ids = Array.from(new Set((userIds || []).map(cleanString).filter(Boolean)));
-  if (!ids.length || !PROFILES_COLLECTION_ID) return new Map();
-  const profiles = await listDocumentsByFieldIn(
-    PROFILES_COLLECTION_ID,
-    "user_id",
-    ids,
-    [...selectQuery(PROFILE_SELECT)],
-  ).catch(() => []);
-  const map = new Map();
-  for (const profile of profiles) {
-    const userId = cleanString(profile.user_id);
-    if (userId && !map.has(userId)) map.set(userId, profile);
+function sagaScheduleIsConfirmedStatus(status) {
+  const normalized = normalizeSagaScheduleStatus(status);
+  if (!normalized) return true;
+  return ["CONFIRMED", "CONFIRMADO", "CONFIRMADA"].includes(normalized);
+}
+
+function isSagaScheduleBlockForReminder(schedule) {
+  const norm = (value) => cleanString(value).replace(/^saga[_-]?/i, "");
+  if (norm(schedule?.studentSagaId) === "139" || norm(schedule?.instructorSagaId) === "139") return true;
+  if (norm(schedule?.studentUserId) === "139") return true;
+  return /bloqueio/i.test(cleanString(schedule?.notes))
+    || /bloqueio/i.test(cleanString(schedule?.studentName))
+    || /bloqueio/i.test(cleanString(schedule?.aircraft));
+}
+
+async function resolveSagaCookieJarForReminder(logs = []) {
+  try {
+    const session = await loadSagaAuthSession();
+    return session.cookieJar;
+  } catch {
+    const credentials = await loadSagaImportCredentials();
+    if (!credentials.email || !credentials.password) {
+      throw Object.assign(new Error("Credenciais SAGA ausentes para lembrete de voo WhatsApp."), { status: 400 });
+    }
+    return sagaLoginSession(credentials.email, credentials.password, logs);
   }
-  return map;
+}
+
+function sagaScheduleToReminderFlight(schedule) {
+  const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+  const notes = cleanString(schedule.notes);
+  return {
+    id: `saga_schedule_${cleanString(schedule.id)}`,
+    studentUserId: cleanString(schedule.studentUserId) || null,
+    instructorUserId: cleanString(schedule.instructorUserId) || null,
+    studentName: cleanString(schedule.studentName),
+    instructorName: cleanString(schedule.instructorName),
+    aircraftIdent: cleanString(schedule.aircraft),
+    flightDate: start.date,
+    startTime: start.time,
+    route: "",
+    trainingSnapshot: notes ? { missionName: notes, name: notes } : null,
+    sourceFilename: notes,
+    trainingMissionId: null,
+    sagaScheduleId: cleanString(schedule.id),
+  };
+}
+
+async function listConfirmedSagaFlightsForDate(targetDate) {
+  const logs = [];
+  const cookieJar = await resolveSagaCookieJarForReminder(logs);
+  const schedules = await fetchSagaScheduledFlights(cookieJar, logs, { monthCount: 2 });
+  const confirmed = (schedules || []).filter((schedule) => {
+    if (!cleanString(schedule?.id) || !cleanString(schedule?.studentSagaId)) return false;
+    if (sagaScheduleIsCancelledStatus(schedule.status)) return false;
+    if (!sagaScheduleIsConfirmedStatus(schedule.status)) return false;
+    if (isSagaScheduleBlockForReminder(schedule)) return false;
+    const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+    return start.date === cleanString(targetDate);
+  });
+  const withUsers = await attachLocalUsersToSagaSchedules(confirmed);
+  return withUsers
+    .map(sagaScheduleToReminderFlight)
+    .sort((a, b) => cleanString(a.startTime).localeCompare(cleanString(b.startTime)));
 }
 
 function wppReminderProfileName(profile, fallback = "") {
@@ -16963,20 +17013,57 @@ async function runWppTomorrowFlightReminderScan(options = {}) {
   const acquired = options.force === true ? true : await acquireWppTomorrowReminderRunLock(targetDate);
   if (!acquired) return { ok: true, skipped: true, reason: "already_ran", targetDate };
 
-  const flights = await listConfirmedFlightsForDate(targetDate);
+  const { publicSettings: schoolRules } = await loadSchoolRules().catch(() => ({ publicSettings: null }));
+  const sagaOnlySchedule = schoolRules?.schedule?.sagaOnlySchedule === true;
+  let flights = [];
+  let source = "local";
+  try {
+    if (sagaOnlySchedule) {
+      source = "saga";
+      flights = await listConfirmedSagaFlightsForDate(targetDate);
+    } else {
+      flights = await listConfirmedFlightsForDate(targetDate);
+    }
+  } catch (err) {
+    const message = cleanString(err?.message).slice(0, 512) || "Falha ao carregar voos para lembrete.";
+    console.warn(`[wppTomorrowReminder] source=${source} failed: ${message}`);
+    return {
+      ok: false,
+      targetDate,
+      source,
+      totalFlights: 0,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      deliveries: [],
+      message,
+    };
+  }
+
   const userIds = flights.flatMap((flight) => [flight.studentUserId, flight.instructorUserId]).filter(Boolean);
   const profilesByUserId = await getProfilesByUserIds(userIds);
   const deliveries = [];
   for (const flight of flights) {
-    const studentProfile = profilesByUserId.get(cleanString(flight.studentUserId));
-    const phone = normalizeWppRecipientPhone(studentProfile?.phone);
-    const dedupeKey = `wpp.tomorrow_flight.${targetDate}.${flight.id}.${flight.studentUserId}`;
-    if (!phone) {
-      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "skipped", reason: "missing_phone" });
+    const studentUserId = cleanString(flight.studentUserId);
+    const dedupeKey = `wpp.tomorrow_flight.${targetDate}.${flight.id}.${studentUserId || "unknown"}`;
+    if (!studentUserId) {
+      deliveries.push({
+        flightId: flight.id,
+        studentUserId: null,
+        sagaScheduleId: flight.sagaScheduleId || null,
+        status: "skipped",
+        reason: "missing_local_profile",
+      });
       continue;
     }
-    if (await alreadyDelivered(dedupeKey, "wpp", flight.studentUserId)) {
-      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "skipped", reason: "already_delivered" });
+    const studentProfile = profilesByUserId.get(studentUserId);
+    const phone = normalizeWppRecipientPhone(studentProfile?.phone);
+    if (!phone) {
+      deliveries.push({ flightId: flight.id, studentUserId, status: "skipped", reason: "missing_phone" });
+      continue;
+    }
+    if (await alreadyDelivered(dedupeKey, "wpp", studentUserId)) {
+      deliveries.push({ flightId: flight.id, studentUserId, status: "skipped", reason: "already_delivered" });
       continue;
     }
     try {
@@ -16988,17 +17075,18 @@ async function runWppTomorrowFlightReminderScan(options = {}) {
         headerParameters: [],
         bodyParameters: resolveWppTemplateParameters(config.bodyParameters, context),
       });
-      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", flight.studentUserId, "sent", messageId, null);
-      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "sent", providerMessageId: messageId });
+      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", studentUserId, "sent", messageId, null);
+      deliveries.push({ flightId: flight.id, studentUserId, status: "sent", providerMessageId: messageId });
     } catch (err) {
       const message = cleanString(err?.message).slice(0, 512) || "Falha ao enviar template.";
-      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", flight.studentUserId, "failed", null, message);
-      deliveries.push({ flightId: flight.id, studentUserId: flight.studentUserId, status: "failed", reason: message });
+      await logDelivery("flight.reminder_24h", dedupeKey, "wpp", studentUserId, "failed", null, message);
+      deliveries.push({ flightId: flight.id, studentUserId, status: "failed", reason: message });
     }
   }
   return {
     ok: true,
     targetDate,
+    source,
     totalFlights: flights.length,
     sent: deliveries.filter((item) => item.status === "sent").length,
     failed: deliveries.filter((item) => item.status === "failed").length,
@@ -24520,6 +24608,33 @@ async function sendAiswebSupplementAlertEmail(userId, userEmail, userName, suppl
   return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
 }
 
+async function sendAiswebAdWarningAlertEmail(userId, userEmail, userName, warning, brand, emailSettings) {
+  const path = await resolveAiswebPortalPath(userId);
+  const numberLabel = cleanString(warning.number)
+    ? `AD WRNG ${cleanString(warning.number)}`
+    : cleanString(warning.id) || "AD WRNG";
+  const details = [
+    ["Aeródromo", cleanString(warning.icao) || "—"],
+    ["Número", numberLabel],
+    ["FIR", cleanString(warning.fir) || "—"],
+    ["Status", cleanString(warning.status) || "—"],
+    ["Fonte", cleanString(warning.source) || "REDEMET"],
+    ["Válido de", formatAiswebNotamDate(warning.validFrom)],
+    ["Válido até", formatAiswebNotamDate(warning.validTo)],
+  ];
+  const textBody = cleanString(warning.text) || "Sem texto.";
+  const message = {
+    eyebrow: "REDEMET · AVISO DE AERÓDROMO",
+    title: `Novo aviso · ${cleanString(warning.icao) || "AD"}`,
+    intro: `Foi publicado um novo aviso de aeródromo (AD WRNG) para ${cleanString(warning.icao) || "o aeródromo"}.`,
+    body: textBody,
+    details,
+    ctaLabel: "Consultar no AISWEB",
+    url: path,
+  };
+  return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
+}
+
 async function runAiswebMetarWatchScan(log = () => {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scanned: 0, notified: 0 };
@@ -24825,10 +24940,15 @@ async function runAiswebNotamAlertScan(log = () => {}) {
         icaoCodes: watchlist.icaoCodes,
         notamAlerts: watchlist.notamAlerts,
         supplementAlerts: watchlist.supplementAlerts || raw.supplementAlerts || {},
+        adWarningAlerts: watchlist.adWarningAlerts || raw.adWarningAlerts || {},
         seenNotamIds: nextSeen,
         seenSupplementIds:
           raw.seenSupplementIds && typeof raw.seenSupplementIds === "object"
             ? raw.seenSupplementIds
+            : {},
+        seenAdWarningIds:
+          raw.seenAdWarningIds && typeof raw.seenAdWarningIds === "object"
+            ? raw.seenAdWarningIds
             : {},
         updatedAt: nowIso(),
       };
@@ -24971,14 +25091,168 @@ async function runAiswebSupplementAlertScan(log = () => {}) {
         icaoCodes: watchlist.icaoCodes,
         notamAlerts: watchlist.notamAlerts || raw.notamAlerts || {},
         supplementAlerts: watchlist.supplementAlerts,
+        adWarningAlerts: watchlist.adWarningAlerts || raw.adWarningAlerts || {},
         seenNotamIds:
           raw.seenNotamIds && typeof raw.seenNotamIds === "object" ? raw.seenNotamIds : {},
         seenSupplementIds: nextSeen,
+        seenAdWarningIds:
+          raw.seenAdWarningIds && typeof raw.seenAdWarningIds === "object"
+            ? raw.seenAdWarningIds
+            : {},
         updatedAt: nowIso(),
       };
       await upsertPlatformSettingDoc(doc.key, payload).catch((err) => {
         errors += 1;
         log(`[aisweb-sup] save seen failed ${userId}: ${err?.message || err}`);
+      });
+    }
+  }
+
+  return { ok: true, scannedUsers, emailsSent, seeded, errors };
+}
+
+async function runAiswebAdWarningAlertScan(log = () => {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, emailsSent: 0 };
+  }
+  const docs = await listAllDocuments(PLATFORM_SETTINGS_COLLECTION_ID, [
+    sdk.Query.startsWith("key", aiswebService.AISWEB_WATCHLIST_PREFIX),
+  ]).catch(() => []);
+  if (!docs.length) {
+    return { ok: true, scannedUsers: 0, emailsSent: 0, seeded: 0, errors: 0 };
+  }
+
+  const [{ settings: emailSettings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+
+  let scannedUsers = 0;
+  let emailsSent = 0;
+  let seeded = 0;
+  let errors = 0;
+  const byIcao = new Map();
+
+  async function warningsFor(icao) {
+    if (byIcao.has(icao)) return byIcao.get(icao);
+    const items = await aiswebService.fetchAdWarnings(icao, { bypassCache: true });
+    byIcao.set(icao, items);
+    return items;
+  }
+
+  for (const doc of docs) {
+    const userId = aiswebService.userIdFromWatchlistKey(doc.key);
+    if (!userId) continue;
+
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const watchlist = aiswebService.publicWatchlist(raw, doc.$updatedAt || null);
+    const alertIcaos = watchlist.icaoCodes.filter((icao) => watchlist.adWarningAlerts?.[icao] === true);
+    if (!alertIcaos.length) continue;
+    scannedUsers += 1;
+
+    const previousSeen =
+      raw.seenAdWarningIds && typeof raw.seenAdWarningIds === "object" && !Array.isArray(raw.seenAdWarningIds)
+        ? raw.seenAdWarningIds
+        : {};
+    const nextSeen = { ...previousSeen };
+    let changed = false;
+    const newItems = [];
+
+    for (const icao of alertIcaos) {
+      let items = [];
+      try {
+        items = await warningsFor(icao);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-adw] fetch failed ${icao}: ${err?.message || err}`);
+        continue;
+      }
+      const currentIds = items.map((item) => cleanString(item.id)).filter(Boolean);
+      const baseline = Array.isArray(previousSeen[icao]) ? previousSeen[icao] : null;
+      if (baseline == null) {
+        nextSeen[icao] = currentIds.slice(0, 200);
+        changed = true;
+        seeded += 1;
+        continue;
+      }
+      const known = new Set(baseline.map(cleanString).filter(Boolean));
+      for (const item of items) {
+        const id = cleanString(item.id);
+        if (!id || known.has(id)) continue;
+        newItems.push(item);
+      }
+      const merged = aiswebService.mergeSeenNotamIds(baseline, currentIds);
+      if (JSON.stringify(merged) !== JSON.stringify(baseline)) {
+        nextSeen[icao] = merged;
+        changed = true;
+      }
+    }
+
+    for (const icao of Object.keys(nextSeen)) {
+      if (!alertIcaos.includes(icao)) {
+        delete nextSeen[icao];
+        changed = true;
+      }
+    }
+
+    if (newItems.length) {
+      let email = "";
+      let name = "";
+      try {
+        const [actor, profile] = await Promise.all([
+          users.get({ userId }).catch(() => null),
+          getProfileByUserId(userId).catch(() => null),
+        ]);
+        email = cleanString(actor?.email || profile?.email);
+        name = cleanString(profile?.full_name || actor?.name || email);
+      } catch (err) {
+        errors += 1;
+        log(`[aisweb-adw] user lookup failed ${userId}: ${err?.message || err}`);
+      }
+
+      if (email) {
+        for (const item of newItems) {
+          try {
+            const result = await sendAiswebAdWarningAlertEmail(
+              userId,
+              email,
+              name,
+              item,
+              brand,
+              emailSettings,
+            );
+            if (result?.status === "sent") emailsSent += 1;
+          } catch (err) {
+            errors += 1;
+            log(`[aisweb-adw] email failed ${userId}/${item.id}: ${err?.message || err}`);
+          }
+        }
+      }
+    }
+
+    if (changed || newItems.length) {
+      const payload = {
+        icaoCodes: watchlist.icaoCodes,
+        notamAlerts: watchlist.notamAlerts || raw.notamAlerts || {},
+        supplementAlerts: watchlist.supplementAlerts || raw.supplementAlerts || {},
+        adWarningAlerts: watchlist.adWarningAlerts,
+        seenNotamIds:
+          raw.seenNotamIds && typeof raw.seenNotamIds === "object" ? raw.seenNotamIds : {},
+        seenSupplementIds:
+          raw.seenSupplementIds && typeof raw.seenSupplementIds === "object"
+            ? raw.seenSupplementIds
+            : {},
+        seenAdWarningIds: nextSeen,
+        updatedAt: nowIso(),
+      };
+      await upsertPlatformSettingDoc(doc.key, payload).catch((err) => {
+        errors += 1;
+        log(`[aisweb-adw] save seen failed ${userId}: ${err?.message || err}`);
       });
     }
   }
@@ -26218,9 +26492,10 @@ module.exports = async ({ req, res, log, error }) => {
       const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       // METAR watch roda em function/schedule próprio (aisweb-metar-watch) a cada ~15 min.
-      const [aiswebNotamAlerts, aiswebSupplementAlerts] = await Promise.all([
+      const [aiswebNotamAlerts, aiswebSupplementAlerts, aiswebAdWarningAlerts] = await Promise.all([
         runAiswebNotamAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
         runAiswebSupplementAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
+        runAiswebAdWarningAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
       ]);
       const cronSyncInput = { origin: "cron", importRunId: `saga-sync-all-${Date.now()}`, startedAt: nowIso() };
       const allUsersSyncResult = await sagaImportAllUsersFromSaga("system", cronSyncInput).catch(async (err) => {
@@ -26236,6 +26511,7 @@ module.exports = async ({ req, res, log, error }) => {
         wppTomorrowFlightReminder,
         aiswebNotamAlerts,
         aiswebSupplementAlerts,
+        aiswebAdWarningAlerts,
       });
     }
 
@@ -26927,6 +27203,7 @@ module.exports = async ({ req, res, log, error }) => {
           icaoCodes: payload.icaoCodes || payload.watchlist?.icaoCodes || [],
           notamAlerts: payload.notamAlerts || payload.watchlist?.notamAlerts,
           supplementAlerts: payload.supplementAlerts || payload.watchlist?.supplementAlerts,
+          adWarningAlerts: payload.adWarningAlerts || payload.watchlist?.adWarningAlerts,
         },
       );
       return jsonResponse(res, 200, { watchlist });

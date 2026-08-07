@@ -32,6 +32,7 @@ import {
   type AiswebTafSegment,
 } from "../lib/aiswebMetar";
 import type {
+  AiswebAdWarning,
   AiswebAerodromeMatch,
   AiswebAirportBundle,
   AiswebDashboard,
@@ -56,6 +57,7 @@ function placeholderAirport(icao: string): AiswebAirportBundle {
     rotaer: null,
     notams: [],
     supplements: [],
+    adWarnings: [],
     sun: null,
     charts: [],
     airspace: null,
@@ -90,6 +92,7 @@ function readBootstrapCache(): {
         icaoCodes: parsed.watchlist.icaoCodes || [],
         notamAlerts: parsed.watchlist.notamAlerts || {},
         supplementAlerts: parsed.watchlist.supplementAlerts || {},
+        adWarningAlerts: parsed.watchlist.adWarningAlerts || {},
         updatedAt: parsed.watchlist.updatedAt || null,
       },
     };
@@ -437,6 +440,9 @@ function ConditionsBoard({
   supplementAlerts,
   onToggleSupplementAlert,
   togglingSupplementIcao,
+  adWarningAlerts,
+  onToggleAdWarningAlert,
+  togglingAdWarningIcao,
   loadingIcaos,
 }: {
   airports: AiswebAirportBundle[];
@@ -456,6 +462,9 @@ function ConditionsBoard({
   supplementAlerts: Record<string, boolean>;
   onToggleSupplementAlert: (icao: string, enabled: boolean) => void;
   togglingSupplementIcao: string | null;
+  adWarningAlerts: Record<string, boolean>;
+  onToggleAdWarningAlert: (icao: string, enabled: boolean) => void;
+  togglingAdWarningIcao: string | null;
   loadingIcaos: Set<string>;
 }) {
   const selected = airports.find((a) => a.icao === selectedIcao) ?? airports[0] ?? null;
@@ -501,6 +510,9 @@ function ConditionsBoard({
               </th>
               <th className="px-2 py-2 font-semibold" title="Avisos de suplemento AIP por e-mail">
                 SUP
+              </th>
+              <th className="px-2 py-2 font-semibold" title="Avisos de aeródromo (REDEMET) por e-mail">
+                AD WRNG
               </th>
               <th className="px-2 py-2 text-right font-semibold">Lista</th>
             </tr>
@@ -632,6 +644,40 @@ function ConditionsBoard({
                         <span
                           className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition ${
                             supplementAlerts[airport.icao] ? "translate-x-4" : "translate-x-0.5"
+                          }`}
+                        />
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    {isTemporary ? (
+                      <span className="text-[10px] text-slate-600">—</span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={adWarningAlerts[airport.icao] === true}
+                        aria-label={
+                          adWarningAlerts[airport.icao]
+                            ? `Desligar avisos de aeródromo para ${airport.icao}`
+                            : `Ligar avisos de aeródromo para ${airport.icao}`
+                        }
+                        disabled={togglingAdWarningIcao === airport.icao}
+                        onClick={() =>
+                          onToggleAdWarningAlert(
+                            airport.icao,
+                            !(adWarningAlerts[airport.icao] === true),
+                          )
+                        }
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition ${
+                          adWarningAlerts[airport.icao]
+                            ? "border-amber-400/60 bg-amber-500/80"
+                            : "border-slate-600 bg-slate-800"
+                        } ${togglingAdWarningIcao === airport.icao ? "opacity-60" : "hover:brightness-110"}`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition ${
+                            adWarningAlerts[airport.icao] ? "translate-x-4" : "translate-x-0.5"
                           }`}
                         />
                       </button>
@@ -769,6 +815,7 @@ function ConditionsBoard({
                   />
                   </div>
                 </div>
+                <AdWarningsPanel warnings={selected.adWarnings || []} />
                 <AiswebConditionVisuals
                   parsed={visualParsed}
                   rotaer={selected.rotaer}
@@ -813,6 +860,50 @@ function NotamCard({ notam }: { notam: AiswebNotam }) {
   );
 }
 
+function AdWarningsPanel({ warnings }: { warnings: AiswebAdWarning[] }) {
+  const active = warnings.filter((item) => item.status === "ACTIVE" || item.status === "SCHEDULED");
+  const list = active.length ? active : warnings;
+  if (!list.length) return null;
+  return (
+    <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-amber-200">
+          Avisos de aeródromo (REDEMET)
+        </h4>
+        <span className="text-[10px] text-amber-200/70">
+          {list.length} mensagem{list.length === 1 ? "" : "ns"}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {list.map((item) => (
+          <article
+            key={item.id}
+            className="rounded-lg border border-amber-500/20 bg-slate-950/50 px-3 py-2.5"
+          >
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <p className="text-xs font-bold tracking-wide text-amber-100">
+                {item.number ? `AD WRNG ${item.number}` : "AD WRNG"}
+                {item.fir ? ` · FIR ${item.fir}` : ""}
+              </p>
+              {item.status ? (
+                <p className="text-[10px] uppercase text-amber-200/70">{item.status}</p>
+              ) : null}
+            </div>
+            <p className="whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-slate-200">
+              {item.text || "Sem texto."}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+              <span>
+                Válido: {formatDateTime(item.validFrom)} → {formatDateTime(item.validTo)}
+              </span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } = {}) {
   const { showToast } = useToast();
   const [dashboard, setDashboard] = useState<AiswebDashboard | null>(() => {
@@ -834,6 +925,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
   const [savingWatchlist, setSavingWatchlist] = useState(false);
   const [togglingNotamIcao, setTogglingNotamIcao] = useState<string | null>(null);
   const [togglingSupplementIcao, setTogglingSupplementIcao] = useState<string | null>(null);
+  const [togglingAdWarningIcao, setTogglingAdWarningIcao] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
   const [lookupSearching, setLookupSearching] = useState(false);
   const [lookupOpen, setLookupOpen] = useState(false);
@@ -982,6 +1074,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
   const watchlist = dashboard?.watchlist.icaoCodes ?? [];
   const notamAlerts = dashboard?.watchlist.notamAlerts ?? {};
   const supplementAlerts = dashboard?.watchlist.supplementAlerts ?? {};
+  const adWarningAlerts = dashboard?.watchlist.adWarningAlerts ?? {};
   const minimums = dashboard?.settings.minimums ?? [];
 
   const conditionAirports = useMemo(() => {
@@ -1031,11 +1124,15 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     const nextSupplementAlerts = Object.fromEntries(
       unique.map((icao) => [icao, dashboard?.watchlist.supplementAlerts?.[icao] === true]),
     );
+    const nextAdWarningAlerts = Object.fromEntries(
+      unique.map((icao) => [icao, dashboard?.watchlist.adWarningAlerts?.[icao] === true]),
+    );
     setSavingWatchlist(true);
     try {
       const saved = await saveAiswebWatchlist(unique, {
         notamAlerts: nextNotamAlerts,
         supplementAlerts: nextSupplementAlerts,
+        adWarningAlerts: nextAdWarningAlerts,
       });
       if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
       const previousCodes = dashboard?.watchlist.icaoCodes || [];
@@ -1091,6 +1188,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
       const saved = await saveAiswebWatchlist(watchlist, {
         notamAlerts: nextAlerts,
         supplementAlerts,
+        adWarningAlerts,
       });
       if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
       setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
@@ -1119,6 +1217,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
       const saved = await saveAiswebWatchlist(watchlist, {
         notamAlerts,
         supplementAlerts: nextAlerts,
+        adWarningAlerts,
       });
       if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
       setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
@@ -1135,6 +1234,35 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
       });
     } finally {
       setTogglingSupplementIcao(null);
+    }
+  }
+
+  async function handleToggleAdWarningAlert(icao: string, enabled: boolean) {
+    const code = normalizeIcao(icao);
+    if (!code || !watchlist.includes(code)) return;
+    const nextAlerts = { ...adWarningAlerts, [code]: enabled };
+    setTogglingAdWarningIcao(code);
+    try {
+      const saved = await saveAiswebWatchlist(watchlist, {
+        notamAlerts,
+        supplementAlerts,
+        adWarningAlerts: nextAlerts,
+      });
+      if (dashboard?.settings) writeBootstrapCache(dashboard.settings, saved);
+      setDashboard((prev) => (prev ? { ...prev, watchlist: saved } : prev));
+      showToast({
+        variant: "success",
+        message: enabled
+          ? `Avisos de aeródromo ligados para ${code}.`
+          : `Avisos de aeródromo desligados para ${code}.`,
+      });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha ao atualizar avisos.",
+      });
+    } finally {
+      setTogglingAdWarningIcao(null);
     }
   }
 
@@ -1528,6 +1656,9 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
           supplementAlerts={supplementAlerts}
           onToggleSupplementAlert={(icao, enabled) => void handleToggleSupplementAlert(icao, enabled)}
           togglingSupplementIcao={togglingSupplementIcao}
+          adWarningAlerts={adWarningAlerts}
+          onToggleAdWarningAlert={(icao, enabled) => void handleToggleAdWarningAlert(icao, enabled)}
+          togglingAdWarningIcao={togglingAdWarningIcao}
           loadingIcaos={tableLoadingIcaos}
         />
       ) : null}
