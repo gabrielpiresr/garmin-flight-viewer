@@ -1083,6 +1083,7 @@ export function PlanejamentoTab() {
               waypoints,
               performanceProfile: performanceProfile?.profile ?? null,
               terrain,
+              corridors: legCorridors,
               cruiseSpeedKt: cruiseOpt,
             })
           : null;
@@ -1188,6 +1189,7 @@ export function PlanejamentoTab() {
               waypoints,
               performanceProfile: performanceProfile?.profile ?? null,
               terrain: terrainPts,
+              corridors: legCorridors,
               cruiseSpeedKt: cruiseOpt,
             })
           : null;
