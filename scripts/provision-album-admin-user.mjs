@@ -51,6 +51,7 @@ const ALL_ADMIN_TABS = [
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
   "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda", "contents.ajuda-instrutor", "contents.painel",
   "aisweb",
+  "radar",
   "users",
   "import",
   "disparos", "disparos.email-mkt", "disparos.avisos",

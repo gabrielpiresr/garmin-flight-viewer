@@ -3,6 +3,7 @@ import type {
   FlightPlanAirspaceHit,
   FlightPlanInfoSection,
   FlightPlanRouteSummary,
+  FlightPlanRouteTableRow,
 } from "../types/flightPlanning";
 
 const DB_NAME = "gfv_offline_briefing";
@@ -34,6 +35,8 @@ export type OfflineFlightBriefing = {
   fuelUnit: string;
   routeText: string;
   mapImageDataUrl: string | null;
+  verticalProfileSvg?: string | null;
+  routeTableRows?: FlightPlanRouteTableRow[] | null;
   metUpdatedAt: string | null;
 };
 

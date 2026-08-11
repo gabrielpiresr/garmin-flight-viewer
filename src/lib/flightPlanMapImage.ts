@@ -7,10 +7,47 @@ const WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_ESRI_PROXY = "/esri-proxy/ArcGIS/rest/services/World_Topo_Map/MapServer/export";
 const DEV_WMS_PROXY = "/geoaisweb-proxy/geoserver/ows";
 
+type Bbox = { minLng: number; minLat: number; maxLng: number; maxLat: number };
+
+/** Expand bbox so geographic aspect matches canvas aspect (no stretch). */
+function fitBboxToAspect(bbox: Bbox, width: number, height: number): Bbox {
+  const pad = 0.08;
+  let minLng = bbox.minLng;
+  let maxLng = bbox.maxLng;
+  let minLat = bbox.minLat;
+  let maxLat = bbox.maxLat;
+  const midLat = (minLat + maxLat) / 2;
+  const cosLat = Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
+  let spanLng = Math.max(0.15, maxLng - minLng);
+  let spanLat = Math.max(0.12, maxLat - minLat);
+  minLng -= spanLng * pad;
+  maxLng += spanLng * pad;
+  minLat -= spanLat * pad;
+  maxLat += spanLat * pad;
+  spanLng = maxLng - minLng;
+  spanLat = maxLat - minLat;
+
+  const targetAspect = width / Math.max(1, height);
+  // Approximate degrees aspect using cos(lat) so 1° lng ≈ cos(lat) of 1° lat in distance.
+  const geoAspect = (spanLng * cosLat) / Math.max(1e-9, spanLat);
+  if (geoAspect < targetAspect) {
+    const needLng = (spanLat * targetAspect) / cosLat;
+    const grow = (needLng - spanLng) / 2;
+    minLng -= grow;
+    maxLng += grow;
+  } else if (geoAspect > targetAspect) {
+    const needLat = (spanLng * cosLat) / targetAspect;
+    const grow = (needLat - spanLat) / 2;
+    minLat -= grow;
+    maxLat += grow;
+  }
+  return { minLng, minLat, maxLng, maxLat };
+}
+
 function project(
   lat: number,
   lng: number,
-  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+  bbox: Bbox,
   width: number,
   height: number,
 ): [number, number] {
@@ -53,16 +90,18 @@ async function fetchImageViaProxy(absoluteUrl: string): Promise<Blob | null> {
   }
 }
 
-/** Build a PNG data-URL map with topo base + CTA/TMA/CTR WMS overlay + route. */
+/** Build a PNG data-URL map with topo base + CTA/TMA/CTR/ATZ WMS overlay + route. */
 export async function buildFlightPlanMapDataUrl(
   waypoints: FlightPlanWaypoint[],
   options?: { width?: number; height?: number },
 ): Promise<string | null> {
   if (waypoints.length < 1) return null;
-  const width = options?.width ?? 1000;
-  const height = options?.height ?? 480;
-  const bbox = routeBoundingBox(waypoints, 0.25);
-  if (!bbox) return null;
+  // A4 landscape ≈ 297×210 → ~1.414
+  const width = options?.width ?? 1400;
+  const height = options?.height ?? 900;
+  const rawBbox = routeBoundingBox(waypoints, 0.2);
+  if (!rawBbox) return null;
+  const bbox = fitBboxToAspect(rawBbox, width, height);
 
   const bboxStr = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
   const esriQs = new URLSearchParams({
@@ -77,7 +116,7 @@ export async function buildFlightPlanMapDataUrl(
     service: "WMS",
     version: "1.1.1",
     request: "GetMap",
-    layers: "ICA:CTA,ICA:TMA,ICA:CTR",
+    layers: "ICA:CTA,ICA:TMA,ICA:CTR,ICA:ATZ",
     styles: "",
     bbox: bboxStr,
     width: String(width),
@@ -127,7 +166,7 @@ export async function buildFlightPlanMapDataUrl(
 
   try {
     await drawBlob(baseBlob, 1);
-    await drawBlob(overlayBlob, 0.72);
+    await drawBlob(overlayBlob, 0.65);
   } catch {
     return null;
   }
@@ -135,8 +174,13 @@ export async function buildFlightPlanMapDataUrl(
   const pts = waypoints.map((w) => project(w.lat, w.lng, bbox, width, height));
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(15,23,42,0.55)";
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+  ctx.stroke();
   ctx.strokeStyle = "#22d3ee";
-  ctx.lineWidth = 3.2;
+  ctx.lineWidth = 3.5;
   ctx.beginPath();
   pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.stroke();
@@ -146,27 +190,52 @@ export async function buildFlightPlanMapDataUrl(
     const isLast = i === pts.length - 1;
     ctx.beginPath();
     ctx.fillStyle = isFirst ? "#34d399" : isLast ? "#f472b6" : "#38bdf8";
-    ctx.arc(x, y, isFirst || isLast ? 6 : 3, 0, Math.PI * 2);
+    ctx.arc(x, y, isFirst || isLast ? 7 : 4, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 1.4;
     ctx.stroke();
   });
 
-  const first = waypoints[0];
-  const last = waypoints[waypoints.length - 1];
-  if (first && pts[0]) {
-    ctx.fillStyle = "#bbf7d0";
-    ctx.font = "bold 13px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(first.label || "DEP", pts[0][0], pts[0][1] - 10);
-  }
-  if (last && pts[pts.length - 1]) {
-    ctx.fillStyle = "#fbcfe8";
-    ctx.font = "bold 13px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(last.label || "ARR", pts[pts.length - 1]![0], pts[pts.length - 1]![1] - 10);
-  }
+  ctx.textAlign = "center";
+  ctx.font = "bold 13px Segoe UI, sans-serif";
+  waypoints.forEach((w, i) => {
+    const pt = pts[i];
+    if (!pt) return;
+    const label = (w.label || `P${i + 1}`).slice(0, 12);
+    const isFirst = i === 0;
+    const isLast = i === waypoints.length - 1;
+    ctx.fillStyle = isFirst ? "#bbf7d0" : isLast ? "#fbcfe8" : "#e0f2fe";
+    ctx.strokeStyle = "rgba(15,23,42,0.65)";
+    ctx.lineWidth = 3;
+    ctx.strokeText(label, pt[0], pt[1] - 12);
+    ctx.fillText(label, pt[0], pt[1] - 12);
+  });
+
+  // Scale bar (~50 NM or proportion of span)
+  const midLat = (bbox.minLat + bbox.maxLat) / 2;
+  const mPerDegLng = 111_320 * Math.cos((midLat * Math.PI) / 180);
+  const spanM = (bbox.maxLng - bbox.minLng) * mPerDegLng;
+  const targetNm = spanM / 1852 > 120 ? 50 : spanM / 1852 > 40 ? 20 : 10;
+  const barPx = Math.min(width * 0.22, ((targetNm * 1852) / spanM) * width);
+  const barX = 28;
+  const barY = height - 28;
+  ctx.fillStyle = "rgba(15,23,42,0.7)";
+  ctx.fillRect(barX - 8, barY - 22, barPx + 16, 30);
+  ctx.strokeStyle = "#f8fafc";
+  ctx.fillStyle = "#f8fafc";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(barX, barY);
+  ctx.lineTo(barX + barPx, barY);
+  ctx.moveTo(barX, barY - 5);
+  ctx.lineTo(barX, barY + 5);
+  ctx.moveTo(barX + barPx, barY - 5);
+  ctx.lineTo(barX + barPx, barY + 5);
+  ctx.stroke();
+  ctx.font = "11px Segoe UI, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`${targetNm} NM`, barX + 4, barY - 8);
 
   return canvas.toDataURL("image/png");
 }

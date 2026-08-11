@@ -1,4 +1,5 @@
 import type { FlightPlanRouteSummary, FlightPlanWaypoint } from "../types/flightPlanning";
+import { parseFieldElevationFt } from "./fieldElevation";
 
 const NM_IN_M = 1852;
 /** Mean Earth radius (m) — closer to common aviation GC calculators than 6371 km. */
@@ -168,11 +169,98 @@ export function snapWaypointsToFixes(
       }
     }
     if (!best || bestDist > maxDistM) return wp;
+    const name = best.name?.trim() ? best.name.trim().toUpperCase() : null;
     return {
       ...wp,
       lat: best.lat,
       lng: best.lng,
-      label: best.name?.trim() ? best.name.trim().toUpperCase() : wp.label,
+      label: name || wp.label,
+      kind: name ? "rea" : wp.kind,
+      ...(name ? { reaName: name } : {}),
+    };
+  });
+}
+
+/**
+ * Se um ponto do FPL estiver perto de um aeródromo do catálogo, usa ICAO + ARP.
+ * Preferir rodar depois do snap REA (pontos já rea/airport são ignorados).
+ */
+export function snapWaypointsToAerodromes(
+  waypoints: FlightPlanWaypoint[],
+  aerodromes: Array<{
+    icao?: string | null;
+    ciad?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    latitudeGeoPoint?: number | null;
+    longitudeGeoPoint?: number | null;
+    altitudeText?: string | null;
+    elevFt?: number | null;
+  }>,
+  maxDistM = NEAR_ENDPOINT_M,
+): FlightPlanWaypoint[] {
+  if (!waypoints.length || !aerodromes.length) return waypoints;
+  const catalog: Array<{ lat: number; lng: number; code: string; elevFt: number | null }> = [];
+  for (const ad of aerodromes) {
+    const lat = ad.latitudeGeoPoint ?? ad.lat;
+    const lng = ad.longitudeGeoPoint ?? ad.lng;
+    const code = (ad.icao || ad.ciad || "").trim().toUpperCase();
+    if (!code || lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const elevFt =
+      ad.elevFt != null && Number.isFinite(ad.elevFt)
+        ? Math.round(ad.elevFt)
+        : parseFieldElevationFt(ad.altitudeText);
+    catalog.push({ lat, lng, code, elevFt });
+  }
+  if (!catalog.length) return waypoints;
+
+  return waypoints.map((wp) => {
+    if (wp.kind === "origin" || wp.kind === "destination" || wp.kind === "airport" || wp.kind === "rea") {
+      if (
+        (wp.kind === "origin" || wp.kind === "destination" || wp.kind === "airport") &&
+        ((wp.altitudeFt == null || !Number.isFinite(wp.altitudeFt)) ||
+          wp.fieldElevFt == null ||
+          !Number.isFinite(wp.fieldElevFt))
+      ) {
+        const code = (wp.label || wp.raw || "").trim().toUpperCase();
+        const hit = catalog.find((ad) => ad.code === code && ad.elevFt != null);
+        if (hit?.elevFt != null) {
+          return {
+            ...wp,
+            fieldElevFt:
+              wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt) ? wp.fieldElevFt : hit.elevFt,
+            altitudeFt:
+              wp.altitudeFt != null && Number.isFinite(wp.altitudeFt) ? wp.altitudeFt : hit.elevFt,
+          };
+        }
+      }
+      return wp;
+    }
+    let best: { lat: number; lng: number; code: string; elevFt: number | null } | null = null;
+    let bestDist = Infinity;
+    for (const ad of catalog) {
+      const d = haversineM(wp, ad);
+      if (d < bestDist) {
+        bestDist = d;
+        best = ad;
+      }
+    }
+    if (!best || bestDist > maxDistM) return wp;
+    return {
+      ...wp,
+      lat: best.lat,
+      lng: best.lng,
+      label: best.code,
+      raw: best.code,
+      kind: "airport" as const,
+      fieldElevFt:
+        wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt)
+          ? wp.fieldElevFt
+          : best.elevFt,
+      altitudeFt:
+        wp.altitudeFt != null && Number.isFinite(wp.altitudeFt)
+          ? wp.altitudeFt
+          : best.elevFt,
     };
   });
 }
@@ -219,6 +307,19 @@ export function buildFullRouteWaypoints(
   return out;
 }
 
+/** True course (0–360°) from A → B. */
+export function calcTrueBearing(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const phi1 = (a.lat * Math.PI) / 180;
+  const phi2 = (b.lat * Math.PI) / 180;
+  const dlambda = ((b.lng - a.lng) * Math.PI) / 180;
+  const y = Math.sin(dlambda) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dlambda);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
 export function summarizeFlightPlanRoute(
   waypoints: FlightPlanWaypoint[],
   options?: { cruiseSpeedKt?: number | null; fuelBurnPerHour?: number | null },
@@ -240,6 +341,86 @@ export function summarizeFlightPlanRoute(
   return { waypoints, distanceM, distanceNm, eteHours, fuelEstimate };
 }
 
+export type FlightPlanLeg = {
+  from: FlightPlanWaypoint;
+  to: FlightPlanWaypoint;
+  /** Index of the destination waypoint in the route (1-based for display as leg N). */
+  toIndex: number;
+  distanceNm: number;
+  bearingDeg: number;
+  eteHours: number | null;
+  fuelEstimate: number | null;
+  /** Cumulative totals from route start through this leg. */
+  cumulativeDistanceNm: number;
+  cumulativeEteHours: number | null;
+  cumulativeFuel: number | null;
+};
+
+export function buildFlightPlanLegs(
+  waypoints: FlightPlanWaypoint[],
+  options?: { cruiseSpeedKt?: number | null; fuelBurnPerHour?: number | null },
+): FlightPlanLeg[] {
+  const cruise = options?.cruiseSpeedKt;
+  const burn = options?.fuelBurnPerHour;
+  const hasCruise = cruise != null && Number.isFinite(cruise) && cruise > 0;
+  const hasBurn = burn != null && Number.isFinite(burn) && burn > 0;
+  const legs: FlightPlanLeg[] = [];
+  let cumNm = 0;
+  for (let i = 1; i < waypoints.length; i++) {
+    const from = waypoints[i - 1]!;
+    const to = waypoints[i]!;
+    const distanceNm = haversineM(from, to) / NM_IN_M;
+    cumNm += distanceNm;
+    const eteHours = hasCruise ? distanceNm / cruise! : null;
+    const fuelEstimate = eteHours != null && hasBurn ? eteHours * burn! : null;
+    const cumulativeEteHours = hasCruise ? cumNm / cruise! : null;
+    const cumulativeFuel =
+      cumulativeEteHours != null && hasBurn ? cumulativeEteHours * burn! : null;
+    legs.push({
+      from,
+      to,
+      toIndex: i,
+      distanceNm,
+      bearingDeg: calcTrueBearing(from, to),
+      eteHours,
+      fuelEstimate,
+      cumulativeDistanceNm: cumNm,
+      cumulativeEteHours,
+      cumulativeFuel,
+    });
+  }
+  return legs;
+}
+
+/** Compact DDMMH/DDDMMH string for NexAtlas / FPL paste. */
+export function formatCompactAviationCoord(lat: number, lng: number): string {
+  return formatCoordLabel(lat, lng);
+}
+
+/**
+ * Build NexAtlas-style route text from waypoints.
+ * Airport endpoints (origin/destination) are omitted — NexAtlas usually exports mid-route only.
+ */
+export function waypointsToNexAtlasText(waypoints: FlightPlanWaypoint[]): string {
+  const mid = waypoints.filter((w) => w.kind !== "origin" && w.kind !== "destination");
+  const tokens = mid.map((w) => formatCompactAviationCoord(w.lat, w.lng));
+  if (!tokens.length) return "";
+  return `DCT ${tokens.join(" ")} DCT`;
+}
+
+export function formatBearingDeg(deg: number): string {
+  if (!Number.isFinite(deg)) return "—";
+  return `${String(Math.round(deg) % 360).padStart(3, "0")}°`;
+}
+
+export function formatEteClock(hours: number | null): string {
+  if (hours == null || !Number.isFinite(hours)) return "—";
+  const totalMin = Math.round(hours * 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 export function formatDistanceNm(nm: number): string {
   if (!Number.isFinite(nm)) return "—";
   return `${nm.toFixed(1)} NM`;
@@ -257,6 +438,132 @@ export function formatEteHours(hours: number | null): string {
 export function formatFuel(amount: number | null, unit = "L"): string {
   if (amount == null || !Number.isFinite(amount)) return "—";
   return `${amount.toFixed(1)} ${unit}`;
+}
+
+/** Projeção do ponto P no segmento A→B (plano local equirectangular). */
+export function projectPointOnSegment(
+  p: { lat: number; lng: number },
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): { t: number; lat: number; lng: number; distanceM: number } {
+  const lat0 = ((a.lat + b.lat) / 2) * (Math.PI / 180);
+  const cosLat = Math.cos(lat0) || 1e-6;
+  const ax = a.lng * cosLat;
+  const ay = a.lat;
+  const bx = b.lng * cosLat;
+  const by = b.lat;
+  const px = p.lng * cosLat;
+  const py = p.lat;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = 0;
+  if (len2 > 1e-18) {
+    t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+  }
+  const lat = a.lat + t * (b.lat - a.lat);
+  const lng = a.lng + t * (b.lng - a.lng);
+  return { t, lat, lng, distanceM: haversineM(p, { lat, lng }) };
+}
+
+export type RouteInsertHint = {
+  /** Índice para `splice` (entre fromIndex e toIndex). */
+  insertIndex: number;
+  mode: "between" | "append";
+  distanceM: number;
+  fromIndex: number;
+  toIndex: number;
+  t: number;
+};
+
+const INSERT_NEAR_LEG_M = 1852 * 22; // ~22 NM de afastamento lateral do trecho
+const INSERT_ENDPOINT_T = 0.08; // evita “inserir” colado nos extremos
+
+/**
+ * Decide se o novo ponto deve ir no fim ou entre trechos (proximidade ao segmento).
+ */
+export function findRouteInsertHint(
+  waypoints: Array<{ lat: number; lng: number }>,
+  point: { lat: number; lng: number },
+  opts?: { maxDistanceM?: number },
+): RouteInsertHint {
+  const maxDist = opts?.maxDistanceM ?? INSERT_NEAR_LEG_M;
+  if (waypoints.length < 2) {
+    return {
+      insertIndex: waypoints.length,
+      mode: "append",
+      distanceM: Infinity,
+      fromIndex: Math.max(0, waypoints.length - 1),
+      toIndex: waypoints.length,
+      t: 1,
+    };
+  }
+
+  let best: RouteInsertHint | null = null;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = waypoints[i]!;
+    const b = waypoints[i + 1]!;
+    const proj = projectPointOnSegment(point, a, b);
+    if (proj.t < INSERT_ENDPOINT_T || proj.t > 1 - INSERT_ENDPOINT_T) continue;
+    if (proj.distanceM > maxDist) continue;
+    if (!best || proj.distanceM < best.distanceM) {
+      best = {
+        insertIndex: i + 1,
+        mode: "between",
+        distanceM: proj.distanceM,
+        fromIndex: i,
+        toIndex: i + 1,
+        t: proj.t,
+      };
+    }
+  }
+
+  if (!best) {
+    return {
+      insertIndex: waypoints.length,
+      mode: "append",
+      distanceM: haversineM(point, waypoints[waypoints.length - 1]!),
+      fromIndex: waypoints.length - 1,
+      toIndex: waypoints.length,
+      t: 1,
+    };
+  }
+
+  // Se está bem mais perto do último ponto do que do trecho, prefere append
+  // (usuário estendendo a rota).
+  const distLast = haversineM(point, waypoints[waypoints.length - 1]!);
+  if (distLast < best.distanceM * 0.55 && distLast < 1852 * 8) {
+    return {
+      insertIndex: waypoints.length,
+      mode: "append",
+      distanceM: distLast,
+      fromIndex: waypoints.length - 1,
+      toIndex: waypoints.length,
+      t: 1,
+    };
+  }
+
+  return best;
+}
+
+/** Índice do trecho (0 = A→B) mais próximo do clique, ou -1. */
+export function nearestRouteLegIndex(
+  waypoints: Array<{ lat: number; lng: number }>,
+  point: { lat: number; lng: number },
+  maxDistanceM = 1852 * 30,
+): number {
+  if (waypoints.length < 2) return -1;
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const proj = projectPointOnSegment(point, waypoints[i]!, waypoints[i + 1]!);
+    if (proj.distanceM < bestDist) {
+      bestDist = proj.distanceM;
+      bestIdx = i;
+    }
+  }
+  return bestDist <= maxDistanceM ? bestIdx : -1;
 }
 
 export function routeBoundingBox(

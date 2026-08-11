@@ -1597,6 +1597,7 @@ function publicMetarWatch(raw, updatedAt = null) {
     lastTaf: cleanString(raw?.lastTaf) || "",
     nickname: cleanString(raw?.nickname) || "",
     userId: cleanString(raw?.userId) || "",
+    simplified: raw?.simplified === true,
     active,
     updatedAt: updatedAt || raw?.updatedAt || null,
   };
@@ -1702,6 +1703,7 @@ async function saveMetarWatch(deps, input) {
     lastTaf: input?.lastTaf,
     nickname: input?.nickname,
     userId: input?.userId,
+    simplified: input?.simplified === true,
     active: input?.active !== false,
     updatedAt: nowIso(),
   }, nowIso());

@@ -65,6 +65,8 @@ export type AdminTabKey =
   | "atualizacoes.agendamentos"
   | "solo-flight"
   | "aisweb"
+  | "planejamento"
+  | "radar"
   | "album";
 
 /** Chaves de abas do portal instrutor */
@@ -255,6 +257,8 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "atualizacoes.agendamentos": "Atualizações › Agendamentos",
   "solo-flight": "Voo solo",
   "aisweb": "AISWEB",
+  "planejamento": "Planejamento",
+  "radar": "Radar",
   "album": "Álbum",
 };
 

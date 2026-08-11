@@ -8,6 +8,7 @@ import { findRunwaysByAirport } from "../lib/runwaysDb";
 import { enrichTrafficPattern, selectBestRunwayHint } from "../lib/trafficPattern";
 import type { TrafficPatternAnalysis } from "../types/flight";
 import { attachFlightTelemetry, clearFlightTelemetry } from "../lib/attachFlightTelemetry";
+import { attachFlightTelemetryFromFr24 } from "../lib/attachFlightTelemetryFromFr24";
 import { getSavedFlight } from "../lib/flightsDb";
 import { Skeleton } from "./ui/Skeleton";
 import {
@@ -99,6 +100,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [savingTelemetry, setSavingTelemetry] = useState(false);
+  const [importingFr24, setImportingFr24] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [flightAlerts, setFlightAlerts] = useState<FlightTelemetryAlertDoc[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
@@ -497,6 +499,96 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     }
   };
 
+  const handleImportFromFr24 = async () => {
+    if (!flightId || !user || !canEditTelemetry) return;
+
+    const hasExisting = Boolean(fileName) || telemetrySources.length > 0;
+    let replaceExisting = false;
+    if (hasExisting) {
+      const confirmed = window.confirm(
+        "Este voo já tem telemetria (CSV). Substituir pelos dados do Flightradar24?\n\nO CSV Garmin continua sendo a melhor fonte quando disponível — o FR24 traz só trilha ADS-B (posição/altitude/GS).",
+      );
+      if (!confirmed) return;
+      replaceExisting = true;
+    }
+
+    setImportingFr24(true);
+    setSavingTelemetry(true);
+    setLoadError(null);
+    try {
+      let result = await attachFlightTelemetryFromFr24({
+        flightId,
+        actorUserId: user.id,
+        actorRole: user.role,
+        replaceExisting,
+      });
+
+      if (!result.ok && result.needsConfirmReplace) {
+        const confirmed = window.confirm(result.error.message);
+        if (!confirmed) return;
+        result = await attachFlightTelemetryFromFr24({
+          flightId,
+          actorUserId: user.id,
+          actorRole: user.role,
+          replaceExisting: true,
+        });
+      }
+
+      if (!result.ok) throw result.error;
+
+      const saved = await getSavedFlight(flightId);
+      if (saved.error || !saved.data) {
+        throw saved.error ?? new Error("Voo não encontrado após importação.");
+      }
+      const decoded = decodeFlightRecord(saved.data.csv_text);
+      const telemetryText = decoded.telemetryCsv;
+      const parsed = parseGarminCsv(telemetryText);
+      const sourceName = result.sourceFileName;
+      applyResult(parsed, sourceName, telemetryText.length);
+      setTelemetrySources([{ name: sourceName, text: telemetryText }]);
+      setTelemetrySegmentCandidates([]);
+      setSelectedTelemetrySegmentIds([]);
+      setTelemetryFileMetas([]);
+      setTelemetryGapSec(null);
+      setTelemetryGaps([]);
+      setTelemetryDirty(false);
+      setFlightMeta(decoded.meta ?? null);
+      await loadFlightAlerts();
+
+      const delta =
+        result.match.deltaMin != null ? ` · Δ ${Math.round(result.match.deltaMin)} min` : "";
+      showToast({
+        variant: "success",
+        message: `Telemetria FR24 vinculada (${result.points.toLocaleString("pt-BR")} pts${delta})${result.match.label ? ` · ${result.match.label}` : ""}.`,
+      });
+
+      void result.attach.reviewAutoBuild?.then((build) => {
+        if (build.added > 0 || build.removed > 0) {
+          window.dispatchEvent(new CustomEvent("flight-review-maneuvers-updated", { detail: { flightId } }));
+        }
+        if (build.added > 0) {
+          showToast({
+            variant: "success",
+            message: `${build.added} manobra${build.added > 1 ? "s" : ""} (decolagem/pouso/TGL) adicionada${build.added > 1 ? "s" : ""} no Flight Review.`,
+          });
+        } else if (build.error) {
+          showToast({
+            variant: "error",
+            message: `Flight Review automático falhou: ${build.error.message}`,
+          });
+        }
+      });
+    } catch (err) {
+      showToast({
+        variant: "error",
+        message: (err as Error).message || "Falha ao importar telemetria do Flightradar24.",
+      });
+    } finally {
+      setImportingFr24(false);
+      setSavingTelemetry(false);
+    }
+  };
+
   const handleClearTelemetry = async () => {
     if (!flightId || !user || !canEditTelemetry) return;
     const confirmed = window.confirm(
@@ -621,10 +713,31 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   const canAddTelemetryFiles = canEditTelemetry && telemetrySources.length < MAX_TELEMETRY_CSV_FILES;
   const isDzaTelemetryFlight = isSegmentedTelemetryAircraft(flightMeta?.header.aircraft);
   const remainingTelemetrySlots = Math.max(0, MAX_TELEMETRY_CSV_FILES - telemetrySources.length);
+  const isFr24Telemetry = useMemo(() => {
+    const nameHit = (fileName || "").toLowerCase().startsWith("fr24-");
+    const sourceHit = telemetrySources.some(
+      (source) =>
+        source.name.toLowerCase().startsWith("fr24-") ||
+        source.text.includes("Flightradar24 track export") ||
+        source.text.includes("ADS-B only"),
+    );
+    return nameHit || sourceHit;
+  }, [fileName, telemetrySources]);
+
+  const adsbWarningBanner = isFr24Telemetry ? (
+    <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5 text-xs text-amber-100/95">
+      <p className="font-semibold text-amber-50">Dados importados do ADS-B (Flightradar24)</p>
+      <p className="mt-1 text-amber-100/80">
+        A trilha pode estar incompleta ou imprecisa (cobertura ADS-B, amostragem irregular, sem dados de motor/atitude do Garmin).
+        Decolagens, TGLs e pousos detectados automaticamente são estimativas — confira e ajuste no Flight Review se necessário.
+      </p>
+    </div>
+  ) : null;
 
   const uploadPanel = showTelemetryManagement ? (
     <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-5">
       <div className="flex flex-col gap-4">
+        {adsbWarningBanner}
         <div>
           <p className="text-sm font-medium text-slate-200">
             CSVs de telemetria ({telemetrySources.length}/{MAX_TELEMETRY_CSV_FILES})
@@ -636,6 +749,9 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
           </p>
           <p className="mt-1 text-xs text-slate-500">
             A ordem de processamento é definida pelos horários nas linhas dos CSVs, não pela ordem de seleção.
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Sem CSV do Garmin? Dá para vincular automaticamente a trilha do Flightradar24 pela matrícula e horário da ficha.
           </p>
         </div>
 
@@ -739,7 +855,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
         ) : null}
 
         {canEditTelemetry && (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
             <label
               className={`inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 ${
                 canAddTelemetryFiles && !savingTelemetry ? "cursor-pointer hover:bg-slate-800" : "cursor-not-allowed opacity-50"
@@ -757,11 +873,20 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
             </label>
             <button
               type="button"
+              onClick={() => void handleImportFromFr24()}
+              disabled={savingTelemetry || importingFr24}
+              title="Busca o voo no Flightradar24 pela matrícula e horário da ficha e anexa a trilha ADS-B"
+              className="inline-flex items-center justify-center rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              {importingFr24 ? "Buscando FR24..." : "Vincular do Flightradar24"}
+            </button>
+            <button
+              type="button"
               onClick={() => void handleProcessTelemetry()}
               disabled={savingTelemetry || telemetrySources.length === 0}
               className="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
             >
-              {savingTelemetry ? "Processando..." : "Processar telemetria"}
+              {savingTelemetry && !importingFr24 ? "Processando..." : "Processar telemetria"}
             </button>
             <button
               type="button"
@@ -811,6 +936,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     <div className="relative min-w-0 flex flex-col gap-2">
       {savingTelemetry ? <TelemetryProcessingOverlay /> : null}
       {uploadPanel}
+      {!showTelemetryManagement && adsbWarningBanner ? adsbWarningBanner : null}
       {showTelemetryManagement ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="min-w-0 break-words text-sm font-medium text-slate-300 [overflow-wrap:anywhere]">
@@ -877,7 +1003,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
               style={mapExpanded ? { gridTemplateRows: "60% 40%" } : undefined}
             >
               {points.length >= 2 ? (
-                <div className="relative h-full min-h-0">
+                <div className="relative flex h-full min-h-0 flex-col gap-1.5">
+                  <div className="relative min-h-0 flex-1">
                   <button
                     type="button"
                     onClick={handleToggleMapFullscreen}
@@ -898,6 +1025,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
                     hoverCallbackRef={hoverCallbackRef}
                     boundsCallbackRef={boundsCallbackRef}
                   />
+                  </div>
                 </div>
               ) : (
                 <p className="rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">

@@ -291,6 +291,8 @@ async function main() {
   const meteoblueLat = process.env.METEOBLUE_LAT || env.METEOBLUE_LAT || "-22.9754";
   const meteoblueLon = process.env.METEOBLUE_LON || env.METEOBLUE_LON || "-44.3074";
   const meteoblueAsl = process.env.METEOBLUE_ASL || env.METEOBLUE_ASL || "2";
+  const flightradar24ApiToken =
+    process.env.FLIGHTRADAR24_API_TOKEN || env.FLIGHTRADAR24_API_TOKEN || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
   const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
@@ -434,6 +436,9 @@ async function main() {
   await upsertVariable(functions, "METEOBLUE_LAT", String(meteoblueLat));
   await upsertVariable(functions, "METEOBLUE_LON", String(meteoblueLon));
   await upsertVariable(functions, "METEOBLUE_ASL", String(meteoblueAsl));
+  if (flightradar24ApiToken) {
+    await upsertVariable(functions, "FLIGHTRADAR24_API_TOKEN", flightradar24ApiToken, true);
+  }
 
   const buffer = fs.readFileSync(archivePath);
   const code = InputFile.fromBuffer(buffer, "admin-users-function.tar.gz");

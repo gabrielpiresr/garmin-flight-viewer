@@ -219,6 +219,9 @@ export const FLIGHT_EVALUATION_DISMISSALS_COL_ID =
 export const FLIGHT_PHOTOS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FLIGHT_PHOTOS_COLLECTION_ID as string | undefined) ?? "6a6120330027b95dee1e";
 
+export const SAVED_FLIGHT_ROUTES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_SAVED_FLIGHT_ROUTES_COL_ID as string | undefined) ?? "saved_flight_routes";
+
 export const isAppwriteConfigured = Boolean(endpoint && projectId && endpoint.startsWith("http"));
 
 export let client: Client | null = null;

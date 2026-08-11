@@ -109,6 +109,7 @@
     "hls.js": "^1.6.16",
     "leaflet": "^1.9.4",
     "papaparse": "^5.5.2",
+    "polygon-clipping": "^0.15.7",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

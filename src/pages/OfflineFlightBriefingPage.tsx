@@ -30,6 +30,8 @@ function briefingToHtml(briefing: OfflineFlightBriefing): string {
     fuelUnit: briefing.fuelUnit,
     routeText: briefing.routeText,
     mapImageDataUrl: briefing.mapImageDataUrl,
+    verticalProfileSvg: briefing.verticalProfileSvg,
+    routeTableRows: briefing.routeTableRows,
     mode: "continuous",
     brand: getPdfBrand(),
   });

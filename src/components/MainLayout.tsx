@@ -660,13 +660,13 @@ export function MainLayout() {
     <FlightReviewClubProvider value={clubContextValue}>
     <div className="school-themed-shell flex min-h-screen">
       <div
-        className={`relative sticky top-0 z-30 hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
       >
       <aside
         onMouseEnter={onSidebarMouseEnter}
         onMouseLeave={onSidebarMouseLeave}
         className={`school-themed-surface absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
-          isPeeking ? "z-40 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
+          isPeeking ? "z-10 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
         }`}
       >
         <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>

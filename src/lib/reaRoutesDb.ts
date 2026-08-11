@@ -61,6 +61,12 @@ export type ReaRouteCollection = {
 
 const GEOAISWEB_WFS = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
+const APP_WFS_PROXY = "/api/geoaisweb/wfs";
+const REA_IDB_NAME = "gfv-rea-routes";
+const REA_IDB_STORE = "collections";
+const REA_IDB_VERSION = 1;
+const FULL_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
+const BBOX_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const LAYER_BY_KIND: Record<ReaRouteKind, { wfs: string; fallback: string }> = {
   rea: { wfs: "ICA:CV_REA_BR_COMPLETO", fallback: "/geo/cv-rea-br.json" },
@@ -69,6 +75,9 @@ const LAYER_BY_KIND: Record<ReaRouteKind, { wfs: string; fallback: string }> = {
 
 const cache: Partial<Record<ReaRouteKind, ReaRouteCollection>> = {};
 const inflight: Partial<Record<ReaRouteKind, Promise<ReaRouteCollection>>> = {};
+const cacheLoadedAt: Partial<Record<ReaRouteKind, number>> = {};
+const bboxInflight = new Map<string, Promise<ReaRouteFeature[]>>();
+let idbPromise: Promise<IDBDatabase | null> | null = null;
 
 function asCollection(data: unknown): ReaRouteCollection {
   const raw = data as ReaRouteCollection;
@@ -82,17 +91,114 @@ async function fetchFallback(path: string): Promise<ReaRouteCollection> {
   return asCollection(await response.json());
 }
 
-async function fetchWfs(baseUrl: string, typeName: string): Promise<ReaRouteCollection> {
+function openReaIdb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve) => {
+    const request = indexedDB.open(REA_IDB_NAME, REA_IDB_VERSION);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(REA_IDB_STORE, { keyPath: "key" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+  return idbPromise;
+}
+
+async function readStoredCollection(key: string, ttlMs: number): Promise<ReaRouteCollection | null> {
+  const db = await openReaIdb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const tx = db.transaction(REA_IDB_STORE, "readonly");
+    const request = tx.objectStore(REA_IDB_STORE).get(key);
+    request.onsuccess = () => {
+      const row = request.result as { savedAt?: number; collection?: unknown } | undefined;
+      if (!row?.savedAt || Date.now() - row.savedAt > ttlMs) {
+        resolve(null);
+        return;
+      }
+      const collection = asCollection(row.collection);
+      resolve(collection.features.length ? collection : null);
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+async function writeStoredCollection(key: string, collection: ReaRouteCollection): Promise<void> {
+  const db = await openReaIdb();
+  if (!db || collection.features.length === 0) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(REA_IDB_STORE, "readwrite");
+    tx.objectStore(REA_IDB_STORE).put({ key, savedAt: Date.now(), collection });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+function fullCacheKey(kind: ReaRouteKind): string {
+  return `${kind}:full`;
+}
+
+function bboxCacheKey(kind: ReaRouteKind, bbox: {
+  minLng: number;
+  minLat: number;
+  maxLng: number;
+  maxLat: number;
+}): string {
+  return `${kind}:bbox:${[
+    bbox.minLng.toFixed(3),
+    bbox.minLat.toFixed(3),
+    bbox.maxLng.toFixed(3),
+    bbox.maxLat.toFixed(3),
+  ].join(",")}`;
+}
+
+function featureIdentity(feature: ReaRouteFeature): string {
+  return String(feature.id ?? JSON.stringify(feature.properties));
+}
+
+function mergeIntoMemoryCache(kind: ReaRouteKind, features: ReaRouteFeature[]): ReaRouteCollection {
+  const existing = cache[kind];
+  if (!existing) {
+    const collection = { type: "FeatureCollection" as const, features };
+    cache[kind] = collection;
+    cacheLoadedAt[kind] = Date.now();
+    return collection;
+  }
+  const byId = new Map<string, ReaRouteFeature>();
+  for (const f of existing.features) byId.set(featureIdentity(f), f);
+  for (const f of features) byId.set(featureIdentity(f), f);
+  const collection = { type: "FeatureCollection" as const, features: [...byId.values()] };
+  cache[kind] = collection;
+  cacheLoadedAt[kind] = Date.now();
+  return collection;
+}
+
+async function fetchWfs(kind: ReaRouteKind, baseUrl: string, typeName: string, bbox?: {
+  minLng: number;
+  minLat: number;
+  maxLng: number;
+  maxLat: number;
+}): Promise<ReaRouteCollection> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 8000);
+  const timer = window.setTimeout(() => controller.abort(), 12000);
   try {
-    const params = new URLSearchParams({
-      service: "WFS",
-      version: "1.0.0",
-      request: "GetFeature",
-      typeName,
-      outputFormat: "application/json",
-    });
+    const params =
+      baseUrl === APP_WFS_PROXY
+        ? new URLSearchParams({ kind })
+        : new URLSearchParams({
+            service: "WFS",
+            version: "1.0.0",
+            request: "GetFeature",
+            typeName,
+            outputFormat: "application/json",
+          });
+    if (bbox) {
+      params.set("bbox", `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`);
+      params.set("maxFeatures", "500");
+    }
     const response = await fetch(`${baseUrl}?${params.toString()}`, { signal: controller.signal });
     if (!response.ok) throw new Error(`WFS ${typeName} falhou (${response.status})`);
     return asCollection(await response.json());
@@ -101,39 +207,56 @@ async function fetchWfs(baseUrl: string, typeName: string): Promise<ReaRouteColl
   }
 }
 
-/** Carrega REA/REH. Prefere snapshot local (rápido/confiável); no dev tenta WFS em background. */
-export async function loadReaRoutes(kind: ReaRouteKind): Promise<ReaRouteCollection> {
+function wfsBases(options?: { bbox?: boolean }): string[] {
+  if (options?.bbox && !import.meta.env.DEV) return [APP_WFS_PROXY, GEOAISWEB_WFS];
+  return import.meta.env.DEV ? [DEV_PROXY_BASE, GEOAISWEB_WFS] : [GEOAISWEB_WFS];
+}
+
+/** Carrega REA/REH. Prefere snapshot local; tenta WFS em background e notifica via onUpdate. */
+export async function loadReaRoutes(
+  kind: ReaRouteKind,
+  options?: { onUpdate?: (collection: ReaRouteCollection) => void },
+): Promise<ReaRouteCollection> {
   const hit = cache[kind];
-  if (hit) return hit;
+  if (hit) {
+    // Ainda tenta refrescar em background (snapshot local pode estar incompleto — ex.: TMA BH).
+    if (Date.now() - (cacheLoadedAt[kind] ?? 0) > FULL_REFRESH_TTL_MS) {
+      void refreshReaRoutesFromWfs(kind, options?.onUpdate);
+    }
+    return hit;
+  }
   const pending = inflight[kind];
   if (pending) return pending;
 
   const spec = LAYER_BY_KIND[kind];
   const promise = (async () => {
-    // Snapshot local primeiro — evita tela preta/travamento por CORS/timeout no GeoAISWEB.
+    const persisted = await readStoredCollection(fullCacheKey(kind), FULL_REFRESH_TTL_MS);
+    if (persisted?.features.length) {
+      cache[kind] = persisted;
+      cacheLoadedAt[kind] = Date.now();
+      return persisted;
+    }
+
     try {
       const fallback = await fetchFallback(spec.fallback);
       if (fallback.features.length > 0) {
         cache[kind] = fallback;
-        if (import.meta.env.DEV) {
-          void fetchWfs(DEV_PROXY_BASE, spec.wfs)
-            .then((live) => {
-              if (live.features.length > 0) cache[kind] = live;
-            })
-            .catch(() => {});
-        }
+        cacheLoadedAt[kind] = Date.now();
+        void writeStoredCollection(fullCacheKey(kind), fallback);
+        void refreshReaRoutesFromWfs(kind, options?.onUpdate);
         return fallback;
       }
     } catch {
       // continue to live
     }
 
-    const bases = import.meta.env.DEV ? [DEV_PROXY_BASE, GEOAISWEB_WFS] : [GEOAISWEB_WFS];
-    for (const base of bases) {
+    for (const base of wfsBases()) {
       try {
-        const collection = await fetchWfs(base, spec.wfs);
+        const collection = await fetchWfs(kind, base, spec.wfs);
         if (collection.features.length > 0) {
           cache[kind] = collection;
+          cacheLoadedAt[kind] = Date.now();
+          void writeStoredCollection(fullCacheKey(kind), collection);
           return collection;
         }
       } catch {
@@ -149,6 +272,71 @@ export async function loadReaRoutes(kind: ReaRouteKind): Promise<ReaRouteCollect
   } finally {
     delete inflight[kind];
   }
+}
+
+async function refreshReaRoutesFromWfs(
+  kind: ReaRouteKind,
+  onUpdate?: (collection: ReaRouteCollection) => void,
+): Promise<void> {
+  const spec = LAYER_BY_KIND[kind];
+  for (const base of wfsBases()) {
+    try {
+      const live = await fetchWfs(kind, base, spec.wfs);
+      if (live.features.length === 0) continue;
+      const prev = cache[kind]?.features.length ?? 0;
+      cache[kind] = live;
+      cacheLoadedAt[kind] = Date.now();
+      void writeStoredCollection(fullCacheKey(kind), live);
+      if (live.features.length !== prev) onUpdate?.(live);
+      return;
+    } catch {
+      // try next
+    }
+  }
+}
+
+/** Busca REA/REH só na viewport (completa gaps do snapshot local, ex. TMA BH). */
+export async function loadReaRoutesInBbox(
+  kind: ReaRouteKind,
+  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+): Promise<ReaRouteFeature[]> {
+  const key = bboxCacheKey(kind, bbox);
+  const pending = bboxInflight.get(key);
+  if (pending) return pending;
+
+  const stored = await readStoredCollection(key, BBOX_CACHE_TTL_MS);
+  if (stored?.features.length) {
+    mergeIntoMemoryCache(kind, stored.features);
+    return stored.features;
+  }
+
+  const spec = LAYER_BY_KIND[kind];
+  const request = (async () => {
+    for (const base of wfsBases({ bbox: true })) {
+      try {
+        const collection = await fetchWfs(kind, base, spec.wfs, bbox);
+        if (collection.features.length > 0) {
+          mergeIntoMemoryCache(kind, collection.features);
+          void writeStoredCollection(key, collection);
+          return collection.features;
+        }
+      } catch {
+        // try next
+      }
+    }
+    return [];
+  })();
+
+  bboxInflight.set(key, request);
+  try {
+    return await request;
+  } finally {
+    bboxInflight.delete(key);
+  }
+}
+
+export function getCachedReaRoutes(kind: ReaRouteKind): ReaRouteCollection | null {
+  return cache[kind] ?? null;
 }
 
 export function numOrNull(value: unknown): number | null {
@@ -230,4 +418,3 @@ export function collectReaFixPoints(features: ReaRouteFeature[]): ReaFixPoint[] 
   }
   return out;
 }
-

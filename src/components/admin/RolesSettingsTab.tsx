@@ -110,6 +110,8 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
     ],
   },
   { label: "AISWEB", parentKey: "aisweb" },
+  { label: "Planejamento", parentKey: "planejamento" },
+  { label: "Radar", parentKey: "radar" },
   { label: "Álbum", parentKey: "album" },
   {
     label: "Configurações",

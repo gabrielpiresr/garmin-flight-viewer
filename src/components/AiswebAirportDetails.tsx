@@ -174,9 +174,9 @@ export function OperationCard({
     : "—";
 
   return (
-    <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 px-3 py-2">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Operação</p>
-      <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+    <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 px-2.5 py-1.5">
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Operação</p>
+      <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] leading-tight">
         <div>
           <dt className="text-slate-500">Tipo</dt>
           <dd className="font-medium text-slate-200">{rotaer?.typeOpr || "—"}</dd>

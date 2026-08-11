@@ -83,6 +83,10 @@ const AtualizacoesAdminTab = lazy(() =>
   import("./AtualizacoesAdminTab").then((module) => ({ default: module.AtualizacoesAdminTab })),
 );
 const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
+const RadarTab = lazy(() => import("./RadarTab").then((module) => ({ default: module.RadarTab })));
+const PlanejamentoTab = lazy(() =>
+  import("./PlanejamentoTab").then((module) => ({ default: module.PlanejamentoTab })),
+);
 const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
 const AdminSoloFlightTab = lazy(() => import("./AdminSoloFlightTab").then((module) => ({ default: module.AdminSoloFlightTab })));
 
@@ -106,6 +110,8 @@ type AdminSection =
   | "atualizacoes"
   | "solo-flight"
   | "aisweb"
+  | "planejamento"
+  | "radar"
   | "album";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
@@ -160,6 +166,26 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M4.5 9.75a6 6 0 0111.673-2.072 3.75 3.75 0 013.543 4.312 4.5 4.5 0 01-1.341 8.76H6.75a4.5 4.5 0 01-2.25-8.4v-.6z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "planejamento",
+    label: "Planejamento",
+    sublabel: "Rotas, mapa e NexAtlas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M8.161 2.58a1.875 1.875 0 011.678 0l4.976 2.459c.09.044.19.044.28 0l4.976-2.459a1.875 1.875 0 012.429 2.43l-2.46 4.976a.375.375 0 000 .28l2.46 4.976a1.875 1.875 0 01-2.43 2.429l-4.976-2.46a.375.375 0 00-.28 0l-4.976 2.46a1.875 1.875 0 01-2.429-2.43l2.46-4.976a.375.375 0 000-.28L5.732 5.01a1.875 1.875 0 012.43-2.43z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "radar",
+    label: "Radar",
+    sublabel: "Frota ao vivo no Flightradar24",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M12 2.25a.75.75 0 01.75.75v1.519a7.5 7.5 0 016.731 6.731H21a.75.75 0 010 1.5h-1.519a7.5 7.5 0 01-6.731 6.731V21a.75.75 0 01-1.5 0v-1.519a7.5 7.5 0 01-6.731-6.731H3a.75.75 0 010-1.5h1.519A7.5 7.5 0 0111.25 4.519V3a.75.75 0 01.75-.75zm0 4.5a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5zm0 2.25a3 3 0 100 6 3 3 0 000-6zm0 2.25a.75.75 0 100 1.5.75.75 0 000-1.5z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -339,7 +365,7 @@ const NAV_ITEMS: NavItem[] = [
 const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "album", "reports", "contents"],
+    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "planejamento", "radar", "album", "reports", "contents"],
   },
   {
     title: "Frota",
@@ -628,6 +654,8 @@ const ADMIN_ROUTES = [
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "solo-flight", path: "/admin/voo-solo" },
   { id: "aisweb", path: "/admin/aisweb" },
+  { id: "planejamento", path: "/admin/planejamento" },
+  { id: "radar", path: "/admin/radar" },
   { id: "album", path: "/admin/album" },
 ] satisfies readonly TabRoute<AdminSection>[];
 
@@ -847,13 +875,13 @@ export function AdminLayout() {
     <div className="flex min-h-screen bg-slate-950">
       {/* Sidebar */}
       <div
-        className={`relative sticky top-0 z-30 hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
       >
       <aside
         onMouseEnter={onSidebarMouseEnter}
         onMouseLeave={onSidebarMouseLeave}
         className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950/95 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
-          isPeeking ? "z-40 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
+          isPeeking ? "z-10 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
         }`}
       >
         <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
@@ -1158,6 +1186,20 @@ export function AdminLayout() {
             <div hidden={section !== "aisweb"}>
               <LazyTab>
                 <AiswebTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("planejamento") && (
+            <div hidden={section !== "planejamento"}>
+              <LazyTab>
+                <PlanejamentoTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("radar") && (
+            <div hidden={section !== "radar"}>
+              <LazyTab>
+                <RadarTab />
               </LazyTab>
             </div>
           )}

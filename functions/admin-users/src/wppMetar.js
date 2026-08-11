@@ -63,6 +63,11 @@ function parseWppMetarWatchCommand(text, responseId = "") {
       const icao = stopMatch[1] ? normalizeIcao(stopMatch[1]) : null;
       return { action: "stop", icao: icao && icao.length === 4 ? icao : null };
     }
+    const simpleMatch = id.match(/^watch_simple(?:_([A-Za-z0-9]{4}))?$/i);
+    if (simpleMatch) {
+      const icao = simpleMatch[1] ? normalizeIcao(simpleMatch[1]) : null;
+      return { action: "simplify", icao: icao && icao.length === 4 ? icao : null };
+    }
     const hoursMatch = id.match(/^watch_([A-Za-z0-9]{4})_([248])$/i);
     if (hoursMatch) {
       const icao = normalizeIcao(hoursMatch[1]);
@@ -94,6 +99,22 @@ function parseWppMetarWatchCommand(text, responseId = "") {
       normalized === "watch stop"
     ) {
       return { action: "stop", icao: null };
+    }
+
+    if (
+      normalized === "receber simplificado" ||
+      normalized === "metar simplificado" ||
+      normalized === "simplificado"
+    ) {
+      return { action: "simplify", icao: null };
+    }
+
+    const simpleIcaoMatch = normalized.match(
+      /^(?:receber\s+)?(?:metar\s+)?simplificado\s+([a-z0-9]{4})$/i,
+    );
+    if (simpleIcaoMatch) {
+      const icao = normalizeIcao(simpleIcaoMatch[1]);
+      if (icao.length === 4) return { action: "simplify", icao };
     }
 
     const startMatch = normalized.match(

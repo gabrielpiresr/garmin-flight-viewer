@@ -70,15 +70,20 @@ function angleDiff(a: number, b: number): number {
 }
 
 function estimateSampleIntervalMs(data: ChartRow[]): number {
-  const diffs: number[] = [];
+  const shortDiffs: number[] = [];
+  const allDiffs: number[] = [];
   for (let i = 1; i < data.length; i++) {
     const diff = data[i]!.x - data[i - 1]!.x;
-    if (diff > 0 && diff <= 10_000) diffs.push(diff);
+    if (diff <= 0) continue;
+    allDiffs.push(diff);
+    // Garmin CSVs are ~1 Hz; ADS-B/FR24 tracks are often 5–60s between points.
+    if (diff <= 120_000) shortDiffs.push(diff);
   }
-  if (diffs.length === 0) return 1000;
+  const pool = shortDiffs.length > 0 ? shortDiffs : allDiffs;
+  if (pool.length === 0) return 1000;
 
-  diffs.sort((a, b) => a - b);
-  return diffs[Math.floor(diffs.length / 2)] ?? 1000;
+  pool.sort((a, b) => a - b);
+  return pool[Math.floor(pool.length / 2)] ?? 1000;
 }
 
 function indexAtOrAfterX(data: ChartRow[], x: number): number {
@@ -87,9 +92,11 @@ function indexAtOrAfterX(data: ChartRow[], x: number): number {
 }
 
 function smoothedGpsAltFt(data: ChartRow[], idx: number, radius = 3): number | null {
+  const sampleMs = estimateSampleIntervalMs(data);
+  const effectiveRadius = sampleMs > 5_000 ? Math.min(radius, 1) : radius;
   let sum = 0;
   let count = 0;
-  for (let i = Math.max(0, idx - radius); i <= Math.min(data.length - 1, idx + radius); i++) {
+  for (let i = Math.max(0, idx - effectiveRadius); i <= Math.min(data.length - 1, idx + effectiveRadius); i++) {
     const alt = get(data[i]!, "gpsAltFt");
     if (alt !== null) {
       sum += alt;
@@ -189,9 +196,9 @@ function isImplausiblyHighTouchdownCandidate(
 function findRotation(
   data: ChartRow[],
   after: number,
-  options: { ignoreAgl?: boolean } = {},
+  options: { ignoreAgl?: boolean; adsbLike?: boolean } = {},
 ): number | null {
-  const { ignoreAgl = false } = options;
+  const { ignoreAgl = false, adsbLike = false } = options;
   for (let i = Math.max(after + 3, 3); i < data.length; i++) {
     const gs = get(data[i]!, "gsKt");
     const pitch = get(data[i]!, "pitchDeg");
@@ -204,15 +211,74 @@ function findRotation(
       (ignoreAgl || agl === null || agl === 0)
     ) return i;
   }
+  if (adsbLike) return findAdsbRotation(data, after);
   return null;
 }
 
 /** Index of LIFTOFF (after rotation). */
-function findLiftoff(data: ChartRow[], afterIdx: number, withinRows = 60): number | null {
+function findLiftoff(
+  data: ChartRow[],
+  afterIdx: number,
+  withinRows = 60,
+  options: { adsbLike?: boolean } = {},
+): number | null {
   for (let i = afterIdx; i < Math.min(afterIdx + withinRows, data.length); i++) {
     const velU = get(data[i]!, "velUMps");
     const gs = get(data[i]!, "gsKt");
     if (velU !== null && velU > 1.0 && gs !== null && gs > 45) return i;
+  }
+  if (options.adsbLike) return findAdsbLiftoff(data, afterIdx, withinRows);
+  return null;
+}
+
+function chartHasMetric(data: ChartRow[], key: string): boolean {
+  for (const row of data) {
+    if (get(row, key) !== null) return true;
+  }
+  return false;
+}
+
+/** Sparse ADS-B / FR24 tracks: GS+alt only, no pitch/AGL/IAS from avionics. */
+function isAdsbLikeTelemetry(data: ChartRow[]): boolean {
+  return (
+    chartHasMetric(data, "gpsAltFt") &&
+    chartHasMetric(data, "gsKt") &&
+    !chartHasMetric(data, "pitchDeg") &&
+    !chartHasMetric(data, "heightAglFt") &&
+    !chartHasMetric(data, "iasKt")
+  );
+}
+
+/** Rotation without pitch: ground-roll then acceleration + imminent climb. */
+function findAdsbRotation(data: ChartRow[], after: number): number | null {
+  for (let i = Math.max(after + 2, 2); i < data.length - 2; i++) {
+    const gs = get(data[i]!, "gsKt");
+    if (gs === null || gs < 40) continue;
+    if (!hasGroundRollBeforeTakeoff(data, i)) continue;
+
+    const alt0 = smoothedGpsAltFt(data, i);
+    if (alt0 === null) continue;
+    const recentMin = minMetric(data, Math.max(0, i - 40), i, "gpsAltFt");
+    if (recentMin !== null && alt0 > recentMin + 500) continue;
+
+    const climbIdx = findAltitudeGainAfter(data, i, 50, 60);
+    if (climbIdx === null) continue;
+    if (data[climbIdx]!.x - data[i]!.x > 180_000) continue;
+    return i;
+  }
+  return null;
+}
+
+/** Liftoff without velU: altitude rising while still flying speed. */
+function findAdsbLiftoff(data: ChartRow[], afterIdx: number, withinRows = 80): number | null {
+  const baseAlt = smoothedGpsAltFt(data, afterIdx);
+  if (baseAlt === null) return null;
+  const afterX = data[afterIdx]!.x;
+  for (let i = afterIdx; i < Math.min(afterIdx + withinRows, data.length); i++) {
+    if (data[i]!.x - afterX > 180_000) break;
+    const gs = get(data[i]!, "gsKt");
+    const alt = smoothedGpsAltFt(data, i);
+    if (gs !== null && gs > 40 && alt !== null && alt >= baseAlt + 40) return i;
   }
   return null;
 }
@@ -417,27 +483,32 @@ function localSpeedValleyIdx(data: ChartRow[], idx: number, lookBehind = 30, loo
 }
 
 function findTglRotationAfterTouchdown(data: ChartRow[], tdIdx: number, fallbackRotIdx?: number): number | null {
-  const speedValleyIdx = localSpeedValleyIdx(data, tdIdx, 0, 45);
+  const sampleMs = estimateSampleIntervalMs(data);
+  const sparse = sampleMs > 5_000;
+  const speedValleyIdx = localSpeedValleyIdx(data, tdIdx, 0, sparse ? 8 : 45);
   const startIdx = Math.max(tdIdx + 1, (speedValleyIdx ?? tdIdx) + 1);
-  const endIdx = Math.min(data.length - 1, tdIdx + 90);
+  const endIdx = Math.min(data.length - 1, tdIdx + (sparse ? 25 : 90));
 
   for (let i = startIdx; i <= endIdx; i++) {
     const gs = get(data[i]!, "gsKt");
-    const previousGs = averageMetric(data, i - 5, i - 1, "gsKt");
+    const previousGs = averageMetric(data, i - (sparse ? 2 : 5), i - 1, "gsKt");
     const velU = get(data[i]!, "velUMps");
     const vs = get(data[i]!, "vertSpeedFpm");
     const pitch = get(data[i]!, "pitchDeg");
     const alt = smoothedGpsAltFt(data, i);
-    const previousAlt = smoothedGpsAltFt(data, i - 3);
+    const previousAlt = smoothedGpsAltFt(data, i - (sparse ? 1 : 3));
+    const climbing =
+      (velU !== null && velU > 0.5) ||
+      (vs !== null && vs > 100) ||
+      (sparse && alt !== null && previousAlt !== null && alt >= previousAlt + 20);
 
     if (
       gs !== null &&
-      gs > 45 &&
+      gs > 40 &&
       previousGs !== null &&
-      gs >= previousGs + 1.5 &&
-      pitch !== null &&
-      pitch > 3 &&
-      ((velU !== null && velU > 0.5) || (vs !== null && vs > 100)) &&
+      gs >= previousGs + (sparse ? 0.5 : 1.5) &&
+      climbing &&
+      (pitch === null || pitch > 3) &&
       (alt === null || previousAlt === null || alt >= previousAlt)
     ) {
       return i;
@@ -547,6 +618,8 @@ function hasAltitudeValleyTouchdownSignature(data: ChartRow[], idx: number): boo
   const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
   const localMinGs = minMetric(data, idx - 20, idx + 20, "gsKt");
   const localMinIas = minMetric(data, idx - 20, idx + 20, "iasKt");
+  const preAlt = averageMetric(data, idx - 30, idx - 10, "gpsAltFt");
+  const touchdownAlt = smoothedGpsAltFt(data, idx);
 
   const touchdownSpeed =
     (gs !== null && gs <= 75) ||
@@ -559,7 +632,9 @@ function hasAltitudeValleyTouchdownSignature(data: ChartRow[], idx: number): boo
   const localSpeedDip =
     (localMinGs !== null && localMinGs <= 62) ||
     (localMinIas !== null && localMinIas <= 62);
-  const recentDescent = recentMinVs !== null && recentMinVs <= -250;
+  const recentDescent =
+    (recentMinVs !== null && recentMinVs <= -250) ||
+    (preAlt !== null && touchdownAlt !== null && preAlt - touchdownAlt >= 150);
 
   return touchdownSpeed && (approachDecel || localSpeedDip) && recentDescent;
 }
@@ -569,24 +644,28 @@ function findAltitudeClimbAfterTouchdown(
   touchdownIdx: number,
   withinMs = 150_000,
   minGainFt = 120,
+  options: { allowAltitudeOnly?: boolean } = {},
 ): number | null {
   const touchdownX = data[touchdownIdx]?.x;
   const touchdownAlt = smoothedGpsAltFt(data, touchdownIdx);
   if (touchdownX === undefined || touchdownAlt === null) return null;
+  const allowAltitudeOnly = options.allowAltitudeOnly === true;
+  const gainNeeded = allowAltitudeOnly ? Math.max(minGainFt, 100) : minGainFt;
+  const windowMs = allowAltitudeOnly ? Math.max(withinMs, 240_000) : withinMs;
 
   for (let i = touchdownIdx + 1; i < data.length; i++) {
-    if (data[i]!.x - touchdownX > withinMs) break;
+    if (data[i]!.x - touchdownX > windowMs) break;
 
     const alt = smoothedGpsAltFt(data, i);
+    if (alt === null || alt < touchdownAlt + gainNeeded) continue;
+
     const velU = get(data[i]!, "velUMps");
     const vs = get(data[i]!, "vertSpeedFpm");
-    if (
-      alt !== null &&
-      alt >= touchdownAlt + minGainFt &&
-      ((velU !== null && velU > 0.8) || (vs !== null && vs > 150))
-    ) {
+    if ((velU !== null && velU > 0.8) || (vs !== null && vs > 150)) {
       return i;
     }
+    // ADS-B / FR24: no vertical rate sensors — altitude regain after the valley is enough for TGL.
+    if (allowAltitudeOnly) return i;
   }
 
   return null;
@@ -597,31 +676,47 @@ function isAltitudeValleyTouchdown(
   idx: number,
   context?: TouchdownDetectionContext,
 ): boolean {
-  if (idx < 30 || idx + 5 >= data.length) return false;
+  const sampleMs = estimateSampleIntervalMs(data);
+  const minLead = sampleMs > 5_000 ? 3 : 30;
+  if (idx < minLead || idx + 2 >= data.length) return false;
   if (isImplausiblyHighTouchdownCandidate(data, idx, context)) return false;
 
   const alt = smoothedGpsAltFt(data, idx);
   const gs = get(data[idx]!, "gsKt");
   if (alt === null || gs === null || gs < 20) return false;
 
-  const localMin = smoothedAltExtreme(data, idx - 15, idx + 15, "min");
+  const localWindow = sampleMs > 5_000 ? 4 : 15;
+  const lookback = sampleMs > 5_000 ? 40 : 180;
+  const lookfwd = sampleMs > 5_000 ? 40 : 180;
+
+  const localMin = smoothedAltExtreme(data, idx - localWindow, idx + localWindow, "min");
   if (localMin.idx !== idx) return false;
 
-  const previousHigh = smoothedAltExtreme(data, idx - 180, idx - 20, "max");
+  const previousHigh = smoothedAltExtreme(
+    data,
+    idx - lookback,
+    idx - Math.max(2, Math.floor(localWindow * 1.2)),
+    "max",
+  );
   if (previousHigh.value === null) return false;
 
-  const futureHigh = smoothedAltExtreme(data, idx + 20, idx + 180, "max");
+  const futureHigh = smoothedAltExtreme(
+    data,
+    idx + Math.max(2, Math.floor(localWindow * 1.2)),
+    idx + lookfwd,
+    "max",
+  );
   const descentFt = previousHigh.value - alt;
   const climbFt = futureHigh.value !== null ? futureHigh.value - alt : 0;
-  const rolloutStop = slowsBelowGroundSpeed(data, idx, 10, 180);
+  const rolloutStop = slowsBelowGroundSpeed(data, idx, 10, sampleMs > 5_000 ? 20 : 180);
   const speedSignature = hasTouchdownSpeedSignature(data, idx, rolloutStop ? "landing" : "tgl");
   const altitudeValleySignature = hasAltitudeValleyTouchdownSignature(data, idx);
 
-  if (descentFt < 250) return false;
-  if (!rolloutStop && climbFt < 100) return false;
+  if (descentFt < (sampleMs > 5_000 ? 150 : 250)) return false;
+  if (!rolloutStop && climbFt < (sampleMs > 5_000 ? 80 : 100)) return false;
   if (!speedSignature && !altitudeValleySignature) return false;
 
-  const recentMinVs = minVerticalSpeed(data, idx - 45, idx);
+  const recentMinVs = minVerticalSpeed(data, idx - (sampleMs > 5_000 ? 8 : 45), idx);
   const touchdownLikeSpeed =
     gs >= 35 ||
     rolloutStop ||
@@ -635,8 +730,11 @@ function collectAltitudeTouchdowns(
   context?: TouchdownDetectionContext,
 ): number[] {
   const candidates: number[] = [];
+  const sampleMs = estimateSampleIntervalMs(data);
+  const startIdx = sampleMs > 5_000 ? 3 : 30;
+  const endPad = sampleMs > 5_000 ? 1 : 5;
 
-  for (let i = 30; i < data.length - 5; i++) {
+  for (let i = startIdx; i < data.length - endPad; i++) {
     if (isAltitudeValleyTouchdown(data, i, context)) candidates.push(i);
   }
 
@@ -1250,17 +1348,22 @@ function segmentPrimaryX(segment: FlightSegment): number {
   return primary?.xMs ?? segment.startX;
 }
 
-function isTakeoffPartOfTglTouchdown(data: ChartRow[], tdIdx: number, takeoff: TakeoffGroup): boolean {
+function isTakeoffPartOfTglTouchdown(
+  data: ChartRow[],
+  tdIdx: number,
+  takeoff: TakeoffGroup,
+  takeoffWindowMs = TGL_TAKEOFF_WINDOW_MS,
+): boolean {
   const tdX = data[tdIdx]!.x;
   const rotDelta = data[takeoff.rotIdx]!.x - tdX;
   const liftDelta = data[takeoff.liftIdx]!.x - tdX;
 
-  if (rotDelta > 0 && rotDelta <= TGL_TAKEOFF_WINDOW_MS) return true;
+  if (rotDelta > 0 && rotDelta <= takeoffWindowMs) return true;
 
   return (
     rotDelta >= -TGL_TOUCHDOWN_OVERLAP_PRE_MS &&
     liftDelta >= -TGL_TOUCHDOWN_OVERLAP_LIFT_TOLERANCE_MS &&
-    liftDelta <= TGL_TAKEOFF_WINDOW_MS
+    liftDelta <= takeoffWindowMs
   );
 }
 
@@ -1275,23 +1378,25 @@ export function detectFlightSegments(
   const segments: FlightSegment[] = [];
   const SAMPLE_MS = estimateSampleIntervalMs(data);
   const aircraftIdent = options.aircraftIdent ?? null;
+  const adsbLike = isAdsbLikeTelemetry(data);
   const reliableAglAircraft = isKnownReliableAglAircraft(aircraftIdent);
   const knownUnreliableAglAircraft = isKnownUnreliableAglAircraft(aircraftIdent);
   const aglAvailable = hasAglSamples(data);
   const aglIsUnreliable = knownUnreliableAglAircraft || (reliableAglAircraft ? false : hasUnreliableAgl(data));
-  const allowAltitudeFallback = knownUnreliableAglAircraft || (!reliableAglAircraft && (aglIsUnreliable || !aglAvailable));
-  const requireAglForTgl = reliableAglAircraft && aglAvailable;
+  const allowAltitudeFallback = knownUnreliableAglAircraft || adsbLike || (!reliableAglAircraft && (aglIsUnreliable || !aglAvailable));
+  const requireAglForTgl = reliableAglAircraft && aglAvailable && !adsbLike;
   const touchdownContext = createTouchdownDetectionContext(data);
+  const tglTakeoffWindowMs = adsbLike ? Math.max(TGL_TAKEOFF_WINDOW_MS, 240_000) : TGL_TAKEOFF_WINDOW_MS;
 
   const takeoffs: TakeoffGroup[] = [];
   const touchdowns: TouchdownGroup[] = [];
 
   let searchFrom = 0;
   while (searchFrom < data.length) {
-    const rotIdx = findRotation(data, searchFrom, { ignoreAgl: aglIsUnreliable });
+    const rotIdx = findRotation(data, searchFrom, { ignoreAgl: aglIsUnreliable || adsbLike, adsbLike });
     if (rotIdx === null) break;
 
-    const liftIdx = findLiftoff(data, rotIdx);
+    const liftIdx = findLiftoff(data, rotIdx, adsbLike ? 120 : 60, { adsbLike });
     if (liftIdx === null) { searchFrom = rotIdx + 1; continue; }
 
     const altAtLiftoff = get(data[liftIdx]!, "gpsAltFt") ?? 0;
@@ -1431,8 +1536,8 @@ export function detectFlightSegments(
     const tglRotationIdx = findTglRotationAfterTouchdown(data, tdIdx, nextTglTakeoff?.rotIdx);
     const detectedLiftIdx =
       tglRotationIdx !== null
-        ? findLiftoff(data, tglRotationIdx, 120)
-        : nextTglTakeoff?.liftIdx ?? findLiftoff(data, tdIdx, 120);
+        ? findLiftoff(data, tglRotationIdx, 120, { adsbLike })
+        : nextTglTakeoff?.liftIdx ?? findLiftoff(data, tdIdx, 120, { adsbLike });
     const nextLiftIdx =
       detectedLiftIdx !== null && tglRotationIdx !== null && detectedLiftIdx < tglRotationIdx
         ? tglRotationIdx
@@ -1495,19 +1600,25 @@ export function detectFlightSegments(
       (takeoff, takeoffIdx) =>
         !tglTakeoffs.has(takeoffIdx) &&
         takeoff.rotIdx > td.tdIdx &&
-        data[takeoff.rotIdx]!.x - data[td.tdIdx]!.x <= TGL_TAKEOFF_WINDOW_MS,
+        data[takeoff.rotIdx]!.x - data[td.tdIdx]!.x <= tglTakeoffWindowMs,
     );
     const nextTglTakeoff = nextTakeoffIdx >= 0 ? takeoffs[nextTakeoffIdx] : undefined;
     const fallbackLiftIdx =
-      nextTglTakeoff === undefined && !requireAglForTgl ? findLiftoff(data, td.tdIdx) : null;
+      nextTglTakeoff === undefined && !requireAglForTgl
+        ? findLiftoff(data, td.tdIdx, adsbLike ? 120 : 60, { adsbLike })
+        : null;
     const climbAfterTouchdownIdx =
-      (aglIsUnreliable ? null : findAglClimbAfterTouchdown(data, td.tdIdx)) ??
-      (allowAltitudeFallback ? findAltitudeClimbAfterTouchdown(data, td.tdIdx) : null);
+      (aglIsUnreliable && !adsbLike ? null : findAglClimbAfterTouchdown(data, td.tdIdx)) ??
+      (allowAltitudeFallback
+        ? findAltitudeClimbAfterTouchdown(data, td.tdIdx, 150_000, 120, {
+            allowAltitudeOnly: adsbLike,
+          })
+        : null);
     const isTgl = nextTglTakeoff !== undefined || fallbackLiftIdx !== null || climbAfterTouchdownIdx !== null;
 
     if (isTgl) {
       takeoffs.forEach((takeoff, takeoffIdx) => {
-        if (isTakeoffPartOfTglTouchdown(data, td.tdIdx, takeoff)) {
+        if (isTakeoffPartOfTglTouchdown(data, td.tdIdx, takeoff, tglTakeoffWindowMs)) {
           tglTakeoffs.add(takeoffIdx);
         }
       });

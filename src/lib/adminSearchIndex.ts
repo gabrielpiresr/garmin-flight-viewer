@@ -39,6 +39,8 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-flight-review", kind: "page", label: "Flight Review", group: "Conteúdos", path: "/admin/conteudos/flight-review", requiredTab: "flight-review", keywords: ["revisao de voo", "avaliacao"] },
   { id: "page-students", kind: "page", label: "Alunos", group: "Operação", path: "/admin/alunos", requiredTab: "students", keywords: ["aluno", "evolucao", "ritmo de voo", "estudante", "turma"] },
   { id: "page-users", kind: "page", label: "Usuários", group: "Operação", path: "/admin/usuarios", requiredTab: "users", keywords: ["usuario", "perfil", "permissoes", "conta", "cadastro", "membros"] },
+  { id: "page-planejamento", kind: "page", label: "Planejamento", group: "Operação", path: "/admin/planejamento", requiredTab: "planejamento", keywords: ["rota", "nexatlas", "fpl", "flight plan", "navegacao", "waypoints", "aerodromo", "rea", "briefing"] },
+  { id: "page-radar", kind: "page", label: "Radar", group: "Operação", path: "/admin/radar", requiredTab: "radar", keywords: ["flightradar", "fr24", "ao vivo", "rastreamento", "frota ao vivo", "mapa radar", "acompanhar aviao"] },
   { id: "page-fleet-aircraft", kind: "page", label: "Frota · Aviões", group: "Frota", path: "/admin/frota/avioes", requiredTab: "fleet.avioes", keywords: ["aeronave", "aviao", "prefixo", "matricula"] },
   { id: "page-fleet-models", kind: "page", label: "Frota · Modelos", group: "Frota", path: "/admin/frota/modelos", requiredTab: "fleet.modelos", keywords: ["modelo de aeronave"] },
   { id: "page-fleet-program", kind: "page", label: "Frota · Programa", group: "Frota", path: "/admin/frota/programa-manutencao", requiredTab: "fleet.programa", keywords: ["programa de manutencao", "inspecao", "horas"] },

@@ -2,6 +2,7 @@ import { lookupAiswebIcao, queryAirspaceAlongRoute } from "./aiswebDb";
 import { pickAirspaceFrequencies } from "./flightPlanFormat";
 import type { FlightPlanAirspaceHit } from "../types/flightPlanning";
 import { haversineM, routeBoundingBox } from "./flightPlanningRoute";
+import { altitudeAtDistanceNm, type ProfilePhasePoint } from "./routePerformanceProfile";
 
 type LatLng = { lat: number; lng: number };
 
@@ -24,9 +25,15 @@ type GeoJsonFeatureCollection = {
   features: GeoJsonFeature[];
 };
 
+export type DetectAirspacesOptions = {
+  /** Performance profile used to sample planned altitude along the route. */
+  performanceProfile?: ProfilePhasePoint[] | null;
+};
+
 const GEOAISWEB_WFS = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
 const NM_IN_M = 1852;
+const ALT_TOL_FT = 100;
 
 const AIRSPACE_LAYERS: Array<{ type: FlightPlanAirspaceHit["type"]; layer: string }> = [
   { type: "CTA", layer: "ICA:CTA" },
@@ -67,14 +74,6 @@ function geometryContainsPoint(geometry: GeoJsonGeometry | null, lng: number, la
   return false;
 }
 
-function routeIntersectsGeometry(points: LatLng[], geometry: GeoJsonGeometry | null): boolean {
-  if (!geometry || points.length === 0) return false;
-  for (const p of points) {
-    if (geometryContainsPoint(geometry, p.lng, p.lat)) return true;
-  }
-  return false;
-}
-
 function densifyRoute(points: LatLng[], maxStepM = 4000): LatLng[] {
   if (points.length < 2) return points;
   const out: LatLng[] = [points[0]!];
@@ -102,27 +101,91 @@ function cumulativeDistanceNm(points: LatLng[]): number[] {
   return cum;
 }
 
-function firstEntryDistanceNm(
-  points: LatLng[],
-  cumNm: number[],
-  geometry: GeoJsonGeometry | null,
-): number | null {
-  if (!geometry) return null;
-  for (let i = 0; i < points.length; i++) {
-    if (geometryContainsPoint(geometry, points[i]!.lng, points[i]!.lat)) {
-      return cumNm[i] ?? null;
-    }
+/** Parse display/WFS limit text or raw value+unit into feet MSL. */
+export function parseAirspaceLimitFt(value: unknown, unit?: unknown): number | null {
+  if (value == null || value === "") return null;
+  const u = String(unit ?? "").trim().toUpperCase();
+  const raw = String(value).trim().toUpperCase();
+  if (!raw || raw === "—" || raw === "-") return null;
+  if (/^(SFC|GND|SURFACE|SUPERF)/.test(raw) || u === "SFC" || u === "GND") return 0;
+  if (/^(UNL|UNLIMITED|UNLTD)/.test(raw) || u === "UNL") return 999_999;
+
+  const flFromText = raw.match(/FL\s*(\d+)/);
+  if (flFromText) return Number(flFromText[1]) * 100;
+  if (u === "FL") {
+    const n = Number(String(value).replace(/[^\d.-]/g, ""));
+    if (Number.isFinite(n)) return Math.round(n) * 100;
   }
-  return null;
+
+  const n = Number(String(value).replace(/[^\d.-]/g, "").replace(",", "."));
+  if (!Number.isFinite(n)) return null;
+  if (u === "FT" || u === "FEET" || u === "" || /\bFT\b/.test(raw)) return Math.round(n);
+  if (u === "M" || u === "MT" || u === "METER" || u === "METRE") return Math.round(n / 0.3048);
+  return Math.round(n);
 }
 
-function formatLimit(value: unknown, unit: unknown): string | null {
-  if (value == null || value === "") return null;
-  const u = String(unit || "").toUpperCase();
-  const n = Number(value);
-  if (u === "FL" && Number.isFinite(n)) return `FL${String(Math.round(n)).padStart(3, "0")}`;
-  if (Number.isFinite(n)) return `${Math.round(n)} ${u || "FT"}`.trim();
-  return String(value);
+function altitudeOverlapsBand(
+  altFt: number,
+  lowerFt: number | null,
+  upperFt: number | null,
+  tol = ALT_TOL_FT,
+): boolean {
+  const lo = lowerFt ?? 0;
+  const hi = upperFt ?? 999_999;
+  if (lo > hi) return altFt >= hi - tol && altFt <= lo + tol;
+  return altFt >= lo - tol && altFt <= hi + tol;
+}
+
+function featureVerticalLimits(props: Record<string, unknown>): {
+  lower: string | null;
+  upper: string | null;
+  lowerFt: number | null;
+  upperFt: number | null;
+} {
+  const lowerFt =
+    parseAirspaceLimitFt(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ??
+    parseAirspaceLimitFt(props.lowerlimi1, props.codedistv1);
+  const upperFt =
+    parseAirspaceLimitFt(props.upperlimit, props.uplimituni || props.uomdistver) ??
+    parseAirspaceLimitFt(props.upperlimit, props.uplimituni);
+
+  const formatLimit = (value: unknown, unit: unknown): string | null => {
+    if (value == null || value === "") return null;
+    const u = String(unit || "").toUpperCase();
+    const n = Number(value);
+    if (u === "FL" && Number.isFinite(n)) return `FL${String(Math.round(n)).padStart(3, "0")}`;
+    if (Number.isFinite(n)) return `${Math.round(n)} ${u || "FT"}`.trim();
+    return String(value);
+  };
+
+  const lower =
+    formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
+    formatLimit(props.lowerlimi1, props.codedistv1);
+  const upper =
+    formatLimit(props.upperlimit, props.uplimituni || props.uomdistver) ||
+    formatLimit(props.upperlimit, props.uplimituni);
+  return { lower, upper, lowerFt, upperFt };
+}
+
+function firstVerticalEntryDistanceNm(
+  points: LatLng[],
+  cumNm: number[],
+  altsFt: Array<number | null>,
+  geometry: GeoJsonGeometry | null,
+  lowerFt: number | null,
+  upperFt: number | null,
+): number | null {
+  if (!geometry) return null;
+  const hasBand = lowerFt != null || upperFt != null;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    if (!geometryContainsPoint(geometry, p.lng, p.lat)) continue;
+    if (!hasBand) return cumNm[i] ?? null;
+    const alt = altsFt[i];
+    if (alt == null || !Number.isFinite(alt)) continue;
+    if (altitudeOverlapsBand(alt, lowerFt, upperFt)) return cumNm[i] ?? null;
+  }
+  return null;
 }
 
 function featureToHit(
@@ -133,18 +196,13 @@ function featureToHit(
   const props = feature.properties || {};
   const ident = String(props.ident || props.icao || feature.id || "").trim() || "—";
   const name = String(props.nam || props.name || props.txtname || ident).trim();
-  const lower =
-    formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
-    formatLimit(props.lowerlimi1, props.codedistv1);
-  const upper =
-    formatLimit(props.upperlimit, props.uplimituni || props.uomdistver) ||
-    formatLimit(props.upperlimit, props.uplimituni);
+  const limits = featureVerticalLimits(props);
   return {
     type,
     ident,
     name,
-    lower,
-    upper,
+    lower: limits.lower,
+    upper: limits.upper,
     fir: props.relatedfir ? String(props.relatedfir) : null,
     entryDistanceNm,
     frequencies: [],
@@ -184,9 +242,38 @@ async function fetchLayerFeatures(
   return Array.isArray(data.features) ? data.features : [];
 }
 
-async function detectAirspacesClientSide(points: LatLng[]): Promise<FlightPlanAirspaceHit[]> {
+function sampleAltsAlongRoute(
+  cumNm: number[],
+  profile: ProfilePhasePoint[] | null | undefined,
+): Array<number | null> {
+  if (!profile?.length) return cumNm.map(() => null);
+  return cumNm.map((x) => altitudeAtDistanceNm(profile, x));
+}
+
+/** Keep hits whose planned altitude at entry overlaps published vertical limits. */
+export function filterAirspaceHitsByAltitude(
+  hits: FlightPlanAirspaceHit[],
+  profile: ProfilePhasePoint[] | null | undefined,
+): FlightPlanAirspaceHit[] {
+  if (!profile?.length) return hits;
+  return hits.filter((hit) => {
+    const lo = parseAirspaceLimitFt(hit.lower);
+    const hi = parseAirspaceLimitFt(hit.upper);
+    if (lo == null && hi == null) return true;
+    const x = hit.entryDistanceNm ?? 0;
+    const alt = altitudeAtDistanceNm(profile, x);
+    if (alt == null || !Number.isFinite(alt)) return true;
+    return altitudeOverlapsBand(alt, lo, hi);
+  });
+}
+
+async function detectAirspacesClientSide(
+  points: LatLng[],
+  options?: DetectAirspacesOptions,
+): Promise<FlightPlanAirspaceHit[]> {
   const dense = densifyRoute(points, 3500);
   const cumNm = cumulativeDistanceNm(dense);
+  const altsFt = sampleAltsAlongRoute(cumNm, options?.performanceProfile);
   const bbox = routeBoundingBox(dense, 0.4);
   if (!bbox) return [];
 
@@ -199,8 +286,21 @@ async function detectAirspacesClientSide(points: LatLng[]): Promise<FlightPlanAi
         AIRSPACE_LAYERS.map(async ({ type, layer }) => {
           const features = await fetchLayerFeatures(base, layer, bbox);
           return features
-            .filter((f) => routeIntersectsGeometry(dense, f.geometry))
-            .map((f) => featureToHit(type, f, firstEntryDistanceNm(dense, cumNm, f.geometry)));
+            .map((f) => {
+              const props = f.properties || {};
+              const limits = featureVerticalLimits(props);
+              const entry = firstVerticalEntryDistanceNm(
+                dense,
+                cumNm,
+                altsFt,
+                f.geometry,
+                limits.lowerFt,
+                limits.upperFt,
+              );
+              if (entry == null) return null;
+              return featureToHit(type, f, entry);
+            })
+            .filter((h): h is FlightPlanAirspaceHit => h != null);
         }),
       );
       const map = new Map<string, FlightPlanAirspaceHit>();
@@ -260,14 +360,16 @@ export async function enrichAirspaceFrequencies(
 /** Prefer client/proxy WFS; fall back to Appwrite function (production). */
 export async function detectAirspacesAlongRoute(
   points: LatLng[],
+  options?: DetectAirspacesOptions,
 ): Promise<FlightPlanAirspaceHit[]> {
   if (points.length === 0) return [];
 
   let hits: FlightPlanAirspaceHit[];
   try {
-    hits = await detectAirspacesClientSide(points);
+    hits = await detectAirspacesClientSide(points, options);
   } catch {
     hits = await queryAirspaceAlongRoute(points);
+    hits = filterAirspaceHitsByAltitude(hits, options?.performanceProfile);
   }
   return enrichAirspaceFrequencies(hits);
 }

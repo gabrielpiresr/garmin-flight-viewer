@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lookupAiswebIcao, searchAiswebAerodromes } from "../lib/aiswebDb";
-import { listAerodromesByCodes } from "../lib/aerodromesDb";
+import { resolveAirportCoords } from "../lib/resolveAirportCoords";
 import { detectAirspacesAlongRoute, sampleRoutePoints } from "../lib/airspaceIntersect";
+import {
+  buildRoutePerformanceProfile,
+  DEFAULT_FLIGHT_PERFORMANCE,
+} from "../lib/routePerformanceProfile";
 import { suggestAlternateAerodromes, type AlternateSuggestion } from "../lib/flightPlanAlternates";
 import { openFlightPlanPdf } from "../lib/flightPlanPdf";
 import { buildFlightPlanMapDataUrl } from "../lib/flightPlanMapImage";
+import { buildRouteVerticalProfileSvg } from "../lib/flightPlanProfileSvg";
+import { getRouteElevation } from "../lib/routeElevationDb";
 import {
   airportSummaryFromBundle,
   formatAirspaceFreqCell,
   formatRotaerFuel,
 } from "../lib/flightPlanFormat";
 import {
+  buildFlightPlanLegs,
   buildFullRouteWaypoints,
+  formatBearingDeg,
   formatDistanceNm,
+  formatEteClock,
   formatEteHours,
   formatFuel,
   snapWaypointsToFixes,
@@ -30,6 +39,7 @@ import {
   FLIGHT_PLAN_INFO_OPTIONS,
   type FlightPlanAirspaceHit,
   type FlightPlanInfoSection,
+  type FlightPlanRouteTableRow,
 } from "../types/flightPlanning";
 import { FlightPlanMap } from "./FlightPlanMap";
 import { RunwayRose } from "./RunwayRose";
@@ -43,6 +53,7 @@ const btnSecondary =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3.5 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50";
 
 const DEFAULT_SECTIONS: FlightPlanInfoSection[] = [
+  "tabela_rota",
   "detalhes",
   "frequencias",
   "rmk",
@@ -74,7 +85,7 @@ function FuelIcon({ available }: { available: boolean }) {
   );
 }
 
-function IcaoField({
+export function IcaoField({
   label,
   value,
   onChange,
@@ -162,7 +173,7 @@ function IcaoField({
   );
 }
 
-function AirportSummaryStrip({
+export function AirportSummaryStrip({
   airports,
   onNoteChange,
 }: {
@@ -250,7 +261,7 @@ function AirportSummaryStrip({
   );
 }
 
-function AirportDocPreview({
+export function AirportDocPreview({
   role,
   icao,
   bundle,
@@ -429,36 +440,7 @@ function AirportDocPreview({
 }
 
 async function resolveEndpointCoords(icao: string): Promise<EndpointCoords | null> {
-  const code = normalizeIcao(icao);
-  if (code.length !== 4) return null;
-  // Prefer AISWEB ROTAER ARP (closer to AIP / NexAtlas) over local catalog.
-  try {
-    const bundle = await lookupAiswebIcao(code);
-    const lat = bundle.rotaer?.lat;
-    const lng = bundle.rotaer?.lng;
-    if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
-      return { lat, lng, label: code };
-    }
-  } catch {
-    // fall through
-  }
-  try {
-    const fromDb = await listAerodromesByCodes([code]);
-    const hit = fromDb.find(
-      (a) =>
-        a.icao === code &&
-        a.latitudeGeoPoint != null &&
-        a.longitudeGeoPoint != null &&
-        Number.isFinite(a.latitudeGeoPoint) &&
-        Number.isFinite(a.longitudeGeoPoint),
-    );
-    if (hit) {
-      return { lat: hit.latitudeGeoPoint!, lng: hit.longitudeGeoPoint!, label: code };
-    }
-  } catch {
-    return null;
-  }
-  return null;
+  return resolveAirportCoords(icao);
 }
 
 export function AiswebFlightPlanningTab() {
@@ -546,6 +528,15 @@ export function AiswebFlightPlanningTab() {
   }, [routeText, effectiveOrigin, effectiveDest, reaFixes]);
   const cruise = Number(String(cruiseSpeedKt).replace(",", "."));
   const burn = Number(String(fuelBurn).replace(",", "."));
+  const performanceProfile = useMemo(
+    () =>
+      buildRoutePerformanceProfile(waypoints, {
+        ...DEFAULT_FLIGHT_PERFORMANCE,
+        cruiseSpeedKt: Number.isFinite(cruise) && cruise > 0 ? cruise : DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt,
+        cruiseBurnPerHour: Number.isFinite(burn) && burn > 0 ? burn : DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour,
+      }),
+    [waypoints, cruise, burn],
+  );
   const routeSummary = useMemo(
     () =>
       summarizeFlightPlanRoute(waypoints, {
@@ -606,8 +597,9 @@ export function AiswebFlightPlanningTab() {
       waypoints.map((w) => ({ lat: w.lat, lng: w.lng })),
       100,
     );
+    const profile = performanceProfile?.profile ?? null;
     const timer = window.setTimeout(() => {
-      void detectAirspacesAlongRoute(samples)
+      void detectAirspacesAlongRoute(samples, { performanceProfile: profile })
         .then((hits) => {
           if (cancelled) return;
           setAirspaces(hits);
@@ -625,7 +617,7 @@ export function AiswebFlightPlanningTab() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [waypoints]);
+  }, [waypoints, performanceProfile]);
 
   function toggleSection(id: FlightPlanInfoSection) {
     setSections((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]));
@@ -707,9 +699,66 @@ export function AiswebFlightPlanningTab() {
     }
     setExportingPdf(true);
     try {
-      const mapImageDataUrl = waypoints.length
-        ? await buildFlightPlanMapDataUrl(waypoints).catch(() => null)
-        : null;
+      let mapImageDataUrl: string | null = null;
+      if (waypoints.length) {
+        try {
+          mapImageDataUrl = await buildFlightPlanMapDataUrl(waypoints);
+        } catch {
+          mapImageDataUrl = null;
+        }
+        if (!mapImageDataUrl) {
+          showToast({
+            variant: "warning",
+            title: "Mapa do PDF",
+            message: "Tiles indisponíveis — usando mapa esquemático.",
+          });
+        }
+      }
+      let terrain: Awaited<ReturnType<typeof getRouteElevation>>["points"] = [];
+      try {
+        if (waypoints.length >= 2) {
+          terrain = (await getRouteElevation(
+            waypoints.map((w) => ({ lat: w.lat, lng: w.lng })),
+            { samples: 80 },
+          )).points;
+        }
+      } catch {
+        terrain = [];
+      }
+      const verticalProfileSvg =
+        waypoints.length >= 2
+          ? buildRouteVerticalProfileSvg({
+              waypoints,
+              performanceProfile: performanceProfile?.profile ?? null,
+              terrain,
+              cruiseSpeedKt: Number.isFinite(cruise) && cruise > 0 ? cruise : null,
+            })
+          : null;
+      const legsLocal = buildFlightPlanLegs(waypoints, {
+        cruiseSpeedKt: Number.isFinite(cruise) && cruise > 0 ? cruise : null,
+        fuelBurnPerHour: Number.isFinite(burn) && burn > 0 ? burn : null,
+      });
+      const routeTableRows: FlightPlanRouteTableRow[] = waypoints.map((wp, idx) => {
+        const leg = idx > 0 ? legsLocal[idx - 1] : null;
+        return {
+          index: idx + 1,
+          point: wp.label || `P${idx + 1}`,
+          bearing: leg ? formatBearingDeg(leg.bearingDeg) : "—",
+          altitude: wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—",
+          corridor: "—",
+          distance: leg ? `${leg.distanceNm.toFixed(1)} nm` : "—",
+          distanceAccum: leg ? `${leg.cumulativeDistanceNm.toFixed(1)} nm` : "—",
+          ete: formatEteClock(leg?.eteHours ?? null),
+          eteAccum: formatEteClock(leg?.cumulativeEteHours ?? null),
+          fuel:
+            leg?.fuelEstimate != null
+              ? `${leg.fuelEstimate.toFixed(1)} ${fuelUnit}`
+              : "—",
+          fuelAccum:
+            leg?.cumulativeFuel != null ? `${leg.cumulativeFuel.toFixed(1)} ${fuelUnit}` : "—",
+          note: wp.note || "—",
+        };
+      });
       openFlightPlanPdf({
         origin: normalizeIcao(origin),
         destination: normalizeIcao(destination),
@@ -723,6 +772,8 @@ export function AiswebFlightPlanningTab() {
         fuelUnit,
         routeText,
         mapImageDataUrl,
+        verticalProfileSvg,
+        routeTableRows,
         mode: "paged",
         brand: getPdfBrand(),
       });
@@ -1005,6 +1056,7 @@ export function AiswebFlightPlanningTab() {
             waypoints={waypoints}
             originLabel={origin || "DEP"}
             destLabel={destination || "ARR"}
+            fitKey={waypoints.length >= 2 ? waypoints.map((w) => `${w.lat.toFixed(4)},${w.lng.toFixed(4)}`).join("|") : null}
           />
         </div>
 

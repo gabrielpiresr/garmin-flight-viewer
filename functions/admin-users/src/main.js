@@ -11,6 +11,8 @@ const { createStudentAutomationService } = require("./studentAutomations");
 const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
 const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
 const aiswebService = require("./aisweb");
+const flightRadarService = require("./flightRadar");
+const routeElevationService = require("./routeElevation");
 const wppMetar = require("./wppMetar");
 const wppBooking = require("./wppBooking");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
@@ -6676,6 +6678,80 @@ async function ensureSagaStudentTrack(studentUserId, trainingTrackId) {
   }
 }
 
+/**
+ * After a brand-new SAGA flight is created (no telemetry yet), try to pull the
+ * matching Flightradar24 track and attach it as ADS-B telemetry.
+ * Never throws — SAGA import must succeed even if FR24 is unavailable.
+ */
+async function tryAttachFr24TelemetryAfterSagaCreate(doc, materialized, firstLeg, logs) {
+  try {
+    if (!doc?.$id || materialized?.telemetry_present || doc.telemetry_present) {
+      return { attached: false };
+    }
+    const baseCsv = cleanString(doc.csv_text || materialized.csv_text);
+    const decoded = decodeFlightRecordCsv(baseCsv);
+    if (hasDecodedTelemetry(decoded) || !decoded.meta) {
+      return { attached: false };
+    }
+
+    const localStart =
+      cleanString(decoded.meta?.header?.startTime) ||
+      sagaImportZuluToLocalClock(cleanString(firstLeg?.acionamento || firstLeg?.decolagem).slice(0, 5)) ||
+      cleanString(materialized.start_time);
+    const depIcao =
+      cleanString(firstLeg?.origem).toUpperCase() ||
+      cleanString(decoded.meta?.legs?.[0]?.dep).toUpperCase() ||
+      "";
+
+    const prepared = await flightRadarService.prepareTelemetryFromFr24(
+      { getSettingDoc },
+      {
+        aircraftIdent: materialized.aircraft_ident,
+        flightDate: materialized.flight_date,
+        startTime: localStart,
+        durationSec: materialized.duration_sec,
+        depIcao,
+      },
+    );
+    if (!prepared?.ok) {
+      if (logs && prepared?.message) {
+        logs.push(`FR24 auto ${materialized.aircraft_ident || "?"}: ${prepared.message}`);
+      }
+      return { attached: false, message: prepared?.message || null };
+    }
+
+    const csvText = encodeFlightRecordCsv({
+      meta: decoded.meta,
+      telemetryFiles: [{ name: prepared.sourceFileName, text: prepared.csv }],
+    });
+    const patch = {
+      csv_text: csvText,
+      telemetry_present: true,
+      source_filename: prepared.sourceFileName,
+    };
+    if (
+      prepared.durationSec &&
+      (!Number(materialized.duration_sec) || Number(materialized.duration_sec) <= 0)
+    ) {
+      patch.duration_sec = prepared.durationSec;
+    }
+    await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, doc.$id, patch);
+    if (logs) {
+      const delta =
+        prepared.deltaMin != null && Number.isFinite(prepared.deltaMin)
+          ? `${Math.round(prepared.deltaMin)}min`
+          : "?";
+      logs.push(
+        `FR24 auto ${materialized.aircraft_ident} ${materialized.flight_date}: telemetria vinculada (${prepared.points} pts, Δ${delta}, ${prepared.fr24Id}).`,
+      );
+    }
+    return { attached: true, fr24Id: prepared.fr24Id, points: prepared.points };
+  } catch (err) {
+    if (logs) logs.push(`FR24 auto: ${cleanString(err?.message) || "falha ao vincular"}`);
+    return { attached: false, error: true };
+  }
+}
+
 async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode = false, cookieJar = null, logs = null, pdfRecordOverride = undefined, forceStudentUserId = null, forceInstructorUserId = null, existingDocId = null, skipMissionMapping = false, missionRemapped = false, createOnly = false, assignTrainingTrack = true } = {}) {
   const firstLeg = group.legs[0] || {};
   const groupKey = cleanString(group.key || group.id);
@@ -6847,7 +6923,14 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     : false;
   await ensureSagaInstructorSignature(doc, materialized.instructor_signed_at, logs);
   await saveInstructorPaymentSnapshotServer(doc, "saga-import", materialized.instructor_signed_at);
-  return { created: true, id: group.id, documentId: doc.$id, trackAssigned };
+
+  let fr24Attached = false;
+  if (!testMode) {
+    const fr24Result = await tryAttachFr24TelemetryAfterSagaCreate(doc, materialized, firstLeg, logs);
+    fr24Attached = Boolean(fr24Result?.attached);
+  }
+
+  return { created: true, id: group.id, documentId: doc.$id, trackAssigned, fr24Attached };
 }
 
 function resolveSagaScheduleAircraft(schedule, mapping, catalogs) {
@@ -7437,7 +7520,8 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
     });
     if (result.created) {
       summary.flightsCreated += 1;
-      summary.logs.push(`Voo importado: id=${result.id || group.id} doc=${result.documentId || "(sem-doc)"} student=${cleanString(group.legs?.[0]?.aluno)} date=${cleanString(group.legs?.[0]?.dataDoVoo)}`);
+      if (result.fr24Attached) summary.fr24TelemetryAttached = (summary.fr24TelemetryAttached || 0) + 1;
+      summary.logs.push(`Voo importado: id=${result.id || group.id} doc=${result.documentId || "(sem-doc)"} student=${cleanString(group.legs?.[0]?.aluno)} date=${cleanString(group.legs?.[0]?.dataDoVoo)}${result.fr24Attached ? " · FR24 telemetria" : ""}`);
       if (result.trackAssigned !== false) summary.trainingAssignmentsTouched += 1;
       flightIndex += 1;
       await reportProgress("Voos realizados", `${flightIndex}/${selectedGroups.length} voos realizados processados.`, flightIndex, selectedGroups.length);
@@ -7720,6 +7804,9 @@ async function sagaImportData(payload = {}, actorUserId = "saga-import", runtime
   summary.missing.creditAircrafts = uniqueCleanValues(summary.missing.creditAircrafts);
   summary.logs.push(`Usuarios: ${summary.usersCreated} criados, ${summary.usersUpdated} atualizados, ${summary.usersSkipped} ignorados.`);
   summary.logs.push(`Voos: ${summary.flightsCreated} criados, ${summary.flightsUpdated} atualizados, ${summary.duplicateFlights} duplicados, ${summary.flightsSkipped} ignorados.`);
+  if (summary.fr24TelemetryAttached) {
+    summary.logs.push(`FR24: telemetria vinculada automaticamente em ${summary.fr24TelemetryAttached} voo(s) novo(s).`);
+  }
   summary.logs.push(`Escala: ${summary.scheduledFlightsCreated} previstos criados, ${summary.scheduledFlightsUpdated} atualizados, ${summary.scheduledFlightsSkipped} ignorados.`);
   summary.logs.push(`ANAC: ${summary.anacSynced} atualizados, ${summary.anacPending} pendentes, ${summary.anacFailed} falhas.`);
   summary.logs.push(`Creditos: ${summary.creditsCreated} criados, ${summary.creditsUpdated} atualizados, ${summary.creditsSkipped} ignorados (${summary.creditHoursImported}h).`);
@@ -19271,6 +19358,7 @@ async function sendWppMetarWatchStartAction(settings, incoming, icaoCode, hoursV
       lastTaf: met?.taf || "",
       nickname,
       userId: cleanString(profile?.user_id),
+      simplified: false,
       active: true,
     });
   } catch (err) {
@@ -19294,7 +19382,7 @@ async function sendWppMetarWatchStartAction(settings, incoming, icaoCode, hoursV
     body,
     buttons: [
       { id: `watch_stop_${icao}`, title: "Parar" },
-      { id: `metar_${icao}`, title: `Metar ${icao}` },
+      { id: `watch_simple_${icao}`, title: "Receber simplificado" },
       { id: "outro_metar", title: "Outro Metar" },
     ],
   }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
@@ -19345,6 +19433,74 @@ async function sendWppMetarWatchStopAction(settings, incoming, icaoCode = null) 
   return result?.cleared ? "stopped" : "not_active";
 }
 
+async function sendWppMetarWatchSimplifyAction(settings, incoming, icaoCode = null) {
+  const phone = normalizeWppRecipientPhone(incoming.from);
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const wantedIcao = aiswebService.normalizeIcao(icaoCode);
+  const active = await aiswebService.listMetarWatchesForPhone(aiswebMetarWatchDeps(), phone).catch(() => []);
+
+  if (!active.length) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: nickname
+        ? `${nickname}, vocÃª nÃ£o tem acompanhamento de METAR ativo agora.`
+        : "VocÃª nÃ£o tem acompanhamento de METAR ativo agora.",
+    });
+    return "not_active";
+  }
+
+  let watch = null;
+  if (wantedIcao && wantedIcao.length === 4) {
+    watch = active.find((item) => item.icao === wantedIcao) || null;
+    if (!watch) {
+      await sendWppTextMessage(settings, {
+        to: incoming.from,
+        body: [
+          `NÃ£o encontrei acompanhamento ativo de *${wantedIcao}*.`,
+          "",
+          `Ativos agora: ${active.map((item) => `*${item.icao}*`).join(", ")}`,
+          `Envie *Receber simplificado ${active[0].icao}* para escolher um deles.`,
+        ].join("\n"),
+      });
+      return "icao_mismatch";
+    }
+  } else if (active.length === 1) {
+    watch = active[0];
+  } else {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: [
+        nickname ? `${nickname}, qual acompanhamento quer simplificar?` : "Qual acompanhamento quer simplificar?",
+        "",
+        `Ativos agora: ${active.map((item) => `*${item.icao}*`).join(", ")}`,
+        `Envie *Receber simplificado ${active[0].icao}*.`,
+      ].join("\n"),
+    });
+    return "choose_icao";
+  }
+
+  await aiswebService.saveMetarWatch(aiswebMetarWatchDeps(), {
+    ...watch,
+    simplified: true,
+    active: true,
+  });
+
+  const body = [
+    nickname ? `${nickname}, acompanhamento simplificado de *${watch.icao}* ativado.` : `Acompanhamento simplificado de *${watch.icao}* ativado.`,
+    "",
+    "Durante esta janela vou mandar sÃ³ a primeira mensagem quando sair METAR/TAF novo.",
+  ].join("\n");
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: [
+      { id: `watch_stop_${watch.icao}`, title: "Parar" },
+    ],
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
+  return "simplified";
+}
+
 async function handleWppMetarWatchCommand(settings, incoming, command) {
   if (!command) return "skipped";
   if (command.action === "choose_hours") {
@@ -19356,6 +19512,9 @@ async function handleWppMetarWatchCommand(settings, incoming, command) {
   if (command.action === "stop") {
     return sendWppMetarWatchStopAction(settings, incoming, command.icao);
   }
+  if (command.action === "simplify") {
+    return sendWppMetarWatchSimplifyAction(settings, incoming, command.icao);
+  }
   return "skipped";
 }
 
@@ -19363,30 +19522,36 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
   const icao = watch.icao;
   const lat = rotaer?.lat;
   const lng = rotaer?.lng;
-  // Dispara Windy cedo, em paralelo com texto/webcams.
+  const metarBody = wppMetar.formatWppMetarMessage({
+    icao,
+    airportName,
+    met,
+    checks,
+    analysis,
+    nickname: watch.nickname || "",
+  });
+  const body = watch.simplified === true
+    ? metarBody
+    : [
+        wppMetar.formatWppMetarWatchUpdatePrefix({
+          icao,
+          changedMetar: changed?.metar === true,
+          changedTaf: changed?.taf === true,
+        }),
+        "",
+        metarBody,
+      ].join("\n");
+  await sendWppTextMessage(settings, { to: watch.phone, body: body.slice(0, 4096) });
+
+  if (watch.simplified === true) {
+    return;
+  }
+
+  // Dispara Windy em paralelo com webcams so no acompanhamento completo.
   const windyMapsPromise = resolveWppWindyMapUrls(icao, lat, lng).catch((err) => {
     console.warn(`[aisweb-metar-watch] windy resolve ${watch.phone}/${icao}: ${cleanString(err?.message).slice(0, 240)}`);
     return null;
   });
-
-  const prefix = wppMetar.formatWppMetarWatchUpdatePrefix({
-    icao,
-    changedMetar: changed?.metar === true,
-    changedTaf: changed?.taf === true,
-  });
-  const body = [
-    prefix,
-    "",
-    wppMetar.formatWppMetarMessage({
-      icao,
-      airportName,
-      met,
-      checks,
-      analysis,
-      nickname: watch.nickname || "",
-    }),
-  ].join("\n");
-  await sendWppTextMessage(settings, { to: watch.phone, body: body.slice(0, 4096) });
 
   try {
     await sendWppNearestWindyWebcams(settings, watch.phone, rotaer || { icao }, {
@@ -19412,7 +19577,7 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
     body: `Acompanhamento de ${icao} segue ativo. Toque em Parar para encerrar.`,
     buttons: [
       { id: `watch_stop_${icao}`, title: "Parar" },
-      { id: `metar_${icao}`, title: `Metar ${icao}` },
+      { id: `watch_simple_${icao}`, title: "Receber simplificado" },
     ],
   }).catch(() => null);
 }
@@ -25959,6 +26124,7 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
     const result = await importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode: false, cookieJar, logs });
     if (result.created) {
       summary.flightsCreated += 1;
+      if (result.fr24Attached) summary.fr24TelemetryAttached = (summary.fr24TelemetryAttached || 0) + 1;
     } else if (result.updated) {
       summary.flightsUpdated += 1;
     } else if (result.skipped) {
@@ -27256,6 +27422,73 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { image });
     }
 
+    if (action === "getFlightRadarSettings") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const settings = await flightRadarService.loadSettings({ getSettingDoc });
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "saveFlightRadarSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await flightRadarService.saveSettings(
+        { getSettingDoc, upsertPlatformSettingDoc },
+        payload.settings || payload,
+      );
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "getFlightRadarLivePositions") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await flightRadarService.fetchLivePositions(
+        { getSettingDoc },
+        {
+          registrations: payload.registrations || payload.regs || [],
+          callsigns: payload.callsigns || [],
+        },
+      );
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "searchFlightRadar") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await flightRadarService.searchLiveAircraft(
+        { getSettingDoc },
+        payload.query || payload.q || payload.search || "",
+      );
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getFlightRadarFlightTrack") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const track = await flightRadarService.fetchFlightTrack(
+        { getSettingDoc },
+        payload.flightId || payload.fr24Id || payload.flight_id,
+      );
+      return jsonResponse(res, 200, { track });
+    }
+
+    if (action === "getFlightRadarFlightSummary") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await flightRadarService.fetchFlightSummary(
+        { getSettingDoc },
+        {
+          registrations: payload.registrations || payload.regs || [],
+          datetimeFrom: payload.datetimeFrom || payload.from || payload.flight_datetime_from,
+          datetimeTo: payload.datetimeTo || payload.to || payload.flight_datetime_to,
+        },
+      );
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getRouteElevation") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await routeElevationService.fetchRouteElevation({
+        waypoints: payload.waypoints || payload.points || [],
+        samples: payload.samples,
+      });
+      return jsonResponse(res, 200, result);
+    }
+
     if (action === "searchWindyWebcams") {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const webcams = await aiswebService.fetchWindyWebcamsForAirport({
@@ -28003,4 +28236,3 @@ module.exports = async ({ req, res, log, error }) => {
     return jsonResponse(res, status, { message: err?.message || "Unexpected function error.", ...(err?.sagaResult || {}) });
   }
 };
-
