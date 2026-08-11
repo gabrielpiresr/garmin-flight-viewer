@@ -478,7 +478,9 @@ export type RouteInsertHint = {
 };
 
 const INSERT_NEAR_LEG_M = 1852 * 22; // ~22 NM de afastamento lateral do trecho
-const INSERT_ENDPOINT_T = 0.08; // evita “inserir” colado nos extremos
+/** Buffer absoluto nos extremos — NÃO usar fração do trecho (em pernas longas
+ *  descartava pontos válidos perto da origem, ex. ITU em SBJD→SBCA). */
+const INSERT_ENDPOINT_BUFFER_M = 1852 * 1.2; // ~1.2 NM
 
 /**
  * Decide se o novo ponto deve ir no fim ou entre trechos (proximidade ao segmento).
@@ -505,8 +507,15 @@ export function findRouteInsertHint(
     const a = waypoints[i]!;
     const b = waypoints[i + 1]!;
     const proj = projectPointOnSegment(point, a, b);
-    if (proj.t < INSERT_ENDPOINT_T || proj.t > 1 - INSERT_ENDPOINT_T) continue;
     if (proj.distanceM > maxDist) continue;
+
+    const legLenM = haversineM(a, b);
+    const alongM = proj.t * legLenM;
+    // Só ignora se está colado a um extremo já existente (quase duplicata).
+    // Em pernas curtas, limita o buffer a 20% da perna para ainda sobrar meio.
+    const endBuf = Math.min(INSERT_ENDPOINT_BUFFER_M, Math.max(1852 * 0.3, legLenM * 0.2));
+    if (alongM < endBuf || legLenM - alongM < endBuf) continue;
+
     if (!best || proj.distanceM < best.distanceM) {
       best = {
         insertIndex: i + 1,
@@ -530,10 +539,23 @@ export function findRouteInsertHint(
     };
   }
 
-  // Se está bem mais perto do último ponto do que do trecho, prefere append
-  // (usuário estendendo a rota).
+  // Prefere append só quando o clique está claramente perto do ÚLTIMO ponto
+  // (estendendo a rota), não quando está perto da origem/meio.
   const distLast = haversineM(point, waypoints[waypoints.length - 1]!);
-  if (distLast < best.distanceM * 0.55 && distLast < 1852 * 8) {
+  let nearestIdx = waypoints.length - 1;
+  let nearestDist = distLast;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const d = haversineM(point, waypoints[i]!);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestIdx = i;
+    }
+  }
+  if (
+    nearestIdx === waypoints.length - 1 &&
+    distLast < best.distanceM * 0.55 &&
+    distLast < 1852 * 8
+  ) {
     return {
       insertIndex: waypoints.length,
       mode: "append",

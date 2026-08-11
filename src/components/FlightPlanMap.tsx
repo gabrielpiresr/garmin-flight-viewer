@@ -189,7 +189,6 @@ function HighDpiWmsTileLayer({
   keepBuffer,
   maxNativeZoom,
   minNativeZoom,
-  format = "image/png",
 }: {
   layers: readonly string[];
   layerSet?: GeoaiswebLayerSet;
@@ -202,7 +201,6 @@ function HighDpiWmsTileLayer({
   keepBuffer?: number;
   maxNativeZoom?: number;
   minNativeZoom?: number;
-  format?: "image/png" | "image/jpeg";
 }) {
   const map = useMap();
   const layerKey = layers.join(",");
@@ -216,7 +214,7 @@ function HighDpiWmsTileLayer({
     const wmsLayer = L.tileLayer.wms(baseUrl, {
       layers: useAppProxy && layerSet ? layerSet : layerKey,
       ...(useAppProxy && layerSet ? { layerSet } : {}),
-      format,
+      format: "image/png",
       transparent,
       version: "1.1.1",
       attribution,
@@ -329,7 +327,7 @@ function HighDpiWmsTileLayer({
       map.off("moveend zoomend", schedulePrefetchAfterSettle);
       wmsLayer.removeFrom(map);
     };
-  }, [attribution, format, keepBuffer, layerKey, layerSet, layers.length, map, maxNativeZoom, minNativeZoom, opacity, pixelRatio, tileSize, transparent, zIndex]);
+  }, [attribution, keepBuffer, layerKey, layerSet, layers.length, map, maxNativeZoom, minNativeZoom, opacity, pixelRatio, tileSize, transparent, zIndex]);
 
   return null;
 }
@@ -2043,7 +2041,6 @@ export function FlightPlanMap({
               layerSet="wac"
               attribution="WAC GeoAISWEB DECEA"
               transparent={false}
-              format="image/jpeg"
               tileSize={512}
               zIndex={1}
               pixelRatio={1}
@@ -2057,8 +2054,7 @@ export function FlightPlanMap({
               layers={WAC_WMS_LAYERS}
               layerSet="wac"
               attribution="WAC GeoAISWEB DECEA"
-              transparent={false}
-              format="image/jpeg"
+              transparent
               tileSize={512}
               zIndex={2}
               pixelRatio={1.25}
@@ -2071,9 +2067,8 @@ export function FlightPlanMap({
               layers={REA_CHART_WMS_LAYERS}
               layerSet="rea"
               attribution="REA GeoAISWEB DECEA"
-              opacity={1}
-              transparent={false}
-              format="image/jpeg"
+              opacity={0.94}
+              transparent
               tileSize={512}
               zIndex={650}
               pixelRatio={1.5}
@@ -2086,9 +2081,8 @@ export function FlightPlanMap({
               layers={REH_CHART_WMS_LAYERS}
               layerSet="reh"
               attribution="REH GeoAISWEB DECEA"
-              opacity={1}
-              transparent={false}
-              format="image/jpeg"
+              opacity={0.94}
+              transparent
               tileSize={512}
               zIndex={670}
               pixelRatio={1.5}

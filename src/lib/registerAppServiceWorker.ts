@@ -32,8 +32,23 @@ export function registerAppServiceWorker(): void {
     return;
   }
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/app-sw.js").catch(() => {
-      // Offline support is best-effort; the app still works online without the worker.
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    const reloadKey = "gfv-app-sw-update-reload";
+
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || sessionStorage.getItem(reloadKey) === "1") return;
+      sessionStorage.setItem(reloadKey, "1");
+      window.location.reload();
     });
+
+    void navigator.serviceWorker
+      .register("/app-sw.js", { updateViaCache: "none" })
+      .then((registration) => {
+        sessionStorage.removeItem(reloadKey);
+        void registration.update();
+      })
+      .catch(() => {
+        // Offline support is best-effort; the app still works online without the worker.
+      });
   });
 }

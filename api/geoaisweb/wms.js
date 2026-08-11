@@ -136,7 +136,7 @@ function normalizeCrs(value) {
 
 function normalizeFormat(value) {
   const format = String(value || "image/png").toLowerCase();
-  if (format !== "image/png" && format !== "image/jpeg") throw new Error("format nao permitido");
+  if (format !== "image/png") throw new Error("format nao permitido");
   return format;
 }
 
@@ -160,10 +160,7 @@ export default async function handler(req, res) {
     const bbox = parseBbox(readParam(req.query, "bbox"));
     const srs = normalizeCrs(readParam(req.query, "srs") || readParam(req.query, "crs"));
     const format = normalizeFormat(readParam(req.query, "format"));
-    const transparent =
-      format === "image/jpeg"
-        ? false
-        : String(readParam(req.query, "transparent") ?? "true").toLowerCase() !== "false";
+    const transparent = String(readParam(req.query, "transparent") ?? "true").toLowerCase() !== "false";
 
     const params = new URLSearchParams({
       service: "WMS",

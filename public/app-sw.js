@@ -1,10 +1,10 @@
-const CACHE_NAME = "gfv-app-shell-v8";
+const CACHE_NAME = "gfv-app-shell-v10";
 const MAP_TILE_CACHE_MAX_ITEMS = 9000;
 const MAP_TILE_PREFETCH_CONCURRENCY = 8;
 const MAP_TILE_CACHES = {
-  wac: "gfv-geoaisweb-wac-v2",
-  rea: "gfv-geoaisweb-rea-chart-v2",
-  reh: "gfv-geoaisweb-reh-chart-v2",
+  wac: "gfv-geoaisweb-wac-v4",
+  rea: "gfv-geoaisweb-rea-chart-v4",
+  reh: "gfv-geoaisweb-reh-chart-v4",
 };
 const MAP_TILE_CACHE_NAMES = new Set(Object.values(MAP_TILE_CACHES));
 const APP_SHELL_URLS = [
@@ -82,7 +82,7 @@ function geoaiswebLayerSet(url) {
   if (!isGeoaisweb && !isDevProxy) return null;
   if (!url.pathname.includes("/geoserver/ows")) return null;
   if ((url.searchParams.get("request") || "").toLowerCase() !== "getmap") return null;
-  if (!(url.searchParams.get("format") || "").toLowerCase().startsWith("image/")) return null;
+  if ((url.searchParams.get("format") || "").toLowerCase() !== "image/png") return null;
   const layers = url.searchParams.get("layers") || "";
   if (/\bICA:WAC_/.test(layers)) return "wac";
   if (/\bICA:CCV_REA_/.test(layers)) return "rea";
