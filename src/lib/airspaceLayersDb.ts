@@ -38,6 +38,7 @@ export type AirspaceFeatureCollection = {
 
 const GEOAISWEB_WFS = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
+const APP_WFS_PROXY = "/api/geoaisweb/wfs";
 
 export const AIRSPACE_LAYER_DEFS: Array<{
   id: Lowercase<AirspaceLayerType>;
@@ -54,7 +55,10 @@ export const AIRSPACE_LAYER_DEFS: Array<{
 ];
 
 function wfsBases(): string[] {
-  return import.meta.env.DEV ? [DEV_PROXY_BASE, GEOAISWEB_WFS] : [GEOAISWEB_WFS, DEV_PROXY_BASE];
+  // Em prod o GeoAISWEB bloqueia CORS no browser — usar proxy Vercel.
+  return import.meta.env.DEV
+    ? [DEV_PROXY_BASE, GEOAISWEB_WFS]
+    : [APP_WFS_PROXY, GEOAISWEB_WFS];
 }
 
 type Bbox = { minLng: number; minLat: number; maxLng: number; maxLat: number };
@@ -65,15 +69,22 @@ async function fetchLayer(
   bbox: Bbox,
   layerType: AirspaceLayerType,
 ): Promise<AirspaceFeature[]> {
-  const params = new URLSearchParams({
-    service: "WFS",
-    version: "1.0.0",
-    request: "GetFeature",
-    typeName,
-    bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
-    outputFormat: "application/json",
-    maxFeatures: "200",
-  });
+  const params =
+    baseUrl === APP_WFS_PROXY
+      ? new URLSearchParams({
+          kind: layerType.toLowerCase(),
+          bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
+          maxFeatures: "200",
+        })
+      : new URLSearchParams({
+          service: "WFS",
+          version: "1.0.0",
+          request: "GetFeature",
+          typeName,
+          bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
+          outputFormat: "application/json",
+          maxFeatures: "200",
+        });
   const response = await fetch(`${baseUrl}?${params.toString()}`);
   if (!response.ok) throw new Error(`WFS ${typeName} falhou (${response.status})`);
   const data = (await response.json()) as {

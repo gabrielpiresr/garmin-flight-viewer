@@ -3,6 +3,10 @@ const GEOAISWEB_WFS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const LAYER_BY_KIND = {
   rea: "ICA:CV_REA_BR_COMPLETO",
   reh: "ICA:CV_REH_BR_COMPLETO",
+  cta: "ICA:CTA",
+  tma: "ICA:TMA",
+  ctr: "ICA:CTR",
+  atz: "ICA:ATZ",
 };
 
 const CACHE_CONTROL = "public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800";
@@ -55,7 +59,7 @@ export default async function handler(req, res) {
     const kind = String(readParam(req.query, "kind") || "").toLowerCase();
     const typeName = LAYER_BY_KIND[kind];
     if (!typeName) {
-      res.status(400).json({ error: "kind deve ser rea ou reh" });
+      res.status(400).json({ error: "kind deve ser rea, reh, cta, tma, ctr ou atz" });
       return;
     }
 

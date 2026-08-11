@@ -32,6 +32,7 @@ export type DetectAirspacesOptions = {
 
 const GEOAISWEB_WFS = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
+const APP_WFS_PROXY = "/api/geoaisweb/wfs";
 const NM_IN_M = 1852;
 const ALT_TOL_FT = 100;
 
@@ -226,16 +227,24 @@ async function fetchLayerFeatures(
   baseUrl: string,
   layer: string,
   bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+  kind?: string,
 ): Promise<GeoJsonFeature[]> {
-  const params = new URLSearchParams({
-    service: "WFS",
-    version: "1.0.0",
-    request: "GetFeature",
-    typeName: layer,
-    bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
-    outputFormat: "application/json",
-    maxFeatures: "250",
-  });
+  const params =
+    baseUrl === APP_WFS_PROXY
+      ? new URLSearchParams({
+          kind: String(kind || "").toLowerCase(),
+          bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
+          maxFeatures: "250",
+        })
+      : new URLSearchParams({
+          service: "WFS",
+          version: "1.0.0",
+          request: "GetFeature",
+          typeName: layer,
+          bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
+          outputFormat: "application/json",
+          maxFeatures: "250",
+        });
   const response = await fetch(`${baseUrl}?${params.toString()}`);
   if (!response.ok) throw new Error(`WFS ${layer} falhou (${response.status})`);
   const data = (await response.json()) as GeoJsonFeatureCollection;
@@ -277,14 +286,16 @@ async function detectAirspacesClientSide(
   const bbox = routeBoundingBox(dense, 0.4);
   if (!bbox) return [];
 
-  const bases = [DEV_PROXY_BASE, GEOAISWEB_WFS];
+  const bases = import.meta.env.DEV
+    ? [DEV_PROXY_BASE, GEOAISWEB_WFS]
+    : [APP_WFS_PROXY, GEOAISWEB_WFS];
   let lastError: unknown = null;
 
   for (const base of bases) {
     try {
       const collections = await Promise.all(
         AIRSPACE_LAYERS.map(async ({ type, layer }) => {
-          const features = await fetchLayerFeatures(base, layer, bbox);
+          const features = await fetchLayerFeatures(base, layer, bbox, type);
           return features
             .map((f) => {
               const props = f.properties || {};
