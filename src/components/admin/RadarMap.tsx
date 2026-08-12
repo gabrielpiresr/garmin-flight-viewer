@@ -16,6 +16,7 @@ import {
 } from "../../lib/windyEmbed";
 import { WindyIsobarsIcon, WindyOverlayIcon } from "../../lib/windyOverlayIcons";
 import type { FlightRadarLivePosition, FlightRadarTrackPoint } from "../../types/flightRadar";
+import { ReaChartFallbackOverlay } from "../ReaChartFallbackOverlay";
 import { REA_LAYER_TOGGLES, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "../ReaRoutesOverlay";
 
 type MapStyle = "satellite" | "roads" | "terrain" | "windy";
@@ -514,6 +515,8 @@ export function RadarMap({
               />
             ) : null,
           )}
+          <ReaChartFallbackOverlay kind="rea" enabled={layersOn.rea === true} />
+          <ReaChartFallbackOverlay kind="reh" enabled={layersOn.reh === true} />
           <ReaRoutesOverlayBoundary>
             <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} />
             <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} />
