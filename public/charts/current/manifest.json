@@ -1,0 +1,6 @@
+{
+  "airac": "current",
+  "generatedAt": null,
+  "layers": {},
+  "note": "No XYZ tiles published yet — FlightPlanMap uses WMS fallback. Run scripts/build-chart-tiles/build.mjs to populate."
+}

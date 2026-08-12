@@ -196,6 +196,20 @@ body {
   font-family: inherit;
 }
 
+/* WAC coarse is a placeholder under sharp; keep it soft so unfinished sharp tiles are obvious. */
+.flight-plan-chart-tile--coarse {
+  filter: contrast(0.96) saturate(0.92);
+  image-rendering: auto;
+}
+
+.flight-plan-chart-tile--sharp {
+  image-rendering: auto;
+}
+
+.flight-plan-wac-map .leaflet-tile-container img.flight-plan-chart-tile {
+  transition: opacity 160ms ease-out;
+}
+
 .school-themed-shell {
   background: var(--school-bg);
 }
