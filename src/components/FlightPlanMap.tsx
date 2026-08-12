@@ -1,7 +1,6 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import {
-  CircleMarker,
   MapContainer,
   Marker,
   Polyline,
@@ -1025,6 +1024,7 @@ function VisibleAerodromes({
   onPick,
   onOpenDetails,
   onSuppressMapPick,
+  hideIcaos,
 }: {
   aerodromes: Aerodrome[];
   show: boolean;
@@ -1033,6 +1033,8 @@ function VisibleAerodromes({
   onOpenDetails?: (bundle: AiswebAirportBundle) => void;
   /** Evita abrir "novo ponto" no mesmo clique que fecha o popup. */
   onSuppressMapPick?: () => void;
+  /** ICAOs já na rota — não desenha label/ícone de fundo (evita sobreposição). */
+  hideIcaos?: Set<string>;
 }) {
   const map = useMap();
   const [bounds, setBounds] = useState(() => map.getBounds());
@@ -1148,6 +1150,9 @@ function VisibleAerodromes({
         const lat = ad.latitudeGeoPoint!;
         const lng = ad.longitudeGeoPoint!;
         const code = ad.icao || ad.ciad || "?";
+        const codeUpper = code.toUpperCase();
+        // AD já está na rota: o waypoint da rota já carrega a label — ocultar o de fundo.
+        if (hideIcaos?.has(codeUpper)) return null;
         return (
           <Marker
             key={ad.id}
@@ -1697,6 +1702,20 @@ export function FlightPlanMap({
         .map((w) => [w.lat, w.lng] as [number, number]),
     [waypoints],
   );
+
+  /** ICAOs dos ADs já na rota — oculta marcadores de fundo para não duplicar label. */
+  const routeIcaos = useMemo(() => {
+    const set = new Set<string>();
+    for (const wp of waypoints) {
+      const kind = wp.kind;
+      if (kind === "fix" || kind === "rea") continue;
+      const code = String(wp.label || "")
+        .trim()
+        .toUpperCase();
+      if (/^[A-Z0-9]{4}$/.test(code)) set.add(code);
+    }
+    return set;
+  }, [waypoints]);
 
   const legs = useMemo(
     () =>
@@ -2410,6 +2429,7 @@ export function FlightPlanMap({
             aerodromes={aerodromes}
             show={showAerodromes && aerodromes.length > 0}
             filter={aerodromeFilter}
+            hideIcaos={routeIcaos}
             onPick={handlePick}
             onOpenDetails={onAerodromeDetails}
             onSuppressMapPick={() => {
@@ -2498,18 +2518,6 @@ export function FlightPlanMap({
               </Marker>
             );
           })}
-
-          {positions.length === 1 ? (
-            <CircleMarker
-              center={positions[0]!}
-              radius={6}
-              pathOptions={{ color: "#fff", fillColor: "#34d399", fillOpacity: 1, weight: 2 }}
-            >
-              <Tooltip permanent direction="top" offset={[0, -8]}>
-                {waypoints[0]?.label || "Ponto"}
-              </Tooltip>
-            </CircleMarker>
-          ) : null}
         </MapContainer>
       </div>
 

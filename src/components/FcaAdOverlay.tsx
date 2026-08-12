@@ -2,7 +2,10 @@ import L from "leaflet";
 import { useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
 import type { Aerodrome } from "../lib/aerodromesDb";
-import { lookupAiswebIcao } from "../lib/aiswebDb";
+import {
+  enrichFcaAdBatch,
+  getCachedFcaAd,
+} from "../lib/fcaAdEnrichment";
 import {
   AIRSPACE_LAYER_DEFS,
   FCA_AD_DEFAULT_FREQ_MHZ,
@@ -44,19 +47,11 @@ function fcaKey(icao: string): string {
 
 function isClickNearCircleEdge(map: L.Map, latlng: L.LatLng, center: L.LatLng, radiusM: number): boolean {
   const distM = map.distance(center, latlng);
-  const tolM = Math.max(map.distance(center, map.layerPointToLatLng(map.latLngToLayerPoint(center).add([AIRSPACE_STYLE.edgeHitPx, 0]))), radiusM * EDGE_HIT_FRAC);
-  return Math.abs(distM - radiusM) <= tolM;
-}
-
-function pickFcaMhz(frequencies: Array<{ service: string; callsign: string | null; frequenciesMhz: string[] }> | undefined): string {
-  const list = frequencies || [];
-  const fca = list.find(
-    (f) => /FCA/i.test(f.service) || /FCA/i.test(f.callsign || "") || /UNICOM|A\/A|AIR.?AIR/i.test(f.service),
+  const tolM = Math.max(
+    map.distance(center, map.layerPointToLatLng(map.latLngToLayerPoint(center).add([AIRSPACE_STYLE.edgeHitPx, 0]))),
+    radiusM * EDGE_HIT_FRAC,
   );
-  if (fca?.frequenciesMhz?.length) return `${fca.frequenciesMhz.join(" · ")} MHz`;
-  const anyRadio = list.find((f) => f.frequenciesMhz?.length);
-  if (anyRadio) return `${anyRadio.service} ${anyRadio.frequenciesMhz.join(" · ")} MHz`;
-  return `${FCA_AD_DEFAULT_FREQ_MHZ} MHz`;
+  return Math.abs(distM - radiusM) <= tolM;
 }
 
 function baseInfo(ad: Aerodrome, frequency: string | null = null): AirspaceInfo {
@@ -77,8 +72,8 @@ function baseInfo(ad: Aerodrome, frequency: string | null = null): AirspaceInfo 
 }
 
 /**
- * Círculos de 10 NM em torno dos aeródromos (FCA AD), no estilo SNPA/NexAtlas.
- * Clique na borda abre o painel com frequência (ROTAER quando disponível).
+ * Círculos de 10 NM só em aeródromos com FCA dedicada no ROTAER
+ * (ou frequência A/A / UNICOM publicada). Não traça o fallback 123.45.
  */
 export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Props) {
   const map = useMap();
@@ -88,40 +83,15 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
   const aerodromesRef = useRef(aerodromes);
   const enabledRef = useRef(enabled);
   const redrawTimer = useRef<number | null>(null);
+  const enrichTimer = useRef<number | null>(null);
   const interactingRef = useRef(false);
   const canvasRendererRef = useRef<L.Canvas | null>(null);
-  const freqCacheRef = useRef<Map<string, string>>(new Map());
-  const lookupInflight = useRef<Set<string>>(new Set());
+  const enrichTickRef = useRef(0);
 
   selectedKeyRef.current = selectedKey;
   onSelectRef.current = onSelect;
   aerodromesRef.current = aerodromes;
   enabledRef.current = enabled;
-
-  const enrichFrequency = (ad: Aerodrome, key: string) => {
-    const icao = ad.icao?.toUpperCase();
-    if (!icao || lookupInflight.current.has(icao)) return;
-    const cached = freqCacheRef.current.get(icao);
-    if (cached) {
-      onSelectRef.current(baseInfo(ad, cached), key);
-      return;
-    }
-    lookupInflight.current.add(icao);
-    void lookupAiswebIcao(icao)
-      .then((bundle) => {
-        const mhz = pickFcaMhz(bundle.rotaer?.frequencies);
-        freqCacheRef.current.set(icao, mhz);
-        if (selectedKeyRef.current === key) {
-          onSelectRef.current(baseInfo(ad, mhz), key);
-        }
-      })
-      .catch(() => {
-        /* mantém 123.45 padrão */
-      })
-      .finally(() => {
-        lookupInflight.current.delete(icao);
-      });
-  };
 
   const redrawRef = useRef(() => {});
   redrawRef.current = () => {
@@ -157,6 +127,10 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
       const color = FCA_DEF.color;
 
       for (const ad of candidates) {
+        const cached = getCachedFcaAd(ad.icao);
+        // Sem cache ainda ou sem frequência dedicada: não traça.
+        if (!cached?.hasDedicated) continue;
+
         const lat = ad.latitudeGeoPoint!;
         const lng = ad.longitudeGeoPoint!;
         const center = L.latLng(lat, lng);
@@ -180,9 +154,8 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
             onSelectRef.current(null, null);
             return;
           }
-          const info = baseInfo(ad, freqCacheRef.current.get(ad.icao.toUpperCase()) ?? null);
+          const info = baseInfo(ad, cached.frequency);
           onSelectRef.current(info, key);
-          enrichFrequency(ad, key);
         });
         circle.addTo(group);
       }
@@ -199,11 +172,50 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
     }, delay);
   };
 
+  const scheduleEnrichRef = useRef(() => {});
+  scheduleEnrichRef.current = () => {
+    if (enrichTimer.current != null) window.clearTimeout(enrichTimer.current);
+    enrichTimer.current = window.setTimeout(() => {
+      enrichTimer.current = null;
+      if (!enabledRef.current) return;
+      const bounds = map.getBounds().pad(0.15);
+      const zoom = map.getZoom();
+      const maxAds = zoom >= 9 ? 120 : zoom >= 7 ? 60 : 25;
+      const icaos: string[] = [];
+      for (const ad of aerodromesRef.current) {
+        const lat = ad.latitudeGeoPoint;
+        const lng = ad.longitudeGeoPoint;
+        if (lat == null || lng == null || !ad.icao) continue;
+        if (!bounds.contains(L.latLng(lat, lng))) continue;
+        const cached = getCachedFcaAd(ad.icao);
+        // Reconsulta se ainda não sabemos; se já sabemos, pula.
+        if (cached && Date.now() - cached.updatedAt < 7 * 24 * 60 * 60 * 1000) continue;
+        icaos.push(ad.icao);
+        if (icaos.length >= maxAds) break;
+      }
+      if (!icaos.length) {
+        scheduleRedraw(0);
+        return;
+      }
+      const tick = ++enrichTickRef.current;
+      void enrichFcaAdBatch(icaos, {
+        concurrency: 3,
+        onProgress: () => {
+          if (tick === enrichTickRef.current) scheduleRedraw(40);
+        },
+      }).then(() => {
+        if (tick === enrichTickRef.current) scheduleRedraw(0);
+      });
+    }, 280);
+  };
+
   useEffect(() => {
     if (!groupRef.current) groupRef.current = L.layerGroup().addTo(map);
+    scheduleEnrichRef.current();
     scheduleRedraw(0);
     return () => {
       if (redrawTimer.current != null) window.clearTimeout(redrawTimer.current);
+      if (enrichTimer.current != null) window.clearTimeout(enrichTimer.current);
       groupRef.current?.removeFrom(map);
       groupRef.current = null;
       canvasRendererRef.current = null;
@@ -211,6 +223,7 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
   }, [map]);
 
   useEffect(() => {
+    if (enabled) scheduleEnrichRef.current();
     scheduleRedraw(0);
   }, [enabled, aerodromes, selectedKey]);
 
@@ -223,11 +236,13 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
     },
     moveend() {
       interactingRef.current = false;
-      scheduleRedraw(120);
+      if (enabledRef.current) scheduleEnrichRef.current();
+      else scheduleRedraw(120);
     },
     zoomend() {
       interactingRef.current = false;
-      scheduleRedraw(120);
+      if (enabledRef.current) scheduleEnrichRef.current();
+      else scheduleRedraw(120);
     },
   });
 

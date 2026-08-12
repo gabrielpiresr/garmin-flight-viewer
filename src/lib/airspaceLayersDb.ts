@@ -122,7 +122,7 @@ export const AIRSPACE_LAYER_DEFS: Array<{
   },
 ];
 
-/** Camadas WFS (exclui FCA AD, que é gerada no cliente). */
+/** Camadas WFS (exclui FCA AD, que é gerada no cliente só para ADs com FCA dedicada). */
 export const AIRSPACE_WFS_LAYER_DEFS = AIRSPACE_LAYER_DEFS.filter((d) => d.layer && d.kind);
 
 export function airspaceTypeLabel(type: AirspaceLayerType): string {
@@ -235,6 +235,32 @@ export type AirspaceInfo = {
   frequency: string | null;
   color: string;
 };
+
+/** Rótulo de carta no mapa, ex.: "CTA CURITIBA 2". */
+export function airspaceMapLabel(feature: AirspaceFeature): string {
+  const props = feature.properties || {};
+  const isEac = feature.layerType === "P" || feature.layerType === "R" || feature.layerType === "D";
+  const type = feature.layerType;
+  const rawName = String(props.nome || props.nam || props.name || "").trim();
+  const ident = String(
+    (isEac ? props.id : null) || props.ident || props.icaocode || props.id || feature.id || "",
+  ).trim();
+
+  if (isEac) {
+    const idPart = ident || rawName;
+    if (!idPart) return type;
+    const upper = idPart.toUpperCase();
+    if (upper.startsWith(`${type} `) || upper === type) return upper;
+    return `${type} ${idPart}`.trim();
+  }
+
+  const base = rawName || ident;
+  if (!base) return type;
+  const upper = base.toUpperCase();
+  if (upper.startsWith(`${type} `) || upper === type) return upper;
+  // "CURITIBA 2" → "CTA CURITIBA 2"
+  return `${type} ${base}`.trim().toUpperCase();
+}
 
 export function airspaceFeatureToInfo(feature: AirspaceFeature): AirspaceInfo {
   const props = feature.properties || {};
