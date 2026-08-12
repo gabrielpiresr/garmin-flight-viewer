@@ -1,7 +1,6 @@
 import L from "leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import {
-  CircleMarker,
   MapContainer,
   Marker,
   Polyline,
@@ -144,12 +143,26 @@ const REH_CHART_WMS_LAYERS = [
   "ICA:CCV_REH_XP2_SAO_PAULO_2",
 ] as const;
 
-import { AIRSPACE_LAYER_DEFS, type AirspaceInfo } from "../lib/airspaceLayersDb";
+import { AIRSPACE_LAYER_DEFS, AIRSPACE_WFS_LAYER_DEFS, type AirspaceInfo } from "../lib/airspaceLayersDb";
+import { loadChartTileObjectUrl } from "../lib/chartTileCache";
+import { enqueueChartTileLoad, releaseChartTileSlot } from "../lib/chartTileQueue";
+import {
+  CHART_OVERLAY_MIN_ZOOM,
+  CHART_NATIVE_ZOOM,
+  WMS_LAYER_LIMITS,
+  WMS_TILE_DEFAULTS,
+  chartXyzUrlTemplate,
+  loadChartTilesManifest,
+  xyzAvailableFor,
+  type ChartLayerSet,
+  type ChartTilesManifest,
+} from "../lib/chartTiles";
 import { AirspaceInfoPanel, AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
+import { FcaAdOverlay } from "./FcaAdOverlay";
 
 const AIRSPACE_TOGGLES = AIRSPACE_LAYER_DEFS.map((d) => ({
   id: d.id,
-  label: d.type,
+  label: d.label,
   defaultOn: d.defaultOn,
   color: d.color,
 }));
@@ -177,6 +190,17 @@ export type MapPickCandidate = {
   operation?: string;
 };
 
+function pendingViewportTiles(layer: L.GridLayer): number {
+  const tiles = (layer as unknown as { _tiles?: Record<string, { loaded?: boolean; current?: boolean; el?: HTMLElement }> })
+    ._tiles;
+  if (!tiles) return 0;
+  let pending = 0;
+  for (const tile of Object.values(tiles)) {
+    if (tile.current && !tile.loaded) pending += 1;
+  }
+  return pending;
+}
+
 function HighDpiWmsTileLayer({
   layers,
   layerSet,
@@ -184,11 +208,12 @@ function HighDpiWmsTileLayer({
   transparent = true,
   opacity = 1,
   zIndex = 1,
-  tileSize = 512,
-  pixelRatio = 2,
+  tileSize = WMS_TILE_DEFAULTS.tileSize,
+  pixelRatio = 1,
   keepBuffer,
   maxNativeZoom,
   minNativeZoom,
+  className = "flight-plan-chart-tile",
 }: {
   layers: readonly string[];
   layerSet?: GeoaiswebLayerSet;
@@ -201,6 +226,7 @@ function HighDpiWmsTileLayer({
   keepBuffer?: number;
   maxNativeZoom?: number;
   minNativeZoom?: number;
+  className?: string;
 }) {
   const map = useMap();
   const layerKey = layers.join(",");
@@ -208,8 +234,13 @@ function HighDpiWmsTileLayer({
   useEffect(() => {
     if (!layers.length) return;
 
-    const useAppProxy = Boolean(layerSet && !import.meta.env.DEV);
-    const baseUrl = useAppProxy ? GEOAISWEB_WMS_PROXY_BASE : import.meta.env.DEV ? DEV_WMS_PROXY_BASE : WMS_BASE;
+    // Prefer app proxy in prod (sheet filter + cache headers). In DEV use Vite proxy with full layer list.
+    const useAppProxy = Boolean(layerSet);
+    const baseUrl = useAppProxy
+      ? GEOAISWEB_WMS_PROXY_BASE
+      : import.meta.env.DEV
+        ? DEV_WMS_PROXY_BASE
+        : WMS_BASE;
     const requestedSize = Math.round(tileSize * Math.max(1, pixelRatio));
     const wmsLayer = L.tileLayer.wms(baseUrl, {
       layers: useAppProxy && layerSet ? layerSet : layerKey,
@@ -221,20 +252,22 @@ function HighDpiWmsTileLayer({
       tileSize,
       opacity,
       zIndex,
-      keepBuffer: keepBuffer ?? (layerSet === "wac" ? 20 : 16),
+      keepBuffer: keepBuffer ?? WMS_TILE_DEFAULTS.keepBuffer,
       updateWhenIdle: true,
       updateWhenZooming: false,
-      updateInterval: 260,
+      updateInterval: WMS_TILE_DEFAULTS.updateInterval,
+      maxZoom: 18,
       ...(maxNativeZoom != null ? { maxNativeZoom } : {}),
       ...(minNativeZoom != null ? { minNativeZoom } : {}),
-      className: "flight-plan-chart-tile",
+      className,
+      crossOrigin: true,
     });
 
     const baseGetTileUrl = wmsLayer.getTileUrl.bind(wmsLayer);
-    const normalizeUrl = (rawUrl: string, requestedSize: number) => {
+    const normalizeUrl = (rawUrl: string, size: number) => {
       const url = new URL(rawUrl, window.location.origin);
-      url.searchParams.set("width", String(requestedSize));
-      url.searchParams.set("height", String(requestedSize));
+      url.searchParams.set("width", String(size));
+      url.searchParams.set("height", String(size));
       if (useAppProxy && layerSet) {
         url.searchParams.set("layerSet", layerSet);
         url.searchParams.set("layers", layerSet);
@@ -245,8 +278,96 @@ function HighDpiWmsTileLayer({
       url.search = sorted.toString();
       return url.origin === window.location.origin ? `${url.pathname}?${url.searchParams.toString()}` : url.href;
     };
-    const tileUrlFor = (coords: L.Coords, requestedSize: number) => normalizeUrl(baseGetTileUrl(coords), requestedSize);
+    const tileUrlFor = (coords: L.Coords, size: number) => normalizeUrl(baseGetTileUrl(coords), size);
     wmsLayer.getTileUrl = (coords: L.Coords) => tileUrlFor(coords, requestedSize);
+
+    const retries = new Map<string, number>();
+    const objectUrls = new WeakMap<HTMLImageElement, string>();
+
+    const clearObjectUrl = (img: HTMLImageElement) => {
+      const prev = objectUrls.get(img);
+      if (prev) {
+        URL.revokeObjectURL(prev);
+        objectUrls.delete(img);
+      }
+    };
+
+    const tileKey = (coords: L.Coords) => `${coords.x}:${coords.y}:${coords.z}`;
+
+    (wmsLayer as unknown as { createTile: (c: L.Coords, done?: L.DoneCallback) => HTMLElement }).createTile = (
+      coords: L.Coords,
+      done?: L.DoneCallback,
+    ) => {
+      const tile = document.createElement("img");
+      tile.alt = "";
+      tile.setAttribute("role", "presentation");
+      tile.className = className;
+      const url = tileUrlFor(coords, requestedSize);
+      const key = tileKey(coords);
+
+      let settled = false;
+      const settleOk = () => {
+        if (settled) return;
+        settled = true;
+        releaseChartTileSlot();
+        done?.(undefined, tile);
+      };
+      const settleErr = () => {
+        if (settled) return;
+        settled = true;
+        releaseChartTileSlot();
+        done?.(new Error("tile error"), tile);
+      };
+
+      const wire = (src: string, useQueue: boolean) => {
+        const onLoad = () => {
+          tile.removeEventListener("load", onLoad);
+          tile.removeEventListener("error", onError);
+          settleOk();
+        };
+        const onError = () => {
+          tile.removeEventListener("load", onLoad);
+          tile.removeEventListener("error", onError);
+          const attempt = (retries.get(key) || 0) + 1;
+          retries.set(key, attempt);
+          if (attempt <= WMS_TILE_DEFAULTS.maxRetries) {
+            // Free the concurrency slot from the failed attempt, then retry.
+            releaseChartTileSlot();
+            settled = false;
+            window.setTimeout(() => {
+              clearObjectUrl(tile);
+              tile.addEventListener("load", onLoad);
+              tile.addEventListener("error", onError);
+              void loadChartTileObjectUrl(url)
+                .then((objectUrl) => {
+                  objectUrls.set(tile, objectUrl);
+                  enqueueChartTileLoad(tile, objectUrl);
+                })
+                .catch(() => {
+                  enqueueChartTileLoad(tile, `${url}${url.includes("?") ? "&" : "?"}_retry=${attempt}`);
+                });
+            }, 280 * attempt);
+            return;
+          }
+          settleErr();
+        };
+        tile.addEventListener("load", onLoad);
+        tile.addEventListener("error", onError);
+        if (useQueue) enqueueChartTileLoad(tile, src);
+        else {
+          tile.src = src;
+        }
+      };
+
+      void loadChartTileObjectUrl(url)
+        .then((objectUrl) => {
+          objectUrls.set(tile, objectUrl);
+          wire(objectUrl, true);
+        })
+        .catch(() => wire(url, true));
+
+      return tile;
+    };
 
     const coordsFor = (x: number, y: number, z: number): L.Coords =>
       Object.assign(L.point(x, y), { z }) as L.Coords;
@@ -269,66 +390,183 @@ function HighDpiWmsTileLayer({
       }
     };
 
-    let redrawTimer: number | null = null;
-    let lastMovePrefetchAt = 0;
+    let prefetchTimer: number | null = null;
 
-    const scheduleHighQualityRedraw = (delay = 180, reset = true) => {
-      if (redrawTimer != null) {
-        if (!reset) return;
-        window.clearTimeout(redrawTimer);
-      }
-      redrawTimer = window.setTimeout(() => {
-        redrawTimer = null;
-        if (!layerSet || !navigator.serviceWorker?.controller) return;
+    const schedulePrefetchAfterVisible = () => {
+      if (prefetchTimer != null) window.clearTimeout(prefetchTimer);
+      prefetchTimer = window.setTimeout(() => {
+        prefetchTimer = null;
+        if (pendingViewportTiles(wmsLayer) > 0) {
+          schedulePrefetchAfterVisible();
+          return;
+        }
         const zoom = Math.round(map.getZoom());
         const urls = new Set<string>();
         const effectiveZoom = maxNativeZoom != null ? Math.min(zoom, maxNativeZoom) : zoom;
-        addPrefetchUrlsForZoom(urls, effectiveZoom, layerSet === "wac" ? 4 : 4, layerSet === "wac" ? 120 : 120);
-        addPrefetchUrlsForZoom(urls, Math.max(0, effectiveZoom - 1), 3, 72);
-        addPrefetchUrlsForZoom(urls, Math.min(maxNativeZoom ?? 18, effectiveZoom + 1), 3, 96);
-        const tiles =
-          ((wmsLayer as unknown as { _tiles?: Record<string, { coords?: L.Coords }> })._tiles || {});
-        for (const tile of Object.values(tiles)) {
-          const coords = tile.coords;
-          if (!coords) continue;
-          for (let dx = -2; dx <= 2; dx++) {
-            for (let dy = -2; dy <= 2; dy++) {
-              const nextCoords = Object.assign(L.point(coords.x + dx, coords.y + dy), { z: coords.z }) as L.Coords;
-              urls.add(tileUrlFor(nextCoords, requestedSize));
-              if (urls.size >= 240) break;
-            }
-            if (urls.size >= 240) break;
-          }
-          if (urls.size >= 240) break;
+        addPrefetchUrlsForZoom(urls, effectiveZoom, 1, 36);
+        addPrefetchUrlsForZoom(urls, Math.max(0, effectiveZoom - 1), 1, 24);
+
+        // Warm IDB/memory even without SW (DEV).
+        for (const u of urls) {
+          void loadChartTileObjectUrl(u).catch(() => {});
         }
-        navigator.serviceWorker.controller.postMessage({
-          type: "GFV_PREFETCH_MAP_TILES",
-          urls: [...urls],
-        });
-      }, delay);
+
+        if (layerSet && navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: "GFV_PREFETCH_MAP_TILES",
+            urls: [...urls],
+          });
+        }
+      }, 400);
     };
 
-    const schedulePrefetchDuringMove = () => {
-      const now = performance.now();
-      if (now - lastMovePrefetchAt < 320) return;
-      lastMovePrefetchAt = now;
-      scheduleHighQualityRedraw(80, false);
+    const onTileLoad = () => schedulePrefetchAfterVisible();
+    const onMoveEnd = () => {
+      // Re-request failed current tiles after pan/zoom settles.
+      const tiles =
+        ((wmsLayer as unknown as { _tiles?: Record<string, { loaded?: boolean; current?: boolean; el?: HTMLImageElement; coords?: L.Coords }> })
+          ._tiles || {});
+      for (const tile of Object.values(tiles)) {
+        if (!tile.current || tile.loaded || !tile.el || !tile.coords) continue;
+        const img = tile.el;
+        if (img.complete && img.naturalWidth > 0) continue;
+        const url = tileUrlFor(tile.coords, requestedSize);
+        void loadChartTileObjectUrl(url)
+          .then((objectUrl) => {
+            clearObjectUrl(img);
+            objectUrls.set(img, objectUrl);
+            img.src = objectUrl;
+          })
+          .catch(() => {
+            img.src = url;
+          });
+      }
+      schedulePrefetchAfterVisible();
     };
-    const schedulePrefetchAfterSettle = () => scheduleHighQualityRedraw(180, true);
 
-    map.on("move zoomstart", schedulePrefetchDuringMove);
-    map.on("moveend zoomend", schedulePrefetchAfterSettle);
+    wmsLayer.on("load", onTileLoad);
+    map.on("moveend zoomend", onMoveEnd);
 
     wmsLayer.addTo(map);
-    window.setTimeout(() => scheduleHighQualityRedraw(0, true), 80);
+    window.setTimeout(() => schedulePrefetchAfterVisible(), 120);
     return () => {
-      if (redrawTimer != null) window.clearTimeout(redrawTimer);
-      map.off("move zoomstart", schedulePrefetchDuringMove);
-      map.off("moveend zoomend", schedulePrefetchAfterSettle);
+      if (prefetchTimer != null) window.clearTimeout(prefetchTimer);
+      wmsLayer.off("load", onTileLoad);
+      map.off("moveend zoomend", onMoveEnd);
       wmsLayer.removeFrom(map);
     };
-  }, [attribution, keepBuffer, layerKey, layerSet, layers.length, map, maxNativeZoom, minNativeZoom, opacity, pixelRatio, tileSize, transparent, zIndex]);
+  }, [
+    attribution,
+    className,
+    keepBuffer,
+    layerKey,
+    layerSet,
+    layers.length,
+    map,
+    maxNativeZoom,
+    minNativeZoom,
+    opacity,
+    pixelRatio,
+    tileSize,
+    transparent,
+    zIndex,
+  ]);
 
+  return null;
+}
+
+function ChartXyzTileLayer({
+  layerSet,
+  attribution,
+  opacity = 1,
+  zIndex = 1,
+  format = "webp",
+  className = "flight-plan-chart-tile",
+}: {
+  layerSet: ChartLayerSet;
+  attribution: string;
+  opacity?: number;
+  zIndex?: number;
+  format?: "webp" | "png";
+  className?: string;
+}) {
+  const map = useMap();
+  const limits = CHART_NATIVE_ZOOM[layerSet];
+
+  useEffect(() => {
+    const url = chartXyzUrlTemplate(layerSet, format);
+    const layer = L.tileLayer(url, {
+      attribution,
+      opacity,
+      zIndex,
+      tileSize: 256,
+      minZoom: limits.min,
+      maxZoom: limits.max,
+      maxNativeZoom: limits.maxNative,
+      minNativeZoom: limits.min,
+      keepBuffer: 4,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      className,
+      crossOrigin: true,
+    });
+
+    const objectUrls = new WeakMap<HTMLImageElement, string>();
+    (layer as unknown as { createTile: (c: L.Coords, done?: L.DoneCallback) => HTMLElement }).createTile = (
+      coords: L.Coords,
+      done?: L.DoneCallback,
+    ) => {
+      const tile = document.createElement("img");
+      tile.alt = "";
+      tile.setAttribute("role", "presentation");
+      const src = layer.getTileUrl(coords);
+      let settled = false;
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        releaseChartTileSlot();
+        done?.(err, tile);
+      };
+      const onLoad = () => {
+        tile.removeEventListener("load", onLoad);
+        tile.removeEventListener("error", onError);
+        settle();
+      };
+      const onError = () => {
+        tile.removeEventListener("load", onLoad);
+        tile.removeEventListener("error", onError);
+        settle(new Error("xyz tile error"));
+      };
+      tile.addEventListener("load", onLoad);
+      tile.addEventListener("error", onError);
+      void loadChartTileObjectUrl(src)
+        .then((objectUrl) => {
+          objectUrls.set(tile, objectUrl);
+          enqueueChartTileLoad(tile, objectUrl);
+        })
+        .catch(() => enqueueChartTileLoad(tile, src));
+      return tile;
+    };
+
+    layer.addTo(map);
+    return () => {
+      layer.removeFrom(map);
+    };
+  }, [attribution, className, format, layerSet, limits.max, limits.maxNative, limits.min, map, opacity, zIndex]);
+
+  return null;
+}
+
+function MapZoomValue({ onZoom }: { onZoom: (zoom: number) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const publish = () => onZoom(map.getZoom());
+    publish();
+    map.on("zoomend", publish);
+    return () => {
+      map.off("zoomend", publish);
+    };
+  }, [map, onZoom]);
   return null;
 }
 
@@ -786,6 +1024,7 @@ function VisibleAerodromes({
   onPick,
   onOpenDetails,
   onSuppressMapPick,
+  hideIcaos,
 }: {
   aerodromes: Aerodrome[];
   show: boolean;
@@ -794,6 +1033,8 @@ function VisibleAerodromes({
   onOpenDetails?: (bundle: AiswebAirportBundle) => void;
   /** Evita abrir "novo ponto" no mesmo clique que fecha o popup. */
   onSuppressMapPick?: () => void;
+  /** ICAOs já na rota — não desenha label/ícone de fundo (evita sobreposição). */
+  hideIcaos?: Set<string>;
 }) {
   const map = useMap();
   const [bounds, setBounds] = useState(() => map.getBounds());
@@ -909,6 +1150,9 @@ function VisibleAerodromes({
         const lat = ad.latitudeGeoPoint!;
         const lng = ad.longitudeGeoPoint!;
         const code = ad.icao || ad.ciad || "?";
+        const codeUpper = code.toUpperCase();
+        // AD já está na rota: o waypoint da rota já carrega a label — ocultar o de fundo.
+        if (hideIcaos?.has(codeUpper)) return null;
         return (
           <Marker
             key={ad.id}
@@ -1417,6 +1661,23 @@ export function FlightPlanMap({
   } | null>(null);
   const [toolPanel, setToolPanel] = useState<MapToolPanel>(null);
   const suppressMapPickUntil = useRef(0);
+  const [mapZoom, setMapZoom] = useState(5);
+  const [chartManifest, setChartManifest] = useState<ChartTilesManifest | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadChartTilesManifest().then((manifest) => {
+      if (!cancelled) setChartManifest(manifest);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const useXyzWac = xyzAvailableFor(chartManifest, "wac");
+  const useXyzRea = xyzAvailableFor(chartManifest, "rea");
+  const useXyzReh = xyzAvailableFor(chartManifest, "reh");
+  const showChartOverlays = mapZoom >= CHART_OVERLAY_MIN_ZOOM;
 
   const adFilterActiveCount =
     (aerodromeFilter.minRunwayLengthM != null && aerodromeFilter.minRunwayLengthM > 0 ? 1 : 0) +
@@ -1441,6 +1702,20 @@ export function FlightPlanMap({
         .map((w) => [w.lat, w.lng] as [number, number]),
     [waypoints],
   );
+
+  /** ICAOs dos ADs já na rota — oculta marcadores de fundo para não duplicar label. */
+  const routeIcaos = useMemo(() => {
+    const set = new Set<string>();
+    for (const wp of waypoints) {
+      const kind = wp.kind;
+      if (kind === "fix" || kind === "rea") continue;
+      const code = String(wp.label || "")
+        .trim()
+        .toUpperCase();
+      if (/^[A-Z0-9]{4}$/.test(code)) set.add(code);
+    }
+    return set;
+  }, [waypoints]);
 
   const legs = useMemo(
     () =>
@@ -1812,6 +2087,7 @@ export function FlightPlanMap({
                             <button
                               key={layer.id}
                               type="button"
+                              title={layer.label}
                               onClick={() =>
                                 setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
                               }
@@ -1984,6 +2260,7 @@ export function FlightPlanMap({
           closePopupOnClick
         >
           {!isWac ? <SoftScrollZoom /> : null}
+          {isWac ? <MapZoomValue onZoom={setMapZoom} /> : null}
           <FitRoute positions={positions} fitKey={fitKey} />
           <MapClickHandler
             enabled={Boolean(interactive && pickMode && !measureMode)}
@@ -2034,34 +2311,57 @@ export function FlightPlanMap({
               {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
             />
           ) : null}
-          {isWac ? (
+          {isWac && useXyzWac ? (
+            <ChartXyzTileLayer
+              key="wac-xyz"
+              layerSet="wac"
+              attribution="WAC GeoAISWEB DECEA"
+              zIndex={1}
+              format={chartManifest?.layers?.wac?.format || "webp"}
+            />
+          ) : null}
+          {isWac && !useXyzWac ? (
             <HighDpiWmsTileLayer
               key="wac-coarse"
               layers={WAC_WMS_LAYERS}
               layerSet="wac"
               attribution="WAC GeoAISWEB DECEA"
               transparent={false}
-              tileSize={512}
+              tileSize={WMS_TILE_DEFAULTS.tileSize}
               zIndex={1}
-              pixelRatio={1}
-              maxNativeZoom={7}
-              keepBuffer={24}
+              pixelRatio={WMS_LAYER_LIMITS["wac-coarse"].pixelRatio}
+              maxNativeZoom={WMS_LAYER_LIMITS["wac-coarse"].maxNativeZoom}
+              minNativeZoom={WMS_LAYER_LIMITS["wac-coarse"].minNativeZoom}
+              keepBuffer={WMS_LAYER_LIMITS["wac-coarse"].keepBuffer}
+              className="flight-plan-chart-tile flight-plan-chart-tile--coarse"
             />
           ) : null}
-          {isWac ? (
+          {isWac && !useXyzWac ? (
             <HighDpiWmsTileLayer
               key="wac-sharp"
               layers={WAC_WMS_LAYERS}
               layerSet="wac"
               attribution="WAC GeoAISWEB DECEA"
               transparent
-              tileSize={512}
+              tileSize={WMS_TILE_DEFAULTS.tileSize}
               zIndex={2}
-              pixelRatio={1.25}
-              keepBuffer={18}
+              pixelRatio={WMS_LAYER_LIMITS.wac.pixelRatio}
+              maxNativeZoom={WMS_LAYER_LIMITS.wac.maxNativeZoom}
+              keepBuffer={WMS_LAYER_LIMITS.wac.keepBuffer}
+              className="flight-plan-chart-tile flight-plan-chart-tile--sharp"
             />
           ) : null}
-          {isWac && layersOn.rea === true ? (
+          {isWac && layersOn.rea === true && showChartOverlays && useXyzRea ? (
+            <ChartXyzTileLayer
+              key="rea-xyz"
+              layerSet="rea"
+              attribution="REA GeoAISWEB DECEA"
+              opacity={0.94}
+              zIndex={650}
+              format={chartManifest?.layers?.rea?.format || "webp"}
+            />
+          ) : null}
+          {isWac && layersOn.rea === true && showChartOverlays && !useXyzRea ? (
             <HighDpiWmsTileLayer
               key="rea-chart"
               layers={REA_CHART_WMS_LAYERS}
@@ -2069,13 +2369,24 @@ export function FlightPlanMap({
               attribution="REA GeoAISWEB DECEA"
               opacity={0.94}
               transparent
-              tileSize={512}
+              tileSize={WMS_TILE_DEFAULTS.tileSize}
               zIndex={650}
-              pixelRatio={1.5}
-              keepBuffer={16}
+              pixelRatio={WMS_LAYER_LIMITS.rea.pixelRatio}
+              maxNativeZoom={WMS_LAYER_LIMITS.rea.maxNativeZoom}
+              keepBuffer={WMS_LAYER_LIMITS.rea.keepBuffer}
             />
           ) : null}
-          {isWac && layersOn.reh === true ? (
+          {isWac && layersOn.reh === true && showChartOverlays && useXyzReh ? (
+            <ChartXyzTileLayer
+              key="reh-xyz"
+              layerSet="reh"
+              attribution="REH GeoAISWEB DECEA"
+              opacity={0.94}
+              zIndex={670}
+              format={chartManifest?.layers?.reh?.format || "webp"}
+            />
+          ) : null}
+          {isWac && layersOn.reh === true && showChartOverlays && !useXyzReh ? (
             <HighDpiWmsTileLayer
               key="reh-chart"
               layers={REH_CHART_WMS_LAYERS}
@@ -2083,13 +2394,14 @@ export function FlightPlanMap({
               attribution="REH GeoAISWEB DECEA"
               opacity={0.94}
               transparent
-              tileSize={512}
+              tileSize={WMS_TILE_DEFAULTS.tileSize}
               zIndex={670}
-              pixelRatio={1.5}
-              keepBuffer={16}
+              pixelRatio={WMS_LAYER_LIMITS.reh.pixelRatio}
+              maxNativeZoom={WMS_LAYER_LIMITS.reh.maxNativeZoom}
+              keepBuffer={WMS_LAYER_LIMITS.reh.keepBuffer}
             />
           ) : null}
-          {AIRSPACE_TOGGLES.some((l) => layersOn[l.id]) ? (
+          {AIRSPACE_WFS_LAYER_DEFS.some((l) => layersOn[l.id]) ? (
             <AirspaceLayersOverlay
               enabledTypes={layersOn}
               selectedKey={selectedAirspace?.key ?? null}
@@ -2099,6 +2411,15 @@ export function FlightPlanMap({
               }}
             />
           ) : null}
+          <FcaAdOverlay
+            enabled={layersOn.fca_ad === true}
+            aerodromes={aerodromes}
+            selectedKey={selectedAirspace?.key ?? null}
+            onSelect={(info, key) => {
+              if (!info || !key) setSelectedAirspace(null);
+              else setSelectedAirspace({ info, key });
+            }}
+          />
           <ReaRoutesOverlayBoundary>
             <ReaRoutesOverlay kind="rea" enabled={!isWac && layersOn.rea === true} showEndpointMarkers={false} />
             <ReaRoutesOverlay kind="reh" enabled={!isWac && layersOn.reh === true} showEndpointMarkers={false} />
@@ -2108,6 +2429,7 @@ export function FlightPlanMap({
             aerodromes={aerodromes}
             show={showAerodromes && aerodromes.length > 0}
             filter={aerodromeFilter}
+            hideIcaos={routeIcaos}
             onPick={handlePick}
             onOpenDetails={onAerodromeDetails}
             onSuppressMapPick={() => {
@@ -2196,18 +2518,6 @@ export function FlightPlanMap({
               </Marker>
             );
           })}
-
-          {positions.length === 1 ? (
-            <CircleMarker
-              center={positions[0]!}
-              radius={6}
-              pathOptions={{ color: "#fff", fillColor: "#34d399", fillOpacity: 1, weight: 2 }}
-            >
-              <Tooltip permanent direction="top" offset={[0, -8]}>
-                {waypoints[0]?.label || "Ponto"}
-              </Tooltip>
-            </CircleMarker>
-          ) : null}
         </MapContainer>
       </div>
 

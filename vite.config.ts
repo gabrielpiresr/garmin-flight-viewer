@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { geoaiswebWmsDevPlugin } from "./vite.geoaisweb-wms-plugin";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), geoaiswebWmsDevPlugin()],
   server: {
     proxy: {
       // GeoAISWEB WFS/WMS has no CORS — proxy for local flight-plan tools.

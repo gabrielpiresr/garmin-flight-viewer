@@ -374,6 +374,30 @@ function IconGear() {
   );
 }
 
+function IconPanelCollapse() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+function IconPanelExpand() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
 export function PlanejamentoTab() {
   const { showToast } = useToast();
   const { user } = useAuth();
@@ -407,6 +431,7 @@ export function PlanejamentoTab() {
   const [showFplExportModal, setShowFplExportModal] = useState(false);
   const [sendingFplEmail, setSendingFplEmail] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
+  const [planningPanelCollapsed, setPlanningPanelCollapsed] = useState(false);
   const [detailBundle, setDetailBundle] = useState<AiswebAirportBundle | null>(null);
   const [bulkAltitudeFt, setBulkAltitudeFt] = useState("");
   const [editingRouteName, setEditingRouteName] = useState(false);
@@ -1551,12 +1576,35 @@ export function PlanejamentoTab() {
         onMeasureModeChange={setMeasureMode}
         onWaypointRemove={(index) => removeWaypoint(index)}
         onAerodromeDetails={(bundle) => setDetailBundle(bundle)}
-        mapOverlayMaxWidthClass="w-[min(100%-1rem,24rem)]"
+        mapOverlayMaxWidthClass={
+          planningPanelCollapsed ? "w-auto" : "w-[min(100%-1rem,24rem)]"
+        }
         mapOverlay={
+          planningPanelCollapsed ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-600/80 bg-slate-950/85 px-2.5 py-2 text-xs font-semibold text-slate-200 shadow-2xl shadow-black/40 backdrop-blur-md transition hover:bg-slate-900 hover:text-white"
+              title="Expandir planejamento"
+              aria-label="Expandir coluna de planejamento"
+              onClick={() => setPlanningPanelCollapsed(false)}
+            >
+              <IconPanelExpand />
+              <span>Planejamento</span>
+            </button>
+          ) : (
           <aside className="flex max-h-[inherit] w-full flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/80 opacity-80 shadow-2xl shadow-black/40 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100">
           <div className="space-y-3 overflow-y-auto p-3">
-            <div>
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-100">Planejamento</h2>
+              <button
+                type="button"
+                className={btnIcon}
+                title="Ocultar coluna de planejamento"
+                aria-label="Ocultar coluna de planejamento"
+                onClick={() => setPlanningPanelCollapsed(true)}
+              >
+                <IconPanelCollapse />
+              </button>
             </div>
 
             <div className="flex flex-wrap gap-1.5">
@@ -1890,6 +1938,7 @@ export function PlanejamentoTab() {
             </div>
           </div>
         </aside>
+          )
         }
       />
 

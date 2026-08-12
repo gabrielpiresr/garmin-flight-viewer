@@ -1,4 +1,7 @@
+import { LAYER_EXTENTS } from "./layerExtents.js";
+
 const GEOAISWEB_WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
+const UPSTREAM_TIMEOUT_MS = 18_000;
 
 const WAC_WMS_LAYERS = [
   "ICA:WAC_2825_CABO_ORANGE",
@@ -93,7 +96,11 @@ const LAYERS_BY_SET = {
   reh: REH_CHART_WMS_LAYERS,
 };
 
-const CACHE_CONTROL = "public, max-age=86400, s-maxage=2592000, stale-while-revalidate=604800";
+const CACHE_CONTROL = "public, max-age=86400, s-maxage=2592000, stale-while-revalidate=604800, immutable";
+
+function loadLayerExtents() {
+  return LAYER_EXTENTS || {};
+}
 
 function readParam(query, name) {
   const direct = query[name];
@@ -120,11 +127,15 @@ function parsePositiveInt(value, label, max) {
   return n;
 }
 
-function parseBbox(value) {
+function parseBboxParts(value) {
   const parts = String(value || "").split(",").map((v) => parseNumber(v, "bbox"));
   if (parts.length !== 4) throw new Error("bbox invalido");
   const [minX, minY, maxX, maxY] = parts;
   if (minX === maxX || minY === maxY) throw new Error("bbox vazio");
+  return parts;
+}
+
+function formatBbox(parts) {
   return parts.map((n) => Number(n.toFixed(6))).join(",");
 }
 
@@ -140,6 +151,63 @@ function normalizeFormat(value) {
   return format;
 }
 
+/** Web Mercator meters → WGS84 degrees (approx for extent tests). */
+function mercatorToLonLat(x, y) {
+  const lon = (x / 20037508.342789244) * 180;
+  const latRad = Math.atan(Math.sinh(y / 20037508.342789244 * Math.PI));
+  const lat = (latRad * 180) / Math.PI;
+  return { lon, lat };
+}
+
+function bboxToLonLat(parts, srs) {
+  const [minX, minY, maxX, maxY] = parts;
+  if (srs === "EPSG:4326") {
+    // WMS 1.1.1 lon/lat order for EPSG:4326 in most GeoServer configs uses lon,lat in bbox
+    return { minLon: minX, minLat: minY, maxLon: maxX, maxLat: maxY };
+  }
+  const sw = mercatorToLonLat(minX, minY);
+  const ne = mercatorToLonLat(maxX, maxY);
+  return {
+    minLon: Math.min(sw.lon, ne.lon),
+    minLat: Math.min(sw.lat, ne.lat),
+    maxLon: Math.max(sw.lon, ne.lon),
+    maxLat: Math.max(sw.lat, ne.lat),
+  };
+}
+
+function intersects(a, b) {
+  return !(a.maxLon < b.minLon || a.minLon > b.maxLon || a.maxLat < b.minLat || a.minLat > b.maxLat);
+}
+
+/**
+ * Keep only sheets whose LatLon extent intersects the request bbox.
+ * Falls back to the full set if extents are missing.
+ */
+export function selectIntersectingLayers(layerSet, allLayers, bboxParts, srs) {
+  const extents = loadLayerExtents();
+  const request = bboxToLonLat(bboxParts, srs);
+  // Pad ~0.15° so edge tiles still pull neighboring sheets.
+  const pad = 0.15;
+  const padded = {
+    minLon: request.minLon - pad,
+    minLat: request.minLat - pad,
+    maxLon: request.maxLon + pad,
+    maxLat: request.maxLat + pad,
+  };
+  const selected = allLayers.filter((name) => {
+    const ext = extents[name];
+    if (!ext) return true;
+    return intersects(padded, ext);
+  });
+  if (selected.length === 0) {
+    // Empty ocean / gap — still ask one nearby sheet set fallback to avoid blank tile errors.
+    return allLayers.slice(0, Math.min(3, allLayers.length));
+  }
+  return selected;
+}
+
+export { bboxToLonLat, intersects, loadLayerExtents };
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -149,18 +217,21 @@ export default async function handler(req, res) {
 
   try {
     const layerSet = String(readParam(req.query, "layerSet") || "").toLowerCase();
-    const layers = LAYERS_BY_SET[layerSet];
-    if (!layers) {
+    const allLayers = LAYERS_BY_SET[layerSet];
+    if (!allLayers) {
       badRequest(res, "layerSet deve ser wac, rea ou reh");
       return;
     }
 
     const width = parsePositiveInt(readParam(req.query, "width"), "width", 2048);
     const height = parsePositiveInt(readParam(req.query, "height"), "height", 2048);
-    const bbox = parseBbox(readParam(req.query, "bbox"));
+    const bboxParts = parseBboxParts(readParam(req.query, "bbox"));
+    const bbox = formatBbox(bboxParts);
     const srs = normalizeCrs(readParam(req.query, "srs") || readParam(req.query, "crs"));
     const format = normalizeFormat(readParam(req.query, "format"));
     const transparent = String(readParam(req.query, "transparent") ?? "true").toLowerCase() !== "false";
+
+    const layers = selectIntersectingLayers(layerSet, allLayers, bboxParts, srs);
 
     const params = new URLSearchParams({
       service: "WMS",
@@ -176,20 +247,37 @@ export default async function handler(req, res) {
       srs,
     });
 
-    const response = await fetch(`${GEOAISWEB_WMS_BASE}?${params.toString()}`, {
-      headers: { "User-Agent": "garmin-flight-viewer/geoaisweb-cache" },
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(`${GEOAISWEB_WMS_BASE}?${params.toString()}`, {
+        headers: { "User-Agent": "garmin-flight-viewer/geoaisweb-cache" },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
     const body = Buffer.from(await response.arrayBuffer());
     res.status(response.status);
     res.setHeader("Content-Type", response.headers.get("content-type") || "image/png");
+    res.setHeader("X-GeoAISWEB-Proxy", layerSet);
+    res.setHeader("X-GeoAISWEB-Sheets", String(layers.length));
     if (response.ok) {
       res.setHeader("Cache-Control", CACHE_CONTROL);
-      res.setHeader("X-GeoAISWEB-Proxy", layerSet);
     } else {
-      res.setHeader("Cache-Control", "no-store");
+      // Do not poison long-lived caches with upstream failures.
+      res.setHeader("Cache-Control", "public, max-age=30");
     }
     res.send(body);
   } catch (err) {
+    if (err?.name === "AbortError") {
+      res.status(504);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ error: "GeoAISWEB timeout" });
+      return;
+    }
     badRequest(res, err instanceof Error ? err.message : "Parametro invalido");
   }
 }
