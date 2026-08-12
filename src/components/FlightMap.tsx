@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import type { FlightPoint, TrafficPatternAnalysis } from "../types/flight";
+import { ReaChartFallbackOverlay } from "./ReaChartFallbackOverlay";
 import { REA_LAYER_TOGGLES, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "./ReaRoutesOverlay";
 
 type AirspaceLayerId = (typeof REA_LAYER_TOGGLES)[number]["id"];
@@ -400,6 +401,8 @@ export const FlightMap = memo(
             updateWhenZooming
             opacity={1}
           />
+          <ReaChartFallbackOverlay kind="rea" enabled={layersOn.rea === true} />
+          <ReaChartFallbackOverlay kind="reh" enabled={layersOn.reh === true} />
           <ReaRoutesOverlayBoundary>
             <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} />
             <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} />

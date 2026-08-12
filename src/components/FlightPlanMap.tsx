@@ -159,6 +159,7 @@ import {
   type ChartTilesManifest,
 } from "../lib/chartTiles";
 import { AirspaceInfoPanel, AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
+import { ReaChartFallbackOverlay } from "./ReaChartFallbackOverlay";
 
 const AIRSPACE_TOGGLES = AIRSPACE_LAYER_DEFS.map((d) => ({
   id: d.id,
@@ -2239,7 +2240,7 @@ export function FlightPlanMap({
           closePopupOnClick
         >
           {!isWac ? <SoftScrollZoom /> : null}
-          {isWac ? <MapZoomValue onZoom={setMapZoom} /> : null}
+          <MapZoomValue onZoom={setMapZoom} />
           <FitRoute positions={positions} fitKey={fitKey} />
           <MapClickHandler
             enabled={Boolean(interactive && pickMode && !measureMode)}
@@ -2379,6 +2380,13 @@ export function FlightPlanMap({
               maxNativeZoom={WMS_LAYER_LIMITS.reh.maxNativeZoom}
               keepBuffer={WMS_LAYER_LIMITS.reh.keepBuffer}
             />
+          ) : null}
+          {/* Sheets without CV_* vectors (WH BH): show CCV chart even off WAC. */}
+          {!isWac ? (
+            <>
+              <ReaChartFallbackOverlay kind="rea" enabled={layersOn.rea === true} />
+              <ReaChartFallbackOverlay kind="reh" enabled={layersOn.reh === true} />
+            </>
           ) : null}
           {AIRSPACE_TOGGLES.some((l) => layersOn[l.id]) ? (
             <AirspaceLayersOverlay

@@ -90,10 +90,19 @@ const REH_CHART_WMS_LAYERS = [
   "ICA:CCV_REH_XP2_SAO_PAULO_2",
 ];
 
+/**
+ * Sheets with WMS chart but no CV_* vectors in GeoAISWEB (WH Belo Horizonte).
+ * Used as raster fallback on non-WAC basemaps.
+ */
+const REA_CHART_FALLBACK_WMS_LAYERS = ["ICA:CCV_REA_WH_BELO_HORIZONTE"];
+const REH_CHART_FALLBACK_WMS_LAYERS = ["ICA:CCV_REH_WH_BELO_HORIZONTE"];
+
 const LAYERS_BY_SET = {
   wac: WAC_WMS_LAYERS,
   rea: REA_CHART_WMS_LAYERS,
   reh: REH_CHART_WMS_LAYERS,
+  "rea-fallback": REA_CHART_FALLBACK_WMS_LAYERS,
+  "reh-fallback": REH_CHART_FALLBACK_WMS_LAYERS,
 };
 
 const CACHE_CONTROL = "public, max-age=86400, s-maxage=2592000, stale-while-revalidate=604800, immutable";
@@ -219,7 +228,7 @@ export default async function handler(req, res) {
     const layerSet = String(readParam(req.query, "layerSet") || "").toLowerCase();
     const allLayers = LAYERS_BY_SET[layerSet];
     if (!allLayers) {
-      badRequest(res, "layerSet deve ser wac, rea ou reh");
+      badRequest(res, "layerSet deve ser wac, rea, reh, rea-fallback ou reh-fallback");
       return;
     }
 
@@ -232,6 +241,38 @@ export default async function handler(req, res) {
     const transparent = String(readParam(req.query, "transparent") ?? "true").toLowerCase() !== "false";
 
     const layers = selectIntersectingLayers(layerSet, allLayers, bboxParts, srs);
+    const isFallbackSet = layerSet === "rea-fallback" || layerSet === "reh-fallback";
+    // Fallback sets are sparse (e.g. only WH BH). Do not force unrelated sheets
+    // when the viewport is outside every chart — return a transparent tile.
+    if (isFallbackSet) {
+      const extents = loadLayerExtents();
+      const request = bboxToLonLat(bboxParts, srs);
+      const pad = 0.15;
+      const padded = {
+        minLon: request.minLon - pad,
+        minLat: request.minLat - pad,
+        maxLon: request.maxLon + pad,
+        maxLat: request.maxLat + pad,
+      };
+      const anyHit = allLayers.some((name) => {
+        const ext = extents[name];
+        return !ext || intersects(padded, ext);
+      });
+      if (!anyHit) {
+        // 1x1 transparent PNG
+        const png = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "base64",
+        );
+        res.status(200);
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Cache-Control", CACHE_CONTROL);
+        res.setHeader("X-GeoAISWEB-Proxy", layerSet);
+        res.setHeader("X-GeoAISWEB-Sheets", "0");
+        res.send(png);
+        return;
+      }
+    }
 
     const params = new URLSearchParams({
       service: "WMS",

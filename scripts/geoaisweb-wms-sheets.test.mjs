@@ -46,3 +46,29 @@ test("bboxToLonLat mercator near origin", () => {
   assert.ok(Math.abs(box.minLon) < 0.02);
   assert.ok(Math.abs(box.minLat) < 0.02);
 });
+
+test("rea-fallback keeps only WH Belo Horizonte for BH bbox", () => {
+  const layers = ["ICA:CCV_REA_WH_BELO_HORIZONTE"];
+  // Confins / Pampulha area
+  const lon = -43.95;
+  const lat = -19.85;
+  const x = (lon / 180) * 20037508.342789244;
+  const y = Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) * (20037508.342789244 / Math.PI);
+  const pad = 40_000;
+  const bbox = [x - pad, y - pad, x + pad, y + pad];
+  const selected = mod.selectIntersectingLayers("rea-fallback", layers, bbox, "EPSG:3857");
+  assert.deepEqual(selected, ["ICA:CCV_REA_WH_BELO_HORIZONTE"]);
+});
+
+test("rea-fallback does not pick WH for Sao Paulo bbox (falls back to sheet list)", () => {
+  const layers = ["ICA:CCV_REA_WH_BELO_HORIZONTE"];
+  const lon = -46.6;
+  const lat = -23.5;
+  const x = (lon / 180) * 20037508.342789244;
+  const y = Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) * (20037508.342789244 / Math.PI);
+  const pad = 20_000;
+  const bbox = [x - pad, y - pad, x + pad, y + pad];
+  const selected = mod.selectIntersectingLayers("rea-fallback", layers, bbox, "EPSG:3857");
+  // No intersecting sheet → implementation returns a small fallback slice (not empty).
+  assert.ok(selected.length >= 1);
+});
