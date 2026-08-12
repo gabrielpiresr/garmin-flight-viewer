@@ -6,6 +6,7 @@ import {
   AIRSPACE_WFS_LAYER_DEFS,
   airspaceFeatureKey,
   airspaceFeatureToInfo,
+  airspaceMapLabel,
   airspaceTypeLabel,
   loadAirspaceFeaturesInBbox,
   smoothAirspaceGeometry,
@@ -15,6 +16,9 @@ import {
 
 const FILL_PANE_Z = "700";
 const SELECTED_PANE_Z = "710";
+const LABEL_PANE_Z = "715";
+/** Offset da legenda para o interior do polígono (px). */
+const LABEL_INSET_PX = 10;
 
 /** Fill só quando selecionado (mesma cor da borda); clique na borda. */
 export const AIRSPACE_STYLE = {
@@ -123,6 +127,109 @@ function expandBbox(b: Bbox, factor: number): Bbox {
   };
 }
 
+function ringCentroid(ring: L.LatLng[]): L.LatLng {
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  const n = Math.max(1, ring.length);
+  for (const p of ring) {
+    const lat = (p.lat * Math.PI) / 180;
+    const lng = (p.lng * Math.PI) / 180;
+    x += Math.cos(lat) * Math.cos(lng);
+    y += Math.cos(lat) * Math.sin(lng);
+    z += Math.sin(lat);
+  }
+  x /= n;
+  y /= n;
+  z /= n;
+  const lng = Math.atan2(y, x);
+  const hyp = Math.sqrt(x * x + y * y);
+  const lat = Math.atan2(z, hyp);
+  return L.latLng((lat * 180) / Math.PI, (lng * 180) / Math.PI);
+}
+
+function normalizeCssAngle(deg: number): number {
+  let a = ((deg + 180) % 360) - 180;
+  if (a <= -180) a += 360;
+  return a;
+}
+
+/**
+ * Posiciona a legenda no segmento mais longo do anel externo,
+ * paralela à linha e deslocada para o interior do polígono.
+ */
+function placeAirspaceEdgeLabel(
+  map: L.Map,
+  rings: L.LatLng[][],
+  text: string,
+  color: string,
+): L.Marker | null {
+  const outer = rings[0];
+  if (!outer || outer.length < 2) return null;
+
+  let bestLen = 0;
+  let bestA: L.LatLng | null = null;
+  let bestB: L.LatLng | null = null;
+  const count = outer.length;
+  const closed =
+    count > 2 &&
+    outer[0]!.lat === outer[count - 1]!.lat &&
+    outer[0]!.lng === outer[count - 1]!.lng;
+  const n = closed ? count - 1 : count;
+  for (let i = 0; i < n; i++) {
+    const a = outer[i]!;
+    const b = outer[(i + 1) % n]!;
+    const len = map.distance(a, b);
+    if (len > bestLen) {
+      bestLen = len;
+      bestA = a;
+      bestB = b;
+    }
+  }
+  if (!bestA || !bestB || bestLen < 80) return null;
+
+  const mid = L.latLng((bestA.lat + bestB.lat) / 2, (bestA.lng + bestB.lng) / 2);
+  const pa = map.latLngToLayerPoint(bestA);
+  const pb = map.latLngToLayerPoint(bestB);
+  const pm = map.latLngToLayerPoint(mid);
+  const dx = pb.x - pa.x;
+  const dy = pb.y - pa.y;
+  const lenPx = Math.sqrt(dx * dx + dy * dy) || 1;
+  // Normal perpendicular (direita do sentido A→B).
+  let nx = -dy / lenPx;
+  let ny = dx / lenPx;
+  const centroid = ringCentroid(outer);
+  const pc = map.latLngToLayerPoint(centroid);
+  const toCenterX = pc.x - pm.x;
+  const toCenterY = pc.y - pm.y;
+  // Garante que o offset aponta para dentro.
+  if (nx * toCenterX + ny * toCenterY < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const inset = map.layerPointToLatLng(L.point(pm.x + nx * LABEL_INSET_PX, pm.y + ny * LABEL_INSET_PX));
+
+  let bearing = (Math.atan2(dy, dx) * 180) / Math.PI;
+  let css = normalizeCssAngle(bearing);
+  if (css > 90 || css < -90) {
+    css = normalizeCssAngle(css + 180);
+  }
+
+  const safe = text.replace(/[<>&"]/g, "");
+  const icon = L.divIcon({
+    className: "",
+    html: `<div style="transform:translate(-50%,-50%) rotate(${css.toFixed(1)}deg);transform-origin:center center;pointer-events:none;white-space:nowrap;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.04em;color:${color};text-shadow:0 0 3px rgba(15,23,42,.95),0 1px 2px rgba(0,0,0,.85);opacity:0.95">${safe}</div>`,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+  return L.marker(inset, {
+    icon,
+    interactive: false,
+    keyboard: false,
+    pane: "airspace-label",
+  });
+}
+
 /**
  * Overlay vetorial CTA/TMA/CTR/ATZ/EAC (WFS) — cantos suavizados, fill leve,
  * borda na cor do preenchimento, clique seleciona e destaca.
@@ -152,6 +259,7 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
       if (interactingRef.current) return;
       ensurePane(map, "airspace-fill", FILL_PANE_Z);
       ensurePane(map, "airspace-selected", SELECTED_PANE_Z);
+      ensurePane(map, "airspace-label", LABEL_PANE_Z);
       if (!canvasRendererRef.current) {
         canvasRendererRef.current = L.canvas({ padding: 0.5 });
       }
@@ -165,6 +273,8 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
       if (!visible.length) return;
 
       const renderer = canvasRendererRef.current;
+      const zoom = map.getZoom();
+      const showLabels = zoom >= 6;
 
       for (const feature of visible) {
         if (!feature.geometry) continue;
@@ -201,6 +311,13 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
                   onSelectRef.current(info, key);
                 }
               });
+            }
+            if (showLabels && lyr instanceof L.Polygon) {
+              const rings = flattenLatLngs(
+                lyr.getLatLngs() as L.LatLng[] | L.LatLng[][] | L.LatLng[][][],
+              );
+              const label = placeAirspaceEdgeLabel(map, rings, airspaceMapLabel(feature), color);
+              if (label) label.addTo(group);
             }
           },
         });
