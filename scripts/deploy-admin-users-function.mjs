@@ -272,6 +272,15 @@ async function main() {
   const studentCrmStatusesCollectionId = process.env.APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CRM_STATUSES_COL_ID || "student_crm_statuses";
   const studentCrmProfilesCollectionId = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_CRM_PROFILES_COL_ID || "student_crm_profiles";
   const instructorStudentsCollectionId = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || env.VITE_APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
+  const flightPlanningAiBriefingsCollectionId =
+    process.env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID ||
+    process.env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COL_ID ||
+    env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID ||
+    env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COL_ID ||
+    "flight_planning_ai_briefings";
+  const openAiApiKey = process.env.OPENAI_API_KEY || env.OPENAI_API_KEY || "";
+  const openAiBriefingModel = process.env.OPENAI_BRIEFING_MODEL || env.OPENAI_BRIEFING_MODEL || "gpt-5.6-terra";
+  const openAiBriefingReasoning = process.env.OPENAI_BRIEFING_REASONING || env.OPENAI_BRIEFING_REASONING || "low";
   const webPushPublicKey = process.env.WEB_PUSH_PUBLIC_KEY || env.VITE_WEB_PUSH_PUBLIC_KEY;
   const webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || env.WEB_PUSH_PRIVATE_KEY;
   const webPushContact = process.env.WEB_PUSH_CONTACT || "mailto:admin@example.com";
@@ -401,7 +410,11 @@ async function main() {
   await upsertVariable(functions, "APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID", studentCrmStatusesCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID", studentCrmProfilesCollectionId);
   await upsertVariable(functions, "APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID", instructorStudentsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID", flightPlanningAiBriefingsCollectionId);
   await upsertVariable(functions, "APPWRITE_ADMIN_USERS_FUNCTION_ID", functionId);
+  if (openAiApiKey) await upsertVariable(functions, "OPENAI_API_KEY", openAiApiKey, true);
+  await upsertVariable(functions, "OPENAI_BRIEFING_MODEL", openAiBriefingModel);
+  await upsertVariable(functions, "OPENAI_BRIEFING_REASONING", openAiBriefingReasoning);
   if (webPushPublicKey) await upsertVariable(functions, "WEB_PUSH_PUBLIC_KEY", webPushPublicKey);
   if (webPushPrivateKey) await upsertVariable(functions, "WEB_PUSH_PRIVATE_KEY", webPushPrivateKey, true);
   await upsertVariable(functions, "WEB_PUSH_CONTACT", webPushContact);

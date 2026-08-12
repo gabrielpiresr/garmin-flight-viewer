@@ -162,6 +162,10 @@ const AUTOMATION_EMAIL_TEMPLATES_COLLECTION_ID = process.env.APPWRITE_AUTOMATION
 const STUDENT_CRM_STATUSES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_STATUSES_COLLECTION_ID || "student_crm_statuses";
 const STUDENT_CRM_PROFILES_COLLECTION_ID = process.env.APPWRITE_STUDENT_CRM_PROFILES_COLLECTION_ID || "student_crm_profiles";
 const INSTRUCTOR_STUDENTS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_STUDENTS_COLLECTION_ID || "instructor_students";
+const FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_PLANNING_AI_BRIEFINGS_COL_ID ||
+  "flight_planning_ai_briefings";
 const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users";
 const SCHEDULE_BOOKING_FUNCTION_ID =
   process.env.APPWRITE_SCHEDULE_BOOKING_FUNCTION_ID || "schedule-booking";
@@ -23522,6 +23526,864 @@ async function sendFlightCreditPaymentLinkEmail(actorUserId, input = {}) {
   return { ok: true, email, delivery: result };
 }
 
+function normalizeBriefingIcao(value) {
+  return cleanString(value).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+}
+
+function briefingNowIso() {
+  return new Date().toISOString();
+}
+
+function stableBriefingTaskId(seed) {
+  return `task_${crypto.createHash("sha1").update(cleanString(seed)).digest("hex").slice(0, 12)}`;
+}
+
+function stableBriefingSourceId(seed) {
+  return `src_${crypto.createHash("sha1").update(cleanString(seed)).digest("hex").slice(0, 10)}`;
+}
+
+function flightBriefingRouteHash(input = {}) {
+  const basis = JSON.stringify({
+    origin: normalizeBriefingIcao(input.origin),
+    destination: normalizeBriefingIcao(input.destination),
+    alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean).sort() : [],
+    routeText: cleanString(input.routeText).slice(0, 2000),
+    distanceNm: Math.round(Number(input.routeSummary?.distanceNm || 0) * 10) / 10,
+  });
+  return crypto.createHash("sha256").update(basis).digest("hex");
+}
+
+function compactBriefingText(value, max = 900) {
+  return cleanString(value).replace(/\s+/g, " ").slice(0, max);
+}
+
+function extractFirstBriefingUrl(...values) {
+  const text = values.map((value) => cleanString(value)).join(" ");
+  const match = text.match(/https?:\/\/[^\s"')\]]+/i);
+  return match ? match[0].replace(/[.,;:]+$/g, "") : "";
+}
+
+function objectiveBriefingTaskTitle(task = {}) {
+  const icao = normalizeBriefingIcao(task.airportIcao) || "rota";
+  const title = cleanString(task.title);
+  const text = `${title} ${cleanString(task.description)}`.toLowerCase();
+  if (task.action === "url") {
+    if (/slot|ppr|autoriza|formul|rede\s*voa/.test(text)) return `Acessar formulário/autorização em ${icao}`;
+    if (/hangar|pernoite|estadia/.test(text)) return `Abrir contato de hangaragem em ${icao}`;
+    if (/combust|abastec/.test(text)) return `Abrir contato de combustível em ${icao}`;
+    return `Abrir link operacional de ${icao}`;
+  }
+  if (task.action === "phone") {
+    if (/combust|abastec/.test(text)) return `Ligar para fornecedor de combustível em ${icao}`;
+    if (/hangar|pernoite|estadia/.test(text)) return `Ligar para hangaragem em ${icao}`;
+    if (/slot|ppr|autoriza/.test(text)) return `Ligar para administração de ${icao}`;
+    return `Ligar para contato de ${icao}`;
+  }
+  if (task.action === "email") {
+    if (/combust|abastec/.test(text)) return `Enviar email sobre combustível em ${icao}`;
+    if (/hangar|pernoite|estadia/.test(text)) return `Enviar email sobre hangaragem em ${icao}`;
+    if (/slot|ppr|autoriza/.test(text)) return `Enviar email sobre autorização em ${icao}`;
+    return `Enviar email para ${icao}`;
+  }
+  if (/combust|abastec/.test(text)) return `Confirmar combustível em ${icao}`;
+  if (/hangar|pernoite|estadia/.test(text)) return `Confirmar hangaragem em ${icao}`;
+  if (/slot|ppr|autoriza|formul/.test(text)) return `Resolver autorização em ${icao}`;
+  return title || `Verificar pendência em ${icao}`;
+}
+
+function extractRotaerContactItems(rotaer) {
+  const text = [
+    rotaer?.fuel?.text,
+    rotaer?.fuel?.hours,
+    rotaer?.workingHours?.text,
+    ...(rotaer?.remarks || []).map((item) => item?.text),
+    ...(rotaer?.complements || []).map((item) => item?.text),
+  ].filter(Boolean).join(" ");
+  const emails = [...new Set((text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).map((v) => v.toLowerCase()))];
+  const phones = [...new Set((text.match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/g) || []).map((v) => cleanString(v)))];
+  return {
+    emails,
+    phones: phones.filter((phone) => phone.replace(/\D/g, "").length >= 10).slice(0, 4),
+  };
+}
+
+function sourceFromAisweb(icao, kind, fetchedAt) {
+  return {
+    id: stableBriefingSourceId(`aisweb:${icao}:${kind}`),
+    title: `AISWEB / ROTAER ${icao}`,
+    url: "https://aisweb.decea.mil.br/",
+    sourceType: "aisweb",
+    fetchedAt,
+    snippet: kind,
+  };
+}
+
+function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
+  const generatedAt = briefingNowIso();
+  const origin = normalizeBriefingIcao(input.origin);
+  const destination = normalizeBriefingIcao(input.destination);
+  const alternates = Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : [];
+  const airports = Array.isArray(input.airports) ? input.airports : [];
+  const sources = [];
+  const tasks = [];
+  const enrichments = airports.map((airport) => {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    const role = airport?.role === "destino" || airport?.role === "alternativo" ? airport.role : "origem";
+    const bundle = airport?.bundle || {};
+    const rotaer = bundle.rotaer || null;
+    const fuelText = compactBriefingText([rotaer?.fuel?.text, rotaer?.fuel?.hours, (rotaer?.fuel?.types || []).join(", ")].filter(Boolean).join(" - "), 320);
+    const contactsRaw = extractRotaerContactItems(rotaer);
+    const source = sourceFromAisweb(icao, "Dados oficiais usados como fallback sem pesquisa IA.", generatedAt);
+    sources.push(source);
+    const contacts = [
+      ...contactsRaw.emails.slice(0, 3).map((email) => ({ type: "email", label: "E-mail ROTAER", value: email, sourceIds: [source.id] })),
+      ...contactsRaw.phones.slice(0, 3).map((phone) => ({ type: "phone", label: "Telefone ROTAER", value: phone, sourceIds: [source.id] })),
+    ];
+    const fuelAvailable = Boolean(fuelText && !/sem\s+combust|n[aã]o\s+dispon/i.test(fuelText));
+    if (fuelAvailable || role !== "origem") {
+      const firstEmail = contacts.find((c) => c.type === "email");
+      const firstPhone = contacts.find((c) => c.type === "phone");
+      tasks.push({
+        id: stableBriefingTaskId(`${icao}:fuel:${firstEmail?.value || firstPhone?.value || "manual"}`),
+        airportIcao: icao,
+        title: `Verificar detalhes de combustível em ${icao}`,
+        description: fuelText || "Confirmar disponibilidade, tipo, horário e forma de pagamento do combustível antes do voo.",
+        action: firstEmail ? "email" : firstPhone ? "phone" : "manual",
+        status: "open",
+        priority: role === "destino" ? "high" : "medium",
+        dueHint: "Antes da decolagem",
+        contact: firstEmail || firstPhone || undefined,
+        providers: [firstEmail, firstPhone].filter(Boolean),
+        suggestedText: firstEmail
+          ? `Olá, bom dia. Estamos planejando um voo para ${icao} e gostaríamos de confirmar disponibilidade de combustível, horário de atendimento, forma de pagamento e necessidade de aviso prévio. Obrigado.`
+          : undefined,
+        sourceIds: [source.id],
+        pilotNote: "",
+        updatedAt: generatedAt,
+      });
+    }
+    tasks.push({
+      id: stableBriefingTaskId(`${icao}:hangarage`),
+      airportIcao: icao,
+      title: `Confirmar hangaragem/pernoite em ${icao}`,
+      description: "Verificar se há hangaragem, pernoite no pátio, taxas e contato do operador local.",
+      action: contacts[0]?.type === "phone" ? "phone" : contacts[0]?.type === "email" ? "email" : "manual",
+      status: "open",
+      priority: role === "destino" ? "medium" : "low",
+      dueHint: "Se houver pernoite ou permanência prolongada",
+      contact: contacts[0],
+      providers: contacts,
+      suggestedText: contacts[0]?.type === "email"
+        ? `Olá, bom dia. Estamos planejando operação em ${icao} e gostaríamos de verificar disponibilidade de hangaragem/pernoite, valores, horários e necessidade de reserva. Obrigado.`
+        : undefined,
+      sourceIds: [source.id],
+      pilotNote: "",
+      updatedAt: generatedAt,
+    });
+    return {
+      icao,
+      role,
+      summary: rotaer?.name ? `${icao} - ${rotaer.name}. Enriquecimento público não executado; use as tasks para confirmação operacional.` : `${icao}: dados AISWEB carregados.`,
+      fuel: {
+        status: fuelAvailable ? "needs_confirmation" : "unknown",
+        detail: fuelText || "Não foi possível confirmar combustível sem pesquisa externa.",
+        confidence: "official",
+        sourceIds: [source.id],
+      },
+      hangarage: {
+        status: "needs_confirmation",
+        detail: "Confirmar diretamente com operador/local antes do voo.",
+        confidence: "needs_confirmation",
+        sourceIds: [source.id],
+      },
+      slotPpr: {
+        required: null,
+        detail: "Verificar necessidade de slot/PPR quando aplicável.",
+        confidence: "needs_confirmation",
+        sourceIds: [source.id],
+      },
+      contacts,
+      notes: reason ? [reason] : [],
+    };
+  });
+  return {
+    status: "fallback",
+    model: cleanString(process.env.OPENAI_BRIEFING_MODEL) || "fallback",
+    generatedAt,
+    route: { origin, destination, alternates },
+    summary: "Checklist operacional gerado em modo fallback com base nos dados AISWEB/ROTAER. Informações de combustível e hangaragem devem ser confirmadas pelo piloto.",
+    warnings: reason
+      ? [{ id: "fallback_reason", severity: "medium", title: "IA/pesquisa externa indisponível", detail: reason, sourceIds: [] }]
+      : [],
+    airports: enrichments,
+    tasks,
+    sources,
+    usage: {},
+  };
+}
+
+function extractOpenAiResponseText(response) {
+  if (typeof response?.output_text === "string" && response.output_text.trim()) return response.output_text;
+  const chunks = [];
+  for (const item of response?.output || []) {
+    for (const content of item?.content || []) {
+      if (typeof content?.text === "string") chunks.push(content.text);
+      if (typeof content?.value === "string") chunks.push(content.value);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
+  const fallback = fallbackFlightBriefingAiReport("", input, fallbackReason);
+  const obj = raw && typeof raw === "object" ? raw : {};
+  const generatedAt = cleanString(obj.generatedAt) || briefingNowIso();
+  const sourceById = new Set();
+  const sources = Array.isArray(obj.sources)
+    ? obj.sources.slice(0, 24).map((source, index) => {
+        const url = cleanString(source?.url).slice(0, 900);
+        const id = cleanString(source?.id) || stableBriefingSourceId(`${url}:${source?.title || index}`);
+        sourceById.add(id);
+        return {
+          id,
+          title: cleanString(source?.title).slice(0, 180) || `Fonte ${index + 1}`,
+          url,
+          sourceType: ["official", "airport_operator", "service_provider", "public_web", "aisweb", "pilot_note"].includes(source?.sourceType)
+            ? source.sourceType
+            : "public_web",
+          fetchedAt: cleanString(source?.fetchedAt) || generatedAt,
+          snippet: cleanString(source?.snippet).slice(0, 360) || undefined,
+        };
+      }).filter((source) => source.url || source.sourceType === "aisweb")
+    : fallback.sources;
+  for (const source of sources) {
+    if (source?.id) sourceById.add(source.id);
+  }
+
+  const safeSourceIds = (value) => Array.isArray(value) ? value.map(cleanString).filter((id) => sourceById.has(id)).slice(0, 8) : [];
+  const safeConfidence = (value) => ["official", "public_source", "inference", "needs_confirmation"].includes(value) ? value : "needs_confirmation";
+  const safeAction = (value) => ["email", "phone", "url", "manual"].includes(value) ? value : "manual";
+  const safePriority = (value) => ["high", "medium", "low"].includes(value) ? value : "medium";
+  const safeStatus = (value) => ["open", "done", "inactive"].includes(value) ? value : "open";
+  const safeContact = (contact) => {
+    if (!contact || typeof contact !== "object") return undefined;
+    const type = ["email", "phone", "website"].includes(contact.type) ? contact.type : null;
+    const value = cleanString(contact.value).slice(0, 260);
+    if (!type || !value) return undefined;
+    return {
+      type,
+      label: cleanString(contact.label).slice(0, 80) || (type === "email" ? "E-mail" : type === "phone" ? "Telefone" : "Site"),
+      value,
+      sourceIds: safeSourceIds(contact.sourceIds),
+    };
+  };
+
+  const airports = Array.isArray(obj.airports)
+    ? obj.airports.slice(0, 8).map((airport, index) => {
+        const fallbackAirport = fallback.airports[index] || fallback.airports[0] || {};
+        const sourceIds = safeSourceIds(airport?.sourceIds);
+        const icao = normalizeBriefingIcao(airport?.icao) || fallbackAirport.icao || "";
+        const role = airport?.role === "destino" || airport?.role === "alternativo" ? airport.role : fallbackAirport.role || "origem";
+        const section = (value, fb) => ({
+          status: ["available", "not_found", "unknown", "needs_confirmation"].includes(value?.status) ? value.status : fb?.status || "unknown",
+          detail: compactBriefingText(value?.detail || fb?.detail || "Verificar.", 220),
+          confidence: safeConfidence(value?.confidence || fb?.confidence),
+          sourceIds: safeSourceIds(value?.sourceIds).length ? safeSourceIds(value?.sourceIds) : sourceIds,
+        });
+        return {
+          icao,
+          role,
+          summary: compactBriefingText(airport?.summary || fallbackAirport.summary || `${icao}: verificar detalhes operacionais.`, 220),
+          fuel: section(airport?.fuel, fallbackAirport.fuel),
+          hangarage: section(airport?.hangarage, fallbackAirport.hangarage),
+          slotPpr: {
+            required: typeof airport?.slotPpr?.required === "boolean" ? airport.slotPpr.required : null,
+            detail: compactBriefingText(airport?.slotPpr?.detail || fallbackAirport.slotPpr?.detail || "Verificar slot/PPR se aplicável.", 220),
+            confidence: safeConfidence(airport?.slotPpr?.confidence || fallbackAirport.slotPpr?.confidence),
+            sourceIds: safeSourceIds(airport?.slotPpr?.sourceIds).length ? safeSourceIds(airport?.slotPpr?.sourceIds) : sourceIds,
+          },
+          contacts: Array.isArray(airport?.contacts) ? airport.contacts.map(safeContact).filter(Boolean).slice(0, 8) : fallbackAirport.contacts || [],
+          notes: Array.isArray(airport?.notes) ? airport.notes.map((note) => compactBriefingText(note, 160)).filter(Boolean).slice(0, 4) : [],
+        };
+      })
+    : fallback.airports;
+
+  const tasks = Array.isArray(obj.tasks)
+    ? obj.tasks.slice(0, 24).map((task, index) => ({
+        id: cleanString(task?.id) || stableBriefingTaskId(`${task?.airportIcao || "route"}:${task?.title || index}`),
+        airportIcao: normalizeBriefingIcao(task?.airportIcao) || undefined,
+        title: compactBriefingText(task?.title || `Tarefa ${index + 1}`, 140),
+        description: compactBriefingText(task?.description || "Verificar pendência operacional.", 420),
+        action: safeAction(task?.action),
+        status: safeStatus(task?.status),
+        priority: safePriority(task?.priority),
+        dueHint: compactBriefingText(task?.dueHint, 120) || undefined,
+        contact: safeContact(task?.contact),
+        providers: Array.isArray(task?.providers) ? task.providers.map(safeContact).filter(Boolean).slice(0, 8) : [],
+        url: cleanString(task?.url).slice(0, 900) || undefined,
+        suggestedText: cleanString(task?.suggestedText).slice(0, 1600) || undefined,
+        sourceIds: safeSourceIds(task?.sourceIds),
+        pilotNote: cleanString(task?.pilotNote).slice(0, 1000),
+        updatedAt: cleanString(task?.updatedAt) || generatedAt,
+      })).filter((task) => task.title)
+    : fallback.tasks;
+  const normalizedTasks = tasks.map((task) => {
+    const detectedUrl = extractFirstBriefingUrl(task.url, task.description, task.suggestedText, task.title);
+    const action = detectedUrl ? "url" : task.action;
+    const next = {
+      ...task,
+      action,
+      contact: action === "url" ? undefined : task.contact,
+      url: detectedUrl || task.url,
+      description: compactBriefingText(task.description, 260),
+      suggestedText: cleanString(task.suggestedText).slice(0, 900) || undefined,
+      pilotNote: input.preservePilotNotes ? cleanString(task.pilotNote).slice(0, 1000) : "",
+    };
+    return {
+      ...next,
+      title: compactBriefingText(objectiveBriefingTaskTitle(next), 120),
+    };
+  });
+  const existingNotamIcaos = new Set(
+    normalizedTasks
+      .filter((task) => /notam/i.test(`${task.title} ${task.description}`))
+      .map((task) => normalizeBriefingIcao(task.airportIcao)),
+  );
+  for (const airport of airports) {
+    const icao = normalizeBriefingIcao(airport.icao);
+    if (!icao || existingNotamIcaos.has(icao)) continue;
+    normalizedTasks.push({
+      id: stableBriefingTaskId(`${icao}:notam`),
+      airportIcao: icao,
+      title: `Verificar NOTAM em ${icao}`,
+      description: "Abrir os NOTAMs do aeródromo no briefing AISWEB e confirmar validade antes do voo.",
+      action: "manual",
+      status: "open",
+      priority: "high",
+      dueHint: "Antes do voo",
+      providers: [],
+      sourceIds: Array.isArray(airport.fuel?.sourceIds) ? airport.fuel.sourceIds : [],
+      pilotNote: "",
+      updatedAt: generatedAt,
+    });
+  }
+  const providerKey = (contact) => `${cleanString(contact?.type)}:${cleanString(contact?.value).toLowerCase()}`;
+  const taskCategory = (task) => {
+    const text = `${task.title} ${task.description}`.toLowerCase();
+    if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
+    if (/hangar|pernoite|estadia|p[aá]tio|estacionamento/.test(text)) return "hangarage";
+    return "";
+  };
+  const airportContactsByIcao = new Map(airports.map((airport) => [normalizeBriefingIcao(airport.icao), airport.contacts || []]));
+  const mergedTasks = [];
+  const groupedTaskByKey = new Map();
+  for (const task of normalizedTasks) {
+    const category = taskCategory(task);
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    const groupKey = category && icao ? `${icao}:${category}` : "";
+    const baseProviders = [
+      ...(Array.isArray(task.providers) ? task.providers : []),
+      task.contact,
+      ...(category ? airportContactsByIcao.get(icao) || [] : []),
+    ].filter(Boolean);
+    const providers = [];
+    const seenProviders = new Set();
+    for (const provider of baseProviders) {
+      const key = providerKey(provider);
+      if (!key || seenProviders.has(key)) continue;
+      seenProviders.add(key);
+      providers.push(provider);
+    }
+    const taskWithProviders = {
+      ...task,
+      providers,
+      contact: task.contact || providers[0],
+    };
+    if (!groupKey) {
+      mergedTasks.push(taskWithProviders);
+      continue;
+    }
+    const existing = groupedTaskByKey.get(groupKey);
+    if (!existing) {
+      groupedTaskByKey.set(groupKey, taskWithProviders);
+      mergedTasks.push(taskWithProviders);
+      continue;
+    }
+    const existingProviderKeys = new Set(existing.providers.map(providerKey));
+    for (const provider of providers) {
+      const key = providerKey(provider);
+      if (key && !existingProviderKeys.has(key)) {
+        existingProviderKeys.add(key);
+        existing.providers.push(provider);
+      }
+    }
+    existing.description = compactBriefingText([existing.description, task.description].filter(Boolean).join(" "), 420);
+    existing.sourceIds = Array.from(new Set([...(existing.sourceIds || []), ...(task.sourceIds || [])])).slice(0, 8);
+    existing.priority = existing.priority === "high" || task.priority !== "high" ? existing.priority : "high";
+  }
+
+  return {
+    status: obj.status === "ready" || obj.status === "fallback" || obj.status === "failed" ? obj.status : "ready",
+    model: cleanString(obj.model) || cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra",
+    generatedAt,
+    route: {
+      origin: normalizeBriefingIcao(input.origin),
+      destination: normalizeBriefingIcao(input.destination),
+      alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : [],
+    },
+    summary: compactBriefingText(obj.summary || fallback.summary, 420),
+    warnings: Array.isArray(obj.warnings)
+      ? obj.warnings.slice(0, 12).map((warning, index) => ({
+          id: cleanString(warning?.id) || `warning_${index + 1}`,
+          severity: ["high", "medium", "low"].includes(warning?.severity) ? warning.severity : "medium",
+          title: compactBriefingText(warning?.title || "Atenção", 140),
+          detail: compactBriefingText(warning?.detail || "", 260),
+          sourceIds: safeSourceIds(warning?.sourceIds),
+        })).filter((warning) => warning.detail || warning.title)
+      : fallback.warnings,
+    airports,
+    tasks: mergedTasks,
+    sources,
+  };
+}
+
+function compactAiReportForStorage(report) {
+  let next = report;
+  let json = JSON.stringify(next);
+  if (json.length <= 49000) return next;
+  next = {
+    ...report,
+    sources: (report.sources || []).slice(0, 10).map((source) => ({ ...source, snippet: compactBriefingText(source.snippet, 160) })),
+    airports: (report.airports || []).map((airport) => ({ ...airport, notes: (airport.notes || []).slice(0, 3) })),
+    tasks: (report.tasks || []).slice(0, 18).map((task) => ({ ...task, suggestedText: cleanString(task.suggestedText).slice(0, 800) || undefined })),
+  };
+  json = JSON.stringify(next);
+  if (json.length <= 49000) return next;
+  return {
+    ...next,
+    sources: [],
+    warnings: (next.warnings || []).slice(0, 6),
+  };
+}
+
+async function callOpenAiBriefingReport(input = {}) {
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) throw new Error("OPENAI_API_KEY nao configurada.");
+  const model = cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
+  const reasoningEffort = cleanString(process.env.OPENAI_BRIEFING_REASONING) || "low";
+  const airportBrief = (Array.isArray(input.airports) ? input.airports : []).map((airport) => {
+    const rotaer = airport?.bundle?.rotaer || {};
+    return {
+      role: airport.role,
+      icao: airport.icao,
+      name: rotaer.name || null,
+      city: rotaer.city || null,
+      uf: rotaer.uf || null,
+      fuel: rotaer.fuel || null,
+      workingHours: rotaer.workingHours || null,
+      remarks: (rotaer.remarks || []).slice(0, 12),
+      complements: (rotaer.complements || []).slice(0, 12),
+      notams: (airport?.bundle?.notams || []).slice(0, 8).map((n) => ({
+        number: n.number,
+        validFrom: n.validFrom,
+        validTo: n.validTo,
+        text: compactBriefingText(n.text, 420),
+      })),
+      supplements: (airport?.bundle?.supplements || []).slice(0, 5).map((s) => ({
+        number: s.number,
+        title: s.title,
+        text: compactBriefingText(s.text, 320),
+      })),
+    };
+  });
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      status: { type: "string", enum: ["ready", "fallback", "failed"] },
+      model: { type: "string" },
+      generatedAt: { type: "string" },
+      summary: { type: "string" },
+      warnings: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: { type: "string" },
+            severity: { type: "string", enum: ["high", "medium", "low"] },
+            title: { type: "string" },
+            detail: { type: "string" },
+            sourceIds: { type: "array", items: { type: "string" } },
+          },
+          required: ["id", "severity", "title", "detail", "sourceIds"],
+        },
+      },
+      airports: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            icao: { type: "string" },
+            role: { type: "string", enum: ["origem", "destino", "alternativo"] },
+            summary: { type: "string" },
+            fuel: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                status: { type: "string", enum: ["available", "not_found", "unknown", "needs_confirmation"] },
+                detail: { type: "string" },
+                confidence: { type: "string", enum: ["official", "public_source", "inference", "needs_confirmation"] },
+                sourceIds: { type: "array", items: { type: "string" } },
+              },
+              required: ["status", "detail", "confidence", "sourceIds"],
+            },
+            hangarage: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                status: { type: "string", enum: ["available", "not_found", "unknown", "needs_confirmation"] },
+                detail: { type: "string" },
+                confidence: { type: "string", enum: ["official", "public_source", "inference", "needs_confirmation"] },
+                sourceIds: { type: "array", items: { type: "string" } },
+              },
+              required: ["status", "detail", "confidence", "sourceIds"],
+            },
+            slotPpr: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                required: { type: ["boolean", "null"] },
+                detail: { type: "string" },
+                confidence: { type: "string", enum: ["official", "public_source", "inference", "needs_confirmation"] },
+                sourceIds: { type: "array", items: { type: "string" } },
+              },
+              required: ["required", "detail", "confidence", "sourceIds"],
+            },
+            contacts: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  type: { type: "string", enum: ["email", "phone", "website"] },
+                  label: { type: "string" },
+                  value: { type: "string" },
+                  sourceIds: { type: "array", items: { type: "string" } },
+                },
+                required: ["type", "label", "value", "sourceIds"],
+              },
+            },
+            notes: { type: "array", items: { type: "string" } },
+          },
+          required: ["icao", "role", "summary", "fuel", "hangarage", "slotPpr", "contacts", "notes"],
+        },
+      },
+      tasks: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: { type: "string" },
+            airportIcao: { type: "string" },
+            title: { type: "string" },
+            description: { type: "string" },
+            action: { type: "string", enum: ["email", "phone", "url", "manual"] },
+            status: { type: "string", enum: ["open", "done", "inactive"] },
+            priority: { type: "string", enum: ["high", "medium", "low"] },
+            dueHint: { type: "string" },
+            contact: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                type: { type: "string", enum: ["email", "phone", "website"] },
+                label: { type: "string" },
+                value: { type: "string" },
+                sourceIds: { type: "array", items: { type: "string" } },
+              },
+              required: ["type", "label", "value", "sourceIds"],
+            },
+            providers: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  type: { type: "string", enum: ["email", "phone", "website"] },
+                  label: { type: "string" },
+                  value: { type: "string" },
+                  sourceIds: { type: "array", items: { type: "string" } },
+                },
+                required: ["type", "label", "value", "sourceIds"],
+              },
+            },
+            url: { type: "string" },
+            suggestedText: { type: "string" },
+            sourceIds: { type: "array", items: { type: "string" } },
+            pilotNote: { type: "string" },
+            updatedAt: { type: "string" },
+          },
+          required: ["id", "airportIcao", "title", "description", "action", "status", "priority", "dueHint", "contact", "providers", "url", "suggestedText", "sourceIds", "pilotNote", "updatedAt"],
+        },
+      },
+      sources: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            url: { type: "string" },
+            sourceType: { type: "string", enum: ["official", "airport_operator", "service_provider", "public_web", "aisweb", "pilot_note"] },
+            fetchedAt: { type: "string" },
+            snippet: { type: "string" },
+          },
+          required: ["id", "title", "url", "sourceType", "fetchedAt", "snippet"],
+        },
+      },
+    },
+    required: ["status", "model", "generatedAt", "summary", "warnings", "airports", "tasks", "sources"],
+  };
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content:
+            "Voce e um assistente operacional para briefing VFR no Brasil. Seja curto, simples e objetivo. Nunca decida se o voo e seguro. Use AISWEB/ROTAER como dado oficial e web search para enriquecer combustivel, hangaragem, slot/PPR, formularios e contatos. Pesquise tambem FBO, aeroclube, escola de aviacao, taxi aereo, operador aeroportuario, administracao do aeroporto e hangar no local. Para hangaragem, tente achar mais de um fornecedor e inclua tambem a administradora do aeroporto como opcao quando houver email, telefone ou site. Nunca escreva combustivel confirmado sem fonte explicita; prefira verificar/confirmar. Se houver link/formulario no ROTAER ou fonte publica, crie task action=url e use esse link, nao email. Responda apenas JSON valido no schema.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            generatedAt: briefingNowIso(),
+            route: {
+              origin: normalizeBriefingIcao(input.origin),
+              destination: normalizeBriefingIcao(input.destination),
+              alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : [],
+              routeText: cleanString(input.routeText).slice(0, 2200),
+              routeSummary: input.routeSummary || null,
+              cruiseSpeedKt: input.cruiseSpeedKt || null,
+              fuelBurnPerHour: input.fuelBurnPerHour || null,
+              fuelUnit: input.fuelUnit || "L",
+            },
+            airspaces: (Array.isArray(input.airspaces) ? input.airspaces : []).slice(0, 20),
+            airports: airportBrief,
+            taskPolicy:
+              "Gere tasks curtas e acionaveis. Titulos devem comecar com verbo: Ligar, Enviar email, Acessar, Reservar, Verificar. Prefira Acessar quando existir link/formulario; nao mande email se a acao correta e abrir um formulario. Priorize combustivel, hangaragem/pernoite, slot/PPR/Rede Voa, horarios e contatos. Nao crie uma task para cada fornecedor de combustivel ou hangaragem; crie uma unica task por tema/aerodromo e coloque os fornecedores em providers com nome/label, email, telefone ou site quando encontrado. Para hangaragem, procure fornecedores reais, administradora do aeroporto e site/telefone/email; tente trazer mais de uma opcao. Nao escreva texto generico quando nao achar; marque needs_confirmation.",
+          }),
+        },
+      ],
+      tools: [{ type: "web_search_preview" }],
+      reasoning: { effort: reasoningEffort },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "flight_briefing_ai_report",
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) {
+    throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  }
+  const text = extractOpenAiResponseText(body);
+  if (!text) throw new Error("OpenAI nao retornou texto estruturado.");
+  const parsed = JSON.parse(text);
+  const report = normalizeAiBriefingReport(parsed, input);
+  return {
+    ...report,
+    status: "ready",
+    model,
+    usage: {
+      inputTokens: body?.usage?.input_tokens,
+      outputTokens: body?.usage?.output_tokens,
+      totalTokens: body?.usage?.total_tokens,
+      webSearchCalls: Array.isArray(body?.output)
+        ? body.output.filter((item) => String(item?.type || "").includes("web_search")).length
+        : undefined,
+    },
+  };
+}
+
+function flightBriefingDocPerms(actorUserId) {
+  const perms = [...ADMIN_DOC_PERMS];
+  perms.push(
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+    sdk.Permission.update(sdk.Role.label("instrutor")),
+  );
+  if (actorUserId) {
+    perms.push(
+      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.update(sdk.Role.user(actorUserId)),
+      sdk.Permission.delete(sdk.Role.user(actorUserId)),
+    );
+  }
+  return [...new Set(perms)];
+}
+
+async function saveFlightBriefingAiReport(actorUserId, input, report) {
+  if (!FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID) return { reportId: null, report };
+  const now = briefingNowIso();
+  const routeHash = flightBriefingRouteHash(input);
+  const compact = compactAiReportForStorage(report);
+  const requestedDocId = cleanString(input.clientReportId).replace(/[^A-Za-z0-9._-]/g, "").slice(0, 36);
+  const docId = requestedDocId || sdk.ID.unique();
+  const payload = {
+    user_id: actorUserId,
+    origin_icao: normalizeBriefingIcao(input.origin),
+    destination_icao: normalizeBriefingIcao(input.destination),
+    alternate_icaos_json: JSON.stringify(Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : []),
+    route_hash: routeHash,
+    status: compact.status || "ready",
+    report_json: JSON.stringify(compact),
+    created_at: now,
+    updated_at: now,
+  };
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID,
+    docId,
+    payload,
+    flightBriefingDocPerms(actorUserId),
+  );
+  return {
+    reportId: doc.$id,
+    report: { ...compact, id: doc.$id },
+  };
+}
+
+async function generateFlightBriefingAiReport(actorUserId, input = {}) {
+  if (!actorUserId) throw Object.assign(new Error("Usuario nao autenticado."), { status: 401 });
+  const dep = normalizeBriefingIcao(input.origin);
+  const arr = normalizeBriefingIcao(input.destination);
+  if (dep.length !== 4 || arr.length !== 4) {
+    throw Object.assign(new Error("Origem e destino invalidos para briefing IA."), { status: 400 });
+  }
+  let report;
+  try {
+    report = await callOpenAiBriefingReport(input);
+  } catch (err) {
+    report = fallbackFlightBriefingAiReport(actorUserId, input, cleanString(err?.message) || "Falha ao chamar IA.");
+  }
+  return saveFlightBriefingAiReport(actorUserId, input, report);
+}
+
+async function getLatestFlightBriefingAiReport(actorUserId, input = {}) {
+  if (!actorUserId) throw Object.assign(new Error("Usuario nao autenticado."), { status: 401 });
+  const dep = normalizeBriefingIcao(input.origin);
+  const arr = normalizeBriefingIcao(input.destination);
+  if (dep.length !== 4 || arr.length !== 4) return { reportId: null, report: null };
+  const routeHash = flightBriefingRouteHash(input);
+  const page = await databases.listDocuments(DATABASE_ID, FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [actorUserId]),
+    sdk.Query.equal("route_hash", [routeHash]),
+    sdk.Query.orderDesc("updated_at"),
+    sdk.Query.limit(1),
+  ]);
+  const doc = page.documents?.[0];
+  if (!doc) return { reportId: null, report: null };
+  const report = normalizeAiBriefingReport(parseJsonObject(doc.report_json, {}), {
+    origin: doc.origin_icao,
+    destination: doc.destination_icao,
+    alternates: parseJsonArray(doc.alternate_icaos_json, []),
+    airports: [],
+    preservePilotNotes: true,
+  });
+  return { reportId: doc.$id, report: { ...report, id: doc.$id } };
+}
+
+async function updateFlightBriefingAiTask(actorUserId, input = {}) {
+  if (!actorUserId) throw Object.assign(new Error("Usuario nao autenticado."), { status: 401 });
+  const reportId = cleanString(input.reportId);
+  const taskId = cleanString(input.taskId);
+  if (!reportId || !taskId) throw Object.assign(new Error("Informe relatorio e tarefa."), { status: 400 });
+  const doc = await databases.getDocument(DATABASE_ID, FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID, reportId);
+  if (doc.user_id !== actorUserId) await requireInstructorOrAdmin(actorUserId);
+  const report = normalizeAiBriefingReport(parseJsonObject(doc.report_json, {}), {
+    origin: doc.origin_icao,
+    destination: doc.destination_icao,
+    alternates: parseJsonArray(doc.alternate_icaos_json, []),
+    airports: [],
+    preservePilotNotes: true,
+  });
+  const now = briefingNowIso();
+  let found = false;
+  const status = ["open", "done", "inactive"].includes(input.status) ? input.status : undefined;
+  const hasPilotNote = Object.prototype.hasOwnProperty.call(input, "pilotNote");
+  report.tasks = (report.tasks || []).map((task) => {
+    if (task.id !== taskId) return task;
+    found = true;
+    return {
+      ...task,
+      ...(status ? { status } : {}),
+      ...(hasPilotNote ? { pilotNote: cleanString(input.pilotNote).slice(0, 1000) } : {}),
+      updatedAt: now,
+    };
+  });
+  if (!found) throw Object.assign(new Error("Tarefa nao encontrada."), { status: 404 });
+  report.id = reportId;
+  await databases.updateDocument(DATABASE_ID, FLIGHT_PLANNING_AI_BRIEFINGS_COLLECTION_ID, reportId, {
+    status: report.status,
+    report_json: JSON.stringify(compactAiReportForStorage(report)),
+    updated_at: now,
+  });
+  return { reportId, report };
+}
+
+async function sendFplExportEmail(actorUserId, input = {}) {
+  await requireInstructorOrAdmin(actorUserId);
+  const route = cleanString(input.route).replace(/\s+/g, " ").slice(0, 1800);
+  const rmk = cleanString(input.rmk).replace(/\s+/g, " ").slice(0, 1800);
+  const eet = cleanString(input.eet).replace(/\D+/g, "").slice(0, 4);
+  const routeName = cleanString(input.routeName).replace(/\s+/g, " ").slice(0, 120);
+  if (!route && !rmk && !eet) throw Object.assign(new Error("FPL vazio para envio."), { status: 400 });
+
+  const [actorUser, actorProfile, { settings }, { publicSettings: brand }] = await Promise.all([
+    users.get({ userId: actorUserId }),
+    getProfileByUserId(actorUserId).catch(() => null),
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+  const email = cleanString(actorUser?.email) || cleanString(actorProfile?.email);
+  if (!email) throw Object.assign(new Error("Usuario sem email cadastrado."), { status: 400 });
+  const name = cleanString(actorProfile?.full_name) || cleanString(actorUser?.name) || email;
+  const details = [
+    routeName ? ["Rota", routeName] : null,
+    ["Campo 15 - Rota", route || "-"],
+    ["EET total", eet || "-"],
+    ["Campo 18 - RMK", rmk || "-"],
+  ].filter(Boolean);
+  const result = await sendEmailToUser(settings, brand, { email, name }, {
+    eyebrow: "Plano de voo",
+    title: "FPL exportado",
+    intro: "As informacoes do FPL gerado no planejamento seguem abaixo.",
+    body: "Confira os campos antes de inserir ou protocolar o plano de voo operacional.",
+    details,
+  });
+  if (result.status !== "sent") {
+    throw Object.assign(new Error(result.reason || "Email nao enviado."), { status: 400 });
+  }
+  return { ok: true, email, delivery: result };
+}
+
 async function retryCaktoProposal(proposalId) {
   const doc = await databases.getDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, cleanString(proposalId));
   if (doc.payment_url) return mapCaktoProposal(doc);
@@ -27123,6 +27985,26 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "sendFlightCreditPaymentLinkEmail") {
       const result = await sendFlightCreditPaymentLinkEmail(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "sendFplExportEmail") {
+      const result = await sendFplExportEmail(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "generateFlightBriefingAiReport") {
+      const result = await generateFlightBriefingAiReport(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "getLatestFlightBriefingAiReport") {
+      const result = await getLatestFlightBriefingAiReport(actorUserId, payload);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "updateFlightBriefingAiTask") {
+      const result = await updateFlightBriefingAiTask(actorUserId, payload);
       return jsonResponse(res, 200, result);
     }
 

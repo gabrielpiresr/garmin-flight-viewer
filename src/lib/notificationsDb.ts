@@ -153,6 +153,23 @@ export async function sendTestEmail(to: string, templateType: EmailTemplateType 
   await executeNotifications({ action: "sendTestEmail", to, templateType });
 }
 
+export async function sendFplExportEmail(input: {
+  route: string;
+  rmk: string;
+  eet: string;
+  routeName?: string;
+}): Promise<{ email: string }> {
+  const response = await executeNotifications({
+    action: "sendFplExportEmail",
+    route: input.route,
+    rmk: input.rmk,
+    eet: input.eet,
+    routeName: input.routeName || "",
+  });
+  if (!response.email) throw new Error(response.message || "Email nao retornado.");
+  return { email: response.email };
+}
+
 export async function getGoogleCalendarSettings(): Promise<GoogleCalendarSettings> {
   const response = await executeNotifications({ action: "getGoogleCalendarSettings" });
   if (!response.googleCalendarSettings) {

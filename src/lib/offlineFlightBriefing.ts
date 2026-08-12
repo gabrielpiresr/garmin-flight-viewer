@@ -5,6 +5,7 @@ import type {
   FlightPlanRouteSummary,
   FlightPlanRouteTableRow,
 } from "../types/flightPlanning";
+import type { FlightBriefingAiReport } from "../types/flightBriefingAi";
 
 const DB_NAME = "gfv_offline_briefing";
 const DB_VERSION = 1;
@@ -37,6 +38,7 @@ export type OfflineFlightBriefing = {
   mapImageDataUrl: string | null;
   verticalProfileSvg?: string | null;
   routeTableRows?: FlightPlanRouteTableRow[] | null;
+  aiReport?: FlightBriefingAiReport | null;
   metUpdatedAt: string | null;
 };
 

@@ -13,6 +13,11 @@ import { formatAirspaceFreqCell } from "../../lib/flightPlanFormat";
 import { buildFlightPlanMapDataUrl } from "../../lib/flightPlanMapImage";
 import { openFlightPlanPdf } from "../../lib/flightPlanPdf";
 import { buildRouteVerticalProfileSvg } from "../../lib/flightPlanProfileSvg";
+import {
+  generateFlightBriefingAiReport,
+  getLatestFlightBriefingAiReport,
+  updateFlightBriefingAiTask,
+} from "../../lib/flightBriefingAiDb";
 import { getRouteElevation } from "../../lib/routeElevationDb";
 import {
   buildFlightPlanLegs,
@@ -56,11 +61,22 @@ import {
   AirportSummaryStrip,
   IcaoField,
 } from "../AiswebFlightPlanningTab";
+import { AiswebAirportDetailTabs, AiswebAirportTopCards } from "../AiswebAirportDetails";
+import { AiswebMeteorologyPanel } from "../AiswebMeteorologyPanel";
 import { AerodromeDetailsSidePanel } from "../AerodromePlanningModals";
 import { FlightPlanMap, type MapPickCandidate } from "../FlightPlanMap";
 import { RouteVerticalProfileChart } from "../RouteVerticalProfileChart";
+import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
 import { matchReaCorridorForLeg, type LegCorridorInfo } from "../../lib/legCorridor";
+import { useAuth } from "../../contexts/AuthContext";
+import { sendFplExportEmail } from "../../lib/notificationsDb";
+import { FlightBriefingAiPanel } from "../FlightBriefingAiPanel";
+import type {
+  FlightBriefingAiGenerateInput,
+  FlightBriefingAiReport,
+  FlightBriefingAiTaskStatus,
+} from "../../types/flightBriefingAi";
 
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15";
@@ -83,6 +99,19 @@ const DEFAULT_SECTIONS: FlightPlanInfoSection[] = [
 ];
 
 type AccumMode = "etapa" | "acumulado";
+type BriefingOnlineTab = "resumo" | "checklist" | "rota" | `aeroporto:${string}`;
+type BriefingAirportDoc = {
+  role: "origem" | "destino" | "alternativo";
+  icao: string;
+  bundle: AiswebAirportBundle;
+  note?: string;
+};
+
+const BRIEFING_ONLINE_TABS: ReadonlyArray<{ id: BriefingOnlineTab; label: string }> = [
+  { id: "resumo", label: "Resumo" },
+  { id: "checklist", label: "Checklist" },
+  { id: "rota", label: "Rota" },
+];
 
 function waypointDisplayName(wp: FlightPlanWaypoint): string {
   if (wp.reaName) return wp.reaName;
@@ -91,6 +120,114 @@ function waypointDisplayName(wp: FlightPlanWaypoint): string {
 
 function isAirportLike(wp: FlightPlanWaypoint): boolean {
   return wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination";
+}
+
+function normalizeFplText(value: string): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9\s]/gi, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+function formatFplSpeed(speedKt: number | null): string {
+  const speed = speedKt != null && Number.isFinite(speedKt) && speedKt > 0 ? speedKt : DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt;
+  return `N${String(Math.max(1, Math.round(speed))).padStart(4, "0")}`;
+}
+
+function formatFplLevel(altitudeFt: number | null | undefined): string {
+  if (altitudeFt != null && Number.isFinite(altitudeFt) && altitudeFt > 0) {
+    return `A${String(Math.round(altitudeFt / 100)).padStart(3, "0")}`;
+  }
+  return "VFR";
+}
+
+function formatFplPointSpeedLevel(wp: FlightPlanWaypoint, speedKt: number | null): string {
+  return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(wp.altitudeFt)}`;
+}
+
+function pushFplToken(tokens: string[], token: string): void {
+  const clean = token.trim().toUpperCase();
+  if (!clean) return;
+  if (tokens[tokens.length - 1] === clean) return;
+  tokens.push(clean);
+}
+
+function buildFplRouteText(
+  waypoints: FlightPlanWaypoint[],
+  legCorridors: Array<LegCorridorInfo | null>,
+  speedKt: number | null,
+): string {
+  if (waypoints.length < 2) return "";
+  const isCorridorLeg = (idx: number) => Boolean(legCorridors[idx]);
+  const legIndexes = waypoints.slice(1).map((_, idx) => idx + 1);
+  const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
+  if (allCorridor) return "REA";
+
+  const tokens: string[] = [];
+  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
+
+  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
+    const to = waypoints[legIdx]!;
+    const inside = isCorridorLeg(legIdx);
+    const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
+    const isLastLeg = legIdx === waypoints.length - 1;
+
+    if (inside) {
+      if (nextInside === false) {
+        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
+        pushFplToken(tokens, "DCT");
+      }
+      continue;
+    }
+
+    if (nextInside === true) {
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
+      pushFplToken(tokens, "REA");
+      continue;
+    }
+
+    if (!isLastLeg) {
+      pushFplToken(tokens, formatCompactAviationCoord(to.lat, to.lng));
+      pushFplToken(tokens, "DCT");
+    }
+  }
+
+  return tokens.join(" ");
+}
+
+function buildFplRmkText(
+  waypoints: FlightPlanWaypoint[],
+  legCorridors: Array<LegCorridorInfo | null>,
+): string {
+  const corridorNames: string[] = [];
+  const seenCorridors = new Set<string>();
+  for (const corridor of legCorridors) {
+    const clean = normalizeFplText(corridor?.name || "");
+    if (!clean || seenCorridors.has(clean)) continue;
+    seenCorridors.add(clean);
+    corridorNames.push(clean);
+  }
+
+  const tglAerodromes = waypoints
+    .slice(1, Math.max(1, waypoints.length - 1))
+    .filter(isAirportLike)
+    .map((wp) => normalizeFplText(wp.label || wp.raw))
+    .filter((code) => /^[A-Z0-9]{4}$/.test(code));
+
+  const tokens: string[] = [];
+  if (corridorNames.length > 0) {
+    tokens.push("REA", ...corridorNames);
+  }
+  for (const icao of tglAerodromes) {
+    tokens.push("TGL", icao);
+  }
+  if (corridorNames.length > 0) {
+    tokens.push("AD", "CFM", "ALT", "MAX", "REA");
+  }
+  return tokens.join(" ");
 }
 
 function fieldElevFtFromAerodrome(ad: Aerodrome | undefined | null): number | null {
@@ -239,6 +376,7 @@ function IconGear() {
 
 export function PlanejamentoTab() {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [waypoints, setWaypoints] = useState<FlightPlanWaypoint[]>([]);
   const [pickMode, setPickMode] = useState(true);
   const [accumMode, setAccumMode] = useState<AccumMode>("acumulado");
@@ -266,6 +404,8 @@ export function PlanejamentoTab() {
   const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showPasteModal, setShowPasteModal] = useState(false);
+  const [showFplExportModal, setShowFplExportModal] = useState(false);
+  const [sendingFplEmail, setSendingFplEmail] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
   const [detailBundle, setDetailBundle] = useState<AiswebAirportBundle | null>(null);
   const [bulkAltitudeFt, setBulkAltitudeFt] = useState("");
@@ -286,17 +426,26 @@ export function PlanejamentoTab() {
   const [loadingBriefing, setLoadingBriefing] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [generated, setGenerated] = useState(false);
-  const [airports, setAirports] = useState<
-    Array<{
-      role: "origem" | "destino" | "alternativo";
-      icao: string;
-      bundle: AiswebAirportBundle;
-      note?: string;
-    }>
-  >([]);
+  const [briefingOnlineTab, setBriefingOnlineTab] = useState<BriefingOnlineTab>("resumo");
+  const [airportNotamsFocusKey, setAirportNotamsFocusKey] = useState("");
+  const [aiReport, setAiReport] = useState<FlightBriefingAiReport | null>(null);
+  const [aiReportId, setAiReportId] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [airports, setAirports] = useState<BriefingAirportDoc[]>([]);
   const [airspaces, setAirspaces] = useState<FlightPlanAirspaceHit[]>([]);
   const [airspaceLoading, setAirspaceLoading] = useState(false);
   const [airspaceError, setAirspaceError] = useState<string | null>(null);
+  const briefingOnlineTabs = useMemo(
+    () => [
+      ...BRIEFING_ONLINE_TABS,
+      ...airports.map((airport) => ({
+        id: `aeroporto:${airport.icao}` as BriefingOnlineTab,
+        label: airport.icao,
+      })),
+    ],
+    [airports],
+  );
 
   const cruise = Number(String(cruiseSpeedKt).replace(",", "."));
   const burn = Number(String(fuelBurn).replace(",", "."));
@@ -423,6 +572,15 @@ export function PlanejamentoTab() {
     }
     return out;
   }, [waypoints, reaFixes, rehFixes]);
+
+  const fplExport = useMemo(
+    () => ({
+      route: buildFplRouteText(waypoints, legCorridors, cruiseOpt),
+      rmk: buildFplRmkText(waypoints, legCorridors),
+      eet: formatEteClock(summary.eteHours).replace(":", ""),
+    }),
+    [waypoints, legCorridors, cruiseOpt, summary.eteHours],
+  );
 
   // Auto ALT = teto do corredor quando o trecho está em um corredor REA/REH.
   useEffect(() => {
@@ -966,6 +1124,98 @@ export function PlanejamentoTab() {
     setAltDraft("");
   }
 
+  function buildAiBriefingInput(airportDocs: BriefingAirportDoc[]): FlightBriefingAiGenerateInput {
+    return {
+      origin: originIcao,
+      destination: destIcao,
+      alternates,
+      airports: airportDocs,
+      routeSummary: waypoints.length ? summary : null,
+      airspaces,
+      cruiseSpeedKt: cruiseOpt,
+      fuelBurnPerHour: burnOpt,
+      fuelUnit,
+      routeText: nexAtlasText,
+    };
+  }
+
+  async function handleGenerateAiReport(airportDocs: BriefingAirportDoc[], forceRegenerate = false) {
+    setAiLoading(true);
+    setAiError(null);
+    if (forceRegenerate) {
+      setAiReport(null);
+      setAiReportId(null);
+    }
+    try {
+      const input = buildAiBriefingInput(airportDocs);
+      const saved = forceRegenerate ? null : await getLatestFlightBriefingAiReport(input);
+      const result = saved || (await generateFlightBriefingAiReport(input));
+      setAiReport(result.report);
+      setAiReportId(result.reportId || result.report.id || null);
+      if (result.report.status === "fallback") {
+        setAiError("IA online indisponível. Checklist criado com dados AISWEB/ROTAER e itens para confirmação.");
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "Não foi possível gerar o enriquecimento IA.");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function handleRegenerateAiReport() {
+    if (!airports.length) return;
+    void handleGenerateAiReport(airports, true);
+  }
+
+  function openBriefingAirportNotams(icaoRaw: string) {
+    const icao = normalizeIcao(icaoRaw);
+    if (!icao) return;
+    setAirportNotamsFocusKey(`${icao}:${Date.now()}`);
+    setBriefingOnlineTab(`aeroporto:${icao}`);
+  }
+
+  function handleAiTaskUpdate(
+    taskId: string,
+    patch: { status?: FlightBriefingAiTaskStatus; pilotNote?: string },
+  ) {
+    setAiReport((prev) =>
+      prev
+        ? {
+            ...prev,
+            tasks: prev.tasks.map((task) =>
+              task.id === taskId
+                ? {
+                    ...task,
+                    ...patch,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : task,
+            ),
+            updatedAt: new Date().toISOString(),
+          }
+        : prev,
+    );
+
+    const reportId = aiReportId || aiReport?.id;
+    if (!reportId) return;
+    void updateFlightBriefingAiTask({ reportId, taskId, ...patch })
+      .then((report) => setAiReport(report))
+      .catch((err) => {
+        setAiError(err instanceof Error ? err.message : "Não foi possível salvar a task IA.");
+      });
+  }
+
+  async function copyAiText(text: string, label: string) {
+    const clean = text.trim();
+    if (!clean) return;
+    try {
+      await navigator.clipboard.writeText(clean);
+      showToast({ variant: "success", title: "Copiado", message: `${label} copiado.` });
+    } catch {
+      showToast({ variant: "warning", title: "Copiar", message: "Não foi possível copiar automaticamente." });
+    }
+  }
+
   async function handleGenerate() {
     const dep = originIcao;
     const arr = destIcao;
@@ -1021,6 +1271,10 @@ export function PlanejamentoTab() {
         return changed ? next : prev;
       });
       setGenerated(true);
+      setBriefingOnlineTab("resumo");
+      setAiReport(null);
+      setAiReportId(null);
+      void handleGenerateAiReport(results);
       showToast({
         variant: "success",
         title: "Documento gerado",
@@ -1122,6 +1376,7 @@ export function PlanejamentoTab() {
         fuelBurnPerHour: burnOpt,
         fuelUnit,
         routeText: nexAtlasText,
+        aiReport,
         mapImageDataUrl,
         verticalProfileSvg,
         routeTableRows,
@@ -1210,6 +1465,7 @@ export function PlanejamentoTab() {
         fuelBurnPerHour: burnOpt,
         fuelUnit,
         routeText: nexAtlasText,
+        aiReport,
         mapImageDataUrl,
         verticalProfileSvg,
         routeTableRows,
@@ -1228,6 +1484,43 @@ export function PlanejamentoTab() {
       });
     } finally {
       setExportingPdf(false);
+    }
+  }
+
+  async function copyFplField(label: string, value: string) {
+    const text = value.trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast({ variant: "success", title: "Copiado", message: `${label} copiado para a area de transferencia.` });
+    } catch {
+      showToast({ variant: "warning", title: "Copiar", message: "Nao foi possivel copiar automaticamente." });
+    }
+  }
+
+  async function sendFplByEmail() {
+    if (!user?.email?.trim()) {
+      showToast({ variant: "warning", title: "E-mail", message: "Nao encontrei e-mail do usuario logado." });
+      return;
+    }
+    if (!fplExport.route && !fplExport.rmk && fplExport.eet === "—") return;
+    setSendingFplEmail(true);
+    try {
+      const result = await sendFplExportEmail({
+        route: fplExport.route,
+        rmk: fplExport.rmk,
+        eet: fplExport.eet,
+        routeName: routeLabel,
+      });
+      showToast({ variant: "success", title: "FPL enviado", message: `Email enviado para ${result.email}.` });
+    } catch (err) {
+      showToast({
+        variant: "error",
+        title: "Falha no envio",
+        message: err instanceof Error ? err.message : "Nao foi possivel enviar o email.",
+      });
+    } finally {
+      setSendingFplEmail(false);
     }
   }
 
@@ -1603,7 +1896,7 @@ export function PlanejamentoTab() {
       <section className="shrink-0 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/60">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
             <h3 className="text-sm font-semibold text-slate-100">Tabela da rota</h3>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
               <div className="flex items-center gap-1.5">
                 <input
                   type="number"
@@ -1632,16 +1925,6 @@ export function PlanejamentoTab() {
                   Alt. todos
                 </button>
               </div>
-              <button
-                type="button"
-                className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-cyan-300 transition hover:border-cyan-500/40 hover:bg-slate-800"
-                onClick={() => {
-                  setRouteTextDraft(nexAtlasText);
-                  setShowPasteModal(true);
-                }}
-              >
-                Colar rota
-              </button>
               <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
                 {(
                   [
@@ -1660,6 +1943,26 @@ export function PlanejamentoTab() {
                     {label}
                   </button>
                 ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-cyan-300 transition hover:border-cyan-500/40 hover:bg-slate-800"
+                  onClick={() => {
+                    setRouteTextDraft(nexAtlasText);
+                    setShowPasteModal(true);
+                  }}
+                >
+                  Importar
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={waypoints.length < 2}
+                  onClick={() => setShowFplExportModal(true)}
+                >
+                  Exportar
+                </button>
               </div>
             </div>
           </div>
@@ -2012,7 +2315,7 @@ export function PlanejamentoTab() {
             ) : null}
           </div>
 
-          <div className="mt-4">
+          <div className="hidden">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Informações no documento
             </p>
@@ -2053,36 +2356,208 @@ export function PlanejamentoTab() {
             >
               {loadingBriefing ? "Gerando…" : "Gerar briefing"}
             </button>
-            <button
-              type="button"
-              className={btnSecondary}
-              disabled={!generated || exportingPdf}
-              onClick={() => void handleExportPdf()}
-            >
-              {exportingPdf ? "Preparando mapa…" : "Exportar PDF"}
-            </button>
-            <button
-              type="button"
-              className={btnSecondary}
-              disabled={!generated || exportingPdf}
-              onClick={() => void handleOpenTabletBriefing()}
-            >
-              Abrir no tablet (offline)
-            </button>
           </div>
         </section>
 
         {generated ? (
-          <AirportSummaryStrip
-            airports={airports}
-            onNoteChange={(role, icao, note) => {
-              setAirports((prev) =>
-                prev.map((a) => (a.role === role && a.icao === icao ? { ...a, note } : a)),
-              );
-            }}
-          />
-        ) : null}
+          <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-400">Briefing online</p>
+                <h2 className="text-base font-semibold text-slate-100">{originIcao} - {destIcao}</h2>
+              </div>
+              <Tabs
+                items={briefingOnlineTabs}
+                value={briefingOnlineTab}
+                onChange={setBriefingOnlineTab}
+                ariaLabel="Abas do briefing online"
+                accent="cyan"
+                className="max-w-full"
+              />
+            </div>
 
+            {briefingOnlineTab === "resumo" ? (
+              <div className="grid gap-3 @2xl:grid-cols-[1.1fr_0.9fr]">
+                <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-100">Leia primeiro</h3>
+                      <p className="mt-1 text-sm text-slate-300">
+                        {aiReport?.summary ||
+                          "Briefing AISWEB pronto. A IA ainda esta enriquecendo contatos, combustivel, hangaragem e pendencias operacionais."}
+                      </p>
+                    </div>
+                    <span className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400">
+                      {aiLoading ? "IA pesquisando" : aiReport ? (aiReport.status === "fallback" ? "IA fallback" : "IA pronta") : "AISWEB pronto"}
+                    </span>
+                  </div>
+                  {aiError ? (
+                    <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      {aiError}
+                    </p>
+                  ) : null}
+                  {aiReport?.warnings?.length ? (
+                    <div className="mt-3 grid gap-2 @lg:grid-cols-2">
+                      {aiReport.warnings.map((warning) => (
+                        <article key={warning.id} className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3">
+                          <p className="text-xs font-semibold text-amber-100">{warning.title}</p>
+                          <p className="mt-1 text-xs text-amber-100/80">{warning.detail}</p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+                <section className="grid gap-2 @md:grid-cols-2">
+                  {[
+                    ["Aeroportos", String(airports.length)],
+                    ["Tasks abertas", String(aiReport?.tasks.filter((task) => task.status === "open").length ?? 0)],
+                    ["Alertas IA", String(aiReport?.warnings.length ?? 0)],
+                    ["Espacos aereos", String(airspaces.length)],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+                      <p className="mt-1 text-2xl font-semibold text-slate-100">{value}</p>
+                    </div>
+                  ))}
+                </section>
+                <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 @2xl:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-100">Documento</h3>
+                      <p className="mt-1 text-xs text-slate-500">Escolha as seções e exporte quando quiser.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className={btnSecondary}
+                        disabled={exportingPdf}
+                        onClick={() => void handleExportPdf()}
+                      >
+                        {exportingPdf ? "Preparando mapa..." : "Exportar PDF"}
+                      </button>
+                      <button
+                        type="button"
+                        className={btnSecondary}
+                        disabled={exportingPdf}
+                        onClick={() => void handleOpenTabletBriefing()}
+                      >
+                        Abrir offline
+                      </button>
+                      <button
+                        type="button"
+                        className={btnSecondary}
+                        disabled={aiLoading || airports.length === 0}
+                        onClick={handleRegenerateAiReport}
+                      >
+                        {aiLoading ? "Gerando IA..." : "Regenerar IA"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-1.5 @md:grid-cols-3 @2xl:grid-cols-4">
+                    {FLIGHT_PLAN_INFO_OPTIONS.map((opt) => {
+                      const on = sections.includes(opt.id);
+                      return (
+                        <label
+                          key={opt.id}
+                          className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition ${
+                            on
+                              ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-50"
+                              : "border-slate-700/70 bg-slate-950/40 text-slate-400 hover:border-slate-600 hover:text-slate-200"
+                          }`}
+                          title={opt.description}
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5"
+                            checked={on}
+                            onChange={() => toggleSection(opt.id)}
+                          />
+                          <span className="truncate font-semibold">{opt.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            ) : null}
+
+            {false ? (
+              <div className="space-y-3">
+                <div className="hidden">
+                <AirportSummaryStrip
+                  airports={airports}
+                  onNoteChange={(role, icao, note) => {
+                    setAirports((prev) =>
+                      prev.map((a) => (a.role === role && a.icao === icao ? { ...a, note } : a)),
+                    );
+                  }}
+                />
+                {aiReport?.airports.length ? (
+                  <div className="grid gap-2 @lg:grid-cols-2 @2xl:grid-cols-4">
+                    {aiReport?.airports.map((airport) => (
+                      <article key={`${airport.role}-${airport.icao}`} className="rounded-lg border border-slate-800 bg-slate-950/45 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-sm font-semibold text-slate-100">{airport.icao}</h3>
+                          <span className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{airport.role}</span>
+                        </div>
+                        <div className="mt-3 grid gap-1.5">
+                          {[
+                            ["Combustível", airport.fuel.detail, airport.fuel.confidence],
+                            ["Hangaragem", airport.hangarage.detail, airport.hangarage.confidence],
+                            ["Slot/PPR", airport.slotPpr.detail, airport.slotPpr.confidence],
+                          ].map(([label, detail, confidence]) => (
+                            <div key={label} className="rounded-md border border-slate-800 bg-slate-900/45 px-2 py-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+                                <p className="text-[10px] text-cyan-300">{confidence}</p>
+                              </div>
+                              <p className="mt-0.5 line-clamp-2 text-xs text-slate-300">{detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : aiLoading ? (
+                  <p className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                    IA pesquisando informacoes publicas dos aeroportos.
+                  </p>
+                ) : null}
+                </div>
+                <div className="grid gap-3">
+                  {airports.map((item) => (
+                    <AirportDocPreview
+                      key={`${item.role}-${item.icao}`}
+                      role={
+                        item.role === "origem" ? "Origem" : item.role === "destino" ? "Destino" : "Alternativo"
+                      }
+                      icao={item.icao}
+                      bundle={item.bundle}
+                      sections={sections}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {briefingOnlineTab === "checklist" ? (
+              <FlightBriefingAiPanel
+                report={aiReport}
+                loading={aiLoading}
+                error={aiError}
+                onTaskUpdate={handleAiTaskUpdate}
+                onCopy={copyAiText}
+                airports={airports}
+                onOpenAirportNotams={openBriefingAirportNotams}
+                onAirportNoteChange={(role, icao, note) => {
+                  setAirports((prev) =>
+                    prev.map((a) => (a.role === role && a.icao === icao ? { ...a, note } : a)),
+                  );
+                }}
+              />
+            ) : null}
+
+            {briefingOnlineTab === "rota" ? (
         <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
@@ -2145,23 +2620,86 @@ export function PlanejamentoTab() {
             </div>
           ) : null}
         </div>
+            ) : null}
 
-        {generated ? (
-          <section className="space-y-3 pb-4">
-            <h2 className="text-sm font-semibold text-slate-100">Detalhes do briefing</h2>
-            <div className="grid gap-3">
-              {airports.map((item) => (
-                <AirportDocPreview
-                  key={`${item.role}-${item.icao}`}
-                  role={
-                    item.role === "origem" ? "Origem" : item.role === "destino" ? "Destino" : "Alternativo"
-                  }
-                  icao={item.icao}
-                  bundle={item.bundle}
-                  sections={sections}
-                />
-              ))}
-            </div>
+            {briefingOnlineTab.startsWith("aeroporto:") ? (() => {
+              const selectedAirport = airports.find((airport) => `aeroporto:${airport.icao}` === briefingOnlineTab);
+              if (!selectedAirport) return null;
+              return (
+                <section className="@container space-y-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-400">
+                      {selectedAirport.role === "origem" ? "Origem" : selectedAirport.role === "destino" ? "Destino" : "Alternativo"}
+                    </p>
+                    <h3 className="text-base font-semibold text-slate-100">
+                      {selectedAirport.icao} · {selectedAirport.bundle.rotaer?.name || "AISWEB"}
+                    </h3>
+                  </div>
+                  <AiswebAirportTopCards airport={selectedAirport.bundle} />
+                  <AiswebAirportDetailTabs
+                    airport={selectedAirport.bundle}
+                    meteorology={<AiswebMeteorologyPanel airport={selectedAirport.bundle} />}
+                    initialSubTab={airportNotamsFocusKey.startsWith(`${selectedAirport.icao}:`) ? "notams" : "meteorologia"}
+                    focusKey={airportNotamsFocusKey}
+                  />
+                </section>
+              );
+            })() : null}
+
+            {false ? (
+              <section className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-100">Documento e offline</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    O checklist IA entra no PDF e no briefing offline quando o relatório estiver disponível.
+                  </p>
+                </div>
+                <div className="grid gap-2 @md:grid-cols-2 @2xl:grid-cols-3">
+                  {FLIGHT_PLAN_INFO_OPTIONS.map((opt) => {
+                    const on = sections.includes(opt.id);
+                    return (
+                      <label
+                        key={opt.id}
+                        className={`flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition ${
+                          on
+                            ? "border-cyan-500/40 bg-cyan-500/10"
+                            : "border-slate-700/70 bg-slate-950/40 hover:border-slate-600"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={on}
+                          onChange={() => toggleSection(opt.id)}
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-100">{opt.label}</span>
+                          <span className="block text-[11px] text-slate-500">{opt.description}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className={btnSecondary}
+                    disabled={exportingPdf}
+                    onClick={() => void handleExportPdf()}
+                  >
+                    {exportingPdf ? "Preparando mapa..." : "Exportar PDF"}
+                  </button>
+                  <button
+                    type="button"
+                    className={btnSecondary}
+                    disabled={exportingPdf}
+                    onClick={() => void handleOpenTabletBriefing()}
+                  >
+                    Abrir no tablet (offline)
+                  </button>
+                </div>
+              </section>
+            ) : null}
           </section>
         ) : null}
 
@@ -2297,6 +2835,94 @@ export function PlanejamentoTab() {
             <button type="button" className={`${btnPrimary} mt-4 w-full`} onClick={() => setShowConfigModal(false)}>
               Fechar
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {showFplExportModal ? (
+        <div
+          className="fixed inset-0 z-[700] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={() => setShowFplExportModal(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-100">Exportar FPL</h3>
+              <button type="button" className="text-slate-500 hover:text-slate-200" onClick={() => setShowFplExportModal(false)}>
+                x
+              </button>
+            </div>
+            <div className="space-y-3">
+              <label className="block space-y-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Rota</span>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <textarea
+                    className={`${inputClass} min-h-[76px] flex-1 font-mono text-[12px]`}
+                    readOnly
+                    value={fplExport.route}
+                  />
+                  <button
+                    type="button"
+                    className={`${btnSecondary} sm:self-start`}
+                    disabled={!fplExport.route}
+                    onClick={() => void copyFplField("Rota", fplExport.route)}
+                  >
+                    Copiar
+                  </button>
+                </div>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">RMK</span>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <textarea
+                    className={`${inputClass} min-h-[76px] flex-1 font-mono text-[12px]`}
+                    readOnly
+                    value={fplExport.rmk}
+                  />
+                  <button
+                    type="button"
+                    className={`${btnSecondary} sm:self-start`}
+                    disabled={!fplExport.rmk}
+                    onClick={() => void copyFplField("RMK", fplExport.rmk)}
+                  >
+                    Copiar
+                  </button>
+                </div>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">EET total</span>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    className={`${inputClass} flex-1 font-mono text-[12px]`}
+                    readOnly
+                    value={fplExport.eet}
+                  />
+                  <button
+                    type="button"
+                    className={`${btnSecondary} sm:self-start`}
+                    disabled={!fplExport.eet || fplExport.eet === "—"}
+                    onClick={() => void copyFplField("EET total", fplExport.eet)}
+                  >
+                    Copiar
+                  </button>
+                </div>
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                className={btnSecondary}
+                disabled={sendingFplEmail || (!fplExport.route && !fplExport.rmk && fplExport.eet === "—")}
+                onClick={() => void sendFplByEmail()}
+              >
+                {sendingFplEmail ? "Enviando..." : "Enviar por e-mail"}
+              </button>
+              <button type="button" className={btnPrimary} onClick={() => setShowFplExportModal(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

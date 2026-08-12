@@ -32,6 +32,7 @@
     "appwrite:fix-admin-perms": "node scripts/fix-admin-collection-permissions.mjs",
     "appwrite:repair-admin-perms": "node scripts/repair-admin-permissions.mjs",
     "appwrite:setup-planning": "node scripts/setup-planning-collections.mjs",
+    "appwrite:setup-flight-planning-ai": "node scripts/setup-flight-planning-ai-briefings.mjs",
     "appwrite:setup-credits": "node scripts/setup-student-credits-collection.mjs",
     "appwrite:setup-notices": "node scripts/setup-notices-collections.mjs",
     "appwrite:setup-notifications": "node scripts/setup-notifications-collections.mjs",

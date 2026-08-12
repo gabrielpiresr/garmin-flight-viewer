@@ -1212,11 +1212,15 @@ function WindyWebcamsPanel({ airport }: { airport: AiswebAirportBundle }) {
 export function AiswebAirportDetailTabs({
   airport,
   meteorology,
+  initialSubTab = "meteorologia",
+  focusKey = "",
 }: {
   airport: AiswebAirportBundle;
   meteorology: ReactNode;
+  initialSubTab?: DetailSubTab;
+  focusKey?: string;
 }) {
-  const [subTab, setSubTab] = useState<DetailSubTab>("meteorologia");
+  const [subTab, setSubTab] = useState<DetailSubTab>(initialSubTab);
   const rotaer = airport.rotaer;
   const frequencies = rotaer?.frequencies || [];
   const navaids = rotaer?.navaids || [];
@@ -1227,8 +1231,8 @@ export function AiswebAirportDetailTabs({
   const notams = airport.notams || [];
 
   useEffect(() => {
-    setSubTab("meteorologia");
-  }, [airport.icao]);
+    setSubTab(initialSubTab);
+  }, [airport.icao, initialSubTab, focusKey]);
 
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },

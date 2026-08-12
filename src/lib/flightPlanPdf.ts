@@ -6,6 +6,7 @@ import type {
   FlightPlanRouteTableRow,
   FlightPlanWaypoint,
 } from "../types/flightPlanning";
+import type { FlightBriefingAiReport, FlightBriefingAiTask } from "../types/flightBriefingAi";
 import {
   airportSummaryFromBundle,
   formatAirspaceFreqCell,
@@ -42,6 +43,8 @@ export type FlightPlanDocumentInput = {
   verticalProfileSvg?: string | null;
   /** Optional route table rows (same columns as planning UI). */
   routeTableRows?: FlightPlanRouteTableRow[] | null;
+  /** Optional AI operational checklist/enrichment for online, PDF and tablet briefings. */
+  aiReport?: FlightBriefingAiReport | null;
   /** paged = print pages; continuous = single dark offline scroll for tablet */
   mode?: "paged" | "continuous";
   brand?: PdfBrand;
@@ -212,6 +215,71 @@ function airportSummaryHtml(airports: AirportDoc[], dark = false): string {
       </section>`);
   }
   return `<div id="resumo-ads">${pages.join("")}</div>`;
+}
+
+function taskStatusLabel(task: FlightBriefingAiTask): string {
+  if (task.status === "done") return "Feito";
+  if (task.status === "inactive") return "Inativo";
+  return "Pendente";
+}
+
+function aiBriefingHtml(report: FlightBriefingAiReport | null | undefined): string {
+  if (!report) return "";
+  const taskRows = report.tasks.length
+    ? report.tasks
+        .map(
+          (task, index) => `<tr>
+            <td>${esc(index + 1)}</td>
+            <td><span class="pill">${esc(taskStatusLabel(task))}</span></td>
+            <td>${esc(task.priority)}</td>
+            <td>${esc(task.airportIcao || "rota")}</td>
+            <td><strong>${esc(task.title)}</strong><br/><span class="muted">${esc(task.description)}</span>${
+              task.pilotNote ? `<br/><span>Obs: ${esc(task.pilotNote)}</span>` : ""
+            }</td>
+            <td>${esc(task.action)}</td>
+          </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="6" class="muted">Nenhuma tarefa operacional sugerida pela IA.</td></tr>`;
+
+  const airportBlocks = report.airports
+    .map(
+      (airport) => `<article class="card keep-together">
+        <header><strong>${esc(airport.icao)}</strong> <span class="pill">${esc(airport.role)}</span></header>
+        <p>${esc(airport.summary)}</p>
+        <p class="line"><span>Combustível</span> ${esc(airport.fuel.detail || "Verificar")}</p>
+        <p class="line"><span>Hangaragem</span> ${esc(airport.hangarage.detail || "Verificar")}</p>
+        <p class="line"><span>Slot/PPR</span> ${esc(airport.slotPpr.detail || "Verificar")}</p>
+      </article>`,
+    )
+    .join("");
+
+  const sourceRows = report.sources.length
+    ? report.sources
+        .slice(0, 12)
+        .map(
+          (source) => `<li><strong>${esc(source.title)}</strong> <span class="muted">${esc(source.sourceType)}</span><br/><span class="mono">${esc(source.url)}</span></li>`,
+        )
+        .join("")
+    : `<li class="muted">Sem fontes públicas além do AISWEB/base do briefing.</li>`;
+
+  return `<section id="checklist-ia" class="page keep-together">
+    <h2>Checklist operacional IA</h2>
+    <p>${esc(report.summary)}</p>
+    ${airportBlocks ? `<section class="block"><h3>Enriquecimento por aeródromo</h3>${airportBlocks}</section>` : ""}
+    <section class="block">
+      <h3>Tarefas do piloto</h3>
+      <table>
+        <thead><tr><th>#</th><th>Status</th><th>Prior.</th><th>AD</th><th>Tarefa</th><th>Ação</th></tr></thead>
+        <tbody>${taskRows}</tbody>
+      </table>
+    </section>
+    <section class="block">
+      <h3>Fontes</h3>
+      <ul class="list">${sourceRows}</ul>
+    </section>
+    <p class="footer">IA apenas organiza informações e pendências; confirmar dados operacionais antes do voo.</p>
+  </section>`;
 }
 
 function airportSectionHtml(
@@ -405,6 +473,8 @@ export function buildFlightPlanDocumentHtml(input: FlightPlanDocumentInput): str
       </section>`
     : "";
 
+  const aiHtml = aiBriefingHtml(input.aiReport);
+
   const airspaceRows = input.airspaces.length
     ? input.airspaces
         .map(
@@ -456,6 +526,15 @@ export function buildFlightPlanDocumentHtml(input: FlightPlanDocumentInput): str
             href: "#tabela-rota",
             label: "Tabela",
             icon: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M3 5v14h18V5H3zm8 12H5v-2h6v2zm0-4H5v-2h6v2zm0-4H5V7h6v2zm8 8h-6v-2h6v2zm0-4h-6v-2h6v2zm0-4h-6V7h6v2z"/></svg>`,
+          },
+        ]
+      : []),
+    ...(aiHtml
+      ? [
+          {
+            href: "#checklist-ia",
+            label: "Checklist IA",
+            icon: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M19 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2zm-8.03 12.03l-2.5-2.5 1.06-1.06 1.44 1.44 3.97-3.97L16 10l-5.03 5.03z"/></svg>`,
           },
         ]
       : []),
@@ -700,6 +779,7 @@ export function buildFlightPlanDocumentHtml(input: FlightPlanDocumentInput): str
       </section>
       <p class="footer">Gerado em ${esc(generatedAt)} · Dados AISWEB / GeoAISWEB</p>
     </section>
+    ${aiHtml}
     ${airportSummaryHtml(input.airports, continuous)}
     ${airportPages}
   </div>

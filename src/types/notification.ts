@@ -112,6 +112,7 @@ export type NotificationResponse = {
   message?: string;
   emailSettings?: EmailSettings;
   brandSettings?: EmailBrandSettings;
+  email?: string;
   googleCalendarSettings?: GoogleCalendarSettings;
   deliveries?: Array<{
     channel: NotificationChannel;
