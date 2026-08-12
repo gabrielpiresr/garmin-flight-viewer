@@ -144,7 +144,7 @@ const REH_CHART_WMS_LAYERS = [
   "ICA:CCV_REH_XP2_SAO_PAULO_2",
 ] as const;
 
-import { AIRSPACE_LAYER_DEFS, type AirspaceInfo } from "../lib/airspaceLayersDb";
+import { AIRSPACE_LAYER_DEFS, AIRSPACE_WFS_LAYER_DEFS, type AirspaceInfo } from "../lib/airspaceLayersDb";
 import { loadChartTileObjectUrl } from "../lib/chartTileCache";
 import { enqueueChartTileLoad, releaseChartTileSlot } from "../lib/chartTileQueue";
 import {
@@ -159,10 +159,11 @@ import {
   type ChartTilesManifest,
 } from "../lib/chartTiles";
 import { AirspaceInfoPanel, AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
+import { FcaAdOverlay } from "./FcaAdOverlay";
 
 const AIRSPACE_TOGGLES = AIRSPACE_LAYER_DEFS.map((d) => ({
   id: d.id,
-  label: d.type,
+  label: d.label,
   defaultOn: d.defaultOn,
   color: d.color,
 }));
@@ -2067,6 +2068,7 @@ export function FlightPlanMap({
                             <button
                               key={layer.id}
                               type="button"
+                              title={layer.label}
                               onClick={() =>
                                 setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
                               }
@@ -2380,7 +2382,7 @@ export function FlightPlanMap({
               keepBuffer={WMS_LAYER_LIMITS.reh.keepBuffer}
             />
           ) : null}
-          {AIRSPACE_TOGGLES.some((l) => layersOn[l.id]) ? (
+          {AIRSPACE_WFS_LAYER_DEFS.some((l) => layersOn[l.id]) ? (
             <AirspaceLayersOverlay
               enabledTypes={layersOn}
               selectedKey={selectedAirspace?.key ?? null}
@@ -2390,6 +2392,15 @@ export function FlightPlanMap({
               }}
             />
           ) : null}
+          <FcaAdOverlay
+            enabled={layersOn.fca_ad === true}
+            aerodromes={aerodromes}
+            selectedKey={selectedAirspace?.key ?? null}
+            onSelect={(info, key) => {
+              if (!info || !key) setSelectedAirspace(null);
+              else setSelectedAirspace({ info, key });
+            }}
+          />
           <ReaRoutesOverlayBoundary>
             <ReaRoutesOverlay kind="rea" enabled={!isWac && layersOn.rea === true} showEndpointMarkers={false} />
             <ReaRoutesOverlay kind="reh" enabled={!isWac && layersOn.reh === true} showEndpointMarkers={false} />

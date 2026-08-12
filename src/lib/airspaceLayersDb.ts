@@ -1,24 +1,52 @@
-/** WFS CTA/TMA/CTR/ATZ para desenho vetorial no mapa de planejamento. */
+/** WFS CTA/TMA/CTR/ATZ + EAC (P/R/D) para desenho vetorial no mapa de planejamento. */
 
-export type AirspaceLayerType = "CTA" | "TMA" | "CTR" | "ATZ";
+export type AirspaceLayerType =
+  | "CTA"
+  | "TMA"
+  | "CTR"
+  | "ATZ"
+  | "P"
+  | "R"
+  | "D"
+  | "FCA_AD";
+
+export type AirspaceLayerId =
+  | "cta"
+  | "tma"
+  | "ctr"
+  | "atz"
+  | "p"
+  | "r"
+  | "d"
+  | "fca_ad";
 
 export type AirspaceFeatureProps = {
   typ?: string;
+  tipo?: string;
   ident?: string;
+  id?: string;
   nam?: string;
   name?: string;
+  nome?: string;
   icaocode?: string;
   relatedfir?: string;
+  fir?: string;
   upperlimit?: number | string | null;
   uplimituni?: string | null;
+  uom_ulimit?: string | null;
   lowerlimi1?: number | string | null;
-  lowerlimit?: string | null;
+  lowerlimit?: number | string | null;
+  uom_llimit?: string | null;
   codedistv1?: string | null;
   codewrkhr?: string | null;
   txtrmk_loc?: string | null;
   classrmklo?: string | null;
   txtlocalty?: string | null;
   entryrpt?: string | null;
+  perigo?: string | null;
+  observacao?: string | null;
+  designador?: string | null;
+  efetivacao?: string | null;
   [key: string]: unknown;
 };
 
@@ -41,18 +69,76 @@ const DEV_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
 const APP_WFS_PROXY = "/api/geoaisweb/wfs";
 
 export const AIRSPACE_LAYER_DEFS: Array<{
-  id: Lowercase<AirspaceLayerType>;
+  id: AirspaceLayerId;
   type: AirspaceLayerType;
-  layer: string;
+  /** GeoAISWEB typeName; null = camada gerada no cliente (ex.: FCA AD). */
+  layer: string | null;
+  /** kind do proxy /api/geoaisweb/wfs. */
+  kind: string | null;
+  label: string;
   defaultOn: boolean;
   /** Fill / stroke base color (hex). */
   color: string;
 }> = [
-  { id: "cta", type: "CTA", layer: "ICA:CTA", defaultOn: false, color: "#f59e0b" },
-  { id: "tma", type: "TMA", layer: "ICA:TMA", defaultOn: true, color: "#8b5cf6" },
-  { id: "ctr", type: "CTR", layer: "ICA:CTR", defaultOn: true, color: "#0ea5e9" },
-  { id: "atz", type: "ATZ", layer: "ICA:ATZ", defaultOn: true, color: "#10b981" },
+  { id: "cta", type: "CTA", layer: "ICA:CTA", kind: "cta", label: "CTA", defaultOn: false, color: "#f59e0b" },
+  { id: "tma", type: "TMA", layer: "ICA:TMA", kind: "tma", label: "TMA", defaultOn: true, color: "#8b5cf6" },
+  { id: "ctr", type: "CTR", layer: "ICA:CTR", kind: "ctr", label: "CTR", defaultOn: true, color: "#0ea5e9" },
+  { id: "atz", type: "ATZ", layer: "ICA:ATZ", kind: "atz", label: "ATZ", defaultOn: true, color: "#10b981" },
+  {
+    id: "p",
+    type: "P",
+    layer: "ICA:eac_p",
+    kind: "eac_p",
+    label: "Proibida",
+    defaultOn: false,
+    color: "#ef4444",
+  },
+  {
+    id: "r",
+    type: "R",
+    layer: "ICA:eac_r",
+    kind: "eac_r",
+    label: "Restrita",
+    defaultOn: false,
+    color: "#f97316",
+  },
+  {
+    id: "d",
+    type: "D",
+    layer: "ICA:eac_d",
+    kind: "eac_d",
+    label: "Perigosa",
+    defaultOn: false,
+    color: "#eab308",
+  },
+  {
+    id: "fca_ad",
+    type: "FCA_AD",
+    layer: null,
+    kind: null,
+    label: "FCA AD",
+    defaultOn: false,
+    color: "#22d3ee",
+  },
 ];
+
+/** Camadas WFS (exclui FCA AD, que é gerada no cliente). */
+export const AIRSPACE_WFS_LAYER_DEFS = AIRSPACE_LAYER_DEFS.filter((d) => d.layer && d.kind);
+
+export function airspaceTypeLabel(type: AirspaceLayerType): string {
+  switch (type) {
+    case "P":
+      return "Área Proibida";
+    case "R":
+      return "Área Restrita";
+    case "D":
+      return "Área Perigosa";
+    case "FCA_AD":
+      return "FCA Aeródromo";
+    default:
+      return type;
+  }
+}
 
 function wfsBases(): string[] {
   // Em prod o GeoAISWEB bloqueia CORS no browser — usar proxy Vercel.
@@ -66,13 +152,14 @@ type Bbox = { minLng: number; minLat: number; maxLng: number; maxLat: number };
 async function fetchLayer(
   baseUrl: string,
   typeName: string,
+  kind: string,
   bbox: Bbox,
   layerType: AirspaceLayerType,
 ): Promise<AirspaceFeature[]> {
   const params =
     baseUrl === APP_WFS_PROXY
       ? new URLSearchParams({
-          kind: layerType.toLowerCase(),
+          kind,
           bbox: `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`,
           maxFeatures: "200",
         })
@@ -109,11 +196,11 @@ export async function loadAirspaceFeaturesInBbox(
   bbox: Bbox,
 ): Promise<AirspaceFeature[]> {
   const def = AIRSPACE_LAYER_DEFS.find((d) => d.type === layerType);
-  if (!def) return [];
+  if (!def?.layer || !def.kind) return [];
   let lastError: unknown = null;
   for (const base of wfsBases()) {
     try {
-      return await fetchLayer(base, def.layer, bbox, layerType);
+      return await fetchLayer(base, def.layer, def.kind, bbox, layerType);
     } catch (err) {
       lastError = err;
     }
@@ -144,36 +231,56 @@ export type AirspaceInfo = {
   airspaceClass: string | null;
   remarks: string | null;
   locality: string | null;
+  /** Frequência (ex.: FCA AD). */
+  frequency: string | null;
   color: string;
 };
 
 export function airspaceFeatureToInfo(feature: AirspaceFeature): AirspaceInfo {
   const props = feature.properties || {};
   const def = AIRSPACE_LAYER_DEFS.find((d) => d.type === feature.layerType);
-  const ident = String(props.ident || props.icaocode || feature.id || "").trim() || "—";
-  const name = String(props.nam || props.name || ident).trim();
-  const lower =
-    formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
-    formatLimit(props.lowerlimi1, props.codedistv1);
-  const upper = formatLimit(props.upperlimit, props.uplimituni || props.uomdistver);
+  const isEac = feature.layerType === "P" || feature.layerType === "R" || feature.layerType === "D";
+
+  const ident = String(
+    (isEac ? props.id : null) || props.ident || props.icaocode || props.id || feature.id || "",
+  ).trim() || "—";
+  const name = String(props.nome || props.nam || props.name || ident).trim();
+
+  const lower = isEac
+    ? formatLimit(props.lowerlimit ?? props.lowerlimi1, props.uom_llimit)
+    : formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
+      formatLimit(props.lowerlimi1, props.codedistv1);
+  const upper = isEac
+    ? formatLimit(props.upperlimit, props.uom_ulimit)
+    : formatLimit(props.upperlimit, props.uplimituni || props.uomdistver);
+
+  const remarkParts = [
+    props.perigo ? String(props.perigo) : null,
+    props.observacao ? String(props.observacao) : null,
+    props.txtrmk_loc ? String(props.txtrmk_loc) : null,
+  ].filter(Boolean);
+
   return {
     type: feature.layerType,
     ident,
     name,
-    fir: props.relatedfir ? String(props.relatedfir) : null,
+    fir: props.fir ? String(props.fir) : props.relatedfir ? String(props.relatedfir) : null,
     upper,
     lower,
     workHours: props.codewrkhr ? String(props.codewrkhr) : null,
-    airspaceClass: props.classrmklo ? String(props.classrmklo) : null,
-    remarks: props.txtrmk_loc ? String(props.txtrmk_loc) : null,
-    locality: props.txtlocalty ? String(props.txtlocalty) : null,
+    airspaceClass: props.classrmklo ? String(props.classrmklo) : isEac ? feature.layerType : null,
+    remarks: remarkParts.length ? remarkParts.join("\n") : null,
+    locality: props.txtlocalty ? String(props.txtlocalty) : props.designador ? String(props.designador) : null,
+    frequency: null,
     color: def?.color || "#94a3b8",
   };
 }
 
 export function airspaceFeatureKey(feature: AirspaceFeature): string {
   const props = feature.properties || {};
-  return `${feature.layerType}:${props.ident || ""}:${props.nam || ""}:${feature.id ?? ""}`;
+  const ident = props.ident || props.id || "";
+  const name = props.nam || props.nome || props.name || "";
+  return `${feature.layerType}:${ident}:${name}:${feature.id ?? ""}`;
 }
 
 /**
@@ -224,3 +331,7 @@ export function smoothAirspaceGeometry(
   }
   return geometry;
 }
+
+/** Raio padrão da FCA de aeródromo (NM), conforme ENR 1.1 / práticas SNPA·NexAtlas. */
+export const FCA_AD_RADIUS_NM = 10;
+export const FCA_AD_DEFAULT_FREQ_MHZ = "123.45";

@@ -7,6 +7,9 @@ const LAYER_BY_KIND = {
   tma: "ICA:TMA",
   ctr: "ICA:CTR",
   atz: "ICA:ATZ",
+  eac_p: "ICA:eac_p",
+  eac_r: "ICA:eac_r",
+  eac_d: "ICA:eac_d",
 };
 
 const CACHE_CONTROL = "public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800";
@@ -59,7 +62,9 @@ export default async function handler(req, res) {
     const kind = String(readParam(req.query, "kind") || "").toLowerCase();
     const typeName = LAYER_BY_KIND[kind];
     if (!typeName) {
-      res.status(400).json({ error: "kind deve ser rea, reh, cta, tma, ctr ou atz" });
+      res.status(400).json({
+        error: "kind deve ser rea, reh, cta, tma, ctr, atz, eac_p, eac_r ou eac_d",
+      });
       return;
     }
 
