@@ -1,10 +1,11 @@
 const CACHE_NAME = "gfv-app-shell-v10";
 const MAP_TILE_CACHE_MAX_ITEMS = 9000;
-const MAP_TILE_PREFETCH_CONCURRENCY = 8;
+const MAP_TILE_PREFETCH_CONCURRENCY = 4;
 const MAP_TILE_CACHES = {
-  wac: "gfv-geoaisweb-wac-v4",
-  rea: "gfv-geoaisweb-rea-chart-v4",
-  reh: "gfv-geoaisweb-reh-chart-v4",
+  wac: "gfv-geoaisweb-wac-v5",
+  rea: "gfv-geoaisweb-rea-chart-v5",
+  reh: "gfv-geoaisweb-reh-chart-v5",
+  xyz: "gfv-chart-xyz-v1",
 };
 const MAP_TILE_CACHE_NAMES = new Set(Object.values(MAP_TILE_CACHES));
 const APP_SHELL_URLS = [
@@ -72,6 +73,10 @@ async function networkFirst(request) {
 }
 
 function geoaiswebLayerSet(url) {
+  if (url.origin === self.location.origin && url.pathname.startsWith("/charts/")) {
+    return "xyz";
+  }
+
   if (url.origin === self.location.origin && url.pathname === "/api/geoaisweb/wms") {
     const layerSet = (url.searchParams.get("layerSet") || "").toLowerCase();
     return MAP_TILE_CACHES[layerSet] ? layerSet : null;
@@ -84,9 +89,9 @@ function geoaiswebLayerSet(url) {
   if ((url.searchParams.get("request") || "").toLowerCase() !== "getmap") return null;
   if ((url.searchParams.get("format") || "").toLowerCase() !== "image/png") return null;
   const layers = url.searchParams.get("layers") || "";
-  if (/\bICA:WAC_/.test(layers)) return "wac";
-  if (/\bICA:CCV_REA_/.test(layers)) return "rea";
-  if (/\bICA:CCV_REH_/.test(layers)) return "reh";
+  if (/\bICA:WAC_/.test(layers) || layers === "wac") return "wac";
+  if (/\bICA:CCV_REA_/.test(layers) || layers === "rea") return "rea";
+  if (/\bICA:CCV_REH_/.test(layers) || layers === "reh") return "reh";
   return null;
 }
 
@@ -125,17 +130,13 @@ async function fetchAndStoreMapTile(cache, request) {
   return response;
 }
 
-async function staleWhileRevalidateMapTile(cacheName, request) {
+/** Cache-first: return cached tile immediately; refresh only when missing. */
+async function cacheFirstMapTile(cacheName, request) {
   const normalized = normalizedMapTileRequest(request);
   const cache = await caches.open(cacheName);
   const cached = await cache.match(normalized);
-  const refresh = fetchAndStoreMapTile(cache, normalized).catch(() => null);
-  if (cached) {
-    void cache.put(normalized, cached.clone()).catch(() => {});
-    return cached;
-  }
-  const response = await refresh;
-  return response || Response.error();
+  if (cached) return cached;
+  return fetchAndStoreMapTile(cache, normalized);
 }
 
 async function prefetchMapTiles(urls) {
@@ -164,8 +165,28 @@ async function prefetchMapTiles(urls) {
 
 self.addEventListener("message", (event) => {
   const data = event.data || {};
-  if (data.type !== "GFV_PREFETCH_MAP_TILES" || !Array.isArray(data.urls)) return;
-  event.waitUntil(prefetchMapTiles(data.urls.slice(0, 240)));
+  if (data.type === "GFV_PREFETCH_MAP_TILES" && Array.isArray(data.urls)) {
+    event.waitUntil(prefetchMapTiles(data.urls.slice(0, 80)));
+    return;
+  }
+  if (data.type === "GFV_REVALIDATE_MAP_TILES" && Array.isArray(data.urls)) {
+    event.waitUntil(
+      (async () => {
+        for (const rawUrl of data.urls.slice(0, 40)) {
+          try {
+            const url = new URL(rawUrl, self.location.origin);
+            const cacheName = mapTileCacheName(url);
+            if (!cacheName) continue;
+            const request = normalizedMapTileRequest(new Request(url.href));
+            const cache = await caches.open(cacheName);
+            await fetchAndStoreMapTile(cache, request);
+          } catch {
+            // ignore
+          }
+        }
+      })(),
+    );
+  }
 });
 
 self.addEventListener("fetch", (event) => {
@@ -175,7 +196,7 @@ self.addEventListener("fetch", (event) => {
 
   const mapCacheName = mapTileCacheName(url);
   if (mapCacheName) {
-    event.respondWith(staleWhileRevalidateMapTile(mapCacheName, request));
+    event.respondWith(cacheFirstMapTile(mapCacheName, request));
     return;
   }
 

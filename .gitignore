@@ -20,3 +20,6 @@ public/downloads/*.dmg
 video-helper-app/dist-release-*/
 video-helper-app/dist-release-*/**
 .vercel
+
+# Chart tile build scratch space
+scripts/build-chart-tiles/.work/
