@@ -281,8 +281,8 @@ function TerrainZoom({
       const minDist = 50;
       const maxDist = Math.max(spanM * 8, 40_000);
       const dist = camera.position.distanceTo(hit);
-      const notches = Math.min(3, Math.max(0.35, Math.abs(event.deltaY) / 120));
-      const k = 1 - Math.pow(0.78, notches);
+      const notches = Math.min(2, Math.abs(event.deltaY) / 120);
+      const k = 1 - Math.pow(0.92, Math.max(0.05, notches));
       const zoomIn = event.deltaY < 0;
 
       if (zoomIn) {
