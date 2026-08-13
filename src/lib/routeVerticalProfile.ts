@@ -1,4 +1,4 @@
-import type { FlightPlanWaypoint } from "../types/flightPlanning";
+import type { FlightPlanWaypoint, FlightPlanAirspaceHit } from "../types/flightPlanning";
 import type { FlightPlanLeg } from "./flightPlanningRoute";
 import type { RouteElevationPoint } from "./routeElevationDb";
 import {
@@ -6,6 +6,8 @@ import {
   eteHoursAtDistanceNm,
   type ProfilePhasePoint,
 } from "./routePerformanceProfile";
+import { parseAirspaceLimitFt } from "./airspaceIntersect";
+import { airspaceHitColor, formatAirspaceFreqCell } from "./flightPlanFormat";
 
 export type VerticalProfileChartPoint = {
   xNm: number;
@@ -192,5 +194,111 @@ export function buildCorridorBands(
       altMax: hi,
     });
   }
+  return bands;
+}
+
+const UNLIMITED_FT = 90_000;
+const AIRSPACE_TYPE_PAINT_ORDER: FlightPlanAirspaceHit["type"][] = [
+  "FIR",
+  "FIS",
+  "CTA",
+  "TMA",
+  "CTR",
+  "FIZ",
+  "ATZ",
+  "AFIS",
+  "D",
+  "R",
+  "P",
+];
+
+export type AirspaceProfileBand = {
+  key: string;
+  name: string;
+  fullName: string;
+  ident: string;
+  type: FlightPlanAirspaceHit["type"];
+  color: string;
+  x0Nm: number;
+  x1Nm: number;
+  altMin: number;
+  altMax: number;
+  unlimited: boolean;
+  altitudeMiss: boolean;
+  lowerLabel: string;
+  upperLabel: string;
+  frequencies: string | null;
+};
+
+function airspaceOccupancySegments(
+  hit: FlightPlanAirspaceHit,
+): Array<{ fromNm: number; toNm: number }> {
+  if (hit.occupancyNm?.length) return hit.occupancyNm;
+  if (hit.entryDistanceNm == null || !Number.isFinite(hit.entryDistanceNm)) return [];
+  const fromNm = hit.entryDistanceNm;
+  const toNm =
+    hit.exitDistanceNm != null && Number.isFinite(hit.exitDistanceNm)
+      ? hit.exitDistanceNm
+      : fromNm;
+  return [{ fromNm, toNm: Math.max(fromNm, toNm) }];
+}
+
+/** Build filled airspace slabs along the route for the vertical profile. */
+export function buildAirspaceProfileBands(
+  airspaces: FlightPlanAirspaceHit[],
+  totalDistanceNm: number,
+): AirspaceProfileBand[] {
+  if (!(totalDistanceNm > 0) || airspaces.length === 0) return [];
+  const minWidth = Math.max(0.4, totalDistanceNm * 0.004);
+  const bands: AirspaceProfileBand[] = [];
+
+  for (const hit of airspaces) {
+    if (hit.type === "FIR" || hit.type === "FIS") continue;
+    const lowerFt = hit.lowerFt ?? parseAirspaceLimitFt(hit.lower) ?? 0;
+    const rawUpper = hit.upperFt ?? parseAirspaceLimitFt(hit.upper);
+    const unlimited = rawUpper == null || rawUpper >= UNLIMITED_FT;
+    const altMin = Number.isFinite(lowerFt) ? Math.max(0, Math.round(lowerFt)) : 0;
+    const altMax = unlimited ? UNLIMITED_FT : Math.max(altMin + 50, Math.round(rawUpper!));
+    const color = airspaceHitColor(hit.type);
+    const label = hit.ident && hit.ident !== "—" ? `${hit.type} ${hit.ident}` : hit.type;
+    const freq = formatAirspaceFreqCell(hit);
+    const frequencies = freq && freq !== "—" ? freq : null;
+
+    for (const seg of airspaceOccupancySegments(hit)) {
+      let x0 = Math.max(0, Math.min(totalDistanceNm, seg.fromNm));
+      let x1 = Math.max(0, Math.min(totalDistanceNm, seg.toNm));
+      if (x1 < x0) {
+        const t = x0;
+        x0 = x1;
+        x1 = t;
+      }
+      if (x1 - x0 < minWidth) {
+        const mid = (x0 + x1) / 2;
+        x0 = Math.max(0, mid - minWidth / 2);
+        x1 = Math.min(totalDistanceNm, mid + minWidth / 2);
+      }
+      if (!(x1 > x0)) continue;
+      bands.push({
+        key: `${hit.type}-${hit.ident}-${hit.name}-${x0.toFixed(2)}-${x1.toFixed(2)}`,
+        name: label,
+        fullName: hit.name,
+        ident: hit.ident,
+        type: hit.type,
+        color,
+        x0Nm: x0,
+        x1Nm: x1,
+        altMin,
+        altMax,
+        unlimited,
+        altitudeMiss: Boolean(hit.altitudeMiss),
+        lowerLabel: hit.lower || "—",
+        upperLabel: hit.upper || (unlimited ? "UNL" : "—"),
+        frequencies,
+      });
+    }
+  }
+
+  const order = new Map(AIRSPACE_TYPE_PAINT_ORDER.map((t, i) => [t, i]));
+  bands.sort((a, b) => (order.get(a.type) ?? 99) - (order.get(b.type) ?? 99));
   return bands;
 }

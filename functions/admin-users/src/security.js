@@ -27,6 +27,7 @@ const LEGACY_GUEST_PASSTHROUGH_ACTIONS = new Set([
   "notifyStudentScheduleEvent",
   "registerSagaCancellationPenalty",
   "runAiswebMetarWatchScan",
+  "runFlightRadarWatchScan",
   "runFlightReminderScan",
   "sagaCancelScheduleDirect",
   "sagaListSchedulesDirect",

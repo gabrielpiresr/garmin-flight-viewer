@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, WMSTileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
 import { prefetchAiswebChartBlobs, previewAiswebChartBlob, searchWindyWebcamsForAirport } from "../lib/aiswebDb";
@@ -887,47 +887,76 @@ function SupplementsPanel({ supplements }: { supplements: AiswebSupplement[] }) 
   );
 }
 
-function NotamsPanel({ notams }: { notams: AiswebNotam[] }) {
+function NotamsPanel({
+  notams,
+  highlightNumber,
+  focusKey,
+}: {
+  notams: AiswebNotam[];
+  highlightNumber?: string;
+  focusKey?: string;
+}) {
+  const highlight = String(highlightNumber || "").trim().toUpperCase();
+  const highlightRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!highlight || !highlightRef.current) return;
+    highlightRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [highlight, focusKey, notams.length]);
+
   if (!notams.length) {
     return <p className="text-xs text-slate-500">Nenhum NOTAM ativo para este aeródromo.</p>;
   }
   return (
     <div className="space-y-2">
-      {notams.map((item) => (
-        <article
-          key={item.id || `${item.icao}-${item.number}-${item.issuedAt}`}
-          className="rounded-xl border border-sky-500/20 bg-slate-950/50 px-3 py-2.5"
-        >
-          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-            <p className="text-xs font-bold tracking-wide text-sky-200">
-              {item.number || item.id || "NOTAM"}
-              {item.type ? ` · ${item.type}` : ""}
-            </p>
-            {item.status ? <p className="text-[10px] uppercase text-slate-500">{item.status}</p> : null}
-          </div>
-          {item.text ? (
-            <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{item.text}</p>
-          ) : (
-            <p className="text-[12px] text-slate-500">Sem texto.</p>
-          )}
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
-            {item.category ? <span>{item.category}</span> : null}
-            {item.qCode ? <span>Q: {item.qCode}</span> : null}
-            {item.lowerLimit || item.upperLimit ? (
-              <span>
-                {[item.lowerLimit, item.upperLimit].filter(Boolean).join(" → ")}
-              </span>
-            ) : null}
-            {item.issuedAt ? <span>Emitido: {formatNotamDate(item.issuedAt)}</span> : null}
-            {item.validFrom || item.validTo ? (
-              <span>
-                Válido: {formatNotamDate(item.validFrom)} → {formatNotamDate(item.validTo)}
-              </span>
-            ) : null}
-            {item.schedule ? <span>{item.schedule}</span> : null}
-          </div>
-        </article>
-      ))}
+      {notams.map((item) => {
+        const isHighlight =
+          Boolean(highlight) &&
+          String(item.number || "")
+            .toUpperCase()
+            .replace(/\s/g, "")
+            .includes(highlight.replace(/\s/g, ""));
+        return (
+          <article
+            key={item.id || `${item.icao}-${item.number}-${item.issuedAt}`}
+            ref={isHighlight ? highlightRef : undefined}
+            className={`rounded-xl border px-3 py-2.5 ${
+              isHighlight
+                ? "border-amber-400/50 bg-amber-500/10 ring-1 ring-amber-400/30"
+                : "border-sky-500/20 bg-slate-950/50"
+            }`}
+          >
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <p className={`text-xs font-bold tracking-wide ${isHighlight ? "text-amber-100" : "text-sky-200"}`}>
+                {item.number || item.id || "NOTAM"}
+                {item.type ? ` · ${item.type}` : ""}
+              </p>
+              {item.status ? <p className="text-[10px] uppercase text-slate-500">{item.status}</p> : null}
+            </div>
+            {item.text ? (
+              <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{item.text}</p>
+            ) : (
+              <p className="text-[12px] text-slate-500">Sem texto.</p>
+            )}
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+              {item.category ? <span>{item.category}</span> : null}
+              {item.qCode ? <span>Q: {item.qCode}</span> : null}
+              {item.lowerLimit || item.upperLimit ? (
+                <span>
+                  {[item.lowerLimit, item.upperLimit].filter(Boolean).join(" → ")}
+                </span>
+              ) : null}
+              {item.issuedAt ? <span>Emitido: {formatNotamDate(item.issuedAt)}</span> : null}
+              {item.validFrom || item.validTo ? (
+                <span>
+                  Válido: {formatNotamDate(item.validFrom)} → {formatNotamDate(item.validTo)}
+                </span>
+              ) : null}
+              {item.schedule ? <span>{item.schedule}</span> : null}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1229,6 +1258,15 @@ export function AiswebAirportDetailTabs({
   const charts = airport.charts || [];
   const supplements = airport.supplements || [];
   const notams = airport.notams || [];
+  const highlightNotamNumber = useMemo(() => {
+    const match = String(focusKey || "").match(/:notam:([^:]+):/);
+    if (!match?.[1]) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }, [focusKey]);
 
   useEffect(() => {
     setSubTab(initialSubTab);
@@ -1292,7 +1330,9 @@ export function AiswebAirportDetailTabs({
           <ExpandableComplements complements={complements} />
         </div>
       ) : null}
-      {subTab === "notams" ? <NotamsPanel notams={notams} /> : null}
+      {subTab === "notams" ? (
+        <NotamsPanel notams={notams} highlightNumber={highlightNotamNumber} focusKey={focusKey} />
+      ) : null}
       {subTab === "suplementos" ? <SupplementsPanel supplements={supplements} /> : null}
       {subTab === "cartas" ? <ChartsPanel charts={charts} /> : null}
     </div>

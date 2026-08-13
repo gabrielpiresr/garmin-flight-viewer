@@ -21,6 +21,16 @@
       "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
     },
     {
+      "functionId": "flight-radar-watch",
+      "name": "FlightRadar Fleet Watch",
+      "runtime": "node-22",
+      "entrypoint": "src/flightRadarWatchCron.js",
+      "path": "functions/admin-users",
+      "schedule": "*/10 * * * *",
+      "timeout": 60,
+      "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
+    },
+    {
       "functionId": "instructor-patch-flight",
       "name": "Instructor Patch Flight",
       "runtime": "node-22",

@@ -79,3 +79,38 @@ export async function findRunwaysByAirport(icao: string): Promise<RunwayRecord[]
     return [];
   }
 }
+
+export async function findRunwaysByAirports(icaoCodes: string[]): Promise<RunwayRecord[]> {
+  if (!isReady() || !databases || !DB_ID || !RUNWAYS_COL_ID) return [];
+  const codes = [...new Set(icaoCodes.map((c) => c.trim().toUpperCase()).filter((c) => /^[A-Z0-9]{4}$/.test(c)))];
+  if (!codes.length) return [];
+  const out: RunwayRecord[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < codes.length; i += 20) {
+    const chunk = codes.slice(i, i + 20);
+    try {
+      const res = await databases.listDocuments(DB_ID, RUNWAYS_COL_ID, [
+        Query.equal("airport_ident", chunk),
+        Query.limit(100),
+      ]);
+      for (const doc of res.documents) {
+        const rec = toRunwayRecord(doc as unknown as Record<string, unknown>);
+        if (!rec.$id || seen.has(rec.$id)) continue;
+        seen.add(rec.$id);
+        out.push(rec);
+      }
+    } catch {
+      await Promise.all(
+        chunk.map(async (code) => {
+          const list = await findRunwaysByAirport(code);
+          for (const rec of list) {
+            if (seen.has(rec.$id)) continue;
+            seen.add(rec.$id);
+            out.push(rec);
+          }
+        }),
+      );
+    }
+  }
+  return out;
+}

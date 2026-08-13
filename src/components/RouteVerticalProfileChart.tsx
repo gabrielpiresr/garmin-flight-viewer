@@ -3,6 +3,7 @@ import {
   Area,
   CartesianGrid,
   ComposedChart,
+  Customized,
   Line,
   ReferenceArea,
   ReferenceLine,
@@ -12,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { FlightPlanWaypoint } from "../types/flightPlanning";
+import type { FlightPlanAirspaceHit, FlightPlanWaypoint } from "../types/flightPlanning";
 import type { FlightPlanLeg } from "../lib/flightPlanningRoute";
 import type { LegCorridorInfo } from "../lib/legCorridor";
 import {
@@ -22,10 +23,13 @@ import {
 } from "../lib/routeElevationDb";
 import type { RoutePerformanceProfile } from "../lib/routePerformanceProfile";
 import { formatEteClock } from "../lib/flightPlanningRoute";
+import { airspaceTypeLabel } from "../lib/airspaceLayersDb";
 import {
+  buildAirspaceProfileBands,
   buildCorridorBands,
   buildVerticalProfileChartData,
   buildWaypointDistanceMarks,
+  type AirspaceProfileBand,
 } from "../lib/routeVerticalProfile";
 
 type Props = {
@@ -34,7 +38,309 @@ type Props = {
   totalDistanceNm: number;
   performance?: RoutePerformanceProfile | null;
   corridors?: Array<LegCorridorInfo | null>;
+  airspaces?: FlightPlanAirspaceHit[];
 };
+
+type ChartMouseState = {
+  activeLabel?: string | number;
+  activePayload?: Array<{ payload?: ChartRow }>;
+  chartX?: number;
+};
+
+type XDomain = [number, number];
+
+const PLOT_LEFT_PX = 40;
+const PLOT_RIGHT_PX = 12;
+
+function xNmFromChartState(state: ChartMouseState | null, domain: XDomain, width: number): number | null {
+  if (state?.chartX != null && Number.isFinite(state.chartX) && width > 0) {
+    const plotW = Math.max(1, width - PLOT_LEFT_PX - PLOT_RIGHT_PX);
+    const ratio = Math.min(1, Math.max(0, (state.chartX - PLOT_LEFT_PX) / plotW));
+    return domain[0] + (domain[1] - domain[0]) * ratio;
+  }
+  if (!state) return null;
+  if (typeof state.activeLabel === "number" && Number.isFinite(state.activeLabel)) {
+    return state.activeLabel;
+  }
+  const parsed = Number(state.activeLabel);
+  if (state.activeLabel != null && state.activeLabel !== "" && Number.isFinite(parsed)) {
+    return parsed;
+  }
+  const x = state.activePayload?.[0]?.payload?.xNm;
+  return typeof x === "number" && Number.isFinite(x) ? x : null;
+}
+
+function clampDomain(min: number, max: number, full: XDomain): XDomain {
+  const lo = Math.max(full[0], Math.min(min, max));
+  const hi = Math.min(full[1], Math.max(min, max));
+  return [lo, hi];
+}
+
+function airspaceFillOpacity(type: FlightPlanAirspaceHit["type"], altitudeMiss: boolean): number {
+  const base = (() => {
+    switch (type) {
+      case "FIR":
+        return 0.02;
+      case "FIS":
+        return 0.025;
+      case "CTA":
+        return 0.03;
+      case "TMA":
+        return 0.04;
+      case "P":
+      case "R":
+      case "D":
+        return 0.07;
+      default:
+        return 0.045;
+    }
+  })();
+  return altitudeMiss ? base * 0.65 : base;
+}
+
+type VisibleAirspaceBand = AirspaceProfileBand & { y1: number; y2: number };
+
+function clipAirspaceBandToScale(
+  band: AirspaceProfileBand,
+  xDomain: XDomain,
+  yDomain: [number, number],
+): VisibleAirspaceBand | null {
+  const x0 = Math.max(band.x0Nm, xDomain[0]);
+  const x1 = Math.min(band.x1Nm, xDomain[1]);
+  if (!(x1 > x0)) return null;
+  const rawTop = band.unlimited ? yDomain[1] : band.altMax;
+  const y1 = Math.max(band.altMin, yDomain[0]);
+  const y2 = Math.min(rawTop, yDomain[1]);
+  if (!(y2 > y1)) return null;
+  return { ...band, x0Nm: x0, x1Nm: x1, y1, y2 };
+}
+
+const LABEL_TYPE_PRIORITY: FlightPlanAirspaceHit["type"][] = [
+  "P",
+  "R",
+  "D",
+  "ATZ",
+  "CTR",
+  "FIZ",
+  "AFIS",
+  "TMA",
+  "CTA",
+  "FIS",
+  "FIR",
+];
+
+function firstChartAxis(map: unknown): { scale?: (v: number) => number } | null {
+  if (!map || typeof map !== "object") return null;
+  const first = Object.values(map as Record<string, { scale?: (v: number) => number }>)[0];
+  return first ?? null;
+}
+
+function AirspaceLabelsOverlay({
+  chartProps,
+  bands,
+}: {
+  chartProps: Record<string, unknown>;
+  bands: VisibleAirspaceBand[];
+}) {
+  const xAxis = firstChartAxis(chartProps.xAxisMap);
+  const yAxis = firstChartAxis(chartProps.yAxisMap);
+  const xScale = xAxis?.scale;
+  const yScale = yAxis?.scale;
+  const offset = chartProps.offset as
+    | { top?: number; left?: number; width?: number; height?: number }
+    | undefined;
+  if (typeof xScale !== "function" || typeof yScale !== "function") return null;
+
+  const plotLeft = offset?.left ?? 0;
+  const plotTop = offset?.top ?? 0;
+  const plotW = offset?.width ?? 0;
+  const plotH = offset?.height ?? 0;
+  const plotRight = plotLeft + plotW;
+  const plotBottom = plotTop + plotH;
+  const pad = 3;
+  const lineH = 12;
+
+  type Box = { x: number; y: number; w: number; h: number; text: string; color: string };
+  const placed: Box[] = [];
+  const priority = new Map(LABEL_TYPE_PRIORITY.map((t, i) => [t, i]));
+  const sorted = [...bands].sort((a, b) => {
+    const pa = priority.get(a.type) ?? 99;
+    const pb = priority.get(b.type) ?? 99;
+    if (pa !== pb) return pa - pb;
+    return (a.x1Nm - a.x0Nm) * (a.y2 - a.y1) - (b.x1Nm - b.x0Nm) * (b.y2 - b.y1);
+  });
+
+  for (const b of sorted) {
+    if (b.type === "FIR") continue;
+    const left = Math.min(xScale(b.x0Nm), xScale(b.x1Nm));
+    const right = Math.max(xScale(b.x0Nm), xScale(b.x1Nm));
+    const top = Math.min(yScale(b.y2), yScale(b.y1));
+    const bot = Math.max(yScale(b.y2), yScale(b.y1));
+    const cl = Math.max(left, plotLeft);
+    const cr = Math.min(right, plotRight);
+    const ct = Math.max(top, plotTop);
+    const cb = Math.min(bot, plotBottom);
+    const bw = cr - cl;
+    const bh = cb - ct;
+    if (bw < 32 || bh < 14) continue;
+
+    const tw = Math.min(bw - pad * 2, b.name.length * 5.7 + 6);
+    if (tw < 18) continue;
+    const candidates = [
+      { x: cl + (bw - tw) / 2, y: ct + pad },
+      { x: cl + pad, y: ct + pad },
+      { x: cr - tw - pad, y: ct + pad },
+      { x: cl + (bw - tw) / 2, y: cb - lineH - pad },
+      { x: cl + pad, y: (ct + cb - lineH) / 2 },
+      { x: cr - tw - pad, y: (ct + cb - lineH) / 2 },
+    ];
+
+    for (const c of candidates) {
+      const box: Box = {
+        x: Math.max(cl + 1, Math.min(c.x, cr - tw - 1)),
+        y: Math.max(ct + 1, Math.min(c.y, cb - lineH - 1)),
+        w: tw,
+        h: lineH,
+        text: b.name,
+        color: b.color,
+      };
+      if (box.x < cl || box.y < ct || box.x + box.w > cr || box.y + box.h > cb) continue;
+      const overlaps = placed.some(
+        (p) =>
+          !(box.x + box.w + 3 < p.x || p.x + p.w + 3 < box.x || box.y + box.h + 2 < p.y || p.y + p.h + 2 < box.y),
+      );
+      if (!overlaps) {
+        placed.push(box);
+        break;
+      }
+    }
+  }
+
+  return (
+    <g pointerEvents="none">
+      {placed.map((p) => (
+        <text
+          key={`${p.text}-${p.x.toFixed(1)}-${p.y.toFixed(1)}`}
+          x={p.x + p.w / 2}
+          y={p.y + p.h - 2}
+          textAnchor="middle"
+          fill={p.color}
+          fontSize={9}
+          fontWeight={600}
+          stroke="#0f172a"
+          strokeWidth={3}
+          paintOrder="stroke"
+          strokeLinejoin="round"
+        >
+          {p.text}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+function AirspaceBorderOverlay({
+  chartProps,
+  bands,
+  hoveredKey,
+  onHover,
+}: {
+  chartProps: Record<string, unknown>;
+  bands: VisibleAirspaceBand[];
+  hoveredKey: string | null;
+  onHover: (band: VisibleAirspaceBand | null, clientX: number, clientY: number) => void;
+}) {
+  const xAxis = firstChartAxis(chartProps.xAxisMap);
+  const yAxis = firstChartAxis(chartProps.yAxisMap);
+  const xScale = xAxis?.scale;
+  const yScale = yAxis?.scale;
+  if (typeof xScale !== "function" || typeof yScale !== "function") return null;
+
+  return (
+    <g>
+      {bands.map((b) => {
+        const x = Math.min(xScale(b.x0Nm), xScale(b.x1Nm));
+        const y = Math.min(yScale(b.y2), yScale(b.y1));
+        const w = Math.abs(xScale(b.x1Nm) - xScale(b.x0Nm));
+        const h = Math.abs(yScale(b.y2) - yScale(b.y1));
+        if (!(w > 1) || !(h > 1)) return null;
+        const hovered = hoveredKey === b.key;
+        return (
+          <g key={`border-${b.key}`}>
+            <rect
+              x={x}
+              y={y}
+              width={w}
+              height={h}
+              fill="none"
+              stroke={b.color}
+              strokeOpacity={0.02}
+              strokeWidth={12}
+              pointerEvents="stroke"
+              style={{ cursor: "pointer" }}
+              onMouseEnter={(event) => onHover(b, event.clientX, event.clientY)}
+              onMouseMove={(event) => onHover(b, event.clientX, event.clientY)}
+              onMouseLeave={() => onHover(null, 0, 0)}
+              onMouseDown={(event) => event.stopPropagation()}
+            />
+            {hovered ? (
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                fill="none"
+                stroke={b.color}
+                strokeOpacity={0.95}
+                strokeWidth={2}
+                strokeDasharray={b.altitudeMiss ? "4 3" : undefined}
+                pointerEvents="none"
+              />
+            ) : null}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function AirspaceHoverCard({ band }: { band: VisibleAirspaceBand }) {
+  const typeLabel = airspaceTypeLabel(band.type);
+  const limits = `${band.lowerLabel} / ${band.upperLabel}`;
+  const span = `${band.x0Nm.toFixed(1)}–${band.x1Nm.toFixed(1)} NM`;
+  return (
+    <div
+      style={{
+        background: "#0f172a",
+        border: `1px solid ${band.color}99`,
+        borderRadius: 8,
+        padding: "8px 10px",
+        fontSize: 11,
+        color: "#e2e8f0",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+        pointerEvents: "none",
+        minWidth: 180,
+        maxWidth: 260,
+      }}
+    >
+      <p style={{ margin: 0, marginBottom: 4, fontWeight: 700, color: band.color }}>
+        {band.type} · {typeLabel}
+      </p>
+      <p style={{ margin: "2px 0", color: "#f1f5f9", fontWeight: 600 }}>{band.fullName}</p>
+      {band.ident && band.ident !== "—" ? (
+        <p style={{ margin: "2px 0", color: "#94a3b8", fontFamily: "ui-monospace, monospace" }}>{band.ident}</p>
+      ) : null}
+      <p style={{ margin: "2px 0", color: "#cbd5e1" }}>Limites: {limits}</p>
+      <p style={{ margin: "2px 0", color: "#94a3b8" }}>Na rota: {span}</p>
+      {band.frequencies ? (
+        <p style={{ margin: "2px 0", color: "#a5b4fc" }}>{band.frequencies}</p>
+      ) : null}
+      {band.altitudeMiss ? (
+        <p style={{ margin: "4px 0 0", color: "#fbbf24" }}>Rota passa fora da altitude deste espaço</p>
+      ) : null}
+    </div>
+  );
+}
 
 type ChartRow = {
   xNm: number;
@@ -237,11 +543,27 @@ export function RouteVerticalProfileChart({
   totalDistanceNm,
   performance = null,
   corridors = [],
+  airspaces = [],
 }: Props) {
   const [terrain, setTerrain] = useState<RouteElevationPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAirspaces, setShowAirspaces] = useState(false);
+  const [airspaceHover, setAirspaceHover] = useState<{
+    band: VisibleAirspaceBand;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [xZoom, setXZoom] = useState<XDomain | null>(null);
+  const [dragRange, setDragRange] = useState<XDomain | null>(null);
   const requestIdRef = useRef(0);
+  const plotShellRef = useRef<HTMLDivElement | null>(null);
+  const dragStartXRef = useRef<number | null>(null);
+  const xZoomRef = useRef<XDomain | null>(null);
+  const fullXDomainRef = useRef<XDomain>([0, Math.max(0, totalDistanceNm)]);
+  const wheelFrameRef = useRef<number | null>(null);
+  const wheelDeltaRef = useRef(0);
+  const wheelClientXRef = useRef<number | null>(null);
   const geometryKey = useMemo(
     () =>
       waypoints.length >= 2
@@ -249,6 +571,30 @@ export function RouteVerticalProfileChart({
         : "",
     [waypoints],
   );
+
+  const fullXDomain = useMemo<XDomain>(
+    () => [0, Math.max(0, totalDistanceNm)],
+    [totalDistanceNm],
+  );
+  const visibleXDomain = xZoom ?? fullXDomain;
+
+  useEffect(() => {
+    xZoomRef.current = xZoom;
+  }, [xZoom]);
+  useEffect(() => {
+    fullXDomainRef.current = fullXDomain;
+  }, [fullXDomain]);
+
+  useEffect(() => {
+    if (!showAirspaces) setAirspaceHover(null);
+  }, [showAirspaces]);
+
+  useEffect(() => {
+    setXZoom(null);
+    setDragRange(null);
+    setAirspaceHover(null);
+    dragStartXRef.current = null;
+  }, [geometryKey, totalDistanceNm]);
 
   useEffect(() => {
     if (!geometryKey || waypoints.length < 2 || !(totalDistanceNm > 0)) {
@@ -297,6 +643,11 @@ export function RouteVerticalProfileChart({
   const corridorBands = useMemo(
     () => buildCorridorBands(legs, corridors),
     [legs, corridors],
+  );
+
+  const airspaceBands = useMemo(
+    () => buildAirspaceProfileBands(airspaces, totalDistanceNm),
+    [airspaces, totalDistanceNm],
   );
 
   const chartData = useMemo(() => {
@@ -355,7 +706,11 @@ export function RouteVerticalProfileChart({
     [waypoints, legs],
   );
 
-  const tickValues = useMemo(() => waypointMarks.map((m) => m.xNm), [waypointMarks]);
+  const tickValues = useMemo(() => {
+    const [x0, x1] = visibleXDomain;
+    const visible = waypointMarks.filter((m) => m.xNm >= x0 - 0.05 && m.xNm <= x1 + 0.05).map((m) => m.xNm);
+    return visible.length ? visible : undefined;
+  }, [waypointMarks, visibleXDomain]);
   const labelByNm = useMemo(() => {
     const map = new Map<number, string>();
     for (const m of waypointMarks) {
@@ -364,8 +719,8 @@ export function RouteVerticalProfileChart({
     return map;
   }, [waypointMarks]);
   const rowByNm = useMemo(
-    () => assignWaypointTickRows(waypointMarks, totalDistanceNm),
-    [waypointMarks, totalDistanceNm],
+    () => assignWaypointTickRows(waypointMarks, Math.max(visibleXDomain[1] - visibleXDomain[0], 1)),
+    [waypointMarks, visibleXDomain],
   );
   const xAxisHeight = useMemo(() => {
     let maxRow = 0;
@@ -374,29 +729,133 @@ export function RouteVerticalProfileChart({
   }, [rowByNm]);
 
   const yDomain = useMemo(() => {
+    const [x0, x1] = visibleXDomain;
     let maxFt = 500;
     for (const p of chartData) {
+      if (p.xNm < x0 || p.xNm > x1) continue;
       if (p.terrainFt != null) maxFt = Math.max(maxFt, p.terrainFt);
       if (p.plannedFt != null) maxFt = Math.max(maxFt, p.plannedFt);
       if (p.phaseFt != null) maxFt = Math.max(maxFt, p.phaseFt);
     }
     for (const b of corridorBands) {
+      if (b.x1Nm < x0 || b.x0Nm > x1) continue;
       maxFt = Math.max(maxFt, b.altMax);
     }
     if (performance?.cruiseAltFt) maxFt = Math.max(maxFt, performance.cruiseAltFt);
     const padded = Math.ceil((maxFt * 1.15) / 500) * 500;
     return [0, Math.max(500, padded)] as [number, number];
-  }, [chartData, performance, corridorBands]);
+  }, [chartData, performance, corridorBands, visibleXDomain]);
+
+  const applyZoom = (next: XDomain | null) => {
+    if (!next) {
+      setXZoom(null);
+      return;
+    }
+    const full = fullXDomainRef.current;
+    const [min, max] = clampDomain(next[0], next[1], full);
+    const fullSpan = full[1] - full[0] || 1;
+    if (max - min < fullSpan * 0.005) return;
+    if (max - min >= fullSpan * 0.92) {
+      setXZoom(null);
+      return;
+    }
+    setXZoom([min, max]);
+  };
+
+  const finishDragZoom = (endX: number | null) => {
+    const start = dragStartXRef.current;
+    dragStartXRef.current = null;
+    setDragRange(null);
+    if (start == null || endX == null) return;
+    applyZoom([start, endX]);
+  };
+
+  useEffect(() => {
+    if (dragRange == null) return undefined;
+    const onUp = () => finishDragZoom(dragRange[1]);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragRange]);
 
   const hasPlanned = chartData.some((p) => p.plannedFt != null);
   const ready = waypoints.length >= 2 && totalDistanceNm > 0;
   const tocCount = performance?.phaseMarkers.filter((m) => m.label === "TOC").length ?? 0;
   const todCount = performance?.phaseMarkers.filter((m) => m.label === "TOD").length ?? 0;
+  const zoomed = xZoom != null;
+  const visibleAirspaceBands = useMemo(() => {
+    if (!showAirspaces) return [];
+    return airspaceBands
+      .map((b) => clipAirspaceBandToScale(b, visibleXDomain, yDomain))
+      .filter((b): b is VisibleAirspaceBand => b != null);
+  }, [showAirspaces, airspaceBands, visibleXDomain, yDomain]);
+
+  useEffect(() => {
+    const el = plotShellRef.current;
+    if (!el) return undefined;
+
+    const applyWheelZoom = () => {
+      wheelFrameRef.current = null;
+      const full = fullXDomainRef.current;
+      const [fullMin, fullMax] = full;
+      const fullSpan = fullMax - fullMin;
+      if (fullSpan <= 0) return;
+      const current = xZoomRef.current ?? full;
+      const currentSpan = current[1] - current[0];
+      const rect = el.getBoundingClientRect();
+      const left = PLOT_LEFT_PX;
+      const right = PLOT_RIGHT_PX;
+      const plotW = Math.max(1, rect.width - left - right);
+      const clientX = wheelClientXRef.current ?? rect.left + left + plotW / 2;
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left - left) / plotW));
+      const anchor = current[0] + currentSpan * ratio;
+      const factor = Math.exp(wheelDeltaRef.current * 0.0012);
+      wheelDeltaRef.current = 0;
+      const nextSpan = Math.min(fullSpan, Math.max(fullSpan / 800, currentSpan * factor));
+      if (nextSpan >= fullSpan * 0.92) {
+        setXZoom(null);
+        return;
+      }
+      let nextMin = anchor - nextSpan * ratio;
+      let nextMax = nextMin + nextSpan;
+      if (nextMin < fullMin) {
+        nextMin = fullMin;
+        nextMax = fullMin + nextSpan;
+      }
+      if (nextMax > fullMax) {
+        nextMax = fullMax;
+        nextMin = fullMax - nextSpan;
+      }
+      setXZoom([nextMin, nextMax]);
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      wheelDeltaRef.current += event.deltaY;
+      wheelClientXRef.current = event.clientX;
+      if (wheelFrameRef.current === null) {
+        wheelFrameRef.current = window.requestAnimationFrame(applyWheelZoom);
+      }
+    };
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", handleWheel);
+      if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    };
+  }, [ready, chartData.length]);
 
   return (
     <section className="shrink-0 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/60">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
-        <h3 className="text-sm font-semibold text-slate-100">Perfil vertical</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">Perfil vertical</h3>
+          <span className="text-[10px] text-slate-500">Arraste para ampliar</span>
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
           {loading ? <span className="text-cyan-300/80">Atualizando relevo…</span> : null}
           {error ? <span className="text-amber-300/90">{error}</span> : null}
@@ -410,6 +869,27 @@ export function RouteVerticalProfileChart({
               TOD×{todCount}
             </span>
           ) : null}
+          <button
+            type="button"
+            disabled={airspaces.length === 0}
+            onClick={() => setShowAirspaces((v) => !v)}
+            className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
+              showAirspaces
+                ? "bg-violet-600 text-white"
+                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+            }`}
+          >
+            Espaços aéreos
+          </button>
+          {zoomed ? (
+            <button
+              type="button"
+              onClick={() => setXZoom(null)}
+              className="rounded-md bg-cyan-600 px-2 py-0.5 text-[11px] font-medium text-white"
+            >
+              Ver rota toda
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="px-1 pt-1">
@@ -418,9 +898,31 @@ export function RouteVerticalProfileChart({
             Defina origem e destino para ver o perfil
           </p>
         ) : chartData.length > 1 && (hasPlanned || terrain.length > 0) ? (
-          <div className="h-80 w-full sm:h-96">
+          <div ref={plotShellRef} className="relative h-52 w-full cursor-crosshair select-none overscroll-contain sm:h-80 lg:h-96">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 14, right: 12, left: 0, bottom: 4 }}>
+              <ComposedChart
+                data={chartData}
+                margin={{ top: 14, right: 12, left: 0, bottom: 4 }}
+                onMouseDown={(state) => {
+                  const width = plotShellRef.current?.clientWidth ?? 0;
+                  const x = xNmFromChartState(state as ChartMouseState, visibleXDomain, width);
+                  if (x == null) return;
+                  dragStartXRef.current = x;
+                  setDragRange([x, x]);
+                }}
+                onMouseMove={(state) => {
+                  if (dragStartXRef.current == null) return;
+                  const width = plotShellRef.current?.clientWidth ?? 0;
+                  const x = xNmFromChartState(state as ChartMouseState, visibleXDomain, width);
+                  if (x == null) return;
+                  setDragRange([dragStartXRef.current, x]);
+                }}
+                onMouseUp={(state) => {
+                  const width = plotShellRef.current?.clientWidth ?? 0;
+                  finishDragZoom(xNmFromChartState(state as ChartMouseState, visibleXDomain, width));
+                }}
+                onDoubleClick={() => setXZoom(null)}
+              >
                 <defs>
                   <linearGradient id="routeTerrainFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#c4a574" stopOpacity={0.7} />
@@ -431,8 +933,9 @@ export function RouteVerticalProfileChart({
                 <XAxis
                   dataKey="xNm"
                   type="number"
-                  domain={[0, "dataMax"]}
-                  ticks={tickValues.length ? tickValues : undefined}
+                  domain={visibleXDomain}
+                  allowDataOverflow
+                  ticks={tickValues}
                   interval={0}
                   tick={<WaypointAxisTick labelByNm={labelByNm} rowByNm={rowByNm} />}
                   height={xAxisHeight}
@@ -453,12 +956,32 @@ export function RouteVerticalProfileChart({
                   tickLine={{ stroke: "#334155" }}
                 />
                 <Tooltip
+                  key={dragRange || airspaceHover ? "paused" : "live"}
                   content={<ProfileTooltip />}
-                  cursor={{ stroke: "#64748b", strokeDasharray: "3 3" }}
+                  cursor={dragRange || airspaceHover ? false : { stroke: "#64748b", strokeDasharray: "3 3" }}
                   allowEscapeViewBox={{ x: true, y: true }}
                   wrapperStyle={{ outline: "none", zIndex: 20, pointerEvents: "none" }}
                   offset={12}
+                  active={dragRange || airspaceHover ? false : undefined}
                 />
+                {showAirspaces
+                  ? visibleAirspaceBands.map((b) => (
+                      <ReferenceArea
+                        key={`airspace-${b.key}`}
+                        x1={b.x0Nm}
+                        x2={b.x1Nm}
+                        y1={b.y1}
+                        y2={b.y2}
+                        stroke={b.color}
+                        strokeOpacity={b.altitudeMiss ? 0.28 : 0.4}
+                        strokeWidth={1}
+                        strokeDasharray={b.altitudeMiss ? "4 3" : undefined}
+                        fill={b.color}
+                        fillOpacity={airspaceFillOpacity(b.type, b.altitudeMiss)}
+                        ifOverflow="hidden"
+                      />
+                    ))
+                  : null}
                 {corridorBands.map((b) => (
                   <ReferenceArea
                     key={`corridor-${b.name}-${b.x0Nm}-${b.x1Nm}`}
@@ -527,8 +1050,56 @@ export function RouteVerticalProfileChart({
                   isAnimationActive={false}
                   legendType="none"
                 />
+                {showAirspaces && visibleAirspaceBands.length > 0 ? (
+                  <Customized
+                    component={(chartProps: Record<string, unknown>) => (
+                      <g>
+                        <AirspaceLabelsOverlay chartProps={chartProps} bands={visibleAirspaceBands} />
+                        <AirspaceBorderOverlay
+                          chartProps={chartProps}
+                          bands={visibleAirspaceBands}
+                          hoveredKey={airspaceHover?.band.key ?? null}
+                          onHover={(band, clientX, clientY) => {
+                            if (!band) {
+                              setAirspaceHover(null);
+                              return;
+                            }
+                            const rect = plotShellRef.current?.getBoundingClientRect();
+                            setAirspaceHover({
+                              band,
+                              x: rect ? clientX - rect.left : clientX,
+                              y: rect ? clientY - rect.top : clientY,
+                            });
+                          }}
+                        />
+                      </g>
+                    )}
+                  />
+                ) : null}
+                {dragRange ? (
+                  <ReferenceArea
+                    x1={Math.min(dragRange[0], dragRange[1])}
+                    x2={Math.max(dragRange[0], dragRange[1])}
+                    y1={yDomain[0]}
+                    y2={yDomain[1]}
+                    stroke="rgba(125, 211, 252, 0.85)"
+                    fill="rgba(14, 165, 233, 0.18)"
+                    ifOverflow="hidden"
+                  />
+                ) : null}
               </ComposedChart>
             </ResponsiveContainer>
+            {showAirspaces && airspaceHover ? (
+              <div
+                className="pointer-events-none absolute z-30"
+                style={{
+                  left: Math.min(airspaceHover.x + 14, (plotShellRef.current?.clientWidth ?? 320) - 200),
+                  top: Math.max(8, airspaceHover.y - 10),
+                }}
+              >
+                <AirspaceHoverCard band={airspaceHover.band} />
+              </div>
+            ) : null}
           </div>
         ) : (
           <p className="grid h-72 place-items-center text-[11px] text-slate-600">

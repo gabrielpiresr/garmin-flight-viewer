@@ -798,10 +798,356 @@ async function prepareTelemetryFromFr24(deps, input = {}) {
   };
 }
 
+/** WhatsApp fleet takeoff/landing watches (opt-in, 24h). */
+const FLIGHT_RADAR_WATCH_PREFIX = "flightRadarWatch:";
+const FLIGHT_RADAR_WATCH_STATE_KEY = "flightRadarWatchState";
+const FLIGHT_RADAR_WATCH_HOURS = 24;
+const OFFLINE_LANDING_STREAK = 2;
+
+function flightRadarWatchKey(phone) {
+  const digits = cleanString(phone).replace(/\D/g, "");
+  if (!digits) return "";
+  return `${FLIGHT_RADAR_WATCH_PREFIX}${digits}`;
+}
+
+function phoneFromFlightRadarWatchKey(key) {
+  const raw = cleanString(key);
+  if (!raw.startsWith(FLIGHT_RADAR_WATCH_PREFIX)) return "";
+  return raw.slice(FLIGHT_RADAR_WATCH_PREFIX.length).replace(/\D/g, "");
+}
+
+function publicFlightRadarWatch(raw, updatedAt = null) {
+  const phone = cleanString(raw?.phone).replace(/\D/g, "");
+  const hours = FLIGHT_RADAR_WATCH_HOURS;
+  const startedAt = cleanString(raw?.startedAt) || null;
+  const expiresAt = cleanString(raw?.expiresAt) || null;
+  const active = raw?.active !== false && Boolean(phone && expiresAt);
+  return {
+    phone,
+    hours,
+    startedAt,
+    expiresAt,
+    nickname: cleanString(raw?.nickname) || "",
+    userId: cleanString(raw?.userId) || "",
+    active,
+    updatedAt: updatedAt || raw?.updatedAt || null,
+  };
+}
+
+async function loadFlightRadarWatch(deps, phone) {
+  const key = flightRadarWatchKey(phone);
+  if (!key) return null;
+  const doc = await deps.getSettingDoc(key);
+  if (!doc) return null;
+  let raw = {};
+  try {
+    raw = JSON.parse(doc.settings_json || "{}");
+  } catch {
+    raw = {};
+  }
+  return publicFlightRadarWatch(
+    { ...raw, phone: raw.phone || phoneFromFlightRadarWatchKey(doc.key) },
+    doc.$updatedAt || raw.updatedAt || null,
+  );
+}
+
+async function listFlightRadarWatchDocs(deps) {
+  if (typeof deps.listSettingDocsByPrefix !== "function") return [];
+  return deps.listSettingDocsByPrefix(FLIGHT_RADAR_WATCH_PREFIX).catch(() => []);
+}
+
+async function listActiveFlightRadarWatches(deps, { includeExpired = false } = {}) {
+  const docs = await listFlightRadarWatchDocs(deps);
+  const out = [];
+  const seen = new Set();
+  const now = Date.now();
+  for (const doc of Array.isArray(docs) ? docs : []) {
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const watch = publicFlightRadarWatch(
+      { ...raw, phone: raw.phone || phoneFromFlightRadarWatchKey(doc.key) },
+      doc.$updatedAt || raw.updatedAt || null,
+    );
+    if (!watch.phone || seen.has(watch.phone)) continue;
+    const expiresMs = Date.parse(watch.expiresAt || "") || 0;
+    const stillValid = watch.active && expiresMs > now;
+    if (!includeExpired && !stillValid) continue;
+    if (!includeExpired && !watch.active) continue;
+    seen.add(watch.phone);
+    out.push({ ...watch, docKey: doc.key, expired: !stillValid || !watch.active });
+  }
+  return out;
+}
+
+async function saveFlightRadarWatch(deps, input) {
+  const phone = cleanString(input?.phone).replace(/\D/g, "");
+  const key = flightRadarWatchKey(phone);
+  if (!key) {
+    throw Object.assign(new Error("Informe um telefone válido para acompanhar a frota."), { status: 400 });
+  }
+  const startedAt = cleanString(input?.startedAt) || nowIso();
+  const hours = FLIGHT_RADAR_WATCH_HOURS;
+  const expiresAt =
+    cleanString(input?.expiresAt) ||
+    new Date(Date.parse(startedAt) + hours * 60 * 60 * 1000).toISOString();
+  const next = publicFlightRadarWatch(
+    {
+      phone,
+      hours,
+      startedAt,
+      expiresAt,
+      nickname: input?.nickname,
+      userId: input?.userId,
+      active: input?.active !== false,
+      updatedAt: nowIso(),
+    },
+    nowIso(),
+  );
+  const saved = await deps.upsertPlatformSettingDoc(key, next);
+  if (!saved) {
+    throw Object.assign(new Error("Não foi possível salvar o acompanhamento da frota."), { status: 500 });
+  }
+  return next;
+}
+
+async function clearFlightRadarWatch(deps, phone) {
+  const key = flightRadarWatchKey(phone);
+  if (!key) return { cleared: 0 };
+  if (typeof deps.deleteSettingDoc === "function") {
+    const ok = await deps.deleteSettingDoc(key);
+    return { cleared: ok ? 1 : 0 };
+  }
+  await deps.upsertPlatformSettingDoc(key, {
+    phone: cleanString(phone).replace(/\D/g, ""),
+    hours: FLIGHT_RADAR_WATCH_HOURS,
+    active: false,
+    expiresAt: nowIso(),
+    updatedAt: nowIso(),
+  });
+  return { cleared: 1 };
+}
+
+function defaultWatchFleetState() {
+  return {
+    aircraft: {},
+    updatedAt: null,
+  };
+}
+
+function publicWatchFleetState(raw) {
+  const aircraft = {};
+  const source = raw?.aircraft && typeof raw.aircraft === "object" && !Array.isArray(raw.aircraft) ? raw.aircraft : {};
+  for (const [regRaw, row] of Object.entries(source)) {
+    const reg = normalizeRegistration(regRaw);
+    if (!reg || !row || typeof row !== "object") continue;
+    const status = cleanString(row.status);
+    aircraft[reg] = {
+      status: status === "airborne" || status === "ground" || status === "offline" ? status : "offline",
+      fr24Id: cleanString(row.fr24Id) || null,
+      alt: Number.isFinite(Number(row.alt)) ? Number(row.alt) : null,
+      gspeed: Number.isFinite(Number(row.gspeed)) ? Number(row.gspeed) : null,
+      callsign: cleanString(row.callsign) || null,
+      offlineStreak: Math.max(0, Math.round(Number(row.offlineStreak) || 0)),
+      lastTakeoffFr24Id: cleanString(row.lastTakeoffFr24Id) || null,
+      lastLandingFr24Id: cleanString(row.lastLandingFr24Id) || null,
+      updatedAt: cleanString(row.updatedAt) || null,
+    };
+  }
+  return {
+    aircraft,
+    updatedAt: cleanString(raw?.updatedAt) || null,
+  };
+}
+
+async function loadWatchFleetState(deps) {
+  const doc = await deps.getSettingDoc(FLIGHT_RADAR_WATCH_STATE_KEY);
+  if (!doc) return defaultWatchFleetState();
+  let raw = {};
+  try {
+    raw = JSON.parse(doc.settings_json || "{}");
+  } catch {
+    raw = {};
+  }
+  return publicWatchFleetState(raw);
+}
+
+async function saveWatchFleetState(deps, state) {
+  const next = publicWatchFleetState({ ...state, updatedAt: nowIso() });
+  const saved = await deps.upsertPlatformSettingDoc(FLIGHT_RADAR_WATCH_STATE_KEY, next);
+  if (!saved) {
+    throw Object.assign(new Error("Não foi possível salvar o estado da frota do Radar Watch."), {
+      status: 500,
+    });
+  }
+  return next;
+}
+
+function classifyLiveStatus(pos) {
+  if (!pos) return "offline";
+  const alt = Number(pos.alt) || 0;
+  const spd = Number(pos.gspeed) || 0;
+  if (alt > 50 || spd > 30) return "airborne";
+  return "ground";
+}
+
+/**
+ * Diff previous fleet state vs current live positions.
+ * Returns events + next state snapshot.
+ */
+function detectFleetTransitions(previousState, positions, trackedRegistrations) {
+  const prev = publicWatchFleetState(previousState);
+  const byReg = new Map();
+  for (const pos of Array.isArray(positions) ? positions : []) {
+    const reg = normalizeRegistration(pos?.reg);
+    if (!reg) continue;
+    byReg.set(reg, pos);
+  }
+
+  const regs = sanitizeRegistrations(
+    trackedRegistrations?.length
+      ? trackedRegistrations
+      : [...new Set([...Object.keys(prev.aircraft), ...byReg.keys()])],
+  );
+
+  const events = [];
+  const nextAircraft = { ...prev.aircraft };
+
+  for (const reg of regs) {
+    const pos = byReg.get(reg) || null;
+    const status = classifyLiveStatus(pos);
+    const previous = prev.aircraft[reg] || {
+      status: "offline",
+      fr24Id: null,
+      alt: null,
+      gspeed: null,
+      callsign: null,
+      offlineStreak: 0,
+      lastTakeoffFr24Id: null,
+      lastLandingFr24Id: null,
+      updatedAt: null,
+    };
+    const fr24Id = cleanString(pos?.fr24Id) || previous.fr24Id || null;
+    let offlineStreak = 0;
+    let nextStatus = status;
+    let eventType = null;
+    const isSeed = !previous.updatedAt;
+
+    if (!isSeed && status === "offline" && previous.status === "airborne") {
+      offlineStreak = Math.max(1, previous.offlineStreak + 1);
+      if (offlineStreak < OFFLINE_LANDING_STREAK) {
+        // ADS-B gap: keep airborne until confirmed missing for N polls.
+        nextStatus = "airborne";
+      } else if ((previous.fr24Id || fr24Id) !== previous.lastLandingFr24Id) {
+        eventType = "landing";
+        nextStatus = "offline";
+      } else {
+        nextStatus = "offline";
+      }
+    } else if (status === "offline") {
+      offlineStreak = !isSeed && previous.status === "offline" ? previous.offlineStreak + 1 : 1;
+      nextStatus = "offline";
+    } else if (
+      !isSeed &&
+      status === "airborne" &&
+      (previous.status === "ground" || previous.status === "offline") &&
+      fr24Id &&
+      fr24Id !== previous.lastTakeoffFr24Id
+    ) {
+      eventType = "takeoff";
+      offlineStreak = 0;
+    } else if (
+      !isSeed &&
+      previous.status === "airborne" &&
+      status === "ground" &&
+      fr24Id &&
+      fr24Id !== previous.lastLandingFr24Id
+    ) {
+      eventType = "landing";
+      offlineStreak = 0;
+    }
+
+    const row = {
+      status: nextStatus,
+      fr24Id,
+      alt: pos?.alt != null && Number.isFinite(Number(pos.alt)) ? Number(pos.alt) : previous.alt,
+      gspeed: pos?.gspeed != null && Number.isFinite(Number(pos.gspeed)) ? Number(pos.gspeed) : previous.gspeed,
+      callsign: cleanString(pos?.callsign) || previous.callsign || null,
+      offlineStreak: nextStatus === "airborne" && status === "offline" ? offlineStreak : status === "offline" ? offlineStreak : 0,
+      lastTakeoffFr24Id: previous.lastTakeoffFr24Id,
+      lastLandingFr24Id: previous.lastLandingFr24Id,
+      updatedAt: nowIso(),
+    };
+
+    // First observation only seeds state (no WhatsApp spam for already-airborne fleet).
+    if (isSeed && status === "airborne" && fr24Id) {
+      row.lastTakeoffFr24Id = fr24Id;
+    }
+
+    if (eventType === "takeoff") {
+      row.lastTakeoffFr24Id = fr24Id;
+      events.push({
+        type: eventType,
+        reg,
+        fr24Id,
+        callsign: row.callsign,
+        alt: row.alt,
+        gspeed: row.gspeed,
+        origIcao: cleanString(pos?.origIcao) || null,
+        destIcao: cleanString(pos?.destIcao) || null,
+        lat: pos?.lat ?? null,
+        lon: pos?.lon ?? null,
+      });
+    } else if (eventType === "landing") {
+      row.lastLandingFr24Id = previous.fr24Id || fr24Id;
+      events.push({
+        type: eventType,
+        reg,
+        fr24Id: row.lastLandingFr24Id,
+        callsign: row.callsign,
+        alt: row.alt,
+        gspeed: row.gspeed,
+        origIcao: cleanString(pos?.origIcao) || null,
+        destIcao: cleanString(pos?.destIcao) || null,
+        lat: pos?.lat ?? null,
+        lon: pos?.lon ?? null,
+      });
+    }
+
+    nextAircraft[reg] = row;
+  }
+
+  return {
+    events,
+    state: {
+      aircraft: nextAircraft,
+      updatedAt: nowIso(),
+    },
+  };
+}
+
+/** Quiet hours for school fleet watches: 22:00 inclusive → 06:00 exclusive (America/Sao_Paulo). */
+function isFlightRadarWatchQuietHour(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  return hour >= 22 || hour < 6;
+}
+
 module.exports = {
   SETTINGS_KEY,
   DEFAULT_MAP_CENTER,
   DEFAULT_POLL_INTERVAL_SEC,
+  FLIGHT_RADAR_WATCH_PREFIX,
+  FLIGHT_RADAR_WATCH_STATE_KEY,
+  FLIGHT_RADAR_WATCH_HOURS,
+  OFFLINE_LANDING_STREAK,
   normalizeRegistration,
   loadSettings,
   saveSettings,
@@ -812,4 +1158,17 @@ module.exports = {
   prepareTelemetryFromFr24,
   publicSettings,
   defaultSettings,
+  flightRadarWatchKey,
+  phoneFromFlightRadarWatchKey,
+  publicFlightRadarWatch,
+  loadFlightRadarWatch,
+  listActiveFlightRadarWatches,
+  listFlightRadarWatchDocs,
+  saveFlightRadarWatch,
+  clearFlightRadarWatch,
+  loadWatchFleetState,
+  saveWatchFleetState,
+  classifyLiveStatus,
+  detectFleetTransitions,
+  isFlightRadarWatchQuietHour,
 };

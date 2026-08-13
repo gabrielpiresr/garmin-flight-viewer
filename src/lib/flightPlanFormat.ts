@@ -1,5 +1,7 @@
 import type { AiswebAirportBundle, AiswebFrequency, AiswebFuel, AiswebRotaer } from "../types/aisweb";
 import type { FlightPlanAirspaceHit } from "../types/flightPlanning";
+import { AIRSPACE_LAYER_DEFS } from "./airspaceLayersDb";
+import { formatEteClock } from "./flightPlanningRoute";
 
 const FUEL_TYPE_LABELS: Record<string, string> = {
   PF: "Gasolina de aviação (AVGAS)",
@@ -11,7 +13,7 @@ const FUEL_TYPE_LABELS: Record<string, string> = {
   "JET A1": "Querosene de aviação (JET-A1)",
 };
 
-const AIRSPACE_FREQ_RE = /^(APP|TWR|TWR\b|GND|ATIS|AFIS|ACC|CLEARANCE|CLNC|RADIO|INFO|DELIVERY|SMC)/i;
+const AIRSPACE_FREQ_RE = /^(APP|TWR|TWR\b|GND|ATIS|AFIS|ACC|CLEARANCE|CLNC|RADIO|INFO|DELIVERY|SMC|CONTROLE|EMERG)/i;
 
 export function formatFuelTypeLabel(code: string): string {
   const key = String(code || "").trim().toUpperCase().replace(/\s+/g, "");
@@ -83,12 +85,22 @@ export function formatFrequenciesShort(frequencies: AiswebFrequency[] | null | u
     .join(" · ");
 }
 
-export function pickAirspaceFrequencies(frequencies: AiswebFrequency[] | null | undefined): Array<{
+export function pickAirspaceFrequencies(
+  frequencies: AiswebFrequency[] | null | undefined,
+  options?: { preferServices?: RegExp },
+): Array<{
   service: string;
   mhz: string;
 }> {
   const list = frequencies || [];
-  const preferred = list.filter((f) => AIRSPACE_FREQ_RE.test(f.service));
+  let preferred = list.filter((f) => AIRSPACE_FREQ_RE.test(f.service));
+  const prefer = options?.preferServices;
+  if (prefer && preferred.length) {
+    const ranked = preferred.filter((f) => prefer.test(f.service));
+    if (ranked.length) {
+      preferred = [...ranked, ...preferred.filter((f) => !prefer.test(f.service))];
+    }
+  }
   const source = preferred.length ? preferred : list;
   return source.slice(0, 6).map((f) => ({
     service: f.service,
@@ -129,4 +141,48 @@ export function airportSummaryFromBundle(
 export function formatAirspaceFreqCell(hit: FlightPlanAirspaceHit): string {
   if (!hit.frequencies?.length) return "—";
   return hit.frequencies.map((f) => `${f.service} ${f.mhz}`).join(" · ");
+}
+
+/** Tailwind classes for airspace type badges in route tables. */
+export function airspaceHitTypeBadgeClass(type: FlightPlanAirspaceHit["type"]): string {
+  switch (type) {
+    case "FIR":
+      return "bg-slate-500/20 text-slate-200";
+    case "FIS":
+      return "bg-fuchsia-500/20 text-fuchsia-200";
+    case "TMA":
+      return "bg-violet-500/20 text-violet-200";
+    case "CTA":
+      return "bg-amber-500/20 text-amber-200";
+    case "CTR":
+      return "bg-sky-500/20 text-sky-200";
+    case "ATZ":
+      return "bg-emerald-500/20 text-emerald-200";
+    case "FIZ":
+      return "bg-teal-500/20 text-teal-200";
+    case "AFIS":
+      return "bg-green-500/20 text-green-200";
+    case "P":
+      return "bg-red-500/20 text-red-200";
+    case "R":
+      return "bg-orange-500/20 text-orange-200";
+    case "D":
+      return "bg-yellow-500/20 text-yellow-200";
+    default:
+      return "bg-slate-500/20 text-slate-200";
+  }
+}
+
+export function airspaceHitColor(type: FlightPlanAirspaceHit["type"]): string {
+  return AIRSPACE_LAYER_DEFS.find((d) => d.type === type)?.color ?? "#94a3b8";
+}
+
+export function formatAirspaceEntryDistance(nm: number | null | undefined): string {
+  if (nm == null || !Number.isFinite(nm)) return "—";
+  return `${nm.toFixed(1)} NM`;
+}
+
+export function formatAirspaceEntryEte(eteHours: number | null | undefined): string | null {
+  const clock = formatEteClock(eteHours ?? null);
+  return clock === "—" ? null : clock;
 }

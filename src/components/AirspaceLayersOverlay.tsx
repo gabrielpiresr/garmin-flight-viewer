@@ -7,18 +7,20 @@ import {
   airspaceFeatureKey,
   airspaceFeatureToInfo,
   airspaceMapLabel,
-  airspaceTypeLabel,
   loadAirspaceFeaturesInBbox,
   smoothAirspaceGeometry,
   type AirspaceFeature,
   type AirspaceInfo,
 } from "../lib/airspaceLayersDb";
 
-const FILL_PANE_Z = "700";
-const SELECTED_PANE_Z = "710";
-const LABEL_PANE_Z = "715";
+/** Abaixo de markerPane (600) e popupPane (700) para não cobrir popups/AD. */
+const FILL_PANE_Z = "450";
+const SELECTED_PANE_Z = "460";
+const LABEL_PANE_Z = "470";
 /** Offset da legenda para o interior do polígono (px). */
 const LABEL_INSET_PX = 10;
+/** Labels só com zoom próximo o bastante para ler o polígono. */
+const LABEL_MIN_ZOOM = 9;
 
 /** Fill só quando selecionado (mesma cor da borda); clique na borda. */
 export const AIRSPACE_STYLE = {
@@ -27,7 +29,7 @@ export const AIRSPACE_STYLE = {
   strokeOpacity: 0.95,
   weight: 2.25,
   weightSelected: 3,
-  /** Distância máx. (px) do clique até a borda para selecionar. */
+  /** Distância máx. (px) do clique/hover até a borda. */
   edgeHitPx: 14,
 } as const;
 
@@ -39,6 +41,12 @@ type Props = {
 
 type Bbox = { minLng: number; minLat: number; maxLng: number; maxLat: number };
 
+type EdgeTarget = {
+  feature: AirspaceFeature;
+  key: string;
+  rings: L.LatLng[][];
+};
+
 function ensurePane(map: L.Map, paneName: string, zIndex: string) {
   let pane = map.getPane(paneName);
   if (!pane) {
@@ -47,6 +55,8 @@ function ensurePane(map: L.Map, paneName: string, zIndex: string) {
   } else {
     pane.style.zIndex = zIndex;
   }
+  // Camada só visual — seleção é via clique no mapa (borda).
+  pane.style.pointerEvents = "none";
   return pane;
 }
 
@@ -56,18 +66,27 @@ function pathStyle(color: string, selected: boolean): L.PathOptions {
     weight: selected ? AIRSPACE_STYLE.weightSelected : AIRSPACE_STYLE.weight,
     opacity: AIRSPACE_STYLE.strokeOpacity,
     fillColor: color,
-    fillOpacity: selected ? AIRSPACE_STYLE.fillOpacitySelected : AIRSPACE_STYLE.fillOpacity,
+    fill: false,
+    fillOpacity: 0,
     lineJoin: "round",
     lineCap: "round",
-    interactive: true,
+    interactive: false,
   };
 }
 
-function distPointToSegPx(
-  p: L.Point,
-  a: L.Point,
-  b: L.Point,
-): number {
+function selectedFillStyle(color: string): L.PathOptions {
+  return {
+    color,
+    weight: 0,
+    opacity: 0,
+    fillColor: color,
+    fill: true,
+    fillOpacity: AIRSPACE_STYLE.fillOpacitySelected,
+    interactive: false,
+  };
+}
+
+function distPointToSegPx(p: L.Point, a: L.Point, b: L.Point): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
@@ -90,21 +109,58 @@ function flattenLatLngs(latlngs: L.LatLng[] | L.LatLng[][] | L.LatLng[][][]): L.
   return out;
 }
 
-/** true se o clique está perto da borda (não no miolo do polígono). */
-function isClickNearPolygonEdge(map: L.Map, latlng: L.LatLng, layer: L.Polygon): boolean {
-  const rings = flattenLatLngs(layer.getLatLngs() as L.LatLng[] | L.LatLng[][] | L.LatLng[][][]);
+function ringsFromGeometry(geometry: AirspaceFeature["geometry"]): L.LatLng[][] {
+  if (!geometry?.coordinates) return [];
+  const out: L.LatLng[][] = [];
+  if (geometry.type === "Polygon") {
+    for (const ring of geometry.coordinates as number[][][]) {
+      out.push(ring.map((c) => L.latLng(c[1]!, c[0]!)));
+    }
+  } else if (geometry.type === "MultiPolygon") {
+    for (const poly of geometry.coordinates as number[][][][]) {
+      for (const ring of poly) {
+        out.push(ring.map((c) => L.latLng(c[1]!, c[0]!)));
+      }
+    }
+  }
+  return out;
+}
+
+function minEdgeDistPx(map: L.Map, latlng: L.LatLng, rings: L.LatLng[][]): number {
   const p = map.latLngToLayerPoint(latlng);
   let minPx = Infinity;
   for (const ring of rings) {
     if (!ring || ring.length < 2) continue;
-    for (let i = 0; i < ring.length; i++) {
+    const closed =
+      ring.length > 2 &&
+      ring[0]!.lat === ring[ring.length - 1]!.lat &&
+      ring[0]!.lng === ring[ring.length - 1]!.lng;
+    const n = closed ? ring.length - 1 : ring.length;
+    for (let i = 0; i < n; i++) {
       const a = map.latLngToLayerPoint(ring[i]!);
-      const b = map.latLngToLayerPoint(ring[(i + 1) % ring.length]!);
+      const b = map.latLngToLayerPoint(ring[(i + 1) % n]!);
       minPx = Math.min(minPx, distPointToSegPx(p, a, b));
-      if (minPx <= AIRSPACE_STYLE.edgeHitPx) return true;
     }
   }
-  return minPx <= AIRSPACE_STYLE.edgeHitPx;
+  return minPx;
+}
+
+function findNearestEdgeTarget(
+  map: L.Map,
+  latlng: L.LatLng,
+  targets: EdgeTarget[],
+  maxPx: number,
+): EdgeTarget | null {
+  let best: EdgeTarget | null = null;
+  let bestDist = maxPx;
+  for (const t of targets) {
+    const d = minEdgeDistPx(map, latlng, t.rings);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = t;
+    }
+  }
+  return best;
 }
 
 function bboxContains(outer: Bbox, inner: Bbox): boolean {
@@ -195,14 +251,12 @@ function placeAirspaceEdgeLabel(
   const dx = pb.x - pa.x;
   const dy = pb.y - pa.y;
   const lenPx = Math.sqrt(dx * dx + dy * dy) || 1;
-  // Normal perpendicular (direita do sentido A→B).
   let nx = -dy / lenPx;
   let ny = dx / lenPx;
   const centroid = ringCentroid(outer);
   const pc = map.latLngToLayerPoint(centroid);
   const toCenterX = pc.x - pm.x;
   const toCenterY = pc.y - pm.y;
-  // Garante que o offset aponta para dentro.
   if (nx * toCenterX + ny * toCenterY < 0) {
     nx = -nx;
     ny = -ny;
@@ -218,7 +272,7 @@ function placeAirspaceEdgeLabel(
   const safe = text.replace(/[<>&"]/g, "");
   const icon = L.divIcon({
     className: "",
-    html: `<div style="transform:translate(-50%,-50%) rotate(${css.toFixed(1)}deg);transform-origin:center center;pointer-events:none;white-space:nowrap;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.04em;color:${color};text-shadow:0 0 3px rgba(15,23,42,.95),0 1px 2px rgba(0,0,0,.85);opacity:0.95">${safe}</div>`,
+    html: `<div style="transform:translate(-50%,-50%) rotate(${css.toFixed(1)}deg);transform-origin:center center;pointer-events:none;white-space:nowrap;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.04em;color:${color};-webkit-text-stroke:0.7px #fff;paint-order:stroke fill;opacity:0.96">${safe}</div>`,
     iconSize: [0, 0],
     iconAnchor: [0, 0],
   });
@@ -227,18 +281,19 @@ function placeAirspaceEdgeLabel(
     interactive: false,
     keyboard: false,
     pane: "airspace-label",
+    zIndexOffset: -600,
   });
 }
 
 /**
- * Overlay vetorial CTA/TMA/CTR/ATZ/EAC (WFS) — cantos suavizados, fill leve,
- * borda na cor do preenchimento, clique seleciona e destaca.
- * Otimizado: canvas, geometria suavizada em cache, refetch só se sair do bbox.
+ * Overlay vetorial FIR/FIS/TMA/CTA/CTR/ATZ/FIZ/AFIS/EAC (WFS) — cantos suavizados,
+ * borda na cor do tipo, clique na borda seleciona (via map click).
  */
 export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: Props) {
   const map = useMap();
   const featuresRef = useRef<AirspaceFeature[]>([]);
   const smoothedCacheRef = useRef<Map<string, AirspaceFeature>>(new Map());
+  const targetsRef = useRef<EdgeTarget[]>([]);
   const groupRef = useRef<L.LayerGroup | null>(null);
   const selectedKeyRef = useRef(selectedKey);
   const onSelectRef = useRef(onSelect);
@@ -248,6 +303,7 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
   const lastFetchBbox = useRef<Bbox | null>(null);
   const interactingRef = useRef(false);
   const canvasRendererRef = useRef<L.Canvas | null>(null);
+  const nearEdgeRef = useRef(false);
 
   selectedKeyRef.current = selectedKey;
   onSelectRef.current = onSelect;
@@ -261,20 +317,30 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
       ensurePane(map, "airspace-selected", SELECTED_PANE_Z);
       ensurePane(map, "airspace-label", LABEL_PANE_Z);
       if (!canvasRendererRef.current) {
-        canvasRendererRef.current = L.canvas({ padding: 0.5 });
+        // Pane dedicado + tolerance no renderer (Leaflet 1.9 ignora tolerance no Path).
+        canvasRendererRef.current = L.canvas({
+          padding: 0.5,
+          pane: "airspace-fill",
+          tolerance: AIRSPACE_STYLE.edgeHitPx,
+        });
       }
       if (!groupRef.current) groupRef.current = L.layerGroup().addTo(map);
       const group = groupRef.current;
       group.clearLayers();
+      targetsRef.current = [];
 
       const enabled = enabledRef.current;
       const selected = selectedKeyRef.current;
-      const visible = featuresRef.current.filter((f) => enabled[f.layerType.toLowerCase()] === true);
+      const visible = featuresRef.current.filter((f) => {
+        const id = AIRSPACE_LAYER_DEFS.find((d) => d.type === f.layerType)?.id;
+        return id != null && enabled[id] === true;
+      });
       if (!visible.length) return;
 
       const renderer = canvasRendererRef.current;
       const zoom = map.getZoom();
-      const showLabels = zoom >= 6;
+      const showLabels = zoom >= LABEL_MIN_ZOOM;
+      const nextTargets: EdgeTarget[] = [];
 
       for (const feature of visible) {
         if (!feature.geometry) continue;
@@ -292,37 +358,46 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
           smoothedCacheRef.current.set(key, smoothed);
         }
 
+        const rings = ringsFromGeometry(smoothed.geometry);
+        nextTargets.push({ feature, key, rings });
+
+        if (isSelected) {
+          const fillStyle = { ...selectedFillStyle(color), renderer };
+          L.geoJSON(smoothed as GeoJSON.Feature, {
+            pane: "airspace-selected",
+            style: () => fillStyle,
+            interactive: false,
+            onEachFeature(_f, lyr) {
+              if (lyr instanceof L.Path) {
+                lyr.setStyle(fillStyle);
+                lyr.options.interactive = false;
+              }
+            },
+          }).addTo(group);
+        }
+
         const style = { ...pathStyle(color, isSelected), renderer };
         const layer = L.geoJSON(smoothed as GeoJSON.Feature, {
           pane: isSelected ? "airspace-selected" : "airspace-fill",
           style: () => style,
+          interactive: false,
           onEachFeature(_f, lyr) {
             if (lyr instanceof L.Path) {
               lyr.setStyle(style);
-              lyr.on("click", (e) => {
-                if (lyr instanceof L.Polygon && !isClickNearPolygonEdge(map, e.latlng, lyr)) {
-                  return;
-                }
-                L.DomEvent.stopPropagation(e);
-                const info = airspaceFeatureToInfo(feature);
-                if (selectedKeyRef.current === key) {
-                  onSelectRef.current(null, null);
-                } else {
-                  onSelectRef.current(info, key);
-                }
-              });
+              lyr.options.interactive = false;
             }
             if (showLabels && lyr instanceof L.Polygon) {
-              const rings = flattenLatLngs(
+              const polyRings = flattenLatLngs(
                 lyr.getLatLngs() as L.LatLng[] | L.LatLng[][] | L.LatLng[][][],
               );
-              const label = placeAirspaceEdgeLabel(map, rings, airspaceMapLabel(feature), color);
+              const label = placeAirspaceEdgeLabel(map, polyRings, airspaceMapLabel(feature), color);
               if (label) label.addTo(group);
             }
           },
         });
         layer.addTo(group);
       }
+      targetsRef.current = nextTargets;
     } catch (err) {
       console.warn("[AirspaceLayersOverlay] falha ao desenhar", err);
     }
@@ -346,6 +421,7 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
       if (!types.length) {
         featuresRef.current = [];
         smoothedCacheRef.current.clear();
+        targetsRef.current = [];
         lastFetchBbox.current = null;
         scheduleRedraw(0);
         return;
@@ -357,7 +433,6 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
         maxLng: b.getEast(),
         maxLat: b.getNorth(),
       };
-      // Já temos dados cobrindo a viewport (+ margem) — só redesenha se necessário.
       if (!force && lastFetchBbox.current && bboxContains(lastFetchBbox.current, view)) {
         return;
       }
@@ -370,7 +445,6 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
           }
         }
         featuresRef.current = [...byKey.values()];
-        // Mantém cache só das features atuais
         const nextCache = new Map<string, AirspaceFeature>();
         for (const f of featuresRef.current) {
           const k = airspaceFeatureKey(f);
@@ -390,9 +464,14 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
     return () => {
       if (redrawTimer.current != null) window.clearTimeout(redrawTimer.current);
       if (fetchTimer.current != null) window.clearTimeout(fetchTimer.current);
+      if (nearEdgeRef.current) {
+        map.getContainer().style.cursor = "";
+        nearEdgeRef.current = false;
+      }
       groupRef.current?.removeFrom(map);
       groupRef.current = null;
       canvasRendererRef.current = null;
+      targetsRef.current = [];
     };
   }, [map]);
 
@@ -421,68 +500,30 @@ export function AirspaceLayersOverlay({ enabledTypes, selectedKey, onSelect }: P
       scheduleFetchRef.current(false);
       scheduleRedraw(120);
     },
+    mousemove(e) {
+      const hit = findNearestEdgeTarget(map, e.latlng, targetsRef.current, AIRSPACE_STYLE.edgeHitPx);
+      const near = Boolean(hit);
+      if (near === nearEdgeRef.current) return;
+      nearEdgeRef.current = near;
+      map.getContainer().style.cursor = near ? "pointer" : "";
+    },
+    // preclick roda antes do MapClickHandler (que limpa seleção no click).
+    preclick(e) {
+      const hit = findNearestEdgeTarget(map, e.latlng, targetsRef.current, AIRSPACE_STYLE.edgeHitPx);
+      if (!hit) return;
+      const oe = e.originalEvent as (MouseEvent & { _airspaceEdge?: boolean }) | undefined;
+      if (oe) oe._airspaceEdge = true;
+      L.DomEvent.stopPropagation(e);
+      const info = airspaceFeatureToInfo(hit.feature);
+      if (selectedKeyRef.current === hit.key) {
+        onSelectRef.current(null, null);
+      } else {
+        onSelectRef.current(info, hit.key);
+      }
+    },
   });
 
   return null;
 }
 
-/** Painel flutuante à direita com detalhes da área selecionada. */
-export function AirspaceInfoPanel({
-  info,
-  onClose,
-}: {
-  info: AirspaceInfo;
-  onClose: () => void;
-}) {
-  const typeLabel = airspaceTypeLabel(info.type);
-  const rows: Array<{ label: string; value: string }> = [
-    { label: "Tipo", value: typeLabel },
-    { label: "Ident", value: info.ident },
-    { label: "Nome", value: info.name },
-    ...(info.frequency ? [{ label: "Frequência FCA", value: info.frequency }] : []),
-    ...(info.fir ? [{ label: "FIR", value: info.fir }] : []),
-    ...(info.upper ? [{ label: "Limite superior", value: info.upper }] : []),
-    ...(info.lower ? [{ label: "Limite inferior", value: info.lower }] : []),
-    ...(info.workHours ? [{ label: "Horário de operação", value: info.workHours }] : []),
-    ...(info.airspaceClass ? [{ label: "Classe", value: info.airspaceClass }] : []),
-    ...(info.locality ? [{ label: "Localidade", value: info.locality }] : []),
-    ...(info.remarks ? [{ label: "Observações", value: info.remarks }] : []),
-  ];
-
-  return (
-    <aside
-      className="pointer-events-auto flex max-h-[calc(100%-1rem)] w-[min(100%-1rem,24rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50"
-      style={{ borderTopColor: info.color, borderTopWidth: 3 }}
-    >
-      <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-3 py-2">
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: info.color }}>
-            {typeLabel}
-          </p>
-          <p className="truncate font-mono text-sm font-bold tracking-wide text-slate-100">
-            {info.ident}
-          </p>
-          <p className="truncate text-[11px] text-slate-400">{info.name}</p>
-        </div>
-        <button
-          type="button"
-          className="shrink-0 rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-          onClick={onClose}
-          aria-label="Fechar"
-        >
-          ✕
-        </button>
-      </div>
-      <div className="space-y-2 overflow-y-auto px-3 py-2.5">
-        {rows.map((row) => (
-          <div key={row.label}>
-            <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">{row.label}</p>
-            <p className="whitespace-pre-wrap break-words text-[12px] leading-snug text-slate-200">
-              {row.value}
-            </p>
-          </div>
-        ))}
-      </div>
-    </aside>
-  );
-}
+export { AirspaceInfoPanel } from "./AirspaceInfoPanel";

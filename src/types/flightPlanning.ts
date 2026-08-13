@@ -81,7 +81,7 @@ export type FlightPlanAirspaceFrequency = {
 };
 
 export type FlightPlanAirspaceHit = {
-  type: "CTA" | "TMA" | "CTR" | "ATZ";
+  type: "FIR" | "FIS" | "TMA" | "CTA" | "CTR" | "ATZ" | "FIZ" | "AFIS" | "P" | "R" | "D";
   ident: string;
   name: string;
   lower: string | null;
@@ -89,6 +89,15 @@ export type FlightPlanAirspaceHit = {
   fir: string | null;
   /** Distance along route (NM) where the route first enters this airspace. */
   entryDistanceNm?: number | null;
+  /** Distance along route (NM) where the route last leaves this airspace. */
+  exitDistanceNm?: number | null;
+  /** Published vertical limits in feet MSL (UNL ≈ 999999). */
+  lowerFt?: number | null;
+  upperFt?: number | null;
+  /** Lateral occupancy along the route (NM), for vertical-profile bands. */
+  occupancyNm?: Array<{ fromNm: number; toNm: number }>;
+  /** Route is laterally inside, but planned altitude never enters the published band. */
+  altitudeMiss?: boolean;
   frequencies?: FlightPlanAirspaceFrequency[];
 };
 

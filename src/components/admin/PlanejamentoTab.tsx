@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { lookupAiswebIcao, searchAiswebAerodromes } from "../../lib/aiswebDb";
 import { listAerodromes, type Aerodrome, type AerodromeMapFilter, EMPTY_AERODROME_MAP_FILTER } from "../../lib/aerodromesDb";
 import { parseFieldElevationFt } from "../../lib/fieldElevation";
@@ -7,9 +7,14 @@ import {
   DEFAULT_FLIGHT_PERFORMANCE,
   type FlightPerformanceSettings,
 } from "../../lib/routePerformanceProfile";
-import { detectAirspacesAlongRoute, sampleRoutePoints } from "../../lib/airspaceIntersect";
+import { airspaceEntryEteHours, airspacesEnteredVertically, detectAirspacesAlongRoute, sampleRoutePoints, type AirspaceVolume } from "../../lib/airspaceIntersect";
 import { suggestAlternateAerodromes, type AlternateSuggestion } from "../../lib/flightPlanAlternates";
-import { formatAirspaceFreqCell } from "../../lib/flightPlanFormat";
+import {
+  formatAirspaceFreqCell,
+  airspaceHitTypeBadgeClass,
+  formatAirspaceEntryDistance,
+  formatAirspaceEntryEte,
+} from "../../lib/flightPlanFormat";
 import { buildFlightPlanMapDataUrl } from "../../lib/flightPlanMapImage";
 import { openFlightPlanPdf } from "../../lib/flightPlanPdf";
 import { buildRouteVerticalProfileSvg } from "../../lib/flightPlanProfileSvg";
@@ -47,8 +52,16 @@ import {
   suggestRouteName,
   type SavedFlightRoute,
 } from "../../lib/savedFlightRoutes";
+import {
+  deleteSavedFlightBriefing,
+  getSavedFlightBriefing,
+  listBriefingsForRoute,
+  saveFlightBriefing,
+  suggestBriefingName,
+  type SavedFlightBriefingIndexItem,
+} from "../../lib/savedFlightBriefings";
 import { normalizeIcao } from "../../lib/aiswebMetar";
-import type { AiswebAerodromeMatch, AiswebAirportBundle } from "../../types/aisweb";
+import type { AiswebAerodromeMatch, AiswebAirportBundle, AiswebNotam } from "../../types/aisweb";
 import {
   FLIGHT_PLAN_INFO_OPTIONS,
   type FlightPlanAirspaceHit,
@@ -61,7 +74,7 @@ import {
   AirportSummaryStrip,
   IcaoField,
 } from "../AiswebFlightPlanningTab";
-import { AiswebAirportDetailTabs, AiswebAirportTopCards } from "../AiswebAirportDetails";
+import { AiswebAirportDetailTabs } from "../AiswebAirportDetails";
 import { AiswebMeteorologyPanel } from "../AiswebMeteorologyPanel";
 import { AerodromeDetailsSidePanel } from "../AerodromePlanningModals";
 import { FlightPlanMap, type MapPickCandidate } from "../FlightPlanMap";
@@ -72,11 +85,21 @@ import { matchReaCorridorForLeg, type LegCorridorInfo } from "../../lib/legCorri
 import { useAuth } from "../../contexts/AuthContext";
 import { sendFplExportEmail } from "../../lib/notificationsDb";
 import { FlightBriefingAiPanel } from "../FlightBriefingAiPanel";
+import { useIsDesktopLg } from "../../hooks/useMediaQuery";
+import {
+  PlanejamentoFloatingNav,
+  PlanejamentoSectionHeader,
+  type PlanejamentoSectionId,
+} from "./PlanejamentoSectionShell";
+import { PlanejamentoRouteCards } from "./PlanejamentoRouteCards";
 import type {
   FlightBriefingAiGenerateInput,
   FlightBriefingAiReport,
   FlightBriefingAiTaskStatus,
+  FlightBriefingAiWarning,
 } from "../../types/flightBriefingAi";
+
+const Route3DView = lazy(() => import("../Route3DView"));
 
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15";
@@ -106,6 +129,60 @@ type BriefingAirportDoc = {
   bundle: AiswebAirportBundle;
   note?: string;
 };
+
+/** Resolve the AISWEB NOTAM behind an AI warning card (by number / ICAO / text). */
+function resolveWarningNotam(
+  warning: FlightBriefingAiWarning,
+  airportDocs: BriefingAirportDoc[],
+): AiswebNotam | null {
+  const blob = `${warning.title} ${warning.detail}`.toUpperCase();
+  const all = airportDocs.flatMap((doc) =>
+    (doc.bundle.notams || []).map((notam) => ({
+      ...notam,
+      icao: normalizeIcao(notam.icao || doc.icao),
+    })),
+  );
+  if (!all.length) return null;
+
+  const numberMatch = blob.match(/\b([A-Z]?\d{3,4}\/\d{2,4})\b/);
+  if (numberMatch) {
+    const needle = numberMatch[1]!.replace(/\s/g, "");
+    const byNumber = all.find((n) => (n.number || "").toUpperCase().replace(/\s/g, "").includes(needle));
+    if (byNumber) return byNumber;
+  }
+
+  for (const notam of all) {
+    const num = (notam.number || "").toUpperCase().replace(/\s/g, "");
+    if (num.length >= 5 && blob.includes(num)) return notam;
+  }
+
+  const icaoMatch = blob.match(/\b(S[BDIJNPRTWY][A-Z]{2})\b/) || blob.match(/\b([A-Z]{4})\b/);
+  const icao = icaoMatch ? normalizeIcao(icaoMatch[1] || "") : "";
+  const pool = icao ? all.filter((n) => n.icao === icao) : all;
+  if (pool.length === 1) return pool[0]!;
+
+  // Soft text overlap against NOTAM body for the same ICAO.
+  const tokens = blob
+    .replace(/[^A-Z0-9/\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 5)
+    .slice(0, 12);
+  let best: AiswebNotam | null = null;
+  let bestScore = 0;
+  for (const notam of pool) {
+    const text = (notam.text || "").toUpperCase();
+    if (!text) continue;
+    let score = 0;
+    for (const token of tokens) {
+      if (text.includes(token)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = notam;
+    }
+  }
+  return bestScore >= 2 ? best : null;
+}
 
 const BRIEFING_ONLINE_TABS: ReadonlyArray<{ id: BriefingOnlineTab; label: string }> = [
   { id: "resumo", label: "Resumo" },
@@ -398,7 +475,7 @@ function IconPanelExpand() {
   );
 }
 
-export function PlanejamentoTab() {
+export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const { showToast } = useToast();
   const { user } = useAuth();
   const [waypoints, setWaypoints] = useState<FlightPlanWaypoint[]>([]);
@@ -432,6 +509,12 @@ export function PlanejamentoTab() {
   const [sendingFplEmail, setSendingFplEmail] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
   const [planningPanelCollapsed, setPlanningPanelCollapsed] = useState(false);
+  const isDesktopLg = useIsDesktopLg();
+  const [activeSection, setActiveSection] = useState<PlanejamentoSectionId>("map");
+
+  useEffect(() => {
+    if (!isDesktopLg) setPlanningPanelCollapsed(true);
+  }, [isDesktopLg]);
   const [detailBundle, setDetailBundle] = useState<AiswebAirportBundle | null>(null);
   const [bulkAltitudeFt, setBulkAltitudeFt] = useState("");
   const [editingRouteName, setEditingRouteName] = useState(false);
@@ -459,8 +542,34 @@ export function PlanejamentoTab() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [airports, setAirports] = useState<BriefingAirportDoc[]>([]);
   const [airspaces, setAirspaces] = useState<FlightPlanAirspaceHit[]>([]);
+  const [airspaceVolumes, setAirspaceVolumes] = useState<AirspaceVolume[]>([]);
   const [airspaceLoading, setAirspaceLoading] = useState(false);
   const [airspaceError, setAirspaceError] = useState<string | null>(null);
+  const [activeBriefingId, setActiveBriefingId] = useState<string | null>(null);
+  const [briefingName, setBriefingName] = useState("");
+  const [editingBriefingName, setEditingBriefingName] = useState(false);
+  const [linkedBriefings, setLinkedBriefings] = useState<SavedFlightBriefingIndexItem[]>([]);
+  const [briefingSaveState, setBriefingSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [expandedWarningId, setExpandedWarningId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSummaryExpanded(false);
+    setExpandedWarningId(null);
+  }, [aiReport?.id, aiReport?.generatedAt, aiReport?.summary]);
+  const [alternateMetrics, setAlternateMetrics] = useState<
+    Array<{
+      icao: string;
+      toOriginNm: number | null;
+      toOriginEte: number | null;
+      toOriginFuel: number | null;
+      toDestNm: number | null;
+      toDestEte: number | null;
+      toDestFuel: number | null;
+    }>
+  >([]);
+  const briefingHydratingRef = useRef(false);
+  const briefingAutosaveTimer = useRef<number | null>(null);
   const briefingOnlineTabs = useMemo(
     () => [
       ...BRIEFING_ONLINE_TABS,
@@ -539,6 +648,7 @@ export function PlanejamentoTab() {
     () => buildRoutePerformanceProfile(waypoints, performanceSettings),
     [waypoints, performanceSettings],
   );
+  const enteredAirspaces = useMemo(() => airspacesEnteredVertically(airspaces), [airspaces]);
 
   const legs = useMemo(
     () => buildFlightPlanLegs(waypoints, { cruiseSpeedKt: cruiseOpt, fuelBurnPerHour: burnOpt }),
@@ -583,6 +693,8 @@ export function PlanejamentoTab() {
   }, [waypoints]);
 
   const displayRouteName = saveName.trim() || (waypoints.length ? suggestRouteName(waypoints) : routeLabel);
+  const displayBriefingName =
+    briefingName.trim() || suggestBriefingName(originIcao, destIcao);
 
   const nexAtlasText = useMemo(() => waypointsToNexAtlasText(waypoints), [waypoints]);
 
@@ -779,24 +891,26 @@ export function PlanejamentoTab() {
   }, [searchQuery]);
 
   useEffect(() => {
+    const airportsOnly = waypoints.filter(isAirportLike);
+    // Sugestões assim que a rota tem 2 aeródromos — não espera o briefing.
+    if (airportsOnly.length < 2 || !originIcao || !destIcao) {
+      setAltSuggestions([]);
+      return;
+    }
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      const originWp = waypoints.find(isAirportLike);
-      const destWp = [...waypoints].reverse().find(isAirportLike);
+      const originWp = airportsOnly[0]!;
+      const destWp = airportsOnly[airportsOnly.length - 1]!;
       void suggestAlternateAerodromes({
-        origin:
-          originWp && originIcao
-            ? { lat: originWp.lat, lng: originWp.lng, icao: originIcao }
-            : null,
-        destination:
-          destWp && destIcao ? { lat: destWp.lat, lng: destWp.lng, icao: destIcao } : null,
+        origin: { lat: originWp.lat, lng: originWp.lng, icao: originIcao },
+        destination: { lat: destWp.lat, lng: destWp.lng, icao: destIcao },
         excludeIcaos: [originIcao, destIcao, ...alternates],
         limit: 6,
         maxNm: 70,
       }).then((items) => {
         if (!cancelled) setAltSuggestions(items);
       });
-    }, 350);
+    }, 200);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -806,6 +920,7 @@ export function PlanejamentoTab() {
   useEffect(() => {
     if (waypoints.length < 2) {
       setAirspaces([]);
+      setAirspaceVolumes([]);
       setAirspaceError(null);
       return;
     }
@@ -818,13 +933,24 @@ export function PlanejamentoTab() {
     );
     const profile = performanceProfile?.profile ?? null;
     const timer = window.setTimeout(() => {
-      void detectAirspacesAlongRoute(samples, { performanceProfile: profile })
-        .then((hits) => {
-          if (!cancelled) setAirspaces(hits);
+      void detectAirspacesAlongRoute(samples, {
+        performanceProfile: profile,
+        aerodromes: aerodromes.map((a) => ({
+          icao: a.icao,
+          lat: a.latitudeGeoPoint,
+          lng: a.longitudeGeoPoint,
+        })),
+      })
+        .then((result) => {
+          if (!cancelled) {
+            setAirspaces(result.hits);
+            setAirspaceVolumes(result.volumes);
+          }
         })
         .catch((err) => {
           if (cancelled) return;
           setAirspaces([]);
+          setAirspaceVolumes([]);
           setAirspaceError(err instanceof Error ? err.message : "Falha ao detectar espaço aéreo.");
         })
         .finally(() => {
@@ -835,7 +961,141 @@ export function PlanejamentoTab() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [waypoints, performanceProfile]);
+  }, [waypoints, performanceProfile, aerodromes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const originWp = waypoints.find(isAirportLike);
+    const destWp = [...waypoints].reverse().find(isAirportLike);
+    if (!alternates.length || !originWp || !destWp) {
+      setAlternateMetrics([]);
+      return;
+    }
+    const cruiseSpeed = cruiseOpt && cruiseOpt > 0 ? cruiseOpt : null;
+    const burnRate = burnOpt && burnOpt > 0 ? burnOpt : null;
+    void (async () => {
+      const rows = await Promise.all(
+        alternates.map(async (icao) => {
+          const coords = await resolveAirportCoords(icao);
+          if (!coords) {
+            return {
+              icao,
+              toOriginNm: null,
+              toOriginEte: null,
+              toOriginFuel: null,
+              toDestNm: null,
+              toDestEte: null,
+              toDestFuel: null,
+            };
+          }
+          const toOriginNm = haversineM(coords, { lat: originWp.lat, lng: originWp.lng }) / 1852;
+          const toDestNm = haversineM(coords, { lat: destWp.lat, lng: destWp.lng }) / 1852;
+          const toOriginEte = cruiseSpeed ? toOriginNm / cruiseSpeed : null;
+          const toDestEte = cruiseSpeed ? toDestNm / cruiseSpeed : null;
+          return {
+            icao,
+            toOriginNm,
+            toOriginEte,
+            toOriginFuel: toOriginEte != null && burnRate ? toOriginEte * burnRate : null,
+            toDestNm,
+            toDestEte,
+            toDestFuel: toDestEte != null && burnRate ? toDestEte * burnRate : null,
+          };
+        }),
+      );
+      if (!cancelled) setAlternateMetrics(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [alternates, waypoints, cruiseOpt, burnOpt]);
+
+  useEffect(() => {
+    if (!generated || !activeBriefingId || briefingHydratingRef.current) return;
+    if (briefingAutosaveTimer.current) window.clearTimeout(briefingAutosaveTimer.current);
+    briefingAutosaveTimer.current = window.setTimeout(() => {
+      void persistActiveBriefing();
+    }, 700);
+    return () => {
+      if (briefingAutosaveTimer.current) window.clearTimeout(briefingAutosaveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persist snapshot of briefing fields
+  }, [
+    generated,
+    activeBriefingId,
+    briefingName,
+    activeSavedId,
+    originIcao,
+    destIcao,
+    sections,
+    airports,
+    aiReport,
+    aiReportId,
+  ]);
+
+  useEffect(() => {
+    if (!activeSavedId) {
+      setLinkedBriefings([]);
+      return;
+    }
+    setLinkedBriefings(listBriefingsForRoute(activeSavedId));
+  }, [activeSavedId]);
+
+  useEffect(() => {
+    if (!generated) return;
+    let cancelled = false;
+    void (async () => {
+      const wanted = [...new Set(alternates.map((icao) => normalizeIcao(icao)).filter((icao) => icao.length === 4))];
+      const missing: string[] = [];
+      setAirports((prev) => {
+        const kept = prev.filter((a) => a.role !== "alternativo" || wanted.includes(a.icao));
+        const have = new Set(kept.filter((a) => a.role === "alternativo").map((a) => a.icao));
+        for (const icao of wanted) {
+          if (!have.has(icao)) missing.push(icao);
+        }
+        return kept;
+      });
+      if (!missing.length) return;
+      const fetched = await Promise.all(
+        missing.map(async (icao) => {
+          try {
+            const bundle = await lookupAiswebIcao(icao);
+            return { role: "alternativo" as const, icao, bundle, note: "" };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const docs = fetched.flatMap((item) => (item ? [item] : []));
+      if (!docs.length) return;
+      setAirports((prev) => {
+        const have = new Set(prev.map((a) => `${a.role}:${a.icao}`));
+        return [...prev, ...docs.filter((doc) => !have.has(`alternativo:${doc.icao}`))];
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [alternates, generated]);
+
+  useEffect(() => {
+    if (!activeSavedId || waypoints.length < 2) return;
+    const timer = window.setTimeout(() => {
+      void saveFlightRoute({
+        id: activeSavedId,
+        name: (saveName.trim() || suggestRouteName(waypoints)).trim(),
+        waypoints,
+        alternates,
+        cruiseSpeedKt: cruiseOpt,
+        fuelBurnPerHour: burnOpt,
+        fuelUnit,
+      }).catch(() => {
+        /* silent — user still has manual save */
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [alternates, activeSavedId]);
 
   function insertWaypoint(wp: FlightPlanWaypoint, insertIndex?: number) {
     setWaypoints((prev) => {
@@ -992,13 +1252,26 @@ export function PlanejamentoTab() {
     setGenerated(false);
   }
 
+  function clearBriefingState() {
+    setActiveBriefingId(null);
+    setBriefingName("");
+    setEditingBriefingName(false);
+    setGenerated(false);
+    setAirports([]);
+    setAiReport(null);
+    setAiReportId(null);
+    setAiError(null);
+    setBriefingOnlineTab("resumo");
+    setBriefingSaveState("idle");
+  }
+
   function clearRoute() {
     setWaypoints([]);
     setAlternates([]);
     setActiveSavedId(null);
     setSaveName("");
-    setGenerated(false);
-    setAirports([]);
+    setLinkedBriefings([]);
+    clearBriefingState();
   }
 
   function newRoute() {
@@ -1112,7 +1385,8 @@ export function PlanejamentoTab() {
     if (route.fuelBurnPerHour != null) setFuelBurn(String(route.fuelBurnPerHour));
     if (route.fuelUnit) setFuelUnit(route.fuelUnit);
     setShowSavedPanel(false);
-    setGenerated(false);
+    clearBriefingState();
+    setLinkedBriefings(listBriefingsForRoute(route.id));
     setFitKey(`load-${route.id}-${Date.now()}`);
     showToast({ variant: "success", title: "Rota carregada", message: route.name });
   }
@@ -1149,6 +1423,172 @@ export function PlanejamentoTab() {
     setAltDraft("");
   }
 
+  function removeAlternate(icao: string) {
+    setAlternates((prev) => prev.filter((c) => c !== icao));
+  }
+
+  async function persistActiveBriefing(force = false) {
+    if (!generated || !activeBriefingId) return;
+    if (briefingHydratingRef.current && !force) return;
+    setBriefingSaveState("saving");
+    try {
+      const saved = await saveFlightBriefing({
+        id: activeBriefingId,
+        name: (briefingName.trim() || suggestBriefingName(originIcao, destIcao)).trim(),
+        routeId: activeSavedId,
+        origin: originIcao,
+        destination: destIcao,
+        alternates: [],
+        sections,
+        airports,
+        aiReport,
+        aiReportId,
+      });
+      setActiveBriefingId(saved.id);
+      setBriefingName(saved.name);
+      if (activeSavedId) setLinkedBriefings(listBriefingsForRoute(activeSavedId));
+      setBriefingSaveState("saved");
+    } catch {
+      setBriefingSaveState("error");
+    }
+  }
+
+  async function openSavedBriefing(id: string) {
+    briefingHydratingRef.current = true;
+    try {
+      const saved = await getSavedFlightBriefing(id);
+      if (!saved) {
+        showToast({ variant: "error", title: "Briefing", message: "Briefing não encontrado." });
+        return;
+      }
+      setActiveBriefingId(saved.id);
+      setBriefingName(saved.name);
+      setSections(saved.sections?.length ? saved.sections : DEFAULT_SECTIONS);
+      setAirports(saved.airports || []);
+      setAiReport(saved.aiReport || null);
+      setAiReportId(saved.aiReportId || null);
+      setGenerated(true);
+      setBriefingOnlineTab("resumo");
+      setBriefingSaveState("saved");
+      showToast({ variant: "success", title: "Briefing aberto", message: saved.name });
+      if (!saved.aiReport && (saved.airports?.length || 0) > 0) {
+        void handleGenerateAiReport(saved.airports);
+      }
+    } finally {
+      window.setTimeout(() => {
+        briefingHydratingRef.current = false;
+      }, 400);
+    }
+  }
+
+  async function createNewBriefing() {
+    const dep = originIcao;
+    const arr = destIcao;
+    if (dep.length !== 4 || arr.length !== 4) {
+      showToast({
+        variant: "error",
+        title: "Origem e destino",
+        message: "A rota precisa de aeródromos de origem e destino (ICAO) para o briefing.",
+      });
+      return;
+    }
+    if (!activeSavedId) {
+      showToast({
+        variant: "warning",
+        title: "Salve a rota",
+        message: "Salve a rota antes de criar um briefing vinculado.",
+      });
+      return;
+    }
+    setLoadingBriefing(true);
+    briefingHydratingRef.current = true;
+    try {
+      const codes: Array<{ role: "origem" | "destino" | "alternativo"; icao: string }> = [
+        { role: "origem", icao: dep },
+        { role: "destino", icao: arr },
+        ...alternates.map((icao) => ({ role: "alternativo" as const, icao })),
+      ];
+      const results = await Promise.all(
+        codes.map(async (item) => {
+          const bundle = await lookupAiswebIcao(item.icao);
+          return { ...item, bundle, note: "" };
+        }),
+      );
+      const name = suggestBriefingName(dep, arr);
+      const saved = await saveFlightBriefing({
+        name,
+        routeId: activeSavedId,
+        origin: dep,
+        destination: arr,
+        alternates: [],
+        sections,
+        airports: results,
+        aiReport: null,
+        aiReportId: null,
+      });
+      setActiveBriefingId(saved.id);
+      setBriefingName(saved.name);
+      setAirports(results);
+      setWaypoints((prev) => {
+        let changed = false;
+        const next = prev.map((wp) => {
+          if (!isAirportLike(wp)) return wp;
+          if (wp.altitudeFt != null && Number.isFinite(wp.altitudeFt)) return wp;
+          const code = normalizeIcao(wp.label || wp.raw);
+          const hit = results.find((r) => r.icao === code);
+          const altFt = hit?.bundle?.rotaer?.altFt;
+          if (altFt == null || !Number.isFinite(altFt)) return wp;
+          const rounded = Math.round(altFt);
+          changed = true;
+          return {
+            ...wp,
+            fieldElevFt:
+              wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt) ? wp.fieldElevFt : rounded,
+            altitudeFt: wp.altitudeFt != null && Number.isFinite(wp.altitudeFt) ? wp.altitudeFt : rounded,
+          };
+        });
+        return changed ? next : prev;
+      });
+      setAiReport(null);
+      setAiReportId(null);
+      setGenerated(true);
+      setBriefingOnlineTab("resumo");
+      setLinkedBriefings(listBriefingsForRoute(activeSavedId));
+      setBriefingSaveState("saved");
+      void handleGenerateAiReport(results);
+      showToast({
+        variant: "success",
+        title: "Briefing criado",
+        message: saved.name,
+      });
+    } catch (err) {
+      showToast({
+        variant: "error",
+        title: "Falha ao criar briefing",
+        message: err instanceof Error ? err.message : "Não foi possível consultar o AISWEB.",
+      });
+    } finally {
+      setLoadingBriefing(false);
+      window.setTimeout(() => {
+        briefingHydratingRef.current = false;
+      }, 400);
+    }
+  }
+
+  async function handleDeleteBriefing(id: string) {
+    try {
+      await deleteSavedFlightBriefing(id);
+      if (activeBriefingId === id) clearBriefingState();
+      if (activeSavedId) setLinkedBriefings(listBriefingsForRoute(activeSavedId));
+    } catch (err) {
+      showToast({
+        variant: "error",
+        title: "Falha ao excluir",
+        message: err instanceof Error ? err.message : "Não foi possível excluir o briefing.",
+      });
+    }
+  }
+
   function buildAiBriefingInput(airportDocs: BriefingAirportDoc[]): FlightBriefingAiGenerateInput {
     return {
       origin: originIcao,
@@ -1156,7 +1596,7 @@ export function PlanejamentoTab() {
       alternates,
       airports: airportDocs,
       routeSummary: waypoints.length ? summary : null,
-      airspaces,
+      airspaces: enteredAirspaces,
       cruiseSpeedKt: cruiseOpt,
       fuelBurnPerHour: burnOpt,
       fuelUnit,
@@ -1192,10 +1632,13 @@ export function PlanejamentoTab() {
     void handleGenerateAiReport(airports, true);
   }
 
-  function openBriefingAirportNotams(icaoRaw: string) {
+  function openBriefingAirportNotams(icaoRaw: string, notamNumber?: string) {
     const icao = normalizeIcao(icaoRaw);
     if (!icao) return;
-    setAirportNotamsFocusKey(`${icao}:${Date.now()}`);
+    const focus = notamNumber
+      ? `${icao}:notam:${encodeURIComponent(notamNumber)}:${Date.now()}`
+      : `${icao}:${Date.now()}`;
+    setAirportNotamsFocusKey(focus);
     setBriefingOnlineTab(`aeroporto:${icao}`);
   }
 
@@ -1241,84 +1684,9 @@ export function PlanejamentoTab() {
     }
   }
 
-  async function handleGenerate() {
-    const dep = originIcao;
-    const arr = destIcao;
-    if (dep.length !== 4 || arr.length !== 4) {
-      showToast({
-        variant: "error",
-        title: "Origem e destino",
-        message: "A rota precisa de aeródromos de origem e destino (ICAO) para o briefing.",
-      });
-      return;
-    }
-    if (sections.length === 0) {
-      showToast({ variant: "error", title: "Selecione informações", message: "Marque ao menos uma seção." });
-      return;
-    }
-    const codes: Array<{ role: "origem" | "destino" | "alternativo"; icao: string }> = [
-      { role: "origem", icao: dep },
-      { role: "destino", icao: arr },
-      ...alternates.map((icao) => ({ role: "alternativo" as const, icao })),
-    ];
-    setLoadingBriefing(true);
-    try {
-      const prevNotes = new Map(airports.map((a) => [`${a.role}:${a.icao}`, a.note || ""] as const));
-      const results = await Promise.all(
-        codes.map(async (item) => {
-          const bundle = await lookupAiswebIcao(item.icao);
-          return {
-            ...item,
-            bundle,
-            note: prevNotes.get(`${item.role}:${item.icao}`) || "",
-          };
-        }),
-      );
-      setAirports(results);
-      setWaypoints((prev) => {
-        let changed = false;
-        const next = prev.map((wp) => {
-          if (!isAirportLike(wp)) return wp;
-          if (wp.altitudeFt != null && Number.isFinite(wp.altitudeFt)) return wp;
-          const code = normalizeIcao(wp.label || wp.raw);
-          const hit = results.find((r) => r.icao === code);
-          const altFt = hit?.bundle?.rotaer?.altFt;
-          if (altFt == null || !Number.isFinite(altFt)) return wp;
-          const rounded = Math.round(altFt);
-          changed = true;
-          return {
-            ...wp,
-            fieldElevFt:
-              wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt) ? wp.fieldElevFt : rounded,
-            altitudeFt: wp.altitudeFt != null && Number.isFinite(wp.altitudeFt) ? wp.altitudeFt : rounded,
-          };
-        });
-        return changed ? next : prev;
-      });
-      setGenerated(true);
-      setBriefingOnlineTab("resumo");
-      setAiReport(null);
-      setAiReportId(null);
-      void handleGenerateAiReport(results);
-      showToast({
-        variant: "success",
-        title: "Documento gerado",
-        message: `${results.length} aeródromo(s) carregado(s) do AISWEB.`,
-      });
-    } catch (err) {
-      showToast({
-        variant: "error",
-        title: "Falha ao gerar",
-        message: err instanceof Error ? err.message : "Não foi possível consultar o AISWEB.",
-      });
-    } finally {
-      setLoadingBriefing(false);
-    }
-  }
-
   async function handleExportPdf() {
     if (!generated || airports.length === 0) {
-      showToast({ variant: "warning", title: "Gere o documento antes", message: "Clique em Gerar briefing." });
+      showToast({ variant: "warning", title: "Abra um briefing antes", message: "Crie ou abra um briefing vinculado à rota." });
       return;
     }
     setExportingPdf(true);
@@ -1396,7 +1764,7 @@ export function PlanejamentoTab() {
         sections,
         airports,
         routeSummary: waypoints.length ? summary : null,
-        airspaces,
+        airspaces: enteredAirspaces,
         cruiseSpeedKt: cruiseOpt,
         fuelBurnPerHour: burnOpt,
         fuelUnit,
@@ -1405,6 +1773,7 @@ export function PlanejamentoTab() {
         mapImageDataUrl,
         verticalProfileSvg,
         routeTableRows,
+        performanceProfile: performanceProfile?.profile ?? null,
         mode: "paged",
         brand: getPdfBrand(),
       });
@@ -1421,7 +1790,7 @@ export function PlanejamentoTab() {
 
   async function handleOpenTabletBriefing() {
     if (!generated || airports.length === 0) {
-      showToast({ variant: "warning", title: "Gere o documento antes", message: "Clique em Gerar briefing." });
+      showToast({ variant: "warning", title: "Abra um briefing antes", message: "Crie ou abra um briefing vinculado à rota." });
       return;
     }
     setExportingPdf(true);
@@ -1485,7 +1854,7 @@ export function PlanejamentoTab() {
           note: a.note || "",
         })),
         routeSummary: waypoints.length ? summary : null,
-        airspaces,
+        airspaces: enteredAirspaces,
         cruiseSpeedKt: cruiseOpt,
         fuelBurnPerHour: burnOpt,
         fuelUnit,
@@ -1549,8 +1918,26 @@ export function PlanejamentoTab() {
     }
   }
 
+  const hasRouteForSections = waypoints.length >= 2;
+  const compactMode = !isDesktopLg;
+
+  useEffect(() => {
+    if (!compactMode) return;
+    const needsRoute =
+      activeSection === "profile" ||
+      activeSection === "view3d" ||
+      activeSection === "airspace";
+    if (needsRoute && !hasRouteForSections) setActiveSection("map");
+  }, [compactMode, activeSection, hasRouteForSections]);
+
   return (
-    <div className="@container flex flex-col gap-3">
+    <>
+    <div className={compactMode ? "@container flex min-h-0 flex-col" : "@container flex flex-col gap-3"}>
+      {compactMode && activeSection !== "map" && activeSection !== "view3d" ? (
+        <PlanejamentoSectionHeader section={activeSection} />
+      ) : null}
+
+      {(isDesktopLg || activeSection === "map") ? (
       <FlightPlanMap
         waypoints={waypoints}
         originLabel={waypoints[0] ? waypointDisplayName(waypoints[0]) : null}
@@ -1570,7 +1957,11 @@ export function PlanejamentoTab() {
         showLegBubbles
         fitKey={fitKey}
         phaseMarkers={phaseMarkers}
-        mapHeightClass="h-[620px] sm:h-[720px]"
+        mapHeightClass={
+          compactMode
+            ? "h-[calc(100dvh-8.25rem)] min-h-[280px]"
+            : "h-[620px] sm:h-[720px]"
+        }
         className="w-full shrink-0"
         measureMode={measureMode}
         onMeasureModeChange={setMeasureMode}
@@ -1583,7 +1974,11 @@ export function PlanejamentoTab() {
           planningPanelCollapsed ? (
             <button
               type="button"
-              className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-600/80 bg-slate-950/85 px-2.5 py-2 text-xs font-semibold text-slate-200 shadow-2xl shadow-black/40 backdrop-blur-md transition hover:bg-slate-900 hover:text-white"
+              className={`inline-flex items-center gap-1.5 rounded-2xl border border-slate-600/80 px-2.5 py-2 text-xs font-semibold text-slate-200 shadow-2xl shadow-black/40 transition hover:bg-slate-900 hover:text-white ${
+                compactMode
+                  ? "bg-slate-950"
+                  : "bg-slate-950/85 backdrop-blur-md"
+              }`}
               title="Expandir planejamento"
               aria-label="Expandir coluna de planejamento"
               onClick={() => setPlanningPanelCollapsed(false)}
@@ -1592,7 +1987,13 @@ export function PlanejamentoTab() {
               <span>Planejamento</span>
             </button>
           ) : (
-          <aside className="flex max-h-[inherit] w-full flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/80 opacity-80 shadow-2xl shadow-black/40 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100">
+          <aside
+            className={`flex max-h-[inherit] w-full flex-col overflow-hidden rounded-2xl border border-slate-600/80 shadow-2xl shadow-black/40 ${
+              compactMode
+                ? "bg-slate-950 opacity-100"
+                : "bg-slate-950/80 opacity-80 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100"
+            }`}
+          >
           <div className="space-y-3 overflow-y-auto p-3">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-100">Planejamento</h2>
@@ -1941,7 +2342,11 @@ export function PlanejamentoTab() {
           )
         }
       />
+      ) : null}
 
+      {(isDesktopLg || activeSection === "route") ? (
+        <>
+      {isDesktopLg ? (
       <section className="shrink-0 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/60">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
             <h3 className="text-sm font-semibold text-slate-100">Tabela da rota</h3>
@@ -2278,142 +2683,420 @@ export function PlanejamentoTab() {
             </div>
           )}
         </section>
-
-        <RouteVerticalProfileChart
+      ) : (
+        <PlanejamentoRouteCards
           waypoints={waypoints}
           legs={legs}
-          totalDistanceNm={summary.distanceNm}
-          performance={performanceProfile}
-          corridors={legCorridors}
+          legCorridors={legCorridors}
+          accumMode={accumMode}
+          fuelUnit={fuelUnit}
+          bulkAltitudeFt={bulkAltitudeFt}
+          onBulkAltitudeFtChange={setBulkAltitudeFt}
+          onApplyBulkAltitude={() => {
+            const n = Number(String(bulkAltitudeFt).replace(",", "."));
+            if (!Number.isFinite(n)) return;
+            const rounded = Math.round(n);
+            setCruiseAltitudeFt(String(rounded));
+            setWaypoints((prev) =>
+              prev.map((wp, i) =>
+                i === 0 || i === prev.length - 1 ? wp : { ...wp, altitudeFt: rounded },
+              ),
+            );
+          }}
+          onAccumModeChange={setAccumMode}
+          onAltitudeChange={(index, value) => {
+            setWaypoints((prev) =>
+              prev.map((wp, i) => {
+                if (i !== index) return wp;
+                if (!value.trim()) {
+                  const { altitudeFt: _a, ...rest } = wp;
+                  return rest;
+                }
+                const n = Number(value.replace(",", "."));
+                if (!Number.isFinite(n)) return wp;
+                return { ...wp, altitudeFt: Math.round(n) };
+              }),
+            );
+          }}
+          onNoteChange={(index, value) => {
+            setWaypoints((prev) =>
+              prev.map((wp, i) => (i === index ? { ...wp, note: value } : wp)),
+            );
+          }}
+          onRemove={removeWaypoint}
+          onMove={(index, dir) => {
+            const to = index + dir;
+            if (to < 0 || to >= waypoints.length) return;
+            reorderWaypoint(index, to);
+          }}
+          onImport={() => {
+            setRouteTextDraft(nexAtlasText);
+            setShowPasteModal(true);
+          }}
+          onExport={() => setShowFplExportModal(true)}
+          waypointDisplayName={waypointDisplayName}
+          noteInput={({ value, onChange }) => (
+            <WaypointNoteInput value={value} onCommit={onChange} />
+          )}
         />
+      )}
+        </>
+      ) : null}
 
+        {(isDesktopLg || activeSection === "profile") && waypoints.length >= 2 ? (
+          <RouteVerticalProfileChart
+            waypoints={waypoints}
+            legs={legs}
+            totalDistanceNm={summary.distanceNm}
+            performance={performanceProfile}
+            corridors={legCorridors}
+            airspaces={airspaces}
+          />
+        ) : null}
+
+        {(isDesktopLg || activeSection === "view3d") && waypoints.length >= 2 ? (
+          <Suspense
+            fallback={
+              <section
+                className={`grid place-items-center border border-slate-700/70 bg-slate-950 text-[11px] text-slate-500 ${
+                  compactMode
+                    ? "h-[calc(100dvh-8.25rem)] rounded-none border-x-0"
+                    : "h-[480px] rounded-2xl"
+                }`}
+              >
+                Carregando vista 3D…
+              </section>
+            }
+          >
+            <Route3DView
+              waypoints={waypoints}
+              totalDistanceNm={summary.distanceNm}
+              performance={performanceProfile}
+              corridors={legCorridors}
+              airspaceVolumes={airspaceVolumes}
+              aerodromes={aerodromes}
+              onAerodromeDetails={(bundle) => setDetailBundle(bundle)}
+              variant={compactMode ? "section" : "embedded"}
+              className={compactMode ? "-mx-3 md:-mx-4" : ""}
+            />
+          </Suspense>
+        ) : null}
+
+        {(isDesktopLg || activeSection === "alternates") ? (
         <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
           <div className="mb-3">
-            <h3 className="text-sm font-semibold text-slate-100">Briefing AISWEB</h3>
+            <h3 className="text-sm font-semibold text-slate-100">Aeródromos alternativos</h3>
             <p className="mt-1 text-xs text-slate-500">
-              Origem/destino vêm dos aeródromos da rota
-              {originIcao || destIcao ? (
-                <>
-                  {" "}
-                  (<span className="font-semibold text-slate-300">{originIcao || "—"}</span>
-                  {" → "}
-                  <span className="font-semibold text-slate-300">{destIcao || "—"}</span>)
-                </>
-              ) : null}
-              .
+              Pertencem à rota{activeSavedId ? " e são salvos com ela" : ""}. Também entram no briefing.
             </p>
           </div>
-
-          <div className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Alternativos</p>
-            <div className="flex flex-wrap gap-2">
-              {alternates.map((icao) => (
-                <span
-                  key={icao}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200"
+          <div className="flex flex-wrap gap-2">
+            {alternates.map((icao) => (
+              <span
+                key={icao}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200"
+              >
+                {icao}
+                <button
+                  type="button"
+                  className="text-slate-500 hover:text-rose-300"
+                  aria-label={`Remover ${icao}`}
+                  onClick={() => removeAlternate(icao)}
                 >
-                  {icao}
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+          <div className="mt-2 grid gap-2 @lg:grid-cols-[1fr_auto] @lg:items-end">
+            <IcaoField
+              label="Buscar alternativo"
+              value={altDraft}
+              onChange={(icao) => {
+                setAltDraft(icao);
+                if (icao.length === 4) addAlternate(icao);
+              }}
+              placeholder="SDAG / Angra"
+            />
+            <button type="button" className={`${btnSecondary} mb-0.5`} onClick={() => addAlternate(altDraft)}>
+              Adicionar
+            </button>
+          </div>
+          {altSuggestions.length > 0 ? (
+            <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2.5">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Sugestões públicas perto do destino/origem
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {altSuggestions.map((s) => (
                   <button
+                    key={s.icao}
                     type="button"
-                    className="text-slate-500 hover:text-rose-300"
-                    aria-label={`Remover ${icao}`}
-                    onClick={() => setAlternates((prev) => prev.filter((c) => c !== icao))}
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-left text-[11px] text-slate-200 transition hover:border-cyan-500/40 hover:bg-slate-800"
+                    onClick={() => addAlternate(s.icao)}
+                    title={`${s.name} · ${s.municipality}/${s.uf}`}
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="grid gap-2 @lg:grid-cols-[1fr_auto] @lg:items-end">
-              <IcaoField
-                label="Buscar alternativo"
-                value={altDraft}
-                onChange={(icao) => {
-                  setAltDraft(icao);
-                  if (icao.length === 4) addAlternate(icao);
-                }}
-                placeholder="SDAG / Angra"
-              />
-              <button type="button" className={`${btnSecondary} mb-0.5`} onClick={() => addAlternate(altDraft)}>
-                Adicionar
-              </button>
-            </div>
-            {altSuggestions.length > 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2.5">
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Sugestões perto do destino/origem
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {altSuggestions.map((s) => (
-                    <button
-                      key={s.icao}
-                      type="button"
-                      className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-left text-[11px] text-slate-200 transition hover:border-cyan-500/40 hover:bg-slate-800"
-                      onClick={() => addAlternate(s.icao)}
-                      title={`${s.name} · ${s.municipality}/${s.uf}`}
-                    >
-                      <span className="font-semibold text-cyan-300">{s.icao}</span>
-                      <span className="text-slate-500">
-                        {" "}
-                        · {s.distanceNm.toFixed(0)} NM · {s.near}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="hidden">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Informações no documento
-            </p>
-            <div className="grid gap-2 @md:grid-cols-2 @2xl:grid-cols-3">
-              {FLIGHT_PLAN_INFO_OPTIONS.map((opt) => {
-                const on = sections.includes(opt.id);
-                return (
-                  <label
-                    key={opt.id}
-                    className={`flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition ${
-                      on
-                        ? "border-cyan-500/40 bg-cyan-500/10"
-                        : "border-slate-700/70 bg-slate-950/40 hover:border-slate-600"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-0.5"
-                      checked={on}
-                      onChange={() => toggleSection(opt.id)}
-                    />
-                    <span>
-                      <span className="block text-sm font-semibold text-slate-100">{opt.label}</span>
-                      <span className="block text-[11px] text-slate-500">{opt.description}</span>
+                    <span className="font-semibold text-cyan-300">{s.icao}</span>
+                    <span className="text-slate-500">
+                      {" "}
+                      · {s.distanceNm.toFixed(0)} NM · {s.near}
                     </span>
-                  </label>
-                );
-              })}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : null}
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Alternativo</th>
+                  <th className="px-3 py-2 font-semibold" colSpan={3}>
+                    → {originIcao || "Origem"}
+                  </th>
+                  <th className="px-3 py-2 font-semibold" colSpan={3}>
+                    → {destIcao || "Destino"}
+                  </th>
+                </tr>
+                <tr>
+                  <th className="px-3 py-1 font-semibold" />
+                  <th className="px-3 py-1 font-semibold">Dist.</th>
+                  <th className="px-3 py-1 font-semibold">Tempo</th>
+                  <th className="px-3 py-1 font-semibold">Consumo</th>
+                  <th className="px-3 py-1 font-semibold">Dist.</th>
+                  <th className="px-3 py-1 font-semibold">Tempo</th>
+                  <th className="px-3 py-1 font-semibold">Consumo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alternates.length === 0 ? (
+                  <tr>
+                    <td className="px-3 py-3 text-slate-500" colSpan={7}>
+                      Nenhum alternativo. Adicione um ICAO acima para ver distância, tempo e consumo até origem/destino.
+                    </td>
+                  </tr>
+                ) : (
+                  alternateMetrics.map((row) => (
+                    <tr key={row.icao} className="border-t border-slate-800/80">
+                      <td className="px-3 py-2 font-semibold text-cyan-300">{row.icao}</td>
+                      <td className="px-3 py-2 font-mono text-slate-300">
+                        {row.toOriginNm != null ? `${row.toOriginNm.toFixed(1)} nm` : "—"}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-slate-300">{formatEteClock(row.toOriginEte)}</td>
+                      <td className="px-3 py-2 font-mono text-slate-300">
+                        {row.toOriginFuel != null ? `${row.toOriginFuel.toFixed(1)} ${fuelUnit}` : "—"}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-slate-300">
+                        {row.toDestNm != null ? `${row.toDestNm.toFixed(1)} nm` : "—"}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-slate-300">{formatEteClock(row.toDestEte)}</td>
+                      <td className="px-3 py-2 font-mono text-slate-300">
+                        {row.toDestFuel != null ? `${row.toDestFuel.toFixed(1)} ${fuelUnit}` : "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        ) : null}
+
+        {(isDesktopLg || activeSection === "airspace") ? (
+        <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
+            {airspaceLoading ? <span className="text-[11px] text-slate-500">Consultando…</span> : null}
+          </div>
+          <p className="mb-2 text-[11px] text-slate-500">
+            Ordem cronológica · FIR/FIS/TMA/CTA/CTR/ATZ/FIZ + P/R/D na altitude planejada
+          </p>
+          {airspaceError ? (
+            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              {airspaceError}
+            </p>
+          ) : null}
+          {!airspaceLoading && !airspaceError && waypoints.length >= 2 && enteredAirspaces.length === 0 ? (
+            <p className="text-xs text-slate-500">Nenhum espaço aéreo detectado ao longo da rota na altitude planejada.</p>
+          ) : null}
+          {waypoints.length < 2 ? (
+            <p className="text-xs text-slate-500">Monte a rota com pelo menos 2 pontos para detectar espaços aéreos.</p>
+          ) : null}
+          {enteredAirspaces.length > 0 ? (
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="min-w-full text-left text-xs">
+                <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 font-semibold">#</th>
+                    <th className="px-3 py-2 font-semibold">Tipo</th>
+                    <th className="px-3 py-2 font-semibold">Nome</th>
+                    <th className="px-3 py-2 font-semibold">Ident</th>
+                    <th className="px-3 py-2 font-semibold">Limites</th>
+                    <th className="px-3 py-2 font-semibold">Frequências</th>
+                    <th className="px-3 py-2 font-semibold">Entrada</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {enteredAirspaces.map((a, idx) => (
+                    <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
+                      <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${airspaceHitTypeBadgeClass(a.type)}`}>
+                          {a.type}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-slate-200">{a.name}</td>
+                      <td className="px-3 py-2 font-mono text-slate-400">{a.ident}</td>
+                      <td className="px-3 py-2 text-slate-400">
+                        {a.lower || "—"} / {a.upper || "—"}
+                      </td>
+                      <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
+                      <td className="px-3 py-2 font-mono text-slate-400">
+                        <span>{formatAirspaceEntryDistance(a.entryDistanceNm)}</span>
+                        {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile)) ? (
+                          <span className="mt-0.5 block text-[10px] text-slate-500">
+                            {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile))}
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </section>
+        ) : null}
+
+        {(isDesktopLg || activeSection === "briefing") ? (
+        <>
+        <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100">Briefing</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Vinculado à rota
+                {originIcao || destIcao ? (
+                  <>
+                    {" "}
+                    (<span className="font-semibold text-slate-300">{originIcao || "—"}</span>
+                    {" → "}
+                    <span className="font-semibold text-slate-300">{destIcao || "—"}</span>)
+                  </>
+                ) : null}
+                . Alterações são salvas automaticamente.
+              </p>
+            </div>
             <button
               type="button"
               className={btnPrimary}
-              disabled={loadingBriefing}
-              onClick={() => void handleGenerate()}
+              disabled={loadingBriefing || originIcao.length !== 4 || destIcao.length !== 4}
+              onClick={() => void createNewBriefing()}
             >
-              {loadingBriefing ? "Gerando…" : "Gerar briefing"}
+              {loadingBriefing ? "Criando…" : "Novo briefing"}
             </button>
           </div>
+
+          {!activeSavedId ? (
+            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              Salve a rota para vincular e listar briefings.
+            </p>
+          ) : linkedBriefings.length === 0 ? (
+            <p className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs text-slate-400">
+              Nenhum briefing vinculado a esta rota. Crie um novo para começar.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {linkedBriefings.map((item) => (
+                <li
+                  key={item.id}
+                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 ${
+                    activeBriefingId === item.id
+                      ? "border-cyan-500/40 bg-cyan-500/10"
+                      : "border-slate-800 bg-slate-900/50"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => void openSavedBriefing(item.id)}
+                  >
+                    <span className="block truncate text-sm font-semibold text-slate-100">{item.name}</span>
+                    <span className="block text-[11px] text-slate-500">
+                      {item.origin} → {item.destination} · {new Date(item.updatedAt).toLocaleString("pt-BR")}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-rose-500/15 hover:text-rose-300"
+                    onClick={() => void handleDeleteBriefing(item.id)}
+                  >
+                    Excluir
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
 
         {generated ? (
           <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
             <div className="space-y-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-400">Briefing online</p>
-                <h2 className="text-base font-semibold text-slate-100">{originIcao} - {destIcao}</h2>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  {editingBriefingName ? (
+                    <input
+                      className={`${inputClass} mt-0.5 max-w-md`}
+                      value={briefingName}
+                      autoFocus
+                      placeholder={suggestBriefingName(originIcao, destIcao)}
+                      onChange={(e) => setBriefingName(e.target.value)}
+                      onBlur={() => setEditingBriefingName(false)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingBriefingName(false);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="group mt-0.5 flex max-w-full items-center gap-2 text-left"
+                      onClick={() => {
+                        if (!briefingName.trim()) setBriefingName(suggestBriefingName(originIcao, destIcao));
+                        setEditingBriefingName(true);
+                      }}
+                      title="Editar nome do briefing"
+                    >
+                      <h2 className="truncate text-base font-semibold text-slate-100">{displayBriefingName}</h2>
+                      {aiLoading ? (
+                        <span className="inline-flex shrink-0 items-center gap-1.5 rounded border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                          <span
+                            className="h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-cyan-300/30 border-t-cyan-200"
+                            aria-hidden
+                          />
+                          IA
+                        </span>
+                      ) : null}
+                      <span className="shrink-0 text-slate-500 opacity-0 transition group-hover:opacity-100">
+                        <IconEdit />
+                      </span>
+                    </button>
+                  )}
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {originIcao} → {destIcao}
+                    {briefingSaveState === "saving"
+                      ? " · Salvando…"
+                      : briefingSaveState === "saved"
+                        ? " · Salvo"
+                        : briefingSaveState === "error"
+                          ? " · Erro ao salvar"
+                          : ""}
+                    {aiLoading && editingBriefingName ? " · IA pesquisando…" : ""}
+                  </p>
+                </div>
               </div>
               <Tabs
                 items={briefingOnlineTabs}
@@ -2426,15 +3109,37 @@ export function PlanejamentoTab() {
             </div>
 
             {briefingOnlineTab === "resumo" ? (
-              <div className="grid gap-3 @2xl:grid-cols-[1.1fr_0.9fr]">
+              <div className="grid gap-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)]">
                 <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <h3 className="text-sm font-semibold text-slate-100">Leia primeiro</h3>
-                      <p className="mt-1 text-sm text-slate-300">
-                        {aiReport?.summary ||
-                          "Briefing AISWEB pronto. A IA ainda esta enriquecendo contatos, combustivel, hangaragem e pendencias operacionais."}
-                      </p>
+                      {(() => {
+                        const summaryText =
+                          aiReport?.summary ||
+                          "Briefing AISWEB pronto. A IA ainda esta enriquecendo contatos, combustivel, hangaragem e pendencias operacionais.";
+                        const long = summaryText.length > 220;
+                        return (
+                          <>
+                            <p
+                              className={`mt-1 text-sm leading-6 text-slate-300 ${
+                                summaryExpanded || !long ? "" : "line-clamp-3"
+                              }`}
+                            >
+                              {summaryText}
+                            </p>
+                            {long ? (
+                              <button
+                                type="button"
+                                className="mt-2 text-[11px] font-semibold text-cyan-300 transition hover:text-cyan-200"
+                                onClick={() => setSummaryExpanded((open) => !open)}
+                              >
+                                {summaryExpanded ? "Recolher" : "Ler na íntegra"}
+                              </button>
+                            ) : null}
+                          </>
+                        );
+                      })()}
                     </div>
                     <span className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400">
                       {aiLoading ? "IA pesquisando" : aiReport ? (aiReport.status === "fallback" ? "IA fallback" : "IA pronta") : "AISWEB pronto"}
@@ -2447,25 +3152,65 @@ export function PlanejamentoTab() {
                   ) : null}
                   {aiReport?.warnings?.length ? (
                     <div className="mt-3 grid gap-2 @lg:grid-cols-2">
-                      {aiReport.warnings.map((warning) => (
-                        <article key={warning.id} className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3">
-                          <p className="text-xs font-semibold text-amber-100">{warning.title}</p>
-                          <p className="mt-1 text-xs text-amber-100/80">{warning.detail}</p>
-                        </article>
-                      ))}
+                      {aiReport.warnings.map((warning) => {
+                        const matchedNotam = resolveWarningNotam(warning, airports);
+                        const expanded = expandedWarningId === warning.id;
+                        const fullText = matchedNotam?.text?.trim() || warning.detail;
+                        const canExpand = Boolean(fullText && (matchedNotam || warning.detail.length > 140));
+                        return (
+                          <article
+                            key={warning.id}
+                            className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3"
+                          >
+                            <p className="text-xs font-semibold text-amber-100">{warning.title}</p>
+                            <p
+                              className={`mt-1 whitespace-pre-wrap text-xs leading-5 text-amber-100/80 ${
+                                expanded ? "" : "line-clamp-3"
+                              }`}
+                            >
+                              {expanded ? fullText : warning.detail}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {canExpand ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] font-semibold text-amber-50/90 underline-offset-2 transition hover:text-white hover:underline"
+                                  onClick={() =>
+                                    setExpandedWarningId((cur) => (cur === warning.id ? null : warning.id))
+                                  }
+                                >
+                                  {expanded ? "Recolher" : "Ler NOTAM na íntegra"}
+                                </button>
+                              ) : null}
+                              {matchedNotam?.icao ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] font-semibold text-cyan-200/90 underline-offset-2 transition hover:text-cyan-100 hover:underline"
+                                  onClick={() =>
+                                    openBriefingAirportNotams(matchedNotam.icao, matchedNotam.number || undefined)
+                                  }
+                                >
+                                  Abrir na aba NOTAMs
+                                  {matchedNotam.number ? ` (${matchedNotam.number})` : ""}
+                                </button>
+                              ) : null}
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </section>
-                <section className="grid gap-2 @md:grid-cols-2">
+                <section className="grid grid-cols-2 gap-2 content-start">
                   {[
                     ["Aeroportos", String(airports.length)],
                     ["Tasks abertas", String(aiReport?.tasks.filter((task) => task.status === "open").length ?? 0)],
                     ["Alertas IA", String(aiReport?.warnings.length ?? 0)],
-                    ["Espacos aereos", String(airspaces.length)],
+                    ["Espacos aereos", String(enteredAirspaces.length)],
                   ].map(([label, value]) => (
-                    <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-                      <p className="mt-1 text-2xl font-semibold text-slate-100">{value}</p>
+                    <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/50 p-2.5">
+                      <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+                      <p className="mt-0.5 text-xl font-semibold text-slate-100">{value}</p>
                     </div>
                   ))}
                 </section>
@@ -2607,68 +3352,206 @@ export function PlanejamentoTab() {
             ) : null}
 
             {briefingOnlineTab === "rota" ? (
-        <div>
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
-            {airspaceLoading ? <span className="text-[11px] text-slate-500">Consultando…</span> : null}
-          </div>
-          {airspaceError ? (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-              {airspaceError}
-            </p>
-          ) : null}
-          {!airspaceLoading && !airspaceError && waypoints.length >= 2 && airspaces.length === 0 ? (
-            <p className="text-xs text-slate-500">Nenhum CTA/TMA/CTR/ATZ detectado ao longo da rota.</p>
-          ) : null}
-          {airspaces.length > 0 ? (
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 font-semibold">#</th>
-                    <th className="px-3 py-2 font-semibold">Tipo</th>
-                    <th className="px-3 py-2 font-semibold">Nome</th>
-                    <th className="px-3 py-2 font-semibold">Ident</th>
-                    <th className="px-3 py-2 font-semibold">Limites</th>
-                    <th className="px-3 py-2 font-semibold">Frequências</th>
-                    <th className="px-3 py-2 font-semibold">Entrada</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {airspaces.map((a, idx) => (
-                    <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
-                      <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            a.type === "CTA"
-                              ? "bg-amber-500/20 text-amber-200"
-                              : a.type === "TMA"
-                                ? "bg-violet-500/20 text-violet-200"
-                                : a.type === "CTR"
-                                  ? "bg-sky-500/20 text-sky-200"
-                                  : "bg-emerald-500/20 text-emerald-200"
-                          }`}
-                        >
-                          {a.type}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-slate-200">{a.name}</td>
-                      <td className="px-3 py-2 font-mono text-slate-400">{a.ident}</td>
-                      <td className="px-3 py-2 text-slate-400">
-                        {a.lower || "—"} / {a.upper || "—"}
-                      </td>
-                      <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
-                      <td className="px-3 py-2 font-mono text-slate-400">
-                        {a.entryDistanceNm != null ? `${a.entryDistanceNm.toFixed(1)} NM` : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-        </div>
+              <div className="space-y-4">
+                <section className="overflow-hidden rounded-xl border border-slate-800">
+                  <div className="border-b border-slate-800 px-3 py-2">
+                    <h3 className="text-sm font-semibold text-slate-100">Tabela da rota</h3>
+                  </div>
+                  {waypoints.length === 0 ? (
+                    <p className="px-3 py-4 text-xs text-slate-500">Sem pontos na rota.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">#</th>
+                            <th className="px-3 py-2 font-semibold">Ponto</th>
+                            <th className="px-3 py-2 font-semibold">Proa</th>
+                            <th className="px-3 py-2 font-semibold">Alt</th>
+                            <th className="px-3 py-2 font-semibold">Distância</th>
+                            <th className="px-3 py-2 font-semibold">Tempo</th>
+                            <th className="px-3 py-2 font-semibold">Consumo</th>
+                            <th className="px-3 py-2 font-semibold">Obs</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {waypoints.map((wp, idx) => {
+                            const leg = idx > 0 ? legs[idx - 1] : null;
+                            return (
+                              <tr key={`brf-route-${wp.lat}-${wp.lng}-${idx}`} className="border-t border-slate-800/80">
+                                <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
+                                <td className="px-3 py-2 font-semibold text-slate-100">{waypointDisplayName(wp)}</td>
+                                <td className="px-3 py-2 font-semibold text-emerald-400">
+                                  {leg ? formatBearingDeg(leg.bearingDeg) : "—"}
+                                </td>
+                                <td className="px-3 py-2 font-mono text-slate-300">
+                                  {wp.altitudeFt != null ? `${wp.altitudeFt} ft` : "—"}
+                                </td>
+                                <td className="px-3 py-2 font-mono text-slate-300">
+                                  {leg ? `${leg.distanceNm.toFixed(1)} nm` : "—"}
+                                </td>
+                                <td className="px-3 py-2 font-mono text-slate-300">{formatEteClock(leg?.eteHours ?? null)}</td>
+                                <td className="px-3 py-2 font-mono text-slate-300">
+                                  {leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} ${fuelUnit}` : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-slate-400">{wp.note || "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        {legs.length > 0 ? (
+                          <tfoot>
+                            <tr className="border-t border-slate-700 bg-slate-900/50">
+                              <td className="px-3 py-2 text-slate-500" colSpan={4}>
+                                Total
+                              </td>
+                              <td className="px-3 py-2 font-mono font-semibold text-slate-100">
+                                {summary.distanceNm.toFixed(1)} nm
+                              </td>
+                              <td className="px-3 py-2 font-mono font-semibold text-slate-100">
+                                {formatEteClock(summary.eteHours)}
+                              </td>
+                              <td className="px-3 py-2 font-mono font-semibold text-slate-100">
+                                {formatFuel(summary.fuelEstimate, fuelUnit)}
+                              </td>
+                              <td />
+                            </tr>
+                          </tfoot>
+                        ) : null}
+                      </table>
+                    </div>
+                  )}
+                </section>
+
+                <RouteVerticalProfileChart
+                  waypoints={waypoints}
+                  legs={legs}
+                  totalDistanceNm={summary.distanceNm}
+                  performance={performanceProfile}
+                  corridors={legCorridors}
+                  airspaces={airspaces}
+                />
+
+                <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Alternativos da rota
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Distância em linha reta, tempo e consumo estimados para o primeiro e o último aeródromo.
+                  </p>
+                  <div className="mt-3 overflow-x-auto rounded-xl border border-slate-800">
+                    <table className="min-w-full text-left text-xs">
+                      <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-semibold">Alternativo</th>
+                          <th className="px-3 py-2 font-semibold" colSpan={3}>
+                            → {originIcao || "Origem"}
+                          </th>
+                          <th className="px-3 py-2 font-semibold" colSpan={3}>
+                            → {destIcao || "Destino"}
+                          </th>
+                        </tr>
+                        <tr>
+                          <th className="px-3 py-1 font-semibold" />
+                          <th className="px-3 py-1 font-semibold">Dist.</th>
+                          <th className="px-3 py-1 font-semibold">Tempo</th>
+                          <th className="px-3 py-1 font-semibold">Consumo</th>
+                          <th className="px-3 py-1 font-semibold">Dist.</th>
+                          <th className="px-3 py-1 font-semibold">Tempo</th>
+                          <th className="px-3 py-1 font-semibold">Consumo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {alternates.length === 0 ? (
+                          <tr>
+                            <td className="px-3 py-3 text-slate-500" colSpan={7}>
+                              Nenhum alternativo na rota. Adicione na seção de aeródromos alternativos acima.
+                            </td>
+                          </tr>
+                        ) : (
+                          alternateMetrics.map((row) => (
+                            <tr key={row.icao} className="border-t border-slate-800/80">
+                              <td className="px-3 py-2 font-semibold text-cyan-300">{row.icao}</td>
+                              <td className="px-3 py-2 font-mono text-slate-300">
+                                {row.toOriginNm != null ? `${row.toOriginNm.toFixed(1)} nm` : "—"}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-slate-300">{formatEteClock(row.toOriginEte)}</td>
+                              <td className="px-3 py-2 font-mono text-slate-300">
+                                {row.toOriginFuel != null ? `${row.toOriginFuel.toFixed(1)} ${fuelUnit}` : "—"}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-slate-300">
+                                {row.toDestNm != null ? `${row.toDestNm.toFixed(1)} nm` : "—"}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-slate-300">{formatEteClock(row.toDestEte)}</td>
+                              <td className="px-3 py-2 font-mono text-slate-300">
+                                {row.toDestFuel != null ? `${row.toDestFuel.toFixed(1)} ${fuelUnit}` : "—"}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
+                    {airspaceLoading ? <span className="text-[11px] text-slate-500">Consultando…</span> : null}
+                  </div>
+                  {airspaceError ? (
+                    <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      {airspaceError}
+                    </p>
+                  ) : null}
+                  {!airspaceLoading && !airspaceError && waypoints.length >= 2 && enteredAirspaces.length === 0 ? (
+                    <p className="text-xs text-slate-500">Nenhum espaço aéreo detectado ao longo da rota na altitude planejada.</p>
+                  ) : null}
+                  {enteredAirspaces.length > 0 ? (
+                    <div className="overflow-x-auto rounded-xl border border-slate-800">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">#</th>
+                            <th className="px-3 py-2 font-semibold">Tipo</th>
+                            <th className="px-3 py-2 font-semibold">Nome</th>
+                            <th className="px-3 py-2 font-semibold">Ident</th>
+                            <th className="px-3 py-2 font-semibold">Limites</th>
+                            <th className="px-3 py-2 font-semibold">Frequências</th>
+                            <th className="px-3 py-2 font-semibold">Entrada</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {enteredAirspaces.map((a, idx) => (
+                            <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
+                              <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
+                              <td className="px-3 py-2">
+                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${airspaceHitTypeBadgeClass(a.type)}`}>
+                                  {a.type}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-slate-200">{a.name}</td>
+                              <td className="px-3 py-2 font-mono text-slate-400">{a.ident}</td>
+                              <td className="px-3 py-2 text-slate-400">
+                                {a.lower || "—"} / {a.upper || "—"}
+                              </td>
+                              <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
+                              <td className="px-3 py-2 font-mono text-slate-400">
+                                <span>{formatAirspaceEntryDistance(a.entryDistanceNm)}</span>
+                                {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile)) ? (
+                                  <span className="mt-0.5 block text-[10px] text-slate-500">
+                                    {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile))}
+                                  </span>
+                                ) : null}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             ) : null}
 
             {briefingOnlineTab.startsWith("aeroporto:") ? (() => {
@@ -2676,15 +3559,6 @@ export function PlanejamentoTab() {
               if (!selectedAirport) return null;
               return (
                 <section className="@container space-y-3">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-400">
-                      {selectedAirport.role === "origem" ? "Origem" : selectedAirport.role === "destino" ? "Destino" : "Alternativo"}
-                    </p>
-                    <h3 className="text-base font-semibold text-slate-100">
-                      {selectedAirport.icao} · {selectedAirport.bundle.rotaer?.name || "AISWEB"}
-                    </h3>
-                  </div>
-                  <AiswebAirportTopCards airport={selectedAirport.bundle} />
                   <AiswebAirportDetailTabs
                     airport={selectedAirport.bundle}
                     meteorology={<AiswebMeteorologyPanel airport={selectedAirport.bundle} />}
@@ -2751,14 +3625,27 @@ export function PlanejamentoTab() {
             ) : null}
           </section>
         ) : null}
+        </>
+        ) : null}
+
+    </div>
+
+      {compactMode ? (
+        <PlanejamentoFloatingNav
+          active={activeSection}
+          hasRoute={hasRouteForSections}
+          onSelect={setActiveSection}
+          onLeave={() => onLeave?.()}
+        />
+      ) : null}
 
       {showConfigModal ? (
         <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/80 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setShowConfigModal(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-xl"
+            className="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-t-2xl border border-slate-700 bg-slate-950 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
@@ -2890,11 +3777,11 @@ export function PlanejamentoTab() {
 
       {showFplExportModal ? (
         <div
-          className="fixed inset-0 z-[700] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[700] flex items-end justify-center bg-slate-950/80 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setShowFplExportModal(false)}
         >
           <div
-            className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-xl"
+            className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-t-2xl border border-slate-700 bg-slate-950 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
@@ -2978,11 +3865,11 @@ export function PlanejamentoTab() {
 
       {showPasteModal ? (
         <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/80 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setShowPasteModal(false)}
         >
           <div
-            className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-xl"
+            className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-slate-700 bg-slate-950 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
@@ -3021,6 +3908,6 @@ export function PlanejamentoTab() {
         open={Boolean(detailBundle)}
         onClose={() => setDetailBundle(null)}
       />
-    </div>
+    </>
   );
 }

@@ -20,6 +20,18 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/esri-proxy/, ""),
       },
+      "/esri-imagery-proxy": {
+        target: "https://server.arcgisonline.com",
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/esri-imagery-proxy/, ""),
+      },
+      "/terrain-proxy": {
+        target: "https://s3.amazonaws.com",
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/terrain-proxy/, "/elevation-tiles-prod/terrarium"),
+      },
     },
   },
   build: {
@@ -34,6 +46,13 @@ export default defineConfig({
           if (normalizedId.includes("/node_modules/recharts/") || normalizedId.includes("/node_modules/d3-")) return "charts";
           if (normalizedId.includes("/node_modules/@tiptap/") || normalizedId.includes("/node_modules/prosemirror")) return "editor";
           if (normalizedId.includes("/node_modules/papaparse/")) return "csv";
+          if (
+            normalizedId.includes("/node_modules/three/") ||
+            normalizedId.includes("/node_modules/@react-three/") ||
+            normalizedId.includes("/node_modules/three-stdlib/")
+          ) {
+            return "three";
+          }
           return undefined;
         },
       },

@@ -157,8 +157,10 @@ import {
   type ChartLayerSet,
   type ChartTilesManifest,
 } from "../lib/chartTiles";
-import { AirspaceInfoPanel, AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
+import { AirspaceInfoPanel } from "./AirspaceInfoPanel";
+import { AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
 import { FcaAdOverlay } from "./FcaAdOverlay";
+import { AfisAdOverlay } from "./AfisAdOverlay";
 
 const AIRSPACE_TOGGLES = AIRSPACE_LAYER_DEFS.map((d) => ({
   id: d.id,
@@ -880,6 +882,10 @@ function MapClickHandler({
       if (suppressUntilRef) suppressUntilRef.current = Date.now() + 450;
     },
     click(e) {
+      // Espaço aéreo trata seleção no preclick e marca o evento.
+      if ((e.originalEvent as { _airspaceEdge?: boolean } | undefined)?._airspaceEdge) {
+        return;
+      }
       onBlankClick?.();
       if (!enabled || !onMapClick) return;
       if (suppressUntilRef && Date.now() < suppressUntilRef.current) return;
@@ -1661,6 +1667,7 @@ export function FlightPlanMap({
   } | null>(null);
   const [toolPanel, setToolPanel] = useState<MapToolPanel>(null);
   const suppressMapPickUntil = useRef(0);
+  const mapShellRef = useRef<HTMLDivElement>(null);
   const [mapZoom, setMapZoom] = useState(5);
   const [chartManifest, setChartManifest] = useState<ChartTilesManifest | null>(null);
 
@@ -1673,6 +1680,16 @@ export function FlightPlanMap({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const el = mapShellRef.current;
+    if (!el || !interactive) return;
+    const blockScrollChain = (event: WheelEvent) => {
+      event.stopPropagation();
+    };
+    el.addEventListener("wheel", blockScrollChain, { passive: true });
+    return () => el.removeEventListener("wheel", blockScrollChain);
+  }, [interactive]);
 
   const useXyzWac = xyzAvailableFor(chartManifest, "wac");
   const useXyzRea = xyzAvailableFor(chartManifest, "rea");
@@ -1882,9 +1899,10 @@ export function FlightPlanMap({
       }`}
     >
       <div
-        className={`relative w-full shrink-0 overflow-hidden bg-[#d4d4c8] [&_.leaflet-container]:bg-[#d4d4c8] [&_.leaflet-control-attribution]:text-[9px] ${mapHeightClass}`}
+        ref={mapShellRef}
+        className={`relative w-full shrink-0 overflow-hidden overscroll-contain bg-[#d4d4c8] [&_.leaflet-container]:bg-[#d4d4c8] [&_.leaflet-control-attribution]:text-[9px] ${mapHeightClass}`}
       >
-        {mapOverlay ? (
+        {mapOverlay && !toolPanel ? (
           <div className="pointer-events-none absolute inset-0 z-[500]">
             <div
               className={`pointer-events-auto absolute left-2 top-2 max-h-[calc(100%-1rem)] ${mapOverlayMaxWidthClass}`}
@@ -1897,7 +1915,7 @@ export function FlightPlanMap({
         {/* Menu vertical direito (estilo NexAtlas) */}
         <div className="pointer-events-none absolute bottom-3 right-2 top-2 z-[530] flex items-start justify-end gap-2">
           {toolPanel ? (
-            <div className="pointer-events-auto flex max-h-full w-[min(100vw-4.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md">
+            <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md max-sm:absolute max-sm:inset-x-2 max-sm:bottom-14 max-sm:top-auto max-sm:max-h-[55%] max-sm:w-auto">
               <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-200">
                   {toolPanel === "filters"
@@ -2413,6 +2431,15 @@ export function FlightPlanMap({
           ) : null}
           <FcaAdOverlay
             enabled={layersOn.fca_ad === true}
+            aerodromes={aerodromes}
+            selectedKey={selectedAirspace?.key ?? null}
+            onSelect={(info, key) => {
+              if (!info || !key) setSelectedAirspace(null);
+              else setSelectedAirspace({ info, key });
+            }}
+          />
+          <AfisAdOverlay
+            enabled={layersOn.afis === true}
             aerodromes={aerodromes}
             selectedKey={selectedAirspace?.key ?? null}
             onSelect={(info, key) => {

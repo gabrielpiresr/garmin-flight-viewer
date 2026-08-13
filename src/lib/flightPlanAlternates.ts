@@ -20,6 +20,7 @@ async function loadAerodromesCached(): Promise<Aerodrome[]> {
   const rows = await listAerodromes();
   aerodromeCache = rows.filter(
     (a) =>
+      a.isPublic &&
       a.icao &&
       a.latitudeGeoPoint != null &&
       a.longitudeGeoPoint != null &&

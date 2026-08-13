@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lookupAiswebIcao, searchAiswebAerodromes } from "../lib/aiswebDb";
 import { resolveAirportCoords } from "../lib/resolveAirportCoords";
-import { detectAirspacesAlongRoute, sampleRoutePoints } from "../lib/airspaceIntersect";
+import { airspaceEntryEteHours, airspacesEnteredVertically, detectAirspacesAlongRoute, sampleRoutePoints } from "../lib/airspaceIntersect";
 import {
   buildRoutePerformanceProfile,
   DEFAULT_FLIGHT_PERFORMANCE,
@@ -13,6 +13,9 @@ import { buildRouteVerticalProfileSvg } from "../lib/flightPlanProfileSvg";
 import { getRouteElevation } from "../lib/routeElevationDb";
 import {
   airportSummaryFromBundle,
+  airspaceHitTypeBadgeClass,
+  formatAirspaceEntryDistance,
+  formatAirspaceEntryEte,
   formatAirspaceFreqCell,
   formatRotaerFuel,
 } from "../lib/flightPlanFormat";
@@ -537,6 +540,7 @@ export function AiswebFlightPlanningTab() {
       }),
     [waypoints, cruise, burn],
   );
+  const enteredAirspaces = useMemo(() => airspacesEnteredVertically(airspaces), [airspaces]);
   const routeSummary = useMemo(
     () =>
       summarizeFlightPlanRoute(waypoints, {
@@ -600,9 +604,9 @@ export function AiswebFlightPlanningTab() {
     const profile = performanceProfile?.profile ?? null;
     const timer = window.setTimeout(() => {
       void detectAirspacesAlongRoute(samples, { performanceProfile: profile })
-        .then((hits) => {
+        .then((result) => {
           if (cancelled) return;
-          setAirspaces(hits);
+          setAirspaces(result.hits);
         })
         .catch((err) => {
           if (cancelled) return;
@@ -766,7 +770,7 @@ export function AiswebFlightPlanningTab() {
         sections,
         airports,
         routeSummary: waypoints.length ? routeSummary : null,
-        airspaces,
+        airspaces: enteredAirspaces,
         cruiseSpeedKt: Number.isFinite(cruise) && cruise > 0 ? cruise : null,
         fuelBurnPerHour: Number.isFinite(burn) && burn > 0 ? burn : null,
         fuelUnit,
@@ -774,6 +778,7 @@ export function AiswebFlightPlanningTab() {
         mapImageDataUrl,
         verticalProfileSvg,
         routeTableRows,
+        performanceProfile: performanceProfile?.profile ?? null,
         mode: "paged",
         brand: getPdfBrand(),
       });
@@ -810,7 +815,7 @@ export function AiswebFlightPlanningTab() {
           note: a.note || "",
         })),
         routeSummary: waypoints.length ? routeSummary : null,
-        airspaces,
+        airspaces: enteredAirspaces,
         cruiseSpeedKt: Number.isFinite(cruise) && cruise > 0 ? cruise : null,
         fuelBurnPerHour: Number.isFinite(burn) && burn > 0 ? burn : null,
         fuelUnit,
@@ -1071,10 +1076,10 @@ export function AiswebFlightPlanningTab() {
               {airspaceError}
             </p>
           ) : null}
-          {!airspaceLoading && !airspaceError && waypoints.length >= 2 && airspaces.length === 0 ? (
-            <p className="text-xs text-slate-500">Nenhum CTA/TMA/CTR/ATZ detectado ao longo da rota.</p>
+          {!airspaceLoading && !airspaceError && waypoints.length >= 2 && enteredAirspaces.length === 0 ? (
+            <p className="text-xs text-slate-500">Nenhum espaço aéreo detectado ao longo da rota na altitude planejada.</p>
           ) : null}
-          {airspaces.length > 0 ? (
+          {enteredAirspaces.length > 0 ? (
             <div className="overflow-x-auto rounded-xl border border-slate-800">
               <table className="min-w-full text-left text-xs">
                 <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
@@ -1089,21 +1094,11 @@ export function AiswebFlightPlanningTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {airspaces.map((a, idx) => (
+                  {enteredAirspaces.map((a, idx) => (
                     <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
                       <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
                       <td className="px-3 py-2">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            a.type === "CTA"
-                              ? "bg-amber-500/20 text-amber-200"
-                              : a.type === "TMA"
-                                ? "bg-violet-500/20 text-violet-200"
-                                : a.type === "CTR"
-                                  ? "bg-sky-500/20 text-sky-200"
-                                  : "bg-emerald-500/20 text-emerald-200"
-                          }`}
-                        >
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${airspaceHitTypeBadgeClass(a.type)}`}>
                           {a.type}
                         </span>
                       </td>
@@ -1114,7 +1109,12 @@ export function AiswebFlightPlanningTab() {
                       </td>
                       <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
                       <td className="px-3 py-2 font-mono text-slate-400">
-                        {a.entryDistanceNm != null ? `${a.entryDistanceNm.toFixed(1)} NM` : "—"}
+                        <span>{formatAirspaceEntryDistance(a.entryDistanceNm)}</span>
+                        {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile)) ? (
+                          <span className="mt-0.5 block text-[10px] text-slate-500">
+                            {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile))}
+                          </span>
+                        ) : null}
                       </td>
                     </tr>
                   ))}

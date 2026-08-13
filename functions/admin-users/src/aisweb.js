@@ -1209,6 +1209,8 @@ function formatAirspaceLimit(value, unit) {
   const u = String(unit || "").toUpperCase();
   const n = Number(value);
   if (u === "FL" && Number.isFinite(n)) return `FL${String(Math.round(n)).padStart(3, "0")}`;
+  if (u === "SFC" || String(value).toUpperCase() === "SFC") return "Superfície";
+  if (Number.isFinite(n) && n === 0 && (u === "FT" || u === "SFC" || !u)) return "Superfície";
   if (Number.isFinite(n)) return `${Math.round(n)} ${u || "FT"}`.trim();
   return String(value);
 }
@@ -1288,10 +1290,16 @@ async function queryAirspaceAlongRoute(rawPoints) {
   if (!bbox) return [];
 
   const layers = [
-    { type: "CTA", layer: "ICA:CTA" },
+    { type: "FIR", layer: "ICA:fir" },
+    { type: "FIS", layer: "ICA:fis" },
     { type: "TMA", layer: "ICA:TMA" },
+    { type: "CTA", layer: "ICA:CTA" },
     { type: "CTR", layer: "ICA:CTR" },
     { type: "ATZ", layer: "ICA:ATZ" },
+    { type: "FIZ", layer: "ICA:fiz" },
+    { type: "P", layer: "ICA:eac_p" },
+    { type: "R", layer: "ICA:eac_r" },
+    { type: "D", layer: "ICA:eac_d" },
   ];
 
   const collections = await Promise.all(
@@ -1302,17 +1310,38 @@ async function queryAirspaceAlongRoute(rawPoints) {
           .filter((f) => routeIntersectsGeometry(dense, f?.geometry || null))
           .map((f) => {
             const props = f?.properties || {};
-            const ident = String(props.ident || props.icao || f.id || "").trim() || "—";
-            const name = String(props.nam || props.name || ident).trim();
+            const isEac = type === "P" || type === "R" || type === "D";
+            const ident =
+              String((isEac ? props.id : null) || props.ident || props.icao || f.id || "").trim() || "—";
+            const name = String(props.nome || props.nam || props.name || ident).trim();
+            const lower = isEac
+              ? formatAirspaceLimit(props.lowerlimit ?? props.lowerlimi1, props.uom_llimit)
+              : formatAirspaceLimit(props.lowerlimi1, props.lowerlimit || props.codedistv1);
+            const upper = isEac
+              ? formatAirspaceLimit(props.upperlimit, props.uom_ulimit)
+              : formatAirspaceLimit(props.upperlimit, props.uplimituni || props.uomdistver);
+            let frequencies = [];
+            if (type === "FIS" && props.txtrmk_loc) {
+              const found = [
+                ...String(props.txtrmk_loc).matchAll(
+                  /(?:frequ[eê]ncia|freq(?:uency)?)\s*[:=]?\s*(\d{2,3}(?:[.,]\d{1,3})?)/gi,
+                ),
+              ].map((m) => String(m[1] || "").replace(",", "."));
+              frequencies = [...new Set(found)].map((mhz) => ({ service: "FIS", mhz }));
+            }
             return {
               type,
               ident,
               name,
-              lower: formatAirspaceLimit(props.lowerlimi1, props.lowerlimit || props.codedistv1),
-              upper: formatAirspaceLimit(props.upperlimit, props.uplimituni || props.uomdistver),
-              fir: props.relatedfir ? String(props.relatedfir) : null,
+              lower,
+              upper,
+              fir: props.fir
+                ? String(props.fir)
+                : props.relatedfir
+                  ? String(props.relatedfir)
+                  : null,
               entryDistanceNm: entryNm(f?.geometry || null),
-              frequencies: [],
+              frequencies,
             };
           });
       } catch {
@@ -1336,17 +1365,38 @@ async function queryAirspaceAlongRoute(rawPoints) {
       String(a.name).localeCompare(String(b.name), "pt-BR"),
   );
 
-  // Attach COM frequencies from ROTAER for CTR/ATZ (ident often = ICAO)
-  const icaoSet = new Set();
-  for (const hit of hits) {
-    if (hit.type === "CTA") continue;
-    const id = String(hit.ident || "").toUpperCase();
-    if (/^[A-Z]{4}$/.test(id)) icaoSet.add(id);
-    else {
-      const m = id.match(/^([A-Z]{4})(?:_|$)/);
-      if (m) icaoSet.add(m[1]);
-    }
+  // Attach COM frequencies:
+  // - CTR/ATZ/FIZ: AD ROTAER (ident ≈ ICAO)
+  // - TMA: ROTAER FIR/TMA CONTROLE table by designator (SBWI…) — never AD TWR
+  function icaoFromIdent(ident) {
+    const id = String(ident || "").toUpperCase();
+    if (/^[A-Z]{4}$/.test(id)) return id;
+    const m = id.match(/^([A-Z]{4})(?:_|$)/);
+    return m ? m[1] : null;
   }
+  function resolveIcao(hit) {
+    if (["CTA", "FIR", "FIS", "P", "R", "D", "TMA"].includes(hit.type)) return null;
+    if (["CTR", "ATZ", "FIZ", "AFIS"].includes(hit.type)) return icaoFromIdent(hit.ident);
+    return icaoFromIdent(hit.ident);
+  }
+
+  const { lookupTmaComFrequencies } = require("./tmaComFrequencies");
+
+  const icaoByKey = new Map();
+  for (const hit of hits) {
+    const key = `${hit.type}:${hit.ident}:${hit.name}`;
+    if (Array.isArray(hit.frequencies) && hit.frequencies.length) {
+      icaoByKey.set(key, null);
+      continue;
+    }
+    if (hit.type === "TMA") {
+      icaoByKey.set(key, null);
+      continue;
+    }
+    icaoByKey.set(key, resolveIcao(hit));
+  }
+
+  const icaoSet = new Set([...icaoByKey.values()].filter(Boolean));
   const freqByIcao = new Map();
   await Promise.all(
     [...icaoSet].map(async (icao) => {
@@ -1364,14 +1414,17 @@ async function queryAirspaceAlongRoute(rawPoints) {
   );
 
   return hits.map((hit) => {
-    const id = String(hit.ident || "").toUpperCase();
-    let icao = /^[A-Z]{4}$/.test(id) ? id : null;
-    if (!icao) {
-      const m = id.match(/^([A-Z]{4})(?:_|$)/);
-      icao = m ? m[1] : null;
+    const key = `${hit.type}:${hit.ident}:${hit.name}`;
+    if (Array.isArray(hit.frequencies) && hit.frequencies.length) return hit;
+    if (hit.type === "TMA") {
+      const tmaFreqs = lookupTmaComFrequencies(hit.ident);
+      return tmaFreqs.length ? { ...hit, frequencies: tmaFreqs } : hit;
     }
+    const icao = icaoByKey.get(key);
     if (!icao) return hit;
-    return { ...hit, frequencies: freqByIcao.get(icao) || [] };
+    const frequencies = freqByIcao.get(icao) || [];
+    if (!frequencies.length) return hit;
+    return { ...hit, frequencies };
   });
 }
 

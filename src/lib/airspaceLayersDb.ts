@@ -1,20 +1,28 @@
-/** WFS CTA/TMA/CTR/ATZ + EAC (P/R/D) para desenho vetorial no mapa de planejamento. */
+/** WFS FIR/FIS/TMA/CTA/CTR/ATZ/FIZ/AFIS + EAC (P/R/D) para desenho vetorial no mapa. */
 
 export type AirspaceLayerType =
-  | "CTA"
+  | "FIR"
+  | "FIS"
   | "TMA"
+  | "CTA"
   | "CTR"
   | "ATZ"
+  | "FIZ"
+  | "AFIS"
   | "P"
   | "R"
   | "D"
   | "FCA_AD";
 
 export type AirspaceLayerId =
-  | "cta"
+  | "fir"
+  | "fis"
   | "tma"
+  | "cta"
   | "ctr"
   | "atz"
+  | "fiz"
+  | "afis"
   | "p"
   | "r"
   | "d"
@@ -80,10 +88,35 @@ export const AIRSPACE_LAYER_DEFS: Array<{
   /** Fill / stroke base color (hex). */
   color: string;
 }> = [
-  { id: "cta", type: "CTA", layer: "ICA:CTA", kind: "cta", label: "CTA", defaultOn: false, color: "#f59e0b" },
+  { id: "fir", type: "FIR", layer: "ICA:fir", kind: "fir", label: "FIR", defaultOn: false, color: "#64748b" },
+  { id: "fis", type: "FIS", layer: "ICA:fis", kind: "fis", label: "FIS", defaultOn: false, color: "#c026d3" },
   { id: "tma", type: "TMA", layer: "ICA:TMA", kind: "tma", label: "TMA", defaultOn: true, color: "#8b5cf6" },
+  { id: "cta", type: "CTA", layer: "ICA:CTA", kind: "cta", label: "CTA", defaultOn: false, color: "#f59e0b" },
   { id: "ctr", type: "CTR", layer: "ICA:CTR", kind: "ctr", label: "CTR", defaultOn: true, color: "#0ea5e9" },
   { id: "atz", type: "ATZ", layer: "ICA:ATZ", kind: "atz", label: "ATZ", defaultOn: true, color: "#10b981" },
+  { id: "fiz", type: "FIZ", layer: "ICA:fiz", kind: "fiz", label: "FIZ", defaultOn: false, color: "#14b8a6" },
+  /**
+   * AFIS gerada no cliente: ADs com Rádio/AFIS no ROTAER (círculo 27 NM, SFC–FL145),
+   * só se o AD não estiver dentro de FIZ / CTR / TMA (ex.: SBDO; não SBCA).
+   */
+  {
+    id: "afis",
+    type: "AFIS",
+    layer: null,
+    kind: null,
+    label: "AFIS",
+    defaultOn: false,
+    color: "#22c55e",
+  },
+  {
+    id: "fca_ad",
+    type: "FCA_AD",
+    layer: null,
+    kind: null,
+    label: "FCA AD",
+    defaultOn: false,
+    color: "#22d3ee",
+  },
   {
     id: "p",
     type: "P",
@@ -111,22 +144,21 @@ export const AIRSPACE_LAYER_DEFS: Array<{
     defaultOn: false,
     color: "#eab308",
   },
-  {
-    id: "fca_ad",
-    type: "FCA_AD",
-    layer: null,
-    kind: null,
-    label: "FCA AD",
-    defaultOn: false,
-    color: "#22d3ee",
-  },
 ];
 
-/** Camadas WFS (exclui FCA AD, que é gerada no cliente só para ADs com FCA dedicada). */
+/** Camadas WFS (exclui FCA AD / AFIS geradas no cliente). */
 export const AIRSPACE_WFS_LAYER_DEFS = AIRSPACE_LAYER_DEFS.filter((d) => d.layer && d.kind);
 
 export function airspaceTypeLabel(type: AirspaceLayerType): string {
   switch (type) {
+    case "FIR":
+      return "Região de Informação de Voo";
+    case "FIS":
+      return "Serviço de Informação de Voo";
+    case "FIZ":
+      return "Zona de Informação de Voo";
+    case "AFIS":
+      return "AFIS / Rádio";
     case "P":
       return "Área Proibida";
     case "R":
@@ -361,3 +393,7 @@ export function smoothAirspaceGeometry(
 /** Raio padrão da FCA de aeródromo (NM), conforme ENR 1.1 / práticas SNPA·NexAtlas. */
 export const FCA_AD_RADIUS_NM = 10;
 export const FCA_AD_DEFAULT_FREQ_MHZ = "123.45";
+
+/** AFIS/Rádio sem FIZ: círculo SFC–FL145 com 27 NM de raio. */
+export const AFIS_AD_RADIUS_NM = 27;
+export const AFIS_AD_UPPER_FL = 145;

@@ -1192,7 +1192,7 @@ export function AdminLayout() {
           {openedSections.has("planejamento") && (
             <div hidden={section !== "planejamento"}>
               <LazyTab>
-                <PlanejamentoTab />
+                <PlanejamentoTab onLeave={() => openSection("home")} />
               </LazyTab>
             </div>
           )}
@@ -1212,7 +1212,11 @@ export function AdminLayout() {
           )}
         </main>
 
-        <nav className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden">
+        <nav
+          className={`fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden ${
+            section === "planejamento" ? "hidden" : ""
+          }`}
+        >
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
             {permissionsLoading ? (
               Array.from({ length: 4 }).map((_, i) => (

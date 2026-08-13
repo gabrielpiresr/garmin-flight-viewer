@@ -49,6 +49,7 @@ if (finalStatus !== "ready") {
 }
 
 const apiBase = endpoint.replace(/\/+$/, "");
+const existing = await functions.get({ functionId });
 const activateRes = await fetch(`${apiBase}/functions/${functionId}`, {
   method: "PUT",
   headers: {
@@ -57,19 +58,21 @@ const activateRes = await fetch(`${apiBase}/functions/${functionId}`, {
     "content-type": "application/json",
   },
   body: JSON.stringify({
-    name: "Admin Users",
-    runtime: "node-22",
-    entrypoint: "src/main.js",
-    execute: ["users"],
-    events: [],
-    schedule: "*/15 * * * *",
-    timeout: 300,
+    name: existing.name || "Admin Users",
+    runtime: existing.runtime || "node-22",
+    entrypoint: existing.entrypoint || "src/main.js",
+    // Public execute is required for Meta WhatsApp webhook + public share links.
+    execute: existing.execute?.includes("any") ? existing.execute : ["any"],
+    events: existing.events || [],
+    schedule: existing.schedule || "*/15 * * * *",
+    timeout: existing.timeout || 300,
     enabled: true,
     logging: true,
-    commands: "npm install",
-    scopes: [],
+    commands: existing.commands || "npm install",
+    scopes: existing.scopes || [],
     deployment: deploymentId,
   }),
 });
 const activateJson = await activateRes.json();
 console.log("Active deployment:", activateJson.deploymentId || activateJson.deployment || "(unknown)");
+console.log("execute:", JSON.stringify(activateJson.execute || existing.execute));

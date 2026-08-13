@@ -3,10 +3,15 @@ const GEOAISWEB_WFS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const LAYER_BY_KIND = {
   rea: "ICA:CV_REA_BR_COMPLETO",
   reh: "ICA:CV_REH_BR_COMPLETO",
+  fir: "ICA:fir",
+  fis: "ICA:fis",
   cta: "ICA:CTA",
   tma: "ICA:TMA",
   ctr: "ICA:CTR",
   atz: "ICA:ATZ",
+  fiz: "ICA:fiz",
+  /** Legacy: AFIS no mapa é gerada no cliente (Rádio ROTAER, 27 NM). Mantido por compat. */
+  afis: "ICA:fiz",
   eac_p: "ICA:eac_p",
   eac_r: "ICA:eac_r",
   eac_d: "ICA:eac_d",
@@ -63,7 +68,8 @@ export default async function handler(req, res) {
     const typeName = LAYER_BY_KIND[kind];
     if (!typeName) {
       res.status(400).json({
-        error: "kind deve ser rea, reh, cta, tma, ctr, atz, eac_p, eac_r ou eac_d",
+        error:
+          "kind deve ser rea, reh, fir, fis, cta, tma, ctr, atz, fiz, afis, eac_p, eac_r ou eac_d",
       });
       return;
     }

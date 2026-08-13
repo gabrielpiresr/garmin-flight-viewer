@@ -14,6 +14,7 @@ const aiswebService = require("./aisweb");
 const flightRadarService = require("./flightRadar");
 const routeElevationService = require("./routeElevation");
 const wppMetar = require("./wppMetar");
+const wppFlightRadar = require("./wppFlightRadar");
 const wppBooking = require("./wppBooking");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
@@ -19309,6 +19310,10 @@ function aiswebMetarWatchDeps() {
   };
 }
 
+function flightRadarWatchDeps() {
+  return aiswebMetarWatchDeps();
+}
+
 async function sendWppMetarWatchChooseHoursAction(settings, incoming, icaoCode) {
   const icao = aiswebService.normalizeIcao(icaoCode);
   if (!icao || icao.length !== 4) {
@@ -19519,6 +19524,110 @@ async function handleWppMetarWatchCommand(settings, incoming, command) {
   if (command.action === "simplify") {
     return sendWppMetarWatchSimplifyAction(settings, incoming, command.icao);
   }
+  return "skipped";
+}
+
+async function sendWppFlightRadarWatchHelpAction(settings, incoming) {
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const body = wppFlightRadar.formatWppFlightRadarWatchHelpMessage(nickname);
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: [
+      { id: "radar_start_24", title: "Acompanhar 24h" },
+      { id: "radar_stop", title: "Parar" },
+    ],
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
+  return "help";
+}
+
+async function sendWppFlightRadarWatchStartAction(settings, incoming) {
+  const phone = normalizeWppRecipientPhone(incoming.from);
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const startedAt = nowIso();
+  const hours = flightRadarService.FLIGHT_RADAR_WATCH_HOURS;
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+  let trackedCount = 0;
+  try {
+    const radarSettings = await flightRadarService.loadSettings({ getSettingDoc });
+    trackedCount = Array.isArray(radarSettings?.trackedRegistrations)
+      ? radarSettings.trackedRegistrations.length
+      : 0;
+  } catch {
+    trackedCount = 0;
+  }
+
+  try {
+    await flightRadarService.saveFlightRadarWatch(flightRadarWatchDeps(), {
+      phone,
+      hours,
+      startedAt,
+      expiresAt,
+      nickname,
+      userId: cleanString(profile?.user_id),
+      active: true,
+    });
+  } catch (err) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: cleanString(err?.message) || "Não consegui ativar o acompanhamento da frota agora.",
+    });
+    return "start_failed";
+  }
+
+  const body = wppFlightRadar.formatWppFlightRadarWatchStartedMessage({
+    hours,
+    expiresAt,
+    nickname,
+    trackedCount,
+  });
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: [
+      { id: "radar_stop", title: "Parar" },
+      { id: "radar_help", title: "Ajuda radar" },
+    ],
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
+  return "started_24h";
+}
+
+async function sendWppFlightRadarWatchStopAction(settings, incoming) {
+  const phone = normalizeWppRecipientPhone(incoming.from);
+  const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+  const nickname = wppProfileDisplayNickname(profile);
+  const existing = await flightRadarService
+    .loadFlightRadarWatch(flightRadarWatchDeps(), phone)
+    .catch(() => null);
+  const expiresMs = Date.parse(existing?.expiresAt || "") || 0;
+  const active = existing?.active && expiresMs > Date.now();
+
+  if (!active) {
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: wppFlightRadar.formatWppFlightRadarWatchNotActiveMessage({ nickname }),
+    });
+    return "not_active";
+  }
+
+  await flightRadarService.clearFlightRadarWatch(flightRadarWatchDeps(), phone);
+  const body = wppFlightRadar.formatWppFlightRadarWatchStoppedMessage({ nickname });
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: [{ id: "radar_start_24", title: "Acompanhar 24h" }],
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body }));
+  return "stopped";
+}
+
+async function handleWppFlightRadarWatchCommand(settings, incoming, command) {
+  if (!command) return "skipped";
+  if (command.action === "help") return sendWppFlightRadarWatchHelpAction(settings, incoming);
+  if (command.action === "start") return sendWppFlightRadarWatchStartAction(settings, incoming);
+  if (command.action === "stop") return sendWppFlightRadarWatchStopAction(settings, incoming);
   return "skipped";
 }
 
@@ -20473,6 +20582,22 @@ async function handleWppIncomingWebhook(payload, log) {
           matchedRuleId: null,
           icao: metarWatchCommand.icao || null,
           hours: metarWatchCommand.hours || null,
+        });
+        continue;
+      }
+
+      const flightRadarWatchCommand = wppFlightRadar.parseWppFlightRadarWatchCommand(
+        incoming.text,
+        incoming.responseId,
+      );
+      if (flightRadarWatchCommand) {
+        const status = await handleWppFlightRadarWatchCommand(settings, incoming, flightRadarWatchCommand);
+        replied += 1;
+        actionResults.push({
+          action: `flight_radar_watch_${flightRadarWatchCommand.action}`,
+          status,
+          matchedRuleId: null,
+          hours: flightRadarWatchCommand.hours || null,
         });
         continue;
       }
@@ -23557,37 +23682,693 @@ function compactBriefingText(value, max = 900) {
   return cleanString(value).replace(/\s+/g, " ").slice(0, max);
 }
 
+function normalizeBriefingUrlCandidate(raw = "") {
+  const value = cleanString(raw).replace(/[.,;:)\]}>]+$/g, "");
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^[a-z0-9][-a-z0-9.]*\.[a-z]{2,}(?:\/\S*)?$/i.test(value)) return `https://${value}`;
+  return "";
+}
+
 function extractFirstBriefingUrl(...values) {
   const text = values.map((value) => cleanString(value)).join(" ");
-  const match = text.match(/https?:\/\/[^\s"')\]]+/i);
-  return match ? match[0].replace(/[.,;:]+$/g, "") : "";
+  const withProto = text.match(/https?:\/\/[^\s<>"')\]]+/i);
+  if (withProto) return normalizeBriefingUrlCandidate(withProto[0]);
+  // ROTAER often cites bare domains (ex.: ga.ccraeroportos.com.br).
+  const bare = text.match(
+    /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com\.br|gov\.br|mil\.br|com|org|net)(?:\/[^\s<>"')\]]*)?/i,
+  );
+  return bare ? normalizeBriefingUrlCandidate(bare[0]) : "";
+}
+
+function inferBriefingContactRelevance(label = "", value = "", type = "", contextText = "") {
+  const text = `${label} ${value} ${contextText}`.toLowerCase();
+  if (/administra|infraero|torre|ais\b|afis|centro\s*de\s*opera/.test(text) && !isFuelSupplierLabel(label)) {
+    return "auxiliary";
+  }
+  if (
+    /airbp|air\s*bp|helpjet|waas|w\.a\.a\.s|fbo|hangar|combust|abastec|avgas|jet\s*a|aeroclube|escola de avia|operador|rede\s*voa|slot|ppr|ground\s*handling|rampa|petrobras|marlim|shell|jet\s*fly|br\s*aviation|raizen|ceu\s*azul|gm\s*aviation/.test(
+      text,
+    )
+  ) {
+    return "relevant";
+  }
+  if (type === "website" && /fbo|hangar|fuel|combust|avionics|aeroclube|airbp|helpjet|shell|petrobras|jetfly/.test(text)) return "relevant";
+  if (type === "hours") return "relevant";
+  return "auxiliary";
+}
+
+function isFuelSupplierLabel(label = "") {
+  return /petrobras|marlim|shell|jet\s*fly|jetfly|air\s*bp|airbp|helpjet|raizen|br\s*aviation|ceu\s*azul|gm\s*aviation|combust|abastec|fuel|querosene|avgas/.test(
+    String(label || "").toLowerCase(),
+  );
+}
+
+function isAdminAuxLabel(label = "") {
+  return /administra|infraero|torre|ais\b|afis|centro\s*de\s*opera|operacional(?!\s*(fuel|combust|abastec))/.test(
+    String(label || "").toLowerCase(),
+  );
+}
+
+function normalizeFuelBrandLabel(raw = "") {
+  const s = cleanString(raw).replace(/\s+/g, " ");
+  if (/air\s*bp|airbp/i.test(s)) return "AIRBP";
+  if (/petrobras/i.test(s)) return "Petrobras";
+  if (/\bshell\b/i.test(s)) return "Shell";
+  if (/jet\s*fly|jetfly/i.test(s)) return "Jet Fly";
+  if (/helpjet/i.test(s)) return "HelpJet";
+  if (/raizen/i.test(s)) return "Raizen";
+  if (/br\s*aviation/i.test(s)) return "BR Aviation";
+  if (/ceu\s*azul/i.test(s)) return "Ceu Azul";
+  if (/gm\s*aviation/i.test(s)) return "GM Aviation H24";
+  return s.replace(/\b([A-ZÁÉÍÓÚÃÕÂÊÔ]{2,})\b/g, (m) => m.charAt(0) + m.slice(1).toLowerCase());
+}
+
+function extractFuelHoursFromSection(section = "") {
+  const text = cleanString(section);
+  const parts = [];
+  const dly = text.match(/\bDLY\s+(\d{3,4}\s*-\s*\d{3,4})/i);
+  if (dly) parts.push(`DLY ${dly[1].replace(/\s+/g, "")}`);
+  if (/demais\s*hr\s*o\s*\/\s*r/i.test(text)) parts.push("Demais HR O/R");
+  const orOnly = text.match(/\bO\s*\/\s*R\b/i);
+  if (!parts.length && orOnly) parts.push("O/R");
+  return parts.join(" · ");
+}
+
+const FUEL_BRAND_SPLIT_RE =
+  /\b(AIR\s*BP|AIRBP|PETROBRAS|SHELL|JET\s*FLY|HELPJET|RAIZEN|BR\s*AVIATION|CEU\s*AZUL|GM\s*AVIATION(?:\s*H24)?)\b/gi;
+
+/** Split ROTAER fuel text into one section per named supplier (phones + hours). */
+function parseFuelSupplierSections(fuelText = "") {
+  const text = cleanString(fuelText);
+  if (!text) return [];
+  const starts = [];
+  let match;
+  const re = new RegExp(FUEL_BRAND_SPLIT_RE.source, "gi");
+  while ((match = re.exec(text)) !== null) {
+    starts.push({ index: match.index, brand: normalizeFuelBrandLabel(match[1]) });
+  }
+  // Dedupe consecutive same brand
+  const sections = [];
+  for (let i = 0; i < starts.length; i += 1) {
+    const cur = starts[i];
+    const next = starts[i + 1];
+    if (i > 0 && starts[i - 1].brand === cur.brand && cur.index - starts[i - 1].index < 8) continue;
+    const end = next ? next.index : text.length;
+    const body = text.slice(cur.index, end);
+    sections.push({
+      brand: cur.brand,
+      body,
+      hours: extractFuelHoursFromSection(body),
+      phones: [...new Set((body.match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/g) || []).map((v) => cleanString(v)))]
+        .filter((phone) => normalizePhoneDigits(phone).length >= 10)
+        .slice(0, 8),
+    });
+  }
+  return sections;
+}
+
+function normalizePhoneDigits(value = "") {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function phonesMatch(a = "", b = "") {
+  const da = normalizePhoneDigits(a);
+  const db = normalizePhoneDigits(b);
+  if (!da || !db) return false;
+  if (da === db) return true;
+  const a8 = da.slice(-8);
+  const b8 = db.slice(-8);
+  return a8.length >= 8 && a8 === b8;
+}
+
+/** Split "tel1 / tel2 / tel3" into one phone contact each (avoids duplicate list + items). */
+function expandBriefingPhoneProviders(providers = []) {
+  const out = [];
+  const seen = new Set();
+  for (const provider of Array.isArray(providers) ? providers : []) {
+    if (!provider) continue;
+    if (provider.type !== "phone") {
+      out.push(provider);
+      continue;
+    }
+    const parts = String(provider.value || "")
+      .split(/\s*(?:\/|,|;|\||\bou\b)\s*/i)
+      .map((part) => cleanString(part))
+      .filter(Boolean);
+    const phones = (parts.length > 1 ? parts : [cleanString(provider.value)])
+      .map((part) => {
+        const match = String(part).match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/);
+        return match ? cleanString(match[0]) : "";
+      })
+      .filter((phone) => normalizePhoneDigits(phone).length >= 10);
+    for (const phone of phones.length ? phones : []) {
+      const key = normalizePhoneDigits(phone).slice(-8);
+      if (!key || seen.has(key)) continue;
+      // Skip if this looks like a concatenated leftover still containing another number separator.
+      if (/\/|,/.test(phone)) continue;
+      seen.add(key);
+      out.push({ ...provider, type: "phone", value: phone });
+    }
+  }
+  return out;
+}
+
+/** Official fuel/hangar/auth facts parsed from ROTAER fuel + COMPL + RMK. */
+function extractOfficialRotaerProviders(rotaer, sourceId) {
+  const complements = Array.isArray(rotaer?.complements) ? rotaer.complements : [];
+  const remarks = Array.isArray(rotaer?.remarks) ? rotaer.remarks : [];
+  const allChunks = [
+    rotaer?.fuel?.text,
+    rotaer?.fuel?.hours,
+    ...(rotaer?.fuel?.types || []),
+    ...complements.map((item) => item?.text),
+    ...remarks.map((item) => item?.text),
+  ]
+    .map((item) => cleanString(item))
+    .filter(Boolean);
+
+  const pick = (re) => allChunks.filter((text) => re.test(text)).join(" | ");
+  const fuelText = pick(/abastec|combust|avgas|jet\s*a|airbp|querosene|fuel|info\s*addn|petrobras|shell|jet\s*fly/i);
+  // Don't treat CCR/auth RMKs as hangar just because they mention "pátio".
+  const hangarText = allChunks
+    .filter((text) => /hangar|pernoite|estadia|fbo/i.test(text) || (/p[aá]tio/i.test(text) && !isBriefingAuthText(text)))
+    .join(" | ");
+  const authText = pick(
+    /autoriza|ppr|slot|formul|compuls[oó]r(?:ia)?|\bauth\b|anteced[eê]ncia|rede\s*voa|forms\.office|agendamento|concession|webapp|ccr|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|reserva\s+de\s+p[aá]tio/i,
+  );
+
+  const providersByCategory = { fuel: [], hangarage: [], auth: [] };
+
+  const pushUnique = (category, provider) => {
+    if (!provider?.value) return;
+    const list = providersByCategory[category];
+    if (
+      list.some(
+        (item) =>
+          item.type === provider.type &&
+          (item.type === "phone"
+            ? phonesMatch(item.value, provider.value)
+            : item.type === "hours"
+              ? item.label.toLowerCase() === provider.label.toLowerCase()
+              : item.value.toLowerCase() === provider.value.toLowerCase()),
+      )
+    ) {
+      return;
+    }
+    list.push(provider);
+  };
+
+  const extractPhones = (text) =>
+    [...new Set((String(text || "").match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/g) || []).map((v) => cleanString(v)))]
+      .filter((phone) => normalizePhoneDigits(phone).length >= 10)
+      .slice(0, 8);
+  const extractEmails = (text) =>
+    [...new Set((String(text || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).map((v) => v.toLowerCase()))].slice(0, 3);
+  const extractUrls = (text) => {
+    const out = [];
+    for (const match of String(text || "").match(/https?:\/\/\S+/gi) || []) {
+      const url = normalizeBriefingUrlCandidate(match);
+      if (url) out.push(url);
+    }
+    for (const match of String(text || "").match(
+      /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com\.br|gov\.br|mil\.br|com|org|net)(?:\/[^\s.,;:)\]}>]*)?/gi,
+    ) || []) {
+      if (/@/.test(match)) continue;
+      const url = normalizeBriefingUrlCandidate(match);
+      if (url) out.push(url);
+    }
+    return [...new Set(out)].slice(0, 4);
+  };
+
+  // Fuel: brand sections (PETROBRAS / SHELL / JET FLY) with hours + phones
+  const namedPhoneTails = new Set();
+  const brandSections = parseFuelSupplierSections(fuelText);
+  for (const section of brandSections) {
+    if (section.hours) {
+      pushUnique("fuel", {
+        type: "hours",
+        label: section.brand,
+        value: section.hours,
+        sourceIds: [sourceId],
+        relevance: "relevant",
+      });
+    }
+    for (const phone of section.phones) {
+      namedPhoneTails.add(normalizePhoneDigits(phone).slice(-8));
+      pushUnique("fuel", {
+        type: "phone",
+        label: section.brand,
+        value: phone,
+        sourceIds: [sourceId],
+        relevance: "relevant",
+      });
+    }
+  }
+
+  // Fuel: "phone - Company" pairs (ex.: (37) 99816-5616 - Ceu Azul)
+  const pairRe =
+    /((?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4})\s*[-–—]\s*([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9.&/+\- ]{1,48})/gi;
+  let pairMatch;
+  while ((pairMatch = pairRe.exec(fuelText)) !== null) {
+    const phone = cleanString(pairMatch[1]);
+    let name = cleanString(pairMatch[2])
+      .replace(/\s+/g, " ")
+      .replace(/\s+(ou|para|quando|mediante|pelo|pela|com|e)\b.*$/i, "")
+      .replace(/[|].*$/, "")
+      .trim();
+    if (normalizePhoneDigits(phone).length < 10 || name.length < 2) continue;
+    // Skip if this phone already belongs to a brand section
+    if (namedPhoneTails.has(normalizePhoneDigits(phone).slice(-8))) continue;
+    // Skip if "name" is actually hours fragment
+    if (/^DLY\b|^\d{3,4}/i.test(name)) continue;
+    namedPhoneTails.add(normalizePhoneDigits(phone).slice(-8));
+    pushUnique("fuel", {
+      type: "phone",
+      label: normalizeFuelBrandLabel(name),
+      value: phone,
+      sourceIds: [sourceId],
+      relevance: "relevant",
+    });
+  }
+
+  // Fallback only when no named suppliers were found
+  if (!brandSections.length && !namedPhoneTails.size) {
+    const fuelNameMatch =
+      fuelText.match(/abastec(?:imento)?\s*[:\s]*([A-Z][A-Z0-9][A-Z0-9./&\-]{1,24})/i) ||
+      fuelText.match(/\b(AIRBP|AIR\s*BP|HELPJET|PETROBRAS|BR\s*AVIATION|RAIZEN|SHELL|JET\s*FLY)\b/i);
+    const fuelName = cleanString(fuelNameMatch?.[1] || "").replace(/\s+/g, " ");
+    const fuelLabel = fuelName ? normalizeFuelBrandLabel(fuelName) : "Abastecimento ROTAER";
+    const hours = extractFuelHoursFromSection(fuelText);
+    if (hours) {
+      pushUnique("fuel", { type: "hours", label: fuelLabel, value: hours, sourceIds: [sourceId], relevance: "relevant" });
+    }
+    for (const phone of extractPhones(fuelText)) {
+      pushUnique("fuel", { type: "phone", label: fuelLabel, value: phone, sourceIds: [sourceId], relevance: "relevant" });
+    }
+    for (const email of extractEmails(fuelText)) {
+      pushUnique("fuel", { type: "email", label: fuelLabel, value: email, sourceIds: [sourceId], relevance: "relevant" });
+    }
+    for (const url of extractUrls(fuelText)) {
+      pushUnique("fuel", { type: "website", label: fuelLabel, value: url, sourceIds: [sourceId], relevance: "relevant" });
+    }
+  }
+
+  // Hangarage
+  if (/waas|w\.a\.a\.s/i.test(hangarText)) {
+    pushUnique("hangarage", {
+      type: "website",
+      label: "W.A.A.S. Avionics (FBO/Hangaragem)",
+      value: "https://alexandreacosta.com.br/waas/fbo.php",
+      sourceIds: [sourceId],
+      relevance: "relevant",
+    });
+  }
+  const hangarLabel = /waas|w\.a\.a\.s/i.test(hangarText) ? "W.A.A.S. Avionics" : "Hangaragem ROTAER";
+  for (const phone of extractPhones(hangarText)) {
+    pushUnique("hangarage", { type: "phone", label: hangarLabel, value: phone, sourceIds: [sourceId], relevance: "relevant" });
+  }
+  for (const email of extractEmails(hangarText)) {
+    pushUnique("hangarage", { type: "email", label: hangarLabel, value: email, sourceIds: [sourceId], relevance: "relevant" });
+  }
+  for (const url of extractUrls(hangarText)) {
+    pushUnique("hangarage", { type: "website", label: hangarLabel, value: url, sourceIds: [sourceId], relevance: "relevant" });
+  }
+
+  // Authorization / Rede VOA / concessionária / CCR
+  const authLabel = /rede\s*voa|\bvoa\b|forms\.office/i.test(authText)
+    ? "Rede VOA"
+    : /ccr|webapp|ccraeroportos|concession/i.test(authText)
+      ? "Concessionária"
+      : "Autorização ROTAER";
+  for (const phone of extractPhones(authText)) {
+    pushUnique("auth", { type: "phone", label: authLabel, value: phone, sourceIds: [sourceId], relevance: "relevant" });
+  }
+  for (const email of extractEmails(authText)) {
+    pushUnique("auth", { type: "email", label: authLabel, value: email, sourceIds: [sourceId], relevance: "relevant" });
+  }
+  for (const url of extractUrls(authText)) {
+    pushUnique("auth", { type: "website", label: authLabel, value: url, sourceIds: [sourceId], relevance: "relevant" });
+  }
+
+  return {
+    fuelText,
+    hangarText,
+    authText,
+    needsAuth: Boolean(authText && isBriefingAuthText(authText)),
+    byCategory: providersByCategory,
+  };
+}
+
+/** Brand/network websites used to enrich fuel tasks beyond AISWEB (always auxiliary unless sole hit). */
+const FUEL_NETWORK_SEED_BY_KEY = {
+  airbp: { label: "AIRBP / HelpJet", website: "https://helpjetaviacao.com.br/" },
+  helpjet: { label: "HelpJet Combustíveis", website: "https://helpjetaviacao.com.br/" },
+  shell: { label: "Shell Aviation", website: "https://www.shell.com.br/business-customers/aviation.html" },
+  petrobras: { label: "Petrobras Aviação", website: "https://petrobras.com.br/" },
+  jetfly: { label: "Jet Fly", website: "https://www.jetfly.com.br/" },
+  raizen: { label: "Raizen", website: "https://www.raizen.com.br/" },
+  "br aviation": { label: "BR Aviation", website: "https://www.br.com.br/" },
+};
+
+function fuelBrandNetworkKey(label = "") {
+  const s = cleanString(label)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/air\s*bp|airbp/.test(s)) return "airbp";
+  if (/helpjet/.test(s)) return "helpjet";
+  if (/\bshell\b/.test(s)) return "shell";
+  if (/petrobras|marlim/.test(s)) return "petrobras";
+  if (/jet\s*fly|jetfly/.test(s)) return "jetfly";
+  if (/raizen/.test(s)) return "raizen";
+  if (/br\s*aviation/.test(s)) return "br aviation";
+  return "";
+}
+
+/** Auxiliary websites for brands already found in ROTAER (never invents phone/email). */
+function fuelNetworkAuxProviders(officialFuelProviders = [], sourceId) {
+  const out = [];
+  const seen = new Set();
+  for (const provider of officialFuelProviders || []) {
+    const key = fuelBrandNetworkKey(provider?.label);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const seed = FUEL_NETWORK_SEED_BY_KEY[key];
+    if (!seed?.website) continue;
+    out.push({
+      type: "website",
+      label: seed.label,
+      value: seed.website,
+      sourceIds: [sourceId],
+      relevance: "auxiliary",
+    });
+  }
+  return out;
+}
+
+const IMPORTANT_NOTAM_RE =
+  /\b(?:RWY|TWY|CLSD|CLOSED|U\/S|UNSERVICEABLE|WIP|ILS|PAPI|ALS|LIGHT(?:ING)?|LUZ(?:ES)?|BIRD|GRUA|CRANE|AD\s*CLSD|AERODROME\s*CLOSED|FUEL|COMBUST|RESTRICT|PROHIBIT|LIMIT|INOP|FECHAD|OUT\s*OF\s*SERVICE|NAV\s*AID|VOR|NDB|GPS|RVR|SNOWTAM)\b/i;
+
+function pickImportantNotams(notams = [], limit = 3) {
+  const out = [];
+  for (const item of Array.isArray(notams) ? notams : []) {
+    const number = cleanString(item?.number) || "NOTAM";
+    const text = cleanString(item?.text);
+    if (!text) continue;
+    if (!IMPORTANT_NOTAM_RE.test(text) && !IMPORTANT_NOTAM_RE.test(number)) continue;
+    out.push({ number, summary: compactBriefingText(text, 160) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function buildNotamTaskContent(icao, notams = []) {
+  const important = pickImportantNotams(notams, 3);
+  const highlights = important.map((item) => `${item.number}: ${item.summary} — merece atenção`);
+  const description = important.length
+    ? `Há ${important.length} NOTAM(s) que merecem mais atenção (lista abaixo). Abra a lista completa no AISWEB e confirme validade antes do voo.`
+    : `Nenhum NOTAM crítico óbvio nos dados atuais de ${icao}. Mesmo assim, abra a lista completa e confirme validade antes do voo.`;
+  return { description, highlights };
+}
+
+function notamsForAirportInput(input = {}, icao) {
+  const code = normalizeBriefingIcao(icao);
+  const airport = (Array.isArray(input.airports) ? input.airports : []).find(
+    (item) => normalizeBriefingIcao(item?.icao) === code,
+  );
+  return Array.isArray(airport?.bundle?.notams) ? airport.bundle.notams : [];
+}
+
+function standardNotamTaskTitle(icao) {
+  return `Verificar os notams de ${icao}`;
+}
+
+function standardFuelTaskTitle(icao) {
+  return `Verificar abastecimento em ${icao}`;
+}
+
+function standardHangarTaskTitle(icao) {
+  return `Verificar hangaragem em ${icao}`;
+}
+
+function authTaskTitleForText(icao, authText = "") {
+  const text = String(authText || "").toLowerCase();
+  if (/rede\s*voa|\bvoa\b|forms\.office/.test(text)) return `Verificar agendamento Rede VOA em ${icao}`;
+  if (/ccr|webapp|ccraeroportos|concession/.test(text)) return `Verificar autorização da concessionária em ${icao}`;
+  if (/\bppr\b|slot/.test(text)) return `Verificar autorização prévia (PPR/slot) em ${icao}`;
+  return `Verificar autorização prévia em ${icao}`;
+}
+
+function buildAuthTaskDescription(authText = "", authUrl = "") {
+  const text = cleanString(authText);
+  if (/ccr|webapp|ccraeroportos/i.test(text)) {
+    const link = authUrl || extractFirstBriefingUrl(text) || "https://ga.ccraeroportos.com.br";
+    return compactBriefingText(
+      `Solicitar AUTH prévia no WebApp-CCR (${link}) com no mínimo 2h de antecedência. Necessário p/ reserva de pátio, matrícula internacional, multi-operador no RAB, cadastro/financeiro pendente, ou ACFT isenta fora PRIVADA/INSTRUCAO/EXPERIMENTAL. APOC responde no WebApp; ajustes até 30 min antes. Contingência: e-mail APOC do RMK / www.ccraeroportos.com.br/clientes-aeroportuarios.`,
+      620,
+    );
+  }
+  if (/rede\s*voa|\bvoa\b|forms\.office/i.test(text)) {
+    const link = authUrl || extractFirstBriefingUrl(text);
+    return compactBriefingText(
+      `Agendar/autorizar via Rede VOA${link ? ` (${link})` : ""} conforme COMPL/RMK do aeródromo, com a antecedência exigida.`,
+      420,
+    );
+  }
+  return compactBriefingText(text ? `Como proceder: ${text}` : "Verificar autorização prévia/PPR/slot e seguir o formulário/link da concessionária.", 520);
+}
+
+function isPreservedStandardTaskTitle(title = "") {
+  const t = cleanString(title).toLowerCase();
+  return (
+    /verifica(?:r)?\s+os\s+notams\b/.test(t) ||
+    /verifica(?:r)?\s+abastecimento\b/.test(t) ||
+    /verifica(?:r)?\s+hangaragem\b/.test(t) ||
+    /verifica(?:r)?\s+(autoriza(?:ção|cao)?|agendamento\s+rede\s+voa)/.test(t)
+  );
+}
+
+function knownAirportBriefingProviders(icaoRaw = "", generatedAt = briefingNowIso()) {
+  const icao = normalizeBriefingIcao(icaoRaw);
+  const sourceId = stableBriefingSourceId(`known:${icao}:ops`);
+  if (icao === "SDIM") {
+    return {
+      source: {
+        id: sourceId,
+        title: "Operadores conhecidos SDIM",
+        url: "https://alexandreacosta.com.br/waas/fbo.php",
+        sourceType: "service_provider",
+        fetchedAt: generatedAt,
+        snippet: "FBO/hangaragem W.A.A.S. Avionics em SDIM. Combustível oficial no ROTAER: AIRBP.",
+      },
+      byCategory: {
+        hangarage: [
+          {
+            type: "website",
+            label: "W.A.A.S. Avionics (FBO/Hangaragem)",
+            value: "https://alexandreacosta.com.br/waas/fbo.php",
+            sourceIds: [sourceId],
+            relevance: "relevant",
+          },
+          {
+            type: "website",
+            label: "W.A.A.S. Avionics",
+            value: "https://waasavionics.com.br/",
+            sourceIds: [sourceId],
+            relevance: "auxiliary",
+          },
+        ],
+        // Fuel official brand in ROTAER COMPL is AIRBP (same TEL often listed publicly as HelpJet).
+        fuel: [
+          {
+            type: "website",
+            label: "HelpJet Combustíveis",
+            value: "https://helpjetaviacao.com.br/",
+            sourceIds: [sourceId],
+            relevance: "auxiliary",
+          },
+        ],
+      },
+    };
+  }
+  return null;
+}
+
+function unifyBriefingProvidersList(providers = [], icao = "") {
+  const list = expandBriefingPhoneProviders(Array.isArray(providers) ? providers.filter(Boolean) : []);
+  if (list.length <= 1) return list;
+  const code = normalizeBriefingIcao(icao).toLowerCase();
+  const orgKey = (label) => {
+    let s = cleanString(label)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    if (code) s = s.replace(new RegExp(`\\b${code}\\b`, "g"), " ");
+    if (/petrobras|marlim/.test(s)) return "petrobras";
+    if (/\bshell\b/.test(s)) return "shell";
+    if (/jet\s*fly|jetfly/.test(s)) return "jetfly";
+    if (/air\s*bp|airbp/.test(s)) return "airbp";
+    if (/helpjet/.test(s)) return "helpjet";
+    if (/ceu\s*azul/.test(s)) return "ceu azul";
+    if (/gm\s*aviation/.test(s)) return "gm aviation";
+    if (/waas/.test(s)) return "waas";
+    if (/rede\s*voa|\bvoa\b/.test(s)) return "rede voa";
+    s = s
+      .replace(
+        /\b(administracao|administrativo|administradora|operacional|operacoes|ops|contato|email|telefone|phone|website|site|fbo|setor|departamento|coordenacao|atendimento|geral|local|revenda)\b/g,
+        " ",
+      )
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+    return s;
+  };
+  const preferredTitle = (label) => {
+    const raw = cleanString(label);
+    if (/rede\s*voa|\bvoa\b/i.test(raw)) return `Rede VOA${icao ? ` ${normalizeBriefingIcao(icao)}` : ""}`.trim();
+    if (isFuelSupplierLabel(raw)) return normalizeFuelBrandLabel(raw);
+    if (/w\.?a\.?a\.?s|waas/i.test(raw)) return "W.A.A.S. Avionics";
+    return raw;
+  };
+
+  const groups = [];
+  const byPhone = new Map();
+  const byEmail = new Map();
+  const byOrg = new Map();
+
+  for (const provider of list) {
+    const key = orgKey(provider.label);
+    const pTail = provider.type === "phone" ? normalizePhoneDigits(provider.value).slice(-8) : "";
+    const emailKey = provider.type === "email" ? cleanString(provider.value).toLowerCase() : "";
+    let group =
+      (pTail.length >= 8 ? byPhone.get(pTail) : null) ||
+      (emailKey ? byEmail.get(emailKey) : null) ||
+      (key ? byOrg.get(key) : null);
+
+    // Only soft-overlap for Rede VOA-like orgs — never merge distinct fuel brands.
+    if (!group && key && !isFuelSupplierLabel(provider.label)) {
+      for (const [org, g] of byOrg) {
+        if (!org || isFuelSupplierLabel(g.title)) continue;
+        if (org.includes(key) || key.includes(org)) {
+          group = g;
+          break;
+        }
+      }
+    }
+    if (!group) {
+      group = { title: preferredTitle(provider.label), contacts: [] };
+      groups.push(group);
+      if (key) byOrg.set(key, group);
+    } else if (key && !byOrg.has(key)) {
+      byOrg.set(key, group);
+    }
+
+    if (
+      !group.contacts.some(
+        (item) =>
+          item.type === provider.type &&
+          (item.type === "phone"
+            ? phonesMatch(item.value, provider.value)
+            : item.type === "hours"
+              ? item.label.toLowerCase() === provider.label.toLowerCase()
+              : item.value.toLowerCase() === provider.value.toLowerCase()),
+      )
+    ) {
+      group.contacts.push(provider);
+    }
+    const title = preferredTitle(provider.label);
+    if (/rede voa|airbp|waas|petrobras|shell|jet fly/i.test(title) || title.length >= group.title.length) group.title = title;
+    if (pTail.length >= 8) byPhone.set(pTail, group);
+    if (emailKey) byEmail.set(emailKey, group);
+  }
+
+  const out = [];
+  for (const group of groups) {
+    const relevance = group.contacts.some((c) => c.relevance === "relevant") ? "relevant" : group.contacts[0]?.relevance || "auxiliary";
+    for (const contact of group.contacts) {
+      out.push({
+        ...contact,
+        label: group.title,
+        relevance: contact.relevance === "relevant" ? "relevant" : relevance,
+      });
+    }
+  }
+  return out.sort((a, b) => Number(b.relevance === "relevant") - Number(a.relevance === "relevant"));
+}
+
+function isBriefingAuthText(text = "") {
+  return /slot|ppr|autoriza|formul|rede\s*voa|concession|webapp|ccr(?:aeroportos)?|\bauth\b|compuls|anteced[eê]ncia|agendamento|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|webapp-?\s*ccr|ga\.ccraeroportos|reserva\s+de\s+p[aá]tio/.test(
+    String(text || "").toLowerCase(),
+  );
+}
+
+/** Keep only contacts that belong to the task service (fuel / hangar / auth). */
+function providerMatchesServiceCategory(provider, category, officialProviders = []) {
+  if (!provider || !category) return false;
+  const label = cleanString(provider.label);
+  const value = cleanString(provider.value);
+  const blob = `${label} ${value}`.toLowerCase();
+  const officialHit = (officialProviders || []).some((item) => {
+    if (item.type !== provider.type) return false;
+    if (provider.type === "phone") return phonesMatch(item.value, provider.value);
+    if (provider.type === "hours") {
+      return cleanString(item.label).toLowerCase() === label.toLowerCase();
+    }
+    return cleanString(item.value).toLowerCase() === value.toLowerCase();
+  });
+  if (officialHit) return true;
+
+  if (category === "fuel") {
+    if (provider.type === "hours") return true;
+    if (isFuelSupplierLabel(label)) return true;
+    if (isAdminAuxLabel(label)) return false;
+    return /combust|abastec|avgas|jet\s*a|jetfly|querosene|airbp|shell|petrobras|marlim|helpjet|raizen|ceu\s*azul|gm\s*aviation|fuel/.test(
+      blob,
+    );
+  }
+  if (category === "hangarage") {
+    if (isFuelSupplierLabel(label) && !/hangar|fbo|waas/.test(blob)) return false;
+    return /hangar|fbo|waas|pernoite|estadia|estacionamento|ground\s*handling/.test(blob);
+  }
+  if (category === "auth") {
+    if (isFuelSupplierLabel(label) || /hangar|fbo|waas|pernoite/.test(blob)) return false;
+    if (provider.type === "hours") return false;
+    return (
+      isBriefingAuthText(blob) ||
+      /concession|rede\s*voa|\bvoa\b|webapp|ccr|forms\.office|ccraeroportos|autoriza|ppr|slot|formul/.test(blob)
+    );
+  }
+  return false;
+}
+
+function filterProvidersForServiceCategory(providers = [], category, officialProviders = []) {
+  if (!category) return [];
+  return (providers || []).filter((provider) => providerMatchesServiceCategory(provider, category, officialProviders));
 }
 
 function objectiveBriefingTaskTitle(task = {}) {
   const icao = normalizeBriefingIcao(task.airportIcao) || "rota";
   const title = cleanString(task.title);
-  const text = `${title} ${cleanString(task.description)}`.toLowerCase();
-  if (task.action === "url") {
-    if (/slot|ppr|autoriza|formul|rede\s*voa/.test(text)) return `Acessar formulário/autorização em ${icao}`;
-    if (/hangar|pernoite|estadia/.test(text)) return `Abrir contato de hangaragem em ${icao}`;
-    if (/combust|abastec/.test(text)) return `Abrir contato de combustível em ${icao}`;
-    return `Abrir link operacional de ${icao}`;
+  const text = `${title} ${cleanString(task.description)} ${cleanString(task.url)}`.toLowerCase();
+  // Keep deterministic checklist titles — do not rewrite into action verbs.
+  if (/verifica(?:r)?\s+os\s+notams\b/.test(text) || (/notam/.test(text) && /verifica/.test(text))) {
+    return standardNotamTaskTitle(icao);
   }
-  if (task.action === "phone") {
-    if (/combust|abastec/.test(text)) return `Ligar para fornecedor de combustível em ${icao}`;
-    if (/hangar|pernoite|estadia/.test(text)) return `Ligar para hangaragem em ${icao}`;
-    if (/slot|ppr|autoriza/.test(text)) return `Ligar para administração de ${icao}`;
-    return `Ligar para contato de ${icao}`;
+  if (/verifica(?:r)?\s+abastecimento\b/.test(text)) return standardFuelTaskTitle(icao);
+  if (/verifica(?:r)?\s+hangaragem\b/.test(text)) return standardHangarTaskTitle(icao);
+  if (/verifica(?:r)?\s+(autoriza(?:ção|cao)?|agendamento\s+rede\s+voa)/.test(text)) {
+    return isPreservedStandardTaskTitle(title) ? title : authTaskTitleForText(icao, text);
   }
-  if (task.action === "email") {
-    if (/combust|abastec/.test(text)) return `Enviar email sobre combustível em ${icao}`;
-    if (/hangar|pernoite|estadia/.test(text)) return `Enviar email sobre hangaragem em ${icao}`;
-    if (/slot|ppr|autoriza/.test(text)) return `Enviar email sobre autorização em ${icao}`;
-    return `Enviar email para ${icao}`;
+  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office/i.test(text)) {
+    return authTaskTitleForText(icao, text);
   }
-  if (/combust|abastec/.test(text)) return `Confirmar combustível em ${icao}`;
-  if (/hangar|pernoite|estadia/.test(text)) return `Confirmar hangaragem em ${icao}`;
-  if (/slot|ppr|autoriza|formul/.test(text)) return `Resolver autorização em ${icao}`;
+  if (/notam/.test(text)) return standardNotamTaskTitle(icao);
+  if (/combust|abastec/.test(text)) return standardFuelTaskTitle(icao);
+  if (/hangar|pernoite|estadia/.test(text)) return standardHangarTaskTitle(icao);
+  if (task.action === "url") return `Abrir link operacional de ${icao}`;
+  if (task.action === "phone") return `Ligar para contato de ${icao}`;
+  if (task.action === "email") return `Enviar email para ${icao}`;
   return title || `Verificar pendência em ${icao}`;
 }
 
@@ -23635,51 +24416,110 @@ function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
     const contactsRaw = extractRotaerContactItems(rotaer);
     const source = sourceFromAisweb(icao, "Dados oficiais usados como fallback sem pesquisa IA.", generatedAt);
     sources.push(source);
+    const official = extractOfficialRotaerProviders(rotaer, source.id);
     const contacts = [
-      ...contactsRaw.emails.slice(0, 3).map((email) => ({ type: "email", label: "E-mail ROTAER", value: email, sourceIds: [source.id] })),
-      ...contactsRaw.phones.slice(0, 3).map((phone) => ({ type: "phone", label: "Telefone ROTAER", value: phone, sourceIds: [source.id] })),
-    ];
-    const fuelAvailable = Boolean(fuelText && !/sem\s+combust|n[aã]o\s+dispon/i.test(fuelText));
-    if (fuelAvailable || role !== "origem") {
-      const firstEmail = contacts.find((c) => c.type === "email");
-      const firstPhone = contacts.find((c) => c.type === "phone");
+      ...(official.byCategory.fuel || []),
+      ...(official.byCategory.hangarage || []),
+      ...contactsRaw.emails.slice(0, 3).map((email) => ({ type: "email", label: "E-mail ROTAER", value: email, sourceIds: [source.id], relevance: "auxiliary" })),
+      ...contactsRaw.phones.slice(0, 3).map((phone) => ({ type: "phone", label: "Telefone ROTAER", value: phone, sourceIds: [source.id], relevance: "auxiliary" })),
+    ].filter((contact, index, list) => {
+      const key = `${contact.type}:${contact.type === "phone" ? normalizePhoneDigits(contact.value).slice(-8) : String(contact.value).toLowerCase()}`;
+      return list.findIndex((item) => `${item.type}:${item.type === "phone" ? normalizePhoneDigits(item.value).slice(-8) : String(item.value).toLowerCase()}` === key) === index;
+    });
+    const fuelAvailable = Boolean(
+      (official.fuelText || fuelText) && !/sem\s+combust|n[aã]o\s+dispon/i.test(official.fuelText || fuelText),
+    );
+    const notamContent = buildNotamTaskContent(icao, Array.isArray(bundle.notams) ? bundle.notams : []);
+    tasks.push({
+      id: stableBriefingTaskId(`${icao}:notam`),
+      airportIcao: icao,
+      title: standardNotamTaskTitle(icao),
+      description: notamContent.description,
+      highlights: notamContent.highlights,
+      action: "manual",
+      status: "open",
+      priority: "high",
+      dueHint: "Antes do voo",
+      providers: [],
+      sourceIds: [source.id],
+      pilotNote: "",
+      updatedAt: generatedAt,
+    });
+    {
+      const fuelProviders = [
+        ...(official.byCategory.fuel || []),
+        ...fuelNetworkAuxProviders(official.byCategory.fuel || [], source.id),
+      ];
+      const first = fuelProviders.find((c) => c.type === "phone" || c.type === "email") || fuelProviders[0];
       tasks.push({
-        id: stableBriefingTaskId(`${icao}:fuel:${firstEmail?.value || firstPhone?.value || "manual"}`),
+        id: stableBriefingTaskId(`${icao}:fuel`),
         airportIcao: icao,
-        title: `Verificar detalhes de combustível em ${icao}`,
-        description: fuelText || "Confirmar disponibilidade, tipo, horário e forma de pagamento do combustível antes do voo.",
-        action: firstEmail ? "email" : firstPhone ? "phone" : "manual",
+        title: standardFuelTaskTitle(icao),
+        description:
+          official.fuelText ||
+          fuelText ||
+          "Confirmar disponibilidade, tipo, horário e forma de pagamento do combustível antes do voo.",
+        action: first?.type === "email" ? "email" : first?.type === "phone" ? "phone" : "manual",
         status: "open",
         priority: role === "destino" ? "high" : "medium",
         dueHint: "Antes da decolagem",
-        contact: firstEmail || firstPhone || undefined,
-        providers: [firstEmail, firstPhone].filter(Boolean),
-        suggestedText: firstEmail
-          ? `Olá, bom dia. Estamos planejando um voo para ${icao} e gostaríamos de confirmar disponibilidade de combustível, horário de atendimento, forma de pagamento e necessidade de aviso prévio. Obrigado.`
-          : undefined,
+        contact: first?.type === "website" || first?.type === "hours" ? undefined : first,
+        providers: fuelProviders,
+        suggestedText:
+          first?.type === "email"
+            ? `Olá, bom dia. Estamos planejando um voo para ${icao} e gostaríamos de confirmar disponibilidade de combustível, horário de atendimento, forma de pagamento e necessidade de aviso prévio. Obrigado.`
+            : undefined,
         sourceIds: [source.id],
         pilotNote: "",
         updatedAt: generatedAt,
       });
     }
-    tasks.push({
-      id: stableBriefingTaskId(`${icao}:hangarage`),
-      airportIcao: icao,
-      title: `Confirmar hangaragem/pernoite em ${icao}`,
-      description: "Verificar se há hangaragem, pernoite no pátio, taxas e contato do operador local.",
-      action: contacts[0]?.type === "phone" ? "phone" : contacts[0]?.type === "email" ? "email" : "manual",
-      status: "open",
-      priority: role === "destino" ? "medium" : "low",
-      dueHint: "Se houver pernoite ou permanência prolongada",
-      contact: contacts[0],
-      providers: contacts,
-      suggestedText: contacts[0]?.type === "email"
-        ? `Olá, bom dia. Estamos planejando operação em ${icao} e gostaríamos de verificar disponibilidade de hangaragem/pernoite, valores, horários e necessidade de reserva. Obrigado.`
-        : undefined,
-      sourceIds: [source.id],
-      pilotNote: "",
-      updatedAt: generatedAt,
-    });
+    if (role === "destino" || role === "alternativo") {
+      const hangarProviders = official.byCategory.hangarage || [];
+      const firstHangar = hangarProviders[0];
+      tasks.push({
+        id: stableBriefingTaskId(`${icao}:hangarage`),
+        airportIcao: icao,
+        title: standardHangarTaskTitle(icao),
+        description:
+          official.hangarText ||
+          "Verificar hangaragem, pernoite no pátio, taxas, contato do operador e necessidade de reserva.",
+        action: firstHangar?.type === "phone" ? "phone" : firstHangar?.type === "email" ? "email" : firstHangar?.type === "website" ? "url" : "manual",
+        status: "open",
+        priority: "medium",
+        dueHint: "Se houver pernoite ou permanência",
+        contact: firstHangar?.type === "website" || firstHangar?.type === "hours" ? undefined : firstHangar,
+        providers: hangarProviders,
+        url: firstHangar?.type === "website" ? firstHangar.value : undefined,
+        suggestedText:
+          firstHangar?.type === "email"
+            ? `Olá, bom dia. Estamos planejando operação em ${icao} e gostaríamos de verificar disponibilidade de hangaragem/pernoite, valores, horários e necessidade de reserva. Obrigado.`
+            : undefined,
+        sourceIds: [source.id],
+        pilotNote: "",
+        updatedAt: generatedAt,
+      });
+    }
+    if (official.needsAuth || (official.byCategory.auth || []).length || official.authText) {
+      const authProviders = official.byCategory.auth || [];
+      const authUrl =
+        authProviders.find((item) => item.type === "website")?.value || extractFirstBriefingUrl(official.authText);
+      tasks.push({
+        id: stableBriefingTaskId(`${icao}:auth`),
+        airportIcao: icao,
+        title: authTaskTitleForText(icao, official.authText),
+        description: buildAuthTaskDescription(official.authText, authUrl),
+        action: authUrl ? "url" : "manual",
+        status: "open",
+        priority: "high",
+        dueHint: "Com a antecedência exigida no ROTAER",
+        providers: authProviders,
+        url: authUrl || undefined,
+        sourceIds: [source.id],
+        pilotNote: "",
+        updatedAt: generatedAt,
+      });
+    }
     return {
       icao,
       role,
@@ -23697,14 +24537,27 @@ function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
         sourceIds: [source.id],
       },
       slotPpr: {
-        required: null,
-        detail: "Verificar necessidade de slot/PPR quando aplicável.",
-        confidence: "needs_confirmation",
+        required: official.needsAuth ? true : null,
+        detail: official.authText || "Verificar necessidade de slot/PPR quando aplicável.",
+        confidence: official.needsAuth ? "official" : "needs_confirmation",
         sourceIds: [source.id],
       },
       contacts,
       notes: reason ? [reason] : [],
     };
+  });
+  // NOTAM first, then auth, fuel, hangar.
+  tasks.sort((a, b) => {
+    const score = (task) => {
+      const text = `${task.title} ${task.description}`.toLowerCase();
+      if (/notam/.test(text)) return 0;
+      if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa/.test(text)) return 1;
+      if (/combust|abastec/.test(text)) return 2;
+      if (/hangar|pernoite/.test(text)) return 3;
+      return 4;
+    };
+    if (score(a) !== score(b)) return score(a) - score(b);
+    return String(a.airportIcao || "").localeCompare(String(b.airportIcao || ""));
   });
   return {
     status: "fallback",
@@ -23767,14 +24620,25 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
   const safeStatus = (value) => ["open", "done", "inactive"].includes(value) ? value : "open";
   const safeContact = (contact) => {
     if (!contact || typeof contact !== "object") return undefined;
-    const type = ["email", "phone", "website"].includes(contact.type) ? contact.type : null;
+    const type = ["email", "phone", "website", "hours"].includes(contact.type) ? contact.type : null;
     const value = cleanString(contact.value).slice(0, 260);
     if (!type || !value) return undefined;
+    const inferred = inferBriefingContactRelevance(cleanString(contact.label), value, type);
+    // Official brands (AIRBP, WAAS, etc.) win over a weak "auxiliary" from the model.
+    const relevance =
+      inferred === "relevant"
+        ? "relevant"
+        : contact.relevance === "relevant" || contact.relevance === "auxiliary"
+          ? contact.relevance
+          : inferred;
     return {
       type,
-      label: cleanString(contact.label).slice(0, 80) || (type === "email" ? "E-mail" : type === "phone" ? "Telefone" : "Site"),
+      label:
+        cleanString(contact.label).slice(0, 80) ||
+        (type === "email" ? "E-mail" : type === "phone" ? "Telefone" : type === "hours" ? "Horário" : "Site"),
       value,
       sourceIds: safeSourceIds(contact.sourceIds),
+      relevance,
     };
   };
 
@@ -23814,6 +24678,9 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
         airportIcao: normalizeBriefingIcao(task?.airportIcao) || undefined,
         title: compactBriefingText(task?.title || `Tarefa ${index + 1}`, 140),
         description: compactBriefingText(task?.description || "Verificar pendência operacional.", 420),
+        highlights: Array.isArray(task?.highlights)
+          ? task.highlights.map((item) => compactBriefingText(item, 220)).filter(Boolean).slice(0, 6)
+          : undefined,
         action: safeAction(task?.action),
         status: safeStatus(task?.status),
         priority: safePriority(task?.priority),
@@ -23829,13 +24696,14 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     : fallback.tasks;
   const normalizedTasks = tasks.map((task) => {
     const detectedUrl = extractFirstBriefingUrl(task.url, task.description, task.suggestedText, task.title);
-    const action = detectedUrl ? "url" : task.action;
+    const action = detectedUrl && !/notam/i.test(`${task.title} ${task.description}`) ? "url" : task.action;
     const next = {
       ...task,
       action,
       contact: action === "url" ? undefined : task.contact,
-      url: detectedUrl || task.url,
-      description: compactBriefingText(task.description, 260),
+      url: action === "url" ? detectedUrl || task.url : task.url,
+      description: compactBriefingText(task.description, 520),
+      highlights: Array.isArray(task.highlights) ? task.highlights.slice(0, 6) : undefined,
       suggestedText: cleanString(task.suggestedText).slice(0, 900) || undefined,
       pilotNote: input.preservePilotNotes ? cleanString(task.pilotNote).slice(0, 1000) : "",
     };
@@ -23847,50 +24715,95 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
   const existingNotamIcaos = new Set(
     normalizedTasks
       .filter((task) => /notam/i.test(`${task.title} ${task.description}`))
-      .map((task) => normalizeBriefingIcao(task.airportIcao)),
+      .map((task) => normalizeBriefingIcao(task.airportIcao))
+      .filter(Boolean),
   );
+  // NOTAM for every airport on the route (origem/destino/alternativos), not only those the model returned.
+  const notamAirportIcaos = new Set();
+  for (const airport of Array.isArray(input.airports) ? input.airports : []) {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    if (icao) notamAirportIcaos.add(icao);
+  }
   for (const airport of airports) {
-    const icao = normalizeBriefingIcao(airport.icao);
-    if (!icao || existingNotamIcaos.has(icao)) continue;
+    const icao = normalizeBriefingIcao(airport?.icao);
+    if (icao) notamAirportIcaos.add(icao);
+  }
+  for (const icao of notamAirportIcaos) {
+    const notamContent = buildNotamTaskContent(icao, notamsForAirportInput(input, icao));
+    const existing = normalizedTasks.find(
+      (task) => normalizeBriefingIcao(task.airportIcao) === icao && /notam/i.test(`${task.title} ${task.description}`),
+    );
+    if (existing) {
+      existing.title = standardNotamTaskTitle(icao);
+      existing.action = "manual";
+      existing.priority = "high";
+      existing.dueHint = existing.dueHint || "Antes do voo";
+      existing.providers = [];
+      existing.contact = undefined;
+      existing.url = undefined;
+      if (!existing.highlights?.length) existing.highlights = notamContent.highlights;
+      if (!existing.description || existing.description.length < 40 || /abrir os notams/i.test(existing.description)) {
+        existing.description = notamContent.description;
+      }
+      continue;
+    }
+    if (existingNotamIcaos.has(icao)) continue;
     normalizedTasks.push({
       id: stableBriefingTaskId(`${icao}:notam`),
       airportIcao: icao,
-      title: `Verificar NOTAM em ${icao}`,
-      description: "Abrir os NOTAMs do aeródromo no briefing AISWEB e confirmar validade antes do voo.",
+      title: standardNotamTaskTitle(icao),
+      description: notamContent.description,
+      highlights: notamContent.highlights,
       action: "manual",
       status: "open",
       priority: "high",
       dueHint: "Antes do voo",
       providers: [],
-      sourceIds: Array.isArray(airport.fuel?.sourceIds) ? airport.fuel.sourceIds : [],
+      sourceIds: [],
       pilotNote: "",
       updatedAt: generatedAt,
     });
   }
-  const providerKey = (contact) => `${cleanString(contact?.type)}:${cleanString(contact?.value).toLowerCase()}`;
+  const providerKey = (contact) => {
+    const type = cleanString(contact?.type);
+    if (type === "phone") return `phone:${normalizePhoneDigits(contact?.value).slice(-8)}`;
+    if (type === "hours") return `hours:${cleanString(contact?.label).toLowerCase()}:${cleanString(contact?.value).toLowerCase()}`;
+    return `${type}:${cleanString(contact?.value).toLowerCase()}`;
+  };
   const taskCategory = (task) => {
-    const text = `${task.title} ${task.description}`.toLowerCase();
+    const text = `${task.title} ${task.description} ${task.url || ""}`.toLowerCase();
+    if (/notam/.test(text)) return "";
+    // Auth before hangar: CCR/WebApp RMKs often mention "pátio" and must not become hangaragem.
+    if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|webapp-?\s*ccr/.test(text)) return "auth";
     if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
-    if (/hangar|pernoite|estadia|p[aá]tio|estacionamento/.test(text)) return "hangarage";
+    if (/hangar|pernoite|estadia|fbo|estacionamento/.test(text)) return "hangarage";
+    // "pátio" alone is weak — only hangar if not an auth/ops text.
+    if (/p[aá]tio/.test(text) && !/autoriza|concession|webapp|ccr|\bauth\b|compuls/.test(text)) return "hangarage";
     return "";
   };
-  const airportContactsByIcao = new Map(airports.map((airport) => [normalizeBriefingIcao(airport.icao), airport.contacts || []]));
   const mergedTasks = [];
   const groupedTaskByKey = new Map();
   for (const task of normalizedTasks) {
     const category = taskCategory(task);
     const icao = normalizeBriefingIcao(task.airportIcao);
     const groupKey = category && icao ? `${icao}:${category}` : "";
-    const baseProviders = [
-      ...(Array.isArray(task.providers) ? task.providers : []),
-      task.contact,
-      ...(category ? airportContactsByIcao.get(icao) || [] : []),
-    ].filter(Boolean);
+    // Never dump all airport contacts into every task — only task.providers/contact.
+    const baseProviders = [...(Array.isArray(task.providers) ? task.providers : []), task.contact].filter(Boolean);
     const providers = [];
     const seenProviders = new Set();
     for (const provider of baseProviders) {
       const key = providerKey(provider);
       if (!key || seenProviders.has(key)) continue;
+      // Drop obvious cross-service noise before merge.
+      if (category === "auth" && (isFuelSupplierLabel(provider.label) || /hangar|fbo|waas|combust|abastec|shell|petrobras|jet\s*fly|airbp/i.test(`${provider.label} ${provider.value}`))) {
+        continue;
+      }
+      if (category === "fuel" && /concession|webapp-ccr|ccraeroportos|autoriza(?:ção|cao)? da concession/i.test(`${provider.label} ${provider.value}`)) {
+        continue;
+      }
+      if (category === "hangarage" && isFuelSupplierLabel(provider.label) && !/hangar|fbo|waas/i.test(provider.label)) {
+        continue;
+      }
       seenProviders.add(key);
       providers.push(provider);
     }
@@ -23922,6 +24835,572 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     existing.priority = existing.priority === "high" || task.priority !== "high" ? existing.priority : "high";
   }
 
+  const knownSourceIds = new Set();
+  const officialByIcao = new Map();
+  for (const airport of Array.isArray(input.airports) ? input.airports : []) {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    if (!icao) continue;
+    const source = sourceFromAisweb(icao, "COMPL/fuel ROTAER oficial", generatedAt);
+    if (!sources.some((item) => item.id === source.id)) {
+      sources.push(source);
+      sourceById.add(source.id);
+    }
+    officialByIcao.set(icao, extractOfficialRotaerProviders(airport?.bundle?.rotaer || null, source.id));
+  }
+
+  for (const task of mergedTasks) {
+    const category = taskCategory(task);
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    if (!category || !icao) continue;
+
+    const official = officialByIcao.get(icao);
+    const officialProviders = official?.byCategory?.[category] || [];
+    const contextText =
+      category === "fuel"
+        ? official?.fuelText || ""
+        : category === "hangarage"
+          ? official?.hangarText || ""
+          : category === "auth"
+            ? official?.authText || ""
+            : "";
+
+    // Inject official ROTAER providers (COMPL/fuel) first — always relevant.
+    const existingProviderKeys = new Set((task.providers || []).map(providerKey));
+    for (const provider of officialProviders) {
+      const key = providerKey(provider);
+      if (!key) continue;
+      const samePhone = (task.providers || []).find(
+        (item) => item.type === "phone" && provider.type === "phone" && phonesMatch(item.value, provider.value),
+      );
+      if (samePhone) {
+        samePhone.label = provider.label || samePhone.label;
+        samePhone.relevance = "relevant";
+        samePhone.sourceIds = Array.from(new Set([...(samePhone.sourceIds || []), ...(provider.sourceIds || [])])).slice(0, 8);
+        continue;
+      }
+      if (provider.type === "hours") {
+        const sameHours = (task.providers || []).find(
+          (item) => item.type === "hours" && cleanString(item.label).toLowerCase() === cleanString(provider.label).toLowerCase(),
+        );
+        if (sameHours) {
+          sameHours.value = provider.value;
+          sameHours.relevance = "relevant";
+          continue;
+        }
+      }
+      if (existingProviderKeys.has(key)) {
+        const hit = (task.providers || []).find((item) => providerKey(item) === key);
+        if (hit) hit.relevance = "relevant";
+        continue;
+      }
+      existingProviderKeys.add(key);
+      task.providers.push({ ...provider, relevance: "relevant" });
+      task.sourceIds = Array.from(new Set([...(task.sourceIds || []), ...(provider.sourceIds || [])])).slice(0, 8);
+    }
+
+    // Relabel phones to the official ROTAER brand that owns that TEL (prevents Shell under Petrobras).
+    if (category === "fuel" && officialProviders.length) {
+      task.providers = (task.providers || []).map((provider) => {
+        if (provider.type !== "phone") return provider;
+        const official = officialProviders.find((item) => item.type === "phone" && phonesMatch(item.value, provider.value));
+        if (!official) return provider;
+        return { ...provider, label: official.label, relevance: "relevant" };
+      });
+    }
+
+    const known = knownAirportBriefingProviders(icao, generatedAt);
+    if (known) {
+      if (known.source?.id && !knownSourceIds.has(known.source.id)) {
+        knownSourceIds.add(known.source.id);
+        sources.push(known.source);
+        sourceById.add(known.source.id);
+      }
+      const extras = known.byCategory[category] || [];
+      for (const provider of extras) {
+        const key = providerKey(provider);
+        if (!key || existingProviderKeys.has(key)) continue;
+        // Don't add a second "relevant" fuel brand when ROTAER already named one (e.g. AIRBP).
+        if (
+          category === "fuel" &&
+          officialProviders.length &&
+          provider.relevance === "relevant" &&
+          !officialProviders.some((item) => phonesMatch(item.value, provider.value) || cleanString(item.label).toLowerCase() === cleanString(provider.label).toLowerCase())
+        ) {
+          provider.relevance = "auxiliary";
+        }
+        // Skip duplicate phone under another brand (HelpJet vs AIRBP).
+        if (
+          provider.type === "phone" &&
+          (task.providers || []).some((item) => item.type === "phone" && phonesMatch(item.value, provider.value))
+        ) {
+          continue;
+        }
+        existingProviderKeys.add(key);
+        task.providers.push(provider);
+        task.sourceIds = Array.from(new Set([...(task.sourceIds || []), ...(provider.sourceIds || [])])).slice(0, 8);
+      }
+    }
+
+    // National fuel-network websites when ROTAER already named the brand (email/phone still come from web_search/AISWEB).
+    if (category === "fuel") {
+      const networkSourceId = stableBriefingSourceId(`fuel-network:${icao}`);
+      for (const provider of fuelNetworkAuxProviders(officialProviders, networkSourceId)) {
+        const key = providerKey(provider);
+        if (!key || existingProviderKeys.has(key)) continue;
+        if ((task.providers || []).some((item) => item.type === "website" && cleanString(item.value).toLowerCase() === cleanString(provider.value).toLowerCase())) {
+          continue;
+        }
+        existingProviderKeys.add(key);
+        task.providers.push(provider);
+        if (!sources.some((item) => item.id === networkSourceId)) {
+          sources.push({
+            id: networkSourceId,
+            title: `Rede de combustível ${icao}`,
+            url: provider.value,
+            sourceType: "service_provider",
+            fetchedAt: generatedAt,
+            snippet: "Site público da rede citada no ROTAER para enriquecer contato.",
+          });
+          sourceById.add(networkSourceId);
+        }
+        task.sourceIds = Array.from(new Set([...(task.sourceIds || []), networkSourceId])).slice(0, 8);
+      }
+    }
+
+    const hasOfficial = officialProviders.length > 0;
+    task.providers = (task.providers || []).map((provider) => {
+      const label = cleanString(provider.label);
+      const matchesOfficial =
+        officialProviders.some(
+          (item) =>
+            (item.type === provider.type &&
+              (provider.type === "phone"
+                ? phonesMatch(item.value, provider.value)
+                : cleanString(item.value).toLowerCase() === cleanString(provider.value).toLowerCase())) ||
+            cleanString(item.label).toLowerCase() === label.toLowerCase() ||
+            (label && cleanString(item.label).toLowerCase().includes(label.toLowerCase())) ||
+            (label && label.toLowerCase().includes(cleanString(item.label).toLowerCase())),
+        ) ||
+        (contextText && label && new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(contextText)) ||
+        (contextText && provider.type === "phone" && normalizePhoneDigits(provider.value) && contextText.includes(normalizePhoneDigits(provider.value).slice(-8)));
+
+      if (matchesOfficial) return { ...provider, relevance: "relevant" };
+      if (hasOfficial && (category === "fuel" || category === "hangarage" || category === "auth")) {
+        return { ...provider, relevance: "auxiliary" };
+      }
+      return {
+        ...provider,
+        relevance:
+          provider.relevance === "relevant" || provider.relevance === "auxiliary"
+            ? provider.relevance
+            : inferBriefingContactRelevance(provider.label, provider.value, provider.type, contextText),
+      };
+    });
+
+    // Prefer official brands for fuel; keep ALL named ROTAER suppliers as relevant (ex.: Ceu Azul + GM Aviation).
+    if (hasOfficial && category === "fuel") {
+      const officialLabels = new Set(officialProviders.map((item) => cleanString(item.label).toLowerCase()));
+      let sawRelevantOfficial = false;
+      task.providers = task.providers.map((provider) => {
+        const isOfficialBrand =
+          officialLabels.has(cleanString(provider.label).toLowerCase()) ||
+          officialProviders.some((item) => item.type === "phone" && provider.type === "phone" && phonesMatch(item.value, provider.value));
+        if (isOfficialBrand) {
+          sawRelevantOfficial = true;
+          return { ...provider, relevance: "relevant" };
+        }
+        return { ...provider, relevance: "auxiliary" };
+      });
+      if (!sawRelevantOfficial) {
+        for (const provider of officialProviders) {
+          const key = providerKey(provider);
+          if (!key || (task.providers || []).some((item) => providerKey(item) === key)) continue;
+          task.providers.unshift({ ...provider, relevance: "relevant" });
+        }
+      }
+    }
+
+    task.providers = [...task.providers].sort((a, b) => {
+      const ra = a.relevance === "relevant" ? 0 : 1;
+      const rb = b.relevance === "relevant" ? 0 : 1;
+      return ra - rb;
+    });
+    const topRelevant = task.providers.find((item) => item.relevance === "relevant");
+    if (topRelevant) task.contact = topRelevant;
+    else if (!task.contact && task.providers[0]) task.contact = task.providers[0];
+
+    // Also apply auth official context text when category is auth
+    if (category === "auth" && official?.authText) {
+      if (!/autoriza|ppr|slot|formul|compuls|webapp|ccr/i.test(task.description) || task.description.length < 40) {
+        const authUrl =
+          task.url ||
+          (task.providers || []).find((item) => item.type === "website")?.value ||
+          extractFirstBriefingUrl(official.authText);
+        task.description = buildAuthTaskDescription(official.authText, authUrl);
+      }
+    }
+    if (category === "fuel" && official?.fuelText) {
+      task.description = compactBriefingText(official.fuelText, 520);
+    }
+    if (category === "hangarage" && official?.hangarText) {
+      if (!task.description || task.description.length < 40) {
+        task.description = compactBriefingText(official.hangarText, 520);
+      }
+    }
+  }
+
+  // Ensure standard checklist tasks: NOTAM (already), fuel always, hangar dest/alt, auth when AISWEB needs it.
+  for (const airport of Array.isArray(input.airports) ? input.airports : []) {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    const role = airport?.role === "destino" || airport?.role === "alternativo" ? airport.role : "origem";
+    if (!icao) continue;
+    const source = sourceFromAisweb(icao, "COMPL/RMK ROTAER", generatedAt);
+    if (!sources.some((item) => item.id === source.id)) {
+      sources.push(source);
+      sourceById.add(source.id);
+    }
+    const facts = officialByIcao.get(icao) || extractOfficialRotaerProviders(airport?.bundle?.rotaer || null, source.id);
+    officialByIcao.set(icao, facts);
+
+    const upsertTask = ({ category, title, description, providers, priority, dueHint, action, url, highlights }) => {
+      const existing = mergedTasks.find((task) => normalizeBriefingIcao(task.airportIcao) === icao && taskCategory(task) === category);
+      const cleanProviders = (providers || []).filter(Boolean);
+      if (existing) {
+        existing.title = title || existing.title;
+        if (Array.isArray(highlights) && highlights.length) existing.highlights = highlights.slice(0, 6);
+        if (description && (existing.description.length < 40 || !/abastec|autoriza|hangar|formul|airbp|tel|notam/i.test(existing.description))) {
+          existing.description = compactBriefingText(description, 520);
+        }
+        const keys = new Set((existing.providers || []).map(providerKey));
+        for (const provider of cleanProviders) {
+          const key = providerKey(provider);
+          if (!key || keys.has(key)) continue;
+          const samePhone = (existing.providers || []).find(
+            (item) => item.type === "phone" && provider.type === "phone" && phonesMatch(item.value, provider.value),
+          );
+          if (samePhone) {
+            samePhone.label = provider.label || samePhone.label;
+            samePhone.relevance = "relevant";
+            continue;
+          }
+          keys.add(key);
+          existing.providers.push({ ...provider, relevance: provider.relevance || "relevant" });
+        }
+        if (url && !existing.url) {
+          existing.url = url;
+          existing.action = "url";
+        }
+        if (!existing.contact && existing.providers?.[0]) existing.contact = existing.providers[0];
+        return existing;
+      }
+      const first = cleanProviders[0];
+      const detectedUrl = url || extractFirstBriefingUrl(description);
+      const task = {
+        id: stableBriefingTaskId(`${icao}:${category}`),
+        airportIcao: icao,
+        title,
+        description: compactBriefingText(description || title, 520),
+        highlights: Array.isArray(highlights) && highlights.length ? highlights.slice(0, 6) : undefined,
+        action: detectedUrl ? "url" : action || (first?.type === "phone" ? "phone" : first?.type === "email" ? "email" : "manual"),
+        status: "open",
+        priority: priority || (role === "destino" ? "high" : "medium"),
+        dueHint: dueHint || "Antes do voo",
+        contact: detectedUrl ? undefined : first,
+        providers: cleanProviders,
+        url: detectedUrl || undefined,
+        sourceIds: [source.id],
+        pilotNote: "",
+        updatedAt: generatedAt,
+      };
+      mergedTasks.push(task);
+      return task;
+    };
+
+    // Fuel: always for origem, destino and alternativo.
+    {
+      const fuelProviders = [
+        ...(facts.byCategory.fuel || []),
+        ...fuelNetworkAuxProviders(facts.byCategory.fuel || [], source.id),
+      ];
+      upsertTask({
+        category: "fuel",
+        title: standardFuelTaskTitle(icao),
+        description:
+          facts.fuelText ||
+          "Confirmar disponibilidade, tipo, horário, forma de pagamento e aviso prévio do combustível antes do voo (ROTAER + contatos públicos).",
+        providers: fuelProviders,
+        priority: role === "origem" ? "medium" : "high",
+        dueHint: "Antes da decolagem",
+      });
+    }
+
+    // Hangarage: only destino and alternativo.
+    if (role === "destino" || role === "alternativo") {
+      upsertTask({
+        category: "hangarage",
+        title: standardHangarTaskTitle(icao),
+        description:
+          facts.hangarText ||
+          "Verificar hangaragem, pernoite no pátio, taxas, contato do operador e necessidade de reserva.",
+        providers: facts.byCategory.hangarage || [],
+        priority: "medium",
+        dueHint: "Se houver pernoite ou permanência",
+      });
+    }
+
+    // Authorization: one task per aeródromo when AISWEB/COMPL/RMK indicates need.
+    if (facts.needsAuth || (facts.byCategory.auth || []).length || facts.authText) {
+      const authUrl =
+        (facts.byCategory.auth || []).find((item) => item.type === "website")?.value ||
+        extractFirstBriefingUrl(facts.authText);
+      upsertTask({
+        category: "auth",
+        title: authTaskTitleForText(icao, facts.authText),
+        description: buildAuthTaskDescription(facts.authText, authUrl),
+        providers: facts.byCategory.auth || [],
+        priority: "high",
+        dueHint: "Com a antecedência exigida no ROTAER",
+        action: authUrl ? "url" : "manual",
+        url: authUrl,
+      });
+    }
+  }
+
+  // Fold leftover "link operacional" / auth-URL tasks into the single auth task per ICAO.
+  for (const task of [...mergedTasks]) {
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    if (!icao || taskCategory(task) === "auth") continue;
+    const blob = `${task.title} ${task.description} ${task.url || ""}`;
+    if (!isBriefingAuthText(blob) && !/ccraeroportos|forms\.office|webapp/i.test(blob)) continue;
+    const authTask = mergedTasks.find((item) => normalizeBriefingIcao(item.airportIcao) === icao && taskCategory(item) === "auth");
+    const url = task.url || extractFirstBriefingUrl(task.description, task.title);
+    const authOnlyProviders = filterProvidersForServiceCategory(task.providers || [], "auth", officialByIcao.get(icao)?.byCategory?.auth || []);
+    if (authTask) {
+      if (url && !authTask.url) {
+        authTask.url = url;
+        authTask.action = "url";
+      }
+      if (task.description && task.description.length > (authTask.description || "").length) {
+        authTask.description = compactBriefingText(task.description, 520);
+      }
+      for (const provider of authOnlyProviders) {
+        const key = providerKey(provider);
+        if (!key || (authTask.providers || []).some((item) => providerKey(item) === key)) continue;
+        authTask.providers.push(provider);
+      }
+      const idx = mergedTasks.indexOf(task);
+      if (idx >= 0) mergedTasks.splice(idx, 1);
+    } else {
+      task.title = authTaskTitleForText(icao, blob);
+      task.providers = authOnlyProviders;
+      if (url) {
+        task.url = url;
+        task.action = "url";
+      }
+    }
+  }
+
+  // Drop hangar tasks on origem (policy: only destino/alternativo).
+  {
+    const originIcaos = new Set(
+      (Array.isArray(input.airports) ? input.airports : [])
+        .filter((airport) => airport?.role === "origem")
+        .map((airport) => normalizeBriefingIcao(airport?.icao))
+        .filter(Boolean),
+    );
+    if (!originIcaos.size && input.origin) originIcaos.add(normalizeBriefingIcao(input.origin));
+    for (let i = mergedTasks.length - 1; i >= 0; i -= 1) {
+      const task = mergedTasks[i];
+      const icao = normalizeBriefingIcao(task.airportIcao);
+      if (originIcaos.has(icao) && taskCategory(task) === "hangarage") {
+        mergedTasks.splice(i, 1);
+      }
+    }
+  }
+
+  // Unify providers on every task (Rede VOA / Operacional / Administração etc.).
+  for (const task of mergedTasks) {
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    const category = taskCategory(task);
+    const officialProviders = category ? officialByIcao.get(icao)?.byCategory?.[category] || [] : [];
+
+    if (category === "fuel") {
+      for (const provider of officialProviders) {
+        const key = providerKey(provider);
+        if (!key || (task.providers || []).some((item) => providerKey(item) === key)) continue;
+        if (
+          provider.type === "hours" &&
+          (task.providers || []).some(
+            (item) => item.type === "hours" && cleanString(item.label).toLowerCase() === cleanString(provider.label).toLowerCase(),
+          )
+        ) {
+          continue;
+        }
+        task.providers.push({ ...provider, relevance: "relevant" });
+      }
+      task.providers = (task.providers || []).map((provider) => {
+        if (provider.type === "phone") {
+          const hit = officialProviders.find((item) => item.type === "phone" && phonesMatch(item.value, provider.value));
+          if (hit) return { ...provider, label: hit.label, relevance: "relevant" };
+        }
+        return provider;
+      });
+    }
+
+    // Strict per-service filter — auth must not show fuel/hangar cards.
+    if (category) {
+      task.providers = filterProvidersForServiceCategory(task.providers || [], category, officialProviders);
+      // Ensure official providers of this category are present.
+      for (const provider of officialProviders) {
+        const key = providerKey(provider);
+        if (!key || task.providers.some((item) => providerKey(item) === key)) continue;
+        task.providers.push({ ...provider, relevance: "relevant" });
+      }
+    } else {
+      task.providers = [];
+    }
+
+    task.providers = unifyBriefingProvidersList(task.providers || [], icao);
+
+    if (category === "fuel") {
+      const officialTails = new Set(
+        officialProviders.filter((item) => item.type === "phone").map((item) => normalizePhoneDigits(item.value).slice(-8)),
+      );
+      task.providers = (task.providers || []).map((provider) => {
+        if (isAdminAuxLabel(provider.label) && !isFuelSupplierLabel(provider.label)) {
+          return { ...provider, relevance: "auxiliary" };
+        }
+        if (isFuelSupplierLabel(provider.label)) return { ...provider, relevance: "relevant" };
+        if (provider.type === "phone" && officialTails.has(normalizePhoneDigits(provider.value).slice(-8))) {
+          return { ...provider, relevance: "relevant" };
+        }
+        if (provider.type === "hours") return { ...provider, relevance: "relevant" };
+        return { ...provider, relevance: "auxiliary" };
+      });
+    }
+
+    if (category === "auth") {
+      const authText = officialByIcao.get(icao)?.authText || `${task.title} ${task.description}`;
+      task.title = authTaskTitleForText(icao, authText);
+      const authUrl =
+        task.url ||
+        (task.providers || []).find((item) => item.type === "website")?.value ||
+        extractFirstBriefingUrl(task.description);
+      if (authUrl) {
+        task.url = authUrl;
+        task.action = "url";
+      }
+      // Auth stays simple: description + link + only concessionária contacts.
+      task.contact = undefined;
+    }
+
+    if (category === "fuel") {
+      task.title = standardFuelTaskTitle(icao);
+    }
+    if (category === "hangarage") {
+      task.title = standardHangarTaskTitle(icao);
+    }
+    if (/notam/i.test(`${task.title} ${task.description}`)) {
+      task.title = standardNotamTaskTitle(icao);
+    }
+
+    if (task.providers[0] && task.action !== "url") {
+      task.contact = task.providers.find((p) => p.relevance === "relevant" && p.type !== "hours") || task.providers[0];
+    }
+  }
+
+  // Hard-dedupe fuel/hangar/auth: one task per aeródromo+categoria.
+  const dedupedTasks = [];
+  const seenCatKey = new Map();
+  for (const task of mergedTasks) {
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    const category = taskCategory(task);
+    const key = icao && category ? `${icao}:${category}` : "";
+    if (!key) {
+      dedupedTasks.push(task);
+      continue;
+    }
+    const existing = seenCatKey.get(key);
+    if (!existing) {
+      seenCatKey.set(key, task);
+      dedupedTasks.push(task);
+      continue;
+    }
+    existing.description = compactBriefingText(
+      [existing.description, task.description].filter(Boolean).sort((a, b) => b.length - a.length)[0] || existing.description,
+      520,
+    );
+    existing.title =
+      category === "auth"
+        ? authTaskTitleForText(icao, existing.description || task.description)
+        : category === "fuel"
+          ? standardFuelTaskTitle(icao)
+          : category === "hangarage"
+            ? standardHangarTaskTitle(icao)
+            : existing.title || task.title;
+    if (task.url && !existing.url) {
+      existing.url = task.url;
+      existing.action = "url";
+    }
+    const keys = new Set((existing.providers || []).map(providerKey));
+    for (const provider of task.providers || []) {
+      const pKey = providerKey(provider);
+      if (!pKey || keys.has(pKey)) continue;
+      keys.add(pKey);
+      existing.providers.push(provider);
+    }
+    existing.providers = unifyBriefingProvidersList(existing.providers || [], icao);
+    existing.sourceIds = Array.from(new Set([...(existing.sourceIds || []), ...(task.sourceIds || [])])).slice(0, 8);
+  }
+  mergedTasks.length = 0;
+  mergedTasks.push(...dedupedTasks);
+
+  // One NOTAM task per ICAO (keep richest highlights/description).
+  {
+    const byNotamIcao = new Map();
+    const rest = [];
+    for (const task of mergedTasks) {
+      const icao = normalizeBriefingIcao(task.airportIcao);
+      if (!icao || !/notam/i.test(`${task.title} ${task.description}`)) {
+        rest.push(task);
+        continue;
+      }
+      const prev = byNotamIcao.get(icao);
+      if (!prev) {
+        byNotamIcao.set(icao, {
+          ...task,
+          title: standardNotamTaskTitle(icao),
+          action: "manual",
+          providers: [],
+          contact: undefined,
+          url: undefined,
+        });
+        continue;
+      }
+      if ((task.highlights || []).length > (prev.highlights || []).length) prev.highlights = task.highlights;
+      if ((task.description || "").length > (prev.description || "").length) prev.description = task.description;
+      prev.sourceIds = Array.from(new Set([...(prev.sourceIds || []), ...(task.sourceIds || [])])).slice(0, 8);
+    }
+    mergedTasks.length = 0;
+    mergedTasks.push(...byNotamIcao.values(), ...rest);
+  }
+
+  // NOTAM tasks first, then auth/fuel/hangar, then extras.
+  mergedTasks.sort((a, b) => {
+    const score = (task) => {
+      const text = `${task.title} ${task.description}`.toLowerCase();
+      if (/notam/.test(text)) return 0;
+      if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa/.test(text)) return 1;
+      if (/combust|abastec/.test(text)) return 2;
+      if (/hangar|pernoite/.test(text)) return 3;
+      return 4;
+    };
+    if (score(a) !== score(b)) return score(a) - score(b);
+    const icaoCmp = String(a.airportIcao || "").localeCompare(String(b.airportIcao || ""));
+    if (icaoCmp) return icaoCmp;
+    return 0;
+  });
+
   return {
     status: obj.status === "ready" || obj.status === "fallback" || obj.status === "failed" ? obj.status : "ready",
     model: cleanString(obj.model) || cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra",
@@ -23931,13 +25410,13 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
       destination: normalizeBriefingIcao(input.destination),
       alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : [],
     },
-    summary: compactBriefingText(obj.summary || fallback.summary, 420),
+    summary: compactBriefingText(obj.summary || fallback.summary, 1200),
     warnings: Array.isArray(obj.warnings)
       ? obj.warnings.slice(0, 12).map((warning, index) => ({
           id: cleanString(warning?.id) || `warning_${index + 1}`,
           severity: ["high", "medium", "low"].includes(warning?.severity) ? warning.severity : "medium",
           title: compactBriefingText(warning?.title || "Atenção", 140),
-          detail: compactBriefingText(warning?.detail || "", 260),
+          detail: compactBriefingText(warning?.detail || "", 900),
           sourceIds: safeSourceIds(warning?.sourceIds),
         })).filter((warning) => warning.detail || warning.title)
       : fallback.warnings,
@@ -23955,7 +25434,13 @@ function compactAiReportForStorage(report) {
     ...report,
     sources: (report.sources || []).slice(0, 10).map((source) => ({ ...source, snippet: compactBriefingText(source.snippet, 160) })),
     airports: (report.airports || []).map((airport) => ({ ...airport, notes: (airport.notes || []).slice(0, 3) })),
-    tasks: (report.tasks || []).slice(0, 18).map((task) => ({ ...task, suggestedText: cleanString(task.suggestedText).slice(0, 800) || undefined })),
+    tasks: (report.tasks || []).slice(0, 18).map((task) => ({
+      ...task,
+      suggestedText: cleanString(task.suggestedText).slice(0, 800) || undefined,
+      highlights: Array.isArray(task.highlights)
+        ? task.highlights.map((item) => compactBriefingText(item, 180)).filter(Boolean).slice(0, 4)
+        : undefined,
+    })),
   };
   json = JSON.stringify(next);
   if (json.length <= 49000) return next;
@@ -23983,7 +25468,7 @@ async function callOpenAiBriefingReport(input = {}) {
       workingHours: rotaer.workingHours || null,
       remarks: (rotaer.remarks || []).slice(0, 12),
       complements: (rotaer.complements || []).slice(0, 12),
-      notams: (airport?.bundle?.notams || []).slice(0, 8).map((n) => ({
+      notams: (airport?.bundle?.notams || []).slice(0, 20).map((n) => ({
         number: n.number,
         validFrom: n.validFrom,
         validTo: n.validTo,
@@ -24067,12 +25552,13 @@ async function callOpenAiBriefingReport(input = {}) {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  type: { type: "string", enum: ["email", "phone", "website"] },
+                  type: { type: "string", enum: ["email", "phone", "website", "hours"] },
                   label: { type: "string" },
                   value: { type: "string" },
                   sourceIds: { type: "array", items: { type: "string" } },
+                  relevance: { type: "string", enum: ["relevant", "auxiliary"] },
                 },
-                required: ["type", "label", "value", "sourceIds"],
+                required: ["type", "label", "value", "sourceIds", "relevance"],
               },
             },
             notes: { type: "array", items: { type: "string" } },
@@ -24098,12 +25584,13 @@ async function callOpenAiBriefingReport(input = {}) {
               type: ["object", "null"],
               additionalProperties: false,
               properties: {
-                type: { type: "string", enum: ["email", "phone", "website"] },
+                type: { type: "string", enum: ["email", "phone", "website", "hours"] },
                 label: { type: "string" },
                 value: { type: "string" },
                 sourceIds: { type: "array", items: { type: "string" } },
+                relevance: { type: "string", enum: ["relevant", "auxiliary"] },
               },
-              required: ["type", "label", "value", "sourceIds"],
+              required: ["type", "label", "value", "sourceIds", "relevance"],
             },
             providers: {
               type: "array",
@@ -24111,12 +25598,13 @@ async function callOpenAiBriefingReport(input = {}) {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  type: { type: "string", enum: ["email", "phone", "website"] },
+                  type: { type: "string", enum: ["email", "phone", "website", "hours"] },
                   label: { type: "string" },
                   value: { type: "string" },
                   sourceIds: { type: "array", items: { type: "string" } },
+                  relevance: { type: "string", enum: ["relevant", "auxiliary"] },
                 },
-                required: ["type", "label", "value", "sourceIds"],
+                required: ["type", "label", "value", "sourceIds", "relevance"],
               },
             },
             url: { type: "string" },
@@ -24159,7 +25647,7 @@ async function callOpenAiBriefingReport(input = {}) {
         {
           role: "system",
           content:
-            "Voce e um assistente operacional para briefing VFR no Brasil. Seja curto, simples e objetivo. Nunca decida se o voo e seguro. Use AISWEB/ROTAER como dado oficial e web search para enriquecer combustivel, hangaragem, slot/PPR, formularios e contatos. Pesquise tambem FBO, aeroclube, escola de aviacao, taxi aereo, operador aeroportuario, administracao do aeroporto e hangar no local. Para hangaragem, tente achar mais de um fornecedor e inclua tambem a administradora do aeroporto como opcao quando houver email, telefone ou site. Nunca escreva combustivel confirmado sem fonte explicita; prefira verificar/confirmar. Se houver link/formulario no ROTAER ou fonte publica, crie task action=url e use esse link, nao email. Responda apenas JSON valido no schema.",
+              "Voce e um assistente operacional de briefing VFR no Brasil. Seu trabalho e ENRIQUECER o checklist e ajudar o piloto a CUMPRIR as tasks — nao inventar checklist solta. Nunca diga se o voo e seguro. Pipeline: (1) Leia COMPL/RMK/fuel do ROTAER e separe CADA fornecedor de combustivel pelo nome com telefones/horarios daquele trecho. (2) Use web_search para completar lacunas: para CADA ICAO busque '{ICAO} abastecimento AVGAS Jet A-1 telefone email horario' e, se destino/alternativo, '{ICAO} hangaragem FBO pernoite telefone email'. So adicione contatos publicos encontrados; nao invente. (3) Tasks obrigatorias com titulos EXATOS: 'Verificar os notams de {ICAO}' (todos), 'Verificar abastecimento em {ICAO}' (todos), 'Verificar hangaragem em {ICAO}' (somente destino e alternativo), autorizacao previa SOMENTE se COMPL/RMK exigir (titulo claro + passos simples + link). Em NOTAM: diga se viu algo importante e deixe CTA para a lista completa. Extras so se agregarem e nao duplicarem notam/combustivel/hangar/autorizacao. CRITICO: providers de cada task so do servico da task. Autorizacao = o que fazer + link/contatos da concessionaria. Responda apenas JSON no schema.",
         },
         {
           role: "user",
@@ -24178,7 +25666,7 @@ async function callOpenAiBriefingReport(input = {}) {
             airspaces: (Array.isArray(input.airspaces) ? input.airspaces : []).slice(0, 20),
             airports: airportBrief,
             taskPolicy:
-              "Gere tasks curtas e acionaveis. Titulos devem comecar com verbo: Ligar, Enviar email, Acessar, Reservar, Verificar. Prefira Acessar quando existir link/formulario; nao mande email se a acao correta e abrir um formulario. Priorize combustivel, hangaragem/pernoite, slot/PPR/Rede Voa, horarios e contatos. Nao crie uma task para cada fornecedor de combustivel ou hangaragem; crie uma unica task por tema/aerodromo e coloque os fornecedores em providers com nome/label, email, telefone ou site quando encontrado. Para hangaragem, procure fornecedores reais, administradora do aeroporto e site/telefone/email; tente trazer mais de uma opcao. Nao escreva texto generico quando nao achar; marque needs_confirmation.",
+              "Titulos fixos: Verificar os notams de ICAO; Verificar abastecimento em ICAO; Verificar hangaragem em ICAO (destino/alternativo). Autorizacao so se AISWEB indicar. Providers filtrados por servico. Combustivel: marcas/TEL/email/horario do ROTAER + web. Hangar: FBO/hangar + web. Autorizacao: description com passos + url. Nao criar extras que concorram com essas. Summary util, ate ~8 frases.",
           }),
         },
       ],
@@ -24281,7 +25769,10 @@ async function generateFlightBriefingAiReport(actorUserId, input = {}) {
   try {
     report = await callOpenAiBriefingReport(input);
   } catch (err) {
-    report = fallbackFlightBriefingAiReport(actorUserId, input, cleanString(err?.message) || "Falha ao chamar IA.");
+    const reason = cleanString(err?.message) || "Falha ao chamar IA.";
+    report = normalizeAiBriefingReport(fallbackFlightBriefingAiReport(actorUserId, input, reason), input, reason);
+    report.status = "fallback";
+    if (reason) report.error = reason;
   }
   return saveFlightBriefingAiReport(actorUserId, input, report);
 }
@@ -25835,6 +27326,183 @@ async function runAiswebMetarWatchScan(log = () => {}) {
   }
 
   return { ok: true, scanned, notified, expired, errors };
+}
+
+async function runFlightRadarWatchScan(log = () => {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    return { ok: false, message: "Coleção de configurações não configurada.", scanned: 0, notified: 0 };
+  }
+
+  const deps = flightRadarWatchDeps();
+  const docs = await flightRadarService.listFlightRadarWatchDocs(deps);
+  if (!docs.length) {
+    return {
+      ok: true,
+      scanned: 0,
+      notified: 0,
+      expired: 0,
+      events: 0,
+      errors: 0,
+      skipped: "no_watches",
+    };
+  }
+
+  let { settings: wppSettings } = await loadWppSettings().catch(() => ({ settings: null }));
+  if (!wppSettings?.phoneNumberId || !wppSettings?.apiKey) {
+    return { ok: false, message: "WhatsApp não configurado.", scanned: 0, notified: 0 };
+  }
+
+  const now = Date.now();
+  const activeWatches = [];
+  let expired = 0;
+  let errors = 0;
+
+  for (const doc of docs) {
+    let raw = {};
+    try {
+      raw = JSON.parse(doc.settings_json || "{}");
+    } catch {
+      raw = {};
+    }
+    const phone =
+      cleanString(raw.phone).replace(/\D/g, "") ||
+      flightRadarService.phoneFromFlightRadarWatchKey(doc.key);
+    const watch = flightRadarService.publicFlightRadarWatch(
+      { ...raw, phone },
+      doc.$updatedAt || raw.updatedAt || null,
+    );
+    if (!watch.phone) {
+      await deletePlatformSettingDoc(doc.key).catch(() => false);
+      continue;
+    }
+
+    const expiresMs = Date.parse(watch.expiresAt || "") || 0;
+    if (!watch.active || !expiresMs || expiresMs <= now) {
+      expired += 1;
+      try {
+        const body = wppFlightRadar.formatWppFlightRadarWatchExpiredMessage({
+          hours: watch.hours,
+          nickname: watch.nickname,
+        });
+        await sendWppBotReply(wppSettings, {
+          to: watch.phone,
+          body,
+          buttons: [
+            { id: "radar_reopen", title: "Reabrir 24h" },
+            { id: "radar_help", title: "Ajuda radar" },
+          ],
+        }).catch(() => sendWppTextMessage(wppSettings, { to: watch.phone, body }));
+      } catch (err) {
+        errors += 1;
+        log(`[flight-radar-watch] expire notify failed ${watch.phone}: ${err?.message || err}`);
+      }
+      await deletePlatformSettingDoc(doc.key).catch(() => false);
+      continue;
+    }
+
+    activeWatches.push({ ...watch, docKey: doc.key });
+  }
+
+  if (!activeWatches.length) {
+    return {
+      ok: true,
+      scanned: 0,
+      notified: 0,
+      expired,
+      events: 0,
+      errors,
+      skipped: "no_active_watches",
+    };
+  }
+
+  if (flightRadarService.isFlightRadarWatchQuietHour()) {
+    return {
+      ok: true,
+      scanned: 0,
+      notified: 0,
+      expired,
+      events: 0,
+      errors,
+      skipped: "quiet_hours",
+      activeWatches: activeWatches.length,
+    };
+  }
+
+  const radarSettings = await flightRadarService.loadSettings({ getSettingDoc }).catch(() => null);
+  const trackedRegistrations = Array.isArray(radarSettings?.trackedRegistrations)
+    ? radarSettings.trackedRegistrations
+    : [];
+  if (!trackedRegistrations.length) {
+    return {
+      ok: true,
+      scanned: 0,
+      notified: 0,
+      expired,
+      events: 0,
+      errors,
+      skipped: "no_tracked_registrations",
+      activeWatches: activeWatches.length,
+    };
+  }
+
+  let live;
+  try {
+    live = await flightRadarService.fetchLivePositions(deps, { registrations: trackedRegistrations });
+  } catch (err) {
+    log(`[flight-radar-watch] FR24 fetch failed: ${err?.message || err}`);
+    return {
+      ok: false,
+      message: cleanString(err?.message) || "Falha ao consultar Flightradar24.",
+      scanned: 0,
+      notified: 0,
+      expired,
+      events: 0,
+      errors: errors + 1,
+      activeWatches: activeWatches.length,
+    };
+  }
+
+  const previousState = await flightRadarService.loadWatchFleetState(deps);
+  const { events, state } = flightRadarService.detectFleetTransitions(
+    previousState,
+    live?.positions || [],
+    trackedRegistrations,
+  );
+  await flightRadarService.saveWatchFleetState(deps, state);
+
+  let notified = 0;
+  for (const event of events) {
+    const body = wppFlightRadar.formatWppFlightRadarEventMessage({
+      ...event,
+      at: nowIso(),
+    });
+    for (const watch of activeWatches) {
+      try {
+        await sendWppBotReply(wppSettings, {
+          to: watch.phone,
+          body,
+          buttons: [{ id: "radar_stop", title: "Parar" }],
+        }).catch(() => sendWppTextMessage(wppSettings, { to: watch.phone, body }));
+        notified += 1;
+      } catch (err) {
+        errors += 1;
+        log(
+          `[flight-radar-watch] notify failed ${watch.phone}/${event.reg}/${event.type}: ${err?.message || err}`,
+        );
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    scanned: trackedRegistrations.length,
+    notified,
+    expired,
+    events: events.length,
+    errors,
+    activeWatches: activeWatches.length,
+    positions: Array.isArray(live?.positions) ? live.positions.length : 0,
+  };
 }
 
 async function runAiswebNotamAlertScan(log = () => {}) {
@@ -27731,6 +29399,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "runAiswebMetarWatchScan") {
       if (actorUserId) await requireAdmin(actorUserId);
       const result = await runAiswebMetarWatchScan(log);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "runFlightRadarWatchScan") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const result = await runFlightRadarWatchScan(log);
       return jsonResponse(res, 200, { ok: true, ...result });
     }
 

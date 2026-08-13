@@ -2,27 +2,27 @@ import L from "leaflet";
 import { useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
 import type { Aerodrome } from "../lib/aerodromesDb";
+import { enrichAfisAdBatch, getCachedAfisAd } from "../lib/afisAdEnrichment";
 import {
-  enrichFcaAdBatch,
-  getCachedFcaAd,
-} from "../lib/fcaAdEnrichment";
+  getCachedAfisCoverage,
+  loadAfisSuppressingAirspaces,
+  markAfisCoverageFromFeatures,
+} from "../lib/afisCoverage";
 import {
+  AFIS_AD_RADIUS_NM,
+  AFIS_AD_UPPER_FL,
   AIRSPACE_LAYER_DEFS,
-  FCA_AD_DEFAULT_FREQ_MHZ,
-  FCA_AD_RADIUS_NM,
   type AirspaceInfo,
 } from "../lib/airspaceLayersDb";
 import { AIRSPACE_STYLE } from "./AirspaceLayersOverlay";
 
-/** Abaixo de markerPane/popupPane — alinhado a AirspaceLayersOverlay. */
 const FILL_PANE_Z = "450";
 const SELECTED_PANE_Z = "460";
 const NM_TO_M = 1852;
-const FCA_RADIUS_M = FCA_AD_RADIUS_NM * NM_TO_M;
-/** Distância relativa ao raio para considerar clique na borda (px + fração). */
+const AFIS_RADIUS_M = AFIS_AD_RADIUS_NM * NM_TO_M;
 const EDGE_HIT_FRAC = 0.08;
 
-const FCA_DEF = AIRSPACE_LAYER_DEFS.find((d) => d.id === "fca_ad")!;
+const AFIS_DEF = AIRSPACE_LAYER_DEFS.find((d) => d.id === "afis")!;
 
 type Props = {
   enabled: boolean;
@@ -31,11 +31,12 @@ type Props = {
   onSelect: (info: AirspaceInfo | null, key: string | null) => void;
 };
 
-type FcaTarget = {
+type AfisTarget = {
   ad: Aerodrome;
   key: string;
   center: L.LatLng;
   frequency: string | null;
+  callsign: string | null;
 };
 
 function ensurePane(map: L.Map, paneName: string, zIndex: string) {
@@ -50,8 +51,8 @@ function ensurePane(map: L.Map, paneName: string, zIndex: string) {
   return pane;
 }
 
-function fcaKey(icao: string): string {
-  return `FCA_AD:${icao}`;
+function afisKey(icao: string): string {
+  return `AFIS:${icao}`;
 }
 
 function isClickNearCircleEdge(map: L.Map, latlng: L.LatLng, center: L.LatLng, radiusM: number): boolean {
@@ -67,31 +68,38 @@ function edgeDistM(map: L.Map, latlng: L.LatLng, center: L.LatLng, radiusM: numb
   return Math.abs(map.distance(center, latlng) - radiusM);
 }
 
-function baseInfo(ad: Aerodrome, frequency: string | null = null): AirspaceInfo {
+function baseInfo(
+  ad: Aerodrome,
+  frequency: string | null = null,
+  callsign: string | null = null,
+): AirspaceInfo {
+  const radioName = callsign ? `AFIS ${callsign}` : `AFIS ${ad.icao}`;
   return {
-    type: "FCA_AD",
+    type: "AFIS",
     ident: ad.icao,
-    name: ad.name || ad.icao,
+    name: radioName,
     fir: null,
-    upper: null,
+    upper: `FL${String(AFIS_AD_UPPER_FL).padStart(3, "0")}`,
     lower: "Superfície",
     workHours: null,
     airspaceClass: null,
-    remarks: `Raio de ${FCA_AD_RADIUS_NM} NM — Frequência para Coordenação entre Aeronaves (FCA) nas proximidades do aeródromo.`,
+    remarks: `AFIS / Rádio — raio ${AFIS_AD_RADIUS_NM} NM · SFC–FL${AFIS_AD_UPPER_FL}. Gerado a partir da frequência publicada no ROTAER (sem FIZ no GeoAISWEB).`,
     locality: [ad.municipality, ad.uf].filter(Boolean).join(" / ") || null,
-    frequency: frequency ?? `${FCA_AD_DEFAULT_FREQ_MHZ} MHz`,
-    color: FCA_DEF.color,
+    frequency: frequency
+      ? `RÁDIO${callsign ? ` ${callsign}` : ""}: ${frequency} · EMERG 121.500 MHz`
+      : "EMERG 121.500 MHz",
+    color: AFIS_DEF.color,
   };
 }
 
 /**
- * Círculos de 10 NM só em aeródromos com FCA dedicada no ROTAER
- * (ou frequência A/A / UNICOM publicada). Não traça o fallback 123.45.
+ * Círculos AFIS (27 NM, SFC–FL145) em aeródromos com Rádio/AFIS no ROTAER
+ * que NÃO estão dentro de FIZ / CTR / TMA (ex.: SBDO sim; SBCA não — já na FIZ Cascavel).
  */
-export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Props) {
+export function AfisAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Props) {
   const map = useMap();
   const groupRef = useRef<L.LayerGroup | null>(null);
-  const targetsRef = useRef<FcaTarget[]>([]);
+  const targetsRef = useRef<AfisTarget[]>([]);
   const selectedKeyRef = useRef(selectedKey);
   const onSelectRef = useRef(onSelect);
   const aerodromesRef = useRef(aerodromes);
@@ -129,9 +137,9 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
         });
       }
 
-      const bounds = map.getBounds().pad(0.15);
+      const bounds = map.getBounds().pad(0.2);
       const zoom = map.getZoom();
-      const maxAds = zoom >= 9 ? 120 : zoom >= 7 ? 60 : 25;
+      const maxAds = zoom >= 9 ? 100 : zoom >= 7 ? 50 : 20;
       const candidates = aerodromesRef.current
         .filter((ad) => {
           const lat = ad.latitudeGeoPoint;
@@ -143,23 +151,31 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
 
       const selected = selectedKeyRef.current;
       const renderer = canvasRendererRef.current;
-      const color = FCA_DEF.color;
-      const nextTargets: FcaTarget[] = [];
+      const color = AFIS_DEF.color;
+      const nextTargets: AfisTarget[] = [];
 
       for (const ad of candidates) {
-        const cached = getCachedFcaAd(ad.icao);
-        if (!cached?.hasDedicated) continue;
+        const cached = getCachedAfisAd(ad.icao);
+        if (!cached?.hasAfisRadio) continue;
+        // Só plota após confirmar que NÃO está em FIZ/CTR/TMA.
+        if (getCachedAfisCoverage(ad.icao) !== false) continue;
 
         const lat = ad.latitudeGeoPoint!;
         const lng = ad.longitudeGeoPoint!;
         const center = L.latLng(lat, lng);
-        const key = fcaKey(ad.icao);
+        const key = afisKey(ad.icao);
         const isSelected = selected === key;
-        nextTargets.push({ ad, key, center, frequency: cached.frequency });
+        nextTargets.push({
+          ad,
+          key,
+          center,
+          frequency: cached.frequency,
+          callsign: cached.callsign,
+        });
 
         if (isSelected) {
           L.circle(center, {
-            radius: FCA_RADIUS_M,
+            radius: AFIS_RADIUS_M,
             pane: "airspace-selected",
             renderer,
             color,
@@ -173,7 +189,7 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
         }
 
         L.circle(center, {
-          radius: FCA_RADIUS_M,
+          radius: AFIS_RADIUS_M,
           pane: isSelected ? "airspace-selected" : "airspace-fill",
           renderer,
           color,
@@ -187,7 +203,7 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
       }
       targetsRef.current = nextTargets;
     } catch (err) {
-      console.warn("[FcaAdOverlay] falha ao desenhar", err);
+      console.warn("[AfisAdOverlay] falha ao desenhar", err);
     }
   };
 
@@ -205,33 +221,54 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
     enrichTimer.current = window.setTimeout(() => {
       enrichTimer.current = null;
       if (!enabledRef.current) return;
-      const bounds = map.getBounds().pad(0.15);
+      const bounds = map.getBounds().pad(0.25);
       const zoom = map.getZoom();
-      const maxAds = zoom >= 9 ? 120 : zoom >= 7 ? 60 : 25;
-      const icaos: string[] = [];
+      const maxAds = zoom >= 9 ? 100 : zoom >= 7 ? 50 : 20;
+      const visible: Array<{ icao: string; lat: number; lng: number }> = [];
+      const icaosNeedRadio: string[] = [];
       for (const ad of aerodromesRef.current) {
         const lat = ad.latitudeGeoPoint;
         const lng = ad.longitudeGeoPoint;
         if (lat == null || lng == null || !ad.icao) continue;
         if (!bounds.contains(L.latLng(lat, lng))) continue;
-        const cached = getCachedFcaAd(ad.icao);
-        if (cached && Date.now() - cached.updatedAt < 7 * 24 * 60 * 60 * 1000) continue;
-        icaos.push(ad.icao);
-        if (icaos.length >= maxAds) break;
+        visible.push({ icao: ad.icao, lat, lng });
+        const cached = getCachedAfisAd(ad.icao);
+        if (!cached || Date.now() - cached.updatedAt >= 7 * 24 * 60 * 60 * 1000) {
+          icaosNeedRadio.push(ad.icao);
+        }
+        if (visible.length >= maxAds) break;
       }
-      if (!icaos.length) {
-        scheduleRedraw(0);
-        return;
-      }
+
+      const sw = bounds.getSouthWest();
+      const ne = bounds.getNorthEast();
+      const bbox = {
+        minLng: sw.lng,
+        minLat: sw.lat,
+        maxLng: ne.lng,
+        maxLat: ne.lat,
+      };
+
       const tick = ++enrichTickRef.current;
-      void enrichFcaAdBatch(icaos, {
-        concurrency: 3,
-        onProgress: () => {
-          if (tick === enrichTickRef.current) scheduleRedraw(40);
-        },
-      }).then(() => {
+      void (async () => {
+        try {
+          const [features] = await Promise.all([
+            loadAfisSuppressingAirspaces(bbox),
+            icaosNeedRadio.length
+              ? enrichAfisAdBatch(icaosNeedRadio, {
+                  concurrency: 3,
+                  onProgress: () => {
+                    if (tick === enrichTickRef.current) scheduleRedraw(40);
+                  },
+                })
+              : Promise.resolve(),
+          ]);
+          if (tick !== enrichTickRef.current) return;
+          markAfisCoverageFromFeatures(visible, features);
+        } catch (err) {
+          console.warn("[AfisAdOverlay] falha ao checar FIZ/CTR/TMA", err);
+        }
         if (tick === enrichTickRef.current) scheduleRedraw(0);
-      });
+      })();
     }, 280);
   };
 
@@ -285,7 +322,7 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
       }
       let near = false;
       for (const t of targetsRef.current) {
-        if (isClickNearCircleEdge(map, e.latlng, t.center, FCA_RADIUS_M)) {
+        if (isClickNearCircleEdge(map, e.latlng, t.center, AFIS_RADIUS_M)) {
           near = true;
           break;
         }
@@ -296,11 +333,11 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
     },
     preclick(e) {
       if (!enabledRef.current || !targetsRef.current.length) return;
-      let best: FcaTarget | null = null;
+      let best: AfisTarget | null = null;
       let bestDist = Infinity;
       for (const t of targetsRef.current) {
-        if (!isClickNearCircleEdge(map, e.latlng, t.center, FCA_RADIUS_M)) continue;
-        const d = edgeDistM(map, e.latlng, t.center, FCA_RADIUS_M);
+        if (!isClickNearCircleEdge(map, e.latlng, t.center, AFIS_RADIUS_M)) continue;
+        const d = edgeDistM(map, e.latlng, t.center, AFIS_RADIUS_M);
         if (d < bestDist) {
           bestDist = d;
           best = t;
@@ -314,7 +351,7 @@ export function FcaAdOverlay({ enabled, aerodromes, selectedKey, onSelect }: Pro
         onSelectRef.current(null, null);
         return;
       }
-      onSelectRef.current(baseInfo(best.ad, best.frequency), best.key);
+      onSelectRef.current(baseInfo(best.ad, best.frequency, best.callsign), best.key);
     },
   });
 

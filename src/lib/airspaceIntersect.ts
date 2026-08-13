@@ -1,10 +1,33 @@
 import { lookupAiswebIcao, queryAirspaceAlongRoute } from "./aiswebDb";
+import { enrichAfisAdFromAisweb } from "./afisAdEnrichment";
+import {
+  isPointInsideFizCtrTma,
+  loadAfisSuppressingAirspaces,
+  markAfisCoverageFromFeatures,
+  pointsBbox,
+} from "./afisCoverage";
+import {
+  AFIS_AD_RADIUS_NM,
+  AFIS_AD_UPPER_FL,
+  airspaceFeatureToInfo,
+  loadAirspaceFeaturesInBbox,
+  type AirspaceInfo,
+  type AirspaceLayerType,
+} from "./airspaceLayersDb";
 import { pickAirspaceFrequencies } from "./flightPlanFormat";
-import type { FlightPlanAirspaceHit } from "../types/flightPlanning";
+import { lookupTmaComFrequencies } from "./tmaComFrequencies";
+import type { FlightPlanAirspaceFrequency, FlightPlanAirspaceHit } from "../types/flightPlanning";
 import { haversineM, routeBoundingBox } from "./flightPlanningRoute";
-import { altitudeAtDistanceNm, type ProfilePhasePoint } from "./routePerformanceProfile";
+import { altitudeAtDistanceNm, eteHoursAtDistanceNm, type ProfilePhasePoint } from "./routePerformanceProfile";
+import { circlePolygon, clipGeometryToBbox, type GeoPoly } from "./geoClip";
 
 type LatLng = { lat: number; lng: number };
+
+export type AfisRouteAerodrome = {
+  icao: string;
+  lat: number | null;
+  lng: number | null;
+};
 
 type Ring = Array<[number, number]>; // [lng, lat]
 
@@ -25,9 +48,31 @@ type GeoJsonFeatureCollection = {
   features: GeoJsonFeature[];
 };
 
+export type AirspaceVolume = {
+  type: FlightPlanAirspaceHit["type"];
+  ident: string;
+  name: string;
+  lowerFt: number | null;
+  upperFt: number | null;
+  geometry: GeoPoly;
+  info?: AirspaceInfo;
+  /** True when loaded for the terrain crop, not because the route intersects it. */
+  offRoute?: boolean;
+};
+
+export type DetectAirspacesResult = {
+  hits: FlightPlanAirspaceHit[];
+  volumes: AirspaceVolume[];
+};
+
 export type DetectAirspacesOptions = {
   /** Performance profile used to sample planned altitude along the route. */
   performanceProfile?: ProfilePhasePoint[] | null;
+  /**
+   * Aeródromos próximos à rota — usados para gerar hits AFIS (Rádio/AFIS no ROTAER)
+   * com círculo 27 NM / SFC–FL145 quando não há FIZ no GeoAISWEB.
+   */
+  aerodromes?: AfisRouteAerodrome[] | null;
 };
 
 const GEOAISWEB_WFS = "https://geoaisweb.decea.mil.br/geoserver/ows";
@@ -36,11 +81,17 @@ const APP_WFS_PROXY = "/api/geoaisweb/wfs";
 const NM_IN_M = 1852;
 const ALT_TOL_FT = 100;
 
-const AIRSPACE_LAYERS: Array<{ type: FlightPlanAirspaceHit["type"]; layer: string }> = [
-  { type: "CTA", layer: "ICA:CTA" },
-  { type: "TMA", layer: "ICA:TMA" },
-  { type: "CTR", layer: "ICA:CTR" },
-  { type: "ATZ", layer: "ICA:ATZ" },
+const AIRSPACE_LAYERS: Array<{ type: FlightPlanAirspaceHit["type"]; layer: string; kind: string }> = [
+  { type: "FIR", layer: "ICA:fir", kind: "fir" },
+  { type: "FIS", layer: "ICA:fis", kind: "fis" },
+  { type: "TMA", layer: "ICA:TMA", kind: "tma" },
+  { type: "CTA", layer: "ICA:CTA", kind: "cta" },
+  { type: "CTR", layer: "ICA:CTR", kind: "ctr" },
+  { type: "ATZ", layer: "ICA:ATZ", kind: "atz" },
+  { type: "FIZ", layer: "ICA:fiz", kind: "fiz" },
+  { type: "P", layer: "ICA:eac_p", kind: "eac_p" },
+  { type: "R", layer: "ICA:eac_r", kind: "eac_r" },
+  { type: "D", layer: "ICA:eac_d", kind: "eac_d" },
 ];
 
 function pointInRing(lng: number, lat: number, ring: Ring): boolean {
@@ -143,29 +194,63 @@ function featureVerticalLimits(props: Record<string, unknown>): {
   lowerFt: number | null;
   upperFt: number | null;
 } {
-  const lowerFt =
-    parseAirspaceLimitFt(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ??
-    parseAirspaceLimitFt(props.lowerlimi1, props.codedistv1);
-  const upperFt =
-    parseAirspaceLimitFt(props.upperlimit, props.uplimituni || props.uomdistver) ??
-    parseAirspaceLimitFt(props.upperlimit, props.uplimituni);
+  // EAC (P/R/D): lowerlimit/upperlimit + uom_llimit/uom_ulimit
+  // CTA/TMA/…: lowerlimi1 + codedistv1 / upperlimit + uplimituni
+  const isEac = Boolean(props.uom_llimit || props.uom_ulimit || props.tipo === "P" || props.tipo === "R" || props.tipo === "D");
+
+  const lowerFt = isEac
+    ? parseAirspaceLimitFt(props.lowerlimit ?? props.lowerlimi1, props.uom_llimit)
+    : parseAirspaceLimitFt(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ??
+      parseAirspaceLimitFt(props.lowerlimi1, props.codedistv1);
+  const upperFt = isEac
+    ? parseAirspaceLimitFt(props.upperlimit, props.uom_ulimit)
+    : parseAirspaceLimitFt(props.upperlimit, props.uplimituni || props.uomdistver) ??
+      parseAirspaceLimitFt(props.upperlimit, props.uplimituni);
 
   const formatLimit = (value: unknown, unit: unknown): string | null => {
     if (value == null || value === "") return null;
     const u = String(unit || "").toUpperCase();
     const n = Number(value);
     if (u === "FL" && Number.isFinite(n)) return `FL${String(Math.round(n)).padStart(3, "0")}`;
+    if (u === "SFC" || String(value).toUpperCase() === "SFC") return "Superfície";
+    if (Number.isFinite(n) && n === 0 && (u === "FT" || u === "SFC" || !u)) return "Superfície";
     if (Number.isFinite(n)) return `${Math.round(n)} ${u || "FT"}`.trim();
     return String(value);
   };
 
-  const lower =
-    formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
-    formatLimit(props.lowerlimi1, props.codedistv1);
-  const upper =
-    formatLimit(props.upperlimit, props.uplimituni || props.uomdistver) ||
-    formatLimit(props.upperlimit, props.uplimituni);
+  const lower = isEac
+    ? formatLimit(props.lowerlimit ?? props.lowerlimi1, props.uom_llimit)
+    : formatLimit(props.lowerlimi1 ?? props.lowerlimit, props.lowerlimit) ||
+      formatLimit(props.lowerlimi1, props.codedistv1);
+  const upper = isEac
+    ? formatLimit(props.upperlimit, props.uom_ulimit)
+    : formatLimit(props.upperlimit, props.uplimituni || props.uomdistver) ||
+      formatLimit(props.upperlimit, props.uplimituni);
   return { lower, upper, lowerFt, upperFt };
+}
+
+function occupancySegments(
+  count: number,
+  cumNm: number[],
+  isInside: (i: number) => boolean,
+): Array<{ fromNm: number; toNm: number }> {
+  const segments: Array<{ fromNm: number; toNm: number }> = [];
+  let start: number | null = null;
+  let last: number | null = null;
+  for (let i = 0; i < count; i++) {
+    if (isInside(i)) {
+      if (start == null) start = cumNm[i] ?? 0;
+      last = cumNm[i] ?? start;
+    } else if (start != null && last != null) {
+      segments.push({ fromNm: start, toNm: Math.max(start, last) });
+      start = null;
+      last = null;
+    }
+  }
+  if (start != null && last != null) {
+    segments.push({ fromNm: start, toNm: Math.max(start, last) });
+  }
+  return segments;
 }
 
 function firstVerticalEntryDistanceNm(
@@ -189,29 +274,127 @@ function firstVerticalEntryDistanceNm(
   return null;
 }
 
+function lateralOccupancyNm(
+  points: LatLng[],
+  cumNm: number[],
+  geometry: GeoJsonGeometry | null,
+): Array<{ fromNm: number; toNm: number }> {
+  if (!geometry) return [];
+  return occupancySegments(points.length, cumNm, (i) => {
+    const p = points[i]!;
+    return geometryContainsPoint(geometry, p.lng, p.lat);
+  });
+}
+
 function featureToHit(
   type: FlightPlanAirspaceHit["type"],
   feature: GeoJsonFeature,
   entryDistanceNm: number | null,
+  extras?: {
+    occupancyNm?: Array<{ fromNm: number; toNm: number }>;
+    exitDistanceNm?: number | null;
+    lowerFt?: number | null;
+    upperFt?: number | null;
+    altitudeMiss?: boolean;
+  },
 ): FlightPlanAirspaceHit {
   const props = feature.properties || {};
-  const ident = String(props.ident || props.icao || feature.id || "").trim() || "—";
-  const name = String(props.nam || props.name || props.txtname || ident).trim();
+  const isEac = type === "P" || type === "R" || type === "D";
+  const ident =
+    String((isEac ? props.id : null) || props.ident || props.icao || feature.id || "").trim() || "—";
+  const name = String(props.nome || props.nam || props.name || props.txtname || ident).trim();
   const limits = featureVerticalLimits(props);
+  const remarkText = props.txtrmk_loc ? String(props.txtrmk_loc) : null;
+  const frequencies =
+    type === "FIS" ? parseFrequencyRemarks(remarkText) : ([] as FlightPlanAirspaceFrequency[]);
+  const occupancyNm = extras?.occupancyNm?.length ? extras.occupancyNm : undefined;
+  const lastSeg = occupancyNm?.[occupancyNm.length - 1];
   return {
     type,
     ident,
     name,
     lower: limits.lower,
     upper: limits.upper,
-    fir: props.relatedfir ? String(props.relatedfir) : null,
+    lowerFt: extras?.lowerFt ?? limits.lowerFt,
+    upperFt: extras?.upperFt ?? limits.upperFt,
+    fir: props.fir
+      ? String(props.fir)
+      : props.relatedfir
+        ? String(props.relatedfir)
+        : null,
     entryDistanceNm,
-    frequencies: [],
+    exitDistanceNm: extras?.exitDistanceNm ?? lastSeg?.toNm ?? null,
+    occupancyNm,
+    frequencies,
+    altitudeMiss: Boolean(extras?.altitudeMiss),
   };
+}
+
+/** ETE along the planned profile at the airspace entry distance. */
+export function airspaceEntryEteHours(
+  hit: FlightPlanAirspaceHit,
+  profile: ProfilePhasePoint[] | null | undefined,
+): number | null {
+  if (hit.entryDistanceNm == null || !Number.isFinite(hit.entryDistanceNm) || !profile?.length) {
+    return null;
+  }
+  return eteHoursAtDistanceNm(profile, hit.entryDistanceNm);
+}
+
+export function airspacesEnteredVertically(hits: FlightPlanAirspaceHit[]): FlightPlanAirspaceHit[] {
+  return hits.filter((hit) => !hit.altitudeMiss);
+}
+
+function parseFrequencyRemarks(text: string | null): FlightPlanAirspaceFrequency[] {
+  if (!text) return [];
+  const found = [
+    ...text.matchAll(/(?:frequ[eê]ncia|freq(?:uency)?)\s*[:=]?\s*(\d{2,3}(?:[.,]\d{1,3})?)/gi),
+  ]
+    .map((m) => String(m[1] || "").replace(",", "."))
+    .filter(Boolean);
+  const unique = [...new Set(found)];
+  return unique.map((mhz) => ({ service: "FIS", mhz }));
 }
 
 function hitKey(hit: FlightPlanAirspaceHit): string {
   return `${hit.type}:${hit.ident}:${hit.name}`;
+}
+
+function volumeFromHit(
+  hit: FlightPlanAirspaceHit,
+  geometry: { type: string; coordinates?: unknown } | null | undefined,
+  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+): AirspaceVolume | null {
+  const clipped = clipGeometryToBbox(geometry, bbox);
+  if (!clipped) return null;
+  return {
+    type: hit.type,
+    ident: hit.ident,
+    name: hit.name,
+    lowerFt: hit.lowerFt ?? null,
+    upperFt: hit.upperFt ?? null,
+    geometry: clipped,
+  };
+}
+
+function mergeHitsAndVolumes(
+  items: Array<{ hit: FlightPlanAirspaceHit; volume: AirspaceVolume | null }>,
+): DetectAirspacesResult {
+  const hitMap = new Map<string, FlightPlanAirspaceHit>();
+  const volumeMap = new Map<string, AirspaceVolume>();
+  for (const item of items) {
+    const key = hitKey(item.hit);
+    const prev = hitMap.get(key);
+    if (!prev || (item.hit.entryDistanceNm ?? Infinity) < (prev.entryDistanceNm ?? Infinity)) {
+      hitMap.set(key, item.hit);
+      if (item.volume) volumeMap.set(key, item.volume);
+      else volumeMap.delete(key);
+    }
+  }
+  return {
+    hits: sortChronological([...hitMap.values()]),
+    volumes: [...volumeMap.values()],
+  };
 }
 
 function sortChronological(hits: FlightPlanAirspaceHit[]): FlightPlanAirspaceHit[] {
@@ -266,8 +449,8 @@ export function filterAirspaceHitsByAltitude(
 ): FlightPlanAirspaceHit[] {
   if (!profile?.length) return hits;
   return hits.filter((hit) => {
-    const lo = parseAirspaceLimitFt(hit.lower);
-    const hi = parseAirspaceLimitFt(hit.upper);
+    const lo = hit.lowerFt ?? parseAirspaceLimitFt(hit.lower);
+    const hi = hit.upperFt ?? parseAirspaceLimitFt(hit.upper);
     if (lo == null && hi == null) return true;
     const x = hit.entryDistanceNm ?? 0;
     const alt = altitudeAtDistanceNm(profile, x);
@@ -279,12 +462,12 @@ export function filterAirspaceHitsByAltitude(
 async function detectAirspacesClientSide(
   points: LatLng[],
   options?: DetectAirspacesOptions,
-): Promise<FlightPlanAirspaceHit[]> {
+): Promise<DetectAirspacesResult> {
   const dense = densifyRoute(points, 3500);
   const cumNm = cumulativeDistanceNm(dense);
   const altsFt = sampleAltsAlongRoute(cumNm, options?.performanceProfile);
-  const bbox = routeBoundingBox(dense, 0.4);
-  if (!bbox) return [];
+  const bbox = routeBoundingBox(dense, 2.6);
+  if (!bbox) return { hits: [], volumes: [] };
 
   const bases = import.meta.env.DEV
     ? [DEV_PROXY_BASE, GEOAISWEB_WFS]
@@ -294,12 +477,14 @@ async function detectAirspacesClientSide(
   for (const base of bases) {
     try {
       const collections = await Promise.all(
-        AIRSPACE_LAYERS.map(async ({ type, layer }) => {
-          const features = await fetchLayerFeatures(base, layer, bbox, type);
+        AIRSPACE_LAYERS.map(async ({ type, layer, kind }) => {
+          const features = await fetchLayerFeatures(base, layer, bbox, kind);
           return features
             .map((f) => {
               const props = f.properties || {};
               const limits = featureVerticalLimits(props);
+              const occupancyNm = lateralOccupancyNm(dense, cumNm, f.geometry);
+              if (!occupancyNm.length) return null;
               const entry = firstVerticalEntryDistanceNm(
                 dense,
                 cumNm,
@@ -308,20 +493,18 @@ async function detectAirspacesClientSide(
                 limits.lowerFt,
                 limits.upperFt,
               );
-              if (entry == null) return null;
-              return featureToHit(type, f, entry);
+              const hit = featureToHit(type, f, entry, {
+                occupancyNm,
+                lowerFt: limits.lowerFt,
+                upperFt: limits.upperFt,
+                altitudeMiss: entry == null,
+              });
+              return { hit, volume: volumeFromHit(hit, f.geometry, bbox) };
             })
-            .filter((h): h is FlightPlanAirspaceHit => h != null);
+            .filter((row): row is { hit: FlightPlanAirspaceHit; volume: AirspaceVolume | null } => row != null);
         }),
       );
-      const map = new Map<string, FlightPlanAirspaceHit>();
-      for (const hit of collections.flat()) {
-        const prev = map.get(hitKey(hit));
-        if (!prev || (hit.entryDistanceNm ?? Infinity) < (prev.entryDistanceNm ?? Infinity)) {
-          map.set(hitKey(hit), hit);
-        }
-      }
-      return sortChronological([...map.values()]);
+      return mergeHitsAndVolumes(collections.flat());
     } catch (err) {
       lastError = err;
     }
@@ -336,18 +519,43 @@ function icaoFromAirspaceIdent(ident: string): string | null {
   return prefix ? prefix[1]! : null;
 }
 
-/** Attach APP/TWR/GND/ATIS from AISWEB ROTAER for CTR/ATZ (and TMA when ICAO-like). */
+/** CTR/ATZ/FIZ use AD ICAO. TMA COM comes from ROTAER FIR/TMA table (not AD TWR). */
+function resolveFrequencyIcaoCandidate(hit: FlightPlanAirspaceHit): string | null {
+  if (
+    hit.type === "CTA" ||
+    hit.type === "FIR" ||
+    hit.type === "FIS" ||
+    hit.type === "P" ||
+    hit.type === "R" ||
+    hit.type === "D" ||
+    hit.type === "TMA"
+  ) {
+    return null;
+  }
+  return icaoFromAirspaceIdent(hit.ident);
+}
+
+/** Attach APP/TWR/GND/ATIS from AISWEB ROTAER; TMA uses ROTAER FIR/TMA CONTROLE table. */
 export async function enrichAirspaceFrequencies(
   hits: FlightPlanAirspaceHit[],
 ): Promise<FlightPlanAirspaceHit[]> {
-  const icaoSet = new Set<string>();
+  const icaoByHitKey = new Map<string, string | null>();
+
   for (const hit of hits) {
-    if (hit.type === "CTA") continue;
-    const icao = icaoFromAirspaceIdent(hit.ident);
+    const key = hitKey(hit);
+    if (hit.frequencies?.length || hit.type === "TMA") {
+      icaoByHitKey.set(key, null);
+      continue;
+    }
+    icaoByHitKey.set(key, resolveFrequencyIcaoCandidate(hit));
+  }
+
+  const icaoSet = new Set<string>();
+  for (const icao of icaoByHitKey.values()) {
     if (icao) icaoSet.add(icao);
   }
 
-  const freqByIcao = new Map<string, FlightPlanAirspaceHit["frequencies"]>();
+  const freqByIcao = new Map<string, FlightPlanAirspaceFrequency[]>();
   await Promise.all(
     [...icaoSet].map(async (icao) => {
       try {
@@ -360,11 +568,18 @@ export async function enrichAirspaceFrequencies(
   );
 
   return hits.map((hit) => {
-    const icao = icaoFromAirspaceIdent(hit.ident);
+    if (hit.frequencies?.length) return hit;
+
+    if (hit.type === "TMA") {
+      const tmaFreqs = lookupTmaComFrequencies(hit.ident);
+      return tmaFreqs.length ? { ...hit, frequencies: tmaFreqs } : hit;
+    }
+
+    const icao = icaoByHitKey.get(hitKey(hit));
     if (!icao) return hit;
-    const frequencies = freqByIcao.get(icao) || [];
-    if (!frequencies.length) return hit;
-    return { ...hit, frequencies };
+    const all = freqByIcao.get(icao) || [];
+    if (!all.length) return hit;
+    return { ...hit, frequencies: all };
   });
 }
 
@@ -372,17 +587,181 @@ export async function enrichAirspaceFrequencies(
 export async function detectAirspacesAlongRoute(
   points: LatLng[],
   options?: DetectAirspacesOptions,
-): Promise<FlightPlanAirspaceHit[]> {
-  if (points.length === 0) return [];
+): Promise<DetectAirspacesResult> {
+  if (points.length === 0) return { hits: [], volumes: [] };
 
   let hits: FlightPlanAirspaceHit[];
+  let volumes: AirspaceVolume[] = [];
   try {
-    hits = await detectAirspacesClientSide(points, options);
+    const detected = await detectAirspacesClientSide(points, options);
+    hits = detected.hits;
+    volumes = detected.volumes;
   } catch {
     hits = await queryAirspaceAlongRoute(points);
     hits = filterAirspaceHitsByAltitude(hits, options?.performanceProfile);
   }
-  return enrichAirspaceFrequencies(hits);
+  const enriched = await enrichAirspaceFrequencies(hits);
+  const afis = await detectAfisAdAlongRoute(points, options?.aerodromes ?? [], options);
+  if (!afis.hits.length) {
+    return { hits: enriched, volumes };
+  }
+
+  const existingKeys = new Set(enriched.map((h) => hitKey(h)));
+  const merged = [...enriched];
+  for (const hit of afis.hits) {
+    if (existingKeys.has(hitKey(hit))) continue;
+    merged.push(hit);
+    existingKeys.add(hitKey(hit));
+  }
+  const volumeKeys = new Set(volumes.map((v) => `${v.type}:${v.ident}:${v.name}`));
+  for (const volume of afis.volumes) {
+    const key = `${volume.type}:${volume.ident}:${volume.name}`;
+    if (volumeKeys.has(key)) continue;
+    volumes.push(volume);
+    volumeKeys.add(key);
+  }
+  return { hits: sortChronological(merged), volumes };
+}
+
+/**
+ * AFIS / Rádio a partir do ROTAER: círculo 27 NM, SFC–FL145,
+ * só quando o AD NÃO está dentro de FIZ / CTR / TMA (ex.: SBDO sim; SBCA não).
+ */
+export async function detectAfisAdAlongRoute(
+  points: LatLng[],
+  aerodromes: AfisRouteAerodrome[],
+  options?: DetectAirspacesOptions,
+): Promise<DetectAirspacesResult> {
+  if (points.length === 0 || !aerodromes.length) return { hits: [], volumes: [] };
+
+  const dense = densifyRoute(points, 6000);
+  const cumNm = cumulativeDistanceNm(dense);
+  const profile = options?.performanceProfile ?? null;
+  const altsFt = dense.map((_, i) =>
+    profile?.length ? altitudeAtDistanceNm(profile, cumNm[i]!) : null,
+  );
+  const radiusM = AFIS_AD_RADIUS_NM * NM_IN_M;
+  const upperFt = AFIS_AD_UPPER_FL * 100;
+  const box = routeBoundingBox(dense, AFIS_AD_RADIUS_NM / 60 + 0.2);
+  if (!box) return { hits: [], volumes: [] };
+  const { minLat, maxLat, minLng, maxLng } = box;
+
+  const near: AfisRouteAerodrome[] = [];
+  const seen = new Set<string>();
+  for (const ad of aerodromes) {
+    const icao = String(ad.icao || "")
+      .trim()
+      .toUpperCase();
+    if (!/^[A-Z0-9]{4}$/.test(icao) || ad.lat == null || ad.lng == null) continue;
+    if (seen.has(icao)) continue;
+    if (ad.lat < minLat || ad.lat > maxLat || ad.lng < minLng || ad.lng > maxLng) continue;
+    const center = { lat: ad.lat, lng: ad.lng };
+    let inside = false;
+    for (const p of dense) {
+      if (haversineM(center, p) <= radiusM) {
+        inside = true;
+        break;
+      }
+    }
+    if (!inside) continue;
+    seen.add(icao);
+    near.push({ icao, lat: ad.lat, lng: ad.lng });
+    if (near.length >= 36) break;
+  }
+  if (!near.length) return { hits: [], volumes: [] };
+
+  const coverBbox =
+    pointsBbox(
+      near.map((a) => ({ lat: a.lat!, lng: a.lng! })),
+      0.08,
+    ) || box;
+  let suppressFeatures: Awaited<ReturnType<typeof loadAfisSuppressingAirspaces>> = [];
+  try {
+    suppressFeatures = await loadAfisSuppressingAirspaces(coverBbox);
+    markAfisCoverageFromFeatures(
+      near.map((a) => ({ icao: a.icao, lat: a.lat!, lng: a.lng! })),
+      suppressFeatures,
+    );
+  } catch {
+    suppressFeatures = [];
+  }
+
+  const hits: FlightPlanAirspaceHit[] = [];
+  const volumes: AirspaceVolume[] = [];
+  await Promise.all(
+    near.map(async (ad) => {
+      const enrich = await enrichAfisAdFromAisweb(ad.icao);
+      if (!enrich?.hasAfisRadio) return;
+      if (isPointInsideFizCtrTma(ad.lat!, ad.lng!, suppressFeatures)) return;
+
+      const center = { lat: ad.lat!, lng: ad.lng! };
+      const occupancyNm = occupancySegments(dense.length, cumNm, (i) => {
+        return haversineM(center, dense[i]!) <= radiusM;
+      });
+      if (!occupancyNm.length) return;
+
+      let entryDistanceNm: number | null = null;
+      for (let i = 0; i < dense.length; i++) {
+        if (haversineM(center, dense[i]!) > radiusM) continue;
+        if (profile?.length) {
+          const alt = altsFt[i];
+          if (alt == null || !Number.isFinite(alt)) continue;
+          if (!altitudeOverlapsBand(alt, 0, upperFt)) continue;
+        }
+        entryDistanceNm = cumNm[i] ?? null;
+        break;
+      }
+
+      const mhzList = enrich.frequenciesMhz?.length
+        ? enrich.frequenciesMhz
+        : enrich.frequency
+          ? [enrich.frequency.replace(/\s*MHz$/i, "").trim()]
+          : [];
+      const serviceLabel = enrich.callsign
+        ? `RÁDIO ${enrich.callsign}`
+        : enrich.service || "RÁDIO";
+      const frequencies: FlightPlanAirspaceFrequency[] = mhzList.map((mhz) => ({
+        service: serviceLabel,
+        mhz: /mhz/i.test(mhz) ? mhz : `${mhz} MHz`,
+      }));
+      if (frequencies.length) {
+        frequencies.push({ service: "EMERG", mhz: "121.500 MHz" });
+      }
+
+      const label = enrich.callsign
+        ? `AFIS / Rádio ${enrich.callsign}`
+        : `AFIS / Rádio ${ad.icao}`;
+      hits.push({
+        type: "AFIS",
+        ident: ad.icao,
+        name: label,
+        lower: "Superfície",
+        upper: `FL${String(AFIS_AD_UPPER_FL).padStart(3, "0")}`,
+        lowerFt: 0,
+        upperFt,
+        fir: null,
+        entryDistanceNm,
+        exitDistanceNm: occupancyNm[occupancyNm.length - 1]?.toNm ?? null,
+        occupancyNm,
+        altitudeMiss: entryDistanceNm == null,
+        frequencies,
+      });
+      const circle = circlePolygon(ad.lat!, ad.lng!, radiusM);
+      const clipped = clipGeometryToBbox(circle, box);
+      if (clipped) {
+        volumes.push({
+          type: "AFIS",
+          ident: ad.icao,
+          name: label,
+          lowerFt: 0,
+          upperFt,
+          geometry: clipped,
+        });
+      }
+    }),
+  );
+
+  return { hits: sortChronological(hits), volumes };
 }
 
 export function sampleRoutePoints(points: LatLng[], maxPoints = 100): LatLng[] {
@@ -394,4 +773,53 @@ export function sampleRoutePoints(points: LatLng[], maxPoints = 100): LatLng[] {
     out.push(points[idx]!);
   }
   return out;
+}
+
+const AREA_VOLUME_TYPES: AirspaceLayerType[] = ["TMA", "CTR", "ATZ", "FIZ", "CTA", "P", "R", "D"];
+
+function volumeKey(volume: Pick<AirspaceVolume, "type" | "ident" | "name">): string {
+  return `${volume.type}:${volume.ident}:${volume.name}`;
+}
+
+/** Espaços aéreos no recorte (não só os cruzados pela rota). */
+export async function loadAirspaceVolumesInBbox(
+  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+  options?: { types?: AirspaceLayerType[]; maxTotal?: number },
+): Promise<AirspaceVolume[]> {
+  const types = options?.types ?? AREA_VOLUME_TYPES;
+  const maxTotal = options?.maxTotal ?? 80;
+  const collections = await Promise.all(
+    types.map(async (type) => {
+      const features = await loadAirspaceFeaturesInBbox(type, bbox);
+      const out: AirspaceVolume[] = [];
+      for (const feature of features.slice(0, 28)) {
+        const clipped = clipGeometryToBbox(feature.geometry, bbox);
+        if (!clipped) continue;
+        const props = (feature.properties || {}) as Record<string, unknown>;
+        const limits = featureVerticalLimits(props);
+        const info = airspaceFeatureToInfo(feature);
+        out.push({
+          type: feature.layerType as AirspaceVolume["type"],
+          ident: info.ident,
+          name: info.name,
+          lowerFt: limits.lowerFt,
+          upperFt: limits.upperFt,
+          geometry: clipped,
+          info,
+          offRoute: true,
+        });
+      }
+      return out;
+    }),
+  );
+  const seen = new Set<string>();
+  const merged: AirspaceVolume[] = [];
+  for (const volume of collections.flat()) {
+    const key = volumeKey(volume);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(volume);
+    if (merged.length >= maxTotal) break;
+  }
+  return merged;
 }

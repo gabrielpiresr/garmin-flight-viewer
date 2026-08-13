@@ -17,10 +17,12 @@ export type FlightBriefingAiSource = {
 };
 
 export type FlightBriefingAiContact = {
-  type: "email" | "phone" | "website";
+  type: "email" | "phone" | "website" | "hours";
   label: string;
   value: string;
   sourceIds: string[];
+  /** Operational importance for checklist UI ordering. */
+  relevance?: "relevant" | "auxiliary";
 };
 
 export type FlightBriefingAiAirportEnrichment = {
@@ -54,6 +56,8 @@ export type FlightBriefingAiTask = {
   airportIcao?: string;
   title: string;
   description: string;
+  /** Short bullets (e.g. important NOTAMs) shown above the CTA / contacts. */
+  highlights?: string[];
   action: FlightBriefingAiTaskAction;
   status: FlightBriefingAiTaskStatus;
   priority: "high" | "medium" | "low";

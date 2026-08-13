@@ -1,0 +1,473 @@
+{
+  "source": "ROTAER FIR/TMA (AISWEB PDF)",
+  "updatedAt": "2026-08-12",
+  "byIdent": {
+    "SBXQ": {
+      "name": "ACADEMIA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.550",
+        "119.750",
+        "120.100",
+        "120.400",
+        "122.400",
+        "122.800",
+        "123.600",
+        "134.600"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWA": {
+      "name": "AMAZONICA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.250",
+        "128.600"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXN": {
+      "name": "ANAPOLIS",
+      "label": "CONTROLE",
+      "primary": [
+        "120.550",
+        "133.000",
+        "119.150",
+        "129.450"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXA": {
+      "name": "ARACAJU",
+      "label": "CONTROLE",
+      "primary": [
+        "119.000",
+        "120.300"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWU": {
+      "name": "BAURU",
+      "label": "CONTROLE",
+      "primary": [
+        "121.300"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWB": {
+      "name": "BELEM",
+      "label": "CONTROLE",
+      "primary": [
+        "119.050",
+        "119.500"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWH": {
+      "name": "BELO HORIZONTE",
+      "label": "CONTROLE",
+      "primary": [
+        "119.100",
+        "119.300",
+        "119.650",
+        "120.200",
+        "128.550",
+        "129.100",
+        "129.400"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWQ": {
+      "name": "BOA VISTA",
+      "label": "CONTROLE",
+      "primary": [
+        "120.100"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWR": {
+      "name": "BRASILIA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.200",
+        "119.500",
+        "119.700",
+        "120.000",
+        "120.300",
+        "120.650",
+        "129.150",
+        "129.600"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWG": {
+      "name": "CAMPO GRANDE",
+      "label": "CONTROLE",
+      "primary": [
+        "119.350",
+        "120.200",
+        "121.000",
+        "119.650"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWY": {
+      "name": "CUIABA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.400",
+        "120.350",
+        "128.900"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWT": {
+      "name": "CURITIBA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.700",
+        "119.950",
+        "120.650",
+        "120.950",
+        "129.550",
+        "133.150"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXF": {
+      "name": "FLORIANOPOLIS",
+      "label": "CONTROLE",
+      "primary": [
+        "119.500",
+        "119.650",
+        "128.950",
+        "129.450",
+        "129.600"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWZ": {
+      "name": "FORTALEZA",
+      "label": "CONTROLE",
+      "primary": [
+        "120.500",
+        "133.000",
+        "134.550"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWI": {
+      "name": "FOZ",
+      "label": "CONTROLE",
+      "primary": [
+        "119.150",
+        "120.300"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWL": {
+      "name": "ILHEUS",
+      "label": "CONTROLE",
+      "primary": [
+        "120.100"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXO": {
+      "name": "LONDRINA",
+      "label": "CONTROLE",
+      "primary": [
+        "129.700"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWE": {
+      "name": "MACAE",
+      "label": "CONTROLE",
+      "primary": [
+        "119.200",
+        "129.300",
+        "129.550",
+        "120.000",
+        "126.900",
+        "130.300",
+        "130.850",
+        "131.980",
+        "128.950"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXK": {
+      "name": "MACAPA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.000"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXM": {
+      "name": "MACEIO",
+      "label": "CONTROLE",
+      "primary": [
+        "119.250",
+        "128.900"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWN": {
+      "name": "MANAUS",
+      "label": "CONTROLE",
+      "primary": [
+        "119.250",
+        "119.700",
+        "120.400",
+        "122.800"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXJ": {
+      "name": "MARABA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.200"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXT": {
+      "name": "NATAL",
+      "label": "CONTROLE",
+      "primary": [
+        "119.300",
+        "119.650"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXD": {
+      "name": "PALMAS",
+      "label": "CONTROLE",
+      "primary": [
+        "119.000"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWP": {
+      "name": "PORTO ALEGRE",
+      "label": "CONTROLE",
+      "primary": [
+        "119.000",
+        "120.100",
+        "120.550",
+        "128.900"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWK": {
+      "name": "PORTO SEGURO",
+      "label": "CONTROLE",
+      "primary": [
+        "119.600",
+        "120.900"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWV": {
+      "name": "PORTO VELHO",
+      "label": "CONTROLE",
+      "primary": [
+        "120.250"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXG": {
+      "name": "PRESIDENTE PRUDENTE",
+      "label": "CONTROLE",
+      "primary": [
+        "125.450"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWF": {
+      "name": "RECIFE",
+      "label": "CONTROLE",
+      "primary": [
+        "119.500",
+        "119.950",
+        "129.600"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXB": {
+      "name": "RIO BRANCO",
+      "label": "CONTROLE",
+      "primary": [
+        "119.900"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWJ": {
+      "name": "RIO DE JANEIRO",
+      "label": "CONTROLE",
+      "primary": [
+        "119.725",
+        "132.975"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXS": {
+      "name": "SALVADOR",
+      "label": "CONTROLE",
+      "primary": [
+        "119.350",
+        "119.800",
+        "120.800",
+        "129.450"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWM": {
+      "name": "SANTA MARIA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.350",
+        "121.350"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBWX": {
+      "name": "SANTAREM",
+      "label": "CONTROLE",
+      "primary": [
+        "119.300"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBWS": {
+      "name": "SAO LUIS",
+      "label": "CONTROLE",
+      "primary": [
+        "119.100"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXP": {
+      "name": "SAO PAULO",
+      "label": "CONTROLE",
+      "primary": [
+        "129.500"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    },
+    "SBXE": {
+      "name": "TERESINA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.600"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXU": {
+      "name": "UBERABA",
+      "label": "CONTROLE",
+      "primary": [
+        "120.800"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXW": {
+      "name": "UBERLANDIA",
+      "label": "CONTROLE",
+      "primary": [
+        "122.850"
+      ],
+      "alternate": [],
+      "emergency": []
+    },
+    "SBXR": {
+      "name": "VITORIA",
+      "label": "CONTROLE",
+      "primary": [
+        "119.850"
+      ],
+      "alternate": [],
+      "emergency": [
+        "121.500"
+      ]
+    }
+  }
+}

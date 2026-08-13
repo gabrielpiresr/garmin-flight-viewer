@@ -9,10 +9,14 @@ import type {
 import type { FlightBriefingAiReport, FlightBriefingAiTask } from "../types/flightBriefingAi";
 import {
   airportSummaryFromBundle,
+  formatAirspaceEntryDistance,
+  formatAirspaceEntryEte,
   formatAirspaceFreqCell,
   formatRotaerFuel,
 } from "./flightPlanFormat";
 import { formatDistanceNm, formatEteHours, formatFuel } from "./flightPlanningRoute";
+import { airspaceEntryEteHours } from "./airspaceIntersect";
+import type { ProfilePhasePoint } from "./routePerformanceProfile";
 import type { PdfBrand } from "./pdfBrand";
 import { getPdfBrandLogoSrc } from "./pdfBrand";
 import { buildRunwayRoseSvg } from "../components/RunwayRose";
@@ -36,6 +40,8 @@ export type FlightPlanDocumentInput = {
   fuelBurnPerHour: number | null;
   fuelUnit: string;
   routeText: string;
+  /** Used to show ETE at airspace entry; cruise speed is the fallback. */
+  performanceProfile?: ProfilePhasePoint[] | null;
   /** @deprecated prefer mapImageDataUrl */
   mapSvg?: string | null;
   mapImageDataUrl?: string | null;
@@ -477,20 +483,28 @@ export function buildFlightPlanDocumentHtml(input: FlightPlanDocumentInput): str
 
   const airspaceRows = input.airspaces.length
     ? input.airspaces
-        .map(
-          (a, idx) =>
-            `<tr>
+        .map((a, idx) => {
+          const ete =
+            airspaceEntryEteHours(a, input.performanceProfile) ??
+            (a.entryDistanceNm != null && input.cruiseSpeedKt && input.cruiseSpeedKt > 0
+              ? a.entryDistanceNm / input.cruiseSpeedKt
+              : null);
+          const eteClock = formatAirspaceEntryEte(ete);
+          const entry = eteClock
+            ? `${formatAirspaceEntryDistance(a.entryDistanceNm)} · ${eteClock}`
+            : formatAirspaceEntryDistance(a.entryDistanceNm);
+          return `<tr>
               <td>${esc(idx + 1)}</td>
               <td><span class="pill ${esc(a.type.toLowerCase())}">${esc(a.type)}</span></td>
               <td>${esc(a.name)}</td>
               <td class="mono">${esc(a.ident)}</td>
               <td>${esc(a.lower || "—")} / ${esc(a.upper || "—")}</td>
               <td>${esc(formatAirspaceFreqCell(a))}</td>
-              <td>${a.entryDistanceNm != null ? `${esc(a.entryDistanceNm.toFixed(1))} NM` : "—"}</td>
-            </tr>`,
-        )
+              <td>${esc(entry)}</td>
+            </tr>`;
+        })
         .join("")
-    : `<tr><td colspan="7" class="muted">Nenhum CTA/TMA/CTR/ATZ na altitude planejada ao longo da rota.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">Nenhum espaço aéreo (FIR/FIS/TMA/CTA/CTR/ATZ/FIZ/P/R/D) na altitude planejada ao longo da rota.</td></tr>`;
 
   const airportPages = input.airports
     .map((doc) => airportSectionHtml(doc, input.sections, continuous))

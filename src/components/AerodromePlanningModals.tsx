@@ -92,7 +92,7 @@ export function AerodromeMapPopupContent({
   const runways = useMemo(() => formatRunwaysShort(bundle?.rotaer), [bundle]);
 
   return (
-    <div className="ad-map-popup w-[300px] max-w-[300px] text-slate-900 [&_p]:m-0">
+    <div className="ad-map-popup w-[min(92vw,300px)] max-w-[300px] text-slate-900 [&_p]:m-0">
       <div className="mb-1 min-w-0 leading-none">
         <div className="font-mono text-[13px] font-bold tracking-widest text-emerald-700">{icao}</div>
         <div className="mt-0.5 truncate text-[11px] font-semibold leading-tight text-slate-800">
@@ -190,13 +190,13 @@ type SideProps = {
   onClose: () => void;
 };
 
-/** Painel lateral 50% — detalhes completos AISWEB. */
+/** Painel lateral — full-screen no celular, ~45% no tablet/desktop. */
 export function AerodromeDetailsSidePanel({ bundle, open, onClose }: SideProps) {
   if (!open || !bundle) return null;
   return (
     <div className="fixed inset-0 z-[900] flex justify-end bg-black/40" onClick={onClose}>
       <aside
-        className="flex h-full w-full max-w-[50vw] min-w-[320px] flex-col border-l border-slate-700 bg-slate-950 shadow-2xl"
+        className="flex h-full w-full max-w-full flex-col border-l border-slate-700 bg-slate-950 shadow-2xl sm:max-w-[min(100%,28rem)] lg:max-w-[45vw] lg:min-w-[320px]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
